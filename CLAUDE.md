@@ -176,4 +176,5 @@ shell commands, and other important information, read the current plan at
 - [specs/052-perf-comment-hygiene/plan.md](specs/052-perf-comment-hygiene/plan.md)
 - [specs/053-apple-production-release/plan.md](specs/053-apple-production-release/plan.md)
 - [specs/054-byo-llm-setup/plan.md](specs/054-byo-llm-setup/plan.md)
+- [specs/063-remote-compute-agents/plan.md](specs/063-remote-compute-agents/plan.md)
 <!-- SPECKIT END -->
