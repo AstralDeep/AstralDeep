@@ -13,7 +13,7 @@ host-key policy, the login-shell execution technique, and the retry/timeout post
 class RemoteTransport(Protocol):
     def run(self, target: MachineTarget, argv: list[str], *, timeout: float) -> RemoteResult: ...
     def put_file(self, target: MachineTarget, data: bytes, remote_path: str, *,
-                 timeout: float, overwrite: bool) -> RemoteResult: ...
+                 timeout: float) -> RemoteResult: ...
     def stat(self, target: MachineTarget, remote_path: str, *, timeout: float) -> StatResult: ...
     def probe(self, target: MachineTarget, *, timeout: float) -> ProbeResult: ...
 ```
@@ -50,9 +50,12 @@ bash -lc 'exec "$@"' _ <argv[0]> <argv[1]> …        # each token shlex.quote'd
 - The one parse that exists is the SSH exec channel itself; `shlex.quote` per token covers it,
   and `exec "$@"` re-vectorises so a residual quoting gap still cannot execute.
 
-`put_file` uses SFTP (`paramiko.SFTPClient`); `stat` uses SFTP `stat` (the read probe behind
+`put_file` uses SFTP (`paramiko.SFTPClient`) and writes **unconditionally** — the destructive
+`if_exists` decision for `upload_file` belongs to the confirmation gate (which calls `stat`
+first), not the transport (gate, not tool). `stat` uses SFTP `stat` (the read probe behind
 `upload_file`'s `if_exists` destructive check); `probe` opens a connection, records the host key
-on first contact, and returns reachability/auth.
+on first contact, and returns reachability/auth. Every SFTP channel carries the verb's declared
+timeout (FR-021).
 
 ## Connection-time egress gate (FR-019) — the product's first non-HTTP egress
 
