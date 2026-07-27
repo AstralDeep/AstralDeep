@@ -105,6 +105,7 @@ class RemoteResult:
     next_action: str = ""
     data: Dict = field(default_factory=dict)
     stdout: str = ""
+    stderr: str = ""  # bounded; surfaced by verbs to explain a non-zero exit (FR-035)
     exit_status: Optional[int] = None
     host_key: Optional[Dict] = None  # {'type','blob_b64','fingerprint'} captured on first probe
     retryable: bool = False  # consequential default; reads may override True
@@ -332,6 +333,21 @@ class ParamikoTransport:
         chan.close()  # over cap: stop consuming, unblock the remote
         return bytes(buf[:MAX_OUTPUT_BYTES]), True
 
+    def _drain_stderr(self, chan, cap: int = 16384) -> str:
+        """Best-effort bounded read of buffered stderr AFTER the command has exited
+        (stdout already read to EOF, so stderr is complete). Never raises; used only
+        to explain a non-zero exit — the transport still returns typed verdicts."""
+        buf = bytearray()
+        try:
+            while len(buf) < cap and chan.recv_stderr_ready():
+                chunk = chan.recv_stderr(min(_RECV_CHUNK, cap - len(buf)))
+                if not chunk:
+                    break
+                buf += chunk
+        except Exception:  # noqa: BLE001
+            pass
+        return bytes(buf).decode("utf-8", "replace")
+
     def _await_exit(self, chan, timeout: float, truncated: bool) -> Optional[int]:
         """Wait for the exit status within the deadline (never unbounded). Returns None
         when output was truncated (channel already closed)."""
@@ -355,9 +371,11 @@ class ParamikoTransport:
             chan = stdout.channel
             out, truncated = self._read_bounded(chan, timeout)
             exit_status = self._await_exit(chan, timeout, truncated)
+            stderr_text = "" if truncated else self._drain_stderr(chan)
             return RemoteResult(verdict=Verdict.OK, machine=target.label,
-                                stdout=out.decode("utf-8", "replace"), exit_status=exit_status,
-                                retryable=retryable, data={"truncated": truncated})
+                                stdout=out.decode("utf-8", "replace"), stderr=stderr_text,
+                                exit_status=exit_status, retryable=retryable,
+                                data={"truncated": truncated})
         except Exception as exc:  # noqa: BLE001 — mapped to vocabulary or re-raised
             return self._result_for_exception(target, exc, retryable=retryable)
         finally:
@@ -447,7 +465,7 @@ class FakeTransport:
 
     def __init__(self, *, reachable: bool = True, authenticated: bool = True,
                  host_key: Optional[Dict] = None, files: Optional[Dict[str, bytes]] = None,
-                 command_stdout: str = "", command_exit: int = 0,
+                 command_stdout: str = "", command_exit: int = 0, command_stderr: str = "",
                  force_verdict: Optional[Verdict] = None):
         self.reachable = reachable
         self.authenticated = authenticated
@@ -455,6 +473,7 @@ class FakeTransport:
         self.files = dict(files or {})
         self.command_stdout = command_stdout
         self.command_exit = command_exit
+        self.command_stderr = command_stderr
         self.force_verdict = force_verdict
         self.calls: List[Dict] = []  # recorded for assertions
 
@@ -493,7 +512,8 @@ class FakeTransport:
         if pre is not None:
             return pre
         return RemoteResult(verdict=Verdict.OK, machine=target.label,
-                            stdout=self.command_stdout, exit_status=self.command_exit,
+                            stdout=self.command_stdout, stderr=self.command_stderr,
+                            exit_status=self.command_exit,
                             retryable=retryable, data={"truncated": False})
 
     def stat(self, target: MachineTarget, remote_path: str, *, timeout: float) -> RemoteResult:

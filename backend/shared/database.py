@@ -29,7 +29,7 @@ logger = logging.getLogger('Database')
 #          runtime, draft publication, maintenance, conversation-commit
 #          coordination, and owner-scoped Run-now reconciliation. Additive and
 #          guarded by fixed PostgreSQL advisory transaction identities.
-SCHEMA_REVISION = '063.003'
+SCHEMA_REVISION = '063.004'
 
 _SCHEMA_ADVISORY_LOCK = (1095980114, 60001)
 _USER_AGENT_POLICY_ADVISORY_LOCK = (1095980114, 60002)
@@ -1389,6 +1389,41 @@ class Database:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_rop_owner_status "
             "ON remote_operation_proposal (owner_user_id, status)")
+
+        # tracked_job: a submitted remote Slurm job whose lifecycle is tracked
+        # async (feature 063 US4 / FR-042..FR-046). A durable row keyed by owner +
+        # cluster job id so the job outlives the tab / process / restart and is
+        # reportable from any device; the background poller updates state/exit_code
+        # read-only over SSH and, on a terminal state, refreshes component_id in
+        # place + notifies (notify_on_finish). Rollback: DROP TABLE IF EXISTS tracked_job;
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tracked_job (
+                tracked_job_id    TEXT PRIMARY KEY,
+                owner_user_id     TEXT NOT NULL,
+                machine_id        TEXT NOT NULL,
+                chat_id           TEXT,
+                scheduler_job_id  TEXT NOT NULL,
+                submit_marker     TEXT,
+                output_path       TEXT,
+                component_id      TEXT,
+                job_name          TEXT,
+                state             TEXT NOT NULL DEFAULT 'submitted',
+                exit_code         TEXT,
+                terminal          BOOLEAN NOT NULL DEFAULT FALSE,
+                notify_on_finish  BOOLEAN NOT NULL DEFAULT FALSE,
+                notified          BOOLEAN NOT NULL DEFAULT FALSE,
+                fail_count        INTEGER NOT NULL DEFAULT 0,
+                created_at        BIGINT NOT NULL,
+                last_polled_at    BIGINT,
+                finished_at       BIGINT
+            )
+        ''')
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_tracked_job_machine_job "
+            "ON tracked_job (machine_id, scheduler_job_id)")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tracked_job_open "
+            "ON tracked_job (owner_user_id, terminal)")
 
         # ── Feature 054: bring-your-own-LLM credential stores ───────────────
         # user_llm_config: one row per user who has completed provider setup;

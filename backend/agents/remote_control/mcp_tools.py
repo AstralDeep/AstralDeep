@@ -94,6 +94,13 @@ def _result_fail(res: RemoteResult) -> Dict[str, Any]:
     return _fail(res.verdict, res.machine, res.next_action)
 
 
+def _stderr_tail(res: RemoteResult) -> str:
+    """The last non-empty stderr line — the actionable reason a command failed
+    (e.g. sbatch's 'You must specify an -a/--account'). Bounded + sanitized."""
+    lines = [ln for ln in (getattr(res, "stderr", "") or "").splitlines() if ln.strip()]
+    return _sanitize(lines[-1], 240) if lines else ""
+
+
 def _resolve(user_id: Optional[str], ref: Optional[str]):
     if not user_id:
         return None, _fail("permission_denied", ref or "?", "sign in to use remote machines")
@@ -123,8 +130,10 @@ def _finish(res: RemoteResult, target, success_title: str, success_comps: List[A
         return _fail(Verdict.UNCONFIRMED, target.label,
                      "the command's output was truncated; check the machine before re-issuing")
     if res.exit_status != 0:
+        tail = _stderr_tail(res)
+        reason = f": {tail}" if tail else f"; {fail_next}"
         return _fail(Verdict.PARTIAL, target.label,
-                     f"the machine rejected the operation (exit {res.exit_status}); {fail_next}")
+                     f"the machine rejected the operation (exit {res.exit_status}){reason}")
     return _ok(success_title, success_comps, {**data, "exit_status": 0})
 
 
@@ -347,13 +356,98 @@ def submit_job(**kwargs) -> Dict[str, Any]:
     if not res.ok:
         return _result_fail(res)
     if res.exit_status not in (0, None) or not (res.stdout or "").strip():
+        tail = _stderr_tail(res)
         return _fail(Verdict.PARTIAL, target.label,
-                     "sbatch did not accept the job; check the script path, partition, and account")
+                     f"sbatch did not accept the job: {tail}" if tail
+                     else "sbatch did not accept the job; check the script path, partition, and account")
     job_id = _sanitize((res.stdout or "").strip().split(";")[0].split()[0] if res.stdout.strip() else "", 24)
     return _ok(f"Job submitted — {_sanitize(target.label, 60)}",
                [Table(headers=["Field", "Value"],
                       rows=[["Job id", job_id], ["Script", _sanitize(script_path, 200)]])],
                {"job_id": job_id, "script_path": script_path})
+
+
+# ── run_job (inline script → sbatch → durable async tracking, US4) ────────────
+
+_MAX_SCRIPT_BYTES = 64 * 1024
+
+
+def run_job(**kwargs) -> Dict[str, Any]:
+    """Submit an INLINE job script (not a pre-existing path), track it durably, and
+    return a live canvas card the background poller updates in place. The script is
+    written to the cluster as DATA via SFTP, then run by a structured ``sbatch``
+    argv — the transport's no-shell-string control-plane invariant still holds. Not
+    destructive (creates new work); consequential and non-retryable."""
+    import uuid as _uuid
+
+    user_id = kwargs.get("user_id")
+    chat_id = kwargs.get("session_id")  # dispatch injects the chat id under session_id
+    ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
+    script = kwargs.get("script")
+    job_name = kwargs.get("job_name")
+    notify = kwargs.get("notify_on_finish")
+    notify = True if notify is None else bool(notify)
+    target, err = _resolve(user_id, ref)
+    if err:
+        return err
+    if not (isinstance(script, str) and script.strip()):
+        return _fail(Verdict.INVALID_ARGUMENT, target.label, "provide the job's script text")
+    if len(script.encode("utf-8", "ignore")) > _MAX_SCRIPT_BYTES:
+        return _fail(Verdict.INVALID_ARGUMENT, target.label, "script is too large (max 64 KB)")
+    flags, ferr = _sbatch_flags(kwargs, target.label)  # partition/time/nodes/gpus/job_name/account
+    if ferr:
+        return ferr
+
+    tx = get_transport()
+    pwd = tx.run(target, ["pwd"], timeout=15.0, retryable=True)
+    if not pwd.ok:
+        return _result_fail(pwd)
+    home = (pwd.stdout or "").strip().splitlines()[0] if (pwd.stdout or "").strip() else ""
+    base = f"{home}/.astral_jobs" if home.startswith("/") else ".astral_jobs"
+    nonce = _uuid.uuid4().hex[:12]
+    script_path = f"{base}/astral-{nonce}.sbatch"
+    output_path = f"{base}/astral-{nonce}.out"
+
+    mk = tx.run(target, ["mkdir", "-p", base], timeout=15.0, retryable=False)
+    if not mk.ok:
+        return _result_fail(mk)
+    body = "#!/bin/bash\n" + script.replace("\r\n", "\n").replace("\r", "\n")
+    if not body.endswith("\n"):
+        body += "\n"
+    put = tx.put_file(target, body.encode("utf-8"), script_path, timeout=30.0)
+    if not put.ok:
+        return _result_fail(put)
+
+    argv = ["sbatch", "--parsable", f"--output={output_path}",
+            f"--comment=astral:{nonce}", *flags, script_path]
+    res = tx.run(target, argv, timeout=30.0, retryable=False)
+    if not res.ok:
+        return _result_fail(res)
+    if res.exit_status not in (0, None) or not (res.stdout or "").strip():
+        tail = _stderr_tail(res)
+        return _fail(Verdict.PARTIAL, target.label,
+                     f"sbatch did not accept the job: {tail}" if tail
+                     else "sbatch did not accept the job; check partition/account and the script")
+    job_id = _sanitize((res.stdout or "").strip().split(";")[0].split()[0], 24)
+    if not job_id:
+        return _fail(Verdict.UNCONFIRMED, target.label,
+                     "the job may have been submitted but no id came back; check the queue")
+
+    component_id = f"au_rjob_{job_id}"
+    from orchestrator import remote_jobs
+    try:
+        remote_jobs.create_tracked_job(
+            _DB, owner_user_id=user_id, machine_id=target.machine_id, chat_id=chat_id,
+            scheduler_job_id=job_id, submit_marker=nonce, output_path=output_path,
+            component_id=component_id, job_name=job_name or "", notify_on_finish=notify)
+    except Exception:  # noqa: BLE001 — the job IS submitted; tracking-row failure is non-fatal
+        pass
+    card = remote_jobs.render_job_card(
+        job_id=job_id, machine_label=target.label, state="submitted", terminal=False,
+        component_id=component_id, job_name=job_name or None)
+    return {"_ui_components": [card],
+            "_data": {"job_id": job_id, "state": "submitted", "tracked": True,
+                      "output_path": output_path, "notify_on_finish": notify}}
 
 
 # ── upload_file (destructive IFF remote_path already has content) ─────────────
@@ -421,6 +515,24 @@ _MACHINE_PROP = {"machine_id": {"type": "string",
 
 
 TOOL_REGISTRY = {
+    "run_job": _entry(
+        run_job,
+        "Run a job on a registered cluster from INLINE script text (e.g. shell commands): "
+        "it is written to the cluster and submitted with sbatch, then tracked asynchronously "
+        "— you can leave and come back; the result appears on the canvas and (opt-in) you're "
+        "notified when it finishes. Creates new work; not destructive.",
+        {"type": "object", "properties": {
+            **_MACHINE_PROP,
+            "script": {"type": "string", "description": "The job's script body (bash). e.g. 'nvidia-smi\\nsleep 60\\nnvidia-smi'."},
+            "job_name": {"type": "string"},
+            "partition": {"type": "string"},
+            "time_limit": {"type": "string", "description": "Slurm time string, e.g. '00:05:00'."},
+            "nodes": {"type": "integer", "minimum": 1},
+            "gpus": {"type": "integer", "minimum": 0},
+            "account": {"type": "string"},
+            "notify_on_finish": {"type": "boolean", "description": "Notify your clients when the job finishes (default true).", "default": True},
+        }, "required": ["machine_id", "script"]},
+        "tools:write", 60.0),
     "submit_job": _entry(
         submit_job,
         "Submit an EXISTING sbatch script to the Slurm scheduler on a registered cluster. "

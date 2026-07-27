@@ -139,3 +139,32 @@ def test_list_processes_all_uses_eo():
     t = _fake(command_stdout="1 root 0.0 0.0 100 init\n", command_exit=0)
     obs.list_processes(user_id=USER, machine_id="dgx", own_only=False)
     assert _argvs(t)[0][0:2] == ["ps", "-eo"]
+
+
+# ── read_job_output (US4 — bounded tail of a tracked job's output) ────────────
+
+def test_read_job_output_from_tracked_job(monkeypatch):
+    from orchestrator import remote_jobs
+    monkeypatch.setattr(remote_jobs, "get_by_job",
+                        lambda db, uid, jid: {"output_path": "/home/me/.astral_jobs/x.out"})
+    t = _fake(command_stdout="GPU 0: NVIDIA A100\n", command_exit=0)
+    res = obs.read_job_output(user_id=USER, machine_id="dgx", job_id="5")
+    assert "A100" in str(res["_ui_components"][0])
+    argv = _argvs(t)[0]
+    assert argv[0] == "tail" and argv[-1] == "/home/me/.astral_jobs/x.out"
+
+
+def test_read_job_output_unknown_job_is_not_found(monkeypatch):
+    from orchestrator import remote_jobs
+    monkeypatch.setattr(remote_jobs, "get_by_job", lambda db, uid, jid: None)
+    t = _fake(command_exit=0)
+    res = obs.read_job_output(user_id=USER, machine_id="dgx", job_id="5")
+    assert _verdict(res) == Verdict.NOT_FOUND.value and _argvs(t) == []
+
+
+def test_read_job_output_explicit_path(monkeypatch):
+    from orchestrator import remote_jobs
+    monkeypatch.setattr(remote_jobs, "get_by_job", lambda db, uid, jid: None)
+    t = _fake(command_stdout="line1\nline2\n", command_exit=0)
+    res = obs.read_job_output(user_id=USER, machine_id="dgx", output_path="/abs/out.log")
+    assert _argvs(t)[0][-1] == "/abs/out.log" and "line1" in str(res["_ui_components"][0])

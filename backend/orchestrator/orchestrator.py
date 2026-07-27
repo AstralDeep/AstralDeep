@@ -114,6 +114,9 @@ LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
 PERSONAL_AGENT_STARTUP_TIMEOUT_SECONDS = 5.0
 PERSONAL_AGENT_HEARTBEAT_TIMEOUT_SECONDS = 5.0
 PERSONAL_AGENT_WATCHDOG_INTERVAL_SECONDS = 1.0
+# Feature 063 US4: how often the always-on background poller checks each open
+# remote Slurm job's status over SSH (read-only). Env-overridable.
+REMOTE_CLUSTER_POLL_INTERVAL_SECONDS = float(os.getenv("REMOTE_CLUSTER_POLL_SECONDS", "30"))
 _PERSONAL_AGENT_HOST_FRAME_TYPES = frozenset(
     {
         "agent_host_inventory",
@@ -1075,6 +1078,9 @@ class Orchestrator:
             tuple[str, str, str], asyncio.Lock
         ] = {}
         self._personal_agent_watchdog_task: asyncio.Task[Any] | None = None
+        # Feature 063 US4: the always-on remote-Slurm-job status poller (launched
+        # in start() only when FF_REMOTE_COMPUTE is on; cancelled on shutdown).
+        self._remote_job_poll_task: asyncio.Task[Any] | None = None
         self.runtime_observability = RuntimeObservability(
             retention_seconds=operation_retention_seconds,
             deployment_instance=os.getenv(
@@ -2374,6 +2380,20 @@ class Orchestrator:
             except Exception:
                 logger.warning("personal-agent watchdog pass failed", exc_info=True)
             await asyncio.sleep(PERSONAL_AGENT_WATCHDOG_INTERVAL_SECONDS)
+
+    async def _remote_job_poll_loop(self) -> None:
+        """Feature 063 US4: always-on background poller for open remote Slurm jobs.
+        Read-only by construction (only squeue/sacct/tail run); the loop must never
+        die on a single bad pass."""
+        while True:
+            try:
+                from orchestrator import remote_jobs
+                await remote_jobs.poll_once(self)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("remote-job poll pass failed", exc_info=True)
+            await asyncio.sleep(REMOTE_CLUSTER_POLL_INTERVAL_SECONDS)
 
     async def _handle_personal_agent_result(
         self,
@@ -17312,6 +17332,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 name="personal-agent-runtime-watchdog",
             )
 
+        # Feature 063 US4: launch the remote-cluster-job poller ONLY when the
+        # remote-compute feature is on (fail-closed — with the flag off no task is
+        # created and boot is byte-identical to today). Read-only status polling
+        # needs only the remote_compute gate, not FF_SCHEDULER_EXECUTION.
+        if flags.is_enabled("remote_compute") and (
+            self._remote_job_poll_task is None or self._remote_job_poll_task.done()
+        ):
+            self._remote_job_poll_task = asyncio.create_task(
+                self._remote_job_poll_loop(), name="remote-cluster-job-poller")
+
         # Feature 052 (FR-028): pre-load the PHI analyzer singleton in a
         # daemon thread so the first personalization write doesn't stall on
         # the 2-5 s Presidio+spaCy build. Readiness never waits on it.
@@ -17711,6 +17741,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 watchdog.cancel()
                 await asyncio.gather(watchdog, return_exceptions=True)
                 self._personal_agent_watchdog_task = None
+            poller = getattr(self, "_remote_job_poll_task", None)
+            if poller is not None:
+                poller.cancel()
+                await asyncio.gather(poller, return_exceptions=True)
+                self._remote_job_poll_task = None
             try:
                 scheduler_loop = getattr(self, "_scheduler_loop", None)
                 if scheduler_loop is not None:

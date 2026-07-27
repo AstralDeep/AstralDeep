@@ -175,3 +175,78 @@ def test_upload_file_missing_attachment_is_not_found(monkeypatch):
     _fake()
     res = ctl.upload_file(user_id=USER, machine_id="dgx", attachment_id="nope", remote_path="/d/f")
     assert _verdict(res) == Verdict.NOT_FOUND.value
+
+
+# ── run_job (inline script → sbatch → durable tracking, US4) ──────────────────
+
+from orchestrator.remote_transport import RemoteResult  # noqa: E402
+
+
+class _Scripted:
+    """Transport double returning a canned result per argv[0] (pwd/mkdir/sbatch)."""
+
+    def __init__(self, table):
+        self.table = table
+        self.calls = []
+        self.last_put = None
+
+    def run(self, target, argv, *, timeout, retryable=False):
+        self.calls.append(list(argv))
+        stdout, exit_status = self.table.get(argv[0], ("", 0))
+        return RemoteResult(verdict=Verdict.OK, machine=target.label,
+                            stdout=stdout, exit_status=exit_status)
+
+    def put_file(self, target, data, remote_path, *, timeout):
+        self.last_put = (remote_path, data)
+        return RemoteResult(verdict=Verdict.OK, machine=target.label,
+                            data={"path": remote_path, "bytes": len(data)})
+
+    def stat(self, target, remote_path, *, timeout):
+        return RemoteResult(verdict=Verdict.OK, machine=target.label, data={"exists": False})
+
+    def probe(self, target, *, timeout):
+        return RemoteResult(verdict=Verdict.OK, machine=target.label, data={"authenticated": True})
+
+
+def test_run_job_writes_script_submits_and_tracks(monkeypatch):
+    from orchestrator import remote_jobs
+    created = {}
+    monkeypatch.setattr(remote_jobs, "create_tracked_job",
+                        lambda db, **kw: created.update(kw) or "tid")
+    tx = _Scripted({"pwd": ("/home/me", 0), "mkdir": ("", 0), "sbatch": ("98765", 0)})
+    set_transport(tx)
+    res = ctl.run_job(user_id=USER, session_id="chat-1", machine_id="dgx",
+                      script="nvidia-smi\nsleep 60\nnvidia-smi", job_name="gpucheck",
+                      notify_on_finish=True)
+    comp = res["_ui_components"][0]
+    assert comp["id"] == "au_rjob_98765"
+    assert res["_data"]["job_id"] == "98765" and res["_data"]["tracked"] is True
+    # tracked_job creation attempted with the right identity + output path
+    assert created["scheduler_job_id"] == "98765"
+    assert created["component_id"] == "au_rjob_98765"
+    assert created["chat_id"] == "chat-1" and created["notify_on_finish"] is True
+    assert created["output_path"].endswith(".out")
+    # script written via SFTP, then sbatch ran with --parsable/--output/--comment
+    assert tx.last_put and tx.last_put[0].endswith(".sbatch")
+    body = tx.last_put[1].decode()
+    assert body.startswith("#!/bin/bash") and "nvidia-smi" in body
+    sbatch = next(c for c in tx.calls if c and c[0] == "sbatch")
+    assert "--parsable" in sbatch and any(a.startswith("--output=") for a in sbatch)
+    assert any(a.startswith("--comment=astral:") for a in sbatch)
+
+
+def test_run_job_rejects_empty_script():
+    set_transport(_Scripted({}))
+    res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="   ")
+    assert _verdict(res) == Verdict.INVALID_ARGUMENT.value
+
+
+def test_run_job_rejects_oversize_script():
+    set_transport(_Scripted({}))
+    res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="x" * (64 * 1024 + 1))
+    assert _verdict(res) == Verdict.INVALID_ARGUMENT.value
+
+
+def test_run_job_is_classified_never_destructive():
+    from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
+    assert DESTRUCTIVE_CLASSIFICATION["run_job"] == "never"

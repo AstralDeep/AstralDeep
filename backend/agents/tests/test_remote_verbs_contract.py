@@ -19,22 +19,25 @@ from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
 READ_VERBS = {
     "list_machines", "probe_machine", "list_queue", "job_status",
     "job_history", "host_facts", "list_directory", "list_processes",
+    "read_job_output",
 }
 
 MUTATING_VERBS = {
     "submit_job", "make_directory", "upload_file", "cancel_job",
     "remove_path", "control_service", "manage_package", "signal_process",
+    "run_job",
 }
 
 # The authoritative scope + destructive table (contracts/verbs.md §mutating).
 CTL_SCOPE = {
-    "submit_job": "tools:write", "make_directory": "tools:write",
+    "run_job": "tools:write", "submit_job": "tools:write", "make_directory": "tools:write",
     "upload_file": "tools:write", "cancel_job": "tools:write",
     "remove_path": "tools:write", "control_service": "tools:system",
     "manage_package": "tools:system", "signal_process": "tools:system",
 }
 
 CTL_DESTRUCTIVE = {
+    "run_job": "never",
     "submit_job": "never",
     "make_directory": "never",
     "upload_file": "if_exists",
@@ -46,6 +49,7 @@ CTL_DESTRUCTIVE = {
 }
 
 CTL_REQUIRED = {
+    "run_job": {"machine_id", "script"},
     "submit_job": {"machine_id", "script_path"},
     "make_directory": {"machine_id", "path"},
     "upload_file": {"machine_id", "attachment_id", "remote_path"},
@@ -65,6 +69,7 @@ READ_REQUIRED = {
     "host_facts": {"machine_id"},
     "list_directory": {"machine_id", "path"},
     "list_processes": {"machine_id"},
+    "read_job_output": {"machine_id"},
 }
 
 
@@ -141,9 +146,9 @@ def test_every_verb_declares_a_positive_timeout():
 
 # ── the unified agent exposes exactly the union (the merge, FR-024/FR-025) ──────
 
-def test_unified_registry_is_exactly_the_sixteen_verbs():
+def test_unified_registry_is_exactly_the_full_verb_set():
     assert set(REG) == (READ_VERBS | MUTATING_VERBS)
-    assert len(REG) == 16
+    assert len(REG) == 18
 
 
 def test_unified_registry_is_the_union_of_the_two_risk_tiers():

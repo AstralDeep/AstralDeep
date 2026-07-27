@@ -43,6 +43,7 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "control_service": {"by_action": ["stop", "disable", "restart"]},
     "manage_package": {"by_action": ["remove"]},
     "submit_job": "never",
+    "run_job": "never",  # US4: submitting a job creates new work (not destructive)
 }
 
 _MARKER = "_remote_op_proposal_id"

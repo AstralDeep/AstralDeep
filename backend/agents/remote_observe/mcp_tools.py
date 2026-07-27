@@ -473,6 +473,49 @@ def list_processes(**kwargs) -> Dict[str, Any]:
                {"processes": len(procs), "own_only": own_only})
 
 
+# ── read_job_output (US4 — bounded, sanitized tail of a tracked job's output) ──
+
+def read_job_output(**kwargs) -> Dict[str, Any]:
+    """Read the recent output (tail) of one of the user's own tracked jobs. Surfaces
+    the job's OWN stdout — bounded (tail -n) + control-char-sanitized + length-clipped.
+    Reads only; resolves the output file from the tracked_job row (or an explicit
+    absolute output_path)."""
+    user_id = kwargs.get("user_id")
+    ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
+    job_id = str(kwargs.get("job_id") or "").strip()
+    target, err = _resolve(user_id, ref)
+    if err:
+        return err
+    path = None
+    if job_id:
+        try:
+            from orchestrator import remote_jobs
+            row = remote_jobs.get_by_job(_DB, user_id, job_id)
+            if row:
+                path = row.get("output_path")
+        except Exception:
+            path = None
+    if not path:
+        path = kwargs.get("output_path")
+    if not (isinstance(path, str) and path.startswith("/") and "\x00" not in path and len(path) <= 4096):
+        return _fail(Verdict.NOT_FOUND, target.label,
+                     "no tracked output for that job — pass an absolute output_path")
+    try:
+        lines = max(1, min(int(kwargs.get("lines") or 200), 1000))
+    except (TypeError, ValueError):
+        lines = 200
+    res = get_transport().run(target, ["tail", "-n", str(lines), path], timeout=20.0, retryable=True)
+    if not res.ok:
+        return _result_fail(res)
+    title = (f"Job {job_id} output" if job_id else "Job output") + f" — {_sanitize(target.label, 60)}"
+    text = _sanitize(res.stdout or "", 16000)
+    if not text.strip():
+        return _ok(title, [Text(content="(no output yet)", variant="body")],
+                   {"job_id": job_id, "bytes": 0})
+    return _ok(title, [Text(content="```\n" + text + "\n```", variant="body")],
+               {"job_id": job_id, "bytes": len(res.stdout or "")})
+
+
 _M = {"machine_id": {"type": "string", "description": "The machine's label, address, or id (e.g. 'dgx')."}}
 
 
@@ -526,4 +569,12 @@ TOOL_REGISTRY = {
         "List processes on a registered machine (defaults to your own).",
         {**_M, "own_only": {"type": "boolean", "description": "Only your own processes (default true).", "default": True}},
         ["machine_id"], 30.0),
+    "read_job_output": _read_entry(
+        read_job_output,
+        "Read the recent output (tail) of one of your tracked cluster jobs.",
+        {**_M,
+         "job_id": {"type": "string", "description": "Numeric Slurm job id you submitted."},
+         "output_path": {"type": "string", "description": "Absolute output path (if not a tracked job)."},
+         "lines": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200}},
+        ["machine_id"], 25.0),
 }
