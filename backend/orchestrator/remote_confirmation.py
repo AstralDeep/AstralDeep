@@ -48,6 +48,70 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
 _MARKER = "_remote_op_proposal_id"
 
 
+# ── hash-chained audit (FR-047/FR-048) ─────────────────────────────────────────
+#
+# Every proposal transition (proposed / approved / declined / expired / consumed)
+# and every refusal (unattended, non-owner, invalid approval) is appended to the
+# hash-chained audit under ``agent_lifecycle``, correlated by ``proposal_id`` and
+# naming the acting user + machine + verb — enough to reconstruct after the fact
+# what was done to which machine, by whom, under which approval. NO secrets and NO
+# argument values are recorded (FR-049) — only the machine id, the verb, and the
+# args *fingerprint* live in the row (via the proposal); ``inputs_meta`` carries a
+# hash-safe subset. Best-effort: an audit failure never blocks or breaks the gate.
+
+def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
+                 proposal_id: Optional[str] = None, machine_id: Optional[str] = None,
+                 verb: Optional[str] = None, outcome: str = "success",
+                 chat_id: Optional[str] = None):
+    from datetime import datetime, timezone
+
+    from audit.schemas import AuditEventCreate
+    meta: Dict[str, Any] = {}
+    if machine_id:
+        meta["machine_id"] = str(machine_id)
+    if verb:
+        meta["verb"] = str(verb)
+    if proposal_id:
+        meta["proposal_id"] = str(proposal_id)
+    return AuditEventCreate(
+        actor_user_id=user_id or "unknown",
+        auth_principal=user_id or "unknown",
+        event_class="agent_lifecycle",
+        action_type=action_type,
+        description=description[:1024],
+        conversation_id=chat_id,
+        correlation_id=proposal_id or uuid.uuid4().hex,
+        outcome=outcome,
+        inputs_meta=meta,
+        started_at=datetime.now(timezone.utc),
+    )
+
+
+def _audit_sync(user_id: Optional[str], action_type: str, description: str, **kw) -> None:
+    """Record a proposal-lifecycle event from the SYNC gate (runs in a worker
+    thread via asyncio.to_thread, so a blocking insert is safe)."""
+    try:
+        from audit.recorder import get_recorder
+        rec = get_recorder()
+        if rec is None:
+            return
+        rec.record_blocking(_audit_event(user_id, action_type, description, **kw))
+    except Exception:  # noqa: BLE001 — audit is best-effort, never fatal
+        logger.debug("remote_op audit failed (%s)", action_type, exc_info=True)
+
+
+async def _audit_async(user_id: Optional[str], action_type: str, description: str, **kw) -> None:
+    """Record a proposal-lifecycle event from the async decision handler."""
+    try:
+        from audit.recorder import get_recorder
+        rec = get_recorder()
+        if rec is None:
+            return
+        await rec.record(_audit_event(user_id, action_type, description, **kw))
+    except Exception:  # noqa: BLE001
+        logger.debug("remote_op audit failed (%s)", action_type, exc_info=True)
+
+
 # ── fingerprint / summary ─────────────────────────────────────────────────────
 
 def _canonical_args(args: Dict[str, Any]) -> str:
@@ -176,6 +240,9 @@ def _create_proposal(orch, user_id: str, chat_id: Optional[str], agent_id: str,
         (proposal_id, user_id, chat_id, args.get("machine_id"), agent_id, tool_name,
          _canonical_args(args), _fingerprint(args), summary, now, now + PROPOSAL_TTL_S))
     logger.info("remote_op proposal created: %s verb=%s owner=%s", proposal_id, tool_name, user_id)
+    _audit_sync(user_id, "remote_op.proposed", f"proposed {tool_name}: {summary}",
+                proposal_id=proposal_id, machine_id=args.get("machine_id"), verb=tool_name,
+                outcome="in_progress", chat_id=chat_id)
     card = Card(title="Confirm a destructive operation", content=[
         Text(content=summary, variant="body"),
         Text(content="This changes the remote machine and cannot be undone by me. "
@@ -210,7 +277,13 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         ok = _consume_if_valid(orch.history.db, str(marker), user_id, tool_name, args)
         args.pop(_MARKER, None)  # never hand the marker to the agent
         if ok:
+            _audit_sync(user_id, "remote_op.consumed",
+                        f"approved & consumed {tool_name}", proposal_id=str(marker),
+                        machine_id=args.get("machine_id"), verb=tool_name, chat_id=chat_id)
             return None  # approved, fresh, matching, single-use consumed -> proceed
+        _audit_sync(user_id, "remote_op.approval_invalid",
+                    f"invalid approval for {tool_name}", proposal_id=str(marker),
+                    machine_id=args.get("machine_id"), verb=tool_name, outcome="failure", chat_id=chat_id)
         return ("This approval is no longer valid (already used, expired, or the "
                 "arguments changed). Re-request the operation.",
                 [Alert(message="Approval no longer valid — re-request the operation.",
@@ -219,6 +292,9 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     # First reach of a destructive verb: refuse and (if interactive) offer a proposal.
     if _no_live_human(orch, websocket):
         logger.info("remote_op refused (unattended): verb=%s owner=%s", tool_name, user_id)
+        _audit_sync(user_id, "remote_op.refused_unattended",
+                    f"refused unattended {tool_name}", machine_id=args.get("machine_id"),
+                    verb=tool_name, outcome="failure", chat_id=chat_id)
         return ("unattended_refused: a destructive operation needs a person to approve "
                 "it; re-issue it interactively.",
                 [Alert(message="Destructive operations can't run unattended — re-issue "
@@ -245,20 +321,30 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     if row is None or row["owner_user_id"] != user_id:
         # Not found, or belongs to a different user (US3-4) — refuse + audit.
         logger.warning("remote_op_decision refused (not owner/found): id=%s actor=%s", proposal_id, user_id)
+        await _audit_async(user_id, "remote_op.decision_refused",
+                           "decision refused (not owner or not found)",
+                           proposal_id=proposal_id, outcome="failure")
         await _say("That confirmation is not available.")
         return
     now = int(time.time())
+    _mid, _verb, _cid = row["machine_id"], row["verb"], row["chat_id"]
     if row["status"] != "pending":
         await _say("This request was already handled.")
         return
     if now > int(row["expires_at"]):
         await db.aexecute("UPDATE remote_operation_proposal SET status='expired' "
                           "WHERE proposal_id=? AND status='pending'", (proposal_id,))
+        await _audit_async(user_id, "remote_op.expired", f"approval expired for {_verb}",
+                           proposal_id=proposal_id, machine_id=_mid, verb=_verb,
+                           outcome="failure", chat_id=_cid)
         await _say("This request expired — please re-request the operation.")
         return
     if decision != "approve":
         await db.aexecute("UPDATE remote_operation_proposal SET status='declined', decided_at=? "
                           "WHERE proposal_id=? AND status='pending'", (now, proposal_id))
+        await _audit_async(user_id, "remote_op.declined", f"declined {_verb}",
+                           proposal_id=proposal_id, machine_id=_mid, verb=_verb,
+                           outcome="failure", chat_id=_cid)
         await _say("Declined — nothing was changed.", variant="info")
         return
 
@@ -269,6 +355,8 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     if approved is None:
         await _say("This request was already handled.")
         return
+    await _audit_async(user_id, "remote_op.approved", f"approved {_verb}",
+                       proposal_id=proposal_id, machine_id=_mid, verb=_verb, chat_id=_cid)
 
     # Re-enter the tool with the STORED args + the consume marker. The gate re-checks
     # the full stack, matches the approved proposal by (owner, verb, args), consumes it

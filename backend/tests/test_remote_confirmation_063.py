@@ -354,3 +354,77 @@ async def test_handle_decision_double_approve_dispatches_once():
     await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
     await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
     assert len(o.execute_single_tool.calls) == 1  # second approve is a no-op (already handled)
+
+
+# ── hash-chained audit lifecycle (FR-047/FR-048) ───────────────────────────────
+
+class _FakeRecorder:
+    """Captures the AuditEventCreate objects the gate emits. Construction of each
+    validates event_class + outcome + required fields, so a bad shape would raise
+    inside _audit_* (swallowed) and simply never reach here — the assertions below
+    therefore also prove the events are schema-valid."""
+
+    def __init__(self):
+        self.events = []
+
+    def record_blocking(self, ev):
+        self.events.append(ev)
+        return ev
+
+    async def record(self, ev):
+        self.events.append(ev)
+        return ev
+
+
+@pytest.fixture
+def audit_rec(monkeypatch):
+    rec = _FakeRecorder()
+    monkeypatch.setattr("audit.recorder.get_recorder", lambda: rec)
+    return rec
+
+
+def _types(rec):
+    return [e.action_type for e in rec.events]
+
+
+def test_audit_proposed_event_is_valid_and_correlated(audit_rec):
+    db = _FakeDB()
+    o = _orch(db)
+    rc.evaluate(o, object(), "remote-control-1", "remove_path",
+                {"machine_id": "m9", "path": "/data"}, "chat", USER)
+    assert _types(audit_rec) == ["remote_op.proposed"]
+    ev = audit_rec.events[0]
+    (pid,) = db.rows.keys()
+    assert ev.outcome == "in_progress" and ev.correlation_id == pid
+    assert ev.inputs_meta.get("machine_id") == "m9" and ev.inputs_meta.get("verb") == "remove_path"
+
+
+def test_audit_unattended_refusal_is_recorded_as_failure(audit_rec):
+    rc.evaluate(_orch(_FakeDB()), None, "remote-control-1", "remove_path",
+                {"machine_id": "m", "path": "/data"}, "chat", USER)
+    assert _types(audit_rec) == ["remote_op.refused_unattended"]
+    assert audit_rec.events[0].outcome == "failure"
+
+
+def test_audit_consume_event_is_recorded(audit_rec):
+    db = _FakeDB()
+    o = _orch(db)
+    args = {"machine_id": "m", "job_id": "5"}
+    _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
+    rc.evaluate(o, object(), "remote-control-1", "cancel_job",
+                dict(args, **{rc._MARKER: "P1"}), "chat", USER)
+    assert _types(audit_rec) == ["remote_op.consumed"]
+    assert audit_rec.events[0].outcome == "success" and audit_rec.events[0].correlation_id == "P1"
+
+
+async def test_audit_approve_and_decline_events(audit_rec):
+    db = _FakeDB()
+    o = _orch(db)
+    _seed(db, "PA", owner=USER, verb="remove_path", args={"machine_id": "m", "path": "/a"}, status="pending")
+    _seed(db, "PD", owner=USER, verb="cancel_job", args={"machine_id": "m", "job_id": "1"}, status="pending")
+    await rc.handle_decision(o, object(), USER, {"proposal_id": "PA", "decision": "approve"})
+    await rc.handle_decision(o, object(), USER, {"proposal_id": "PD", "decision": "decline"})
+    by_type = {e.action_type: e for e in audit_rec.events}
+    assert by_type["remote_op.approved"].outcome == "success"
+    assert by_type["remote_op.declined"].outcome == "failure"
+    assert by_type["remote_op.approved"].correlation_id == "PA"
