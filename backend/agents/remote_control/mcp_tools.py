@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Mutating verbs for remote-control-1 (feature 063).
+"""Mutating remote-compute verb library (feature 063).
 
-This agent is NEVER safe-seeded (FR-003): every verb needs an explicit per-user
-grant, and every DESTRUCTIVE verb is additionally gated by the durable
-confirmation mechanism enforced at the shared dispatch gate
-(``orchestrator/remote_confirmation.py``) — the verb functions here never see the
-confirmation flow; by the time one runs, the gate has already required and
-consumed an approval (or classified the call non-destructive).
+These verbs are unioned into the single remote-compute-1 agent
+(``agents.remote_compute``); this module is the mutating-tier library, kept
+separate so the risk-bearing verbs stay small and reviewable. Every DESTRUCTIVE
+verb is gated by the durable confirmation mechanism enforced at the shared
+dispatch gate (``orchestrator/remote_confirmation.py``) — the verb functions here
+never see the confirmation flow; by the time one runs, the gate has already
+required and consumed an approval (or classified the call non-destructive).
 
 Invariants shared with the read-only agent (``remote_observe``):
 - No shell strings (FR-022). Every command is a discrete argv vector executed via

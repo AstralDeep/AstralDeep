@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only verbs for remote-observe-1 (feature 063).
+"""Read-only remote-compute verb library (feature 063) — unioned into remote-compute-1.
 
 Structured, typed fields only (FR-038); every remote string bounded + control/ANSI
 sanitised (FR-040/FR-041); no shell strings (FR-022 — the transport uses the argv
