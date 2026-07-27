@@ -29,7 +29,7 @@ logger = logging.getLogger('Database')
 #          runtime, draft publication, maintenance, conversation-commit
 #          coordination, and owner-scoped Run-now reconciliation. Additive and
 #          guarded by fixed PostgreSQL advisory transaction identities.
-SCHEMA_REVISION = '063.001'
+SCHEMA_REVISION = '063.002'
 
 _SCHEMA_ADVISORY_LOCK = (1095980114, 60001)
 _USER_AGENT_POLICY_ADVISORY_LOCK = (1095980114, 60002)
@@ -1361,6 +1361,34 @@ class Database:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_machine_credential_owner "
             "ON machine_credential (owner_user_id)")
+
+        # remote_operation_proposal: the durable, single-use, expiring, user- and
+        # argument-bound record of an intended DESTRUCTIVE remote operation awaiting
+        # explicit approval (feature 063 US3 / FR-029..FR-033). Survives restart.
+        # Rollback: DROP TABLE IF EXISTS remote_operation_proposal;
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS remote_operation_proposal (
+                proposal_id       TEXT PRIMARY KEY,
+                owner_user_id     TEXT NOT NULL,
+                chat_id           TEXT,
+                machine_id        TEXT NOT NULL,
+                agent_id          TEXT NOT NULL,
+                verb              TEXT NOT NULL,
+                args_json         TEXT NOT NULL,
+                args_fingerprint  TEXT NOT NULL,
+                summary           TEXT NOT NULL,
+                status            TEXT NOT NULL DEFAULT 'pending',
+                created_at        BIGINT NOT NULL,
+                expires_at        BIGINT NOT NULL,
+                decided_at        BIGINT,
+                consumed_at       BIGINT,
+                CONSTRAINT ck_rop_status
+                    CHECK (status IN ('pending','approved','declined','expired','consumed'))
+            )
+        ''')
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rop_owner_status "
+            "ON remote_operation_proposal (owner_user_id, status)")
 
         # ── Feature 054: bring-your-own-LLM credential stores ───────────────
         # user_llm_config: one row per user who has completed provider setup;
