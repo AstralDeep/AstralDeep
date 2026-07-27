@@ -51,10 +51,10 @@ untouched pickers without cross-field lookup) equals `equals`, re-evaluating on 
 controller change. Hidden fields still submit whatever they hold; `chrome_machine_add`
 keeps reading only the inputs matching `cred_type`, so a stale hidden value stays inert.
 Clients that predate the attribute ignore it and render every field (the original 063
-shape — the labels alone must therefore still disambiguate). Implemented: Apple
-(`ComponentView.swift` `fieldIsVisible`), Windows (`renderer.py` `_r_param_picker`
-conditional-visibility block). Android renders all fields (pre-063.1 behavior) until its
-renderer adopts the attribute.
+shape — the labels alone must therefore still disambiguate). Implemented on all three
+native clients: Apple (`ComponentView.swift` `fieldIsVisible`), Windows (`renderer.py`
+`_r_param_picker` conditional-visibility block), Android (`Input.kt` `fieldIsVisible`
++ `ParamVisibleWhenTest`).
 
 Native param text fields and textareas MUST NOT autocapitalize or autocorrect
 (usernames/hosts/PEMs are identifiers; iOS defaults corrupted them — 063.1, live-found).
