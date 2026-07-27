@@ -121,6 +121,60 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
             f'{machines}{form}</div>')
 
 
+async def components(orch: Any, user_id: str, roles: Any, params: Any):
+    """Feature 063 (T025) — the surface as native SDUI components.
+
+    Native forms can't re-render when the credential-type dropdown changes (no
+    client round-trip), so BOTH credential inputs — the private-key textarea and
+    the password field — are always present; the ``chrome_machine_add`` handler
+    already reads whichever matches ``cred_type`` and ignores the other. Same
+    handler keys + same ``fields`` payload shape as the web ``render()`` form, so
+    HANDLERS are unchanged. Template: webrender/chrome/surfaces/llm.py.
+    """
+    import asyncio
+
+    from webrender.chrome.surfaces import _sdui
+    rows = await asyncio.to_thread(remote_machines.list_machines, orch.history.db, user_id)
+    out = [_sdui.text("Register your own machines and clusters. On save the product makes a "
+                      "real connection and reports what happened. Your machines are private "
+                      "to you.", "caption")]
+    if not rows:
+        out.append(_sdui.text("No machines yet — add one below.", "caption"))
+    else:
+        for r in rows:
+            mid = r["machine_id"]
+            facts = _sdui.key_value([
+                {"label": "Address", "value": f'{r["address"]}:{r["port"]}'},
+                {"label": "OS", "value": r["os_family"]},
+                {"label": "Role", "value": r["role"]},
+                {"label": "Last check", "value": r.get("last_verdict") or "not yet probed"},
+            ], columns=2)
+            actions = _sdui.container([
+                _sdui.button("Probe", "chrome_machine_probe", payload={"machine_id": mid}),
+                _sdui.button("Delete", "chrome_machine_delete", payload={"machine_id": mid},
+                             variant="secondary"),
+            ], direction="row")
+            out.append(_sdui.card(r["label"], [facts, actions]))
+
+    fields = [
+        _sdui.field("label", "Label", "text", help="A short name, e.g. my-dgx."),
+        _sdui.field("address", "Address", "text", help="Hostname or IP, e.g. dgx.ai.uky.edu."),
+        _sdui.field("port", "Port", "number", default="22"),
+        _sdui.field("username", "Username", "text"),
+        _sdui.field("os_family", "Operating system", "select", default="linux", options=list(_OS)),
+        _sdui.field("role", "Role", "select", default="cluster", options=list(_ROLE)),
+        _sdui.field("cred_type", "Credential type", "select", default="ssh_key", options=list(_CRED),
+                    help="Pick ssh_key to paste a private key below, or password."),
+        _sdui.field("private_key", "Private key — paste the full PEM (for the ssh_key type)",
+                    "textarea", help="Used only when the credential type is ssh_key."),
+        _sdui.field("passphrase", "Key passphrase (optional)", "password"),
+        _sdui.field("password", "Password (for the password credential type)", "password"),
+    ]
+    out.append(_sdui.form(fields, submit_action="chrome_machine_add",
+                          submit_label="Add & probe", title="Add a machine"))
+    return out
+
+
 # ── handlers ─────────────────────────────────────────────────────────────────
 
 def _probe_notice(orch, user_id: str, machine_id: str, label: str) -> str:
