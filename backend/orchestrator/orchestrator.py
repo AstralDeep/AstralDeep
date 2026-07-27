@@ -7337,6 +7337,13 @@ class Orchestrator:
                     await scheduling_chat.handle_decision(
                         self, websocket, user_id, msg.payload or {})
 
+                elif msg.action == "remote_op_decision":
+                    # Feature 063 US3 — the approve/decline click for a proposed
+                    # DESTRUCTIVE remote operation (durable proposal; single-use).
+                    from orchestrator import remote_confirmation
+                    await remote_confirmation.handle_decision(
+                        self, websocket, user_id, msg.payload or {})
+
                 elif msg.action == "update_device":
                     # ROTE: viewport / capability change from the frontend
                     device_info = msg.payload.get("device") or {}
@@ -12500,6 +12507,24 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     ui_components=[alert.to_dict()]),
                 render_components=[alert.to_dict()])
 
+        # Feature 063 US3: destructive-operation confirmation gate. Every dispatch
+        # path (single, parallel, chained hop, component re-exec) reaches here via
+        # _run_gate_stack, so this one check cannot be bypassed. It runs BEFORE args
+        # are mutated (clean sha256 fingerprint) and BEFORE credentials/delegation
+        # tokens are minted for a call that may be refused. remote-control-1 only.
+        if agent_id == "remote-control-1":
+            from orchestrator import remote_confirmation
+            _conf = await asyncio.to_thread(
+                remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
+                args, chat_id, user_id)
+            if _conf is not None:
+                _msg, _comps = _conf
+                return GateRefusal(
+                    response=MCPResponse(
+                        error={"message": _msg, "retryable": False},
+                        ui_components=_comps),
+                    render_components=_comps, render_target="chat")
+
         # Deterministic pre-action policy engine — an ordered, fail-closed rule
         # chain (data, admin-extensible via POLICY_RULES) on top of the
         # permission gate. Default OFF + no seed rules ⇒ purely additive.
@@ -17228,6 +17253,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
                 seed_ids = self.history.db._FIRST_PARTY_PUBLIC_AGENT_IDS
+                # Feature 063 (FR-003): the mutating remote-control-1 is NEVER
+                # safe-seeded — every verb requires an explicit per-user grant, no
+                # matter the flag. It is filtered out unconditionally.
+                seed_ids = tuple(a for a in seed_ids if a != "remote-control-1")
                 # Feature 063 (FR-002/FR-004/FR-005): the read-only remote-observe-1
                 # is safe-seeded ONLY when the remote-compute feature is enabled. With
                 # the flag off the seed set is byte-identical to the pre-063 fleet, so

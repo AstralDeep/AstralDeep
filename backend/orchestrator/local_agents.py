@@ -37,9 +37,12 @@ BUILT_IN_AGENT_DIRS = (
 )
 
 #: Feature 063 remote-compute agent dirs — registered ONLY when FF_REMOTE_COMPUTE
-#: is on (see register_built_ins). remote_control (mutating) is added later.
+#: is on (see register_built_ins). remote_observe is read-only + safe-seeded;
+#: remote_control is mutating + NEVER safe-seeded (FR-003, enforced at the boot
+#: seed in orchestrator.py, not here).
 _REMOTE_COMPUTE_AGENT_DIRS = (
     "remote_observe",
+    "remote_control",
 )
 
 

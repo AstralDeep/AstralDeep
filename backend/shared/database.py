@@ -3071,12 +3071,13 @@ class Database:
         'connectors-1', 'dice-roller-1', 'general-1',
         'journal-review-1', 'medical-1', 'ml-services-1', 'summarizer-1',
         'weather-1', 'web-research-1',
-        # Feature 063: the read-only remote-compute agent is VISIBLE always
-        # (discoverable), but is safe-seeded only when FF_REMOTE_COMPUTE is on
-        # (see the boot seed filter in orchestrator.start) — visibility does NOT
-        # imply authorization (FR-004). The mutating remote-control-1 (later) will
-        # be visible but NEVER safe-seeded (FR-003).
+        # Feature 063: the remote-compute agents are VISIBLE always (discoverable
+        # before granting, FR-025), but visibility does NOT imply authorization
+        # (FR-004). remote-observe-1 (read-only) is safe-seeded only when
+        # FF_REMOTE_COMPUTE is on; remote-control-1 (mutating) is NEVER safe-seeded
+        # (FR-003) — both filters live in the boot seed in orchestrator.start.
         'remote-observe-1',
+        'remote-control-1',
     )
 
     def _migrate_agent_visibility_030(self, cursor):

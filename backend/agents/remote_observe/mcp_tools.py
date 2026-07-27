@@ -267,41 +267,263 @@ def host_facts(**kwargs) -> Dict[str, Any]:
                [Table(headers=["Fact", "Value"], rows=rows)], facts)
 
 
+# ── job_status / job_history (Slurm squeue/sacct --json) ──────────────────────
+
+def _num_field(container: Dict, *keys) -> str:
+    for k in keys:
+        if k in container:
+            return str(_num(container[k]) if isinstance(container[k], dict) else container[k] or "")
+    return ""
+
+
+def _parse_sacct_json(text: str) -> Optional[List[Dict]]:
+    try:
+        doc = json.loads(text or "")
+    except Exception:
+        return None
+    jobs = []
+    for j in (doc.get("jobs") or []):
+        state = (j.get("state") or {})
+        cur = state.get("current") if isinstance(state, dict) else state
+        if isinstance(cur, list):
+            cur = ",".join(str(s) for s in cur) if cur else "?"
+        tinfo = j.get("time") or {}
+        exit_code = j.get("exit_code") or {}
+        rc = exit_code.get("return_code")
+        if isinstance(rc, dict):
+            rc = rc.get("number")
+        jobs.append({
+            "id": str(_num(j.get("job_id")) or j.get("job_id") or "?"),
+            "name": j.get("name") or "",
+            "state": str(cur or "?"),
+            "elapsed": _num_field(tinfo, "elapsed"),
+            "exit_code": "" if rc is None else str(rc),
+            "partition": j.get("partition") or "",
+            "end": _num_field(tinfo, "end"),
+        })
+    return jobs
+
+
+def job_status(**kwargs) -> Dict[str, Any]:
+    user_id = kwargs.get("user_id")
+    ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
+    job_id = str(kwargs.get("job_id") or "").strip()
+    target, err = _resolve(user_id, ref)
+    if err:
+        return err
+    if not re.match(r"^\d+$", job_id):
+        return _fail(Verdict.INVALID_ARGUMENT, target.label, "job_id must be a numeric Slurm job id")
+    transport = get_transport()
+    live = transport.run(target, ["squeue", "--job", job_id, "--json"], timeout=30.0, retryable=True)
+    if not live.ok:
+        return _result_fail(live)
+    jobs = _parse_squeue_json(live.stdout)
+    if jobs:
+        j = jobs[0]
+        rows = [["Job", j["id"]], ["Name", _sanitize(j["name"], 60)], ["State", j["state"]],
+                ["Partition", _sanitize(j["partition"], 40)], ["Nodes", j["nodes"]],
+                ["Reason", _sanitize(j["reason"], 60)]]
+        return _ok(f"Job {job_id} — {_sanitize(target.label, 60)}",
+                   [Table(headers=["Field", "Value"], rows=rows)], {"job_id": job_id, "state": j["state"]})
+    # Not in the live queue → it may have finished; ask the accounting DB.
+    hist = transport.run(target, ["sacct", "-j", job_id, "--json", "-X"], timeout=30.0, retryable=True)
+    if not hist.ok:
+        return _result_fail(hist)
+    acct = _parse_sacct_json(hist.stdout)
+    if not acct:
+        return _fail(Verdict.NOT_FOUND, target.label, "no such job in the queue or recent accounting records")
+    j = acct[0]
+    rows = [["Job", j["id"]], ["Name", _sanitize(j["name"], 60)], ["State", j["state"]],
+            ["Elapsed", _sanitize(j["elapsed"], 24)], ["Exit code", _sanitize(j["exit_code"], 16)],
+            ["Partition", _sanitize(j["partition"], 40)]]
+    return _ok(f"Job {job_id} — {_sanitize(target.label, 60)}",
+               [Table(headers=["Field", "Value"], rows=rows)], {"job_id": job_id, "state": j["state"]})
+
+
+def job_history(**kwargs) -> Dict[str, Any]:
+    user_id = kwargs.get("user_id")
+    ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
+    try:
+        days = int(kwargs.get("days") or 7)
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 30))
+    target, err = _resolve(user_id, ref)
+    if err:
+        return err
+    res = get_transport().run(
+        target, ["sacct", "--json", "-X", "-S", f"now-{days}days", "-E", "now"],
+        timeout=45.0, retryable=True)
+    if not res.ok:
+        return _result_fail(res)
+    jobs = _parse_sacct_json(res.stdout)
+    if jobs is None:
+        return _fail(Verdict.PARTIAL, target.label, "could not parse the accounting response")
+    if not jobs:
+        return _ok(f"Job history — {_sanitize(target.label, 60)}",
+                   [Text(content=f"No jobs in the last {days} day(s).", variant="body")], {"jobs": 0})
+    table = Table(
+        headers=["Job", "Name", "State", "Elapsed", "Exit", "Partition"],
+        rows=[[j["id"], _sanitize(j["name"], 36), j["state"], _sanitize(j["elapsed"], 20),
+               _sanitize(j["exit_code"], 12), _sanitize(j["partition"], 24)] for j in jobs[:_MAX_ROWS]],
+    )
+    comps = [table]
+    if len(jobs) > _MAX_ROWS:
+        comps.append(Text(content=f"Showing {_MAX_ROWS} of {len(jobs)} jobs.", variant="caption"))
+    return _ok(f"Job history — {_sanitize(target.label, 60)} ({len(jobs)} in {days}d)", comps,
+               {"jobs": len(jobs), "days": days})
+
+
+# ── list_directory / list_processes ───────────────────────────────────────────
+
+def _parse_find(text: str) -> List[Dict]:
+    entries = []
+    for ln in (text or "").splitlines():
+        parts = ln.split("\t")
+        if len(parts) < 4:
+            continue
+        ftype, size, mtime, name = parts[0], parts[1], parts[2], "\t".join(parts[3:])
+        kind = {"f": "file", "d": "dir", "l": "link"}.get(ftype, ftype)
+        try:
+            size_bytes = int(size)
+        except ValueError:
+            size_bytes = None
+        entries.append({"type": kind, "size_bytes": size_bytes, "mtime": mtime.split(".")[0], "name": name})
+    return entries
+
+
+def list_directory(**kwargs) -> Dict[str, Any]:
+    user_id = kwargs.get("user_id")
+    ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
+    path = kwargs.get("path")
+    target, err = _resolve(user_id, ref)
+    if err:
+        return err
+    if not (isinstance(path, str) and path.startswith("/") and "\x00" not in path and len(path) <= 4096):
+        return _fail(Verdict.INVALID_ARGUMENT, target.label, "path must be an absolute path")
+    res = get_transport().run(
+        target, ["find", path, "-maxdepth", "1", "-mindepth", "1", "-printf", "%y\\t%s\\t%T@\\t%f\\n"],
+        timeout=30.0, retryable=True)
+    if not res.ok:
+        return _result_fail(res)
+    entries = _parse_find(res.stdout)
+    if not entries:
+        return _ok(f"{_sanitize(path, 80)} — {_sanitize(target.label, 60)}",
+                   [Text(content="Empty (or not a directory).", variant="body")], {"entries": 0})
+    shown = entries[:_MAX_ROWS]
+    table = Table(
+        headers=["Type", "Name", "Size"],
+        rows=[[e["type"], _sanitize(e["name"], 80),
+               (_fmt_bytes(e["size_bytes"]) if e["size_bytes"] is not None else "")] for e in shown],
+    )
+    comps = [table]
+    if len(entries) > _MAX_ROWS:
+        comps.append(Text(content=f"Showing {_MAX_ROWS} of {len(entries)} entries.", variant="caption"))
+    return _ok(f"{_sanitize(path, 80)} — {_sanitize(target.label, 60)} ({len(entries)})", comps,
+               {"path": path, "shown": len(shown), "total": len(entries),
+                "truncated": len(entries) > _MAX_ROWS})
+
+
+def _parse_ps(text: str) -> List[Dict]:
+    procs = []
+    for ln in (text or "").splitlines():
+        parts = ln.split(None, 5)
+        if len(parts) < 6:
+            continue
+        pid, user, cpu, mem, rss, comm = parts
+        try:
+            rss_bytes = int(rss) * 1024
+        except ValueError:
+            rss_bytes = None
+        procs.append({"pid": pid, "user": user, "cpu_pct": cpu, "mem_pct": mem,
+                      "rss_bytes": rss_bytes, "comm": comm})
+    return procs
+
+
+def list_processes(**kwargs) -> Dict[str, Any]:
+    user_id = kwargs.get("user_id")
+    ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
+    own_only = kwargs.get("own_only")
+    own_only = True if own_only is None else bool(own_only)
+    target, err = _resolve(user_id, ref)
+    if err:
+        return err
+    fmt = "pid,user:20,pcpu,pmem,rss,comm"
+    if own_only:
+        argv = ["ps", "-u", target.username, "-o", fmt, "--no-headers"]
+    else:
+        argv = ["ps", "-eo", fmt, "--no-headers"]
+    res = get_transport().run(target, argv, timeout=30.0, retryable=True)
+    if not res.ok:
+        return _result_fail(res)
+    procs = _parse_ps(res.stdout)
+    if not procs:
+        return _ok(f"Processes — {_sanitize(target.label, 60)}",
+                   [Text(content="No matching processes.", variant="body")], {"processes": 0})
+    table = Table(
+        headers=["PID", "User", "CPU%", "MEM%", "RSS", "Command"],
+        rows=[[p["pid"], _sanitize(p["user"], 24), p["cpu_pct"], p["mem_pct"],
+               (_fmt_bytes(p["rss_bytes"]) if p["rss_bytes"] is not None else ""),
+               _sanitize(p["comm"], 60)] for p in procs[:_MAX_ROWS]],
+    )
+    comps = [table]
+    if len(procs) > _MAX_ROWS:
+        comps.append(Text(content=f"Showing {_MAX_ROWS} of {len(procs)} processes.", variant="caption"))
+    return _ok(f"Processes — {_sanitize(target.label, 60)} ({len(procs)})", comps,
+               {"processes": len(procs), "own_only": own_only})
+
+
+_M = {"machine_id": {"type": "string", "description": "The machine's label, address, or id (e.g. 'dgx')."}}
+
+
+def _read_entry(fn, description, properties, required, timeout):
+    """A read verb entry. All read verbs are idempotent → ``retryable=True``; each
+    declares its timeout so the FR-051 contract test can assert it uniformly."""
+    return {
+        "function": fn,
+        "description": description,
+        "input_schema": {"type": "object", "properties": properties, "required": required},
+        "scope": "tools:read",
+        "retryable": True,
+        "timeout": timeout,
+    }
+
+
 TOOL_REGISTRY = {
-    "list_machines": {
-        "function": list_machines,
-        "description": "List your own registered remote machines and their last-known reachability.",
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-        "scope": "tools:read",
-    },
-    "probe_machine": {
-        "function": probe_machine,
-        "description": "Test whether one of your registered machines is reachable and your credential authenticates.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"machine_id": {"type": "string", "description": "The machine's label, address, or id (e.g. 'dgx')."}},
-            "required": ["machine_id"],
-        },
-        "scope": "tools:read",
-    },
-    "list_queue": {
-        "function": list_queue,
-        "description": "List your own jobs in the Slurm queue on a registered cluster machine.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"machine_id": {"type": "string", "description": "The cluster machine's label, address, or id (e.g. 'dgx')."}},
-            "required": ["machine_id"],
-        },
-        "scope": "tools:read",
-    },
-    "host_facts": {
-        "function": host_facts,
-        "description": "Report typed host facts (CPUs, load, uptime, memory) for a registered machine.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"machine_id": {"type": "string", "description": "The machine's label, address, or id (e.g. 'dgx')."}},
-            "required": ["machine_id"],
-        },
-        "scope": "tools:read",
-    },
+    "list_machines": _read_entry(
+        list_machines,
+        "List your own registered remote machines and their last-known reachability.",
+        {}, [], 5.0),
+    "probe_machine": _read_entry(
+        probe_machine,
+        "Test whether one of your registered machines is reachable and your credential authenticates.",
+        dict(_M), ["machine_id"], 20.0),
+    "list_queue": _read_entry(
+        list_queue,
+        "List your own jobs in the Slurm queue on a registered cluster machine.",
+        dict(_M), ["machine_id"], 30.0),
+    "host_facts": _read_entry(
+        host_facts,
+        "Report typed host facts (CPUs, load, uptime, memory) for a registered machine.",
+        dict(_M), ["machine_id"], 30.0),
+    "job_status": _read_entry(
+        job_status,
+        "Report the current status of one of your Slurm jobs (live queue, then accounting if finished).",
+        {**_M, "job_id": {"type": "string", "description": "Numeric Slurm job id."}},
+        ["machine_id", "job_id"], 30.0),
+    "job_history": _read_entry(
+        job_history,
+        "List your recent Slurm jobs from accounting (default last 7 days, max 30).",
+        {**_M, "days": {"type": "integer", "minimum": 1, "maximum": 30, "default": 7}},
+        ["machine_id"], 45.0),
+    "list_directory": _read_entry(
+        list_directory,
+        "List the entries of a directory (one level) on a registered machine.",
+        {**_M, "path": {"type": "string", "description": "Absolute directory path to list."}},
+        ["machine_id", "path"], 30.0),
+    "list_processes": _read_entry(
+        list_processes,
+        "List processes on a registered machine (defaults to your own).",
+        {**_M, "own_only": {"type": "boolean", "description": "Only your own processes (default true).", "default": True}},
+        ["machine_id"], 30.0),
 }
