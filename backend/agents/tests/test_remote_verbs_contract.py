@@ -1,13 +1,17 @@
-"""FR-051 contract test — the fixed, closed verb set of the two remote-compute agents.
+"""FR-051 contract test — the fixed, closed verb set of the remote-compute agent.
 
-Asserts, against the live ``TOOL_REGISTRY`` of ``remote-observe-1`` and
-``remote-control-1``, the exact verb set, per-verb scope, required argument keys,
-enum members, destructive classification, retry posture, and declared timeout —
-so adding a verb, widening an argument, reclassifying a destructive operation, or
-flipping a retry posture cannot pass unnoticed (specs/063 contracts/verbs.md).
+The read-only and mutating verbs were merged into ONE agent (remote-compute-1) but
+still live in two risk-tiered libraries (``remote_observe``/``remote_control``) that
+the agent unions. This asserts, against those live registries AND the unified
+``remote_compute`` registry the agent actually exposes, the exact verb set, per-verb
+scope, required argument keys, enum members, destructive classification, retry
+posture, and declared timeout — so adding a verb, widening an argument,
+reclassifying a destructive operation, or flipping a retry posture cannot pass
+unnoticed (specs/063 contracts/verbs.md).
 
 Stdlib-only; no DB, no network — pure registry inspection.
 """
+from agents.remote_compute.mcp_tools import TOOL_REGISTRY as REG
 from agents.remote_control.mcp_tools import TOOL_REGISTRY as CTL
 from agents.remote_observe.mcp_tools import TOOL_REGISTRY as OBS
 from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
@@ -133,3 +137,23 @@ def test_read_verbs_declare_retryable_true():
 def test_every_verb_declares_a_positive_timeout():
     for name, v in {**OBS, **CTL}.items():
         assert isinstance(v.get("timeout"), (int, float)) and v["timeout"] > 0, name
+
+
+# ── the unified agent exposes exactly the union (the merge, FR-024/FR-025) ──────
+
+def test_unified_registry_is_exactly_the_sixteen_verbs():
+    assert set(REG) == (READ_VERBS | MUTATING_VERBS)
+    assert len(REG) == 16
+
+
+def test_unified_registry_is_the_union_of_the_two_risk_tiers():
+    # The merged agent unions the two libraries by REFERENCE — the same entry
+    # dicts — so no metadata (scope/destructive/etc.) can diverge between what the
+    # contract asserts per tier and what the agent actually serves.
+    for name, entry in {**OBS, **CTL}.items():
+        assert REG[name] is entry
+
+
+def test_unified_registry_destructive_still_matches_the_gate_map():
+    for name in MUTATING_VERBS:
+        assert REG[name]["destructive"] is DESTRUCTIVE_CLASSIFICATION[name]

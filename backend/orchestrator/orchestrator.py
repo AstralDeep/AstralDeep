@@ -619,6 +619,11 @@ _MERGED_AGENT_REMAP = {
     "classify": "ml-services-1", "classify-1": "ml-services-1",
     "forecaster": "ml-services-1", "forecaster-1": "ml-services-1",
     "llm_factory": "ml-services-1", "llm-factory-1": "ml-services-1",
+    # Feature 063: the split read-only + control agents merged into the single
+    # remote-compute-1. Verb names are identical across the merge, so old
+    # transcript component sources reroute with no tool-name rewrite (no prefix
+    # entry needed) — a refresh transparently re-runs on the unified agent.
+    "remote-observe-1": "remote-compute-1", "remote-control-1": "remote-compute-1",
 }
 _MERGED_TOOL_PREFIX = {
     "classify": "classify_", "classify-1": "classify_",
@@ -12511,8 +12516,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # path (single, parallel, chained hop, component re-exec) reaches here via
         # _run_gate_stack, so this one check cannot be bypassed. It runs BEFORE args
         # are mutated (clean sha256 fingerprint) and BEFORE credentials/delegation
-        # tokens are minted for a call that may be refused. remote-control-1 only.
-        if agent_id == "remote-control-1":
+        # tokens are minted for a call that may be refused. remote-compute-1 only;
+        # evaluate() fires only for that agent's DESTRUCTIVE verbs (read verbs and
+        # non-destructive mutating verbs classify to None and pass straight through).
+        if agent_id == "remote-compute-1":
             from orchestrator import remote_confirmation
             _conf = await asyncio.to_thread(
                 remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
@@ -17253,16 +17260,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
                 seed_ids = self.history.db._FIRST_PARTY_PUBLIC_AGENT_IDS
-                # Feature 063 (FR-003): the mutating remote-control-1 is NEVER
-                # safe-seeded — every verb requires an explicit per-user grant, no
-                # matter the flag. It is filtered out unconditionally.
-                seed_ids = tuple(a for a in seed_ids if a != "remote-control-1")
-                # Feature 063 (FR-002/FR-004/FR-005): the read-only remote-observe-1
-                # is safe-seeded ONLY when the remote-compute feature is enabled. With
-                # the flag off the seed set is byte-identical to the pre-063 fleet, so
-                # no agent_trust row (or audit event) is produced for it.
+                # Feature 063 (FR-002/FR-004/FR-005): the unified remote-compute-1 is
+                # safe-seeded ONLY when the remote-compute feature is enabled — so with
+                # the flag off the seed set is byte-identical to the pre-063 fleet (no
+                # agent_trust row or audit event for it). Safe-seeding flips only the
+                # baseline; every DESTRUCTIVE verb is still gated per-verb by the
+                # confirmation mechanism (remote_confirmation) no matter the baseline.
                 if not flags.is_enabled("remote_compute"):
-                    seed_ids = tuple(a for a in seed_ids if a != "remote-observe-1")
+                    seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
                 await agent_trust.seed_safe(self.history.db, seed_ids)
         except Exception:
             logger.debug("Feature 040 safe seed failed (non-fatal)", exc_info=True)

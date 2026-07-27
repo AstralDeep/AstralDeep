@@ -148,10 +148,10 @@ class FeatureFlags:
             # boundary re-verification reuses the existing gate stack. See
             # specs/057-byo-client-agents/.
             "byo_agents": self._read("FF_BYO_AGENTS", False),
-            # 063-remote-compute-agents: the two bundled SSH agents (read-only
-            # remote-observe-1 + mutating remote-control-1) for cluster (Slurm)
-            # jobs and host operations over a single SSH transport. FAIL CLOSED —
-            # default OFF; with the flag off neither agent registers, no verb is
+            # 063-remote-compute-agents: the unified bundled SSH agent
+            # (remote-compute-1 — read + mutating verbs) for cluster (Slurm) jobs
+            # and host operations over a single SSH transport. FAIL CLOSED —
+            # default OFF; with the flag off the agent does not register, no verb is
             # listed/invocable, the remote-machines surface is absent, and behavior
             # is byte-identical to today. Read once at import (container recreate
             # to enable). See specs/063-remote-compute-agents/.

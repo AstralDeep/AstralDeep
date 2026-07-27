@@ -37,7 +37,7 @@ _UNTRUSTED_TOOLS = {
 _UNTRUSTED_AGENTS = {"web-research-1", "summarizer-1",
                      # Feature 063 (FR-039): remote machines return untrusted text
                      # (banners, filenames, job names, process command columns).
-                     "remote-observe-1", "remote-control-1"}
+                     "remote-compute-1"}
 
 #: Write / egress sinks — untrusted data must not flow into their arguments.
 #: (``fetch_page``/``web_search`` are BOTH sources and sinks: a URL built from

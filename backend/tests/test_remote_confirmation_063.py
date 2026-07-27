@@ -123,7 +123,7 @@ def _orch(db):
 
 
 def _seed(db, pid, *, owner, verb, args, status="approved", expires_at=None,
-          chat_id="chat-1", agent_id="remote-control-1"):
+          chat_id="chat-1", agent_id="remote-compute-1"):
     db.rows[pid] = {
         "proposal_id": pid, "owner_user_id": owner, "chat_id": chat_id,
         "machine_id": args.get("machine_id"), "agent_id": agent_id, "verb": verb,
@@ -208,7 +208,7 @@ def test_no_live_human_plain_socket_is_attended():
 
 def test_evaluate_non_destructive_verb_proceeds():
     o = _orch(_FakeDB())
-    assert rc.evaluate(o, object(), "remote-control-1", "make_directory",
+    assert rc.evaluate(o, object(), "remote-compute-1", "make_directory",
                        {"machine_id": "m", "path": "/tmp/x"}, "chat", USER) is None
 
 
@@ -221,7 +221,7 @@ def test_evaluate_other_agent_is_ignored():
 def test_evaluate_destructive_first_reach_creates_proposal_and_refuses():
     db = _FakeDB()
     o = _orch(db)
-    out = rc.evaluate(o, object(), "remote-control-1", "remove_path",
+    out = rc.evaluate(o, object(), "remote-compute-1", "remove_path",
                       {"machine_id": "m", "path": "/data", "recursive": True}, "chat", USER)
     assert out is not None
     msg, comps = out
@@ -236,7 +236,7 @@ def test_evaluate_destructive_first_reach_creates_proposal_and_refuses():
 def test_evaluate_unattended_refuses_and_creates_no_proposal():
     db = _FakeDB()
     o = _orch(db)
-    out = rc.evaluate(o, None, "remote-control-1", "remove_path",
+    out = rc.evaluate(o, None, "remote-compute-1", "remove_path",
                       {"machine_id": "m", "path": "/data"}, "chat", USER)
     assert out is not None
     msg, _ = out
@@ -250,7 +250,7 @@ def test_evaluate_valid_marker_consumes_single_use_and_proceeds():
     args = {"machine_id": "m", "job_id": "123"}
     _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
     passed = dict(args, **{rc._MARKER: "P1"})
-    assert rc.evaluate(o, object(), "remote-control-1", "cancel_job", passed, "chat", USER) is None
+    assert rc.evaluate(o, object(), "remote-compute-1", "cancel_job", passed, "chat", USER) is None
     assert rc._MARKER not in passed          # marker stripped, never reaches the agent
     assert db.rows["P1"]["status"] == "consumed"
 
@@ -260,10 +260,10 @@ def test_evaluate_consumed_marker_cannot_be_replayed():
     o = _orch(db)
     args = {"machine_id": "m", "job_id": "123"}
     _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
-    assert rc.evaluate(o, object(), "remote-control-1", "cancel_job",
+    assert rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
                        dict(args, **{rc._MARKER: "P1"}), "chat", USER) is None
     # second use of the same approval must be refused (single-use)
-    out = rc.evaluate(o, object(), "remote-control-1", "cancel_job",
+    out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
                       dict(args, **{rc._MARKER: "P1"}), "chat", USER)
     assert out is not None and "no longer valid" in out[0]
 
@@ -273,7 +273,7 @@ def test_evaluate_marker_owned_by_another_user_is_refused():
     o = _orch(db)
     args = {"machine_id": "m", "job_id": "123"}
     _seed(db, "P1", owner=OTHER, verb="cancel_job", args=args, status="approved")
-    out = rc.evaluate(o, object(), "remote-control-1", "cancel_job",
+    out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
                       dict(args, **{rc._MARKER: "P1"}), "chat", USER)
     assert out is not None and db.rows["P1"]["status"] == "approved"  # untouched
 
@@ -283,7 +283,7 @@ def test_evaluate_expired_marker_is_refused():
     o = _orch(db)
     args = {"machine_id": "m", "job_id": "123"}
     _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved", expires_at=PAST())
-    out = rc.evaluate(o, object(), "remote-control-1", "cancel_job",
+    out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
                       dict(args, **{rc._MARKER: "P1"}), "chat", USER)
     assert out is not None
 
@@ -294,7 +294,7 @@ def test_evaluate_marker_with_mutated_args_is_refused():
     _seed(db, "P1", owner=USER, verb="remove_path",
           args={"machine_id": "m", "path": "/safe"}, status="approved")
     # Approval was for /safe; the model now asks to delete /etc with the same token.
-    out = rc.evaluate(o, object(), "remote-control-1", "remove_path",
+    out = rc.evaluate(o, object(), "remote-compute-1", "remove_path",
                       {"machine_id": "m", "path": "/etc", rc._MARKER: "P1"}, "chat", USER)
     assert out is not None and "no longer valid" in out[0]
 
@@ -390,7 +390,7 @@ def _types(rec):
 def test_audit_proposed_event_is_valid_and_correlated(audit_rec):
     db = _FakeDB()
     o = _orch(db)
-    rc.evaluate(o, object(), "remote-control-1", "remove_path",
+    rc.evaluate(o, object(), "remote-compute-1", "remove_path",
                 {"machine_id": "m9", "path": "/data"}, "chat", USER)
     assert _types(audit_rec) == ["remote_op.proposed"]
     ev = audit_rec.events[0]
@@ -400,7 +400,7 @@ def test_audit_proposed_event_is_valid_and_correlated(audit_rec):
 
 
 def test_audit_unattended_refusal_is_recorded_as_failure(audit_rec):
-    rc.evaluate(_orch(_FakeDB()), None, "remote-control-1", "remove_path",
+    rc.evaluate(_orch(_FakeDB()), None, "remote-compute-1", "remove_path",
                 {"machine_id": "m", "path": "/data"}, "chat", USER)
     assert _types(audit_rec) == ["remote_op.refused_unattended"]
     assert audit_rec.events[0].outcome == "failure"
@@ -411,7 +411,7 @@ def test_audit_consume_event_is_recorded(audit_rec):
     o = _orch(db)
     args = {"machine_id": "m", "job_id": "5"}
     _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
-    rc.evaluate(o, object(), "remote-control-1", "cancel_job",
+    rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
                 dict(args, **{rc._MARKER: "P1"}), "chat", USER)
     assert _types(audit_rec) == ["remote_op.consumed"]
     assert audit_rec.events[0].outcome == "success" and audit_rec.events[0].correlation_id == "P1"

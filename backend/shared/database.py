@@ -29,7 +29,7 @@ logger = logging.getLogger('Database')
 #          runtime, draft publication, maintenance, conversation-commit
 #          coordination, and owner-scoped Run-now reconciliation. Additive and
 #          guarded by fixed PostgreSQL advisory transaction identities.
-SCHEMA_REVISION = '063.002'
+SCHEMA_REVISION = '063.003'
 
 _SCHEMA_ADVISORY_LOCK = (1095980114, 60001)
 _USER_AGENT_POLICY_ADVISORY_LOCK = (1095980114, 60002)
@@ -1506,6 +1506,9 @@ class Database:
         # ── Feature 040: retire etf_tracker_1 (orphan row purge) ────────────
         self._cleanup_retired_agents_040(cursor)
 
+        # ── Feature 063: merge remote-observe-1 + remote-control-1 → one agent ─
+        self._cleanup_merged_remote_agents_063(cursor)
+
         # ── Feature 030: first-party agent visibility backfill ──────────────
         self._migrate_agent_visibility_030(cursor)
 
@@ -2926,6 +2929,14 @@ class Database:
     # exist in deployed databases — cover both.
     _RETIRED_AGENT_IDS_040 = ('etf-tracker-1-1', 'etf_tracker_1')
 
+    # Feature 063: the initially-split read-only (remote-observe-1) and control
+    # (remote-control-1) agents were merged into the single remote-compute-1
+    # agent. Purge the orphaned per-agent rows for the two retired ids so they
+    # can't linger as ghost cards / stale trust; the unified agent registers
+    # fresh. Per-MACHINE credentials live in machine_credential keyed by
+    # machine_id (not agent_id) and are intentionally untouched.
+    _RETIRED_AGENT_IDS_063 = ('remote-observe-1', 'remote-control-1')
+
     def _cleanup_phantom_windows_tools_ids(self, cursor):
         """Feature 039 (C-2): delete phantom Windows-tools agent rows.
 
@@ -2958,6 +2969,27 @@ class Database:
         ``specs/040-inprocess-agents-skills-commands/data-model.md``.
         """
         retired = self._RETIRED_AGENT_IDS_040
+        ph = ", ".join(["%s"] * len(retired))
+        for table in ('agent_ownership', 'agent_scopes', 'tool_overrides',
+                      'tool_permissions', 'user_credentials', 'agent_trust'):
+            try:
+                cursor.execute(
+                    f"DELETE FROM {table} WHERE agent_id IN ({ph})", retired
+                )
+            except Exception:  # noqa: BLE001 — table may be absent on older schema
+                pass
+
+    def _cleanup_merged_remote_agents_063(self, cursor):
+        """Feature 063: purge orphaned per-agent rows for the merged-away
+        remote-observe-1 / remote-control-1 ids (unified into remote-compute-1).
+
+        Idempotent (each DELETE matches nothing on re-run). Per-machine
+        credentials (machine_credential, keyed by machine_id) and the user's
+        remote_machine inventory are intentionally preserved — the unified agent
+        reads the same machines. Chats/saved_components are preserved and degrade
+        via the runtime retired-agent handling (orchestrator.RETIRED_AGENT_IDS).
+        """
+        retired = self._RETIRED_AGENT_IDS_063
         ph = ", ".join(["%s"] * len(retired))
         for table in ('agent_ownership', 'agent_scopes', 'tool_overrides',
                       'tool_permissions', 'user_credentials', 'agent_trust'):
@@ -3071,13 +3103,13 @@ class Database:
         'connectors-1', 'dice-roller-1', 'general-1',
         'journal-review-1', 'medical-1', 'ml-services-1', 'summarizer-1',
         'weather-1', 'web-research-1',
-        # Feature 063: the remote-compute agents are VISIBLE always (discoverable
-        # before granting, FR-025), but visibility does NOT imply authorization
-        # (FR-004). remote-observe-1 (read-only) is safe-seeded only when
-        # FF_REMOTE_COMPUTE is on; remote-control-1 (mutating) is NEVER safe-seeded
-        # (FR-003) — both filters live in the boot seed in orchestrator.start.
-        'remote-observe-1',
-        'remote-control-1',
+        # Feature 063: the unified remote-compute-1 agent is VISIBLE always
+        # (discoverable before granting, FR-025) and safe-seeded only when
+        # FF_REMOTE_COMPUTE is on (the boot seed in orchestrator.start applies the
+        # flag filter). Its destructive verbs are gated per-verb by the confirmation
+        # mechanism regardless of the safe-seed baseline. The earlier split agents
+        # remote-observe-1 / remote-control-1 were merged into it (see RETIRED set).
+        'remote-compute-1',
     )
 
     def _migrate_agent_visibility_030(self, cursor):

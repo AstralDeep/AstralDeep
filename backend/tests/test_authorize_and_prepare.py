@@ -286,7 +286,7 @@ async def test_single_path_surfaces_authorizer_refusal(orch):
 
 
 # --------------------------------------------------------------------------- #
-# Gate: feature 063 destructive-operation confirmation (remote-control-1 only)
+# Gate: feature 063 destructive-operation confirmation (remote-compute-1 only)
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
@@ -295,7 +295,7 @@ async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, mo
     card = {"type": "card", "title": "Confirm"}
     ev = MagicMock(return_value=("confirmation_required: approve", [card]))
     monkeypatch.setattr(remote_confirmation, "evaluate", ev)
-    out = await _auth(orch, tool="cancel_job", agent="remote-control-1", args={"job_id": "1"})
+    out = await _auth(orch, tool="cancel_job", agent="remote-compute-1", args={"job_id": "1"})
     assert isinstance(out, GateRefusal)
     assert "confirmation_required" in _msg(out)
     assert out.render_target == "chat"
@@ -308,8 +308,8 @@ async def test_remote_control_confirmation_none_proceeds(orch, monkeypatch):
     from orchestrator import remote_confirmation
     ev = MagicMock(return_value=None)  # non-destructive / already-approved → proceed
     monkeypatch.setattr(remote_confirmation, "evaluate", ev)
-    orch.local_agents["remote-control-1"] = MagicMock()
-    out = await _auth(orch, tool="make_directory", agent="remote-control-1", args={"path": "/x"})
+    orch.local_agents["remote-compute-1"] = MagicMock()
+    out = await _auth(orch, tool="make_directory", agent="remote-compute-1", args={"path": "/x"})
     assert isinstance(out, PreparedDispatch)
     ev.assert_called_once()
 

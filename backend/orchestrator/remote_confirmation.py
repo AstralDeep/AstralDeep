@@ -29,7 +29,7 @@ logger = logging.getLogger("RemoteConfirmation")
 
 PROPOSAL_TTL_S = 900  # 15 minutes; absolute server time, clock-skew-safe (FR-031)
 
-MUTATING_AGENT_ID = "remote-control-1"
+MUTATING_AGENT_ID = "remote-compute-1"
 
 #: SINGLE SOURCE OF TRUTH for destructive classification (the gate enforces this;
 #: the agent's registry imports it so verb + classification cannot drift — FR-028).

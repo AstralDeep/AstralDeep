@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""MCP server for remote-observe-1 — routes tool/call requests to verb functions.
+"""MCP server for remote-compute-1 — routes tool/call over the unified registry.
 
-Same dispatch contract as the other bundled agents (dice_roller/weather): branches
-on the ``_ui_components`` envelope and flags an error when any component has
-``variant == "error"``.
+Identical dispatch contract to the other bundled agents: branches on the
+``_ui_components`` envelope and flags an error response when any top-level
+component has ``variant == "error"``.
 """
 import inspect
 import json
@@ -13,9 +13,9 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from shared.protocol import MCPRequest, MCPResponse
-from agents.remote_observe.mcp_tools import TOOL_REGISTRY
+from agents.remote_compute.mcp_tools import TOOL_REGISTRY
 
-logger = logging.getLogger('RemoteObserveMCPServer')
+logger = logging.getLogger('RemoteComputeMCPServer')
 
 RETRYABLE_EXCEPTIONS = (ConnectionError, TimeoutError, json.JSONDecodeError, OSError)
 NON_RETRYABLE_EXCEPTIONS = (TypeError, KeyError, ValueError, AttributeError)

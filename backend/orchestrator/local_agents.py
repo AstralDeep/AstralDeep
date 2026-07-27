@@ -36,13 +36,12 @@ BUILT_IN_AGENT_DIRS = (
     "web_research",
 )
 
-#: Feature 063 remote-compute agent dirs — registered ONLY when FF_REMOTE_COMPUTE
-#: is on (see register_built_ins). remote_observe is read-only + safe-seeded;
-#: remote_control is mutating + NEVER safe-seeded (FR-003, enforced at the boot
-#: seed in orchestrator.py, not here).
+#: Feature 063 remote-compute agent dir — registered ONLY when FF_REMOTE_COMPUTE
+#: is on (see register_built_ins). One unified agent (remote_compute) exposes both
+#: the read-only and mutating verbs; the read/control verb sets still live in the
+#: remote_observe / remote_control modules as risk-tiered libraries it unions.
 _REMOTE_COMPUTE_AGENT_DIRS = (
-    "remote_observe",
-    "remote_control",
+    "remote_compute",
 )
 
 
