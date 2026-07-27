@@ -41,11 +41,12 @@ def _fields(payload: Any) -> Dict[str, str]:
     return out
 
 
-def _select(name: str, options, current: str) -> str:
+def _select(name: str, options, current: str, *, extra_cls: str = "") -> str:
     opts = "".join(
         f'<option value="{esc(v)}"{" selected" if v == current else ""}>{esc(v)}</option>'
         for v in options)
-    return f'<select name="{esc(name)}" class="{_INPUT_CLS}">{opts}</select>'
+    cls = f"{_INPUT_CLS} {extra_cls}".strip()
+    return f'<select name="{esc(name)}" class="{cls}">{opts}</select>'
 
 
 def _text_field(name: str, label: str, *, value: str = "", placeholder: str = "",
@@ -94,12 +95,22 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">Role</span>'
         f'{_select("role", _ROLE, "cluster")}</label>'
         f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">Credential type</span>'
-        f'{_select("cred_type", _CRED, "ssh_key")}</label>'
+        f'{_select("cred_type", _CRED, "ssh_key", extra_cls="astral-cred-type")}</label>'
+        # SSH-key fields and the password field are BOTH in the DOM; the
+        # astral-cred-type change handler in client.js shows only the group that
+        # matches the selected credential type (the chrome modal has no reactive
+        # re-render — same pattern as the LLM provider/endpoint toggle). The server
+        # handler already reads private_key OR password by cred_type, so a hidden
+        # field being submitted is inert.
+        f'<div class="astral-cred-group astral-cred-ssh_key space-y-3">'
         f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">Private key (paste the full PEM)</span>'
         f'<textarea name="private_key" rows="8" spellcheck="false" class="{_INPUT_CLS}" '
         f'placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>'
         f'{_text_field("passphrase", "Key passphrase (optional)", input_type="password")}'
-        f'{_text_field("password", "Password (only for password credentials)", input_type="password")}'
+        f'</div>'
+        f'<div class="astral-cred-group astral-cred-password space-y-3" style="display:none">'
+        f'{_text_field("password", "Password", input_type="password")}'
+        f'</div>'
         f'<div class="flex justify-end gap-2">'
         f'<button type="button" class="{_BTN_PRIMARY}" data-ui-action="chrome_machine_add" '
         f'data-ui-collect="true">Add &amp; probe</button></div>'

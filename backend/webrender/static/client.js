@@ -2503,6 +2503,23 @@
     }
   });
 
+  // Feature 063: the remote-machines "Credential type" dropdown toggles which
+  // credential fields are shown — SSH key + passphrase for "ssh_key", the
+  // password field for "password". Both groups are always in the DOM (the chrome
+  // modal has no reactive re-render); this flips display to match the selection.
+  // Same static-modal pattern as the LLM provider/endpoint toggle above.
+  document.addEventListener("change", function (e) {
+    var t = e.target;
+    if (!(t.classList && t.classList.contains("astral-cred-type"))) return;
+    var form = t.closest && t.closest("[data-ui-form]");
+    if (!form) return;
+    var groups = form.querySelectorAll(".astral-cred-group");
+    for (var i = 0; i < groups.length; i++) {
+      var g = groups[i];
+      g.style.display = g.classList.contains("astral-cred-" + t.value) ? "" : "none";
+    }
+  });
+
   // ---- tour runner (steps server-rendered into [data-tour-steps]; A10 skips) ----
   var tourState = null;
   function maybeStartTour() {
