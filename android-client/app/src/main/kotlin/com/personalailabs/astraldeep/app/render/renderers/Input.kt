@@ -142,6 +142,24 @@ internal fun fieldOptions(f: JsonObject): List<String> =
 internal fun rendersAsDropdown(f: JsonObject): Boolean = fieldKind(f) == "select" && fieldOptions(f).isNotEmpty()
 
 /**
+ * 063.1 declarative visibility: a field marked `visible_when {field, equals,
+ * default}` shows only while the named controller select's current value
+ * (typed-or-`default`) equals `equals`. Fields without the marker — and whole
+ * payloads from servers that predate it — are always visible, so the server can
+ * emit the attribute freely for older clients.
+ */
+internal fun fieldIsVisible(
+    f: JsonObject,
+    texts: Map<String, String>,
+): Boolean {
+    val vw = f["visible_when"] as? JsonObject ?: return true
+    val controller = fieldStr(vw, "field") ?: return true
+    val expected = fieldStr(vw, "equals") ?: return true
+    val current = texts[controller] ?: fieldStr(vw, "default") ?: ""
+    return current == expected
+}
+
+/**
  * The initially selected key of a `select`: the server default when it is on the
  * menu, else the first option — a dropdown always shows *something*, and that
  * something is what an untouched Save submits (parity with `<select>`, which
@@ -253,6 +271,10 @@ private fun ParamPickerPrimitive(
             }
             fields.forEach { f ->
                 val name = fieldStr(f, "name") ?: return@forEach
+                // 063.1: a hidden field keeps its state and still submits — it only
+                // stops rendering. Reading `texts` here re-evaluates visibility on
+                // every controller change (SnapshotStateMap subscription).
+                if (!fieldIsVisible(f, texts)) return@forEach
                 val label = fieldStr(f, "label") ?: name
                 val kind = fieldKind(f)
                 when {
