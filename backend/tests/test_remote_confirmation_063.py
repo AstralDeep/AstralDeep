@@ -206,6 +206,16 @@ def test_no_live_human_plain_socket_is_attended():
 
 # ── evaluate: the gate hook ─────────────────────────────────────────────────────
 
+def test_evaluate_read_verb_on_merged_agent_never_gates():
+    # Merge safety: read verbs are not in the destructive map, so the gate fires
+    # for NONE of them — the unified agent's reads run under the safe-seed baseline
+    # untouched. Only the mutating agent's destructive verbs are gated.
+    o = _orch(_FakeDB())
+    for verb in ("list_queue", "job_status", "host_facts", "list_processes"):
+        assert rc.evaluate(o, object(), "remote-compute-1", verb,
+                           {"machine_id": "m"}, "chat", USER) is None
+
+
 def test_evaluate_non_destructive_verb_proceeds():
     o = _orch(_FakeDB())
     assert rc.evaluate(o, object(), "remote-compute-1", "make_directory",
