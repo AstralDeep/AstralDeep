@@ -121,7 +121,7 @@ def render_job_card(*, job_id: str, machine_label: str, state: str,
     """Build the tracked-job canvas Card as a serialized dict, stamped with an
     explicit ``au_``-prefixed id so the workspace assigns EXACTLY component_id and
     the poller can update the same component in place."""
-    from astralprims import Alert, Card, Table, Text
+    from astralprims import Alert, Card, CodeBlock, Table, Text
     st = state or "submitted"
     base = _base_state(st)
     label = machine_label or "?"
@@ -143,9 +143,11 @@ def render_job_card(*, job_id: str, machine_label: str, state: str,
         rows.append(["Exit code", str(exit_code)])
     content: List[Any] = [alert, Table(headers=["Field", "Value"], rows=rows)]
     if output_tail:
-        clipped = _clip_output(output_tail)
-        content.append(Text(content="**Output**", variant="caption"))
-        content.append(Text(content="```\n" + clipped + "\n```", variant="body"))
+        # A CodeBlock renders in a <pre> (monospace, newlines preserved, long lines
+        # scroll horizontally) — the right shape for terminal output like an
+        # nvidia-smi table. A plain Text collapses the newlines into one flowing line.
+        content.append(Text(content="Output", variant="caption"))
+        content.append(CodeBlock(code=_clip_output(output_tail), language=""))
     card = Card(title=f"Remote job {job_id} — {label}", content=content)
     card.id = component_id  # explicit id → resolve_identity uses it verbatim
     return card.to_dict()

@@ -12,7 +12,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from astralprims import Alert, Card, Table, Text
+from astralprims import Alert, Card, CodeBlock, Table, Text
 
 from orchestrator import remote_machines
 from orchestrator.credential_manager import CredentialNotConfigured, CredentialUndecryptable
@@ -512,7 +512,9 @@ def read_job_output(**kwargs) -> Dict[str, Any]:
     if not text.strip():
         return _ok(title, [Text(content="(no output yet)", variant="body")],
                    {"job_id": job_id, "bytes": 0})
-    return _ok(title, [Text(content="```\n" + text + "\n```", variant="body")],
+    # CodeBlock (<pre>) preserves newlines + monospace so terminal output stays
+    # readable; a plain Text would collapse the whole thing onto one line.
+    return _ok(title, [CodeBlock(code=text, language="")],
                {"job_id": job_id, "bytes": len(res.stdout or "")})
 
 
