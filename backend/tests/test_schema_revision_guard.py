@@ -21,9 +21,9 @@ except Exception:  # pragma: no cover - import guard
     Database = None  # type: ignore
     SCHEMA_REVISION = None  # type: ignore
 
-EXPECTED_SCHEMA_REVISION = "060.004"
+EXPECTED_SCHEMA_REVISION = "063.001"
 EXPECTED_SOURCE_SHA256 = (
-    "f8a0d8398660564e82ca466f25d11bf6da07d290140d0deb99134de84288f393"
+    "fcce602c035a3926d08a07b416ff2d42e478219c3ea5641f6da65bcfbfc9ec7d"
 )
 EXPECTED_USER_AGENT_POLICY_REVISION = "constitution=0.1.0;analyze=1"
 EXPECTED_USER_AGENT_POLICY_SOURCE_SHA256 = (

@@ -36,6 +36,12 @@ BUILT_IN_AGENT_DIRS = (
     "web_research",
 )
 
+#: Feature 063 remote-compute agent dirs — registered ONLY when FF_REMOTE_COMPUTE
+#: is on (see register_built_ins). remote_control (mutating) is added later.
+_REMOTE_COMPUTE_AGENT_DIRS = (
+    "remote_observe",
+)
+
 
 def _agents_root() -> str:
     return os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents")
@@ -73,7 +79,22 @@ async def register_built_ins(orch) -> List[str]:
     from shared.protocol import RegisterAgent
 
     registered: List[str] = []
-    for dir_name in discover_built_in_agent_dirs():
+    dirs = discover_built_in_agent_dirs()
+    # Feature 063: the remote-compute agent(s) register ONLY when FF_REMOTE_COMPUTE
+    # is on (fail-closed, FR-005). With the flag off they are absent from the fleet
+    # and no verb is listed or invocable — byte-identical to the pre-063 product.
+    try:
+        from shared.feature_flags import flags
+        if flags.is_enabled("remote_compute"):
+            root = _agents_root()
+            for name in _REMOTE_COMPUTE_AGENT_DIRS:
+                d = os.path.join(root, name)
+                if (name not in dirs and os.path.isdir(d)
+                        and os.path.exists(os.path.join(d, f"{name}_agent.py"))):
+                    dirs.append(name)
+    except Exception:  # noqa: BLE001
+        logger.debug("Feature 063 flag check failed (non-fatal)", exc_info=True)
+    for dir_name in dirs:
         try:
             cls = _load_agent_class(dir_name)
             if cls is None:

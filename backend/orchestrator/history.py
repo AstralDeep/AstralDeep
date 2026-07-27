@@ -201,21 +201,32 @@ def _is_rail_text_only(components: list[Any]) -> bool:
 
 
 def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop rich components from a transcript message's parts.
+    """Reduce a transcript message's parts to TEXT ONLY (feature 063).
 
-    A ``components`` part keeps only its text-like members; a part left empty
-    is dropped, and a message whose every part drops is omitted from the
-    transcript entirely (its content is canvas state, not conversation)."""
+    The chat rail is the conversation; the canvas is where UI lives. So a
+    ``components`` part is reduced to the plain text of any top-level ``text``
+    primitives it carries (lifted to ``text`` parts, so no assistant words are
+    lost) and every other component — cards, tables, lists, alerts, metrics — is
+    dropped from the transcript: it is canvas state, not conversation. A message
+    left with no parts is omitted (it was purely a rendered component).
+
+    This supersedes the feature-062 rule that kept text-like components in the
+    rail (they still appeared as duplicate cards beside the canvas)."""
     kept: list[dict[str, Any]] = []
     for part in parts:
         if part.get("type") != "components":
             kept.append(part)
             continue
-        text_only = [
-            c for c in part.get("components", []) if _is_rail_text_only([c])
-        ]
-        if text_only:
-            kept.append({"type": "components", "components": text_only})
+        for comp in part.get("components", []):
+            if not isinstance(comp, Mapping):
+                continue
+            if str(comp.get("type", "")).strip().lower() != "text":
+                continue  # a UI component — canvas only
+            text = comp.get("content")
+            if not isinstance(text, str):
+                text = comp.get("text")
+            if isinstance(text, str) and text.strip():
+                kept.append({"type": "text", "text": text})
     return kept
 
 

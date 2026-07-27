@@ -556,6 +556,7 @@
   // .astral-skeleton-line shimmer the server-driven skeleton primitive ships.
   function showSkeleton() {
     if (timelineMode || document.getElementById("astral-canvas-skeleton")) return;
+    hideCanvasEmpty(); // the welcome placeholder never coexists with the loading skeleton
     var d = document.createElement("div");
     d.id = "astral-canvas-skeleton";
     d.className = "astral-skeleton";
@@ -1379,6 +1380,9 @@
         if (data.status === "done" || data.status === "idle") {
           hideSkeleton();
           clearTransientOverlay();
+          // The welcome was dropped when the skeleton started; if the turn produced
+          // no canvas component at all, restore it so the canvas isn't left blank.
+          if (canvas && !canvas.querySelector('[data-component-id], .astral-component')) showCanvasEmpty();
         }
         if (data.status === "processing_async") {
           // Background dispatch ack (055): status text only — never the turn

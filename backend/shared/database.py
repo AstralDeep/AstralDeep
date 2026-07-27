@@ -29,7 +29,7 @@ logger = logging.getLogger('Database')
 #          runtime, draft publication, maintenance, conversation-commit
 #          coordination, and owner-scoped Run-now reconciliation. Additive and
 #          guarded by fixed PostgreSQL advisory transaction identities.
-SCHEMA_REVISION = '060.004'
+SCHEMA_REVISION = '063.001'
 
 _SCHEMA_ADVISORY_LOCK = (1095980114, 60001)
 _USER_AGENT_POLICY_ADVISORY_LOCK = (1095980114, 60002)
@@ -1309,6 +1309,58 @@ class Database:
                 revised_reset_at TIMESTAMPTZ
             )
         ''')
+
+        # ── Feature 063: remote-compute agents — inventory + per-machine creds ─
+        # User-owned SSH targets (clusters + plain hosts). Never seeded; the
+        # inventory starts empty for every user, and one user's machines are
+        # invisible to every other (owner_user_id scoping).
+        # Rollback: DROP TABLE IF EXISTS remote_machine;
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS remote_machine (
+                machine_id            TEXT PRIMARY KEY,
+                owner_user_id         TEXT NOT NULL,
+                label                 TEXT NOT NULL,
+                address               TEXT NOT NULL,
+                port                  INTEGER NOT NULL DEFAULT 22,
+                username              TEXT NOT NULL,
+                os_family             TEXT NOT NULL,
+                role                  TEXT NOT NULL,
+                host_key_type         TEXT,
+                host_key_fingerprint  TEXT,
+                host_key_blob         TEXT,
+                last_verdict          TEXT,
+                last_checked_at       BIGINT,
+                created_at            BIGINT NOT NULL,
+                updated_at            BIGINT NOT NULL,
+                CONSTRAINT ck_remote_machine_os   CHECK (os_family IN ('linux','windows','macos')),
+                CONSTRAINT ck_remote_machine_role CHECK (role IN ('cluster','plain'))
+            )
+        ''')
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_remote_machine_owner "
+            "ON remote_machine (owner_user_id)")
+
+        # machine_credential: the secret for one machine, one user. Fernet at rest
+        # under CREDENTIAL_ENCRYPTION_KEY. FR-014: because the agent runs in-process,
+        # decrypted material transiently exists in orchestrator memory — the
+        # protection is encryption at rest + per-user isolation, NOT process
+        # isolation. Rollback: DROP TABLE IF EXISTS machine_credential;
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS machine_credential (
+                machine_id           TEXT PRIMARY KEY
+                                     REFERENCES remote_machine (machine_id) ON DELETE CASCADE,
+                owner_user_id        TEXT NOT NULL,
+                cred_type            TEXT NOT NULL,
+                encrypted_secret     TEXT NOT NULL,
+                encrypted_passphrase TEXT,
+                created_at           BIGINT NOT NULL,
+                updated_at           BIGINT NOT NULL,
+                CONSTRAINT ck_machine_credential_type CHECK (cred_type IN ('ssh_key','password'))
+            )
+        ''')
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_machine_credential_owner "
+            "ON machine_credential (owner_user_id)")
 
         # ── Feature 054: bring-your-own-LLM credential stores ───────────────
         # user_llm_config: one row per user who has completed provider setup;
@@ -2991,6 +3043,12 @@ class Database:
         'connectors-1', 'dice-roller-1', 'general-1',
         'journal-review-1', 'medical-1', 'ml-services-1', 'summarizer-1',
         'weather-1', 'web-research-1',
+        # Feature 063: the read-only remote-compute agent is VISIBLE always
+        # (discoverable), but is safe-seeded only when FF_REMOTE_COMPUTE is on
+        # (see the boot seed filter in orchestrator.start) — visibility does NOT
+        # imply authorization (FR-004). The mutating remote-control-1 (later) will
+        # be visible but NEVER safe-seeded (FR-003).
+        'remote-observe-1',
     )
 
     def _migrate_agent_visibility_030(self, cursor):

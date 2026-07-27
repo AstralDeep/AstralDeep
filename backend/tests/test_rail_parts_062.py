@@ -1,9 +1,11 @@
-"""Feature 062 — the 060 snapshot transcript honors the 045 words-only rail.
+"""Feature 063 — the chat rail is TEXT ONLY; UI components live on the canvas.
 
-`_rail_parts` post-processes a transcript message's parts: `components` parts
-keep only text-like members (the `_transcript_html` predicate mirrored), other
-part kinds pass through untouched, and a message whose parts all drop is
-omitted by the caller. These are pure functions — no orchestrator needed.
+`_rail_parts` post-processes a transcript message's parts: a `components` part is
+reduced to the plain text of any top-level `text` primitives (lifted to `text`
+parts, so no assistant words are lost) and every other component (cards, tables,
+lists, alerts, metrics) is dropped to the canvas; other part kinds pass through,
+and a message whose parts all drop is omitted by the caller. Supersedes the
+feature-062 rule that kept text-like components in the rail. Pure functions.
 """
 
 from orchestrator.history import _is_rail_text_only, _rail_parts
@@ -69,20 +71,19 @@ class TestRailParts:
         parts = [{"type": "components", "components": [_metric(), _metric()]}]
         assert _rail_parts(parts) == []
 
-    def test_mixed_components_keep_only_text_like(self):
-        words = _text("the answer")
-        parts = [{"type": "components", "components": [_metric(), words]}]
-        assert _rail_parts(parts) == [
-            {"type": "components", "components": [words]}
-        ]
+    def test_components_part_lifts_text_and_drops_rich(self):
+        # feature 063: a bare text primitive is lifted to a text part; the metric drops.
+        parts = [{"type": "components", "components": [_metric(), _text("the answer")]}]
+        assert _rail_parts(parts) == [{"type": "text", "text": "the answer"}]
 
-    def test_text_only_card_survives(self):
+    def test_text_only_card_is_dropped_to_canvas(self):
+        # feature 063: a card is a UI component — canvas only, never in the chat rail.
         doc = {"type": "card", "title": "Response", "content": [_text("summary")]}
         parts = [{"type": "components", "components": [doc]}]
-        assert _rail_parts(parts) == parts
+        assert _rail_parts(parts) == []
 
-    def test_rich_dropped_but_other_parts_keep_order(self):
+    def test_rich_dropped_and_text_lifted_keeping_order(self):
         words = {"type": "text", "text": "before"}
         rich = {"type": "components", "components": [_metric()]}
         after = {"type": "components", "components": [_text("after")]}
-        assert _rail_parts([words, rich, after]) == [words, after]
+        assert _rail_parts([words, rich, after]) == [words, {"type": "text", "text": "after"}]

@@ -23,6 +23,15 @@ from shared.crypto import (
 logger = logging.getLogger("CredentialManager")
 
 
+class CredentialNotConfigured(Exception):
+    """No credential row exists for the given machine (feature 063 FR-016)."""
+
+
+class CredentialUndecryptable(Exception):
+    """A stored credential row exists but cannot be decrypted (e.g. the encryption
+    key rotated). Distinct from 'not configured' — feature 063 FR-016."""
+
+
 class CredentialManager:
     """Manages per-user, per-agent encrypted credentials backed by PostgreSQL.
 
@@ -216,6 +225,65 @@ class CredentialManager:
             (user_id, agent_id)
         )
         logger.info(f"All credentials removed: user={user_id} agent={agent_id}")
+
+    # ------------------------------------------------------------------
+    # Feature 063: per-machine credentials (remote-compute agents)
+    # Fernet-only (the in-process transport must decrypt to authenticate); stored
+    # in the machine_credential table, keyed by machine_id, 1:1 with a machine.
+    # FR-014: encryption at rest + per-user isolation, NOT process isolation.
+    # ------------------------------------------------------------------
+
+    def set_machine_credential(self, machine_id: str, owner_user_id: str, cred_type: str,
+                               secret: str, passphrase: Optional[str] = None):
+        """Encrypt and store the credential for one machine (upsert)."""
+        enc_secret = self._fernet.encrypt(secret.encode()).decode()
+        enc_pass = self._fernet.encrypt(passphrase.encode()).decode() if passphrase else None
+        now = int(time.time() * 1000)
+        self.db.execute(
+            """INSERT INTO machine_credential
+               (machine_id, owner_user_id, cred_type, encrypted_secret, encrypted_passphrase,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (machine_id) DO UPDATE SET
+                 owner_user_id = EXCLUDED.owner_user_id,
+                 cred_type = EXCLUDED.cred_type,
+                 encrypted_secret = EXCLUDED.encrypted_secret,
+                 encrypted_passphrase = EXCLUDED.encrypted_passphrase,
+                 updated_at = EXCLUDED.updated_at""",
+            (machine_id, owner_user_id, cred_type, enc_secret, enc_pass, now, now)
+        )
+        logger.info(f"Machine credential set: machine={machine_id} type={cred_type}")
+
+    def get_machine_credential(self, machine_id: str) -> Optional[Dict[str, Optional[str]]]:
+        """Return {'cred_type','secret','passphrase'} decrypted, or None if not configured.
+
+        Raises CredentialUndecryptable if a row exists but cannot be decrypted (FR-016).
+        """
+        row = self.db.fetch_one(
+            "SELECT cred_type, encrypted_secret, encrypted_passphrase "
+            "FROM machine_credential WHERE machine_id = ?",
+            (machine_id,)
+        )
+        if row is None:
+            return None
+        try:
+            secret = self._fernet.decrypt(row["encrypted_secret"].encode()).decode()
+            passphrase = None
+            if row["encrypted_passphrase"]:
+                passphrase = self._fernet.decrypt(row["encrypted_passphrase"].encode()).decode()
+        except Exception as e:
+            raise CredentialUndecryptable(str(machine_id)) from e
+        return {"cred_type": row["cred_type"], "secret": secret, "passphrase": passphrase}
+
+    def delete_machine_credential(self, machine_id: str):
+        """Destroy the stored credential for one machine (FR-015)."""
+        self.db.execute("DELETE FROM machine_credential WHERE machine_id = ?", (machine_id,))
+        logger.info(f"Machine credential deleted: machine={machine_id}")
+
+    def remove_machine_credentials_for_user(self, owner_user_id: str):
+        """Destroy every machine credential owned by a user (account removal / logout, FR-015)."""
+        self.db.execute("DELETE FROM machine_credential WHERE owner_user_id = ?", (owner_user_id,))
+        logger.info(f"All machine credentials removed for user={owner_user_id}")
 
     # ------------------------------------------------------------------
     # Migration: Re-encrypt Fernet credentials to ECIES

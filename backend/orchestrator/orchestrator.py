@@ -17227,8 +17227,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from shared.feature_flags import flags
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
-                await agent_trust.seed_safe(
-                    self.history.db, self.history.db._FIRST_PARTY_PUBLIC_AGENT_IDS)
+                seed_ids = self.history.db._FIRST_PARTY_PUBLIC_AGENT_IDS
+                # Feature 063 (FR-002/FR-004/FR-005): the read-only remote-observe-1
+                # is safe-seeded ONLY when the remote-compute feature is enabled. With
+                # the flag off the seed set is byte-identical to the pre-063 fleet, so
+                # no agent_trust row (or audit event) is produced for it.
+                if not flags.is_enabled("remote_compute"):
+                    seed_ids = tuple(a for a in seed_ids if a != "remote-observe-1")
+                await agent_trust.seed_safe(self.history.db, seed_ids)
         except Exception:
             logger.debug("Feature 040 safe seed failed (non-fatal)", exc_info=True)
 
