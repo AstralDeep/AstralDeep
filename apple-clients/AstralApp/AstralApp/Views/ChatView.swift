@@ -663,24 +663,41 @@ extension View {
     func shimmer() -> some View { modifier(ShimmerModifier()) }
 }
 
-private struct ShimmerModifier: ViewModifier {
-    @State private var phase: CGFloat = -1
+struct ShimmerModifier: ViewModifier {
+    /// The moving highlight must never dirty the view graph outside this
+    /// overlay. The previous `repeatForever` animation on an `@State` phase
+    /// forced a FULL layout pass of the hosting view on every animation
+    /// frame; once the chat screen's layout cost exceeded one frame
+    /// interval, the main thread livelocked in back-to-back layout and the
+    /// @MainActor frame reducer starved — delivered `conversation_snapshot`
+    /// / `chat_status done` frames were never reduced and the skeleton
+    /// latched forever (the 063 stuck-canvas defect; same class as the 061
+    /// grid-clamp hang). `TimelineView` scopes each tick's invalidation to
+    /// the gradient subtree, so outer layout runs only when real state
+    /// changes.
     func body(content: Content) -> some View {
         content.overlay(
             GeometryReader { geo in
-                LinearGradient(
-                    colors: [.clear, .white.opacity(0.18), .clear],
-                    startPoint: .leading, endPoint: .trailing
-                )
-                .frame(width: geo.size.width * 0.6)
-                .offset(x: geo.size.width * phase)
+                TimelineView(.animation) { context in
+                    let cycle = context.date.timeIntervalSinceReferenceDate
+                        .truncatingRemainder(dividingBy: 1.3) / 1.3
+                    LinearGradient(
+                        colors: [.clear, .white.opacity(0.18), .clear],
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                    .frame(width: geo.size.width * 0.6)
+                    .offset(x: geo.size.width * ShimmerModifier.phase(cycle: cycle))
+                }
             }
             .allowsHitTesting(false)
         )
         .clipped()
-        .onAppear {
-            withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) { phase = 1.6 }
-        }
+    }
+
+    /// Pure sweep curve: cycle ∈ [0, 1) → offset multiplier in [-1, 1.6),
+    /// the same left-to-right pass the animated @State produced.
+    static func phase(cycle: Double) -> CGFloat {
+        CGFloat(-1 + cycle * 2.6)
     }
 }
 

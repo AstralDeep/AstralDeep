@@ -15255,10 +15255,35 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 # websockets library WebSocket
                 await websocket.send(data)
+            self._trace_frame(websocket, data, ok=True)
             return True
         except Exception as e:
             logger.debug(f"Failed to send message (connection likely closed): {e}")
+            self._trace_frame(websocket, data, ok=False, error=repr(e))
             return False
+
+    def _trace_frame(self, websocket, data: str, *, ok: bool, error: str = "") -> None:
+        """Diagnostic outbound-frame trace, enabled by a marker file so a
+        running container can flip it without an env-recreate. Fail-open."""
+        try:
+            if not os.path.exists("/app/.frame_trace"):
+                return
+            ftype = "?"
+            try:
+                ftype = json.loads(data).get("type", "?")
+            except Exception:
+                pass
+            sock = type(websocket).__name__
+            logger.info("FRAME_TRACE type=%s sock=%s id=%s bytes=%d ok=%s %s",
+                        ftype, sock, id(websocket), len(data), ok, error)
+            with open("/app/frame_trace.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "ts": time.time(), "type": ftype, "sock": sock,
+                    "sock_id": id(websocket), "ok": ok, "error": error,
+                    "frame": data,
+                }) + "\n")
+        except Exception:
+            pass
 
     def _vws_fan_targets(self, websocket) -> List[Any]:
         """Real sockets that must mirror a VirtualWebSocket-bound chat frame

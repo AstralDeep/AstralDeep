@@ -2,8 +2,11 @@
 
 Every child receives one continuous fixed-size reader per output pipe.  Output is
 diagnostic only: complete logical lines are retained in per-stream rings while
-old data and overlong-line suffixes are counted and discarded.  Termination uses
-one total deadline for the process tree, both readers, and both pipes.
+old data and overlong-line suffixes are counted and discarded.  Each chunk is
+also forwarded verbatim to the supervisor's own matching stream, so ``docker
+logs`` reflects the running children instead of only the supervisor's ~22
+lines.  Termination uses one total deadline for the process tree, both
+readers, and both pipes.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -217,6 +221,25 @@ class BoundedStreamReader:
                 self._pipe_closed = True
                 self._condition.notify_all()
 
+    def _forward_chunk(self, chunk: bytes) -> None:
+        """Tee one chunk to the supervisor's matching stream, fail-open.
+
+        Forwarding is a straight passthrough of the fixed-size read — nothing
+        accumulates — so the bounded-memory contract of the ring is untouched.
+        A broken host stream must never take the reader (or the child) down.
+        """
+
+        try:
+            host = sys.stdout if self.stream is OutputStream.STDOUT else sys.stderr
+            buffer = getattr(host, "buffer", None)
+            if buffer is not None:
+                buffer.write(chunk)
+            else:  # Text-only host stream (tests may swap in StringIO).
+                host.write(chunk.decode("utf-8", errors="replace"))
+            host.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
+
     def run(self) -> None:
         """Consume until EOF, finalize a trailing line, and close the pipe."""
 
@@ -225,6 +248,7 @@ class BoundedStreamReader:
                 chunk = self._pipe.read(self._limits.read_chunk_bytes)
                 if not chunk:
                     break
+                self._forward_chunk(chunk)
                 with self._condition:
                     self._consume(chunk)
         except (OSError, ValueError) as exc:
