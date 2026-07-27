@@ -34,6 +34,31 @@ US1-2): a `<textarea>` on the web `render()` and `kind="textarea"` on native
 `_sdui.field(...)` (`_sdui.py:88-95`). The current `agents.py` credential input is single-line
 `<input type="password">` (`agents.py:513-514`) and is explicitly not reused.
 
+### Conditional credential visibility — `visible_when` (063.1, additive)
+
+The web form already shows only the credential group matching `cred_type` (the
+`astral-cred-type` change handler in `client.js`). Native parity rides an ADDITIVE field
+attribute emitted by `components()`:
+
+```json
+{"name": "password", "kind": "password",
+ "visible_when": {"field": "cred_type", "equals": "password", "default": "ssh_key"}}
+```
+
+A capable client hides the field unless the named controller field's current value
+(typed-value-or-`default` — the marker embeds the controller's default so clients resolve
+untouched pickers without cross-field lookup) equals `equals`, re-evaluating on every
+controller change. Hidden fields still submit whatever they hold; `chrome_machine_add`
+keeps reading only the inputs matching `cred_type`, so a stale hidden value stays inert.
+Clients that predate the attribute ignore it and render every field (the original 063
+shape — the labels alone must therefore still disambiguate). Implemented: Apple
+(`ComponentView.swift` `fieldIsVisible`), Windows (`renderer.py` `_r_param_picker`
+conditional-visibility block). Android renders all fields (pre-063.1 behavior) until its
+renderer adopts the attribute.
+
+Native param text fields and textareas MUST NOT autocapitalize or autocorrect
+(usernames/hosts/PEMs are identifiers; iOS defaults corrupted them — 063.1, live-found).
+
 The inventory starts **empty** for every user; the empty state is an explicit invitation to add
 a machine, with **no** example, default, or pre-seeded host of any kind (FR-009, US1-1).
 

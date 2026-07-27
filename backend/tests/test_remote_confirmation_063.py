@@ -25,8 +25,12 @@ from orchestrator.remote_transport import FakeTransport, MachineTarget, Verdict,
 
 USER = "user-1"
 OTHER = "user-2"
-FUTURE = lambda: int(time.time()) + 900
-PAST = lambda: int(time.time()) - 10
+def FUTURE():
+    return int(time.time()) + 900
+
+
+def PAST():
+    return int(time.time()) - 10
 
 
 # ── fake proposal store (matches remote_confirmation's exact queries) ──────────

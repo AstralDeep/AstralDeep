@@ -502,6 +502,11 @@ def _r_param_picker(c, ctx):
     if c.get("description"):
         lay.addWidget(_label(c["description"], color=T.MUTED, size=13))
     getters: Dict[str, Callable[[], Any]] = {}
+    # 063.1 declarative visibility: fields marked visible_when {field, equals,
+    # default} show only while the named controller select matches; hidden
+    # fields still submit (the server reads only the matching inputs).
+    combos: Dict[str, QComboBox] = {}
+    conditional: List[Any] = []  # (visible_when, [widgets])
     for field in c.get("fields", []) or []:
         if not isinstance(field, dict):
             continue
@@ -509,6 +514,7 @@ def _r_param_picker(c, ctx):
         label = field.get("label") or name
         kind = field.get("kind", "text")
         default = field.get("default")
+        first_item = lay.count()
         if kind == "boolean":
             box = QCheckBox(str(label))
             box.setChecked(bool(default))
@@ -522,6 +528,7 @@ def _r_param_picker(c, ctx):
             if default is not None and str(default) in opts:
                 combo.setCurrentText(str(default))
             getters[name] = lambda cb=combo: cb.currentText()
+            combos[name] = combo
             lay.addWidget(combo)
         elif kind == "checklist":
             lay.addWidget(_label(label, color=T.MUTED, size=12))
@@ -569,6 +576,22 @@ def _r_param_picker(c, ctx):
             lay.addWidget(edit)
         if field.get("help"):
             lay.addWidget(_label(field["help"], color=T.MUTED, size=11))
+        vw = field.get("visible_when")
+        if isinstance(vw, dict):
+            widgets = [lay.itemAt(i).widget() for i in range(first_item, lay.count())]
+            conditional.append((vw, [w for w in widgets if w is not None]))
+    if conditional:
+        def _apply_visibility() -> None:
+            for vw, widgets in conditional:
+                combo = combos.get(vw.get("field", ""))
+                current = (combo.currentText() if combo is not None
+                           else str(vw.get("default") or ""))
+                show = current == vw.get("equals")
+                for widget in widgets:
+                    widget.setVisible(show)
+        for combo in combos.values():
+            combo.currentTextChanged.connect(lambda _t: _apply_visibility())
+        _apply_visibility()
     # Feature 043: settings forms (LLM, Personalization) submit their collected
     # fields to a chrome_* action (action-submit) rather than a chat message. A
     # form may carry several action buttons (Load / Test / Save) that all submit

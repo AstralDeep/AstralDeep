@@ -23,7 +23,7 @@ import logging
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("RemoteConfirmation")
 

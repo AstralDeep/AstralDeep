@@ -104,7 +104,8 @@ def test_control_required_args_match():
 
 
 def test_control_enum_members_are_the_closed_sets():
-    props = lambda verb: CTL[verb]["input_schema"]["properties"]
+    def props(verb):
+        return CTL[verb]["input_schema"]["properties"]
     assert props("control_service")["action"]["enum"] == ["start", "stop", "restart", "enable", "disable"]
     assert props("manage_package")["action"]["enum"] == ["install", "remove"]
     assert props("signal_process")["signal"]["enum"] == ["TERM", "KILL"]

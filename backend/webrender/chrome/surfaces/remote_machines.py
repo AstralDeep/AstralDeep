@@ -18,6 +18,18 @@ from orchestrator.remote_transport import get_transport
 TITLE = "Remote machines"
 SURFACE_KEY = "remote_machines"
 
+_DISABLED_MSG = "Remote compute is disabled on this server."
+
+
+def _enabled() -> bool:
+    """FF_REMOTE_COMPUTE re-check (T064). The surfaces registry maps this key
+    unconditionally, so every entry point — render, components, and each
+    chrome_* handler — re-checks the flag itself; otherwise a crafted ui_event
+    could mutate machine state while the feature is off (the flag must keep
+    flag-off byte-identical, mirroring the BYO ``byo_enabled()`` posture)."""
+    from shared.feature_flags import flags
+    return flags.is_enabled("remote_compute")
+
 _INPUT_CLS = ("rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-sm "
               "text-astral-text w-full focus:outline-none focus:border-astral-primary/50")
 _LABEL_CLS = "flex flex-col gap-1 text-sm"
@@ -81,6 +93,8 @@ def _machines_html(orch, user_id: str) -> str:
 
 
 async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
+    if not _enabled():
+        return f'<p class="text-sm text-astral-muted">{esc(_DISABLED_MSG)}</p>'
     params = params if isinstance(params, dict) else {}
     machines = _machines_html(orch, user_id)
     form = (
@@ -124,16 +138,21 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
 async def components(orch: Any, user_id: str, roles: Any, params: Any):
     """Feature 063 (T025) — the surface as native SDUI components.
 
-    Native forms can't re-render when the credential-type dropdown changes (no
-    client round-trip), so BOTH credential inputs — the private-key textarea and
-    the password field — are always present; the ``chrome_machine_add`` handler
-    already reads whichever matches ``cred_type`` and ignores the other. Same
-    handler keys + same ``fields`` payload shape as the web ``render()`` form, so
-    HANDLERS are unchanged. Template: webrender/chrome/surfaces/llm.py.
+    BOTH credential inputs — the private-key textarea and the password field —
+    are always present in the payload; the ``chrome_machine_add`` handler
+    already reads whichever matches ``cred_type`` and ignores the other. The
+    credential inputs additionally carry ``visible_when`` markers so clients
+    that support declarative visibility show only the inputs matching the
+    selected credential type; older shipped clients ignore the attribute and
+    render every field (the pre-063.1 behavior). Same handler keys + same
+    ``fields`` payload shape as the web ``render()`` form, so HANDLERS are
+    unchanged. Template: webrender/chrome/surfaces/llm.py.
     """
     import asyncio
 
     from webrender.chrome.surfaces import _sdui
+    if not _enabled():
+        return [_sdui.text(_DISABLED_MSG, "caption")]
     rows = await asyncio.to_thread(remote_machines.list_machines, orch.history.db, user_id)
     out = [_sdui.text("Register your own machines and clusters. On save the product makes a "
                       "real connection and reports what happened. Your machines are private "
@@ -165,10 +184,17 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         _sdui.field("role", "Role", "select", default="cluster", options=list(_ROLE)),
         _sdui.field("cred_type", "Credential type", "select", default="ssh_key", options=list(_CRED),
                     help="Pick ssh_key to paste a private key below, or password."),
-        _sdui.field("private_key", "Private key — paste the full PEM (for the ssh_key type)",
-                    "textarea", help="Used only when the credential type is ssh_key."),
-        _sdui.field("passphrase", "Key passphrase (optional)", "password"),
-        _sdui.field("password", "Password (for the password credential type)", "password"),
+        _sdui.field("private_key", "Private key (paste the full PEM)",
+                    "textarea", help="Used only when the credential type is ssh_key.",
+                    visible_when={"field": "cred_type", "equals": "ssh_key",
+                                  "default": "ssh_key"}),
+        _sdui.field("passphrase", "Key passphrase (optional)", "password",
+                    visible_when={"field": "cred_type", "equals": "ssh_key",
+                                  "default": "ssh_key"}),
+        _sdui.field("password", "Password", "password",
+                    help="Used only when the credential type is password.",
+                    visible_when={"field": "cred_type", "equals": "password",
+                                  "default": "ssh_key"}),
     ]
     out.append(_sdui.form(fields, submit_action="chrome_machine_add",
                           submit_label="Add & probe", title="Add a machine"))
@@ -199,6 +225,8 @@ def _probe_notice(orch, user_id: str, machine_id: str, label: str) -> str:
 
 
 async def _h_machine_add(orch, websocket, user_id, roles, payload):
+    if not _enabled():
+        return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
     f = _fields(payload)
     label, address, username = f.get("label"), f.get("address"), f.get("username")
     if not (label and address and username):
@@ -234,6 +262,8 @@ async def _h_machine_add(orch, websocket, user_id, roles, payload):
 
 
 async def _h_machine_probe(orch, websocket, user_id, roles, payload):
+    if not _enabled():
+        return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
     machine_id = (payload or {}).get("machine_id")
     if not machine_id:
         return (SURFACE_KEY, {}, notice_block("error", "No machine specified."))
@@ -244,6 +274,8 @@ async def _h_machine_probe(orch, websocket, user_id, roles, payload):
 
 
 async def _h_machine_delete(orch, websocket, user_id, roles, payload):
+    if not _enabled():
+        return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
     machine_id = (payload or {}).get("machine_id")
     if not machine_id:
         return (SURFACE_KEY, {}, notice_block("error", "No machine specified."))
