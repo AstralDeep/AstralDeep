@@ -10,7 +10,7 @@ read — pinning the `asyncio.to_thread` routing.
 """
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
