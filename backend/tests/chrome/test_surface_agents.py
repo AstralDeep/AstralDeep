@@ -20,11 +20,12 @@ def run(coro):
 # ---------------------------------------------------------------------------
 
 class FakeSkill:
-    def __init__(self, sid, description, scope, name=None):
+    def __init__(self, sid, description, scope, name=None, metadata=None):
         self.id = sid
         self.name = name or sid
         self.description = description
         self.scope = scope
+        self.metadata = metadata or {}
 
 
 class FakeCard:
@@ -657,3 +658,127 @@ def test_disabled_from_preferences_tolerates_malformed_blobs():
     assert surface._disabled_from_preferences("not-json{") == set()
     assert surface._disabled_from_preferences('{"disabled_agents": "not-a-list"}') == set()
     assert surface._disabled_from_preferences(None) == set()
+
+
+# ---------------------------------------------------------------------------
+# Feature 063 T074 (FR-025) — pre-grant destructive markers on the verb list
+# ---------------------------------------------------------------------------
+
+_ROW_MARKER = '<div class="flex items-center justify-between gap-3 py-2">'
+
+
+def _tool_row(html, tool_name):
+    """The one rendered tool row containing ``>tool_name<`` (badge scoping)."""
+    chunks = [c for c in html.split(_ROW_MARKER) if f">{tool_name}<" in c]
+    assert len(chunks) == 1, f"expected exactly one row for {tool_name}"
+    return chunks[0]
+
+
+def test_destructive_badge_classifications():
+    assert surface._destructive_badge(None) == ""
+    assert surface._destructive_badge("never") == ""
+    assert ">Destructive<" in surface._destructive_badge("always")
+    assert ">Sometimes destructive<" in surface._destructive_badge("if_exists")
+    assert ">Sometimes destructive<" in surface._destructive_badge(
+        {"by_action": ["remove"]})
+
+
+def test_detail_marks_destructive_tools_from_skill_metadata():
+    orch = make_orch()
+    orch.agent_cards["alpha"].skills = [
+        FakeSkill("get_data", "Fetch records", "tools:read"),
+        FakeSkill("write_data", "Modify records", "tools:write",
+                  metadata={"destructive": "always"}),
+        FakeSkill("upload_thing", "Upload a file", "tools:write",
+                  metadata={"destructive": "if_exists"}),
+        FakeSkill("mkdir_thing", "Make a directory", "tools:write",
+                  metadata={"destructive": "never"}),
+    ]
+    orch.tool_permissions.scope_map = {
+        "get_data": "tools:read", "write_data": "tools:write",
+        "upload_thing": "tools:write", "mkdir_thing": "tools:write",
+    }
+    html = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha"}))
+    assert ">Destructive<" in _tool_row(html, "write_data")
+    assert ">Sometimes destructive<" in _tool_row(html, "upload_thing")
+    # never / no declaration → no marker of either strength.
+    for clean in ("get_data", "mkdir_thing"):
+        row = _tool_row(html, clean)
+        assert ">Destructive<" not in row and "Sometimes destructive" not in row
+
+
+def _remote_compute_card():
+    """The REAL remote-compute-1 card, built by the REAL base-agent card
+    builder from the REAL unified TOOL_REGISTRY (no keys/sockets needed)."""
+    from agents.remote_compute.mcp_tools import TOOL_REGISTRY
+    from shared.base_agent import BaseA2AAgent
+
+    class _Stub(BaseA2AAgent):
+        def __init__(self):
+            self.mcp_server = type("S", (), {"tools": TOOL_REGISTRY})()
+            self.service_name = "Remote Compute"
+            self.agent_id = "remote-compute-1"
+            self.description = "Work with your registered machines."
+            self.skill_tags = []
+            self.card_metadata = {}
+            self._public_key_jwk = {"kty": "EC"}
+
+    return _Stub()._build_agent_card()
+
+
+def test_remote_compute_card_skills_carry_destructive_metadata():
+    """base_agent propagates each registry entry's destructive classification
+    onto the card skill metadata — the SAME object the confirmation gate reads
+    (FR-028 no-drift), and only where the registry declares one."""
+    from agents.remote_compute.mcp_tools import TOOL_REGISTRY
+    from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
+
+    by_id = {s.id: s for s in _remote_compute_card().skills}
+    assert set(by_id) == set(TOOL_REGISTRY) and len(by_id) == 18
+    for verb, classification in DESTRUCTIVE_CLASSIFICATION.items():
+        assert by_id[verb].metadata.get("destructive") is classification, verb
+    for verb, entry in TOOL_REGISTRY.items():
+        if "destructive" not in entry:
+            assert "destructive" not in by_id[verb].metadata, verb
+
+
+def test_remote_compute_full_verb_list_visible_before_any_grant():
+    """FR-025: the agents surface shows remote-compute-1's COMPLETE verb list
+    — all 18 verbs, each with a non-empty one-line description and a
+    destructive marker on the destructive ones — with ZERO agent_scopes rows
+    for the viewing user (nothing granted, nothing enabled)."""
+    from agents.remote_compute.mcp_tools import TOOL_REGISTRY
+    from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
+    from webrender.chrome import esc
+
+    assert len(TOOL_REGISTRY) == 18
+    card = _remote_compute_card()
+    db = FakeDB(
+        ownership={"remote-compute-1": {"owner_email": "system@astral",
+                                        "is_public": True}},
+        users={"u1": {"email": "viewer@example.com"}},
+    )
+    # Zero agent_scopes rows: no per-tool grants, every scope False.
+    perms = FakePerms(
+        scope_map={name: entry["scope"] for name, entry in TOOL_REGISTRY.items()},
+        per_tool={},
+    )
+    orch = FakeOrch(cards={"remote-compute-1": card}, db=db, perms=perms,
+                    creds=FakeCreds(keys=[]))
+    html = run(surface.render(
+        orch, "u1", ["user"], {"agent_id": "remote-compute-1", "tab": "public"}))
+
+    assert " checked" not in html  # truly pre-grant: nothing presents as on
+    for name, entry in TOOL_REGISTRY.items():
+        row = _tool_row(html, name)
+        desc = entry["description"]
+        assert desc and desc.strip(), f"{name} has no description"
+        assert esc(surface._snippet(desc, 90)) in row, f"{name} description missing"
+        classification = DESTRUCTIVE_CLASSIFICATION.get(name)
+        if classification == "always":
+            assert ">Destructive<" in row, name
+        elif classification and classification != "never":
+            assert ">Sometimes destructive<" in row, name
+        else:
+            assert ">Destructive<" not in row, name
+            assert "Sometimes destructive" not in row, name

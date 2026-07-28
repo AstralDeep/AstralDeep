@@ -29,7 +29,9 @@ logger = logging.getLogger('Database')
 #          runtime, draft publication, maintenance, conversation-commit
 #          coordination, and owner-scoped Run-now reconciliation. Additive and
 #          guarded by fixed PostgreSQL advisory transaction identities.
-SCHEMA_REVISION = '063.004'
+# 063.005: + _cleanup_retire_063 (US7 retirement purge helper — dormant, never
+#          invoked at boot; bump satisfies the guarded-source hash discipline)
+SCHEMA_REVISION = '063.005'
 
 _SCHEMA_ADVISORY_LOCK = (1095980114, 60001)
 _USER_AGENT_POLICY_ADVISORY_LOCK = (1095980114, 60002)
@@ -3034,6 +3036,49 @@ class Database:
                 )
             except Exception:  # noqa: BLE001 — table may be absent on older schema
                 pass
+
+    # Feature 063 US7: the four feature tables in FK-safe drop order —
+    # machine_credential references remote_machine, so it must drop first.
+    _REMOTE_TABLES_063 = ('machine_credential', 'remote_operation_proposal',
+                          'tracked_job', 'remote_machine')
+
+    def _cleanup_retire_063(self, cursor, full_retire=False):
+        """Feature 063 US7 (FR-015/FR-053): retire the remote-compute capability.
+
+        NOT invoked at boot (the capability is live) — called only when the
+        capability is retired, mirroring ``_cleanup_retired_agents_040``'s purge
+        shape. Runs inside the caller's transaction. Idempotent (SC-014): every
+        statement matches nothing on re-run, and each is savepoint-guarded so a
+        table already dropped by an earlier full retire (or absent on an older
+        schema) cannot poison that transaction. In order (data-model.md):
+          1. destroy every stored machine secret;
+          2. purge permission/credential/trust/ownership rows for the merged-away
+             split ids — plus the live remote-compute-1 id on full retire;
+          3. close still-open tracked jobs honestly (state='orphaned', terminal);
+          4. on full retire only, drop the four 063 tables (dependent rows are
+             already gone, so re-running changes nothing further).
+        """
+        def guarded(statement, params=()):
+            cursor.execute("SAVEPOINT cleanup_retire_063")
+            try:
+                cursor.execute(statement, params)
+            except Exception:  # noqa: BLE001 — table absent on re-run/older schema
+                cursor.execute("ROLLBACK TO SAVEPOINT cleanup_retire_063")
+            else:
+                cursor.execute("RELEASE SAVEPOINT cleanup_retire_063")
+
+        guarded("DELETE FROM machine_credential")
+        agent_ids = self._RETIRED_AGENT_IDS_063 + (
+            ('remote-compute-1',) if full_retire else ())
+        ph = ", ".join(["%s"] * len(agent_ids))
+        for table in ('agent_scopes', 'tool_overrides', 'tool_permissions',
+                      'agent_trust', 'agent_ownership', 'user_credentials'):
+            guarded(f"DELETE FROM {table} WHERE agent_id IN ({ph})", agent_ids)
+        guarded("UPDATE tracked_job SET state='orphaned', terminal=TRUE "
+                "WHERE terminal = FALSE")
+        if full_retire:
+            for table in self._REMOTE_TABLES_063:
+                guarded(f"DROP TABLE IF EXISTS {table}")
 
     def _migrate_agent_catalog_029(self, cursor):
         """Feature 029 one-time (idempotent) catalog migrations.

@@ -67,8 +67,14 @@ def test_registry_resolves_surface():
 
 
 def test_handlers_cover_the_machine_actions():
+    # T026 extended the set with the machine-scoped credential + re-trust
+    # actions (machine-namespaced: the flat chrome action map already gives
+    # plain chrome_credential_delete to the agents surface).
     assert set(rm.HANDLERS) == {"chrome_machine_add", "chrome_machine_probe",
-                                "chrome_machine_delete"}
+                                "chrome_machine_delete",
+                                "chrome_machine_credential_set",
+                                "chrome_machine_credential_delete",
+                                "chrome_machine_retrust"}
     for fn in rm.HANDLERS.values():
         assert asyncio.iscoroutinefunction(fn)
 

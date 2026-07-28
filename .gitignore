@@ -19,6 +19,7 @@ docs/*
 !docs/keycloak*.md
 !docs/production-deployment.md
 !docs/byo-client-agents.md
+!docs/remote-compute-agents.md
 /.ruff_cache/
 Qualifying_Exam/
 .docker-cache/

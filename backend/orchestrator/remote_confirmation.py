@@ -185,9 +185,10 @@ def _is_destructive(orch, user_id: str, tool_name: str, args: Dict[str, Any], cl
 
 
 def _no_live_human(orch, websocket) -> bool:
-    """A destructive op needs an interactive channel to show a proposal + collect an
-    approval. A machine turn, a background/async VirtualWebSocket, or a None socket
-    cannot deliver one — refuse there (FR-033)."""
+    """Every mutating remote-control verb needs a live human on an interactive
+    channel (FR-033) — destructive ones additionally to show a proposal + collect
+    an approval. A machine turn, a background/async VirtualWebSocket, or a None
+    socket has no such human — refuse there."""
     if websocket is None:
         return True
     try:
@@ -269,7 +270,22 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         return None
     classification = classification_for(tool_name)
     if classification is None:
-        return None  # not a known mutating verb — let the normal gates handle it
+        return None  # read verb — permitted unattended (FR-044's status-poll allowance)
+
+    # FR-033: EVERY mutating verb needs a live human — checked BEFORE destructiveness
+    # (so before any transport contact, including the if_exists stat), before any
+    # proposal row, and before marker consumption (an approval can never be spent by
+    # a machine turn). Applies regardless of granted scope.
+    if _no_live_human(orch, websocket):
+        logger.info("remote_op refused (unattended): verb=%s owner=%s", tool_name, user_id)
+        _audit_sync(user_id, "remote_op.refused_unattended",
+                    f"refused unattended {tool_name}", machine_id=args.get("machine_id"),
+                    verb=tool_name, outcome="failure", chat_id=chat_id)
+        return ("unattended_refused: remote-control operations need a live person; "
+                "re-issue it interactively.",
+                [Alert(message="Remote-control operations can't run unattended — "
+                               "re-issue this interactively.", variant="error").to_dict()])
+
     if not _is_destructive(orch, user_id, tool_name, args, classification):
         return None  # non-destructive mutating verb — the explicit grant already gated it
 
@@ -290,16 +306,7 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                 [Alert(message="Approval no longer valid — re-request the operation.",
                        variant="error").to_dict()])
 
-    # First reach of a destructive verb: refuse and (if interactive) offer a proposal.
-    if _no_live_human(orch, websocket):
-        logger.info("remote_op refused (unattended): verb=%s owner=%s", tool_name, user_id)
-        _audit_sync(user_id, "remote_op.refused_unattended",
-                    f"refused unattended {tool_name}", machine_id=args.get("machine_id"),
-                    verb=tool_name, outcome="failure", chat_id=chat_id)
-        return ("unattended_refused: a destructive operation needs a person to approve "
-                "it; re-issue it interactively.",
-                [Alert(message="Destructive operations can't run unattended — re-issue "
-                               "this interactively.", variant="error").to_dict()])
+    # First reach of a destructive verb on an attended turn: refuse with a proposal.
     _pid, card = _create_proposal(orch, user_id, chat_id, agent_id, tool_name, args)
     return ("confirmation_required: approve the operation to proceed.", [card])
 

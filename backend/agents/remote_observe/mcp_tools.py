@@ -25,6 +25,7 @@ _CREDMGR = None
 
 _MAX_FIELD = 256   # per remote string field bound (FR-040)
 _MAX_ROWS = 200    # listing bound
+_MAX_FACT_ROWS = 50  # disk/GPU inventory bound (hundreds of autofs mounts stay bounded)
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\x1b]")
 
 
@@ -63,8 +64,10 @@ def _fail(verdict: Any, machine: str, next_action: str = "") -> Dict[str, Any]:
 
 
 def _resolve(user_id: Optional[str], ref: Optional[str]):
+    # No principal on the call → the vocabulary's no-live-human verdict (a bare
+    # "permission_denied" is not in contracts/result-vocabulary.md — SC-011).
     if not user_id:
-        return None, _fail("permission_denied", ref or "?", "sign in to use remote machines")
+        return None, _fail(Verdict.UNATTENDED_REFUSED, ref or "?", "sign in to use remote machines")
     if not ref:
         return None, _fail(Verdict.INVALID_ARGUMENT, "?", "name the machine (its label, address, or id)")
     row = remote_machines.resolve_machine(_DB, user_id, ref)
@@ -89,7 +92,7 @@ def _result_fail(res: RemoteResult) -> Dict[str, Any]:
 def list_machines(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
     if not user_id:
-        return _fail("permission_denied", "-", "sign in to use remote machines")
+        return _fail(Verdict.UNATTENDED_REFUSED, "-", "sign in to use remote machines")
     rows = remote_machines.list_machines(_DB, user_id)
     if not rows:
         return _ok("Remote machines",
@@ -133,9 +136,6 @@ def probe_machine(**kwargs) -> Dict[str, Any]:
 
 # ── list_queue (Slurm) ───────────────────────────────────────────────────────
 
-_SQUEUE_ARGV = ["squeue", "--me", "--json"]
-
-
 def _num(v, default=None):
     if isinstance(v, dict):
         return None if v.get("infinite") else v.get("number", default)
@@ -163,18 +163,61 @@ def _parse_squeue_json(text: str) -> Optional[List[Dict]]:
     return jobs
 
 
+# Delimited fallback for a scheduler too old for --json (research.md R4). Positional
+# fields: %i id, %P partition, %T state, %M used, %L left, %D nodes, %C cpus, %m mem,
+# %b gres, %R reason — mapped onto the SAME typed shape as the JSON path (the pinned
+# format carries no name column, so `name` degrades to "").
+_SQUEUE_FALLBACK_FMT = "%i|%P|%T|%M|%L|%D|%C|%m|%b|%R"
+
+
+def _parse_squeue_delim(text: str) -> List[Dict]:
+    jobs = []
+    for ln in (text or "").splitlines():
+        parts = ln.split("|")
+        if len(parts) < 10:
+            continue
+        jobs.append({
+            "id": parts[0].strip() or "?",
+            "name": "",
+            "state": parts[2].strip() or "?",
+            "partition": parts[1].strip(),
+            "nodes": parts[5].strip(),
+            "reason": "|".join(parts[9:]).strip(),
+        })
+    return jobs
+
+
+def _squeue_jobs(transport, target, selector: List[str]):
+    """``squeue <selector> --json`` first; a pre---json scheduler (non-zero exit or
+    non-JSON output) gets one delimited ``-o`` retry mapped onto the same typed job
+    dicts. Returns ``(jobs, error_response)`` — exactly one is None."""
+    res = transport.run(target, ["squeue", *selector, "--json"], timeout=30.0, retryable=True)
+    if not res.ok:
+        return None, _result_fail(res)
+    jobs = _parse_squeue_json(res.stdout) if res.exit_status in (0, None) else None
+    if jobs is not None:
+        return jobs, None
+    fb = transport.run(target, ["squeue", *selector, "--noheader", "-o", _SQUEUE_FALLBACK_FMT],
+                       timeout=30.0, retryable=True)
+    if not fb.ok:
+        return None, _result_fail(fb)
+    jobs = _parse_squeue_delim(fb.stdout) if fb.exit_status in (0, None) else []
+    # An empty parse of NON-empty (or failed) output is a parse failure, not an
+    # empty queue — surfacing it keeps SC-011's no-silent-failure promise.
+    if not jobs and (fb.exit_status not in (0, None) or (fb.stdout or "").strip()):
+        return None, _fail(Verdict.PARTIAL, target.label, "could not parse the scheduler response")
+    return jobs, None
+
+
 def list_queue(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
     ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
     target, err = _resolve(user_id, ref)
     if err:
         return err
-    res = get_transport().run(target, _SQUEUE_ARGV, timeout=30.0, retryable=True)
-    if not res.ok:
-        return _result_fail(res)
-    jobs = _parse_squeue_json(res.stdout)
-    if jobs is None:
-        return _fail(Verdict.PARTIAL, target.label, "could not parse the scheduler response")
+    jobs, jerr = _squeue_jobs(get_transport(), target, ["--me"])
+    if jerr is not None:
+        return jerr
     if not jobs:
         return _ok(f"Queue — {_sanitize(target.label, 60)}",
                    [Text(content="No jobs in your queue.", variant="body")], {"jobs": 0})
@@ -245,6 +288,62 @@ def _mem_kb(line: str) -> Optional[int]:
     return None
 
 
+def _parse_df(text: str) -> List[Dict]:
+    """``df -B1 --output=target,size,used,avail`` → typed disk rows. Mount is the
+    FIRST column so a name with spaces re-joins from the left; the header row
+    ("Mounted on  1B-blocks …") and malformed lines fail the int parse and are
+    skipped — never guessed at."""
+    disks = []
+    for ln in (text or "").splitlines():
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+        try:
+            size_b, used_b, avail_b = (int(p) for p in parts[-3:])
+        except ValueError:
+            continue
+        pct = round(100.0 * used_b / size_b, 1) if size_b > 0 else 0.0
+        disks.append({"mount": _sanitize(" ".join(parts[:-3]), 120), "size_bytes": size_b,
+                      "used_bytes": used_b, "avail_bytes": avail_b, "use_pct": pct})
+    return disks
+
+
+# gres tokens: gpu:8 / gpu:a100:4 (an optional type between the fixed prefix and
+# the trailing count). Socket-affinity suffixes like "(S:0-1)" are stripped first.
+_GRES_GPU = re.compile(r"^gpu(?::([A-Za-z0-9_.+-]+))?:(\d+)$")
+
+
+def _parse_sinfo_gres(text: str) -> List[Dict]:
+    """``sinfo --noheader -o %P|%G`` → typed GPU rows. Non-gpu GRES ("(null)",
+    shard:…) and malformed tokens are skipped; the default-partition ``*`` marker
+    is dropped from the name."""
+    gpus = []
+    for ln in (text or "").splitlines():
+        parts = ln.split("|")
+        if len(parts) < 2:
+            continue
+        where = _sanitize(parts[0].strip().rstrip("*"), 40)
+        for token in "|".join(parts[1:]).split(","):
+            m = _GRES_GPU.match(re.sub(r"\(.*$", "", token.strip()))
+            if not m:
+                continue
+            gpus.append({"node_or_partition": where,
+                         "gpu_type": _sanitize(m.group(1) or "", 40),
+                         "count": int(m.group(2))})
+    return gpus
+
+
+def _machine_role(user_id: Optional[str], ref: Optional[str]) -> str:
+    """The inventory row's declared role decides the Slurm-GRES GPU leg — the
+    contract sources GPU facts from ``sinfo`` on 'cluster' machines ONLY, never
+    ``nvidia-smi`` on the queried host (verbs.md host_facts row)."""
+    try:
+        row = remote_machines.resolve_machine(_DB, user_id, ref)
+        return (row or {}).get("role") or ""
+    except Exception:
+        return ""
+
+
 def host_facts(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
     ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
@@ -260,11 +359,54 @@ def host_facts(**kwargs) -> Dict[str, Any]:
     ncpu = transport.run(target, ["nproc"], timeout=15.0, retryable=True)
     if ncpu.ok:
         facts["cpus"] = _sanitize((ncpu.stdout or "").strip(), 16)
+    omitted: List[str] = []
+    # Disk facts (contract verbs.md). A dead df (no GNU --output, hung NFS mount →
+    # transport timeout, garbage output) degrades to a NOTED omission, never a hard
+    # failure — the facts gathered above still stand (FR-034 honest partials).
+    dfres = transport.run(target, ["df", "-B1", "--output=target,size,used,avail"],
+                          timeout=15.0, retryable=True)
+    disks = _parse_df(dfres.stdout) if dfres.ok else []
+    if disks:
+        facts["disks"] = disks[:_MAX_FACT_ROWS]
+        facts["disks_shown"] = len(facts["disks"])
+        facts["disks_total"] = len(disks)
+        facts["disks_truncated"] = len(disks) > _MAX_FACT_ROWS
+    else:
+        omitted.append("disk usage")
+    gpus = None
+    if _machine_role(user_id, ref) == "cluster":
+        sres = transport.run(target, ["sinfo", "--noheader", "-o", "%P|%G"],
+                             timeout=15.0, retryable=True)
+        if sres.ok and sres.exit_status in (0, None):
+            # exit 0 with zero gpu tokens is a REAL "no GPUs" (all-(null) GRES),
+            # distinct from the sinfo-failed omission below.
+            gpus = _parse_sinfo_gres(sres.stdout)
+            facts["gpus"] = gpus[:_MAX_FACT_ROWS]
+        else:
+            omitted.append("GPU inventory")
     labels = [("cpus", "CPUs"), ("load", "Load (1/5/15)"), ("uptime", "Uptime"),
               ("mem_total", "Memory total"), ("mem_avail", "Memory available")]
     rows = [[label, _sanitize(facts[key], 48)] for key, label in labels if facts.get(key)]
-    return _ok(f"Host facts — {_sanitize(target.label, 60)}",
-               [Table(headers=["Fact", "Value"], rows=rows)], facts)
+    comps: List[Any] = [Table(headers=["Fact", "Value"], rows=rows)]
+    if disks:
+        comps.append(Table(
+            headers=["Mount", "Size", "Used", "Avail", "Use%"],
+            rows=[[d["mount"], _fmt_bytes(d["size_bytes"]), _fmt_bytes(d["used_bytes"]),
+                   _fmt_bytes(d["avail_bytes"]), f'{d["use_pct"]:.0f}%']
+                  for d in facts["disks"]]))
+        if facts["disks_truncated"]:
+            comps.append(Text(content=f"Showing {facts['disks_shown']} of {len(disks)} mounts.",
+                              variant="caption"))
+    if gpus:
+        comps.append(Table(
+            headers=["Partition", "GPU type", "Count"],
+            rows=[[g["node_or_partition"], g["gpu_type"] or "gpu", str(g["count"])]
+                  for g in facts["gpus"]]))
+    if omitted:
+        facts["omitted"] = omitted
+        comps.append(Text(content="Unavailable right now: " + ", ".join(omitted) + ".",
+                          variant="caption"))
+    return _ok(f"Host facts — {_sanitize(target.label, 60)}", comps, facts)
 
 
 # ── job_status / job_history (Slurm squeue/sacct --json) ──────────────────────
@@ -314,10 +456,9 @@ def job_status(**kwargs) -> Dict[str, Any]:
     if not re.match(r"^\d+$", job_id):
         return _fail(Verdict.INVALID_ARGUMENT, target.label, "job_id must be a numeric Slurm job id")
     transport = get_transport()
-    live = transport.run(target, ["squeue", "--job", job_id, "--json"], timeout=30.0, retryable=True)
-    if not live.ok:
-        return _result_fail(live)
-    jobs = _parse_squeue_json(live.stdout)
+    jobs, jerr = _squeue_jobs(transport, target, ["--job", job_id])
+    if jerr is not None:
+        return jerr
     if jobs:
         j = jobs[0]
         rows = [["Job", j["id"]], ["Name", _sanitize(j["name"], 60)], ["State", j["state"]],
@@ -554,7 +695,7 @@ TOOL_REGISTRY = {
         dict(_M), ["machine_id"], 30.0),
     "host_facts": _read_entry(
         host_facts,
-        "Report typed host facts (CPUs, load, uptime, memory) for a registered machine.",
+        "Report typed host facts (CPUs, load, uptime, memory, disks; GPU inventory on clusters) for a registered machine.",
         dict(_M), ["machine_id"], 30.0),
     "job_status": _read_entry(
         job_status,

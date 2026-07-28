@@ -280,10 +280,13 @@ class CredentialManager:
         self.db.execute("DELETE FROM machine_credential WHERE machine_id = ?", (machine_id,))
         logger.info(f"Machine credential deleted: machine={machine_id}")
 
-    def remove_machine_credentials_for_user(self, owner_user_id: str):
-        """Destroy every machine credential owned by a user (account removal / logout, FR-015)."""
-        self.db.execute("DELETE FROM machine_credential WHERE owner_user_id = ?", (owner_user_id,))
-        logger.info(f"All machine credentials removed for user={owner_user_id}")
+    def remove_machine_credentials_for_user(self, owner_user_id: str) -> int:
+        """Destroy every machine credential owned by a user (account removal / logout, FR-015).
+        Returns the number of rows destroyed (psycopg2 reports -1 when unknown → 0)."""
+        cur = self.db.execute("DELETE FROM machine_credential WHERE owner_user_id = ?", (owner_user_id,))
+        removed = max(0, getattr(cur, "rowcount", 0) or 0)
+        logger.info(f"Machine credentials removed for user={owner_user_id}: {removed}")
+        return removed
 
     # ------------------------------------------------------------------
     # Migration: Re-encrypt Fernet credentials to ECIES

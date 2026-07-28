@@ -591,8 +591,9 @@ async def auth_logout(request: Request):
 
     Order: end the server session unconditionally → best-effort refresh-token
     revocation at Keycloak (queued for retry when offline) → revoke the
-    user's feature-025 offline grants → audit → Keycloak end-session
-    redirect (best-effort). Local sign-out never blocks on the IdP."""
+    user's feature-025 offline grants → destroy the user's feature-063
+    machine credentials → audit → Keycloak end-session redirect
+    (best-effort). Local sign-out never blocks on the IdP."""
     raw = request.cookies.get(COOKIE_NAME)
     sess = None
     if raw:
@@ -614,6 +615,7 @@ async def auth_logout(request: Request):
                 logger.info("web_auth: revoked %d offline grant(s) for %s at sign-out", revoked, user_id)
         except Exception:
             logger.warning("web_auth: offline-grant revocation failed at sign-out", exc_info=True)
+        await _destroy_machine_credentials(user_id, "sign-out")
         await _audit("logout", user_id, "User signed out; session and refresh credential revoked")
     resp = RedirectResponse("/", status_code=303)
     resp.delete_cookie(COOKIE_NAME)
@@ -717,6 +719,26 @@ async def _revoke_or_queue(user_id: str, refresh_token: str,
             logger.warning("web_auth: revocation enqueue failed", exc_info=True)
     logger.warning("web_auth: could not revoke or queue refresh token for %s", user_id)
     return "failed"
+
+
+async def _destroy_machine_credentials(user_id: str, context: str) -> None:
+    """Feature 063 FR-015: a sign-out destroys the user's stored remote-machine
+    credentials, riding the same revocation flow as the refresh token and the
+    feature-025 offline grants. Fail-open — credential cleanup must never
+    block a local sign-out. Shared by the web and 044 native logout legs."""
+    if not user_id:
+        return
+    try:
+        from orchestrator.credential_manager import CredentialManager
+        from shared.database import Database
+        removed = await asyncio.to_thread(
+            lambda: CredentialManager(db=Database()).remove_machine_credentials_for_user(user_id))
+        if removed:
+            logger.info("web_auth: destroyed %d machine credential(s) for %s at %s",
+                        removed, user_id, context)
+    except Exception:
+        logger.warning("web_auth: machine-credential revocation failed at %s", context,
+                       exc_info=True)
 
 
 _MAX_REVOCATION_ATTEMPTS = 30

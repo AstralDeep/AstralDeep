@@ -102,8 +102,10 @@ def _stderr_tail(res: RemoteResult) -> str:
 
 
 def _resolve(user_id: Optional[str], ref: Optional[str]):
+    # No principal on the call → the vocabulary's no-live-human verdict (a bare
+    # "permission_denied" is not in contracts/result-vocabulary.md — SC-011).
     if not user_id:
-        return None, _fail("permission_denied", ref or "?", "sign in to use remote machines")
+        return None, _fail(Verdict.UNATTENDED_REFUSED, ref or "?", "sign in to use remote machines")
     if not ref:
         return None, _fail(Verdict.INVALID_ARGUMENT, "?", "name the machine (its label, address, or id)")
     row = remote_machines.resolve_machine(_DB, user_id, ref)
@@ -340,9 +342,21 @@ def _sbatch_flags(kwargs: Dict[str, Any], label: str):
 
 
 def submit_job(**kwargs) -> Dict[str, Any]:
+    """Submit a PRE-EXISTING sbatch script by path — same idempotency + durable
+    tracking posture as run_job (T049/FR-037): the nonce rides sbatch's --comment
+    AND the tracked_job row, a lost/slow submit surfaces the transport's
+    non-retryable ``unconfirmed`` and records NO row (a duplicate is impossible).
+    Unlike run_job the script already lives on the cluster, so there is no
+    controlled --output path (the script's own directives decide)."""
+    import uuid as _uuid
+
     user_id = kwargs.get("user_id")
+    chat_id = kwargs.get("session_id")  # dispatch injects the chat id under session_id
     ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
     script_path = kwargs.get("script_path")
+    job_name = kwargs.get("job_name")
+    notify = kwargs.get("notify_on_finish")
+    notify = True if notify is None else bool(notify)
     target, err = _resolve(user_id, ref)
     if err:
         return err
@@ -351,7 +365,8 @@ def submit_job(**kwargs) -> Dict[str, Any]:
     flags, ferr = _sbatch_flags(kwargs, target.label)
     if ferr:
         return ferr
-    argv = ["sbatch", "--parsable", *flags, script_path]
+    nonce = _uuid.uuid4().hex[:12]
+    argv = ["sbatch", "--parsable", f"--comment=astral:{nonce}", *flags, script_path]
     res = get_transport().run(target, argv, timeout=30.0, retryable=False)
     if not res.ok:
         return _result_fail(res)
@@ -360,11 +375,26 @@ def submit_job(**kwargs) -> Dict[str, Any]:
         return _fail(Verdict.PARTIAL, target.label,
                      f"sbatch did not accept the job: {tail}" if tail
                      else "sbatch did not accept the job; check the script path, partition, and account")
-    job_id = _sanitize((res.stdout or "").strip().split(";")[0].split()[0] if res.stdout.strip() else "", 24)
-    return _ok(f"Job submitted — {_sanitize(target.label, 60)}",
-               [Table(headers=["Field", "Value"],
-                      rows=[["Job id", job_id], ["Script", _sanitize(script_path, 200)]])],
-               {"job_id": job_id, "script_path": script_path})
+    job_id = _sanitize((res.stdout or "").strip().split(";")[0].split()[0], 24)
+    if not job_id:
+        return _fail(Verdict.UNCONFIRMED, target.label,
+                     "the job may have been submitted but no id came back; check the queue")
+
+    component_id = f"au_rjob_{job_id}"
+    from orchestrator import remote_jobs
+    try:
+        remote_jobs.create_tracked_job(
+            _DB, owner_user_id=user_id, machine_id=target.machine_id, chat_id=chat_id,
+            scheduler_job_id=job_id, submit_marker=nonce, output_path=None,
+            component_id=component_id, job_name=job_name or "", notify_on_finish=notify)
+    except Exception:  # noqa: BLE001 — the job IS submitted; tracking-row failure is non-fatal
+        pass
+    card = remote_jobs.render_job_card(
+        job_id=job_id, machine_label=target.label, state="submitted", terminal=False,
+        component_id=component_id, job_name=job_name or None)
+    return {"_ui_components": [card],
+            "_data": {"job_id": job_id, "state": "submitted", "tracked": True,
+                      "script_path": script_path, "notify_on_finish": notify}}
 
 
 # ── run_job (inline script → sbatch → durable async tracking, US4) ────────────
@@ -535,8 +565,10 @@ TOOL_REGISTRY = {
         "tools:write", 60.0),
     "submit_job": _entry(
         submit_job,
-        "Submit an EXISTING sbatch script to the Slurm scheduler on a registered cluster. "
-        "Creates new work; not destructive.",
+        "Submit an EXISTING sbatch script to the Slurm scheduler on a registered cluster, "
+        "then track it asynchronously — you can leave and come back; the result appears on "
+        "the canvas and (opt-in) you're notified when it finishes. Creates new work; not "
+        "destructive.",
         {"type": "object", "properties": {
             **_MACHINE_PROP,
             "script_path": {"type": "string", "description": "Absolute path to an existing sbatch script on the machine."},
@@ -546,6 +578,7 @@ TOOL_REGISTRY = {
             "gpus": {"type": "integer", "minimum": 0},
             "job_name": {"type": "string"},
             "account": {"type": "string"},
+            "notify_on_finish": {"type": "boolean", "description": "Notify your clients when the job finishes (default true).", "default": True},
         }, "required": ["machine_id", "script_path"]},
         "tools:write", 30.0),
     "make_directory": _entry(

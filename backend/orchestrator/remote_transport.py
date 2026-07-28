@@ -306,6 +306,12 @@ class ParamikoTransport:
         verdict = self._verdict_for_exception(exc)
         if verdict is None:
             raise RemoteTransportError(f"unexpected transport error for {target.label}: {exc}") from exc
+        # FR-036/SC-010: a CONSEQUENTIAL (non-retryable) call whose deadline expired
+        # has an unknown outcome — the command may or may not have taken effect.
+        # Surface the honest ``unconfirmed`` (verify before re-issuing), never a
+        # ``timeout`` the caller might treat as safely re-attemptable.
+        if verdict is Verdict.TIMEOUT and not retryable:
+            verdict = Verdict.UNCONFIRMED
         return RemoteResult(verdict=verdict, machine=target.label,
                             next_action=_NEXT_ACTION.get(verdict, ""), retryable=retryable)
 
@@ -494,8 +500,13 @@ class FakeTransport:
             blocked.retryable = retryable
             return blocked
         if self.force_verdict is not None:
-            return RemoteResult(verdict=self.force_verdict, machine=target.label,
-                                next_action=_NEXT_ACTION.get(self.force_verdict, ""), retryable=retryable)
+            verdict = self.force_verdict
+            # Mirror ParamikoTransport: a consequential timeout surfaces as
+            # ``unconfirmed`` (FR-036/SC-010), so verb tests see production verdicts.
+            if verdict is Verdict.TIMEOUT and not retryable:
+                verdict = Verdict.UNCONFIRMED
+            return RemoteResult(verdict=verdict, machine=target.label,
+                                next_action=_NEXT_ACTION.get(verdict, ""), retryable=retryable)
         if not self.reachable:
             return RemoteResult(verdict=Verdict.UNREACHABLE, machine=target.label,
                                 next_action=_NEXT_ACTION[Verdict.UNREACHABLE], retryable=retryable)

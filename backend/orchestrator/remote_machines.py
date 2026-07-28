@@ -8,12 +8,15 @@ owner-scoped so one user can never see, name, or address another user's machine
 """
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Dict, List, Optional
 
 from orchestrator.credential_manager import CredentialNotConfigured
 from orchestrator.remote_transport import MachineTarget
+
+logger = logging.getLogger("RemoteMachines")
 
 
 class MachineNotFound(Exception):
@@ -81,15 +84,95 @@ def delete_machine(db, owner_user_id: str, machine_id: str) -> bool:
     return True
 
 
+def purge_user_remote_compute(db, owner_user_id: str, credential_manager=None) -> Dict[str, int]:
+    """Account-removal leg of FR-015 (data-model.md "Retirement & revocation"):
+    destroy every machine credential the user owns, then their remote_machine
+    inventory and tracked_job rows. Sibling of the attachments account-deletion
+    hook (``attachments.account_lifecycle.purge_user_attachments``) — called by
+    the user-management subsystem when an account is removed. Idempotent."""
+    if credential_manager is None:
+        from orchestrator.credential_manager import CredentialManager
+        credential_manager = CredentialManager(db=db)
+    credentials = credential_manager.remove_machine_credentials_for_user(owner_user_id)
+
+    def _count(cur) -> int:
+        return max(0, getattr(cur, "rowcount", 0) or 0)  # psycopg2 -1 == unknown
+
+    machines = _count(db.execute(
+        "DELETE FROM remote_machine WHERE owner_user_id = ?", (owner_user_id,)))
+    jobs = _count(db.execute(
+        "DELETE FROM tracked_job WHERE owner_user_id = ?", (owner_user_id,)))
+    return {"credentials": credentials, "machines": machines, "jobs": jobs}
+
+
+# Verdicts under which the connection genuinely reached + authenticated to the
+# machine; anything else audits as a failed connection attempt (FR-047).
+_CONNECTED_VERDICTS = ("ok", "partial")
+
+
+def audit_machine_event(owner_user_id: Optional[str], action_type: str, description: str, *,
+                        machine_id: Optional[str] = None, label: Optional[str] = None,
+                        verdict: Optional[str] = None, cred_type: Optional[str] = None,
+                        outcome: str = "success") -> None:
+    """FR-047 hash-chained audit row naming the actor, the machine (id + label)
+    and the outcome. Reuses the ``agent_lifecycle`` class the 063 confirmation
+    gate already records ``remote_op.*`` rows under (no schema change; same
+    posture as feature 056's constant-only ``delegation`` class), correlated by
+    ``machine_id`` so one machine's whole lifecycle lines up. SECRETS NEVER
+    enter a row (FR-049): only ids, labels, credential *types* and verdicts.
+    Best-effort — an audit failure never blocks the operation (mirrors
+    ``remote_confirmation._audit_sync``)."""
+    try:
+        from datetime import datetime, timezone
+
+        from audit.recorder import get_recorder
+        from audit.schemas import AuditEventCreate
+        rec = get_recorder()
+        if rec is None:
+            return
+        meta: Dict[str, str] = {}
+        if machine_id:
+            meta["machine_id"] = str(machine_id)
+        if label:
+            meta["machine_label"] = str(label)
+        if verdict:
+            meta["verdict"] = str(verdict)
+        if cred_type:
+            meta["cred_type"] = str(cred_type)
+        rec.record_blocking(AuditEventCreate(
+            actor_user_id=owner_user_id or "unknown",
+            auth_principal=owner_user_id or "unknown",
+            event_class="agent_lifecycle",
+            action_type=action_type,
+            description=description[:1024],
+            correlation_id=str(machine_id) if machine_id else uuid.uuid4().hex,
+            outcome=outcome,
+            inputs_meta=meta,
+            started_at=datetime.now(timezone.utc),
+        ))
+    except Exception:  # noqa: BLE001 — audit is best-effort, never fatal
+        logger.debug("remote_machine audit failed (%s)", action_type, exc_info=True)
+
+
 def record_probe(db, owner_user_id: str, machine_id: str, verdict: str,
                  host_key: Optional[Dict] = None) -> None:
     """Persist the last reachability verdict; record the host key ONLY on first
     contact (FR-020). Never overwrites an existing recorded key — a change surfaces
-    as a host_key_mismatch verdict and requires an explicit re-trust action."""
+    as a host_key_mismatch verdict and requires an explicit re-trust action.
+
+    Also the single audit seam for connection attempts (FR-047): every probe and
+    verb-level connection already reports its verdict through here, so each one
+    lands in the audit log as attempt + verdict without agents/** auditing."""
     now = _now_ms()
     row = get_machine(db, owner_user_id, machine_id)
     if row is None:
         return
+    audit_machine_event(
+        owner_user_id, "remote_machine.connection",
+        f"connection to {row['label']}: {verdict}",
+        machine_id=machine_id, label=row["label"], verdict=verdict,
+        outcome="success" if verdict in _CONNECTED_VERDICTS else "failure",
+    )
     if host_key and not row.get("host_key_fingerprint"):
         db.execute(
             """UPDATE remote_machine SET last_verdict = ?, last_checked_at = ?,

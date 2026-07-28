@@ -5,8 +5,8 @@ ONE agent exposes BOTH the read-only verbs and the mutating verbs. The two verb
 sets still live in their own modules, split by risk tier so each stays small and
 reviewable:
 
-- ``agents.remote_observe.mcp_tools`` — the 8 read-only verbs (``tools:read``).
-- ``agents.remote_control.mcp_tools``  — the 8 mutating verbs (``tools:write`` /
+- ``agents.remote_observe.mcp_tools`` — the 9 read-only verbs (``tools:read``).
+- ``agents.remote_control.mcp_tools``  — the 9 mutating verbs (``tools:write`` /
   ``tools:system``).
 
 This module unions them into the single registered agent. Merging the AGENTS does
@@ -28,8 +28,8 @@ def register_deps(db, credmgr) -> None:
     _control.register_deps(db, credmgr)
 
 
-# Union of the two risk-tiered registries. The verb names are disjoint (8 read +
-# 8 mutating = 16), and each entry dict is the SAME object the source module
+# Union of the two risk-tiered registries. The verb names are disjoint (9 read +
+# 9 mutating = 18), and each entry dict is the SAME object the source module
 # built — so remote_control's ``destructive`` values remain identical (``is``) to
 # ``remote_confirmation.DESTRUCTIVE_CLASSIFICATION`` (FR-028 no-drift holds).
 TOOL_REGISTRY = {**_observe.TOOL_REGISTRY, **_control.TOOL_REGISTRY}
