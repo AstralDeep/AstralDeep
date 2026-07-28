@@ -514,8 +514,13 @@ def read_job_output(**kwargs) -> Dict[str, Any]:
                    {"job_id": job_id, "bytes": 0})
     # CodeBlock (<pre>) preserves newlines + monospace so terminal output stays
     # readable; a plain Text would collapse the whole thing onto one line.
+    # `tail` must ride `_data`: the LLM sees ONLY `_data` (the orchestrator's
+    # two-tier rule), and this verb's purpose is for the model to read the
+    # output it was asked about. Already bounded + sanitized (FR-040/FR-041);
+    # with no `_model_digest` it still flows through the untrusted-content
+    # datamark, so the taint posture is unchanged.
     return _ok(title, [CodeBlock(code=text, language="")],
-               {"job_id": job_id, "bytes": len(res.stdout or "")})
+               {"job_id": job_id, "bytes": len(res.stdout or ""), "tail": text})
 
 
 _M = {"machine_id": {"type": "string", "description": "The machine's label, address, or id (e.g. 'dgx')."}}

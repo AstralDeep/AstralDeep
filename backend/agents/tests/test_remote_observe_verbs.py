@@ -154,6 +154,20 @@ def test_read_job_output_from_tracked_job(monkeypatch):
     assert argv[0] == "tail" and argv[-1] == "/home/me/.astral_jobs/x.out"
 
 
+def test_read_job_output_tail_reaches_the_model_tier(monkeypatch):
+    # The orchestrator's two-tier rule shows the LLM ONLY `_data`
+    # (`_tool_result_to_llm_content`); the CodeBlock in `_ui_components` is
+    # render-only. Without the tail in `_data` the model is blind to the very
+    # output it was asked to interpret — live-found 2026-07-28: it re-submitted
+    # `cat` jobs for content the canvas already showed.
+    from orchestrator import remote_jobs
+    monkeypatch.setattr(remote_jobs, "get_by_job",
+                        lambda db, uid, jid: {"output_path": "/home/me/.astral_jobs/x.out"})
+    _fake(command_stdout="=== GPU Status ===\nNo devices were found\n", command_exit=0)
+    res = obs.read_job_output(user_id=USER, machine_id="dgx", job_id="5")
+    assert "No devices were found" in res["_data"]["tail"]
+
+
 def test_read_job_output_unknown_job_is_not_found(monkeypatch):
     from orchestrator import remote_jobs
     monkeypatch.setattr(remote_jobs, "get_by_job", lambda db, uid, jid: None)
