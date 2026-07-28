@@ -708,7 +708,8 @@ struct ShimmerModifier: ViewModifier {
         content.overlay(
             GeometryReader { geo in
                 TimelineView(.animation) { context in
-                    let cycle = context.date.timeIntervalSinceReferenceDate
+                    let cycle =
+                        context.date.timeIntervalSinceReferenceDate
                         .truncatingRemainder(dividingBy: 1.3) / 1.3
                     LinearGradient(
                         colors: [.clear, .white.opacity(0.18), .clear],

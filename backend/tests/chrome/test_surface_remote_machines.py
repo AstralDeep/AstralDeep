@@ -43,6 +43,9 @@ def _orch(cm=None):
 def _no_db(monkeypatch):
     # render()/components() list machines — stub to empty (no Postgres).
     monkeypatch.setattr(rm.remote_machines, "list_machines", lambda db, uid: [])
+    # CI runs with FF_REMOTE_COMPUTE unset; these tests exercise the ENABLED
+    # surface (the disabled posture is test_remote_flag_off_063.py's job).
+    monkeypatch.setattr(rm, "_enabled", lambda: True)
 
 
 def _picker(comps):

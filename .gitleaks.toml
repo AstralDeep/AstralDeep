@@ -23,6 +23,9 @@ paths = [
   # Backend test fixtures (mock JWTs, pytest-only secrets, fake keys)
   '''backend/tests/.*''',
   '''backend/.*/tests/.*''',
+  # Windows-client test fixtures — e.g. the throwaway PEM the 063
+  # remote-machines surface test round-trips through the form
+  '''windows-client/tests/.*''',
   # Shipped example env file — placeholder values only; production boot
   # refuses them (exit 78)
   '''\.env\.example$''',

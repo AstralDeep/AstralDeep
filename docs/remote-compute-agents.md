@@ -239,7 +239,7 @@ secrets:
   queue or machine before re-issuing.
 
 The FR-052 live-verification checklist for a candidate image lives in
-[quickstart.md](../specs/063-remote-compute-agents/quickstart.md#live-verification-checklist-fr-052--sc-016).
+[quickstart.md](../specs/063-remote-compute-agents/quickstart.md#live-verification-checklist-fr-052-sc-016).
 The broader service posture, Keycloak setup, TLS, readiness, and rollback
 entry points remain in the
 [production deployment guide](production-deployment.md).
