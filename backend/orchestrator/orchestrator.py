@@ -13150,8 +13150,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # error automatically. 030: the draft check now gates the STATUS
             # too — previously every errored live tool flashed a misleading
             # "Auto-fixing..." even though auto_fix only acts on drafts.
+            # The draft lookup is a sync DB read — off the loop thread (052).
             if (agent_id and hasattr(self, 'lifecycle_manager')
-                    and self.lifecycle_manager._get_draft_by_agent_id(agent_id)):
+                    and await asyncio.to_thread(
+                        self.lifecycle_manager._get_draft_by_agent_id, agent_id)):
                 try:
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status", "status": "fixing",
@@ -13886,7 +13888,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     t_name = tool_names[i] if i < len(tool_names) else None
                     a_id = tool_to_agent.get(t_name) if t_name else None
                     # 030: status only when auto-fix can actually act (drafts).
-                    if a_id and self.lifecycle_manager._get_draft_by_agent_id(a_id):
+                    # The lookup is a sync DB read — off the loop thread (052).
+                    if a_id and await asyncio.to_thread(
+                            self.lifecycle_manager._get_draft_by_agent_id, a_id):
                         try:
                             await self._safe_send(websocket, json.dumps({
                                 "type": "chat_status", "status": "fixing",
