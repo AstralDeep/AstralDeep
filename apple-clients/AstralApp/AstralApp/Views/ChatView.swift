@@ -63,7 +63,12 @@ private struct SplitShell: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 PanelHeader(title: "Conversation")
-                ChatList().frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Same layout firewall as CanvasArea: without it the rail
+                // VStack's flexible rounds measure the full transcript per
+                // proposal (063 livelock class — this is the macOS/iPad shape).
+                GeometryReader { geo in
+                    ChatList().frame(width: geo.size.width, height: geo.size.height)
+                }
                 if model.turnActive { StepTrailView(lines: model.stepTrail) }
                 InputBar()
             }
@@ -99,33 +104,43 @@ private struct CanvasArea: View {
                 ProgressView().progressViewStyle(.linear).tint(p.secondary)
             }
             ZStack(alignment: .topTrailing) {
-                Group {
-                    if model.showSkeleton {
-                        SkeletonCanvas()
-                    } else if model.visibleCanvas.isEmpty {
-                        EmptyCanvasHint()
-                    } else {
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 12) {
-                                // Keyed by component identity so a `remove` op
-                                // doesn't shift every later component onto a new
-                                // SwiftUI identity (resetting tabs/collapsibles
-                                // and scroll anchors — FR-013).
-                                ForEach(canvasItems, id: \.key) { item in
-                                    // 055 US4/US5 chrome: provenance badge +
-                                    // refine/export context menu (top-level only).
-                                    ComponentChrome(
-                                        component: item.comp,
-                                        interactive: !model.isViewingHistory,
-                                        onRefine: { refineTarget = $0 })
+                // GeometryReader is a layout firewall: it answers every parent
+                // proposal in O(1) and lays the scroll content out ONCE at the
+                // final concrete size. Without it, the shell VStack's flexible-
+                // space rounds ask this subtree for its ideal height, and a
+                // vertical ScrollView answers that by realizing + measuring its
+                // ENTIRE LazyVStack — one component of the combinatorial layout
+                // pass behind the 063 stuck-canvas livelock (same class as the
+                // shimmer trigger fixed earlier; see StepTrailView/MessagesPanel).
+                GeometryReader { geo in
+                    Group {
+                        if model.showSkeleton {
+                            SkeletonCanvas()
+                        } else if model.visibleCanvas.isEmpty {
+                            EmptyCanvasHint()
+                        } else {
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 12) {
+                                    // Keyed by component identity so a `remove` op
+                                    // doesn't shift every later component onto a new
+                                    // SwiftUI identity (resetting tabs/collapsibles
+                                    // and scroll anchors — FR-013).
+                                    ForEach(canvasItems, id: \.key) { item in
+                                        // 055 US4/US5 chrome: provenance badge +
+                                        // refine/export context menu (top-level only).
+                                        ComponentChrome(
+                                            component: item.comp,
+                                            interactive: !model.isViewingHistory,
+                                            onRefine: { refineTarget = $0 })
+                                    }
                                 }
+                                .padding(16)
                             }
-                            .padding(16)
+                            .scrollDismissesKeyboard(.immediately)
                         }
-                        .scrollDismissesKeyboard(.immediately)
                     }
+                    .frame(width: geo.size.width, height: geo.size.height)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 if !model.isViewingHistory {
                     HStack(spacing: 8) {
@@ -306,13 +321,18 @@ private struct StepTrailView: View {
         if lines.isEmpty {
             EmptyView()
         } else {
-            VStack(alignment: .leading, spacing: 1) {
-                ForEach(lines.suffix(4), id: \.self) { line in
-                    Text(line).font(.caption2).foregroundStyle(theme.palette.muted).lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16).padding(.vertical, 4)
+            // One Text, not a ForEach of rows: the trail updates on every
+            // chat_step during a live turn, and per-row flexible layout fed the
+            // shell's flexible-space rounds (063 livelock). A single bounded
+            // Text is one cheap measure — and it can't hit the duplicate-
+            // identity hazard `ForEach(id: \.self)` had when a step repeats
+            // (two `✗ run_job` lines in one turn).
+            Text(lines.suffix(4).joined(separator: "\n"))
+                .font(.caption2).foregroundStyle(theme.palette.muted)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 4)
         }
     }
 }
@@ -333,7 +353,13 @@ private struct MessagesPanel: View {
             VStack(spacing: 0) {
                 if expanded {
                     Divider().overlay(p.border)
-                    ChatList().frame(maxHeight: 320).background(p.bg)
+                    // A CONCRETE height, not maxHeight: shrink-to-fit required
+                    // measuring the whole transcript (a vertical ScrollView's
+                    // ideal height realizes every LazyVStack row, including the
+                    // long markdown bubbles) on every flexible-space round of
+                    // the shell VStack — the core multiplier of the 063
+                    // stuck-canvas layout livelock. Fixed height = O(1) answer.
+                    ChatList().frame(height: 320).background(p.bg)
                 }
                 Button {
                     withAnimation { expanded.toggle() }
@@ -385,7 +411,10 @@ private struct ChatList: View {
             .accessibilityIdentifier("conversation-message-scroll")
             .scrollDismissesKeyboard(.immediately)
             .onChange(of: visible.count) { _, _ in
-                if let last = visible.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                // Unanimated: an animated scrollTo re-lays-out the transcript
+                // every animation frame, compounding the live-turn layout storm
+                // (063 livelock). A jump costs exactly one pass.
+                if let last = visible.last { proxy.scrollTo(last.id, anchor: .bottom) }
             }
         }
     }
