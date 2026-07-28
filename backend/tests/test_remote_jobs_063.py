@@ -576,3 +576,273 @@ class TestSubmitJobParity:
         assert ctl_db.rows == {}  # zero rows recorded → zero duplicates across all 20
         from agents.remote_control.mcp_tools import TOOL_REGISTRY
         assert TOOL_REGISTRY["submit_job"]["retryable"] is False  # dispatch never re-attempts
+
+
+# ── repository writes (the sync helpers the poller wraps in to_thread) ─────────
+
+class _CaptureDB:
+    """Records the exact UPDATE each repository helper issues (no DB needed)."""
+
+    def __init__(self):
+        self.writes = []
+
+    def execute(self, q, params):
+        self.writes.append((" ".join(q.split()), params))
+
+
+class TestRepositoryWrites:
+    def test_apply_open_job_leaves_notified_alone_and_finished_at_null(self):
+        db = _CaptureDB()
+        rj._apply(db, "t1", state="RUNNING", exit_code=None, terminal=False, fail_count=0)
+        q, params = db.writes[0]
+        assert "notified" not in q
+        assert params[0] == "RUNNING" and params[2] is False and params[-1] == "t1"
+        assert params[5] is None  # finished_at stays NULL while the job is open
+
+    def test_apply_with_notified_writes_the_flag_and_stamps_finished_at(self):
+        db = _CaptureDB()
+        rj._apply(db, "t1", state="COMPLETED", exit_code="0:0", terminal=True,
+                  fail_count=0, notified=True)
+        q, params = db.writes[0]
+        assert "notified=?" in q
+        assert params[-2] is True and params[-1] == "t1"
+        assert params[5] is not None  # finished_at stamped on the terminal write
+
+    def test_orphan_closes_the_row(self):
+        db = _CaptureDB()
+        rj._orphan(db, "t1")
+        q, params = db.writes[0]
+        assert "state='orphaned'" in q and "terminal=TRUE" in q
+        assert params[1] == "t1"
+
+    def test_touch_fail_records_only_the_counter(self):
+        # A transport blip must not rewrite state/terminal — only the fail counter
+        # and the poll timestamp, so a later good poll resumes cleanly.
+        db = _CaptureDB()
+        rj._touch_fail(db, "t1", 3)
+        q, params = db.writes[0]
+        assert "fail_count=?" in q and "state=" not in q and "terminal" not in q
+        assert params[0] == 3 and params[2] == "t1"
+
+    def test_mark_notified(self):
+        db = _CaptureDB()
+        rj._mark_notified(db, "t1")
+        assert "notified=TRUE" in db.writes[0][0] and db.writes[0][1] == ("t1",)
+
+
+# ── card variants ─────────────────────────────────────────────────────────────
+
+def _alert(card):
+    return next(c for c in card["content"] if c["type"] == "alert")
+
+
+class TestJobCardVariants:
+    def test_orphaned_card_explains_that_tracking_stopped(self):
+        d = rj.render_job_card(job_id="5", machine_label="dgx", state="orphaned",
+                               terminal=True, component_id="au_rjob_5")
+        a = _alert(d)
+        assert a["variant"] == "warning" and "tracking stopped" in a["message"]
+
+    def test_failed_card_is_an_error_and_names_the_exit_code(self):
+        d = rj.render_job_card(job_id="5", machine_label="dgx", state="FAILED",
+                               exit_code="1:0", terminal=True, component_id="au_rjob_5",
+                               job_name="train")
+        assert _alert(d)["variant"] == "error"
+        assert "(exit 1:0)" in _alert(d)["message"]
+        table = next(c for c in d["content"] if c["type"] == "table")
+        assert ["Name", "train"] in table["rows"] and ["Exit code", "1:0"] in table["rows"]
+
+    def test_cancelled_card_is_a_warning_not_an_error(self):
+        d = rj.render_job_card(job_id="5", machine_label="", state="CANCELLED by 1234",
+                               terminal=True, component_id="au_rjob_5")
+        a = _alert(d)
+        assert a["variant"] == "warning" and "on ?" in a["message"]  # unresolved label
+
+    def test_completed_with_a_nonzero_exit_is_not_a_success(self):
+        d = rj.render_job_card(job_id="5", machine_label="dgx", state="COMPLETED",
+                               exit_code="2:0", terminal=True, component_id="au_rjob_5")
+        assert _alert(d)["variant"] == "error"
+
+
+# ── probe edges ───────────────────────────────────────────────────────────────
+
+class _RaisingTransport:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def run(self, target, argv, *, timeout, retryable=False):
+        raise self.exc
+
+
+class TestProbeEdges:
+    def test_unexpected_resolve_error_is_transient_not_orphan(self, monkeypatch):
+        # Only the three "the machine/credential is gone" errors orphan a job; any
+        # other resolve failure is transient, so a blip never abandons tracking.
+        def _boom(*a, **k):
+            raise RuntimeError("pool exhausted")
+        monkeypatch.setattr("orchestrator.remote_machines.build_target", _boom)
+        out = rj._probe_state(_orch(), {"owner_user_id": "u", "machine_id": "m1",
+                                        "scheduler_job_id": "5", "state": "running"})
+        assert out == {"transient": True}
+
+    def test_sacct_failure_is_transient(self, monkeypatch):
+        monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _target())
+        set_transport(_Scripted({"squeue": (_SQUEUE_EMPTY, 0), "sacct": Verdict.UNREACHABLE}))
+        out = rj._probe_state(_orch(), {"owner_user_id": "u", "machine_id": "m1",
+                                        "scheduler_job_id": "5", "state": "running"})
+        assert out.get("transient") is True and out.get("machine") == "dgx"
+
+    def test_gone_from_both_while_running_still_reads_the_output(self, monkeypatch):
+        monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _target())
+        set_transport(_Scripted({"squeue": (_SQUEUE_EMPTY, 0), "sacct": (_SQUEUE_EMPTY, 0),
+                                 "tail": ("purged but produced output", 0)}))
+        out = rj._probe_state(_orch(), {"owner_user_id": "u", "machine_id": "m1",
+                                        "scheduler_job_id": "5", "state": "RUNNING",
+                                        "output_path": "/o"})
+        assert out["terminal"] is True and out["output_tail"] == "purged but produced output"
+
+    def test_gone_from_both_while_never_started_stays_open(self, monkeypatch):
+        # A just-submitted job that neither squeue nor sacct knows yet must stay
+        # open (not be resolved COMPLETED) — the next pass decides.
+        monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _target())
+        t = _Scripted({"squeue": (_SQUEUE_EMPTY, 0), "sacct": (_SQUEUE_EMPTY, 0)})
+        set_transport(t)
+        out = rj._probe_state(_orch(), {"owner_user_id": "u", "machine_id": "m1",
+                                        "scheduler_job_id": "5", "state": "submitted",
+                                        "output_path": "/o"})
+        assert out == {"state": "submitted", "terminal": False, "exit_code": None,
+                       "machine": "dgx"}
+        assert not [a for a in t.calls if a[0] == "tail"]  # nothing to read yet
+
+    def test_tail_returns_none_when_the_read_fails(self):
+        assert rj._tail(_Scripted({"tail": ("", 1)}), _target(), "/o") == ""
+        assert rj._tail(_Scripted({"tail": Verdict.UNREACHABLE}), _target(), "/o") is None
+
+    def test_tail_swallows_a_transport_exception(self):
+        # The output read is a nicety — it must never break the state transition.
+        assert rj._tail(_RaisingTransport(RuntimeError("ssh died")), _target(), "/o") is None
+
+
+# ── poll_once isolation ───────────────────────────────────────────────────────
+
+class _OneRowDB:
+    def fetch_all(self, q, params):
+        assert "terminal = FALSE" in q
+        return [_row()]
+
+
+async def test_poll_once_isolates_a_failing_job(monkeypatch):
+    # One bad job must never abort the pass for the others (best-effort per job).
+    async def _boom(orch, row):
+        raise RuntimeError("probe exploded")
+    monkeypatch.setattr(rj, "_poll_one", _boom)
+    await rj.poll_once(_orch(_OneRowDB()))  # swallowed, no raise
+
+
+# ── component refresh + finish notification ───────────────────────────────────
+
+class _PushOrch:
+    """Publication-boundary double: the detached mutation actually runs, so the
+    workspace upsert this module builds is exercised end to end."""
+
+    def __init__(self, *, mutation_error=None, ops=None):
+        self.history = SimpleNamespace(db=object())
+        self.workspace = SimpleNamespace(aupsert=self._aupsert)
+        self.upserts = []
+        self.aupserts = []
+        self._ops = [{"op": "update", "component_id": "au_rjob_5"}] if ops is None else ops
+        self._mutation_error = mutation_error
+
+    async def _aupsert(self, chat_id, user_id, comps, force_component_id=None):
+        self.aupserts.append((chat_id, user_id, comps, force_component_id))
+        return self._ops
+
+    async def run_detached_conversation_mutation(self, *, chat_id, user_id, mutation):
+        if self._mutation_error:
+            raise self._mutation_error
+        return await mutation()
+
+    async def send_ui_upsert(self, websocket, chat_id, user_id, ops):
+        self.upserts.append((websocket, chat_id, user_id, ops))
+
+
+class TestPushComponent:
+    async def test_refreshes_the_same_component_with_the_friendly_label(self, monkeypatch):
+        monkeypatch.setattr("orchestrator.remote_machines.get_machine",
+                            lambda db, uid, mid: {"machine_id": mid, "label": "dgx"})
+        o = _PushOrch()
+        await rj._push_component(o, _row(), state="COMPLETED", exit_code="0:0",
+                                 terminal=True, output_tail="done")
+        (chat_id, user_id, comps, forced) = o.aupserts[0]
+        assert chat_id == "c1" and user_id == "u" and forced == "au_rjob_5"
+        assert comps[0]["id"] == "au_rjob_5" and "dgx" in comps[0]["title"]
+        assert o.upserts and o.upserts[0][3] == o._ops
+        assert o.upserts[0][0] is None  # fanned out to every socket on that chat
+
+    async def test_label_lookup_failure_falls_back_to_the_machine_id(self, monkeypatch):
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("orchestrator.remote_machines.get_machine", _boom)
+        o = _PushOrch()
+        await rj._push_component(o, _row(), state="RUNNING", exit_code=None, terminal=False)
+        assert "m1" in o.aupserts[0][2][0]["title"]
+
+    async def test_no_ops_means_no_live_fanout(self, monkeypatch):
+        monkeypatch.setattr("orchestrator.remote_machines.get_machine",
+                            lambda db, uid, mid: None)
+        o = _PushOrch(ops=[])
+        await rj._push_component(o, _row(), state="RUNNING", exit_code=None, terminal=False)
+        assert o.aupserts and o.upserts == []
+
+    async def test_orphaned_row_without_a_canvas_component_is_a_noop(self):
+        o = _PushOrch()
+        await rj._push_component(o, _row(component_id=None), state="orphaned",
+                                 exit_code=None, terminal=True)
+        await rj._push_component(o, _row(chat_id=None), state="orphaned",
+                                 exit_code=None, terminal=True)
+        assert o.aupserts == [] and o.upserts == []
+
+    async def test_mutation_failure_is_swallowed(self, monkeypatch):
+        # The DB row is authoritative; a canvas refresh failure must not break the
+        # poll pass (the next pass re-renders).
+        monkeypatch.setattr("orchestrator.remote_machines.get_machine",
+                            lambda db, uid, mid: {"label": "dgx"})
+        o = _PushOrch(mutation_error=RuntimeError("chat revisioned"))
+        await rj._push_component(o, _row(), state="COMPLETED", exit_code="0:0", terminal=True)
+        assert o.upserts == []
+
+
+class _NotifyOrch:
+    def __init__(self, *, error=None):
+        self.notifications = []
+        self._error = error
+
+    async def notify_user(self, user_id, payload):
+        if self._error:
+            raise self._error
+        self.notifications.append((user_id, payload))
+
+
+class TestNotifyFinish:
+    async def test_success_notification_shape(self):
+        o = _NotifyOrch()
+        await rj._notify_finish(o, _row(), "COMPLETED", "0:0")
+        (user_id, payload) = o.notifications[0]
+        assert user_id == "u"
+        assert payload["level"] == "info" and payload["source"] == "remote_job"
+        assert payload["job_id"] == "5" and payload["chat_id"] == "c1"
+        assert payload["title"] == "Remote job finished" and "COMPLETED" in payload["body"]
+
+    async def test_failure_notification_is_a_warning_naming_the_exit_code(self):
+        o = _NotifyOrch()
+        await rj._notify_finish(o, _row(), "FAILED", "1:0")
+        payload = o.notifications[0][1]
+        assert payload["level"] == "warning" and payload["title"] == "Remote job ended"
+        assert "(exit 1:0)" in payload["body"]
+
+    async def test_notification_failure_is_swallowed(self):
+        # The job's terminal state is already durable — a dead socket must not
+        # re-raise into the poll pass.
+        o = _NotifyOrch(error=RuntimeError("no sockets"))
+        await rj._notify_finish(o, _row(), "COMPLETED", "0:0")
+        assert o.notifications == []

@@ -821,3 +821,184 @@ async def test_pending_proposal_survives_restart_and_never_auto_approves():
     assert len(o2.execute_single_tool.calls) == 1
     assert o1.execute_single_tool.calls == []
     assert _destructive_ops(t) == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Degraded-path behaviour: the gate's decisions must not depend on the audit sink,
+# the machine-label lookup, or a resolvable machine — and the two "impossible"
+# store shapes (unknown proposal id, lost single-use race) must still refuse.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class _BoomRecorder:
+    """Audit sink that fails on every write (FR-047 is best-effort, never fatal)."""
+
+    def record_blocking(self, ev):
+        raise RuntimeError("audit sink down")
+
+    async def record(self, ev):
+        raise RuntimeError("audit sink down")
+
+
+class TestAuditIsBestEffort:
+    def test_sync_audit_swallows_a_recorder_failure(self, monkeypatch):
+        monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
+        rc._audit_sync(USER, "remote_op.proposed", "x", verb="remove_path",
+                       machine_id="m1", proposal_id="P1")
+
+    def test_sync_audit_is_a_noop_without_a_recorder(self, monkeypatch):
+        monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
+        rc._audit_sync(USER, "remote_op.proposed", "x")
+
+    async def test_async_audit_swallows_a_recorder_failure(self, monkeypatch):
+        monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
+        await rc._audit_async(USER, "remote_op.approved", "x", proposal_id="P1")
+
+    async def test_async_audit_is_a_noop_without_a_recorder(self, monkeypatch):
+        monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
+        await rc._audit_async(USER, "remote_op.approved", "x")
+
+    def test_gate_still_refuses_when_the_audit_sink_is_down(self, monkeypatch):
+        # The refusal is authoritative even with no usable audit sink — a broken
+        # recorder must never turn a refusal into a pass.
+        monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
+        out = rc.evaluate(_orch(_FakeDB()), None, "remote-compute-1", "remove_path",
+                          {"machine_id": "m", "path": "/data"}, "chat", USER)
+        assert out is not None and "unattended_refused" in out[0]
+
+    async def test_decision_still_dispatches_when_the_audit_sink_is_down(self, monkeypatch):
+        monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
+        db = _FakeDB()
+        o = _orch(db)
+        _seed(db, "P1", owner=USER, verb="remove_path",
+              args={"machine_id": "m", "path": "/data"}, status="pending")
+        await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
+        assert db.rows["P1"]["status"] == "approved"
+        assert len(o.execute_single_tool.calls) == 1
+
+
+class TestMachineLabelResolution:
+    def test_missing_machine_id_renders_a_placeholder(self):
+        assert rc._machine_label(_orch(_FakeDB()), USER, None) == "?"
+
+    def test_friendly_label_is_used_when_the_machine_resolves(self, monkeypatch):
+        monkeypatch.setattr("orchestrator.remote_machines.get_machine",
+                            lambda db, uid, mid: {"machine_id": mid, "label": "dgx"})
+        assert rc._machine_label(_orch(_FakeDB()), USER, "m1") == "dgx"
+
+    def test_unlabelled_row_falls_back_to_the_raw_id(self, monkeypatch):
+        monkeypatch.setattr("orchestrator.remote_machines.get_machine",
+                            lambda db, uid, mid: {"machine_id": mid, "label": None})
+        assert rc._machine_label(_orch(_FakeDB()), USER, "m1") == "m1"
+
+    def test_lookup_failure_falls_back_to_the_raw_id(self, monkeypatch):
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("orchestrator.remote_machines.get_machine", _boom)
+        assert rc._machine_label(_orch(_FakeDB()), USER, "m1") == "m1"
+
+    def test_summary_falls_back_to_the_verb_for_an_unmapped_tool(self, monkeypatch):
+        monkeypatch.setattr("orchestrator.remote_machines.get_machine",
+                            lambda db, uid, mid: {"label": "dgx"})
+        assert rc._summary(_orch(_FakeDB()), USER, "make_directory",
+                           {"machine_id": "m1"}) == "make_directory on dgx"
+
+    def test_proposal_card_survives_an_unresolvable_machine(self, monkeypatch):
+        # A proposal must still be offered (with the raw id in its summary) when the
+        # inventory read fails — the human still sees exactly what would run.
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("orchestrator.remote_machines.get_machine", _boom)
+        db = _FakeDB()
+        out = rc.evaluate(_orch(db), object(), "remote-compute-1", "remove_path",
+                          {"machine_id": "m1", "path": "/data"}, "chat", USER)
+        assert out is not None and "confirmation_required" in out[0]
+        (row,) = db.rows.values()
+        assert row["summary"] == "Delete /data on m1"
+
+
+class TestDestructiveClassificationEdges:
+    def test_if_exists_fails_closed_when_the_machine_cannot_be_resolved(self, monkeypatch):
+        # build_target raising (credential gone / undecryptable) is indistinguishable
+        # from "cannot tell whether the file exists" → destructive (fail-closed).
+        def _boom(*a, **k):
+            raise RuntimeError("credential undecryptable")
+        monkeypatch.setattr("orchestrator.remote_machines.build_target", _boom)
+        set_transport(FakeTransport())
+        assert rc._is_destructive(_orch(_FakeDB()), USER, "upload_file",
+                                  {"machine_id": "m1", "remote_path": "/x"}, "if_exists") is True
+
+    def test_unknown_classification_fails_closed(self):
+        # A future verb whose classification string nobody taught the gate must be
+        # treated as destructive, never waved through.
+        assert rc._is_destructive(_orch(_FakeDB()), USER, "weird_verb", {}, "sometimes") is True
+
+
+class TestNoLiveHumanGuard:
+    def test_virtual_websocket_is_unattended(self):
+        from orchestrator.async_tasks import VirtualWebSocket
+        assert rc._no_live_human(_orch(_FakeDB()), VirtualWebSocket(None)) is True
+
+    def test_background_turn_is_refused_through_evaluate(self):
+        from orchestrator.async_tasks import VirtualWebSocket
+        db = _FakeDB()
+        out = rc.evaluate(_orch(db), VirtualWebSocket(None), "remote-compute-1", "remove_path",
+                          {"machine_id": "m", "path": "/data"}, "chat", USER)
+        assert out is not None and "unattended_refused" in out[0]
+        assert db.rows == {}
+
+    def test_guard_survives_an_unusable_async_tasks_module(self, monkeypatch):
+        # The isinstance probe is defensive: if async_tasks cannot be resolved the
+        # guard must swallow it and fall through to the machine-claims check, not
+        # explode inside the gate.
+        import sys
+        from types import ModuleType
+        stub = ModuleType("orchestrator.async_tasks")
+        stub.VirtualWebSocket = "not-a-class"  # isinstance() raises TypeError
+        monkeypatch.setitem(sys.modules, "orchestrator.async_tasks", stub)
+        assert rc._no_live_human(_orch(_FakeDB()), object()) is False
+
+
+class TestProposalStoreEdges:
+    def test_marker_for_an_unknown_proposal_is_refused(self):
+        # A fabricated marker matches no row at all — refused, and it does not
+        # conjure a proposal the model could then "approve".
+        db = _FakeDB()
+        o = _orch(db)
+        out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
+                          {"machine_id": "m", "job_id": "9", rc._MARKER: "nope"}, "chat", USER)
+        assert out is not None and "no longer valid" in out[0]
+        assert db.rows == {}
+        assert o.execute_single_tool.calls == []
+
+    async def test_decision_without_a_proposal_id_is_refused(self):
+        db = _FakeDB()
+        o = _orch(db)
+        await rc.handle_decision(o, object(), USER, {"decision": "approve"})
+        assert o.execute_single_tool.calls == []
+        assert len(o.send_ui_render.calls) == 1
+
+    async def test_decision_for_an_unknown_proposal_is_refused(self):
+        db = _FakeDB()
+        o = _orch(db)
+        await rc.handle_decision(o, object(), USER, {"proposal_id": "ghost", "decision": "approve"})
+        assert o.execute_single_tool.calls == []
+        assert len(o.send_ui_render.calls) == 1
+
+    async def test_approve_losing_the_single_use_race_never_dispatches(self):
+        # The SELECT still reads 'pending' but a concurrent tab wins the guarded
+        # UPDATE, so the atomic approve returns no row — this click must report
+        # "already handled" and must NOT re-enter the tool.
+        class _RacyDB(_FakeDB):
+            async def afetch_one(self, q, params):
+                if q.strip().startswith("UPDATE"):
+                    return None  # the other tab already flipped it
+                return await super().afetch_one(q, params)
+
+        db = _RacyDB()
+        o = _orch(db)
+        _seed(db, "P1", owner=USER, verb="remove_path",
+              args={"machine_id": "m", "path": "/data"}, status="pending")
+        await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
+        assert o.execute_single_tool.calls == []
+        assert len(o.send_ui_render.calls) == 1

@@ -82,6 +82,18 @@ class TestRailParts:
         parts = [{"type": "components", "components": [doc]}]
         assert _rail_parts(parts) == []
 
+    def test_non_mapping_component_entries_are_skipped(self):
+        # A malformed transcript row (a stray string beside real components) must
+        # not abort the rail reduction — the entry is skipped, the rest survives.
+        parts = [{"type": "components", "components": ["stray string", _text("kept")]}]
+        assert _rail_parts(parts) == [{"type": "text", "text": "kept"}]
+
+    def test_text_primitive_serialized_under_the_text_key_is_lifted(self):
+        # astralprims Text serializes as `content`; older transcript rows carry
+        # `text`. Both are the assistant's words, so both are lifted to the rail.
+        parts = [{"type": "components", "components": [{"type": "text", "text": "older row"}]}]
+        assert _rail_parts(parts) == [{"type": "text", "text": "older row"}]
+
     def test_rich_dropped_and_text_lifted_keeping_order(self):
         words = {"type": "text", "text": "before"}
         rich = {"type": "components", "components": [_metric()]}

@@ -70,3 +70,11 @@ def test_assert_rejects_bad_port(port):
 def test_assert_raises_on_unresolvable():
     with pytest.raises(net_guard.HostResolutionError):
         net_guard.assert_ssh_target_allowed("no.such.host.invalid.", 22)
+
+
+def test_assert_raises_when_the_resolver_answers_with_no_records(monkeypatch):
+    # A successful lookup that yields zero addresses leaves nothing to check
+    # against the block list, so it is a resolution failure — never an open target.
+    monkeypatch.setattr(net_guard, "resolve_host_addresses", lambda host: [])
+    with pytest.raises(net_guard.HostResolutionError):
+        net_guard.assert_ssh_target_allowed("cluster.example.edu", 22)

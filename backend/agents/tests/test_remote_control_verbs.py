@@ -49,6 +49,57 @@ def _verdict(res):
     return (res.get("_data") or {}).get("verdict")
 
 
+# ── rendering + machine-resolution helpers ──────────────────────────────────────
+
+def test_sanitize_renders_a_missing_value_as_nothing():
+    # Every user-facing string passes through _sanitize; a NULL label (or an absent
+    # next action) must render as empty text, never the word "None".
+    assert ctl._sanitize(None) == ""
+
+
+def test_long_values_are_bounded_with_an_ellipsis():
+    _fake(command_exit=0)
+    res = ctl.make_directory(user_id=USER, machine_id="dgx", path="/" + "d" * 400)
+    body = str(res["_ui_components"])
+    assert "…" in body and "d" * 400 not in body
+
+
+def test_a_call_with_no_machine_reference_is_invalid_argument():
+    t = _fake(command_exit=0)
+    res = ctl.make_directory(user_id=USER, path="/tmp/x")
+    assert _verdict(res) == Verdict.INVALID_ARGUMENT.value and t.calls == []
+
+
+def test_a_machine_outside_the_callers_inventory_is_not_found(monkeypatch):
+    monkeypatch.setattr("orchestrator.remote_machines.resolve_machine",
+                        lambda db, uid, ref: None)
+    t = _fake(command_exit=0)
+    res = ctl.cancel_job(user_id=USER, machine_id="someone-elses", job_id="1")
+    assert _verdict(res) == Verdict.NOT_FOUND.value and t.calls == []
+
+
+@pytest.mark.parametrize("exc_path,expected", [
+    ("orchestrator.remote_machines.MachineNotFound", Verdict.NOT_FOUND),
+    ("orchestrator.credential_manager.CredentialNotConfigured", Verdict.CREDENTIAL_NOT_CONFIGURED),
+    ("orchestrator.credential_manager.CredentialUndecryptable", Verdict.CREDENTIAL_UNDECRYPTABLE),
+])
+def test_target_build_failures_map_onto_the_result_vocabulary(monkeypatch, exc_path, expected):
+    # build_target reads the row + decrypts its credential; each failure it can raise
+    # has one documented verdict (contracts/result-vocabulary.md) — never a raw
+    # exception escaping into the turn.
+    import importlib
+    mod_name, _, cls_name = exc_path.rpartition(".")
+    exc = getattr(importlib.import_module(mod_name), cls_name)
+
+    def _raise(db, cm, uid, mid):
+        raise exc("boom")
+
+    monkeypatch.setattr("orchestrator.remote_machines.build_target", _raise)
+    t = _fake(command_exit=0)
+    res = ctl.make_directory(user_id=USER, machine_id="dgx", path="/tmp/x")
+    assert _verdict(res) == expected.value and t.calls == []
+
+
 # ── argv construction ───────────────────────────────────────────────────────────
 
 def test_make_directory_builds_mkdir_p():
@@ -99,6 +150,13 @@ def test_manage_package_no_manager_is_invalid_argument():
     assert _argvs(t) == [["which", "apt-get", "dnf", "yum", "zypper"]]  # never ran the remove
 
 
+def test_manage_package_uses_zypper_non_interactive_form():
+    # zypper has no -y; it needs --non-interactive, so its argv is built separately.
+    t = _fake(command_stdout="/usr/bin/zypper", command_exit=0)
+    ctl.manage_package(user_id=USER, machine_id="dgx", package_name="htop", action="remove")
+    assert _argvs(t)[1] == ["zypper", "--non-interactive", "remove", "htop"]
+
+
 def test_submit_job_parsable_and_flags():
     t = _fake(command_stdout="98765", command_exit=0)
     res = ctl.submit_job(user_id=USER, machine_id="dgx", script_path="/home/me/run.sh",
@@ -107,6 +165,22 @@ def test_submit_job_parsable_and_flags():
     assert argv[0:2] == ["sbatch", "--parsable"] and argv[-1] == "/home/me/run.sh"
     assert "--partition=gpu" in argv and "--nodes=2" in argv and "--gpus=4" in argv
     assert res["_data"]["job_id"] == "98765"
+
+
+def test_submit_job_rejected_by_sbatch_reports_the_stderr_tail():
+    _fake(command_stdout="", command_exit=1,
+          command_stderr="sbatch: error: You must specify an -a/--account\n")
+    res = ctl.submit_job(user_id=USER, machine_id="dgx", script_path="/home/me/run.sh")
+    assert _verdict(res) == Verdict.PARTIAL.value
+    assert "--account" in res["_data"]["next_action"]
+
+
+def test_submit_job_with_an_unreadable_job_id_is_unconfirmed():
+    # sbatch answered, but its id sanitizes away to nothing (control bytes only).
+    # The job may exist, so this is 'unconfirmed' — never a tracked job with no id.
+    _fake(command_stdout="\x01\x02\n", command_exit=0)
+    res = ctl.submit_job(user_id=USER, machine_id="dgx", script_path="/home/me/run.sh")
+    assert _verdict(res) == Verdict.UNCONFIRMED.value
 
 
 # ── exit-status interpretation ───────────────────────────────────────────────────
@@ -121,6 +195,15 @@ def test_transport_unreachable_surfaces_the_verdict():
     _fake(reachable=False)
     res = ctl.cancel_job(user_id=USER, machine_id="dgx", job_id="1")
     assert _verdict(res) == Verdict.UNREACHABLE.value
+
+
+def test_a_command_that_ran_without_an_exit_status_is_unconfirmed():
+    # The transport reports OK (the command RAN) but the exit status was lost —
+    # truncated/interrupted output. That is 'unconfirmed', never a silent success:
+    # the user must check the machine before re-issuing a consequential verb.
+    _fake(command_exit=None)
+    res = ctl.remove_path(user_id=USER, machine_id="dgx", path="/data")
+    assert _verdict(res) == Verdict.UNCONFIRMED.value
 
 
 # ── argument-shape guards (no transport call on a bad arg) ───────────────────────
@@ -179,27 +262,71 @@ def test_upload_file_missing_attachment_is_not_found(monkeypatch):
     assert _verdict(res) == Verdict.NOT_FOUND.value
 
 
+def test_upload_file_without_an_attachment_id_is_invalid_argument():
+    t = _fake()
+    res = ctl.upload_file(user_id=USER, machine_id="dgx", remote_path="/dest/f.bin")
+    assert _verdict(res) == Verdict.INVALID_ARGUMENT.value and t.calls == []
+
+
+def test_upload_file_refuses_an_oversize_attachment(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        "orchestrator.attachments.repository.AttachmentRepository.get_by_id",
+        lambda self, aid, uid: SimpleNamespace(filename="big.bin",
+                                               size_bytes=ctl._MAX_UPLOAD_BYTES + 1))
+    t = _fake()
+    res = ctl.upload_file(user_id=USER, machine_id="dgx", attachment_id="a1",
+                          remote_path="/dest/big.bin")
+    # Refused on the recorded size — the blob is never read into memory, and no
+    # transport operation occurs.
+    assert _verdict(res) == Verdict.INVALID_ARGUMENT.value and t.calls == []
+
+
+def test_upload_file_with_a_missing_stored_blob_is_not_found(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    monkeypatch.setattr("orchestrator.attachments.repository.AttachmentRepository.get_by_id",
+                        lambda self, aid, uid: SimpleNamespace(filename="gone.bin", size_bytes=5))
+    monkeypatch.setattr("orchestrator.attachments.store.read_path",
+                        lambda uid, aid, fn: tmp_path / "gone.bin")  # never written
+    t = _fake()
+    res = ctl.upload_file(user_id=USER, machine_id="dgx", attachment_id="a1",
+                          remote_path="/dest/gone.bin")
+    assert _verdict(res) == Verdict.NOT_FOUND.value and t.calls == []
+
+
 # ── run_job (inline script → sbatch → durable tracking, US4) ──────────────────
 
 from orchestrator.remote_transport import RemoteResult  # noqa: E402
 
 
 class _Scripted:
-    """Transport double returning a canned result per argv[0] (pwd/mkdir/sbatch)."""
+    """Transport double returning a canned result per argv[0] (pwd/mkdir/sbatch).
 
-    def __init__(self, table):
+    ``fail`` maps argv[0] → a transport-level verdict (the command never ran), and
+    ``put_verdict`` fails the SFTP write — the two ways run_job's staging step can
+    stop before sbatch."""
+
+    def __init__(self, table, *, fail=None, put_verdict=None):
         self.table = table
+        self.fail = dict(fail or {})
+        self.put_verdict = put_verdict
         self.calls = []
         self.last_put = None
 
     def run(self, target, argv, *, timeout, retryable=False):
         self.calls.append(list(argv))
+        bad = self.fail.get(argv[0])
+        if bad is not None:
+            return RemoteResult(verdict=bad, machine=target.label, next_action="check the machine")
         stdout, exit_status = self.table.get(argv[0], ("", 0))
         return RemoteResult(verdict=Verdict.OK, machine=target.label,
                             stdout=stdout, exit_status=exit_status)
 
     def put_file(self, target, data, remote_path, *, timeout):
         self.last_put = (remote_path, data)
+        if self.put_verdict is not None:
+            return RemoteResult(verdict=self.put_verdict, machine=target.label,
+                                next_action="check the machine")
         return RemoteResult(verdict=Verdict.OK, machine=target.label,
                             data={"path": remote_path, "bytes": len(data)})
 
@@ -247,6 +374,69 @@ def test_run_job_rejects_oversize_script():
     set_transport(_Scripted({}))
     res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="x" * (64 * 1024 + 1))
     assert _verdict(res) == Verdict.INVALID_ARGUMENT.value
+
+
+def test_run_job_stops_when_the_scratch_directory_cannot_be_made():
+    tx = _Scripted({"pwd": ("/home/me", 0)}, fail={"mkdir": Verdict.UNREACHABLE})
+    set_transport(tx)
+    res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="echo ok")
+    assert _verdict(res) == Verdict.UNREACHABLE.value
+    assert [c[0] for c in tx.calls] == ["pwd", "mkdir"]  # nothing was submitted
+
+
+def test_run_job_stops_when_the_script_cannot_be_written():
+    tx = _Scripted({"pwd": ("/home/me", 0), "mkdir": ("", 0)},
+                   put_verdict=Verdict.PERMISSION_DENIED_REMOTE)
+    set_transport(tx)
+    res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="echo ok")
+    assert _verdict(res) == Verdict.PERMISSION_DENIED_REMOTE.value
+    assert [c[0] for c in tx.calls] == ["pwd", "mkdir"]  # sbatch never ran
+
+
+def test_run_job_lost_sbatch_call_surfaces_unconfirmed_and_tracks_nothing(monkeypatch):
+    # A consequential submit that times out is never retried (FR-036): the verb
+    # surfaces the transport's 'unconfirmed' and records NO tracking row, so a
+    # duplicate job is impossible.
+    from orchestrator import remote_jobs
+    monkeypatch.setattr(remote_jobs, "create_tracked_job",
+                        lambda db, **kw: pytest.fail("tracked an unconfirmed submit"))
+    tx = _Scripted({"pwd": ("/home/me", 0), "mkdir": ("", 0)},
+                   fail={"sbatch": Verdict.UNCONFIRMED})
+    set_transport(tx)
+    res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="echo ok")
+    assert _verdict(res) == Verdict.UNCONFIRMED.value
+
+
+def test_run_job_rejected_by_sbatch_is_partial():
+    tx = _Scripted({"pwd": ("/home/me", 0), "mkdir": ("", 0), "sbatch": ("", 1)})
+    set_transport(tx)
+    res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="echo ok")
+    assert _verdict(res) == Verdict.PARTIAL.value
+
+
+def test_run_job_with_an_unreadable_job_id_is_unconfirmed():
+    # As for submit_job: an id that sanitizes away to nothing leaves the submission
+    # in doubt, so nothing is tracked and the user is told to check the queue.
+    tx = _Scripted({"pwd": ("/home/me", 0), "mkdir": ("", 0), "sbatch": ("\x01\x02", 0)})
+    set_transport(tx)
+    res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="echo ok")
+    assert _verdict(res) == Verdict.UNCONFIRMED.value
+
+
+def test_run_job_still_reports_the_job_when_the_tracking_row_fails(monkeypatch):
+    # The job IS submitted by the time the row is written; a tracking failure must
+    # not lose the id (it degrades to an untracked card, never an error).
+    from orchestrator import remote_jobs
+
+    def _boom(db, **kw):
+        raise RuntimeError("tracked_job insert failed")
+
+    monkeypatch.setattr(remote_jobs, "create_tracked_job", _boom)
+    tx = _Scripted({"pwd": ("/home/me", 0), "mkdir": ("", 0), "sbatch": ("4242", 0)})
+    set_transport(tx)
+    res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="echo ok")
+    assert res["_data"]["job_id"] == "4242"
+    assert res["_ui_components"][0]["id"] == "au_rjob_4242"
 
 
 def test_run_job_is_classified_never_destructive():
@@ -380,6 +570,20 @@ def test_shell_payload_in_any_argument_is_refused_before_any_transport_call():
                 res = fn(user_id=USER, machine_id="dgx", **{**base, arg: payload})
                 assert _verdict(res) == Verdict.INVALID_ARGUMENT.value, (verb, arg, payload)
                 assert t.calls == [], (verb, arg, payload)
+
+
+def test_every_verb_refuses_a_call_with_no_live_principal(monkeypatch):
+    # No user_id => no human behind the call. Every mutating verb refuses with the
+    # vocabulary's unattended_refused (a bare permission_denied is not in
+    # contracts/result-vocabulary.md — SC-011) before resolving a machine, so an
+    # unattended path can never reach the transport.
+    monkeypatch.setattr("orchestrator.remote_machines.resolve_machine",
+                        lambda db, uid, ref: pytest.fail("resolved a machine with no principal"))
+    for verb, base in _SWEEP_BASE.items():
+        t = _fake(command_exit=0)
+        res = ctl.TOOL_REGISTRY[verb]["function"](user_id=None, machine_id="dgx", **base)
+        assert _verdict(res) == Verdict.UNATTENDED_REFUSED.value, verb
+        assert t.calls == [], verb
 
 
 def test_injection_shaped_attachment_id_never_reaches_the_transport(monkeypatch):

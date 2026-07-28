@@ -141,6 +141,64 @@ def test_paramiko_maps_gate_and_hostkey_exceptions_to_verdicts():
     assert tr._verdict_for_exception(rt.HostKeyMismatch("changed")) is Verdict.HOST_KEY_MISMATCH
 
 
+# ── the production host-key policy (FR-020), driven with a fake presented key ──
+
+class _PresentedKey:
+    """A presented host key — the surface paramiko's policy hook actually uses."""
+
+    def __init__(self, blob: bytes = b"host-key-bytes", name: str = "ssh-ed25519"):
+        self._blob = blob
+        self._name = name
+
+    def asbytes(self) -> bytes:
+        return self._blob
+
+    def get_name(self) -> str:
+        return self._name
+
+
+def _policy_for(pin):
+    pytest.importorskip("paramiko")
+    target = _target()
+    target.host_key_fingerprint = pin
+    return rt.ParamikoTransport()._host_key_policy(target)
+
+
+def test_policy_records_the_key_on_first_registration():
+    key = _PresentedKey()
+    policy = _policy_for(None)  # no pin yet
+    assert policy.missing_host_key(None, "dgx", key) is None  # accepted
+    assert policy.captured["fingerprint"] == rt._sha256_fingerprint(key)
+    assert policy.captured["type"] == "ssh-ed25519"
+    assert policy.captured["blob_b64"] == "aG9zdC1rZXktYnl0ZXM="
+
+
+def test_policy_accepts_a_key_matching_the_pin():
+    key = _PresentedKey()
+    policy = _policy_for(rt._sha256_fingerprint(key))
+    assert policy.missing_host_key(None, "dgx", key) is None
+
+
+def test_policy_refuses_a_changed_key_and_still_reports_what_it_saw():
+    # The ONLY accept paths are 'record' and 'match'; a changed identity raises
+    # from inside the connect, so no byte is ever exchanged with the impostor.
+    key = _PresentedKey(b"different-host-key")
+    policy = _policy_for("SHA256:pinned-at-registration")
+    with pytest.raises(rt.HostKeyMismatch) as exc:
+        policy.missing_host_key(None, "dgx", key)
+    assert "SHA256:pinned-at-registration" in str(exc.value)
+    assert policy.captured["fingerprint"] == rt._sha256_fingerprint(key)
+
+
+def test_policy_is_per_target_so_one_pin_never_leaks_into_another():
+    key = _PresentedKey()
+    matching = _policy_for(rt._sha256_fingerprint(key))
+    other = _policy_for("SHA256:someone-elses-machine")
+    assert matching.missing_host_key(None, "dgx", key) is None
+    with pytest.raises(rt.HostKeyMismatch):
+        other.missing_host_key(None, "dgx", key)
+
+
 # ── host-key pinning (FR-020): mismatch refuses; re-trust is the only accept ──
 
 _SCHEMA = """
