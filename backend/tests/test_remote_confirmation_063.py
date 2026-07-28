@@ -628,6 +628,10 @@ def real_orch(monkeypatch):
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.history = SimpleNamespace(db=_FakeDB())
     o._record_hop_audit = AsyncMock()
+    # The draft-agent lookup in execute_parallel_tools is a sync DB read that
+    # trips CI's event-loop guard (LOOP_GUARD_ENFORCE=1) — irrelevant to the
+    # confirmation gate under test, so stub it out.
+    o.lifecycle_manager._get_draft_by_agent_id = MagicMock(return_value=None)
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     return o
 

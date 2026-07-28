@@ -14,6 +14,13 @@ import pytest
 from webrender.chrome.surfaces import remote_machines as surface
 
 
+@pytest.fixture(autouse=True)
+def _flag_on(monkeypatch):
+    # CI runs with FF_REMOTE_COMPUTE unset; these tests exercise the ENABLED
+    # surface. T064's flag_off fixture re-patches False on top for its tests.
+    monkeypatch.setattr(surface, "_enabled", lambda: True)
+
+
 def _find_fields(node):
     """Depth-first hunt for the form's fields list inside the payload."""
     if isinstance(node, dict):
