@@ -208,7 +208,7 @@ schema, agent-registration, and permission-decoupling pieces every story depends
 - [X] T067 [P] Author `backend/agents/tests/test_remote_verbs_contract.py` (FR-051) — assert the exact verb set, scopes, argument schemas, destructive classifications, retry posture, and timeouts for both agents against the live `TOOL_REGISTRY`.
 - [x] T068 [P] Write `docs/remote-compute-agents.md` — operator enablement, the FR-054 dependency record (paramiko + transitive set), and the security posture including the honest FR-014 in-process disclosure.
 - [X] T069 Run the Python lint gate from the repo root (`ruff check .`) and fix findings; no new client-language lint surface is added.
-- [ ] T070 Run both pytest invocations inside the built image against `postgres:17-alpine`; confirm changed-code coverage ≥ 90% (Constitution III/XI, SC-015).
+- [x] T070 Run both pytest invocations inside the built image against `postgres:17-alpine`; confirm changed-code coverage ≥ 90% (Constitution III/XI, SC-015).
 - [ ] T071 Validate the runtime-infrastructure change (paramiko dependency + non-HTTP egress + schema delta) in a qualifying staging deployment of the candidate image, then complete the FR-052 **live-verification checklist from the deployed orchestrator** against the real DGX ([quickstart.md](quickstart.md#live-verification-checklist-fr-052), SC-016); record evidence bound to the candidate SHA.
 - [x] T072 Confirm the `ui_protocol.json` manifest and every client's drift-guard suite are green (Constitution XII); run `quickstart.md` validation.
 - [ ] T073 Add the CLAUDE.md "Recent Changes" entry for 063 distinguishing proven-live from code-shaped (FR-052, Constitution XIII), and confirm the `project-dgx-tunneling` reachability consult (research R16) is resolved before declaring reachability proven.
@@ -311,7 +311,20 @@ found during closure:
 - SCHEMA_REVISION bumped 063.004→063.005 (T065's `_cleanup_retire_063` matches the
   guard-hashed `_cleanup_*` prefix; next boot re-runs the idempotent schema once).
 
-Still open: **T070** (full-suite runs green locally; the ≥90% changed-line coverage
-number is CI's diff-cover gate on push), **T071** (operator-gated staging deployment +
-FR-052 checklist from the deployed orchestrator; the DGX-live legs were exercised from
-the local deployment 2026-07-27/28), **T073** (lands with this close-out commit).
+**T070 is CLOSED** (PR #149): both pytest invocations run green in the built image, and
+changed-line coverage is **99%** (2108 lines, 13 missing) against the ≥90% gate. Getting
+there exposed a CI hole worth recording: `pytest.ini`'s `testpaths = tests` limits the
+first invocation to `backend/tests/`, and the second invocation had never listed
+**eight** test directories — `agents/tests` (where all four 063 verb suites live), the
+four per-agent suites, `feedback/tests`, `security_benchmark/tests`, `shared/tests`.
+**742 tests had never run in CI at all**, and their coverage never counted (hence a
+44.8% report on a module three suites hammer). All eight are now in both invocations.
+
+Also fixed en route (pre-existing on `main`, not 063): the draft-agent auto-fix lookup
+on BOTH dispatch paths ran a synchronous DB read on the event loop, violating feature
+052's rule — now routed through `asyncio.to_thread` and pinned by
+`tests/test_dispatch_loop_guard.py`.
+
+Still open: **T071** only — the operator-gated staging deployment + the FR-052 checklist
+run from the deployed orchestrator (the DGX-live legs were exercised from the local
+deployment 2026-07-27/28). **T073** landed with the close-out commit.
