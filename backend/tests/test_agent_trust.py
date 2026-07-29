@@ -235,3 +235,94 @@ async def test_seed_safe_idempotent(db):
     assert agent_id in first
     second = await agent_trust.seed_safe(db, [agent_id])
     assert agent_id not in second  # already safe → not re-seeded
+
+
+# ── Feature 013 ∩ 040: the FR-015 per-tool backfill must not freeze a ──────
+# ── denial over a baseline that has no row to carry forward ───────────────
+
+
+def _kind_rows(db, user_id, agent_id):
+    """The per-(tool, kind) override rows that actually exist."""
+    return {
+        (r["tool_name"], r["permission_kind"], bool(r["enabled"]))
+        for r in db.fetch_all(
+            """SELECT tool_name, permission_kind, enabled FROM tool_overrides
+               WHERE user_id = ? AND agent_id = ? AND permission_kind IS NOT NULL""",
+            (user_id, agent_id),
+        )
+    }
+
+
+def _safe_public(db, pm, tool_map):
+    user_id, agent_id = _fresh_ids()
+    db.upsert_agent_safe(agent_id, True, marked_by="pytest")
+    db.set_agent_ownership(agent_id, "o@e.com", is_public=True)
+    pm.register_tool_scopes(agent_id, tool_map)
+    return user_id, agent_id
+
+
+def test_backfill_writes_nothing_when_user_has_no_scope_rows(db, pm):
+    """THE regression: reading the permissions screen must not revoke agents.
+
+    ``backfill_per_tool_rows`` used to materialise an ``enabled=False`` row for
+    every tool of a user who had no ``agent_scopes`` rows at all. Those rows win
+    at step 1 of ``_resolve_tool_allowed`` — ahead of the feature-040 safe flip —
+    so a user who had granted nothing and revoked nothing silently lost every
+    built-in agent's tools by doing nothing worse than opening the screen.
+    """
+    user_id, agent_id = _safe_public(
+        db, pm, {"web_search": "tools:search", "fetch_page": "tools:read"})
+    assert pm.is_tool_allowed(user_id, agent_id, "web_search") is True
+
+    assert pm.backfill_per_tool_rows(user_id, agent_id) == 0
+    assert _kind_rows(db, user_id, agent_id) == set()
+    # Still allowed — the baseline survived the read.
+    assert pm.is_tool_allowed(user_id, agent_id, "web_search") is True
+    assert pm.get_enabled_scope_names(user_id, agent_id) == [
+        "tools:read", "tools:search"]
+
+
+def test_backfill_carries_forward_explicit_scope_rows(db, pm):
+    """The FR-015 carry-forward itself is unchanged for users who have rows."""
+    user_id, agent_id = _safe_public(
+        db, pm, {"web_search": "tools:search", "fetch_page": "tools:read"})
+    pm.set_agent_scopes(
+        user_id, agent_id, {"tools:read": True, "tools:search": False})
+
+    assert pm.backfill_per_tool_rows(user_id, agent_id) == 2
+    assert _kind_rows(db, user_id, agent_id) == {
+        ("fetch_page", "tools:read", True),
+        ("web_search", "tools:search", False),
+    }
+    # Carrying forward changed no effective decision.
+    assert pm.is_tool_allowed(user_id, agent_id, "fetch_page") is True
+    assert pm.is_tool_allowed(user_id, agent_id, "web_search") is False
+    # Idempotent: the rows now exist, so a second pass inserts nothing.
+    assert pm.backfill_per_tool_rows(user_id, agent_id) == 0
+
+
+def test_backfill_skips_only_the_scopes_with_no_row(db, pm):
+    """Carry-forward is per scope, not all-or-nothing.
+
+    A user who granted ``tools:read`` and never touched ``tools:search`` gets a
+    row for the read tool and NO row for the search tool — so the search tool
+    keeps resolving through the safe baseline instead of being frozen denied.
+    """
+    user_id, agent_id = _safe_public(
+        db, pm, {"web_search": "tools:search", "fetch_page": "tools:read"})
+    pm.set_agent_scopes(user_id, agent_id, {"tools:read": True})
+
+    assert pm.backfill_per_tool_rows(user_id, agent_id) == 1
+    assert _kind_rows(db, user_id, agent_id) == {
+        ("fetch_page", "tools:read", True)}
+    assert pm.is_tool_allowed(user_id, agent_id, "web_search") is True
+
+
+def test_backfill_still_leaves_non_safe_agent_denied(db, pm):
+    """Skipping the write must not widen anything — a plain agent stays deny."""
+    user_id, agent_id = _fresh_ids()
+    pm.register_tool_scopes(agent_id, {"web_search": "tools:search"})
+
+    assert pm.backfill_per_tool_rows(user_id, agent_id) == 0
+    assert _kind_rows(db, user_id, agent_id) == set()
+    assert pm.is_tool_allowed(user_id, agent_id, "web_search") is False
