@@ -64,13 +64,26 @@ WELCOME_EXAMPLES = [
 def enable_agents_card() -> Dict[str, Any]:
     """Consent affordance shown when the account has no enabled agent tools.
 
-    Feature 030 (walkthrough finding): a fresh user starts fail-closed —
-    every agent scope disabled — so all welcome examples silently degrade to
+    Feature 030 (walkthrough finding): a fresh user started fail-closed — every
+    agent scope disabled — so all welcome examples silently degraded to
     text-only chat. This card makes that state visible and actionable. The
     "Enable" button is the explicit user grant (Constitution VII: the system
     sets attenuated scopes; the user may adjust per agent afterwards) and is
     handled server-side by the audited ``enable_recommended_agents`` action,
     which never grants ``tools:write``.
+
+    **Feature 040 changed who sees this, and that is intended.** The nine
+    bundled built-ins are seeded safe + public, and the safe baseline flips
+    deny→allow for a user with no explicit scope row — so a *fresh* account now
+    has tools available and correctly never sees this card. What remains
+    reachable is the population the copy is still honest for: a user who
+    explicitly opted out of everything (explicit ``enabled=False`` rows outrank
+    the safe flip), a deployment running with ``FF_SAFE_AGENTS`` off, and an
+    account whose only agents are safe-but-private. The gate is
+    ``compute_tools_available_for_user``, which reads ``is_tool_allowed``, so
+    the card appears exactly when replies really would be text-only — it cannot
+    render a false promise. Do not "restore" it for fresh users: that would be
+    telling them agents are off while their agents work.
     """
     return Card(title="🔌 Agents are off for this account", content=[
         Text(content=("Replies will be plain text until agents are enabled. "

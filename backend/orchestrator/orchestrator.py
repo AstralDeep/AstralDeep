@@ -17041,12 +17041,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """Deterministic enable affordance for text-only replies (feature 030).
 
         Appended server-side to the chat reply when a turn dispatched with
-        zero tools AND the user has never enabled any agent scope — the
-        never-configured state the walkthrough showed every fresh account
-        lands in. Users who deliberately disabled their agents (rows exist,
-        some enabled elsewhere) are not nagged. Composed of astralprims
-        primitives per Constitution II/VIII; the buttons route through the
-        audited ``enable_recommended_agents`` / ``chrome_open`` actions.
+        zero tools AND the user has never enabled any agent scope. Users who
+        deliberately disabled their agents (rows exist, some enabled
+        elsewhere) are not nagged. Composed of astralprims primitives per
+        Constitution II/VIII; the buttons route through the audited
+        ``enable_recommended_agents`` / ``chrome_open`` actions.
+
+        Since feature 040 this no longer fires for a fresh account — the safe
+        baseline makes the built-ins dispatchable, so such a turn is not
+        text-only in the first place and never reaches here. That is correct,
+        not a regression: see :func:`orchestrator.welcome.enable_agents_card`
+        for the populations still reachable (explicit opt-out,
+        ``FF_SAFE_AGENTS`` off, safe-but-private catalog).
         """
         try:
             if self.tool_permissions.has_any_enabled_scope(user_id):

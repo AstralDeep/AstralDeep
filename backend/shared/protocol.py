@@ -989,7 +989,11 @@ class AgentSkill:
     input_schema: Optional[Dict[str, Any]] = None
     output_schema: Optional[Dict[str, Any]] = None
     tags: List[str] = field(default_factory=list)
-    scope: str = ""  # Required scope: "tools:read", "tools:write", "tools:search", "tools:system"
+    # Required scope — one of orchestrator.tool_permissions.VALID_SCOPES, which
+    # is authoritative: tools:read, tools:write, tools:search, tools:system,
+    # tools:files (027), tools:execute (039). A scope outside that set has no
+    # grantable permission surface and its tool is denied at dispatch.
+    scope: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)  # Optional metadata (e.g. streamable config)
 
     def to_dict(self) -> Dict[str, Any]:
