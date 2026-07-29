@@ -585,7 +585,10 @@ _SECURITY_RULES_BYO = f"""{_SECURITY_RULES_COMMON}
 - Import ONLY the Python standard library and `astralprims`. NOTHING else is
   installed where this agent runs. Do NOT assume any `pip install` is available,
   do NOT import from `shared` or `agents.`, and NEVER touch `sys.path`.
-  A file that imports anything else is REJECTED and never delivered."""
+  A file that imports anything else is REJECTED and never delivered.
+- Import by literal name at the top of the file. `importlib.import_module(...)`
+  and `__import__(...)` are checked against the same allowlist, and a module
+  name computed at runtime is REJECTED because it cannot be checked at all."""
 
 
 def security_rules_block(self_contained: bool = False) -> str:

@@ -43,11 +43,53 @@ def byo_allowed_modules() -> Set[str]:
     return set(getattr(sys, "stdlib_module_names", set())) | BYO_EXTRA_ALLOWED_IMPORTS
 
 
+#: Reported by :func:`disallowed_imports` for a dynamic import whose module name
+#: is not a literal, so the allowlist cannot be decided statically at all.
+UNRESOLVABLE_DYNAMIC_IMPORT = "<computed at runtime>"
+
+
+def _dynamic_import_arg(node: ast.Call) -> Optional[ast.expr]:
+    """The module-name argument of ``__import__(...)``/``importlib.import_module(...)``.
+
+    Returns ``None`` for any other call. Matches the bare name (``__import__``,
+    or ``import_module`` after ``from importlib import import_module``) and the
+    attribute form (``importlib.import_module``), which is every spelling a
+    flat 3-file bundle can reach.
+    """
+    func = node.func
+    if isinstance(func, ast.Name):
+        name = func.id
+    elif isinstance(func, ast.Attribute):
+        name = func.attr
+    else:
+        return None
+    if name not in ("__import__", "import_module"):
+        return None
+    if node.args:
+        return node.args[0]
+    for kw in node.keywords:
+        if kw.arg in ("name", "module"):
+            return kw.value
+    return None
+
+
 def disallowed_imports(code: str) -> List[str]:
     """Top-level module names imported by ``code`` that a BYO host cannot resolve.
 
     AST-only (never imports the module). A relative import is reported as
     ``.<name>``: the bundle is a flat 3-file directory with no package.
+
+    Covers DYNAMIC imports too — ``__import__("requests")`` and
+    ``importlib.import_module("requests")`` reach the host's interpreter exactly
+    like a static ``import requests`` and die there the same way, but a
+    statement-only walk never saw them. The cost of missing one is not a
+    security hole (validation never executes the code, and ``__import__`` is
+    separately flagged CRITICAL by ``CodeSecurityAnalyzer``, which aborts BYO
+    generation) — it is that the author gets no generation-time feedback and
+    instead watches the agent fail as an unexplained host silence-timeout.
+    A non-literal module name is reported as
+    :data:`UNRESOLVABLE_DYNAMIC_IMPORT`, since host compatibility cannot be
+    decided statically in that case either.
     """
     allowed = byo_allowed_modules()
     try:
@@ -55,21 +97,34 @@ def disallowed_imports(code: str) -> List[str]:
     except SyntaxError:
         return []          # the syntax error is reported by the caller
     bad: List[str] = []
+
+    def _flag(name: str) -> None:
+        if name and name not in bad:
+            bad.append(name)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = (alias.name or "").split(".")[0]
-                if root and root not in allowed and root not in bad:
-                    bad.append(root)
+                if root and root not in allowed:
+                    _flag(root)
         elif isinstance(node, ast.ImportFrom):
             if node.level:
-                rel = "." * node.level + (node.module or "")
-                if rel not in bad:
-                    bad.append(rel)
+                _flag("." * node.level + (node.module or ""))
                 continue
             root = (node.module or "").split(".")[0]
-            if root and root not in allowed and root not in bad:
-                bad.append(root)
+            if root and root not in allowed:
+                _flag(root)
+        elif isinstance(node, ast.Call):
+            arg = _dynamic_import_arg(node)
+            if arg is None:
+                continue
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                root = arg.value.split(".")[0]
+                if root and root not in allowed:
+                    _flag(root)
+            else:
+                _flag(UNRESOLVABLE_DYNAMIC_IMPORT)
     return bad
 
 
@@ -192,6 +247,13 @@ class AgentSpecValidator:
 
         # (2) Import allowlist — the host ships stdlib + astralprims, nothing else.
         for module in disallowed_imports(code):
+            if module == UNRESOLVABLE_DYNAMIC_IMPORT:
+                report.add(ValidationSeverity.ERROR, "IMPORT",
+                           "Imports a module whose name is computed at runtime, so "
+                           "host compatibility cannot be checked before delivery. "
+                           "Import by literal name — a user agent may import ONLY "
+                           "the Python standard library and 'astralprims'.")
+                continue
             report.add(ValidationSeverity.ERROR, "IMPORT",
                        f"Imports '{module}', which the desktop host does not have. "
                        "A user agent may import ONLY the Python standard library "
