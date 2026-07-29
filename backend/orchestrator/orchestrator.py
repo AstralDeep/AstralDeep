@@ -114,6 +114,9 @@ LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
 PERSONAL_AGENT_STARTUP_TIMEOUT_SECONDS = 5.0
 PERSONAL_AGENT_HEARTBEAT_TIMEOUT_SECONDS = 5.0
 PERSONAL_AGENT_WATCHDOG_INTERVAL_SECONDS = 1.0
+# Feature 063 US4: how often the always-on background poller checks each open
+# remote Slurm job's status over SSH (read-only). Env-overridable.
+REMOTE_CLUSTER_POLL_INTERVAL_SECONDS = float(os.getenv("REMOTE_CLUSTER_POLL_SECONDS", "30"))
 _PERSONAL_AGENT_HOST_FRAME_TYPES = frozenset(
     {
         "agent_host_inventory",
@@ -619,6 +622,11 @@ _MERGED_AGENT_REMAP = {
     "classify": "ml-services-1", "classify-1": "ml-services-1",
     "forecaster": "ml-services-1", "forecaster-1": "ml-services-1",
     "llm_factory": "ml-services-1", "llm-factory-1": "ml-services-1",
+    # Feature 063: the split read-only + control agents merged into the single
+    # remote-compute-1. Verb names are identical across the merge, so old
+    # transcript component sources reroute with no tool-name rewrite (no prefix
+    # entry needed) — a refresh transparently re-runs on the unified agent.
+    "remote-observe-1": "remote-compute-1", "remote-control-1": "remote-compute-1",
 }
 _MERGED_TOOL_PREFIX = {
     "classify": "classify_", "classify-1": "classify_",
@@ -1070,6 +1078,9 @@ class Orchestrator:
             tuple[str, str, str], asyncio.Lock
         ] = {}
         self._personal_agent_watchdog_task: asyncio.Task[Any] | None = None
+        # Feature 063 US4: the always-on remote-Slurm-job status poller (launched
+        # in start() only when FF_REMOTE_COMPUTE is on; cancelled on shutdown).
+        self._remote_job_poll_task: asyncio.Task[Any] | None = None
         self.runtime_observability = RuntimeObservability(
             retention_seconds=operation_retention_seconds,
             deployment_instance=os.getenv(
@@ -2369,6 +2380,20 @@ class Orchestrator:
             except Exception:
                 logger.warning("personal-agent watchdog pass failed", exc_info=True)
             await asyncio.sleep(PERSONAL_AGENT_WATCHDOG_INTERVAL_SECONDS)
+
+    async def _remote_job_poll_loop(self) -> None:
+        """Feature 063 US4: always-on background poller for open remote Slurm jobs.
+        Read-only by construction (only squeue/sacct/tail run); the loop must never
+        die on a single bad pass."""
+        while True:
+            try:
+                from orchestrator import remote_jobs
+                await remote_jobs.poll_once(self)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("remote-job poll pass failed", exc_info=True)
+            await asyncio.sleep(REMOTE_CLUSTER_POLL_INTERVAL_SECONDS)
 
     async def _handle_personal_agent_result(
         self,
@@ -7335,6 +7360,13 @@ class Orchestrator:
                     # schedule.* events the handler records).
                     from orchestrator import scheduling_chat
                     await scheduling_chat.handle_decision(
+                        self, websocket, user_id, msg.payload or {})
+
+                elif msg.action == "remote_op_decision":
+                    # Feature 063 US3 — the approve/decline click for a proposed
+                    # DESTRUCTIVE remote operation (durable proposal; single-use).
+                    from orchestrator import remote_confirmation
+                    await remote_confirmation.handle_decision(
                         self, websocket, user_id, msg.payload or {})
 
                 elif msg.action == "update_device":
@@ -12500,6 +12532,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     ui_components=[alert.to_dict()]),
                 render_components=[alert.to_dict()])
 
+        # Feature 063 US3: destructive-operation confirmation gate. Every dispatch
+        # path (single, parallel, chained hop, component re-exec) reaches here via
+        # _run_gate_stack, so this one check cannot be bypassed. It runs BEFORE args
+        # are mutated (clean sha256 fingerprint) and BEFORE credentials/delegation
+        # tokens are minted for a call that may be refused. remote-compute-1 only;
+        # evaluate() fires only for that agent's DESTRUCTIVE verbs (read verbs and
+        # non-destructive mutating verbs classify to None and pass straight through).
+        if agent_id == "remote-compute-1":
+            from orchestrator import remote_confirmation
+            _conf = await asyncio.to_thread(
+                remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
+                args, chat_id, user_id)
+            if _conf is not None:
+                _msg, _comps = _conf
+                return GateRefusal(
+                    response=MCPResponse(
+                        error={"message": _msg, "retryable": False},
+                        ui_components=_comps),
+                    render_components=_comps, render_target="chat")
+
         # Deterministic pre-action policy engine — an ordered, fail-closed rule
         # chain (data, admin-extensible via POLICY_RULES) on top of the
         # permission gate. Default OFF + no seed rules ⇒ purely additive.
@@ -13098,8 +13150,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # error automatically. 030: the draft check now gates the STATUS
             # too — previously every errored live tool flashed a misleading
             # "Auto-fixing..." even though auto_fix only acts on drafts.
+            # The draft lookup is a sync DB read — off the loop thread (052).
             if (agent_id and hasattr(self, 'lifecycle_manager')
-                    and self.lifecycle_manager._get_draft_by_agent_id(agent_id)):
+                    and await asyncio.to_thread(
+                        self.lifecycle_manager._get_draft_by_agent_id, agent_id)):
                 try:
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status", "status": "fixing",
@@ -13834,7 +13888,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     t_name = tool_names[i] if i < len(tool_names) else None
                     a_id = tool_to_agent.get(t_name) if t_name else None
                     # 030: status only when auto-fix can actually act (drafts).
-                    if a_id and self.lifecycle_manager._get_draft_by_agent_id(a_id):
+                    # The lookup is a sync DB read — off the loop thread (052).
+                    if a_id and await asyncio.to_thread(
+                            self.lifecycle_manager._get_draft_by_agent_id, a_id):
                         try:
                             await self._safe_send(websocket, json.dumps({
                                 "type": "chat_status", "status": "fixing",
@@ -15203,10 +15259,35 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 # websockets library WebSocket
                 await websocket.send(data)
+            self._trace_frame(websocket, data, ok=True)
             return True
         except Exception as e:
             logger.debug(f"Failed to send message (connection likely closed): {e}")
+            self._trace_frame(websocket, data, ok=False, error=repr(e))
             return False
+
+    def _trace_frame(self, websocket, data: str, *, ok: bool, error: str = "") -> None:
+        """Diagnostic outbound-frame trace, enabled by a marker file so a
+        running container can flip it without an env-recreate. Fail-open."""
+        try:
+            if not os.path.exists("/app/.frame_trace"):
+                return
+            ftype = "?"
+            try:
+                ftype = json.loads(data).get("type", "?")
+            except Exception:
+                pass
+            sock = type(websocket).__name__
+            logger.info("FRAME_TRACE type=%s sock=%s id=%s bytes=%d ok=%s %s",
+                        ftype, sock, id(websocket), len(data), ok, error)
+            with open("/app/frame_trace.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "ts": time.time(), "type": ftype, "sock": sock,
+                    "sock_id": id(websocket), "ok": ok, "error": error,
+                    "frame": data,
+                }) + "\n")
+        except Exception:
+            pass
 
     def _vws_fan_targets(self, websocket) -> List[Any]:
         """Real sockets that must mirror a VirtualWebSocket-bound chat frame
@@ -17227,8 +17308,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from shared.feature_flags import flags
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
-                await agent_trust.seed_safe(
-                    self.history.db, self.history.db._FIRST_PARTY_PUBLIC_AGENT_IDS)
+                seed_ids = self.history.db._FIRST_PARTY_PUBLIC_AGENT_IDS
+                # Feature 063 (FR-002/FR-004/FR-005): the unified remote-compute-1 is
+                # safe-seeded ONLY when the remote-compute feature is enabled — so with
+                # the flag off the seed set is byte-identical to the pre-063 fleet (no
+                # agent_trust row or audit event for it). Safe-seeding flips only the
+                # baseline; every DESTRUCTIVE verb is still gated per-verb by the
+                # confirmation mechanism (remote_confirmation) no matter the baseline.
+                if not flags.is_enabled("remote_compute"):
+                    seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
+                await agent_trust.seed_safe(self.history.db, seed_ids)
         except Exception:
             logger.debug("Feature 040 safe seed failed (non-fatal)", exc_info=True)
 
@@ -17271,6 +17360,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._personal_agent_watchdog_loop(),
                 name="personal-agent-runtime-watchdog",
             )
+
+        # Feature 063 US4: launch the remote-cluster-job poller ONLY when the
+        # remote-compute feature is on (fail-closed — with the flag off no task is
+        # created and boot is byte-identical to today). Read-only status polling
+        # needs only the remote_compute gate, not FF_SCHEDULER_EXECUTION.
+        if flags.is_enabled("remote_compute") and (
+            self._remote_job_poll_task is None or self._remote_job_poll_task.done()
+        ):
+            self._remote_job_poll_task = asyncio.create_task(
+                self._remote_job_poll_loop(), name="remote-cluster-job-poller")
 
         # Feature 052 (FR-028): pre-load the PHI analyzer singleton in a
         # daemon thread so the first personalization write doesn't stall on
@@ -17671,6 +17770,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 watchdog.cancel()
                 await asyncio.gather(watchdog, return_exceptions=True)
                 self._personal_agent_watchdog_task = None
+            poller = getattr(self, "_remote_job_poll_task", None)
+            if poller is not None:
+                poller.cancel()
+                await asyncio.gather(poller, return_exceptions=True)
+                self._remote_job_poll_task = None
             try:
                 scheduler_loop = getattr(self, "_scheduler_loop", None)
                 if scheduler_loop is not None:

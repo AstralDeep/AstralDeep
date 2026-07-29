@@ -46,6 +46,8 @@ SURFACE_MODULES = {
     # Feature 058 — BYO agent authoring + management (flag-gated, default OFF:
     # the surface and every one of its handlers refuse when FF_BYO_AGENTS is off).
     "agent_authoring": "webrender.chrome.surfaces.authoring",
+    # Feature 063 — remote machines inventory + per-machine credentials (flag-gated).
+    "remote_machines": "webrender.chrome.surfaces.remote_machines",
 }
 
 

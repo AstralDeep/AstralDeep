@@ -87,11 +87,18 @@ def tabs(tab_items: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def field(name: str, label: str, kind: str = "text", default: Any = None,
           options: Optional[List[Any]] = None, help: Optional[str] = None,
-          step: Optional[float] = None) -> Dict[str, Any]:
+          step: Optional[float] = None,
+          visible_when: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """One ``ParamPicker`` field.
 
     ``kind`` is text|password|textarea|number|boolean|select|checklist. The
     ``password``/``textarea`` kinds are the feature-043 additions (research D2).
+
+    ``visible_when`` (063, additive) is ``{"field": <controller name>,
+    "equals": <value>, "default": <controller's default>}`` — capable clients
+    hide the field unless the controller's current value matches; clients that
+    predate the attribute ignore it and render every field, so the submit
+    handler must keep tolerating values from hidden fields.
     """
     f: Dict[str, Any] = {"name": name, "label": label, "kind": kind}
     if default is not None:
@@ -102,6 +109,8 @@ def field(name: str, label: str, kind: str = "text", default: Any = None,
         f["help"] = help
     if step is not None:
         f["step"] = step
+    if visible_when is not None:
+        f["visible_when"] = visible_when
     return f
 
 

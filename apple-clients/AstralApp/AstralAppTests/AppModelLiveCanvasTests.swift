@@ -120,4 +120,130 @@ final class AppModelLiveCanvasTests: XCTestCase {
         model.sendChat("two")
         XCTAssertTrue(model.showSkeleton)  // liveOpsThisTurn resets on arm
     }
+
+    // MARK: 063 stuck-canvas regression — continuity-mode turn terminal frames
+
+    // Frame shapes taken from a live frame trace of the 2026-07-27 stuck-
+    // skeleton reproduction (chat 209bed7e…): the server delivered every
+    // terminal frame (`conversation_snapshot`, `chat_status done`, and the
+    // post-done designed `ui_render`) and the reducer must resolve the
+    // skeleton and commit the canvas from exactly this sequence. The live
+    // failure was NOT a reducer defect — a shimmer-driven layout livelock
+    // starved the MainActor so these frames were never reduced — but this
+    // pins the wire contract the fix restored end-to-end.
+    private static let chat = "209bed7e-2057-4c88-b707-57406e81c52d"
+    private static let connection = "09733175-9b07-4625-9247-f25a643350b5"
+    private static let request = "8a21ba74-fa14-4e02-8461-f65e75fedc82"
+
+    private func fence(_ sequence: Int, base: Int = 0) -> String {
+        #""chat_id":"\#(Self.chat)","connection_generation":"\#(Self.connection)","#
+            + #""request_generation":"\#(Self.request)","#
+            + #""base_render_revision":\#(base),"frame_sequence":\#(sequence)"#
+    }
+
+    private func armContinuityTurn(_ model: AppModel) {
+        XCTAssertTrue(model.beginConversationConnection(Self.connection))
+        XCTAssertTrue(
+            model.openConversationRequest(
+                chatId: Self.chat, requestGeneration: Self.request, purpose: .commit))
+        model.activeChatId = Self.chat
+        model.turnActive = true
+        model.pendingReplace = true
+        model.pendingCanvas = []
+        model.liveOpsThisTurn = false
+        model.stepTrail = ["✓ roll_dice"]
+    }
+
+    private var committedSnapshot: String {
+        #"{"type":"conversation_snapshot","schema_version":1,"#
+            + #""snapshot_id":"0980a848-4021-457a-83d2-7884d9028be7","#
+            + #""chat_id":"\#(Self.chat)","#
+            + #""connection_generation":"\#(Self.connection)","#
+            + #""request_generation":"\#(Self.request)","#
+            + #""snapshot_purpose":"commit","render_revision":6,"#
+            + #""committed_at":"2026-07-27T18:02:08Z","#
+            + #""transcript":[{"message_id":"m-1","role":"user","#
+            + #""created_at":"2026-07-27T18:01:45Z","#
+            + #""parts":[{"type":"text","text":"Roll two dice and show live system metrics"}],"#
+            + #""attachments":[]},"#
+            + #"{"message_id":"m-2","role":"assistant","#
+            + #""created_at":"2026-07-27T18:02:07Z","#
+            + #""parts":[{"type":"text","text":"Rolled 3 and 2."}],"attachments":[]}],"#
+            + #""canvas":{"target":"canvas","components":["#
+            + #"{"type":"card","component_id":"wc_dice","title":"Dice Roll Results"},"#
+            + #"{"type":"card","component_id":"wc_metrics","title":"Live System Metrics"}]}}"#
+    }
+
+    func testContinuityTerminalFramesClearSkeletonAndCommitCanvas() {
+        let model = AppModel()
+        armContinuityTurn(model)
+        XCTAssertTrue(model.showSkeleton)
+
+        // Mid-turn fenced transient upsert — overlay only, skeleton stays.
+        reduce(
+            model,
+            #"{"type":"ui_upsert",\#(fence(1)),"ops":[{"op":"upsert","#
+                + #""component_id":"wc_dice","component":{"type":"card","#
+                + #""component_id":"wc_dice","title":"Dice Roll Results"}}]}"#)
+        XCTAssertEqual(model.transientCanvas?.map(\.componentId), ["wc_dice"])
+        XCTAssertTrue(model.showSkeleton)
+
+        // Rail narrative preview (fenced, chat target).
+        reduce(
+            model,
+            #"{"type":"ui_render","target":"chat",\#(fence(2)),"#
+                + #""components":[{"type":"text","content":"Rolled 3 and 2.","#
+                + #""variant":"markdown"}]}"#)
+        XCTAssertTrue(model.transientTurns.contains { $0.role == "assistant" })
+
+        // The committed snapshot resolves the skeleton and replaces the canvas.
+        reduce(model, committedSnapshot)
+        XCTAssertFalse(model.showSkeleton)
+        XCTAssertEqual(model.canvas.map(\.componentId), ["wc_dice", "wc_metrics"])
+        XCTAssertNil(model.transientCanvas)
+        XCTAssertEqual(model.turns.map(\.role), ["user", "assistant"])
+
+        // Terminal status clears the turn chrome.
+        reduce(model, doneStatus)
+        XCTAssertFalse(model.turnActive)
+        XCTAssertNil(model.statusText)
+        XCTAssertTrue(model.stepTrail.isEmpty)
+
+        // The post-done designed refinement rides the NEXT fence, but the
+        // committed snapshot already carries the designed canvas — on a
+        // continuity client the overlay is a deliberate no-op (a completed
+        // scope accepts no further transients).
+        reduce(
+            model,
+            #"{"type":"ui_render","target":"canvas",\#(fence(1, base: 6)),"#
+                + #""components":[{"type":"card","component_id":"wc_designed","#
+                + #""title":"Designed"}]}"#)
+        XCTAssertEqual(model.canvas.map(\.componentId), ["wc_dice", "wc_metrics"])
+        XCTAssertFalse(model.showSkeleton)
+    }
+
+    // A done that arrives with NO snapshot (error-path turns) must still
+    // release the skeleton in continuity mode — the canvas it uncovers is the
+    // prior committed state, which is honest.
+    func testContinuityDoneWithoutSnapshotReleasesSkeleton() {
+        let model = AppModel()
+        armContinuityTurn(model)
+        XCTAssertTrue(model.showSkeleton)
+        reduce(model, doneStatus)
+        XCTAssertFalse(model.showSkeleton)
+        XCTAssertFalse(model.turnActive)
+    }
+
+    // MARK: 063 shimmer sweep — pure curve
+
+    // The shimmer highlight is driven by a TimelineView so its per-frame
+    // invalidation stays scoped to the overlay (the animated-@State version
+    // forced a full-screen layout pass per animation frame and livelocked the
+    // main thread — the stuck-skeleton defect). The sweep itself is pinned
+    // here: one 1.3 s cycle crosses the card from x = -1·w to x = 1.6·w.
+    func testShimmerPhaseSweepMatchesLegacyAnimation() {
+        XCTAssertEqual(ShimmerModifier.phase(cycle: 0), -1.0, accuracy: 0.0001)
+        XCTAssertEqual(ShimmerModifier.phase(cycle: 0.5), 0.3, accuracy: 0.0001)
+        XCTAssertEqual(ShimmerModifier.phase(cycle: 0.9999), 1.6, accuracy: 0.001)
+    }
 }

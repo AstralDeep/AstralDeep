@@ -283,3 +283,42 @@ async def test_single_path_surfaces_authorizer_refusal(orch):
     # The single path rendered the refusal alert to the chat target.
     orch.send_ui_render.assert_awaited()
     assert orch.send_ui_render.await_args.kwargs.get("target") == "chat"
+
+
+# --------------------------------------------------------------------------- #
+# Gate: feature 063 destructive-operation confirmation (remote-compute-1 only)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, monkeypatch):
+    from orchestrator import remote_confirmation
+    card = {"type": "card", "title": "Confirm"}
+    ev = MagicMock(return_value=("confirmation_required: approve", [card]))
+    monkeypatch.setattr(remote_confirmation, "evaluate", ev)
+    out = await _auth(orch, tool="cancel_job", agent="remote-compute-1", args={"job_id": "1"})
+    assert isinstance(out, GateRefusal)
+    assert "confirmation_required" in _msg(out)
+    assert out.render_target == "chat"
+    assert out.response.ui_components == [card] and out.render_components == [card]
+    ev.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_remote_control_confirmation_none_proceeds(orch, monkeypatch):
+    from orchestrator import remote_confirmation
+    ev = MagicMock(return_value=None)  # non-destructive / already-approved → proceed
+    monkeypatch.setattr(remote_confirmation, "evaluate", ev)
+    orch.local_agents["remote-compute-1"] = MagicMock()
+    out = await _auth(orch, tool="make_directory", agent="remote-compute-1", args={"path": "/x"})
+    assert isinstance(out, PreparedDispatch)
+    ev.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_confirmation_gate_skipped_for_other_agents(orch, monkeypatch):
+    from orchestrator import remote_confirmation
+    ev = MagicMock(side_effect=AssertionError("confirmation gate must not run for other agents"))
+    monkeypatch.setattr(remote_confirmation, "evaluate", ev)
+    out = await _auth(orch, tool="t1", agent="a1")
+    assert isinstance(out, PreparedDispatch)
+    ev.assert_not_called()

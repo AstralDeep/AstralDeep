@@ -538,8 +538,8 @@ def _run_in_threads(count: int, target: Callable[[], Any]) -> list[BaseException
     return errors
 
 
-def test_schema_revision_declares_060_004() -> None:
-    assert database_module.SCHEMA_REVISION == "060.004"
+def test_schema_revision_declares_063_004() -> None:
+    assert database_module.SCHEMA_REVISION == "063.005"
 
 
 def test_startup_source_declares_both_fixed_advisory_transactions() -> None:
@@ -559,7 +559,7 @@ def test_empty_database_has_complete_additive_schema(
     marker = _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
     )
-    assert marker["value"] == "060.004"
+    assert marker["value"] == "063.005"
     for table, expected_columns in NEW_TABLE_COLUMNS.items():
         assert expected_columns <= _column_names(sandbox, table), table
     for table, expected_columns in ADDED_COLUMNS.items():
@@ -703,7 +703,7 @@ def test_representative_057_migration_preserves_legacy_truth(
 
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "060.004"
+    )["value"] == "063.005"
     assert _fetch_all(
         sandbox, "SELECT id, chat_id, role, content FROM messages ORDER BY id"
     ) == before_messages
@@ -1058,7 +1058,7 @@ def test_two_starters_apply_schema_once_after_lock_recheck(
     assert calls == 1
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "060.004"
+    )["value"] == "063.005"
 
 
 def test_killed_schema_owner_rolls_back_and_waiter_reapplies(
@@ -1116,7 +1116,7 @@ def test_killed_schema_owner_rolls_back_and_waiter_reapplies(
     assert calls == 2
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "060.004"
+    )["value"] == "063.005"
 
 
 def test_fifty_two_starter_schema_and_policy_trials_converge_once(
@@ -1201,7 +1201,7 @@ def test_fifty_two_starter_schema_and_policy_trials_converge_once(
         assert _fetch_one(
             sandbox,
             "SELECT value FROM schema_meta WHERE key = 'revision'",
-        )["value"] == "060.004"
+        )["value"] == "063.005"
         assert _fetch_one(
             sandbox,
             "SELECT value FROM schema_meta "
@@ -1355,7 +1355,7 @@ def test_failed_migration_rolls_back_before_marker_and_repeats_cleanly(
     Database(sandbox.dsn)
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "060.004"
+    )["value"] == "063.005"
 
 
 def test_current_and_forced_repeat_runs_are_idempotent(

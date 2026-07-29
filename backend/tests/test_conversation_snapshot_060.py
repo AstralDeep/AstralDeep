@@ -406,7 +406,10 @@ def test_atomic_publish_advances_once_and_explicit_empty_canvas_clears(database:
     )
     assert snapshot["render_revision"] == 1
     assert len(snapshot["transcript"]) == 2
-    assert snapshot["transcript"][1]["parts"][0]["type"] == "components"
+    # feature 063: a text primitive is lifted to a chat text part (words preserved);
+    # UI components live only on the canvas, never in the transcript.
+    assert snapshot["transcript"][1]["parts"][0]["type"] == "text"
+    assert snapshot["transcript"][1]["parts"][0]["text"] == "Answer"
     assert snapshot["canvas"]["components"][0]["content"] == "Canvas"
 
     second = repository.stage_commit(
@@ -569,10 +572,11 @@ def test_web_presentation_is_exact_post_adaptation_and_never_semantic(database: 
     )
 
     assert semantic == original
-    for component in (
-        web["transcript"][0]["parts"][0]["components"]
-        + web["canvas"]["components"]
-    ):
+    # feature 063: the transcript is text-only — the rail text primitive is lifted to a
+    # text part (no _presentation), and only canvas components carry web _presentation.
+    assert web["transcript"][0]["parts"][0]["type"] == "text"
+    assert web["transcript"][0]["parts"][0]["text"] == "Rail <safe>"
+    for component in web["canvas"]["components"]:
         assert set(component["_presentation"]) == {"target", "html", "workspace"}
         assert component["_presentation"]["target"] == "web"
         assert set(component["_presentation"]["workspace"]) == {"export", "share"}

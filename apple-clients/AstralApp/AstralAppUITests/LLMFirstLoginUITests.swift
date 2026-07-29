@@ -39,6 +39,15 @@ final class LLMFirstLoginUITests: XCTestCase {
         // The closing navigate-once bound still enforces the real contract,
         // and the single-flight/editability semantics are pinned by
         // LLMFirstLoginOperationTests and by the strict local trial matrix.
+        //
+        // These AX round-trips are the HARNESS's cost, not the app's: on a slow
+        // hosted VM they can outlive the ~1.7 s dismissal entirely (the failure
+        // signature is focusAndType probing a torn-down element — an invalid
+        // {{inf, inf}, {0, 0}} hit point), which then charged the app for time
+        // the test spent looking. Their measured duration is deducted below, the
+        // same way the watchdog test deducts its scene round-trip, so the five
+        // second bound keeps measuring the app and every check below still runs.
+        let introspectionStarted = Date()
         if form.exists {
             XCTAssertEqual(status.label, "AI provider setup status")
         }
@@ -52,6 +61,7 @@ final class LLMFirstLoginUITests: XCTestCase {
             XCTAssertTrue(apiKey.isEnabled)
             focusAndType(apiKey, "x")
         }
+        let introspectionOverhead = Date().timeIntervalSince(introspectionStarted)
 
         let activePhaseObserved = waitForStatus(
             status,
@@ -64,11 +74,12 @@ final class LLMFirstLoginUITests: XCTestCase {
         XCTAssertTrue(
             activePhaseObserved || !form.exists,
             "an operation still active after one second must expose its current phase")
-        let remaining = max(0, 5 - Date().timeIntervalSince(acknowledgedAt))
+        let remaining = max(
+            0, 5 + introspectionOverhead - Date().timeIntervalSince(acknowledgedAt))
         XCTAssertTrue(form.waitForNonExistence(timeout: remaining))
         let advanceObservedAt = Date()
         XCTAssertLessThan(
-            advanceObservedAt.timeIntervalSince(acknowledgedAt),
+            advanceObservedAt.timeIntervalSince(acknowledgedAt) - introspectionOverhead,
             5,
             "durably completed first-login setup must advance exactly once within five seconds")
     }

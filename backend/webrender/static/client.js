@@ -556,6 +556,7 @@
   // .astral-skeleton-line shimmer the server-driven skeleton primitive ships.
   function showSkeleton() {
     if (timelineMode || document.getElementById("astral-canvas-skeleton")) return;
+    hideCanvasEmpty(); // the welcome placeholder never coexists with the loading skeleton
     var d = document.createElement("div");
     d.id = "astral-canvas-skeleton";
     d.className = "astral-skeleton";
@@ -1379,6 +1380,9 @@
         if (data.status === "done" || data.status === "idle") {
           hideSkeleton();
           clearTransientOverlay();
+          // The welcome was dropped when the skeleton started; if the turn produced
+          // no canvas component at all, restore it so the canvas isn't left blank.
+          if (canvas && !canvas.querySelector('[data-component-id], .astral-component')) showCanvasEmpty();
         }
         if (data.status === "processing_async") {
           // Background dispatch ack (055): status text only — never the turn
@@ -2496,6 +2500,23 @@
       if (preset) preset.style.display = "";
       if (urlEl) urlEl.textContent = map[t.value] || "";
       if (input) input.value = "";  // preset URL is derived server-side
+    }
+  });
+
+  // Feature 063: the remote-machines "Credential type" dropdown toggles which
+  // credential fields are shown — SSH key + passphrase for "ssh_key", the
+  // password field for "password". Both groups are always in the DOM (the chrome
+  // modal has no reactive re-render); this flips display to match the selection.
+  // Same static-modal pattern as the LLM provider/endpoint toggle above.
+  document.addEventListener("change", function (e) {
+    var t = e.target;
+    if (!(t.classList && t.classList.contains("astral-cred-type"))) return;
+    var form = t.closest && t.closest("[data-ui-form]");
+    if (!form) return;
+    var groups = form.querySelectorAll(".astral-cred-group");
+    for (var i = 0; i < groups.length; i++) {
+      var g = groups[i];
+      g.style.display = g.classList.contains("astral-cred-" + t.value) ? "" : "none";
     }
   });
 

@@ -29,7 +29,9 @@ logger = logging.getLogger('Database')
 #          runtime, draft publication, maintenance, conversation-commit
 #          coordination, and owner-scoped Run-now reconciliation. Additive and
 #          guarded by fixed PostgreSQL advisory transaction identities.
-SCHEMA_REVISION = '060.004'
+# 063.005: + _cleanup_retire_063 (US7 retirement purge helper — dormant, never
+#          invoked at boot; bump satisfies the guarded-source hash discipline)
+SCHEMA_REVISION = '063.005'
 
 _SCHEMA_ADVISORY_LOCK = (1095980114, 60001)
 _USER_AGENT_POLICY_ADVISORY_LOCK = (1095980114, 60002)
@@ -1310,6 +1312,121 @@ class Database:
             )
         ''')
 
+        # ── Feature 063: remote-compute agents — inventory + per-machine creds ─
+        # User-owned SSH targets (clusters + plain hosts). Never seeded; the
+        # inventory starts empty for every user, and one user's machines are
+        # invisible to every other (owner_user_id scoping).
+        # Rollback: DROP TABLE IF EXISTS remote_machine;
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS remote_machine (
+                machine_id            TEXT PRIMARY KEY,
+                owner_user_id         TEXT NOT NULL,
+                label                 TEXT NOT NULL,
+                address               TEXT NOT NULL,
+                port                  INTEGER NOT NULL DEFAULT 22,
+                username              TEXT NOT NULL,
+                os_family             TEXT NOT NULL,
+                role                  TEXT NOT NULL,
+                host_key_type         TEXT,
+                host_key_fingerprint  TEXT,
+                host_key_blob         TEXT,
+                last_verdict          TEXT,
+                last_checked_at       BIGINT,
+                created_at            BIGINT NOT NULL,
+                updated_at            BIGINT NOT NULL,
+                CONSTRAINT ck_remote_machine_os   CHECK (os_family IN ('linux','windows','macos')),
+                CONSTRAINT ck_remote_machine_role CHECK (role IN ('cluster','plain'))
+            )
+        ''')
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_remote_machine_owner "
+            "ON remote_machine (owner_user_id)")
+
+        # machine_credential: the secret for one machine, one user. Fernet at rest
+        # under CREDENTIAL_ENCRYPTION_KEY. FR-014: because the agent runs in-process,
+        # decrypted material transiently exists in orchestrator memory — the
+        # protection is encryption at rest + per-user isolation, NOT process
+        # isolation. Rollback: DROP TABLE IF EXISTS machine_credential;
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS machine_credential (
+                machine_id           TEXT PRIMARY KEY
+                                     REFERENCES remote_machine (machine_id) ON DELETE CASCADE,
+                owner_user_id        TEXT NOT NULL,
+                cred_type            TEXT NOT NULL,
+                encrypted_secret     TEXT NOT NULL,
+                encrypted_passphrase TEXT,
+                created_at           BIGINT NOT NULL,
+                updated_at           BIGINT NOT NULL,
+                CONSTRAINT ck_machine_credential_type CHECK (cred_type IN ('ssh_key','password'))
+            )
+        ''')
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_machine_credential_owner "
+            "ON machine_credential (owner_user_id)")
+
+        # remote_operation_proposal: the durable, single-use, expiring, user- and
+        # argument-bound record of an intended DESTRUCTIVE remote operation awaiting
+        # explicit approval (feature 063 US3 / FR-029..FR-033). Survives restart.
+        # Rollback: DROP TABLE IF EXISTS remote_operation_proposal;
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS remote_operation_proposal (
+                proposal_id       TEXT PRIMARY KEY,
+                owner_user_id     TEXT NOT NULL,
+                chat_id           TEXT,
+                machine_id        TEXT NOT NULL,
+                agent_id          TEXT NOT NULL,
+                verb              TEXT NOT NULL,
+                args_json         TEXT NOT NULL,
+                args_fingerprint  TEXT NOT NULL,
+                summary           TEXT NOT NULL,
+                status            TEXT NOT NULL DEFAULT 'pending',
+                created_at        BIGINT NOT NULL,
+                expires_at        BIGINT NOT NULL,
+                decided_at        BIGINT,
+                consumed_at       BIGINT,
+                CONSTRAINT ck_rop_status
+                    CHECK (status IN ('pending','approved','declined','expired','consumed'))
+            )
+        ''')
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rop_owner_status "
+            "ON remote_operation_proposal (owner_user_id, status)")
+
+        # tracked_job: a submitted remote Slurm job whose lifecycle is tracked
+        # async (feature 063 US4 / FR-042..FR-046). A durable row keyed by owner +
+        # cluster job id so the job outlives the tab / process / restart and is
+        # reportable from any device; the background poller updates state/exit_code
+        # read-only over SSH and, on a terminal state, refreshes component_id in
+        # place + notifies (notify_on_finish). Rollback: DROP TABLE IF EXISTS tracked_job;
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tracked_job (
+                tracked_job_id    TEXT PRIMARY KEY,
+                owner_user_id     TEXT NOT NULL,
+                machine_id        TEXT NOT NULL,
+                chat_id           TEXT,
+                scheduler_job_id  TEXT NOT NULL,
+                submit_marker     TEXT,
+                output_path       TEXT,
+                component_id      TEXT,
+                job_name          TEXT,
+                state             TEXT NOT NULL DEFAULT 'submitted',
+                exit_code         TEXT,
+                terminal          BOOLEAN NOT NULL DEFAULT FALSE,
+                notify_on_finish  BOOLEAN NOT NULL DEFAULT FALSE,
+                notified          BOOLEAN NOT NULL DEFAULT FALSE,
+                fail_count        INTEGER NOT NULL DEFAULT 0,
+                created_at        BIGINT NOT NULL,
+                last_polled_at    BIGINT,
+                finished_at       BIGINT
+            )
+        ''')
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_tracked_job_machine_job "
+            "ON tracked_job (machine_id, scheduler_job_id)")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tracked_job_open "
+            "ON tracked_job (owner_user_id, terminal)")
+
         # ── Feature 054: bring-your-own-LLM credential stores ───────────────
         # user_llm_config: one row per user who has completed provider setup;
         # api_key_enc is Fernet ciphertext under CREDENTIAL_ENCRYPTION_KEY
@@ -1425,6 +1542,9 @@ class Database:
 
         # ── Feature 040: retire etf_tracker_1 (orphan row purge) ────────────
         self._cleanup_retired_agents_040(cursor)
+
+        # ── Feature 063: merge remote-observe-1 + remote-control-1 → one agent ─
+        self._cleanup_merged_remote_agents_063(cursor)
 
         # ── Feature 030: first-party agent visibility backfill ──────────────
         self._migrate_agent_visibility_030(cursor)
@@ -2846,6 +2966,14 @@ class Database:
     # exist in deployed databases — cover both.
     _RETIRED_AGENT_IDS_040 = ('etf-tracker-1-1', 'etf_tracker_1')
 
+    # Feature 063: the initially-split read-only (remote-observe-1) and control
+    # (remote-control-1) agents were merged into the single remote-compute-1
+    # agent. Purge the orphaned per-agent rows for the two retired ids so they
+    # can't linger as ghost cards / stale trust; the unified agent registers
+    # fresh. Per-MACHINE credentials live in machine_credential keyed by
+    # machine_id (not agent_id) and are intentionally untouched.
+    _RETIRED_AGENT_IDS_063 = ('remote-observe-1', 'remote-control-1')
+
     def _cleanup_phantom_windows_tools_ids(self, cursor):
         """Feature 039 (C-2): delete phantom Windows-tools agent rows.
 
@@ -2887,6 +3015,70 @@ class Database:
                 )
             except Exception:  # noqa: BLE001 — table may be absent on older schema
                 pass
+
+    def _cleanup_merged_remote_agents_063(self, cursor):
+        """Feature 063: purge orphaned per-agent rows for the merged-away
+        remote-observe-1 / remote-control-1 ids (unified into remote-compute-1).
+
+        Idempotent (each DELETE matches nothing on re-run). Per-machine
+        credentials (machine_credential, keyed by machine_id) and the user's
+        remote_machine inventory are intentionally preserved — the unified agent
+        reads the same machines. Chats/saved_components are preserved and degrade
+        via the runtime retired-agent handling (orchestrator.RETIRED_AGENT_IDS).
+        """
+        retired = self._RETIRED_AGENT_IDS_063
+        ph = ", ".join(["%s"] * len(retired))
+        for table in ('agent_ownership', 'agent_scopes', 'tool_overrides',
+                      'tool_permissions', 'user_credentials', 'agent_trust'):
+            try:
+                cursor.execute(
+                    f"DELETE FROM {table} WHERE agent_id IN ({ph})", retired
+                )
+            except Exception:  # noqa: BLE001 — table may be absent on older schema
+                pass
+
+    # Feature 063 US7: the four feature tables in FK-safe drop order —
+    # machine_credential references remote_machine, so it must drop first.
+    _REMOTE_TABLES_063 = ('machine_credential', 'remote_operation_proposal',
+                          'tracked_job', 'remote_machine')
+
+    def _cleanup_retire_063(self, cursor, full_retire=False):
+        """Feature 063 US7 (FR-015/FR-053): retire the remote-compute capability.
+
+        NOT invoked at boot (the capability is live) — called only when the
+        capability is retired, mirroring ``_cleanup_retired_agents_040``'s purge
+        shape. Runs inside the caller's transaction. Idempotent (SC-014): every
+        statement matches nothing on re-run, and each is savepoint-guarded so a
+        table already dropped by an earlier full retire (or absent on an older
+        schema) cannot poison that transaction. In order (data-model.md):
+          1. destroy every stored machine secret;
+          2. purge permission/credential/trust/ownership rows for the merged-away
+             split ids — plus the live remote-compute-1 id on full retire;
+          3. close still-open tracked jobs honestly (state='orphaned', terminal);
+          4. on full retire only, drop the four 063 tables (dependent rows are
+             already gone, so re-running changes nothing further).
+        """
+        def guarded(statement, params=()):
+            cursor.execute("SAVEPOINT cleanup_retire_063")
+            try:
+                cursor.execute(statement, params)
+            except Exception:  # noqa: BLE001 — table absent on re-run/older schema
+                cursor.execute("ROLLBACK TO SAVEPOINT cleanup_retire_063")
+            else:
+                cursor.execute("RELEASE SAVEPOINT cleanup_retire_063")
+
+        guarded("DELETE FROM machine_credential")
+        agent_ids = self._RETIRED_AGENT_IDS_063 + (
+            ('remote-compute-1',) if full_retire else ())
+        ph = ", ".join(["%s"] * len(agent_ids))
+        for table in ('agent_scopes', 'tool_overrides', 'tool_permissions',
+                      'agent_trust', 'agent_ownership', 'user_credentials'):
+            guarded(f"DELETE FROM {table} WHERE agent_id IN ({ph})", agent_ids)
+        guarded("UPDATE tracked_job SET state='orphaned', terminal=TRUE "
+                "WHERE terminal = FALSE")
+        if full_retire:
+            for table in self._REMOTE_TABLES_063:
+                guarded(f"DROP TABLE IF EXISTS {table}")
 
     def _migrate_agent_catalog_029(self, cursor):
         """Feature 029 one-time (idempotent) catalog migrations.
@@ -2991,6 +3183,13 @@ class Database:
         'connectors-1', 'dice-roller-1', 'general-1',
         'journal-review-1', 'medical-1', 'ml-services-1', 'summarizer-1',
         'weather-1', 'web-research-1',
+        # Feature 063: the unified remote-compute-1 agent is VISIBLE always
+        # (discoverable before granting, FR-025) and safe-seeded only when
+        # FF_REMOTE_COMPUTE is on (the boot seed in orchestrator.start applies the
+        # flag filter). Its destructive verbs are gated per-verb by the confirmation
+        # mechanism regardless of the safe-seed baseline. The earlier split agents
+        # remote-observe-1 / remote-control-1 were merged into it (see RETIRED set).
+        'remote-compute-1',
     )
 
     def _migrate_agent_visibility_030(self, cursor):

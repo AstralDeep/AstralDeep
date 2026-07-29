@@ -195,6 +195,52 @@ def test_limits_and_owner_reject_invalid_contract_values(kwargs: dict) -> None:
         ProcessOwner(owner_kind="", owner_id="missing-kind")
 
 
+def test_reader_forwards_child_output_to_supervisor_stream(monkeypatch) -> None:
+    """docker-logs observability: every consumed chunk is teed verbatim to the
+    supervisor's matching stream, while the bounded ring fills unchanged."""
+
+    host = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    monkeypatch.setattr(sys, "stdout", host)
+    payload = b"hello from the child\nsecond line\n"
+    reader = BoundedStreamReader(
+        stream=OutputStream.STDOUT,
+        pipe=_RecordingPipe(payload),
+        limits=DEFAULT_PROCESS_SUPERVISION_LIMITS,
+    )
+
+    reader.run()
+
+    assert host.buffer.getvalue() == payload
+    snapshot = reader.snapshot()
+    assert snapshot.lines == (b"hello from the child", b"second line")
+    assert snapshot.dropped_bytes == 0
+
+
+def test_reader_forwarding_failure_never_breaks_the_ring(monkeypatch) -> None:
+    """A broken host stream must not take the reader (or the child) down."""
+
+    class _BrokenHost:
+        def write(self, _data) -> int:
+            raise OSError("host stream gone")
+
+        def flush(self) -> None:
+            raise OSError("host stream gone")
+
+    monkeypatch.setattr(sys, "stderr", _BrokenHost())
+    reader = BoundedStreamReader(
+        stream=OutputStream.STDERR,
+        pipe=_RecordingPipe(b"err line\n"),
+        limits=DEFAULT_PROCESS_SUPERVISION_LIMITS,
+    )
+
+    reader.run()
+
+    snapshot = reader.snapshot()
+    assert snapshot.lines == (b"err line",)
+    assert snapshot.read_error is None
+    assert snapshot.reader_done is True
+
+
 def test_reader_reports_read_errors_eof_timeout_and_tiny_ring_drops() -> None:
     class _BrokenPipe(_RecordingPipe):
         def read(self, size: int = -1) -> bytes:

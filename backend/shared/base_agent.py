@@ -224,6 +224,13 @@ class BaseA2AAgent:
             tool_metadata = info.get("metadata")
             if isinstance(tool_metadata, dict):
                 skill_metadata.update(tool_metadata)
+            # Feature 063 (FR-025): surface the registry's destructive
+            # classification on the card so clients can mark destructive verbs
+            # BEFORE any grant. Passed through unchanged ("never" | "always" |
+            # "if_exists" | {"by_action": [...]}) — the confirmation gate stays
+            # the sole enforcer; this is display metadata only.
+            if "destructive" in info:
+                skill_metadata["destructive"] = info["destructive"]
             skills.append(AgentSkill(
                 name=name,
                 description=desc,

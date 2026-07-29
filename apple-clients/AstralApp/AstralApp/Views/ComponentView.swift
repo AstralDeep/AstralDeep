@@ -954,6 +954,24 @@ struct ParamPickerComponent: View {
 
     @ViewBuilder
     private func fieldView(_ field: JSONValue) -> some View {
+        if fieldIsVisible(field) { fieldBody(field) }
+    }
+
+    /// Server-declared conditional visibility (063): a field may carry
+    /// `visible_when: {field, equals, default}` — hidden unless the named
+    /// controller field's current value matches. Fields without the attribute
+    /// are always visible, so servers can emit it freely for older clients.
+    private func fieldIsVisible(_ field: JSONValue) -> Bool {
+        guard let vw = field["visible_when"],
+            let controller = vw["field"]?.stringValue,
+            let expected = vw["equals"]?.stringValue
+        else { return true }
+        let current = values[controller] ?? vw["default"]?.stringValue ?? ""
+        return current == expected
+    }
+
+    @ViewBuilder
+    private func fieldBody(_ field: JSONValue) -> some View {
         let name = field["name"]?.stringValue ?? ""
         let label = field["label"]?.stringValue ?? name
         let kind = field["kind"]?.stringValue ?? field["type"]?.stringValue ?? "text"
@@ -1038,6 +1056,12 @@ struct ParamPickerComponent: View {
                         set: { values[name] = $0 })
                 )
                 .frame(minHeight: 80)
+                // Param fields hold identifiers/keys (usernames, PEMs), never
+                // prose — autocap/autocorrect would corrupt them (063).
+                .autocorrectionDisabled(true)
+                #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                #endif
                 .accessibilityIdentifier("param-field-\(name)")
                 .accessibilityLabel(label)
             default:
@@ -1048,6 +1072,10 @@ struct ParamPickerComponent: View {
                         set: { values[name] = $0 })
                 )
                 .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled(true)
+                #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                #endif
                 .accessibilityIdentifier("param-field-\(name)")
                 .accessibilityLabel(label)
             }

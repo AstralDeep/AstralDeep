@@ -99,7 +99,14 @@ final class ManifestDriftTests: XCTestCase {
         //        + the two feature-055 component_refine/component_restore actions.
         // 87 = 73 + the feature-058 BYO authoring + agent-management chrome actions
         //        (chrome_author_* / chrome_agent_*).
-        XCTAssertEqual(manifest.acceptActions.count, 87)
+        // 91 = 87 + the four feature-063 remote-compute actions
+        //        (chrome_machine_add/probe/delete + remote_op_decision) —
+        //        all posted through the generic SDUI action path, no new
+        //        client code.
+        // 94 = 91 + the T026 machine-credential/re-trust actions
+        //        (chrome_machine_credential_set/delete + chrome_machine_retrust),
+        //        same generic path.
+        XCTAssertEqual(manifest.acceptActions.count, 94)
     }
 
     func testRuntimeReliabilityFramesAndRegistrationDisposition() throws {

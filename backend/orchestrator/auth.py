@@ -291,6 +291,9 @@ async def native_logout(request: Request,
     except Exception:
         logger.debug("native logout: offline-grant revocation failed", exc_info=True)
 
+    # Feature-063 machine credentials die too (FR-015) — fail-open like the grants.
+    await web_auth._destroy_machine_credentials(user_id, "native sign-out")
+
     try:
         from audit.hooks import record_auth_event
         await record_auth_event(

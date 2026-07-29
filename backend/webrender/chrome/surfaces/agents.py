@@ -291,8 +291,31 @@ def _switch(name: str, checked: bool, extra_cls: str, aria: str, disabled: bool 
     )
 
 
+def _destructive_badge(classification) -> str:
+    """Feature 063 (FR-025): pre-grant destructive marker for one verb.
+
+    The classification rides the card skill metadata straight from the agent's
+    ``TOOL_REGISTRY`` ("never" | "always" | "if_exists" | {"by_action": [...]});
+    anything other than never/absent renders a marker — unconditional red,
+    input-dependent amber. Display only; the confirmation gate enforces.
+    """
+    if not classification or classification == "never":
+        return ""
+    if classification == "always":
+        label = "Destructive"
+        cls = "bg-red-500/10 text-red-400 border-red-500/20"
+    else:  # "if_exists" or {"by_action": [...]} — destructive on some inputs
+        label = "Sometimes destructive"
+        cls = "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
+    return (
+        f'<span class="astral-destructive px-1.5 py-0.5 rounded text-[10px] '
+        f'font-medium border {cls}">{esc(label)}</span>'
+    )
+
+
 def _render_perm_sections(agent_id: str, tool_scope_map, per_tool, scope_state,
-                          tool_descriptions, tab: str = "mine") -> str:
+                          tool_descriptions, tab: str = "mine",
+                          tool_destructive=None) -> str:
     """Per-kind permission sections: one master switch per permission kind,
     individual tool switches beneath it.
 
@@ -303,6 +326,7 @@ def _render_perm_sections(agent_id: str, tool_scope_map, per_tool, scope_state,
     switches render disabled (the client mirrors this on toggle) and the
     save handler forces the whole section off regardless of collected values.
     """
+    tool_destructive = tool_destructive or {}
     sections = []
     sectioned = set()
     for kind in PERMISSION_KINDS:
@@ -325,7 +349,9 @@ def _render_perm_sections(agent_id: str, tool_scope_map, per_tool, scope_state,
             rows.append(
                 f'<div class="flex items-center justify-between gap-3 py-2">'
                 f'<div class="min-w-0">'
-                f'<div class="text-sm text-astral-text">{esc(tool_name)}</div>'
+                f'<div class="flex items-center gap-2 flex-wrap">'
+                f'<span class="text-sm text-astral-text">{esc(tool_name)}</span>'
+                f'{_destructive_badge(tool_destructive.get(tool_name))}</div>'
                 f'<div class="text-xs text-astral-muted">{esc(_snippet(desc, 90))}</div></div>'
                 f'{_switch(f"{tool_name}::{kind}", tool_on, "astral-perm-tool", f"{tool_name} {label}", disabled=not master_on)}'
                 f"</div>"
@@ -356,7 +382,9 @@ def _render_perm_sections(agent_id: str, tool_scope_map, per_tool, scope_state,
             rows.append(
                 f'<div class="flex items-center justify-between gap-3 py-2">'
                 f'<div class="min-w-0">'
-                f'<div class="text-sm text-astral-text">{esc(tool_name)}</div>'
+                f'<div class="flex items-center gap-2 flex-wrap">'
+                f'<span class="text-sm text-astral-text">{esc(tool_name)}</span>'
+                f'{_destructive_badge(tool_destructive.get(tool_name))}</div>'
                 f'<div class="text-xs text-astral-muted">{esc(_snippet(desc, 90))}</div></div>'
                 f'<span class="text-xs text-astral-muted shrink-0">Not configurable</span>'
                 f"</div>"
@@ -619,6 +647,12 @@ async def _render_detail(orch, user_id, roles, agent_id: str, tab: str) -> str:
     per_tool = await asyncio.to_thread(
         tp.get_effective_tool_permissions, user_id, agent_id, safe_default)
     tool_descriptions = {s.id: s.description for s in card.skills}
+    # Feature 063 (FR-025): destructive classification propagated from the
+    # agent's TOOL_REGISTRY via the card skill metadata (base_agent).
+    tool_destructive = {
+        s.id: (getattr(s, "metadata", None) or {}).get("destructive")
+        for s in card.skills
+    }
 
     user_email = ctx["user_email"]
     is_owner = bool(user_email) and ctx["owner_email"] == user_email
@@ -634,7 +668,8 @@ async def _render_detail(orch, user_id, roles, agent_id: str, tab: str) -> str:
         f"{_back_button(tab)}</div></div>"
     )
     sections = [header, _render_perm_sections(
-        agent_id, tool_scope_map, per_tool, scope_state, tool_descriptions, tab)]
+        agent_id, tool_scope_map, per_tool, scope_state, tool_descriptions, tab,
+        tool_destructive)]
     if is_owner:
         sections.append(_render_visibility(agent_id, ctx["is_public"], tab))
     # Feature 040 (US2): owner/admin safe-marking control.
