@@ -25,8 +25,13 @@ from orchestrator import scheduling_chat  # noqa: E402
 def orch():
     o = MagicMock()
     o.history.db = MagicMock()
+    # The card and the capture both read the EFFECTIVE scope list, so the
+    # safe-baseline population (no explicit agent_scopes rows) is not told
+    # "no scopes yet" and does not capture an empty consented list.
     o.tool_permissions.get_agent_scopes = MagicMock(
         return_value={"tools:read": True, "tools:search": True, "tools:write": False})
+    o.tool_permissions.get_enabled_scope_names = MagicMock(
+        return_value=["tools:read", "tools:search"])
     o.send_ui_render = AsyncMock()
     return o
 
@@ -141,8 +146,8 @@ async def test_capture_failure_is_not_fatal(orch, captured):
 @pytest.mark.asyncio
 async def test_consent_card_names_scopes_durability_and_revocation(orch):
     """FR-011: the card the user approves must SAY what it grants."""
-    orch.tool_permissions.get_agent_scopes = MagicMock(
-        return_value={"tools:read": True, "tools:search": True})
+    orch.tool_permissions.get_enabled_scope_names = MagicMock(
+        return_value=["tools:read", "tools:search"])
     resp = await scheduling_chat.handle_meta_tool(
         orch, "schedule_recurring_task",
         {"name": "arXiv sweep", "instruction": "check arXiv",

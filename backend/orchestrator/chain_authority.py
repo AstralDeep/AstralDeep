@@ -212,8 +212,20 @@ class MachineTurnAuthority:
         if agent_id:
             from scheduler.runner import _intersect_scopes
             try:
-                current = await asyncio.to_thread(
-                    self.orch.tool_permissions.get_agent_scopes, user_id, agent_id)
+                # EFFECTIVE scopes, not a raw agent_scopes read. Two
+                # dispatch-allowing paths write no scope row at all (feature
+                # 040's safe-agent baseline, feature 013's per-(tool, kind)
+                # grants), so get_agent_scopes would report all-False for a
+                # user whose tools demonstrably run — collapsing the
+                # intersection to empty and skipping every machine turn they
+                # legitimately consented to. get_enabled_scope_names derives
+                # per tool through is_tool_allowed, which is the same
+                # predicate the dispatch gate applies, so containment here
+                # can never exceed what the turn could actually do.
+                current_names = await asyncio.to_thread(
+                    self.orch.tool_permissions.get_enabled_scope_names,
+                    user_id, agent_id)
+                current = {scope: True for scope in current_names or []}
             except Exception:
                 current = {}
             allowed_scopes = _intersect_scopes(

@@ -66,8 +66,13 @@ def _orch(current_scopes):
     orch = types.SimpleNamespace(
         run_scheduled_turn=run_scheduled_turn,
         notify_user=notify_user,
+        # Derivation reads the EFFECTIVE scope list, not the raw rows, so the
+        # safe-agent baseline is not mistaken for "no grants" (see
+        # test_machine_turn_authority.py::test_safe_baseline_*).
         tool_permissions=types.SimpleNamespace(
-            get_agent_scopes=lambda uid, aid: dict(current_scopes)),
+            get_agent_scopes=lambda uid, aid: dict(current_scopes),
+            get_enabled_scope_names=lambda uid, aid: [
+                s for s, on in current_scopes.items() if on]),
     )
     return orch, calls
 

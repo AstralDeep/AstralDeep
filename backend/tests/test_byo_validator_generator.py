@@ -62,6 +62,73 @@ def test_disallowed_imports_flags_a_third_party_root_once():
     assert disallowed_imports("import requests\nimport requests.adapters\n") == ["requests"]
 
 
+# ── dynamic imports reach the host exactly like static ones ─────────────────
+
+@pytest.mark.parametrize("src", [
+    '__import__("requests")',
+    'importlib.import_module("requests")',
+    'import_module("requests")',                  # from importlib import ...
+    '__import__("requests.adapters")',            # reported at the root
+    'importlib.import_module(name="requests")',   # keyword form
+])
+def test_disallowed_imports_flags_dynamic_third_party(src):
+    # A statement-only AST walk never saw these, so the author got no
+    # generation-time feedback — the bundle just died as a host silence-timeout.
+    assert disallowed_imports(f"import importlib\nx = {src}\n") == ["requests"]
+
+
+@pytest.mark.parametrize("src", [
+    '__import__("json")',
+    'importlib.import_module("xml.etree.ElementTree")',
+    'importlib.import_module("astralprims")',
+])
+def test_disallowed_imports_allows_dynamic_stdlib_and_astralprims(src):
+    # The allowlist is the same one static imports get — no stricter.
+    assert disallowed_imports(f"import importlib\nx = {src}\n") == []
+
+
+def test_disallowed_imports_flags_computed_module_name_as_unresolvable():
+    from orchestrator.agent_validator import UNRESOLVABLE_DYNAMIC_IMPORT
+
+    bad = disallowed_imports("import importlib\nm = importlib.import_module(name_var)\n")
+    assert bad == [UNRESOLVABLE_DYNAMIC_IMPORT]
+
+
+def test_disallowed_imports_ignores_unrelated_calls():
+    # Only the two import spellings match — nothing else is an import.
+    assert disallowed_imports("x = compute('requests')\ny = obj.load('requests')\n") == []
+
+
+def test_validate_static_rejects_a_dynamic_third_party_import(v):
+    code = (
+        "import importlib\n"
+        "from astralprims import Text\n\n"
+        "def t(**kwargs):\n"
+        "    requests = importlib.import_module('requests')\n"
+        "    return {'_ui_components': [Text(content='x').to_dict()], '_data': {}}\n\n"
+        "TOOL_REGISTRY = {'t': {'function': t, 'description': 'd', 'input_schema': {}}}\n"
+    )
+    report = v.validate_static(code, "byo")
+    assert not report.passed
+    assert any(f.category == "IMPORT" and "requests" in f.message
+               for f in report.findings)
+
+
+def test_validate_static_explains_a_computed_module_name(v):
+    code = (
+        "import importlib\n"
+        "from astralprims import Text\n\n"
+        "def t(**kwargs):\n"
+        "    mod = importlib.import_module(kwargs['lib'])\n"
+        "    return {'_ui_components': [Text(content='x').to_dict()], '_data': {}}\n\n"
+        "TOOL_REGISTRY = {'t': {'function': t, 'description': 'd', 'input_schema': {}}}\n"
+    )
+    report = v.validate_static(code, "byo")
+    assert not report.passed
+    assert any(f.category == "IMPORT" and "computed at runtime" in f.message
+               for f in report.findings)
+
+
 def test_registry_from_source_on_unparseable_code_returns_empty():
     assert registry_from_source("def (:") == {}
 

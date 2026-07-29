@@ -104,6 +104,54 @@ def test_has_any_enabled_scope_false_for_fresh_user(perms):
     assert manager.has_any_enabled_scope(user_id) is False
 
 
+# ── 030 ∩ 040: who the enable affordance is still FOR ─────────────────────
+
+
+@needs_db
+def test_fresh_user_on_safe_baseline_is_not_shown_the_enable_affordance(perms):
+    """The 030 affordance is deliberately unreachable for a fresh account.
+
+    Feature 040 seeds the bundled built-ins safe + public, and the safe
+    baseline flips deny→allow for a user with no explicit scope row. So a fresh
+    user's tools ARE available and the "Agents are off for this account" card
+    must not render — showing it would be a false statement, and the register
+    entry calling this "structurally unreachable" describes intended behavior,
+    not a defect. This pins the premise so the affordance is not "restored".
+    """
+    manager, user_id = perms
+    agent_id = f"pytest-030-safe-{uuid.uuid4().hex[:10]}"
+    manager.db.upsert_agent_safe(agent_id, True, marked_by="pytest")
+    manager.db.set_agent_ownership(agent_id, "o@e.com", is_public=True)
+    manager.register_tool_scopes(agent_id, {"web_search": "tools:search"})
+
+    # Dispatchable → compute_tools_available_for_user would return True …
+    assert manager.is_tool_allowed(user_id, agent_id, "web_search") is True
+    # … even though the user has granted nothing explicitly.
+    assert manager.has_any_enabled_scope(user_id) is False
+    assert all("Agents are off" not in str(c.get("title", ""))
+               for c in welcome_components(tools_available=True))
+
+
+@needs_db
+def test_explicit_optout_user_still_reaches_the_enable_affordance(perms):
+    """…and it is still reachable, and honest, for the opt-out population.
+
+    An explicit ``enabled=False`` row outranks the safe flip, so a user who
+    deliberately turned everything off has no dispatchable tools — the card's
+    copy is then true, and its Enable button writes the rows that undo it.
+    """
+    manager, user_id = perms
+    agent_id = f"pytest-030-optout-{uuid.uuid4().hex[:10]}"
+    manager.db.upsert_agent_safe(agent_id, True, marked_by="pytest")
+    manager.db.set_agent_ownership(agent_id, "o@e.com", is_public=True)
+    manager.register_tool_scopes(agent_id, {"web_search": "tools:search"})
+    manager.set_agent_scopes(user_id, agent_id, {"tools:search": False})
+
+    assert manager.is_tool_allowed(user_id, agent_id, "web_search") is False
+    card = welcome_components(tools_available=False)[1]
+    assert "Agents are off" in card["title"]
+
+
 @needs_db
 def test_has_any_enabled_scope_false_when_all_rows_disabled(perms):
     manager, user_id = perms

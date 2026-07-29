@@ -2,16 +2,28 @@
 Tool Permission Manager — Scope-based agent authorization.
 
 Provides scope-level control over which MCP tools each agent can
-execute on behalf of a specific user. Four scopes map to Keycloak
-client scopes on the astral-agent-service client:
+execute on behalf of a specific user. Six scopes map to Keycloak
+client scopes on the astral-agent-service client — ``VALID_SCOPES``
+below is the authoritative list:
 
-  - tools:read   — Read/retrieve data, generate visualizations, analyze
-  - tools:write  — Create, modify, delete data; post to external services
-  - tools:search — Query external APIs/databases for information
-  - tools:system — Access system resources (CPU, memory, disk)
+  - tools:read    — Read/retrieve data, generate visualizations, analyze
+  - tools:write   — Create, modify, delete data; post to external services
+  - tools:search  — Query external APIs/databases for information
+  - tools:system  — Access system resources (CPU, memory, disk)
+  - tools:files   — Read files and mounted volumes (added in feature 027)
+  - tools:execute — Run commands/shells (added in feature 039)
 
-By default, all scopes are DISABLED. Users must explicitly grant scopes.
 Persists to PostgreSQL via the agent_scopes table.
+
+Absent a stored row the baseline is DENY, but two later features resolve
+that absence to allow at check time rather than by writing rows: feature
+040's owner-approved "safe" agents and the feature 057/058 owned-user-agent
+default (see :meth:`ToolPermissionManager._resolve_tool_allowed`). An
+explicit row — grant OR opt-out — always outranks both. So "all scopes are
+DISABLED until granted" describes the storage default, not the effective
+decision; read the effective decision through :meth:`is_tool_allowed` (or
+:meth:`get_enabled_scope_names` for the scope-level view) and never from a
+raw ``agent_scopes`` query.
 
 Part of the RFC 8693 Delegated Authorization framework.
 """
@@ -64,7 +76,7 @@ VALID_SCOPES = ["tools:read", "tools:write", "tools:search", "tools:system",
 class ToolPermissionManager:
     """Manages per-user, per-agent scope-based permissions backed by PostgreSQL.
 
-    Structure (logical):
+    Structure (logical) — one entry per scope in ``VALID_SCOPES``:
         {
             "<user_id>": {
                 "<agent_id>": {
@@ -72,11 +84,15 @@ class ToolPermissionManager:
                     "tools:write": true/false,
                     "tools:search": true/false,
                     "tools:system": true/false,
+                    "tools:files": true/false,
+                    "tools:execute": true/false,
                 }
             }
         }
 
-    Default: all scopes DISABLED for new agents (user must explicitly grant).
+    Storage default: no row, which resolves to DENY unless a check-time
+    baseline (safe agent, owned user agent) says otherwise — see the module
+    docstring and :meth:`_resolve_tool_allowed`.
     """
 
     def __init__(self, db=None, data_dir: str = None, database_url: str = None):
@@ -565,18 +581,41 @@ class ToolPermissionManager:
         """Idempotent 1:1 carry-forward from agent_scopes to per-tool rows (FR-015).
 
         For every tool the agent exposes, if a per-(tool, kind) row does
-        not yet exist, insert one with ``enabled`` equal to the agent-wide
-        scope state for that tool's required kind. Returns the number of
-        rows inserted (zero on subsequent runs).
+        not yet exist AND the user has an explicit ``agent_scopes`` row for
+        that tool's required kind, insert one carrying that row's value.
+        Returns the number of rows inserted (zero on subsequent runs).
 
         Safe to call repeatedly — subsequent calls are no-ops because
         rows already exist. Called from the per-tool permissions
         endpoints on first read so users don't have to re-toggle.
+
+        **Only carries forward what actually exists.** A missing scope row is
+        not a stored ``False`` — it is the absence of a decision, and two
+        dispatch-allowing baselines resolve it at check time: feature 040's
+        safe-agent deny→allow flip and the 057/058 owned-user-agent default
+        (both in :meth:`_resolve_tool_allowed`, step 3/4). Materialising
+        ``enabled=False`` rows for those tools would hand step 1 an explicit
+        row that outranks both baselines *permanently*, so merely opening the
+        permissions screen would silently strip every built-in agent's tools
+        from a user who had granted nothing and revoked nothing. Skipping the
+        write leaves the baseline live and changes no effective decision for
+        users who do have scope rows — for them an explicit per-tool row and
+        the scope row it was copied from resolve identically.
         """
         scope_map = self._tool_scope_map.get(agent_id, {})
         if not scope_map:
             return 0
-        scope_state = self.get_agent_scopes(user_id, agent_id)
+        # Raw rows, NOT get_agent_scopes() — that helper fills absent scopes
+        # with False, which is exactly the distinction this method turns on.
+        explicit_scopes = {
+            row["scope"]: bool(row["enabled"])
+            for row in self.db.fetch_all(
+                "SELECT scope, enabled FROM agent_scopes WHERE user_id = ? AND agent_id = ?",
+                (user_id, agent_id),
+            )
+        }
+        if not explicit_scopes:
+            return 0
         existing = self.db.fetch_all(
             """SELECT tool_name, permission_kind FROM tool_overrides
                WHERE user_id = ? AND agent_id = ? AND permission_kind IS NOT NULL""",
@@ -588,7 +627,11 @@ class ToolPermissionManager:
         for tool_name, required_scope in scope_map.items():
             if (tool_name, required_scope) in existing_pairs:
                 continue
-            enabled = bool(scope_state.get(required_scope, False))
+            if required_scope not in explicit_scopes:
+                # No agent-wide decision to carry forward — leave the tool to
+                # the resolution baselines rather than freezing a denial.
+                continue
+            enabled = explicit_scopes[required_scope]
             self.db.execute(
                 """INSERT INTO tool_overrides
                    (user_id, agent_id, tool_name, permission_kind, enabled, updated_at)
