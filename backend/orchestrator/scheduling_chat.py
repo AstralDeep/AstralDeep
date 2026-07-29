@@ -228,9 +228,13 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
              variant="caption"),
     ]
     if cleaned["agent_id"]:
-        scope_names = await asyncio.to_thread(
-            orch.tool_permissions.get_agent_scopes, user_id, cleaned["agent_id"])
-        granting = sorted(name for name, on in (scope_names or {}).items() if on)
+        # EFFECTIVE scopes (see the matching note at the capture step below):
+        # a raw agent_scopes read reports nothing for a safe-baseline user, so
+        # this card used to promise "no scopes yet" to someone whose tools run
+        # fine — misdescribing the very grant it is asking them to approve.
+        granting = await asyncio.to_thread(
+            orch.tool_permissions.get_enabled_scope_names,
+            user_id, cleaned["agent_id"])
         card_content.append(Text(
             content=("**Approving grants durable consent.** To run on your behalf "
                      "while you are signed out, this job stores a revocable "
@@ -343,9 +347,16 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
 
     consented: List[str] = []
     if cleaned["agent_id"]:
-        current = await asyncio.to_thread(
-            orch.tool_permissions.get_agent_scopes, user_id, cleaned["agent_id"])
-        consented = sorted(s for s, on in current.items() if on)
+        # EFFECTIVE scopes, matching the approval card and the dispatch gate.
+        # A raw agent_scopes read only sees explicit rows, so a user running on
+        # feature 040's safe baseline captured an EMPTY consented list — and an
+        # empty list is not "deny everything" downstream, it is read as "no
+        # constraint" by MachineTurnAuthority.derive. Capturing the effective
+        # set makes the containment real for exactly the users who never
+        # granted a scope explicitly.
+        consented = await asyncio.to_thread(
+            orch.tool_permissions.get_enabled_scope_names,
+            user_id, cleaned["agent_id"])
 
     # 056 US2 (FR-011/D8): the EXPLICIT durable-consent capture step. The
     # approval card the user just confirmed named the scopes below, its durable

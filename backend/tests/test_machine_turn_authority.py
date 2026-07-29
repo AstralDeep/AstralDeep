@@ -55,10 +55,21 @@ def _grants(valid=True, token="consent-token"):
 
 
 def _orch(current_scopes=None):
+    """Orchestrator double whose CURRENT grants are ``current_scopes``.
+
+    Callers still describe the user's grants as a ``{scope: enabled}`` dict,
+    but derivation reads ``get_enabled_scope_names`` — the effective predicate
+    — so the double exposes that instead of the raw ``get_agent_scopes``. The
+    distinction is the point of ``test_safe_baseline_*`` below: a user with no
+    explicit rows has an empty ``get_agent_scopes`` and a NON-empty effective
+    scope list.
+    """
+    scopes = ({"tools:read": True, "tools:search": True}
+              if current_scopes is None else current_scopes)
     o = MagicMock()
-    o.tool_permissions.get_agent_scopes = MagicMock(
-        return_value=current_scopes if current_scopes is not None
-        else {"tools:read": True, "tools:search": True})
+    o.tool_permissions.get_agent_scopes = MagicMock(return_value=dict(scopes))
+    o.tool_permissions.get_enabled_scope_names = MagicMock(
+        return_value=[s for s, on in scopes.items() if on])
     o.run_scheduled_turn = AsyncMock(return_value="did the thing")
     o.notify_user = AsyncMock()
     return o
@@ -92,6 +103,41 @@ async def test_authority_never_wider_than_current_grants():
     kwargs = orch.run_scheduled_turn.await_args.kwargs
     assert kwargs["allowed_scopes"] == ["tools:read"]
     assert kwargs["authority"].allowed_scopes == ["tools:read"]
+
+
+@pytest.mark.asyncio
+async def test_safe_baseline_user_is_not_mistaken_for_having_no_grants():
+    """A user whose tools run on the feature-040 safe baseline has NO
+    ``agent_scopes`` rows. Deriving from that raw table collapsed the
+    intersection to empty and skipped the run — for exactly the users who never
+    granted a scope explicitly, which after 040 is the default population.
+    """
+    orch = _orch()
+    orch.tool_permissions.get_agent_scopes = MagicMock(return_value={})  # no rows
+    orch.tool_permissions.get_enabled_scope_names = MagicMock(
+        return_value=["tools:read", "tools:search"])           # but tools DO run
+    store, grants = _store(), _grants()
+
+    outcome = await JobRunner(orch, store, grants).run_job(_job())
+
+    assert outcome == "success"
+    kwargs = orch.run_scheduled_turn.await_args.kwargs
+    assert kwargs["allowed_scopes"] == ["tools:read", "tools:search"]
+    orch.tool_permissions.get_agent_scopes.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_effective_revocation_still_skips():
+    """The containment itself is unchanged: when the effective set no longer
+    intersects what was consented, the run skips rather than running wider."""
+    orch = _orch()
+    orch.tool_permissions.get_enabled_scope_names = MagicMock(return_value=[])
+    store, grants = _store(), _grants()
+
+    outcome = await JobRunner(orch, store, grants).run_job(_job())
+
+    assert outcome == "skipped_auth"
+    orch.run_scheduled_turn.assert_not_awaited()
 
 
 # --------------------------------------------------------------------------- #

@@ -79,9 +79,15 @@ def test_subtree_slice_cannot_exceed_parent_ceiling():
 def _mta(*, grant_valid=True, latest=None, mint="fresh-token",
          current_scopes=None):
     orch = MagicMock()
-    orch.tool_permissions.get_agent_scopes = MagicMock(
-        return_value=current_scopes if current_scopes is not None
-        else {"tools:read": True, "tools:search": True})
+    # Callers describe the user's CURRENT grants as a {scope: enabled} dict, but
+    # derive reads the EFFECTIVE list (get_enabled_scope_names) so the feature-040
+    # safe baseline is not mistaken for "no grants" — a raw agent_scopes read is
+    # empty for the post-040 default population.
+    _scopes = ({"tools:read": True, "tools:search": True}
+               if current_scopes is None else current_scopes)
+    orch.tool_permissions.get_agent_scopes = MagicMock(return_value=dict(_scopes))
+    orch.tool_permissions.get_enabled_scope_names = MagicMock(
+        return_value=[s for s, on in _scopes.items() if on])
     grants = MagicMock()
     grants.is_valid = MagicMock(return_value=grant_valid)
     grants.latest_valid_for = MagicMock(return_value=latest)
