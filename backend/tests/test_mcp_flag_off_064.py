@@ -6,6 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from orchestrator.mcp_server_endpoint import install_mcp_server
 from shared.feature_flags import FeatureFlags
 
 
@@ -57,3 +61,26 @@ def test_endpoint_install_is_structurally_guarded_by_the_flag():
         if guarded:
             break
     assert guarded
+
+
+def test_recreated_flag_off_app_has_no_residual_surface_or_server_record(monkeypatch):
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realms/astral")
+    server = object()
+    enabled_app = FastAPI()
+    install_mcp_server(enabled_app, server, public_base_url="http://mcp.test")
+    enabled = TestClient(enabled_app)
+    assert enabled.get("/.well-known/oauth-protected-resource/mcp").status_code == 200
+
+    # Feature flags are startup state. A recreated process with the flag off
+    # never calls install_mcp_server, so the old app/router is unreachable and
+    # no endpoint-owned session/advertisement record exists to tear down.
+    disabled_app = FastAPI()
+    disabled_paths = {
+        route.path for route in disabled_app.routes if hasattr(route, "path")
+    }
+    assert "/mcp" not in disabled_paths
+    assert "/.well-known/oauth-protected-resource/mcp" not in disabled_paths
+    disabled = TestClient(disabled_app)
+    assert disabled.post("/mcp").status_code == 404
+    assert disabled.get("/.well-known/oauth-protected-resource/mcp").status_code == 404

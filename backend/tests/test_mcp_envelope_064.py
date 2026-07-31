@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+from importlib import import_module
 from types import SimpleNamespace
 
 import pytest
 
 from shared.feature_flags import FeatureFlags
+from shared.local_transport import FencedTunnelSocket
 from shared.protocol import (
     AgentCard,
     AgentSkill,
@@ -168,3 +171,115 @@ def test_mcp_server_flag_is_fail_closed_and_read_from_documented_env(
     assert FeatureFlags().is_enabled("mcp_server") is False
     monkeypatch.setenv("FF_MCP_SERVER", "true")
     assert FeatureFlags().is_enabled("mcp_server") is True
+
+
+def test_protocol_error_serialization_includes_structured_data_only_when_present() -> None:
+    assert MCPProtocolError(-1, "plain").to_error() == {
+        "code": -1,
+        "message": "plain",
+        "retryable": False,
+    }
+    assert MCPProtocolError(-2, "detail", data={"supported": ["v1"]}).to_error()[
+        "data"
+    ] == {"supported": ["v1"]}
+
+
+@pytest.mark.parametrize("payload", ["{", "[]"])
+def test_message_parser_rejects_invalid_json_or_non_object(payload: str) -> None:
+    with pytest.raises(ProtocolValidationError):
+        Message.from_json(payload)
+
+
+@pytest.mark.parametrize(
+    "mcp_request",
+    [
+        MCPRequest(
+            request_id="caps",
+            method="tools/list",
+            protocol_version=MCP_PROTOCOL_VERSION,
+            caller_capabilities=[],
+        ),
+        MCPRequest(
+            request_id="info",
+            method="tools/list",
+            protocol_version=MCP_PROTOCOL_VERSION,
+            caller_capabilities={},
+            caller_info="bad",
+        ),
+    ],
+)
+def test_modern_request_metadata_must_use_objects(mcp_request: MCPRequest) -> None:
+    with pytest.raises(MCPProtocolError):
+        mcp_request.validate_protocol_metadata(allow_legacy=False)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"responder_info": "bad"},
+        {"error": "bad"},
+        {"ui_components": "bad"},
+    ],
+)
+def test_response_metadata_shapes_are_validated(kwargs: dict) -> None:
+    with pytest.raises(ProtocolValidationError):
+        MCPResponse(**kwargs)
+
+
+def test_agent_card_parser_rejects_non_object_and_non_list_skills() -> None:
+    with pytest.raises(ProtocolValidationError, match="must be an object"):
+        AgentCard.from_dict([])
+    with pytest.raises(ProtocolValidationError, match="skills must be a list"):
+        AgentCard.from_dict({"name": "x", "skills": {}})
+
+
+def test_non_network_request_paths_do_not_reparse_additive_request_fields() -> None:
+    from orchestrator.orchestrator import Orchestrator
+
+    in_process = inspect.getsource(Orchestrator._execute_in_process)
+    tunnel = inspect.getsource(FencedTunnelSocket.send_fenced)
+    assert "Message.from_json" not in in_process
+    assert "agent.handle_mcp_request(loopback, request)" in in_process
+    assert "Message.from_json" not in tunnel
+    assert '"frame": frame' in tunnel
+
+
+def test_protocol_metadata_never_enters_splat_tool_arguments() -> None:
+    modules = (
+        "dice_roller",
+        "general",
+        "journal_review",
+        "medical",
+        "ml_services",
+        "remote_compute",
+        "summarizer",
+        "weather",
+        "web_research",
+    )
+    for module_name in modules:
+        server = import_module(f"agents.{module_name}.mcp_server").MCPServer()
+        captured = {}
+
+        def probe(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True}
+
+        server.tools = {
+            "probe": {
+                "function": probe,
+                "description": "probe",
+                "input_schema": {"type": "object"},
+            }
+        }
+        response = server.process_request(
+            MCPRequest(
+                request_id=f"probe-{module_name}",
+                method="tools/call",
+                params={"name": "probe", "arguments": {"value": module_name}},
+                protocol_version=MCP_PROTOCOL_VERSION,
+                caller_capabilities={"future": True},
+                caller_info={"name": "test", "version": "1"},
+            )
+        )
+        assert response.error is None
+        assert captured == {"value": module_name}

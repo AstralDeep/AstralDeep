@@ -28,7 +28,7 @@ from orchestrator.user_agents import (
     HostSessionRecord,
 )
 from orchestrator.work_admission import ExecutionFence
-from shared.protocol import AgentHostRegistration, RuntimeFence
+from shared.protocol import AgentHostRegistration, ProtocolValidationError, RuntimeFence
 from shared.protocol import CandidateCapabilityMap
 
 
@@ -740,6 +740,8 @@ async def test_fenced_result_settles_durably_before_waking_the_caller():
         "request_generation": request_generation,
         "fence": runtime_fence.to_dict(),
         "result": {"ok": True},
+        "result_type": "complete",
+        "responder_info": {"name": "agent-060", "version": "1.0.0"},
     }
 
     await orchestrator._handle_personal_agent_result(websocket, frame)
@@ -747,6 +749,25 @@ async def test_fenced_result_settles_durably_before_waking_the_caller():
     assert events == ["durable_settlement"]
     assert waiter.done()
     assert waiter.result().result == {"ok": True}
+    assert waiter.result().result_type == "complete"
+    assert waiter.result().responder_info == {
+        "name": "agent-060",
+        "version": "1.0.0",
+    }
+
+
+@pytest.mark.asyncio
+async def test_fenced_result_refuses_unknown_field_before_repository_access():
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    frame = {
+        "type": "mcp_response",
+        "request_id": _uuid(),
+        "request_generation": _uuid(),
+        "fence": {},
+        "future_field": True,
+    }
+    with pytest.raises(ProtocolValidationError, match="response fields are invalid"):
+        await orchestrator._handle_personal_agent_result(object(), frame)
 
 
 @pytest.mark.asyncio

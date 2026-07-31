@@ -9,11 +9,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
 from orchestrator.mcp_server_endpoint import (
     _admitted_request,
+    _decode_name_header,
+    _parse_request,
+    _record_metric,
+    _structured,
+    _tool_result,
     _wait_for_disconnect,
+    _with_origin,
     install_mcp_server,
 )
 from orchestrator.mcp_projection import project_tools
@@ -525,3 +532,237 @@ async def test_disconnect_cancels_inflight_tool_and_releases_admission(endpoint)
     status = orchestrator.work_admission.inspect_admission_class(AdmissionClass.MCP)
     assert status.active_count == 0
     assert status.queued_count == 0
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("plain-name", "plain-name"),
+        ("=?base64?Y2Fmw6k=?=", "café"),
+    ],
+)
+def test_name_header_decoding_accepts_plain_ascii_and_utf8_sentinel(value, expected):
+    assert _decode_name_header(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "=?base64?!!!?=",
+        "=?base64??=",
+        " leading",
+        "trailing ",
+        "café",
+        "=?base64?not-actually-encoded",
+        "looks-like?=",
+    ],
+)
+def test_name_header_decoding_rejects_ambiguous_or_unsafe_values(value):
+    with pytest.raises(ValueError):
+        _decode_name_header(value)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"not-json",
+        b"[]",
+        b'{"jsonrpc":"1.0","method":"x"}',
+        b'{"jsonrpc":"2.0","result":{},"method":"x"}',
+        b'{"jsonrpc":"2.0","method":3}',
+        b'{"jsonrpc":"2.0","method":"x","id":true}',
+        b'{"jsonrpc":"2.0","method":"x","id":[]}',
+        b'{"jsonrpc":"2.0","method":"x","params":[]}',
+    ],
+)
+def test_json_rpc_parser_rejects_malformed_client_envelopes(payload):
+    with pytest.raises(ValueError):
+        _parse_request(payload)
+
+
+def test_json_rpc_parser_marks_notifications_and_preserves_null_id():
+    payload, request_id, notification = _parse_request(
+        b'{"jsonrpc":"2.0","method":"ping"}'
+    )
+    assert payload["method"] == "ping"
+    assert request_id is None and notification is True
+    _, request_id, notification = _parse_request(
+        b'{"jsonrpc":"2.0","method":"ping","id":null}'
+    )
+    assert request_id is None and notification is False
+
+
+def test_tool_result_covers_error_scalar_and_json_fallbacks():
+    error = _tool_result(MCPResponse(error={"message": "x" * 70_000}))
+    assert error["isError"] is True
+    assert len(error["content"][0]["text"]) == 65_536
+
+    scalar = _tool_result(MCPResponse(result=7, ui_components=[]))
+    assert scalar["structuredContent"] == {"value": 7}
+    assert scalar["content"] == [{"type": "text", "text": '{"value": 7}'}]
+    assert _structured(None) == {}
+    mapping = {"ok": True}
+    assert _structured(mapping) is mapping
+
+
+def test_cors_preflight_and_same_origin_response_never_allow_credentials(endpoint):
+    client, _ = endpoint
+    preflight = client.options(
+        "/mcp",
+        headers={
+            "Origin": BASE,
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert preflight.status_code == 204
+    assert preflight.headers["access-control-allow-origin"] == BASE
+    assert "access-control-allow-credentials" not in preflight.headers
+
+    body, headers = _request("server/discover", headers={"Origin": BASE})
+    response = client.post("/mcp", json=body, headers=headers)
+    assert response.headers["access-control-allow-origin"] == BASE
+    assert "access-control-allow-credentials" not in response.headers
+
+    metadata = client.get(
+        "/.well-known/oauth-protected-resource/mcp",
+        headers={"Origin": BASE},
+    )
+    assert metadata.headers["access-control-allow-origin"] == BASE
+
+
+def test_non_mcp_routes_pass_through_cors_middleware(endpoint):
+    client, _ = endpoint
+    assert client.get("/unrelated").status_code == 404
+
+
+def test_endpoint_rejects_media_type_and_malformed_json(endpoint):
+    client, _ = endpoint
+    body, headers = _request("server/discover")
+    headers["Content-Type"] = "text/plain"
+    assert client.post("/mcp", content=json.dumps(body), headers=headers).status_code == 415
+
+    headers["Content-Type"] = "application/json"
+    response = client.post("/mcp", content="{", headers=headers)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == -32600
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda body, headers: body.__setitem__("params", []),
+        lambda body, headers: body["params"].__setitem__(
+            "_meta", {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+        ),
+        lambda body, headers: body["params"]["_meta"].__setitem__(
+            "io.modelcontextprotocol/clientCapabilities", []
+        ),
+        lambda body, headers: body["params"].__setitem__("requiredCapabilities", "x"),
+    ],
+)
+def test_endpoint_rejects_additional_invalid_metadata_shapes(endpoint, mutate):
+    client, _ = endpoint
+    body, headers = _request("server/discover")
+    mutate(body, headers)
+    response = client.post("/mcp", content=json.dumps(body), headers=headers)
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"arguments": {}},
+        {"name": "read_value", "arguments": []},
+    ],
+)
+def test_tool_call_requires_valid_name_and_argument_object(endpoint, params):
+    client, _ = endpoint
+    body, headers = _request(
+        "tools/call",
+        params,
+        headers={"Mcp-Name": "read_value"},
+    )
+    response = client.post("/mcp", json=body, headers=headers)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == -32602
+
+
+def test_tool_call_requires_matching_name_header(endpoint):
+    client, _ = endpoint
+    body, headers = _request("tools/call", {"name": "read_value", "arguments": {}})
+    assert client.post("/mcp", json=body, headers=headers).status_code == 400
+    headers["Mcp-Name"] = "different"
+    assert client.post("/mcp", json=body, headers=headers).status_code == 400
+
+
+def test_capacity_refusal_is_retryable_transport_response(endpoint, monkeypatch):
+    client, orchestrator = endpoint
+    orchestrator._claim_personal_agent_operation = AsyncMock(return_value=None)
+    body, headers = _request("server/discover")
+    response = client.post("/mcp", json=body, headers=headers)
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "1"
+    assert response.json()["error"]["message"] == "MCP request capacity is exhausted"
+
+
+def test_missing_subject_and_internal_failure_are_redacted(endpoint, monkeypatch):
+    import orchestrator.mcp_server_endpoint as endpoint_module
+
+    client, orchestrator = endpoint
+
+    async def no_subject(**_kwargs):
+        return {"scope": "mcp:discover"}
+
+    monkeypatch.setattr(endpoint_module, "authorize_mcp_request", no_subject)
+    body, headers = _request("server/discover")
+    assert client.post("/mcp", json=body, headers=headers).status_code == 401
+
+    async def authorized(**_kwargs):
+        return {"sub": "u1", "scope": "mcp:discover"}
+
+    monkeypatch.setattr(endpoint_module, "authorize_mcp_request", authorized)
+    orchestrator._claim_personal_agent_operation = AsyncMock(
+        side_effect=RuntimeError("patient-secret")
+    )
+    response = client.post("/mcp", json=body, headers=headers)
+    assert response.status_code == 500
+    assert "patient-secret" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_wait_for_disconnect_returns_completed_operation():
+    class _ConnectedRequest:
+        async def is_disconnected(self):
+            return False
+
+    async def complete():
+        return "done"
+
+    assert await _wait_for_disconnect(_ConnectedRequest(), complete()) == "done"
+
+
+@pytest.mark.asyncio
+async def test_admitted_request_terminalizes_failures(endpoint):
+    _, orchestrator = endpoint
+    with pytest.raises(RuntimeError, match="boom"):
+        async with _admitted_request(
+            orchestrator,
+            user_id="test_user",
+            method="server/discover",
+        ):
+            raise RuntimeError("boom")
+    status = orchestrator.work_admission.inspect_admission_class(AdmissionClass.MCP)
+    assert status.active_count == 0
+
+
+def test_metric_without_observer_and_origin_header_cleanup():
+    _record_metric(object(), "requested", phase="discover", result_code="received")
+    response = Response(
+        headers={
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Origin": "https://wrong.test",
+        }
+    )
+    cleaned = _with_origin(response, BASE, BASE)
+    assert cleaned.headers["access-control-allow-origin"] == BASE
+    assert "access-control-allow-credentials" not in cleaned.headers

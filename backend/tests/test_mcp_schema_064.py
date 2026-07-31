@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -135,3 +136,104 @@ def test_agent_card_threads_explicit_output_schema_or_null() -> None:
     assert schemas["derived"]["type"] == "object"
     assert schemas["opaque"] is None
 
+
+@pytest.mark.parametrize(
+    ("schema", "kwargs", "reason"),
+    [
+        ({"type": "object"}, {"tool_name": ""}, "tool name is required"),
+        ([], {}, "schema must be an object"),
+        ({"type": "object", "const": float("nan")}, {}, "finite JSON values"),
+        ({"type": "object", "$ref": "other.json"}, {}, "non-local \\$ref"),
+        ({"type": "object", "$ref": "#anchor"}, {}, "unsupported local \\$ref"),
+        ({"type": "mystery"}, {}, "invalid type declaration"),
+        ({"type": []}, {}, "invalid type declaration"),
+        ({"type": "object", "required": ["x", "x"]}, {}, "unique strings"),
+        ({"type": "object", "required": [1]}, {}, "unique strings"),
+        ({"type": "object", "$ref": 3}, {}, "must be a string"),
+        ({"type": "object", "properties": []}, {}, "must be an object"),
+        ({"type": "object", "properties": {1: {"type": "string"}}}, {}, "names .* strings"),
+        ({"type": "object", "items": 4}, {}, "subschema .* object or boolean"),
+        ({"type": "object", "allOf": []}, {}, "non-empty array"),
+        ({"type": "object", "oneOf": "bad"}, {}, "non-empty array"),
+    ],
+)
+def test_schema_validation_rejects_each_unsafe_shape(
+    schema: object,
+    kwargs: dict[str, str],
+    reason: str,
+) -> None:
+    with pytest.raises(ToolSchemaError, match=reason):
+        validate_tool_schema(
+            schema,
+            kwargs.get("tool_name", "edge_case"),
+            require_object_root=False,
+        )
+
+
+def test_schema_validation_accepts_boolean_subschemas_and_local_pointer_arrays() -> None:
+    schema = {
+        "type": "object",
+        "$defs": {"choices": {"prefixItems": [{"type": "string"}]}},
+        "properties": {
+            "value": {"$ref": "#/$defs/choices/prefixItems/0"},
+            "anything": True,
+        },
+        "additionalProperties": False,
+        "allOf": [{"type": ["object", "null"]}],
+    }
+
+    assert validate_tool_schema(
+        schema,
+        "local_array_ref",
+        require_object_root=True,
+    )["$schema"] == JSON_SCHEMA_2020_12
+    assert validate_tool_schema(
+        {"type": "object", "$ref": "#"},
+        "root_ref",
+        require_object_root=True,
+    )["$ref"] == "#"
+
+
+def test_schema_validation_enforces_encoded_size_limit() -> None:
+    with pytest.raises(ToolSchemaError, match="9-byte limit"):
+        validate_tool_schema(
+            {"type": "object"},
+            "large",
+            require_object_root=True,
+            max_bytes=9,
+        )
+
+
+@pytest.mark.asyncio
+async def test_agent_registration_refuses_invalid_schema_before_state_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator.orchestrator import Orchestrator
+    from shared.protocol import AgentCard, AgentSkill, RegisterAgent
+
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.setenv("AGENT_API_KEY", "")
+    fake = SimpleNamespace(agents={}, agent_cards={})
+    websocket = SimpleNamespace(close=AsyncMock())
+    card = AgentCard(
+        name="Unsafe",
+        description="",
+        agent_id="unsafe-1",
+        skills=[
+            AgentSkill(
+                id="bad",
+                name="Bad",
+                description="",
+                input_schema={"type": "string"},
+            )
+        ],
+    )
+
+    await Orchestrator.register_agent(
+        fake,
+        websocket,
+        RegisterAgent(agent_card=card),
+    )
+
+    assert fake.agents == {} and fake.agent_cards == {}
+    websocket.close.assert_awaited_once_with(code=1008, reason="invalid tool schema")
