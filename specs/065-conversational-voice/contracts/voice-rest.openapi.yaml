@@ -1,0 +1,1219 @@
+openapi: 3.1.0
+info:
+  title: AstralDeep Conversational Voice Control API
+  version: 0.1.0
+  description: >-
+    Authenticated control and short-lived media-grant API for feature 065. The
+    ordinary AstralDeep WebSocket chat_message action remains the only query
+    submission contract. No endpoint accepts raw audio, an LLM choice, a speech
+    endpoint, a speech credential, a model override, or a voice override. Every
+    mutating operation additionally requires the device, connection generation,
+    and opaque voice-control binding minted by the server on that device's most
+    recent authenticated register_ui exchange. The server verifies that the
+    bearer principal owns the registered connection, the supplied device UUID
+    equals both the registered device and any request device, the
+    connection-generation UUID is the currently live generation, and the binding
+    is the exact unexpired value scoped to that principal/device/connection tuple.
+    Session control additionally requires that device to be the current session
+    owner, except that explicit takeover first validates principal ownership of
+    the prior session and then atomically makes the bound device its new owner.
+    These headers complement Keycloak authorization; they are not standalone
+    credentials and must never be logged or durably persisted by a client.
+servers:
+  - url: /
+security:
+  - keycloakBearer: []
+tags:
+  - name: Voice
+paths:
+  /api/voice/capability:
+    get:
+      tags: [Voice]
+      operationId: getVoiceCapability
+      summary: Get the server-owned voice capability and exact-profile readiness
+      responses:
+        "200":
+          description: Capability is known; ready may be false.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceCapability"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/voice/sessions:
+    post:
+      tags: [Voice]
+      operationId: createVoiceSession
+      summary: Start a user-owned media session or report that takeover is required
+      parameters:
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+      description: >-
+        Requires a recent explicit client activation and an authorized runtime
+        microphone state. The server selects the room, identities, worker, model,
+        voice, transport, and grant scope. The body device_id must exactly equal
+        X-Astral-Device-Id and the device registered to the bound connection. An
+        exact retry with the same activation_id returns the same logical current
+        session/grant without creating another session; changed reuse fails.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "201":
+          description: Session created and a short-lived media grant minted.
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+              description: Always no-store.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceSessionWithGrant"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ControlBindingRejected"
+        "409":
+          description: Another client owns the user's live media session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TakeoverRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/voice/sessions/{session_id}/takeover:
+    post:
+      tags: [Voice]
+      operationId: takeOverVoiceSession
+      summary: Explicitly transfer the user's active media ownership to this device
+      description: >-
+        The bearer principal must own the prior session. The body device_id must
+        exactly equal X-Astral-Device-Id and the device registered to the bound
+        connection; on success it atomically becomes the replacement session owner.
+        An exact retry of the same activation_id returns that same replacement
+        generation/grant rather than taking over twice; changed reuse fails.
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TakeoverRequest"
+      responses:
+        "200":
+          description: Prior media ended and replacement grant minted; accepted work continues.
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+              description: Always no-store.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceSessionWithGrant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ControlBindingRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/StaleGeneration"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/voice/sessions/{session_id}:
+    patch:
+      tags: [Voice]
+      operationId: updateVoiceSession
+      summary: Update future-turn chat, foreground, mute, microphone, or interaction state
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSessionRequest"
+      responses:
+        "200":
+          description: Owner-validated generation-fenced session state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceSession"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ControlBindingRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/StaleGeneration"
+    delete:
+      tags: [Voice]
+      operationId: endVoiceSession
+      summary: End capture/playback without cancelling accepted work
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+        - name: expected_generation
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: expected_media_grant_revision
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "204":
+          description: Media ownership ended; response has no body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ControlBindingRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/StaleGeneration"
+
+  /api/voice/sessions/{session_id}/media-grants:
+    get:
+      tags: [Voice]
+      operationId: getCurrentVoiceMediaGrantState
+      summary: Recover current session and media-grant state without bearer material
+      description: >-
+        Returns the authoritative session and credential-free grant metadata for
+        reconnect recovery. It never returns a LiveKit join token, watch ticket,
+        participant identity, room name, or media URL. After a refresh replay
+        window expires, the client obtains this state and submits a new refresh_id
+        with the current generation and media_grant_revision to rotate again.
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+      responses:
+        "200":
+          description: Credential-free current session and media-grant state.
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+              description: Always no-store.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceMediaGrantState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ControlBindingRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    post:
+      tags: [Voice]
+      operationId: refreshVoiceMediaGrant
+      summary: Rotate a short-lived media grant during an authenticated reconnect
+      description: >-
+        The first valid request for a refresh_id rotates exactly once. An identical
+        retry from the same bound principal/device/connection within the at-most
+        30-second replay window returns the same logical current grant without a
+        second rotation. The first request fixes its non-secret claims and
+        deterministic nonce; the server regenerates the credential during the
+        replay window rather than retaining a bearer. It stores only a non-secret
+        request fingerprint/idempotency marker and fixed claim metadata for the
+        session lifetime; neither bearer material nor request headers may enter
+        logs, audit payloads, or durable storage. Reusing a refresh_id with changed
+        input, or after its replay window, returns credential-free current state. A
+        newly rotated credential is not returned until the expected worker has
+        acknowledged media_grant_applied; retrying the same refresh_id safely
+        re-drives pending worker application without another revision increment.
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshGrantRequest"
+      responses:
+        "200":
+          description: >-
+            Idempotent retry within the replay window; the exact grant minted by
+            the first request for this refresh_id is returned without rotation.
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+              description: Always no-store.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefreshedVoiceSessionWithGrant"
+        "201":
+          description: >-
+            The authoritative session plus a new no-store grant are returned. The
+            session generation is unchanged; media_grant_revision and participant
+            identity advance. The prior identity is rejected/removed immediately,
+            while its already-minted short-lived JWT remains cryptographically valid
+            only until expiry and conveys no accepted authority.
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+              description: Always no-store.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefreshedVoiceSessionWithGrant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ControlBindingRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/GrantRefreshConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/voice/sessions/{session_id}/speech/stop:
+    post:
+      tags: [Voice]
+      operationId: stopVoiceSpeech
+      summary: Interrupt current assistant speech promptly
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerationRequest"
+      responses:
+        "202":
+          description: Stop command accepted and generation-fenced.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ControlBindingRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/StaleGeneration"
+
+  /api/voice/sessions/{session_id}/results/{result_id}/read-consent:
+    post:
+      tags: [Voice]
+      operationId: consentToSensitiveRecap
+      summary: Grant one-result consent to read a pending sensitive recap
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+        - name: result_id
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/OpaqueId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SensitiveConsentRequest"
+      responses:
+        "202":
+          description: Fresh owner/result-bound consent accepted for one bounded recap.
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ControlBindingRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/StaleGeneration"
+
+components:
+  securitySchemes:
+    keycloakBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Uuid4"
+    VoiceDeviceIdHeader:
+      name: X-Astral-Device-Id
+      in: header
+      required: true
+      description: >-
+        RFC 4122 version-4 device UUID established by the authenticated
+        register_ui exchange. It must equal the device on the live registered
+        connection and any device_id in the body. It must also equal the current
+        session owner for ordinary control operations; explicit takeover instead
+        assigns it as the new owner after authenticating ownership of the session.
+      schema:
+        $ref: "#/components/schemas/Uuid4"
+    VoiceConnectionGenerationHeader:
+      name: X-Astral-Connection-Generation
+      in: header
+      required: true
+      description: >-
+        Canonical RFC 4122 version-4 connection-generation UUID freshly generated
+        by the client and accepted/bound by the server on the most recent
+        authenticated register_ui exchange. A reconnect replaces it; stale or
+        non-current generations cannot control the voice session.
+      schema:
+        $ref: "#/components/schemas/Uuid4"
+    VoiceControlBindingHeader:
+      name: X-Astral-Voice-Control-Binding
+      in: header
+      required: true
+      description: >-
+        Opaque, high-entropy, short-lived binding minted by the server during the
+        authenticated register_ui exchange and scoped to the bearer principal,
+        device UUID, and connection-generation UUID. It is compared exactly and
+        is never a substitute for Keycloak authorization. Clients keep it only in
+        volatile connection state and servers redact it from logs and audit data.
+        It expires after at most ten minutes and never beyond the Keycloak token
+        or registered socket; replacement is issued only over that authenticated socket.
+      schema:
+        type: string
+        minLength: 32
+        maxLength: 512
+        pattern: "^[A-Za-z0-9._~-]+$"
+
+  responses:
+    Unauthorized:
+      description: Missing, expired, or invalid Keycloak user authorization.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ControlBindingRejected:
+      description: >-
+        The voice-control binding is missing, expired, not owned by the bearer
+        principal, not current for the registered UI connection, or does not
+        exactly match the supplied/body device, current connection generation,
+        and applicable current-or-takeover session ownership rule.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InvalidRequest:
+      description: Strict schema, capability, permission, or state validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: Resource is absent or not owned by the authenticated user.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    StaleGeneration:
+      description: Expected session generation or media-grant revision is stale, ended, or owned by another device.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    GrantRefreshConflict:
+      description: >-
+        The generation or revision is stale, the refresh_id was reused with a
+        different request, or its credential replay window expired. The response
+        exposes only current credential-free state so the client can retry with a
+        new refresh_id and current fences.
+      headers:
+        Cache-Control:
+          schema:
+            const: no-store
+          description: Always no-store.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/VoiceGrantRefreshProblem"
+    RateLimited:
+      description: Per-user/deployment capacity is temporarily unavailable.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unavailable:
+      description: Voice media, worker, exact ASR/TTS model, or voice is not ready.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    OpaqueId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: "^[A-Za-z0-9._:-]+$"
+
+    Uuid4:
+      type: string
+      format: uuid
+      pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      description: Canonical lowercase RFC 4122 version-4 UUID.
+
+    DeviceKind:
+      type: string
+      enum: [web, windows, android, ios, macos, watchos]
+
+    VoiceTransport:
+      type: string
+      enum: [livekit, watch_pcm_websocket]
+
+    PermissionState:
+      type: string
+      enum: [not_determined, authorized, denied, restricted]
+
+    CapabilityStatus:
+      type: string
+      enum: [ready, unavailable, degraded, checking]
+
+    CapabilityReason:
+      type: string
+      enum:
+        - ready
+        - feature_disabled
+        - media_unconfigured
+        - media_unreachable
+        - worker_unavailable
+        - asr_unavailable
+        - tts_unavailable
+        - voice_unavailable
+        - output_language_unsupported
+        - capacity_exhausted
+        - permission_denied
+        - permission_restricted
+        - no_microphone
+        - no_audio_output
+        - unsupported_transport
+        - authentication_required
+        - internal_error
+
+    VoiceCapability:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - status
+        - reason
+        - checked_at
+        - expires_at
+        - profile
+        - supported_transports
+        - components
+      properties:
+        schema_version:
+          const: "1"
+        status:
+          $ref: "#/components/schemas/CapabilityStatus"
+        reason:
+          $ref: "#/components/schemas/CapabilityReason"
+        message:
+          type: string
+          maxLength: 240
+        checked_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        profile:
+          $ref: "#/components/schemas/VoiceProfile"
+        supported_transports:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/VoiceTransport"
+        components:
+          type: object
+          additionalProperties: false
+          required: [livekit, worker, asr, tts, voice]
+          properties:
+            livekit: { $ref: "#/components/schemas/CapabilityStatus" }
+            worker: { $ref: "#/components/schemas/CapabilityStatus" }
+            asr: { $ref: "#/components/schemas/CapabilityStatus" }
+            tts: { $ref: "#/components/schemas/CapabilityStatus" }
+            voice: { $ref: "#/components/schemas/CapabilityStatus" }
+
+    VoiceProfile:
+      type: object
+      additionalProperties: false
+      required: [asr_model, tts_model, voice, output_locale, output_format, output_sample_rate_hz]
+      properties:
+        asr_model:
+          const: Systran/faster-whisper-large-v3
+        tts_model:
+          const: speaches-ai/Kokoro-82M-v1.0-ONNX
+        voice:
+          const: af_heart
+        output_locale:
+          const: en-US
+        output_format:
+          const: wav
+        output_sample_rate_hz:
+          const: 24000
+
+    ClientMediaCapability:
+      type: object
+      additionalProperties: false
+      required:
+        - has_microphone
+        - has_audio_output
+        - microphone_permission
+        - transport
+      properties:
+        has_microphone:
+          type: boolean
+        has_audio_output:
+          type: boolean
+        microphone_permission:
+          $ref: "#/components/schemas/PermissionState"
+        full_duplex:
+          type: boolean
+        transport:
+          $ref: "#/components/schemas/VoiceTransport"
+
+    CreateSessionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - device_id
+        - device_kind
+        - visible_chat_id
+        - activation_id
+        - capability
+        - foreground_active
+      properties:
+        device_id:
+          description: Must equal X-Astral-Device-Id and the registered connection device.
+          $ref: "#/components/schemas/Uuid4"
+        device_kind:
+          $ref: "#/components/schemas/DeviceKind"
+        visible_chat_id:
+          $ref: "#/components/schemas/Uuid4"
+        activation_id:
+          description: >-
+            Client-generated UUID4 minted only for this explicit click/tap and reused
+            only to retry this request. It is correlation/idempotency, not
+            authorization or proof of OS permission.
+          $ref: "#/components/schemas/Uuid4"
+        capability:
+          $ref: "#/components/schemas/ClientMediaCapability"
+        foreground_active:
+          description: >-
+            Explicit activation can create a session only while this registered
+            client is foreground-active and permitted to capture/play audio.
+          const: true
+
+    TakeoverRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - device_id
+        - device_kind
+        - visible_chat_id
+        - activation_id
+        - capability
+        - expected_generation
+        - expected_media_grant_revision
+        - foreground_active
+      properties:
+        device_id:
+          description: Must equal X-Astral-Device-Id and the registered connection device.
+          $ref: "#/components/schemas/Uuid4"
+        device_kind:
+          $ref: "#/components/schemas/DeviceKind"
+        visible_chat_id:
+          $ref: "#/components/schemas/Uuid4"
+        activation_id:
+          description: Client-generated UUID4 minted for this explicit takeover click/tap.
+          $ref: "#/components/schemas/Uuid4"
+        capability:
+          $ref: "#/components/schemas/ClientMediaCapability"
+        expected_generation:
+          type: integer
+          minimum: 1
+        expected_media_grant_revision:
+          type: integer
+          minimum: 1
+        foreground_active:
+          description: >-
+            Explicit takeover can complete only while this registered client is
+            foreground-active and permitted to capture/play audio.
+          const: true
+
+    GenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_generation, expected_media_grant_revision]
+      properties:
+        expected_generation:
+          type: integer
+          minimum: 1
+        expected_media_grant_revision:
+          type: integer
+          minimum: 1
+
+    RefreshGrantRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - refresh_id
+        - expected_generation
+        - expected_media_grant_revision
+        - device_id
+      properties:
+        refresh_id:
+          description: >-
+            Client-generated UUID4 unique within this session. Identical retries
+            must use the same complete request and bound connection. The server
+            keeps a non-secret fingerprint/idempotency marker until session end
+            plus fixed non-secret claim metadata for a replay window of no more
+            than 30 seconds; it regenerates and never stores bearer material.
+          $ref: "#/components/schemas/Uuid4"
+        expected_generation:
+          type: integer
+          minimum: 1
+        expected_media_grant_revision:
+          type: integer
+          minimum: 1
+        device_id:
+          description: Must equal X-Astral-Device-Id and the session owner device.
+          $ref: "#/components/schemas/Uuid4"
+
+    UpdateSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_generation, expected_media_grant_revision]
+      minProperties: 3
+      properties:
+        expected_generation:
+          type: integer
+          minimum: 1
+        expected_media_grant_revision:
+          type: integer
+          minimum: 1
+        visible_chat_id:
+          $ref: "#/components/schemas/Uuid4"
+        speech_muted:
+          type: boolean
+        microphone_enabled:
+          type: boolean
+        foreground_active:
+          description: >-
+            False immediately suspends new capture and assistant playback and
+            moves a live session to suspended without cancelling
+            accepted work. True may resume only on the currently registered,
+            bound connection after runtime media permission is revalidated.
+          type: boolean
+        foreground_reason:
+          type: string
+          enum: [foreground, backgrounded, locked, audio_interrupted, route_unavailable, connection_lost]
+        interaction:
+          description: >-
+            Content-free interaction signal. The server stamps authenticated receipt
+            time; no client clock value extends the idle lease.
+          const: true
+      allOf:
+        - if:
+            required: [foreground_active]
+            properties:
+              foreground_active: { const: true }
+          then:
+            required: [foreground_reason]
+            properties:
+              foreground_reason: { const: foreground }
+        - if:
+            required: [foreground_active]
+            properties:
+              foreground_active: { const: false }
+          then:
+            required: [foreground_reason]
+            properties:
+              microphone_enabled: { const: false }
+              foreground_reason:
+                enum: [backgrounded, locked, audio_interrupted, route_unavailable, connection_lost]
+        - if:
+            required: [foreground_reason]
+          then:
+            required: [foreground_active]
+
+    VoiceSessionState:
+      type: string
+      enum: [starting, active, suspended, reconnecting, ending, ended, error]
+
+    VoiceSession:
+      type: object
+      additionalProperties: false
+      required:
+        - session_id
+        - device_id
+        - device_kind
+        - transport
+        - state
+        - generation
+        - media_grant_revision
+        - owner_connection_generation
+        - visible_chat_id
+        - applied_visible_chat_id
+        - chat_context_revision
+        - applied_chat_context_revision
+        - chat_context_synced
+        - foreground_active
+        - foreground_reason
+        - foreground_changed_at
+        - speech_muted
+        - microphone_enabled
+        - lease_expires_at
+        - started_at
+      properties:
+        session_id:
+          $ref: "#/components/schemas/Uuid4"
+        device_id:
+          $ref: "#/components/schemas/Uuid4"
+        device_kind:
+          $ref: "#/components/schemas/DeviceKind"
+        transport:
+          $ref: "#/components/schemas/VoiceTransport"
+        state:
+          $ref: "#/components/schemas/VoiceSessionState"
+        generation:
+          type: integer
+          minimum: 1
+        media_grant_revision:
+          type: integer
+          minimum: 1
+        owner_connection_generation:
+          description: Current registered UI connection generation allowed to control this session.
+          $ref: "#/components/schemas/Uuid4"
+        chat_context_revision:
+          type: integer
+          minimum: 1
+        applied_chat_context_revision:
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: "null"
+        chat_context_synced:
+          description: >-
+            True only when applied_visible_chat_id equals visible_chat_id and
+            applied_chat_context_revision equals chat_context_revision. False
+            pauses new-turn capture until the worker acknowledges both values.
+          type: boolean
+        visible_chat_id:
+          description: Desired visible chat for the next accepted voice turn.
+          $ref: "#/components/schemas/Uuid4"
+        applied_visible_chat_id:
+          description: Visible chat most recently acknowledged by the worker.
+          oneOf:
+            - $ref: "#/components/schemas/Uuid4"
+            - type: "null"
+        foreground_active:
+          description: >-
+            Server-applied client foreground state. False forbids new capture and
+            assistant playback but does not cancel already accepted agentic work.
+            The server forces false on a reported background/hidden/locked state or
+            loss/replacement of the registered connection; it never trusts a stale
+            client to remain foreground-active.
+          type: boolean
+        foreground_reason:
+          type: string
+          enum: [foreground, backgrounded, locked, audio_interrupted, route_unavailable, connection_lost]
+        foreground_changed_at:
+          type: string
+          format: date-time
+        speech_muted:
+          type: boolean
+        microphone_enabled:
+          type: boolean
+        lease_expires_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        idle_expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+      allOf:
+        - if:
+            properties:
+              foreground_active: { const: true }
+          then:
+            properties:
+              foreground_reason: { const: foreground }
+              state:
+                enum: [starting, active, reconnecting, ending, error]
+        - if:
+            properties:
+              foreground_active: { const: false }
+          then:
+            properties:
+              foreground_reason:
+                enum: [backgrounded, locked, audio_interrupted, route_unavailable, connection_lost]
+              microphone_enabled: { const: false }
+              state:
+                enum: [suspended, reconnecting, ending, ended, error]
+
+    VoiceSessionWithGrant:
+      type: object
+      description: >-
+        Runtime validation requires grant session_id, generation, and
+        media_grant_revision to equal the authoritative session fields.
+      additionalProperties: false
+      required: [session, grant]
+      properties:
+        session:
+          $ref: "#/components/schemas/VoiceSession"
+        grant:
+          $ref: "#/components/schemas/MediaGrant"
+
+    RefreshedVoiceSessionWithGrant:
+      type: object
+      description: >-
+        Runtime validation requires grant session_id, generation, and
+        media_grant_revision to equal the authoritative session fields. A 201
+        response has replayed=false. A 200 idempotent retry has replayed=true and
+        returns the same logical bearer grant regenerated for this refresh_id. The replay
+        deadline is at most 30 seconds after the first successful response and the
+        replay eligibility is evicted earlier on session end, takeover, or connection
+        replacement.
+      additionalProperties: false
+      required: [refresh_id, replayed, replay_expires_at, session, grant]
+      properties:
+        refresh_id:
+          $ref: "#/components/schemas/Uuid4"
+        replayed:
+          type: boolean
+        replay_expires_at:
+          type: string
+          format: date-time
+        session:
+          $ref: "#/components/schemas/VoiceSession"
+        grant:
+          $ref: "#/components/schemas/MediaGrant"
+
+    VoiceMediaGrantState:
+      type: object
+      description: >-
+        Credential-free recovery state. This schema deliberately cannot carry a
+        LiveKit join token, watch ticket, participant identity, room name, or
+        media URL.
+      additionalProperties: false
+      required: [session, grant_state]
+      properties:
+        session:
+          $ref: "#/components/schemas/VoiceSession"
+        grant_state:
+          $ref: "#/components/schemas/CredentialFreeMediaGrantState"
+
+    CredentialFreeMediaGrantState:
+      type: object
+      additionalProperties: false
+      required: [transport, media_grant_revision, status, expires_at]
+      properties:
+        transport:
+          $ref: "#/components/schemas/VoiceTransport"
+        media_grant_revision:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [pending_worker, active, expired, unavailable]
+        expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+
+    VoiceGrantRefreshProblem:
+      type: object
+      description: >-
+        Safe recovery response with no bearer grant. The client either retries the
+        unchanged refresh_id while its replay window remains open, or uses a new
+        refresh_id with the fences reported in current after the window expires.
+      additionalProperties: false
+      required: [code, message, retryable, current]
+      properties:
+        code:
+          type: string
+          enum:
+            - stale_generation
+            - stale_media_grant_revision
+            - refresh_id_payload_mismatch
+            - refresh_replay_expired
+        message:
+          type: string
+          maxLength: 240
+        retryable:
+          type: boolean
+        current:
+          $ref: "#/components/schemas/VoiceMediaGrantState"
+
+    MediaGrant:
+      oneOf:
+        - $ref: "#/components/schemas/LiveKitGrant"
+        - $ref: "#/components/schemas/WatchBridgeGrant"
+      discriminator:
+        propertyName: transport
+        mapping:
+          livekit: "#/components/schemas/LiveKitGrant"
+          watch_pcm_websocket: "#/components/schemas/WatchBridgeGrant"
+
+    LiveKitGrant:
+      type: object
+      additionalProperties: false
+      required:
+        - grant_id
+        - transport
+        - session_id
+        - generation
+        - media_grant_revision
+        - expires_at
+        - url
+        - join_token
+        - room_name
+        - participant_identity
+        - worker_identity
+      properties:
+        grant_id:
+          $ref: "#/components/schemas/OpaqueId"
+        transport:
+          const: livekit
+        session_id:
+          $ref: "#/components/schemas/Uuid4"
+        generation:
+          type: integer
+          minimum: 1
+        media_grant_revision:
+          type: integer
+          minimum: 1
+          description: Rotates with participant identity on each reconnect grant refresh.
+        expires_at:
+          type: string
+          format: date-time
+        url:
+          type: string
+          format: uri
+          pattern: "^wss?://"
+        join_token:
+          type: string
+          minLength: 32
+          maxLength: 8192
+          readOnly: true
+        room_name:
+          $ref: "#/components/schemas/OpaqueId"
+        participant_identity:
+          description: Unique to this media_grant_revision; old identities are rejected by the worker.
+          $ref: "#/components/schemas/OpaqueId"
+        worker_identity:
+          $ref: "#/components/schemas/OpaqueId"
+
+    WatchBridgeGrant:
+      type: object
+      additionalProperties: false
+      required:
+        - grant_id
+        - transport
+        - session_id
+        - generation
+        - media_grant_revision
+        - expires_at
+        - url
+        - ticket
+        - worker_identity
+        - capture
+        - playback
+      properties:
+        grant_id:
+          $ref: "#/components/schemas/OpaqueId"
+        transport:
+          const: watch_pcm_websocket
+        session_id:
+          $ref: "#/components/schemas/Uuid4"
+        generation:
+          type: integer
+          minimum: 1
+        media_grant_revision:
+          type: integer
+          minimum: 1
+          description: Rotates with the one-time ticket on each reconnect grant refresh.
+        expires_at:
+          type: string
+          format: date-time
+        url:
+          type: string
+          format: uri
+          pattern: "^wss://"
+        ticket:
+          type: string
+          minLength: 32
+          maxLength: 8192
+          readOnly: true
+        worker_identity:
+          description: Exact server-designated worker accepted for transcript and announcement envelopes.
+          $ref: "#/components/schemas/OpaqueId"
+        capture:
+          $ref: "#/components/schemas/CapturePcmProfile"
+        playback:
+          $ref: "#/components/schemas/PlaybackPcmProfile"
+
+    CapturePcmProfile:
+      type: object
+      additionalProperties: false
+      required: [encoding, channels, sample_rate_hz, frame_duration_ms]
+      properties:
+        encoding:
+          const: pcm_s16le
+        channels:
+          const: 1
+        sample_rate_hz:
+          const: 16000
+        frame_duration_ms:
+          const: 20
+
+    PlaybackPcmProfile:
+      type: object
+      additionalProperties: false
+      required: [encoding, channels, sample_rate_hz, frame_duration_ms]
+      properties:
+        encoding:
+          const: pcm_s16le
+        channels:
+          const: 1
+        sample_rate_hz:
+          const: 24000
+        frame_duration_ms:
+          const: 20
+
+    TakeoverRequired:
+      type: object
+      additionalProperties: false
+      required: [code, message, owner]
+      properties:
+        code:
+          const: voice_takeover_required
+        message:
+          type: string
+          maxLength: 240
+        owner:
+          type: object
+          additionalProperties: false
+          required: [session_id, device_kind, generation, media_grant_revision, started_at]
+          properties:
+            session_id:
+              $ref: "#/components/schemas/Uuid4"
+            device_kind:
+              $ref: "#/components/schemas/DeviceKind"
+            generation:
+              type: integer
+              minimum: 1
+            media_grant_revision:
+              type: integer
+              minimum: 1
+            started_at:
+              type: string
+              format: date-time
+            device_label:
+              type: string
+              maxLength: 80
+
+    SensitiveConsentRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_generation, expected_media_grant_revision, turn_id, consent_method]
+      properties:
+        expected_generation:
+          type: integer
+          minimum: 1
+        expected_media_grant_revision:
+          type: integer
+          minimum: 1
+        turn_id:
+          $ref: "#/components/schemas/Uuid4"
+        consent_method:
+          type: string
+          enum: [tap, strict_spoken_control]
+
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable]
+      properties:
+        code:
+          type: string
+          pattern: "^[a-z0-9_]+$"
+          maxLength: 64
+        message:
+          type: string
+          maxLength: 240
+        retryable:
+          type: boolean
+        current_generation:
+          type: integer
+          minimum: 1

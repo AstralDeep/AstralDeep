@@ -32,12 +32,12 @@
 ## Validation Notes
 
 - Validation iteration 1 completed on 2026-07-31: 0 clarification markers and 0 template placeholders remain.
-- The specification contains 6 prioritized user stories, 42 Given/When/Then scenarios, 16 explicit edge cases, 57 uniquely numbered functional requirements, 12 uniquely numbered measurable outcomes, and 11 documented assumptions.
+- The clarified specification contains 6 prioritized user stories, 45 Given/When/Then scenarios, 17 explicit edge cases, 57 uniquely numbered functional requirements, 13 uniquely numbered measurable outcomes, and 11 documented assumptions.
+- Clarification completed on 2026-07-31 with 5 accepted answers encoded into the specification: sensitive-result speech consent, concurrent-query behavior, chat-switch routing, five-minute idle expiry, and completion-recap source precedence.
 - The named LiveKit project, exact ASR/TTS/voice identifiers, deployment input names, and six client targets are explicit owner constraints from the request. They are recorded as dependencies and boundaries; detailed topology, versions, code structure, and API contracts remain for planning.
 - Success criteria describe observable user, safety, timing, isolation, accessibility, and cross-client outcomes without prescribing implementation internals.
-- The broad “all clients,” turn-taking, auto-submit, cross-device ownership, audio retention, final-summary, and environment-variable questions were resolved through the safest defaults consistent with the request and documented as owner decisions/assumptions, so no blocking clarification marker is required.
+- The broad “all clients,” turn-taking, auto-submit, cross-device ownership, audio retention, and environment-variable questions are documented as owner decisions. The five highest-impact behavioral ambiguities were resolved through the clarification workflow, so no blocking clarification marker remains.
 
 ## Notes
 
-- The specification is ready for `$speckit-clarify` as the next quality gate. Planning should not begin until the user confirms or amends the documented defaults if desired.
-
+- The specification has passed `$speckit-clarify` and is ready for `$speckit-plan`.
