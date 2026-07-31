@@ -1,0 +1,847 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astraldeep.example/contracts/065/voice-control.schema.json",
+  "title": "AstralDeep Conversational Voice UI/Control Contract",
+  "description": "Strict server-owned composer/state/control-binding frames plus correlated ordinary chat creation, bound transcript, accepted/rejected submission dispositions, announcement-media, normal message acknowledgement, and content-free playout envelopes. Session mutations use the authenticated REST API; final query text uses the existing chat_message action. This schema defines no generic voice mutation action.",
+  "oneOf": [
+    { "$ref": "#/$defs/composerStateFrame" },
+    { "$ref": "#/$defs/sessionStateFrame" },
+    { "$ref": "#/$defs/turnStateFrame" },
+    { "$ref": "#/$defs/controlBindingFrame" },
+    { "$ref": "#/$defs/newChatActionFrame" },
+    { "$ref": "#/$defs/chatCreatedFrame" },
+    { "$ref": "#/$defs/messageAckFrame" },
+    { "$ref": "#/$defs/submissionRejectedFrame" },
+    { "$ref": "#/$defs/transcriptFrame" },
+    { "$ref": "#/$defs/announcementMediaFrame" },
+    { "$ref": "#/$defs/playoutEvent" }
+  ],
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "nullableUuid": {
+      "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "deviceKind": {
+      "enum": ["web", "windows", "android", "ios", "macos", "watchos"]
+    },
+    "permissionState": {
+      "enum": ["not_determined", "authorized", "denied", "restricted"]
+    },
+    "transport": {
+      "enum": ["livekit", "watch_pcm_websocket"]
+    },
+    "voiceState": {
+      "enum": [
+        "off",
+        "unavailable",
+        "connecting",
+        "greeting",
+        "listening",
+        "speech_detected",
+        "transcribing",
+        "acknowledging",
+        "processing",
+        "waiting_on_user",
+        "speaking_progress",
+        "speaking_result",
+        "muted",
+        "suspended",
+        "reconnecting",
+        "error",
+        "ended"
+      ]
+    },
+    "reasonCode": {
+      "enum": [
+        "ready",
+        "feature_disabled",
+        "authentication_required",
+        "permission_not_determined",
+        "permission_denied",
+        "permission_restricted",
+        "no_microphone",
+        "no_audio_output",
+        "media_unavailable",
+        "worker_unavailable",
+        "asr_unavailable",
+        "tts_unavailable",
+        "voice_unavailable",
+        "output_language_unsupported",
+        "capacity_exhausted",
+        "takeover_required",
+        "idle_expired",
+        "backgrounded",
+        "audio_interrupted",
+        "chat_context_unavailable",
+        "auth_expired",
+        "network_interrupted",
+        "media_error",
+        "speech_error",
+        "stale_generation",
+        "ended_by_user",
+        "internal_error"
+      ]
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "action", "label", "icon", "visible", "enabled", "pressed", "busy"],
+      "properties": {
+        "key": { "$ref": "#/$defs/opaqueId" },
+        "action": {
+          "enum": [
+            "voice_session_start",
+            "voice_session_takeover",
+            "voice_session_end",
+            "voice_microphone_set",
+            "voice_speech_stop",
+            "voice_speech_mute_set",
+            "voice_visible_chat_update",
+            "voice_sensitive_recap_request"
+          ]
+        },
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "icon": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "visible": { "type": "boolean" },
+        "enabled": { "type": "boolean" },
+        "pressed": { "type": "boolean" },
+        "busy": { "type": "boolean" }
+      }
+    },
+    "clientCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["has_microphone", "has_audio_output", "microphone_permission", "transport"],
+      "properties": {
+        "has_microphone": { "type": "boolean" },
+        "has_audio_output": { "type": "boolean" },
+        "microphone_permission": { "$ref": "#/$defs/permissionState" },
+        "full_duplex": { "type": "boolean" },
+        "transport": { "$ref": "#/$defs/transport" }
+      }
+    },
+    "voiceModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "state",
+        "speech_muted",
+        "microphone_enabled",
+        "foreground_active",
+        "reason",
+        "output_locale",
+        "chat_context_revision",
+        "applied_chat_context_revision",
+        "chat_context_synced",
+        "controls"
+      ],
+      "properties": {
+        "available": { "type": "boolean" },
+        "state": { "$ref": "#/$defs/voiceState" },
+        "speech_muted": { "type": "boolean" },
+        "microphone_enabled": { "type": "boolean" },
+        "foreground_active": { "type": "boolean" },
+        "reason": { "$ref": "#/$defs/reasonCode" },
+        "output_locale": { "const": "en-US" },
+        "chat_context_revision": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "applied_chat_context_revision": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "chat_context_synced": { "type": "boolean" },
+        "message": { "type": "string", "maxLength": 240 },
+        "session_id": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+        "generation": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "media_grant_revision": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "visible_chat_id": { "$ref": "#/$defs/nullableUuid" },
+        "foreground_turn_id": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+        "owner_device": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["device_id", "device_kind", "generation"],
+              "properties": {
+                "device_id": { "$ref": "#/$defs/uuid" },
+                "device_kind": { "$ref": "#/$defs/deviceKind" },
+                "device_label": { "type": "string", "maxLength": 80 },
+                "generation": { "type": "integer", "minimum": 1 }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "idle_expires_at": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+        "controls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": { "$ref": "#/$defs/control" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "foreground_active": { "const": false } } },
+          "then": {
+            "properties": {
+              "microphone_enabled": { "const": false },
+              "state": { "enum": ["off", "unavailable", "suspended", "reconnecting", "error", "ended"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "state": { "enum": ["connecting", "greeting", "listening", "speech_detected", "transcribing", "acknowledging", "processing", "waiting_on_user", "speaking_progress", "speaking_result", "muted", "reconnecting", "error"] }
+            }
+          }
+        }
+      ]
+    },
+    "composerStateFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "schema_version", "revision", "connection_generation", "voice"],
+      "properties": {
+        "type": { "const": "composer_state" },
+        "schema_version": { "const": "1" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "connection_generation": { "$ref": "#/$defs/uuid" },
+        "voice": { "$ref": "#/$defs/voiceModel" }
+      }
+    },
+    "sessionStateFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "session_id",
+        "connection_generation",
+        "generation",
+        "media_grant_revision",
+        "visible_chat_id",
+        "chat_context_revision",
+        "applied_chat_context_revision",
+        "chat_context_synced",
+        "state",
+        "speech_muted",
+        "microphone_enabled",
+        "foreground_active",
+        "reason",
+        "occurred_at"
+      ],
+      "properties": {
+        "type": { "const": "voice_session_state" },
+        "schema_version": { "const": "1" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "connection_generation": { "$ref": "#/$defs/uuid" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "media_grant_revision": { "type": "integer", "minimum": 1 },
+        "visible_chat_id": { "$ref": "#/$defs/uuid" },
+        "chat_context_revision": { "type": "integer", "minimum": 1 },
+        "applied_chat_context_revision": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "chat_context_synced": { "type": "boolean" },
+        "state": { "$ref": "#/$defs/voiceState" },
+        "speech_muted": { "type": "boolean" },
+        "microphone_enabled": { "type": "boolean" },
+        "foreground_active": { "type": "boolean" },
+        "reason": { "$ref": "#/$defs/reasonCode" },
+        "message": { "type": "string", "maxLength": 240 },
+        "occurred_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "foreground_active": { "const": false } } },
+          "then": {
+            "properties": {
+              "microphone_enabled": { "const": false },
+              "state": { "enum": ["suspended", "reconnecting", "error", "ended"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "state": { "enum": ["connecting", "greeting", "listening", "speech_detected", "transcribing", "acknowledging", "processing", "waiting_on_user", "speaking_progress", "speaking_result", "muted", "reconnecting", "error"] }
+            }
+          }
+        }
+      ]
+    },
+    "turnStateFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "session_id",
+        "connection_generation",
+        "generation",
+        "media_grant_revision",
+        "turn_id",
+        "client_turn_id",
+        "submission_id",
+        "request_generation",
+        "chat_id",
+        "chat_context_revision",
+        "detected_language",
+        "spoken_output_policy",
+        "output_reason",
+        "state",
+        "foreground",
+        "sensitive_result_pending",
+        "sequence",
+        "occurred_at"
+      ],
+      "properties": {
+        "type": { "const": "voice_turn_state" },
+        "schema_version": { "const": "1" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "connection_generation": { "$ref": "#/$defs/uuid" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "media_grant_revision": { "type": "integer", "minimum": 1 },
+        "turn_id": { "$ref": "#/$defs/uuid" },
+        "client_turn_id": { "$ref": "#/$defs/uuid" },
+        "submission_id": { "$ref": "#/$defs/uuid" },
+        "request_generation": { "$ref": "#/$defs/uuid" },
+        "chat_id": { "$ref": "#/$defs/uuid" },
+        "chat_context_revision": { "type": "integer", "minimum": 1 },
+        "detected_language": {
+          "oneOf": [
+            { "type": "string", "minLength": 2, "maxLength": 32, "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$" },
+            { "type": "null" }
+          ]
+        },
+        "spoken_output_policy": { "enum": ["pending", "full_recap", "english_lifecycle_only"] },
+        "output_reason": { "enum": ["language_pending", "ready", "output_language_unsupported"] },
+        "state": {
+          "enum": [
+            "recognizing",
+            "submitting",
+            "accepted",
+            "processing",
+            "waiting_on_user",
+            "succeeded",
+            "failed",
+            "refused",
+            "cancelled",
+            "abandoned"
+          ]
+        },
+        "foreground": { "type": "boolean" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "result_id": { "oneOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "sensitive_result_pending": { "type": "boolean" },
+        "message": { "type": "string", "maxLength": 240 },
+        "occurred_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "detected_language": { "type": "null" } } },
+          "then": {
+            "properties": {
+              "spoken_output_policy": { "const": "pending" },
+              "output_reason": { "const": "language_pending" }
+            }
+          },
+          "else": {
+            "if": { "properties": { "detected_language": { "type": "string", "pattern": "^en(?:-|$)" } } },
+            "then": {
+              "properties": {
+                "spoken_output_policy": { "const": "full_recap" },
+                "output_reason": { "const": "ready" }
+              }
+            },
+            "else": {
+              "properties": {
+                "spoken_output_policy": { "const": "english_lifecycle_only" },
+                "output_reason": { "const": "output_language_unsupported" }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "recognizing" } } },
+          "then": { "properties": { "detected_language": { "type": "null" } } },
+          "else": {
+            "if": { "properties": { "state": { "const": "abandoned" } } },
+            "then": {},
+            "else": {
+              "properties": {
+                "detected_language": { "type": "string", "minLength": 2, "maxLength": 32, "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "newChatActionFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "action",
+        "schema_version",
+        "connection_generation",
+        "submission_id",
+        "request_generation",
+        "payload"
+      ],
+      "properties": {
+        "type": { "const": "ui_event" },
+        "action": { "const": "new_chat" },
+        "schema_version": { "const": "1" },
+        "connection_generation": { "$ref": "#/$defs/uuid" },
+        "submission_id": { "$ref": "#/$defs/uuid" },
+        "request_generation": { "$ref": "#/$defs/uuid" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "connection_generation", "submission_id", "request_generation"],
+          "properties": {
+            "schema_version": { "const": "1" },
+            "connection_generation": { "$ref": "#/$defs/uuid" },
+            "submission_id": { "$ref": "#/$defs/uuid" },
+            "request_generation": { "$ref": "#/$defs/uuid" }
+          }
+        }
+      }
+    },
+    "chatCreatedFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "connection_generation",
+        "submission_id",
+        "request_generation",
+        "payload"
+      ],
+      "properties": {
+        "type": { "const": "chat_created" },
+        "schema_version": { "const": "1" },
+        "connection_generation": { "$ref": "#/$defs/uuid" },
+        "submission_id": { "$ref": "#/$defs/uuid" },
+        "request_generation": { "$ref": "#/$defs/uuid" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "chat_id",
+            "from_message",
+            "connection_generation",
+            "submission_id",
+            "request_generation"
+          ],
+          "properties": {
+            "schema_version": { "const": "1" },
+            "chat_id": { "$ref": "#/$defs/uuid" },
+            "from_message": { "const": false },
+            "connection_generation": { "$ref": "#/$defs/uuid" },
+            "submission_id": { "$ref": "#/$defs/uuid" },
+            "request_generation": { "$ref": "#/$defs/uuid" }
+          }
+        }
+      }
+    },
+    "controlBindingFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "device_id",
+        "connection_generation",
+        "binding_id",
+        "binding",
+        "expires_at"
+      ],
+      "properties": {
+        "type": { "const": "voice_control_binding" },
+        "schema_version": { "const": "1" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "connection_generation": { "$ref": "#/$defs/uuid" },
+        "binding_id": { "$ref": "#/$defs/uuid" },
+        "binding": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 512,
+          "description": "Opaque bearer delivered after authenticated register_ui; memory-only, redacted, valid at most ten minutes and never beyond the Keycloak token/socket."
+        },
+        "expires_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "messageAckFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "chat_id",
+        "message_id",
+        "submission_id",
+        "request_generation",
+        "connection_generation",
+        "voice_turn_id"
+      ],
+      "properties": {
+        "type": { "const": "user_message_acked" },
+        "schema_version": { "const": "1" },
+        "chat_id": { "$ref": "#/$defs/uuid" },
+        "message_id": { "type": "integer", "minimum": 1 },
+        "submission_id": { "$ref": "#/$defs/uuid" },
+        "request_generation": { "$ref": "#/$defs/uuid" },
+        "connection_generation": { "$ref": "#/$defs/uuid" },
+        "voice_turn_id": { "$ref": "#/$defs/nullableUuid" }
+      }
+    },
+    "submissionRejectedFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "session_id",
+        "connection_generation",
+        "generation",
+        "media_grant_revision",
+        "turn_id",
+        "client_turn_id",
+        "submission_id",
+        "request_generation",
+        "chat_id",
+        "reason",
+        "retry_policy",
+        "occurred_at"
+      ],
+      "properties": {
+        "type": { "const": "voice_submission_rejected" },
+        "schema_version": { "const": "1" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "connection_generation": { "$ref": "#/$defs/uuid" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "media_grant_revision": { "type": "integer", "minimum": 1 },
+        "turn_id": { "$ref": "#/$defs/uuid" },
+        "client_turn_id": { "$ref": "#/$defs/uuid" },
+        "submission_id": { "$ref": "#/$defs/uuid" },
+        "request_generation": { "$ref": "#/$defs/uuid" },
+        "chat_id": { "$ref": "#/$defs/uuid" },
+        "reason": {
+          "enum": [
+            "capacity_exhausted",
+            "chat_unavailable",
+            "invalid_binding",
+            "invalid_proof",
+            "proof_expired",
+            "permission_denied",
+            "stale_session",
+            "malformed_final"
+          ]
+        },
+        "retry_policy": { "enum": ["explicit_user_retry", "none"] },
+        "message": { "type": "string", "maxLength": 240 },
+        "occurred_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "transcriptFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "session_id",
+        "generation",
+        "turn_id",
+        "client_turn_id",
+        "submission_id",
+        "request_generation",
+        "chat_id",
+        "chat_context_revision",
+        "media_grant_revision",
+        "sequence",
+        "final",
+        "text",
+        "detected_language",
+        "source_participant_identity"
+      ],
+      "properties": {
+        "type": { "const": "voice_transcript" },
+        "schema_version": { "const": "1" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "turn_id": { "$ref": "#/$defs/uuid" },
+        "client_turn_id": { "$ref": "#/$defs/uuid" },
+        "submission_id": { "$ref": "#/$defs/uuid" },
+        "request_generation": { "$ref": "#/$defs/uuid" },
+        "chat_id": { "$ref": "#/$defs/uuid" },
+        "chat_context_revision": { "type": "integer", "minimum": 1 },
+        "media_grant_revision": { "type": "integer", "minimum": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "final": { "type": "boolean" },
+        "text": { "type": "string", "maxLength": 8000 },
+        "detected_language": {
+          "oneOf": [
+            { "type": "string", "minLength": 2, "maxLength": 32, "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$" },
+            { "type": "null" }
+          ]
+        },
+        "text_digest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "transcript_proof": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Short-lived HMAC proof over the immutable binding plus normalized-text digest; copied verbatim by the client and never persisted."
+        },
+        "proof_expires_at": { "$ref": "#/$defs/timestamp" },
+        "source_participant_identity": { "$ref": "#/$defs/opaqueId" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "final": { "const": true } } },
+          "then": {
+            "required": ["text_digest_sha256", "transcript_proof", "proof_expires_at"],
+            "properties": {
+              "text": { "type": "string", "minLength": 1, "maxLength": 8000, "pattern": "^[\\s\\S]*\\S[\\s\\S]*$" },
+              "detected_language": { "type": "string", "minLength": 2, "maxLength": 32, "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$" }
+            }
+          },
+          "else": {
+            "properties": {
+              "text_digest_sha256": false,
+              "transcript_proof": false,
+              "proof_expires_at": false
+            }
+          }
+        }
+      ]
+    },
+    "announcementMediaFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "session_id",
+        "generation",
+        "media_grant_revision",
+        "announcement_id",
+        "announcement_sequence",
+        "turn_id",
+        "kind",
+        "quantum_role",
+        "quantum_index",
+        "transport",
+        "worker_identity",
+        "sample_rate_hz",
+        "duration_samples"
+      ],
+      "properties": {
+        "type": { "const": "voice_announcement_media" },
+        "schema_version": { "const": "1" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "media_grant_revision": { "type": "integer", "minimum": 1 },
+        "announcement_id": { "$ref": "#/$defs/uuid" },
+        "announcement_sequence": { "type": "integer", "minimum": 1 },
+        "turn_id": { "$ref": "#/$defs/nullableUuid" },
+        "kind": {
+          "enum": [
+            "greeting",
+            "acknowledgement",
+            "progress",
+            "waiting",
+            "result",
+            "sensitive_notice",
+            "failure",
+            "refusal",
+            "cancellation"
+          ]
+        },
+        "quantum_role": { "enum": ["single", "result_opening", "result_continuation"] },
+        "quantum_index": { "type": "integer", "minimum": 0, "maximum": 31 },
+        "transport": { "$ref": "#/$defs/transport" },
+        "worker_identity": { "$ref": "#/$defs/opaqueId" },
+        "sample_rate_hz": { "const": 24000 },
+        "duration_samples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 96000,
+          "description": "Actual audio samples in this one playout quantum at the fixed 24 kHz rate. The 720,000-sample/30-second recap ceiling is aggregate across result quanta, never one manifest."
+        },
+        "result_reserved_samples_after": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 720000,
+          "description": "Conservative durable per-result sample budget reserved through this quantum; required only for result quanta and monotonically matched to the worker command."
+        },
+        "track_sid": { "$ref": "#/$defs/opaqueId" },
+        "track_name": { "$ref": "#/$defs/opaqueId" },
+        "first_media_sequence": { "type": "integer", "minimum": 0 },
+        "last_media_sequence": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "greeting" } } },
+          "then": { "properties": { "turn_id": { "type": "null" } } },
+          "else": { "properties": { "turn_id": { "$ref": "#/$defs/uuid" } } }
+        },
+        {
+          "if": { "properties": { "quantum_role": { "const": "single" } } },
+          "then": {
+            "properties": {
+              "kind": { "enum": ["greeting", "acknowledgement", "progress", "waiting", "sensitive_notice", "failure", "refusal", "cancellation"] },
+              "quantum_index": { "const": 0 },
+              "result_reserved_samples_after": false
+            }
+          }
+        },
+        {
+          "if": { "properties": { "quantum_role": { "const": "result_opening" } } },
+          "then": {
+            "required": ["result_reserved_samples_after"],
+            "properties": {
+              "kind": { "const": "result" },
+              "quantum_index": { "const": 0 },
+              "duration_samples": { "type": "integer", "minimum": 1, "maximum": 36000 },
+              "result_reserved_samples_after": { "type": "integer", "minimum": 1, "maximum": 36000 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "quantum_role": { "const": "result_continuation" } } },
+          "then": {
+            "required": ["result_reserved_samples_after"],
+            "properties": {
+              "kind": { "const": "result" },
+              "quantum_index": { "type": "integer", "minimum": 1, "maximum": 31 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "transport": { "const": "livekit" } } },
+          "then": {
+            "required": ["track_sid", "track_name"],
+            "properties": {
+              "first_media_sequence": false,
+              "last_media_sequence": false
+            }
+          },
+          "else": {
+            "required": ["first_media_sequence", "last_media_sequence"],
+            "properties": {
+              "track_sid": false,
+              "track_name": false
+            }
+          }
+        }
+      ]
+    },
+    "playoutEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "device_id",
+        "connection_generation",
+        "session_id",
+        "generation",
+        "media_grant_revision",
+        "announcement_id",
+        "announcement_sequence",
+        "turn_id",
+        "kind",
+        "quantum_role",
+        "quantum_index",
+        "phase",
+        "client_sequence",
+        "observed_at"
+      ],
+      "properties": {
+        "type": { "const": "voice_playout_event" },
+        "schema_version": { "const": "1" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "connection_generation": { "$ref": "#/$defs/uuid" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "media_grant_revision": { "type": "integer", "minimum": 1 },
+        "announcement_id": { "$ref": "#/$defs/uuid" },
+        "announcement_sequence": { "type": "integer", "minimum": 1 },
+        "turn_id": { "$ref": "#/$defs/nullableUuid" },
+        "kind": {
+          "enum": [
+            "greeting",
+            "acknowledgement",
+            "progress",
+            "waiting",
+            "result",
+            "sensitive_notice",
+            "failure",
+            "refusal",
+            "cancellation"
+          ]
+        },
+        "quantum_role": { "enum": ["single", "result_opening", "result_continuation"] },
+        "quantum_index": { "type": "integer", "minimum": 0, "maximum": 31 },
+        "result_reserved_samples_after": { "type": "integer", "minimum": 1, "maximum": 720000 },
+        "phase": { "enum": ["started", "finished", "interrupted"] },
+        "client_sequence": { "type": "integer", "minimum": 0 },
+        "observed_at": {
+          "description": "Client diagnostic wall-clock observation only; the server's authenticated receipt time is authoritative for scheduling.",
+          "$ref": "#/$defs/timestamp"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["kind"],
+            "properties": { "kind": { "const": "greeting" } }
+          },
+          "then": { "properties": { "turn_id": { "type": "null" } } },
+          "else": { "properties": { "turn_id": { "$ref": "#/$defs/uuid" } } }
+        },
+        {
+          "if": { "properties": { "quantum_role": { "const": "single" } } },
+          "then": {
+            "properties": {
+              "kind": { "enum": ["greeting", "acknowledgement", "progress", "waiting", "sensitive_notice", "failure", "refusal", "cancellation"] },
+              "quantum_index": { "const": 0 },
+              "result_reserved_samples_after": false
+            }
+          }
+        },
+        {
+          "if": { "properties": { "quantum_role": { "const": "result_opening" } } },
+          "then": {
+            "required": ["result_reserved_samples_after"],
+            "properties": {
+              "kind": { "const": "result" },
+              "quantum_index": { "const": 0 },
+              "result_reserved_samples_after": { "type": "integer", "minimum": 1, "maximum": 36000 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "quantum_role": { "const": "result_continuation" } } },
+          "then": {
+            "required": ["result_reserved_samples_after"],
+            "properties": {
+              "kind": { "const": "result" },
+              "quantum_index": { "type": "integer", "minimum": 1, "maximum": 31 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

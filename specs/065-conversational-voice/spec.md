@@ -33,9 +33,19 @@ This section records constraints already established by the request and facts ve
 | D-005 | Raw audio is ephemeral and is not retained. The final transcript becomes the ordinary user chat message; the authoritative assistant result remains the ordinary committed text/structured result. |
 | D-006 | The launch speech profile is fixed to ASR `Systran/faster-whisper-large-v3`, TTS `speaches-ai/Kokoro-82M-v1.0-ONNX`, `af_heart`, and the service's advertised 24 kHz output. There is no end-user voice, model, endpoint, or key picker in this feature. |
 | D-007 | The deployment's existing `OPENAI_BASE_URL` and `OPENAI_API_KEY` values are the operator-provided inputs for the speech service only. This does not revive environment-backed LLM configuration: those values must remain incapable of configuring or replacing a user's LLM or the System LLM. |
-| D-008 | The request's final “ASR summary” step is interpreted as a **TTS** summary: completed agent text/structured output is converted into a concise, faithful spoken recap. Speech never becomes the authoritative result. |
+| D-008 | The request's final “ASR summary” step is interpreted as a **TTS** summary: the completed request's authoritative text summary is used when present; otherwise, a short faithful recap is generated from the committed content shown to the user. Speech never becomes the authoritative result. |
 | D-009 | Voice media uses a pinned, self-hosted LiveKit deployment and the supported client/agent components needed for the six clients. Modifying upstream LiveKit server source is permitted only if a documented, tested gap cannot be solved through supported configuration or extension points. |
 | D-010 | Live verification uses the running Docker deployment, a real browser, the desktop client, Android emulator/device, and Apple simulators/devices available on the Mac. Work pauses at the real login boundary for the user. A Mac-only run cannot substitute for later Windows-native packaging/audio evidence. |
+
+## Clarifications
+
+### Session 2026-07-31
+
+- Q: When a completed result contains PHI or similarly sensitive content, what may TTS say aloud? → A: Speak only a generic sensitive-result notice, then require an explicit tap or spoken request before reading the sensitive details aloud.
+- Q: When the user speaks another query while the current agentic turn is still running, what should happen? → A: Move the current turn to durable background execution and start the new query immediately.
+- Q: If the user changes the visible chat while conversation mode remains active, where should their next spoken turn go? → A: Follow the newly visible chat for future turns while keeping existing turns bound to their originating chats.
+- Q: How long may conversation mode remain listening with no user speech or interaction before ending automatically? → A: End after five continuous minutes of idle listening.
+- Q: How should AstralDeep create the concise completion recap sent to TTS? → A: Use the completed request's authoritative text summary when present; otherwise create a short faithful recap from the committed content shown on screen.
 
 ## Scope
 
@@ -64,7 +74,7 @@ This section records constraints already established by the request and facts ve
 
 A signed-in user selects the conversation control beside the chat input. After any first-use operating-system permission prompt, the assistant gives a short greeting in the `af_heart` voice, clearly indicates that it is listening, and accepts an ordinary spoken turn without requiring the user to hold a button or press Send. The same recognizable control, states, and behavior are available on every shipping client, adapted to its form factor.
 
-**Why this priority**: Without a trustworthy start/stop experience and real media path, none of the later agentic or progress behavior is usable. The explicit activation is also the user's privacy consent and the browser's audio-playback gesture.
+**Why this priority**: Without a trustworthy start/stop experience and real media path, none of the later agentic or progress behavior is usable. The explicit activation authorizes microphone capture and ordinary playback and supplies the browser's audio-playback gesture, but it does not by itself authorize sensitive result details to be read aloud.
 
 **Independent Test**: On each client, start from voice-off, activate the control, grant microphone access, hear one short greeting, observe a visible and accessible listening state, speak one sentence, and see a single final transcript. Repeat with permission denied and with no microphone to verify a clear non-recording state and usable text fallback.
 
@@ -77,6 +87,7 @@ A signed-in user selects the conversation control beside the chat input. After a
 5. **Given** the assistant is greeting or speaking, **When** the user begins talking or selects stop speech, **Then** current playback stops promptly and the client transitions to listening without replaying the interrupted audio.
 6. **Given** conversation mode is active, **When** the user selects its control again, **Then** capture and playback stop, the control returns to off, and already-submitted agent work continues unless the user separately invokes the normal cancellation action.
 7. **Given** a user already has an active voice session on another client, **When** they request activation on this client, **Then** they see which device owns the session and must explicitly take it over; successful takeover ends media on the earlier client without duplicating or cancelling submitted work.
+8. **Given** conversation mode is listening with no active turn or user-input gate, **When** five continuous minutes pass without user speech or interaction, **Then** the session ends capture and playback, releases its media ownership, and tells the user it ended for inactivity; processing and waiting periods do not count toward this timeout.
 
 ---
 
@@ -102,7 +113,7 @@ The user speaks a request and pauses naturally. AstralDeep determines the end of
 
 ### User Story 3 - Hear acknowledgement, honest progress, and a concise result (Priority: P1)
 
-After AstralDeep accepts each spoken query, the assistant promptly says “On it!” or a similarly short natural acknowledgement. If work continues, it gives concise, varied, truthful reassurance often enough that no processing interval exceeds 20 seconds without audible feedback. When the committed result arrives, it stops progress speech and gives a short, faithful spoken summary. Errors, refusals, cancellations, and actions waiting on the user receive equally honest terminal or waiting messages.
+After AstralDeep accepts each spoken query, the assistant promptly says “On it!” or a similarly short natural acknowledgement. If work continues, it gives concise, varied, truthful reassurance often enough that no processing interval exceeds 20 seconds without audible feedback. When a non-sensitive committed result arrives, it stops progress speech and speaks the request's authoritative text summary when one is present; otherwise it generates a short, faithful recap from the committed content displayed to the user. For PHI or similarly sensitive results, it announces only that a sensitive result is ready and waits for an explicit tap or spoken request before reading details aloud. Errors, refusals, cancellations, and actions waiting on the user receive equally honest terminal or waiting messages.
 
 **Why this priority**: Agentic tasks can take minutes. Silence makes the system appear broken, while fabricated or overlapping progress damages trust. A bounded, state-backed speech contract is central to the requested experience.
 
@@ -115,17 +126,18 @@ After AstralDeep accepts each spoken query, the assistant promptly says “On it
 3. **Given** real sanitized lifecycle information is available, **When** a progress message is chosen, **Then** it may describe the broad user-facing phase; otherwise it uses a neutral acknowledgement and never invents a completed step, result, elapsed promise, tool outcome, or certainty.
 4. **Given** consecutive progress announcements in one session, **When** the wording is selected, **Then** the exact same phrase is not repeated back-to-back and the variation does not imply unverified progress.
 5. **Given** a turn completes while progress audio is queued or playing, **When** the committed result arrives, **Then** stale progress is cancelled, no progress starts afterward, and the final summary is serialized without overlapping another assistant utterance.
-6. **Given** a successful committed result, **When** it becomes authoritative, **Then** a concise spoken summary derived only from that result begins promptly, remains faithful to material conclusions and caveats, and does not replace or mutate the full visible result.
-7. **Given** a failure, refusal, or cancellation, **When** the turn becomes terminal, **Then** the assistant speaks an honest concise outcome and does not phrase it as success.
-8. **Given** a turn is waiting for login, permission, approval, or another user action, **When** that state begins, **Then** the assistant explains the required action once and suspends repetitive 20-second processing reassurance until work actually resumes.
-9. **Given** the user mutes speech while leaving conversation mode active, **When** work continues or finishes, **Then** visible progress and results continue normally but no audio plays until the user explicitly unmutes; muted announcements are not replayed in a burst.
-10. **Given** generated acknowledgement or progress text, **When** the turn later continues, **Then** that ephemeral speech has not been inserted into the authoritative conversation transcript or model context as an assistant answer.
+6. **Given** a successful non-sensitive committed result, **When** it becomes authoritative, **Then** the spoken recap uses the request's authoritative text summary when present or otherwise generates a short faithful recap only from the committed content shown to the user; it begins promptly and does not replace or mutate the full visible result.
+7. **Given** a successful result containing PHI or similarly sensitive content, **When** it becomes authoritative, **Then** the assistant speaks only a generic notice that a sensitive result is ready and waits for a fresh explicit tap or spoken request before reading any sensitive detail aloud.
+8. **Given** a failure, refusal, or cancellation, **When** the turn becomes terminal, **Then** the assistant speaks an honest concise outcome and does not phrase it as success.
+9. **Given** a turn is waiting for login, permission, approval, or another user action, **When** that state begins, **Then** the assistant explains the required action once and suspends repetitive 20-second processing reassurance until work actually resumes.
+10. **Given** the user mutes speech while leaving conversation mode active, **When** work continues or finishes, **Then** visible progress and results continue normally but no audio plays until the user explicitly unmutes; muted announcements are not replayed in a burst.
+11. **Given** generated acknowledgement or progress text, **When** the turn later continues, **Then** that ephemeral speech has not been inserted into the authoritative conversation transcript or model context as an assistant answer.
 
 ---
 
 ### User Story 4 - Interrupt, recover, and continue without crosstalk (Priority: P2)
 
-The user can naturally interrupt greeting, progress, or final-summary speech with a new utterance. AstralDeep stops the old playback, recognizes the new turn, and applies the existing foreground/background and cancellation rules without confusing the new request with the old one. Brief media-network changes recover without duplicate turns or replayed summaries.
+The user can naturally interrupt greeting, progress, or final-summary speech with a new utterance. AstralDeep stops the old playback and recognizes the new turn. If an earlier agentic turn is still running, it continues under the existing durable background-task rules while the new query starts immediately as the foreground turn; neither request is confused with or allowed to cancel the other. Conversation mode follows the currently visible chat for each future turn, while already-submitted turns and their announcements remain bound to their originating chats. Brief media-network changes recover without duplicate turns or replayed summaries.
 
 **Why this priority**: Turn-taking, interruption, echo control, and reconnection distinguish a conversation from dictation plus audio playback. They are also common sources of duplicated consequential work.
 
@@ -134,11 +146,12 @@ The user can naturally interrupt greeting, progress, or final-summary speech wit
 **Acceptance Scenarios**:
 
 1. **Given** the assistant is speaking, **When** the user starts a new turn, **Then** playback is interrupted promptly, captured speech excludes the assistant's own output to the practical limit of platform echo control, and the new final transcript is correlated to a new turn.
-2. **Given** an earlier agent task is still running, **When** the user asks another question, **Then** each turn's progress and final speech remains correlated and serialized; the system never presents one task's state or result as the other's.
-3. **Given** a short network interruption, **When** media reconnects within the supported recovery window, **Then** the session returns to an honest state without automatically resubmitting a transcript or replaying already-acknowledged/final speech.
-4. **Given** media cannot recover, **When** the failure becomes terminal, **Then** capture and playback stop, the user sees a specific text-only recovery path, and any already-submitted agent work continues under normal chat semantics.
-5. **Given** a native app moves to the background or the device locks, **When** foreground voice policy takes effect, **Then** capture and unsolicited playback pause immediately; on return the client states whether the task is still running or already completed before resuming speech.
-6. **Given** the user explicitly says or selects the normal cancel action, **When** cancellation is accepted, **Then** the agent task follows existing best-effort cancellation semantics and voice progress stops; merely interrupting or disabling voice does not imply task cancellation.
+2. **Given** an earlier agent task is still running, **When** the user asks another question, **Then** the earlier turn transitions to durable background execution, the new query starts immediately as the foreground turn, neither is cancelled, and each turn's progress and final speech remains correlated, attributable, and serialized.
+3. **Given** conversation mode is active in one chat, **When** the user makes another chat visible, **Then** the next spoken turn is submitted to the newly visible chat while every earlier turn, progress announcement, and result remains bound and attributed to its originating chat.
+4. **Given** a short network interruption, **When** media reconnects within the supported recovery window, **Then** the session returns to an honest state without automatically resubmitting a transcript or replaying already-acknowledged/final speech.
+5. **Given** media cannot recover, **When** the failure becomes terminal, **Then** capture and playback stop, the user sees a specific text-only recovery path, and any already-submitted agent work continues under normal chat semantics.
+6. **Given** a native app moves to the background or the device locks, **When** foreground voice policy takes effect, **Then** capture and unsolicited playback pause immediately; on return the client states whether the task is still running or already completed before resuming speech.
+7. **Given** the user explicitly says or selects the normal cancel action, **When** cancellation is accepted, **Then** the agent task follows existing best-effort cancellation semantics and voice progress stops; merely interrupting or disabling voice does not imply task cancellation.
 
 ---
 
@@ -180,13 +193,14 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 
 ### Edge Cases
 
-- The user activates voice but never speaks; the session remains visibly listening for a bounded idle period, then ends or asks whether to continue without submitting an empty turn.
+- The user activates voice but never speaks; after five continuous minutes of idle listening with no active turn or user-input gate, the session ends, releases media ownership, and submits no empty turn.
 - Recognition returns partial text and then an error; partial text is shown as non-authoritative, is not submitted, and can be retried without duplication.
 - Speech ends just as the 20-second progress deadline or final result arrives; one serialized truthful utterance wins, and stale queued speech is cancelled.
 - A task completes while the app is muted, backgrounded, disconnected, or owned by another client; the text result persists, and old audio is not replayed automatically on resume or takeover.
-- The user changes chats during an in-flight voice turn; announcements remain bound to the originating chat and are not spoken as if they belong to the newly visible chat.
+- The user changes chats during an in-flight voice turn; future spoken turns follow the newly visible chat, while announcements and results for existing turns remain bound to their originating chat and are not spoken as if they belong to the new chat.
 - Two background tasks finish together; completion summaries are queued, clearly attributed, bounded, and dismissible rather than overlapping.
 - The ASR recognizes a destructive or sensitive request incorrectly; normal authorization/confirmation gates still prevent voice from becoming an approval bypass, and the visible transcript lets the user identify the error.
+- A committed result contains PHI or similarly sensitive content while voice mode is active; only the generic readiness notice is automatic, and no sensitive detail is spoken until a fresh explicit tap or spoken request is accepted for that result.
 - Input language is outside the launch voice's supported spoken locale; the transcript is preserved when recognition succeeds, but the client clearly communicates any spoken-output limitation and never silently switches away from `af_heart`.
 - The TTS service fails after a query was accepted; the agent task and visible result continue, voice enters an honest degraded state, and retry cannot duplicate the task.
 - The ASR service fails while TTS remains healthy, or vice versa; capability and recovery distinguish listening from speaking rather than presenting a generic healthy state.
@@ -208,10 +222,10 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 - **FR-003**: The shared state vocabulary MUST distinguish at minimum: off, unavailable, connecting, greeting, listening, speech detected, transcribing, acknowledging, processing, waiting on user, speaking progress, speaking result, muted, reconnecting, error, and ended.
 - **FR-004**: Microphone capture and assistant playback MUST begin only after an explicit user activation; activation MUST request and honor the platform's runtime microphone authorization.
 - **FR-005**: A client MUST communicate microphone capability and runtime authorization separately; static hardware capability MUST NOT be treated as proof that recording is permitted.
-- **FR-006**: On successful activation, the assistant MUST give a short `af_heart` greeting and enter turn-based listening with automatic end-of-turn detection.
+- **FR-006**: On successful activation, the assistant MUST give a short `af_heart` greeting and enter turn-based listening with automatic end-of-turn detection. A continuous listening period with no active turn, no user-input gate, and no user speech or interaction MUST end automatically after five minutes and release media ownership; processing and waiting periods MUST NOT consume this idle allowance.
 - **FR-007**: The user MUST be able to stop capture, stop current speech, mute/unmute assistant speech, or end conversation mode at any time through visible and accessible controls.
 - **FR-008**: The system MUST allow only one active media session per user and MUST provide an explicit, audited takeover flow between the user's clients.
-- **FR-009**: Ending, muting, interrupting, or transferring a media session MUST NOT implicitly cancel already-submitted agent work; task cancellation MUST use the existing explicit cancellation contract.
+- **FR-009**: Ending, muting, interrupting, or transferring a media session MUST NOT implicitly cancel already-submitted agent work; task cancellation MUST use the existing explicit cancellation contract. When a new spoken query is accepted while the current turn is still active, the current turn MUST transition to durable background execution and the new query MUST start immediately as the foreground turn.
 - **FR-010**: Conversation capture and unsolicited playback MUST pause when a client is backgrounded or locked; already-submitted work MAY continue under the existing background-task policy.
 
 #### Recognition and ordinary agentic dispatch
@@ -219,7 +233,7 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 - **FR-011**: Conversation mode MUST use ASR model `Systran/faster-whisper-large-v3` for final transcripts on every client; platform dictation MAY remain a separate text-entry aid but MUST NOT satisfy this requirement.
 - **FR-012**: Clients MUST display partial recognition as provisional and MUST display the final recognized text as the ordinary user message that is submitted.
 - **FR-013**: A final non-empty recognized turn MUST auto-submit exactly once through the same authenticated, correlated `chat_message` path used by typed input; partial, empty, failed, and cancelled recognition MUST NOT submit.
-- **FR-014**: Voice-originated text MUST retain the active user, chat, device, turn, request-generation, and submission identities needed for owner isolation, ordering, idempotency, resume, and audit.
+- **FR-014**: Voice-originated text MUST retain the active user, chat, device, turn, request-generation, and submission identities needed for owner isolation, ordering, idempotency, resume, and audit. Each turn MUST snapshot the currently visible chat when recognition begins; a later chat switch MUST route future turns to the newly visible chat without rebinding any existing turn, announcement, or result.
 - **FR-015**: The recognized text MUST pass through the existing LLM resolution, orchestrator, agents, tools, permissions, policies, delegation, PHI, confirmation, egress, retry, cancellation, persistence, and audit paths without a voice-only bypass.
 - **FR-016**: The LiveKit voice participant MUST act only as a media/turn bridge into AstralDeep; it MUST NOT independently choose an LLM, answer the user, invoke tools, or maintain a competing authoritative conversation.
 - **FR-017**: Voice input MUST grant no additional scope or approval authority. A spoken utterance MAY enter the normal text path, but every consequential action MUST still satisfy its existing server-side confirmation and human-presence rules.
@@ -233,11 +247,11 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 - **FR-022**: Progress speech MUST be concise, natural, truthful, and derived from sanitized user-facing lifecycle state. It MUST NOT reveal chain-of-thought, hidden prompts, credentials, raw tool arguments/results, PHI-bearing intermediate content, or unverified claims of progress.
 - **FR-023**: Consecutive progress messages MUST NOT repeat the exact same wording back-to-back, and variation MUST NOT change the asserted state.
 - **FR-024**: A terminal result, failure, refusal, cancellation, user-input gate, mute, session end, disconnect, or chat transfer MUST cancel or suspend stale queued progress speech as appropriate.
-- **FR-025**: On successful completion, the system MUST synthesize a concise, faithful summary derived only from the authoritative committed assistant result, including material caveats and next actions while omitting low-value detail that is still available visually.
+- **FR-025**: On successful completion, the system MUST use the completed request's authoritative text summary as the spoken-recap source when that summary is present. If no authoritative text summary exists, the system MUST generate a short faithful recap only from the committed content displayed to the user, preserving material conclusions, caveats, and next actions; it MUST NOT derive the recap from transient progress, hidden reasoning, or intermediate or uncommitted content. A non-sensitive recap MAY begin automatically; when the result contains PHI or similarly sensitive content, automatic speech MUST be limited to a generic sensitive-result notice and the system MUST require a fresh explicit tap or spoken request bound to that result before reading any sensitive detail aloud.
 - **FR-026**: On failure, refusal, or cancellation, the system MUST synthesize an accurate terminal explanation and MUST NOT use success language.
 - **FR-027**: When work is blocked on login, permission, confirmation, or other user input, the system MUST speak the required action once, enter a waiting state, and pause the 20-second processing cadence until processing resumes.
 - **FR-028**: Acknowledgements and progress phrases MUST be ephemeral media events, not assistant chat messages, model-context entries, durable UI audio components, or substitutes for the committed result.
-- **FR-029**: Spoken messages for concurrent or background turns MUST be serialized, bounded, and clearly attributable; overlapping assistant audio is prohibited.
+- **FR-029**: Spoken messages for concurrent or background turns MUST be serialized, bounded, and clearly attributable to the foreground or earlier background turn; overlapping assistant audio is prohibited, and background progress/final announcements MUST NOT be represented as the foreground turn's state or result.
 
 #### Turn-taking, audio behavior, and recovery
 
@@ -265,7 +279,7 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 - **FR-045**: Raw microphone audio and synthesized audio MUST be ephemeral and MUST NOT be stored in conversation history, uploads, audit payloads, databases, caches beyond active processing, crash reports, or telemetry.
 - **FR-046**: The final transcript MUST follow the existing message-retention and audit policy because it is the user's ordinary chat message; logs and metrics MUST record only bounded non-content metadata needed for operations unless an existing authorized audit rule explicitly requires content.
 - **FR-047**: Speech credentials, internal endpoints, media secrets, raw upstream response bodies, raw audio, and PHI-bearing transcript/summary text MUST be excluded or redacted from logs, metrics, tracing, client errors, and audit metadata.
-- **FR-048**: Voice media carrying PHI MUST receive transport protection, access isolation, and trusted-service handling equivalent to or stronger than typed PHI; any end-to-end media encryption boundary and unavoidable plaintext processor MUST be documented and tested.
+- **FR-048**: Voice media carrying PHI MUST receive transport protection, access isolation, trusted-service handling, and local audible-disclosure controls equivalent to or stronger than typed PHI; any end-to-end media encryption boundary and unavoidable plaintext processor MUST be documented and tested. Activating voice mode alone MUST NOT count as consent to read a later sensitive result aloud.
 - **FR-049**: Structured observability MUST measure session counts/states, readiness, connection and recovery outcomes, time to listening, transcription latency, acknowledgement latency, progress-cadence gaps, time to first result audio, interruption latency, TTS failures, deduplication, and resource cleanup without recording content.
 - **FR-050**: Capacity limits MUST be per authenticated user and deployment policy, produce an honest retryable unavailable state, and never be enforced solely by an unauthenticated global in-memory socket count.
 
@@ -282,9 +296,9 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 ### Key Entities
 
 - **Voice Service Profile**: The operator-owned, non-user-editable speech/media capability, including exact ASR/TTS/voice identifiers, readiness state, supported format/rate, and references to server-held credentials without exposing their values.
-- **Voice Session**: One authenticated user's active media relationship to one client and chat, including stable session identity, owning device, lifecycle state, mute state, start/activity/expiry timestamps, and takeover lineage. It contains no retained raw audio.
-- **Voice Turn**: The correlation between one captured utterance, provisional/final transcript state, the ordinary submitted chat message, the agentic task/turn, and its terminal committed result.
-- **Spoken Announcement**: An ephemeral, turn-bound utterance with a kind (greeting, acknowledgement, progress, waiting, result, failure), sanitized speakable text, lifecycle timestamps, interruption status, and deduplication identity. It is not a chat message.
+- **Voice Session**: One authenticated user's active media relationship to one client, including stable session identity, owning device, currently visible chat, lifecycle state, mute state, start/activity/expiry timestamps, and takeover lineage. The session may follow chat navigation, but it contains no retained raw audio and never changes an existing turn's chat binding.
+- **Voice Turn**: The correlation between one captured utterance, provisional/final transcript state, the ordinary submitted chat message, foreground/background execution state, the agentic task/turn, and its terminal committed result.
+- **Spoken Announcement**: An ephemeral, turn-bound utterance with a kind (greeting, acknowledgement, progress, waiting, result, failure), sanitized speakable text, lifecycle timestamps, interruption status, deduplication identity, and, for a result recap, a source reference identifying either the authoritative text summary or the committed-visible-content fallback. It is not a chat message.
 - **Media Access Grant**: Short-lived, least-privilege authorization for one authenticated participant to join the intended room/session, excluding the server API secret and speech credential.
 - **Voice Capability State**: The server-owned availability and reason vocabulary consumed consistently by every client, including separate hardware capability, permission authorization, media readiness, ASR readiness, and TTS readiness.
 
@@ -295,15 +309,16 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 - **SC-001**: After microphone permission is already granted and services are warm, at least 95% of activations begin the greeting or reach listening within 3 seconds on each client under the supported staging network profile.
 - **SC-002**: At least 95% of accepted spoken turns begin an audible acknowledgement within 1.5 seconds of durable transcript acceptance, and 100% receive exactly one acknowledgement before any scheduled progress speech.
 - **SC-003**: Across controlled active turns lasting longer than 20 seconds, at least 99% have no audible-feedback gap over 20.0 seconds while speech is enabled and processing is not waiting on the user; no progress utterance begins after a terminal event.
-- **SC-004**: At least 95% of successful committed results begin their spoken recap within 2 seconds of becoming available to the voice layer; each default recap is no longer than 30 seconds or 80 spoken words unless the user asks to hear more.
-- **SC-005**: Human review of a representative set of at least 100 successful, failed, refused, and cancelled turns finds no material contradiction, invented completion, lost critical caveat, or incorrect terminal state in at least 95% of spoken recaps, with zero fabricated progress claims allowed.
-- **SC-006**: In parity tests, 100% of final transcripts produce exactly one ordinary chat submission and the same authorization/confirmation verdict as the identical typed text; reconnect and duplicate-event scenarios produce zero duplicate messages, tool calls, or jobs.
+- **SC-004**: At least 95% of successful committed results begin their spoken recap within 2 seconds of becoming available to the voice layer; each default recap is no longer than 30 seconds or 80 spoken words unless the user asks to hear more. In source-precedence tests, 100% use the authoritative completed text summary when one is present, and fallback recaps occur only when it is absent and contain no information outside the committed content shown to the user.
+- **SC-005**: Human review of a representative set of at least 100 successful, failed, refused, cancelled, and sensitive-result turns finds no material contradiction, invented completion, lost critical caveat, or incorrect terminal state in at least 95% of spoken recaps, with zero fabricated progress claims and zero sensitive details spoken before per-result consent.
+- **SC-006**: In parity tests, 100% of final transcripts produce exactly one ordinary chat submission and the same authorization/confirmation verdict as the identical typed text; reconnect and duplicate-event scenarios produce zero duplicate messages, tool calls, or jobs; a new query during active work produces one durable background transition plus one immediate foreground submission without cancelling either turn; and every post-navigation turn routes to the newly visible chat while prior turns remain in their originating chats.
 - **SC-007**: The complete live voice journey—activate, greet, listen, auto-submit, acknowledge, hear at least two progress updates, receive a terminal recap, interrupt, mute, reconnect, and stop—passes on web, Windows, Android, macOS, iOS, and watchOS before release, subject only to a constitution-compliant bounded platform-unavailability exception.
 - **SC-008**: Isolation tests with at least five simultaneous voice users for 30 minutes produce zero cross-user/cross-chat audio, transcript, room, announcement, takeover, or result leakage and zero unintended session termination caused by another user.
 - **SC-009**: Failure injection for missing credentials, missing model/voice, denied permission, media failure, ASR failure, TTS failure, timeout, and network loss yields an honest usable text fallback in 100% of cases and exposes zero secret values or raw upstream bodies.
 - **SC-010**: Storage and telemetry inspection after representative sessions finds zero retained raw microphone or synthesized audio and zero speech/media credentials in client state, logs, metrics, traces, audit metadata, databases, or crash artifacts.
 - **SC-011**: Accessibility verification finds 100% of voice controls on all six clients have meaningful accessible names, operable activation/stop/mute actions, perceivable current state and errors, keyboard/switch reachability where supported, and no state conveyed by sound or color alone.
 - **SC-012**: A structured listening panel rates the `af_heart` greeting, acknowledgement, progress, interruption, and recap experience at a mean of at least 4.0 out of 5 for naturalness and clarity, with no back-to-back identical progress phrase in the evaluated sessions.
+- **SC-013**: Inactivity tests on every client show that 100% of sessions with no active turn, no user-input gate, and no user speech or interaction end and release media ownership at five minutes within a ±5-second tolerance, while sessions actively processing or waiting on the user do not time out as idle.
 
 ## Assumptions
 
@@ -311,7 +326,7 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 - Automatic end-of-turn submission is intentional. The visible final transcript and normal confirmation gates are the safety controls; this feature does not insert a transcript-confirmation tap into every ordinary voice turn.
 - Conversation mode is foreground-only. Existing durable background execution continues after capture/playback pauses, and the visible committed result remains the source of truth.
 - One active media session per authenticated user is an acceptable default for privacy, cross-device coherence, and duplicate prevention.
-- Final spoken recaps can be produced faithfully from the committed response without invoking a separate voice-owned LLM. Planning may choose deterministic extraction or the existing authorized summarization path, but it may not create a second authoritative answer.
+- The completed request's authoritative text summary is the preferred spoken-recap source. If it is absent, a short recap is generated only from committed user-visible content; no transient, hidden, intermediate, or uncommitted content may become its source, and the recap does not become a second authoritative answer.
 - `af_heart` remains the only launch voice even on watchOS. Platform dictation and on-device synthesis may remain outside conversation mode as accessibility/text-entry aids, but they do not count as feature parity.
 - The exact model inventory supplied by the user is available at specification time. Release readiness still performs a live exact-model/voice check and fails visibly if that inventory changes.
 - The deployment operator, not end users, owns LiveKit and speech-service configuration. Formal lead-developer approval for new third-party runtime dependencies and pinned versions must still be recorded in the implementation PR under Constitution V.
@@ -328,4 +343,3 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 - An approved bounded streaming-egress path for authenticated HTTP and WebSocket media/model traffic. The existing buffered HTTP helper alone does not prove realtime safety.
 - Platform microphone/audio permissions and packaging: browser user-gesture/autoplay rules; Windows audio modules and frozen build; Android recording permission/runtime handling; Apple microphone usage descriptions, entitlements, privacy manifests, and audio-session behavior.
 - Candidate-bound automated and live evidence for all affected clients. Simulators do not prove Windows-native packaging or real acoustic echo cancellation, so those require their own release evidence.
-
