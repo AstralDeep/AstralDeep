@@ -539,7 +539,7 @@ def _run_in_threads(count: int, target: Callable[[], Any]) -> list[BaseException
 
 
 def test_schema_revision_declares_063_004() -> None:
-    assert database_module.SCHEMA_REVISION == "063.005"
+    assert database_module.SCHEMA_REVISION == "064.001"
 
 
 def test_startup_source_declares_both_fixed_advisory_transactions() -> None:
@@ -559,11 +559,28 @@ def test_empty_database_has_complete_additive_schema(
     marker = _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
     )
-    assert marker["value"] == "063.005"
+    assert marker["value"] == "064.001"
     for table, expected_columns in NEW_TABLE_COLUMNS.items():
         assert expected_columns <= _column_names(sandbox, table), table
     for table, expected_columns in ADDED_COLUMNS.items():
         assert expected_columns <= _column_names(sandbox, table), table
+
+    mcp_class = _fetch_one(
+        sandbox,
+        "SELECT parent_class_name, active_limit, queue_limit, max_wait_ms, "
+        "config_revision FROM operation_admission_class WHERE class_name = 'mcp'",
+    )
+    assert mcp_class == {
+        "parent_class_name": "global",
+        "active_limit": 8,
+        "queue_limit": 32,
+        "max_wait_ms": 5000,
+        "config_revision": "064-defaults",
+    }
+    assert _fetch_one(
+        sandbox,
+        "SELECT COUNT(*) AS n FROM operation_admission_slot WHERE class_name = 'mcp'",
+    )["n"] == 8
 
     operation_fks = {
         row["table_name"]
@@ -703,7 +720,7 @@ def test_representative_057_migration_preserves_legacy_truth(
 
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "063.005"
+    )["value"] == "064.001"
     assert _fetch_all(
         sandbox, "SELECT id, chat_id, role, content FROM messages ORDER BY id"
     ) == before_messages
@@ -715,6 +732,15 @@ def test_representative_057_migration_preserves_legacy_truth(
     assert _fetch_all(
         sandbox, "SELECT id, synthesized FROM interaction_log ORDER BY id"
     ) == before_synthesis
+    assert _fetch_one(
+        sandbox,
+        "SELECT active_limit, queue_limit, max_wait_ms "
+        "FROM operation_admission_class WHERE class_name = 'mcp'",
+    ) == {"active_limit": 8, "queue_limit": 32, "max_wait_ms": 5000}
+    assert _fetch_one(
+        sandbox,
+        "SELECT COUNT(*) AS n FROM operation_admission_slot WHERE class_name = 'mcp'",
+    )["n"] == 8
 
     chats = _fetch_all(
         sandbox,
@@ -1058,7 +1084,7 @@ def test_two_starters_apply_schema_once_after_lock_recheck(
     assert calls == 1
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "063.005"
+    )["value"] == "064.001"
 
 
 def test_killed_schema_owner_rolls_back_and_waiter_reapplies(
@@ -1116,7 +1142,7 @@ def test_killed_schema_owner_rolls_back_and_waiter_reapplies(
     assert calls == 2
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "063.005"
+    )["value"] == "064.001"
 
 
 def test_fifty_two_starter_schema_and_policy_trials_converge_once(
@@ -1201,7 +1227,7 @@ def test_fifty_two_starter_schema_and_policy_trials_converge_once(
         assert _fetch_one(
             sandbox,
             "SELECT value FROM schema_meta WHERE key = 'revision'",
-        )["value"] == "063.005"
+        )["value"] == "064.001"
         assert _fetch_one(
             sandbox,
             "SELECT value FROM schema_meta "
@@ -1355,7 +1381,7 @@ def test_failed_migration_rolls_back_before_marker_and_repeats_cleanly(
     Database(sandbox.dsn)
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "063.005"
+    )["value"] == "064.001"
 
 
 def test_current_and_forced_repeat_runs_are_idempotent(

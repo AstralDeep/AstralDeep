@@ -31,7 +31,8 @@ logger = logging.getLogger('Database')
 #          guarded by fixed PostgreSQL advisory transaction identities.
 # 063.005: + _cleanup_retire_063 (US7 retirement purge helper — dormant, never
 #          invoked at boot; bump satisfies the guarded-source hash discipline)
-SCHEMA_REVISION = '063.005'
+# 064.001: + bounded MCP child admission class and slots (8 active / 32 queued)
+SCHEMA_REVISION = '064.001'
 
 _SCHEMA_ADVISORY_LOCK = (1095980114, 60001)
 _USER_AGENT_POLICY_ADVISORY_LOCK = (1095980114, 60002)
@@ -1563,6 +1564,58 @@ class Database:
         # ── Feature 060: runtime reliability coordination schema ───────────
         self._migrate_runtime_reliability_060(cursor)
 
+        # ── Feature 064: bounded MCP request admission class ───────────────
+        self._migrate_mcp_admission_064(cursor)
+
+    def _migrate_mcp_admission_064(self, cursor):
+        """Add the repeat-safe MCP child class to existing 060 graphs.
+
+        Rollback is operational: disable ``FF_MCP_SERVER`` and recreate the
+        container. The additive idle class/slots may remain without changing
+        any other workload; rows are not removed while operations may refer to
+        them.
+        """
+        # Representative pre-060 migration fixtures intentionally invoke the
+        # full-schema method with the 060 migration disabled. In real startup
+        # the table exists by this point; preserving that fixture seam also
+        # makes this delta safe if an operator resumes from an older partial
+        # schema and the surrounding transaction later reruns 060 first.
+        cursor.execute(
+            "SELECT to_regclass('operation_admission_class') AS relation_name"
+        )
+        relation_row = cursor.fetchone()
+        try:
+            relation_name = relation_row["relation_name"]
+        except (KeyError, TypeError):
+            relation_name = relation_row[0]
+        if relation_name is None:
+            return
+        cursor.execute('''
+            ALTER TABLE operation_admission_class
+            DROP CONSTRAINT IF EXISTS operation_admission_class_name_check
+        ''')
+        cursor.execute('''
+            ALTER TABLE operation_admission_class
+            ADD CONSTRAINT operation_admission_class_name_check CHECK (
+                class_name IN (
+                    'global', 'interactive', 'mcp', 'background', 'scheduled',
+                    'maintenance', 'system'
+                )
+            )
+        ''')
+        cursor.execute('''
+            INSERT INTO operation_admission_class (
+                class_name, parent_class_name, active_limit, queue_limit,
+                max_wait_ms, config_revision
+            ) VALUES ('mcp', 'global', 8, 32, 5000, '064-defaults')
+            ON CONFLICT (class_name) DO NOTHING
+        ''')
+        cursor.execute('''
+            INSERT INTO operation_admission_slot (class_name, slot_number)
+            SELECT 'mcp', generate_series(1, 8)
+            ON CONFLICT (class_name, slot_number) DO NOTHING
+        ''')
+
     def _migrate_runtime_reliability_060(self, cursor):
         """Install the additive, repeat-safe feature-060 coordination schema."""
         self._migrate_operation_coordination_060(cursor)
@@ -1588,7 +1641,7 @@ class Database:
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 CONSTRAINT operation_admission_class_name_check CHECK (
                     class_name IN (
-                        'global', 'interactive', 'background', 'scheduled',
+                        'global', 'interactive', 'mcp', 'background', 'scheduled',
                         'maintenance', 'system'
                     )
                 ),

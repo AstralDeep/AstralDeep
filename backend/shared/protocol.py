@@ -33,6 +33,48 @@ class ProtocolValidationError(ValueError):
     """A feature-060 wire value failed its public protocol contract."""
 
 
+MCP_PROTOCOL_VERSION = "2026-07-28"
+MCP_SUPPORTED_PROTOCOL_VERSIONS = (MCP_PROTOCOL_VERSION,)
+MCP_HEADER_MISMATCH = -32020
+MCP_MISSING_REQUIRED_CLIENT_CAPABILITY = -32021
+MCP_UNSUPPORTED_PROTOCOL_VERSION = -32022
+MCP_INVALID_REQUEST = -32600
+MCP_INVALID_PARAMS = -32602
+MCP_RESULT_COMPLETE = "complete"
+
+
+class MCPProtocolError(ProtocolValidationError):
+    """A modern MCP envelope cannot be processed safely."""
+
+    def __init__(
+        self,
+        code: int,
+        message: str,
+        *,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.data = dict(data or {})
+
+    def to_error(self) -> Dict[str, Any]:
+        error: Dict[str, Any] = {
+            "code": self.code,
+            "message": str(self),
+            "retryable": False,
+        }
+        if self.data:
+            error["data"] = dict(self.data)
+        return error
+
+
+def _known_dataclass_fields(cls: type, data: Mapping[str, Any]) -> Dict[str, Any]:
+    """Keep additive wire fields from crashing a version-skewed reader."""
+
+    valid_fields = {item.name for item in fields(cls)}
+    return {key: value for key, value in data.items() if key in valid_fields}
+
+
 def _require_uuid4(value: object, field_name: str) -> str:
     if not isinstance(value, str):
         raise ProtocolValidationError(f"{field_name} must be a UUID4 string")
@@ -89,12 +131,20 @@ class Message:
 
     @staticmethod
     def from_json(json_str: str) -> 'Message':
-        data = json.loads(json_str)
+        try:
+            data = json.loads(json_str)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ProtocolValidationError("message must be valid JSON") from exc
+        if not isinstance(data, Mapping):
+            raise ProtocolValidationError("message must be a JSON object")
         msg_type = data.get('type')
         if msg_type == 'mcp_request':
-            return MCPRequest(**data)
+            # Filter unknown keys so older peers parsing newer MCP envelopes
+            # (and vice versa) survive additive fields instead of silently
+            # dropping the frame and leaving its caller to time out.
+            return MCPRequest(**_known_dataclass_fields(MCPRequest, data))
         elif msg_type == 'mcp_response':
-            return MCPResponse(**data)
+            return MCPResponse(**_known_dataclass_fields(MCPResponse, data))
         elif msg_type == 'ui_event':
             return UIEvent(**data)
         elif msg_type == 'ui_render':
@@ -169,6 +219,44 @@ class MCPRequest(Message):
     request_id: str = ""
     method: str = ""
     params: Dict[str, Any] = field(default_factory=dict)
+    # 064 Phase A: per-request modern MCP metadata stays on the envelope. It
+    # must never be injected into params["arguments"], because several agents
+    # intentionally splat that mapping into a tool signature.
+    protocol_version: Optional[str] = None
+    caller_capabilities: Optional[Dict[str, Any]] = None
+    caller_info: Optional[Dict[str, Any]] = None
+
+    def validate_protocol_metadata(self, *, allow_legacy: bool = True) -> None:
+        """Validate modern metadata without inferring cross-request state."""
+
+        modern_declared = any(
+            value is not None
+            for value in (
+                self.protocol_version,
+                self.caller_capabilities,
+                self.caller_info,
+            )
+        )
+        if not modern_declared and allow_legacy:
+            return
+        if self.protocol_version is None or self.caller_capabilities is None:
+            raise MCPProtocolError(
+                MCP_INVALID_PARAMS,
+                "protocol_version and caller_capabilities are required",
+            )
+        if self.protocol_version not in MCP_SUPPORTED_PROTOCOL_VERSIONS:
+            raise MCPProtocolError(
+                MCP_UNSUPPORTED_PROTOCOL_VERSION,
+                f"Unsupported MCP protocol version: {self.protocol_version}",
+                data={"supported": list(MCP_SUPPORTED_PROTOCOL_VERSIONS)},
+            )
+        if not isinstance(self.caller_capabilities, dict):
+            raise MCPProtocolError(
+                MCP_INVALID_PARAMS,
+                "caller_capabilities must be an object",
+            )
+        if self.caller_info is not None and not isinstance(self.caller_info, dict):
+            raise MCPProtocolError(MCP_INVALID_PARAMS, "caller_info must be an object")
 
 @dataclass
 class MCPResponse(Message):
@@ -183,6 +271,29 @@ class MCPResponse(Message):
     # The orchestrator stamps this onto the response after the audit
     # context closes; agents do not set it.
     correlation_id: Optional[str] = None
+    # 064 Phase A: the internal snake_case projection of MCP Result.resultType
+    # plus the SHOULD-level identity of the responder.
+    result_type: str = MCP_RESULT_COMPLETE
+    responder_info: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        self.validate_result_shape()
+
+    def validate_result_shape(self) -> None:
+        if not isinstance(self.result_type, str) or not self.result_type:
+            raise ProtocolValidationError("result_type must be a non-empty string")
+        if self.responder_info is not None and not isinstance(self.responder_info, dict):
+            raise ProtocolValidationError("responder_info must be an object")
+        if self.error is not None and not isinstance(self.error, dict):
+            raise ProtocolValidationError("error must be an object")
+        if self.ui_components is not None and not isinstance(self.ui_components, list):
+            raise ProtocolValidationError("ui_components must be an array")
+        if self.error is not None and (
+            self.result is not None or self.ui_components
+        ):
+            raise ProtocolValidationError(
+                "an MCP response cannot carry an error with a result or renderable components"
+            )
 
 @dataclass
 class AgentHopRequest(Message):
@@ -1010,9 +1121,21 @@ class AgentCard:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> 'AgentCard':
+        if not isinstance(data, Mapping):
+            raise ProtocolValidationError("agent card must be an object")
         skills_data = data.get('skills', [])
-        skills = [AgentSkill(**s) if isinstance(s, dict) else s for s in skills_data]
-        card_data = {k: v for k, v in data.items() if k not in ('skills',)}
+        if not isinstance(skills_data, list):
+            raise ProtocolValidationError("agent card skills must be a list")
+        skills = [
+            AgentSkill(**_known_dataclass_fields(AgentSkill, skill))
+            if isinstance(skill, Mapping)
+            else skill
+            for skill in skills_data
+        ]
+        card_data = _known_dataclass_fields(
+            AgentCard,
+            {key: value for key, value in data.items() if key != 'skills'},
+        )
         return AgentCard(skills=skills, **card_data)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1021,12 +1144,7 @@ class AgentCard:
             "description": self.description,
             "agent_id": self.agent_id,
             "version": self.version,
-            "skills": [
-                {"id": s.id, "name": s.name, "description": s.description,
-                 "input_schema": s.input_schema, "output_schema": s.output_schema,
-                 "tags": s.tags, "scope": s.scope, "metadata": s.metadata}
-                for s in self.skills
-            ] if self.skills else []
+            "skills": [skill.to_dict() for skill in self.skills] if self.skills else []
         }
         if self.metadata:
             result["metadata"] = self.metadata

@@ -200,6 +200,24 @@ class RuntimeObservability:
             labels["phase"] = phase
         self.record(f"operation_{event}_total", labels=labels)
 
+    def observe_operation_duration(
+        self,
+        duration_seconds: float,
+        *,
+        operation_kind: str,
+        phase: str,
+        result_code: str,
+    ) -> None:
+        """Record the latest bounded operation duration without identity labels."""
+
+        labels = self._base_labels()
+        labels.update(
+            operation_kind=operation_kind,
+            phase=phase,
+            result_code=result_code,
+        )
+        self._set("operation_duration_seconds", duration_seconds, labels)
+
     def record_scheduler(
         self,
         event: str,

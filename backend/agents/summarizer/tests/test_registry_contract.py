@@ -68,14 +68,15 @@ def test_mcp_server_tool_list_matches_registry() -> None:
     assert names == EXPECTED_TOOLS
 
 
-def test_mcp_server_surfaces_error_alerts() -> None:
+def test_mcp_server_surfaces_error_alerts_without_renderable_error_payload() -> None:
     server = MCPServer()
     response = server.process_request(MCPRequest(
         request_id="r2", method="tools/call",
         params={"name": "summarize_text", "arguments": {"text": ""}},
     ))
     assert response.error is not None
-    assert response.ui_components[0]["variant"] == "error"
+    assert response.ui_components is None
+    assert "non-empty 'text'" in response.error["message"]
 
 
 def test_mcp_server_unknown_method() -> None:

@@ -130,7 +130,10 @@ def dispatch(req: Dict[str, Any]) -> Dict[str, Any]:
     tools = _advertised_tools()
 
     if method == "tools/list":
-        return {"type": "mcp_response", "request_id": rid, "result": {"tools": [
+        return {"type": "mcp_response", "request_id": rid,
+                "result_type": "complete",
+                "responder_info": {"name": AGENT_ID, "version": "1.0.0"},
+                "result": {"tools": [
             {"name": n, "description": i["description"],
              "input_schema": i.get("input_schema", {"type": "object", "properties": {}})}
             for n, i in tools.items()]}}
@@ -147,6 +150,8 @@ def dispatch(req: Dict[str, Any]) -> Dict[str, Any]:
                               correlation_id=str(rid), event_class="dangerous_bypass",
                               detail="bypass flag not set (call rejected)")
             return {"type": "mcp_response", "request_id": rid,
+                    "result_type": "complete",
+                    "responder_info": {"name": AGENT_ID, "version": "1.0.0"},
                     "error": {"code": -32601, "message": f"Unknown tool: {name}", "retryable": False}}
         try:
             fn = info["function"]
@@ -156,13 +161,20 @@ def dispatch(req: Dict[str, Any]) -> Dict[str, Any]:
             result = fn(**args)
             comps = result.get("_ui_components") if isinstance(result, dict) else None
             data = result.get("_data") if isinstance(result, dict) else result
-            return {"type": "mcp_response", "request_id": rid, "result": data, "ui_components": comps}
+            return {"type": "mcp_response", "request_id": rid,
+                    "result_type": "complete",
+                    "responder_info": {"name": AGENT_ID, "version": "1.0.0"},
+                    "result": data, "ui_components": comps}
         except Exception as exc:  # noqa: BLE001
             logger.exception("tool %s failed", name)
             return {"type": "mcp_response", "request_id": rid,
+                    "result_type": "complete",
+                    "responder_info": {"name": AGENT_ID, "version": "1.0.0"},
                     "error": {"code": -32603, "message": str(exc), "retryable": True}}
 
     return {"type": "mcp_response", "request_id": rid,
+            "result_type": "complete",
+            "responder_info": {"name": AGENT_ID, "version": "1.0.0"},
             "error": {"code": -32601, "message": f"Unknown method: {method}", "retryable": False}}
 
 

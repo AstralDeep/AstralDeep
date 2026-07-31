@@ -120,11 +120,12 @@ async def test_dispatch_blocked_when_tool_filtered_by_picker() -> None:
     assert "read_spreadsheet" in alert["message"]
     assert "tool picker" in alert["message"]
 
-    # Dispatch did not reach upstream — the response carries the same alert + error.
+    # Dispatch did not reach upstream. The alert was rendered separately so
+    # the correlated error envelope stays unambiguous.
     assert result is not None
     assert result.error is not None
     assert "read_spreadsheet" in result.error["message"]
-    assert result.ui_components and result.ui_components[0]["type"] == "alert"
+    assert result.ui_components is None
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,31 @@ WEB_SESSION_SECRET=<random>      # cookie HMAC (falls back to WEB_SESSION_ENC_KE
 Generate Fernet keys with
 `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
 
+## Client: `astral-mcp` (feature 064 resource audience)
+
+Create a dedicated Keycloak client/audience for third-party MCP hosts. Do not
+append it to `KEYCLOAK_ALLOWED_AZP`; MCP validation is isolated from the
+web/native allow-list and requires real `aud` validation.
+
+1. Create the `astral-mcp` client using the flow appropriate for the host. A
+   public host must use Authorization Code + PKCE; never distribute an Astral
+   client secret to desktop software.
+2. Add an audience mapper so issued access tokens contain `astral-mcp` in
+   `aud`. A token carrying only `astral-frontend` is intentionally refused.
+3. Create and assign the client scopes `mcp:discover`, `mcp:tools:read`, and
+   `mcp:tools:invoke`. Invocation implies read, and read implies discovery at
+   the resource server. Do not add `offline_access` to this resource's
+   published or challenged scopes.
+4. Set `PUBLIC_BASE_URL` to the canonical external HTTPS origin, configure the
+   reverse proxy to forward `/mcp` and
+   `/.well-known/oauth-protected-resource/mcp`, then recreate the orchestrator
+   with `FF_MCP_SERVER=true`.
+
+The OAuth scope only admits a request to the resource. Agent visibility,
+owner isolation, per-tool permission, policy, PHI/taint, delegation,
+credentials, destructive-operation refusal, concurrency, and audit gates are
+still evaluated at listing or invocation time.
+
 ## Behavior summary (what these settings power)
 
 - Unauthenticated `GET /` → 302 to Keycloak; after login the user lands on

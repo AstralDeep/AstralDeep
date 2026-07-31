@@ -236,10 +236,10 @@ def test_server_honors_tool_retryable_false_on_error_components() -> None:
         },
     }
     resp = _call(server, "fake_tool")
-    assert resp.error["code"] == -32000
+    assert resp.error["code"] == -32603
     assert resp.error["message"] == "boom"
     assert resp.error["retryable"] is False
-    assert resp.ui_components[0]["variant"] == "error"
+    assert resp.ui_components is None
 
 
 def test_server_classifies_raised_value_error_as_non_retryable() -> None:

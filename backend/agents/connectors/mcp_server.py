@@ -128,11 +128,10 @@ class ConnectorsMCPServer:
                         return MCPResponse(
                             request_id=request.request_id,
                             error={
-                                "code": -32000,
+                                "code": -32603,
                                 "message": error_msg,
                                 "retryable": result.get("_retryable", True),
                             },
-                            ui_components=ui_comps,
                         )
                     return MCPResponse(
                         request_id=request.request_id,

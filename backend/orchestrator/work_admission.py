@@ -33,6 +33,7 @@ _TERMINAL_STATES: frozenset["OperationState"]
 class AdmissionClass(str, Enum):
     GLOBAL = "global"
     INTERACTIVE = "interactive"
+    MCP = "mcp"
     BACKGROUND = "background"
     SCHEDULED = "scheduled"
     MAINTENANCE = "maintenance"

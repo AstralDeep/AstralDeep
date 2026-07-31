@@ -179,5 +179,5 @@ shell commands, and other important information, read the current plan at
 - [specs/053-apple-production-release/plan.md](specs/053-apple-production-release/plan.md)
 - [specs/054-byo-llm-setup/plan.md](specs/054-byo-llm-setup/plan.md)
 - [specs/063-remote-compute-agents/plan.md](specs/063-remote-compute-agents/plan.md)
-- [specs/064-mcp-2026-07-28-decision/spec.md](specs/064-mcp-2026-07-28-decision/spec.md) *(decision-only — no plan.md)*
+- [specs/064-mcp-2026-07-28-decision/plan.md](specs/064-mcp-2026-07-28-decision/plan.md) *(decision verdicts ratified + a phased upgrade: Phase A envelope/dialect, Phase B a flag-gated conformant MCP endpoint)*
 <!-- SPECKIT END -->

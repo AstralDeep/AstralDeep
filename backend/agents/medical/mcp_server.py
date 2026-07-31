@@ -78,9 +78,8 @@ class MCPServer:
                         logger.warning(f"Tool '{tool_name}' returned error alert: {error_msg}")
                         return MCPResponse(
                             request_id=request.request_id,
-                            error={"code": -32000, "message": error_msg,
-                                   "retryable": True},
-                            ui_components=ui_comps
+                            error={"code": -32603, "message": error_msg,
+                                   "retryable": True}
                         )
 
                     data = result.get("_data")

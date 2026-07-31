@@ -156,6 +156,14 @@ class FeatureFlags:
             # is byte-identical to today. Read once at import (container recreate
             # to enable). See specs/063-remote-compute-agents/.
             "remote_compute": self._read("FF_REMOTE_COMPUTE", False),
+            # 064-mcp-2026-07-28-decision: exposes the audience-bound,
+            # stateless MCP Streamable HTTP server. FAIL CLOSED — default OFF;
+            # with the flag off there is no MCP route, protected-resource
+            # metadata, admission activity, or advertisement, preserving the
+            # pre-feature HTTP surface byte-for-byte. Read once at import
+            # (container recreate to enable). See
+            # specs/064-mcp-2026-07-28-decision/.
+            "mcp_server": self._read("FF_MCP_SERVER", False),
         }
 
     @staticmethod

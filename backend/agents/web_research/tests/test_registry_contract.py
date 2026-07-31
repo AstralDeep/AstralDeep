@@ -84,15 +84,16 @@ def test_mcp_server_unknown_tool_is_not_retryable() -> None:
     assert response.error["retryable"] is False
 
 
-def test_mcp_server_surfaces_error_alerts() -> None:
-    """A tool-level error Alert becomes an MCP error with the UI attached."""
+def test_mcp_server_surfaces_error_alerts_without_renderable_error_payload() -> None:
+    """A tool-level error Alert becomes an MCP error with no renderable body."""
     server = MCPServer()
     response = server.process_request(MCPRequest(
         request_id="r3", method="tools/call",
         params={"name": "web_search", "arguments": {"query": ""}},
     ))
     assert response.error is not None
-    assert response.ui_components[0]["variant"] == "error"
+    assert response.ui_components is None
+    assert "non-empty 'query'" in response.error["message"]
 
 
 def test_error_classification() -> None:

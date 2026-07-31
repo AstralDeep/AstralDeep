@@ -23,7 +23,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 
 import websockets
 import websockets.exceptions
@@ -79,6 +79,7 @@ from shared.protocol import (
     RegisterAgent, RegisterUI, AgentCard, ToolProgress,
     AgentHostRegistration, AgentHostRegistered, CandidateCapabilityMap,
     AGENT_LIFECYCLE_REASON_CODES, ProtocolValidationError, RuntimeFence,
+    MCP_PROTOCOL_VERSION,
     ConversationCommitReady,
     ToolStreamData, ToolStreamEnd, ToolStreamCancel,
     AgentHopRequest, AgentHopResponse,
@@ -2409,6 +2410,8 @@ class Orchestrator:
             "error",
             "ui_components",
             "correlation_id",
+            "result_type",
+            "responder_info",
         }
         required = {"type", "request_id", "request_generation", "fence"}
         if not required.issubset(frame) or not set(frame).issubset(allowed):
@@ -2465,10 +2468,12 @@ class Orchestrator:
             waiter.set_result(
                 MCPResponse(
                     request_id=request_id,
-                    result=frame.get("result"),
+                    result=None if error is not None else frame.get("result"),
                     error=error,
-                    ui_components=frame.get("ui_components"),
+                    ui_components=None if error is not None else frame.get("ui_components"),
                     correlation_id=frame.get("correlation_id"),
+                    result_type=frame.get("result_type", "complete"),
+                    responder_info=frame.get("responder_info"),
                 )
             )
 
@@ -3308,6 +3313,40 @@ class Orchestrator:
                         logger.debug("close after refused agent registration failed", exc_info=True)
                 return
 
+        # 064 Phase A: validate the agent's exact JSON Schema 2020-12
+        # declaration before publishing any card/routing state. This validator
+        # is bounded and offline; it never dereferences a network URI. Only
+        # after validation is an absent dialect made explicit.
+        from shared.schema_validation import validate_tool_schema
+
+        try:
+            for skill in card.skills:
+                skill.input_schema = validate_tool_schema(
+                    skill.input_schema
+                    or {"type": "object", "properties": {}},
+                    skill.id or skill.name,
+                    require_object_root=True,
+                )
+                output_schema = getattr(skill, "output_schema", None)
+                if output_schema is not None:
+                    skill.output_schema = validate_tool_schema(
+                        output_schema,
+                        skill.id or skill.name,
+                        require_object_root=False,
+                    )
+        except ValueError as exc:
+            logger.warning(
+                "Refusing agent %s registration: %s",
+                card.agent_id,
+                exc,
+            )
+            if websocket is not None:
+                try:
+                    await websocket.close(code=1008, reason="invalid tool schema")
+                except Exception:
+                    logger.debug("close after invalid tool schema failed", exc_info=True)
+            return
+
         if websocket is not None:
             self.agents[card.agent_id] = websocket
         self.agent_cards[card.agent_id] = card
@@ -3706,6 +3745,7 @@ class Orchestrator:
                 await self.register_agent(websocket, msg)
 
             elif isinstance(msg, MCPResponse):
+                msg.validate_result_shape()
                 req_id = msg.request_id
                 if req_id in self.pending_requests:
                     if not self._response_is_from_dispatch_target(req_id, websocket):
@@ -3773,6 +3813,25 @@ class Orchestrator:
 
         except Exception as e:
             logger.error(f"Error handling agent message: {e}")
+            # Resolve a correlatable malformed response immediately. Unknown
+            # additive keys are filtered by Message.from_json; reaching this
+            # branch means the known envelope itself is invalid.
+            try:
+                raw = json.loads(message)
+            except (TypeError, json.JSONDecodeError):
+                raw = None
+            req_id = raw.get("request_id") if isinstance(raw, dict) else None
+            if (
+                isinstance(req_id, str)
+                and raw.get("type") == "mcp_response"
+                and req_id in self.pending_requests
+                and self._response_is_from_dispatch_target(req_id, websocket)
+            ):
+                future = self.pending_requests[req_id]
+                if not future.done():
+                    future.set_exception(
+                        ProtocolValidationError("malformed MCP response")
+                    )
 
     @staticmethod
     def _parsed_ui_frame(message: str) -> dict[str, Any] | None:
@@ -9892,90 +9951,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug(f"Could not resolve user disabled-agent list: {e}")
             disabled_agents = set()
 
-        # Phase A: walk every (agent, skill) pair, run the full gate
-        # stack, and accumulate the survivors. We can't emit yet —
-        # qualification depends on knowing the full set first (Phase B).
-        eligible: List[Tuple[str, Any]] = []
+        # Phase A: run the single chat visibility predicate off the event loop.
+        # The MCP projection calls the same helper, preventing catalog drift.
+        from orchestrator.tool_visibility import eligible_tool_pairs
 
-        def _collect_eligible():
-            """Run the per-(agent, skill) gate stack off the event loop.
+        def _log_exclusion(agent_id: str, skill_id: Optional[str], reason: str) -> None:
+            subject = f"Tool '{skill_id}'" if skill_id else f"Agent '{agent_id}'"
+            logger.debug(
+                "%s excluded user=%s agent=%s reason=%s",
+                subject,
+                user_id,
+                agent_id,
+                reason,
+            )
 
-            The permission reads inside are the turn's hottest DB path; the
-            active turn memo makes each distinct tool resolve once.
-            """
-            for agent_id, card in self.agent_cards.items():
-                if agent_id not in self.agents and agent_id not in self.local_agents:
-                    continue
-
-                # Draft test: only include tools from the draft agent being tested
-                if draft_agent_id and agent_id != draft_agent_id:
-                    continue
-
-                # 030 follow-up: NON-LIVE drafts never enter normal chats. A
-                # draft under self-test registers with the orchestrator and the
-                # test flow enables its scopes — without this skip its generated
-                # tools leaked into every chat, colliding with (and shadowing)
-                # first-party tools (live incident: a generated Serper-keyed
-                # web_search shadowed the keyless built-in one).
-                if not draft_agent_id and self._is_draft_agent(agent_id):
-                    logger.debug(
-                        f"Agent '{agent_id}' excluded user={user_id} reason=draft_not_live"
-                    )
-                    continue
-
-                # Per-user agent disable (Feature 013 follow-up): user has
-                # muted this agent; skip ALL its tools without touching
-                # scope/permission state. Logged so operators can see when
-                # it kicks in.
-                if agent_id in disabled_agents:
-                    logger.debug(
-                        f"Agent '{agent_id}' excluded user={user_id} reason=user_disabled_agent"
-                    )
-                    continue
-
-                # Draft test (Feature 013 follow-up): when the user is testing
-                # THEIR OWN draft agent, bypass scope/per-tool permission checks
-                # so they can exercise the agent's tools without first granting
-                # themselves scopes. Strictly isolated to the draft being tested
-                # — `agent_id == draft_agent_id` is the only way this branch
-                # fires, so other agents (live or otherwise) are unaffected.
-                in_draft_test_for_this_agent = (
-                    draft_agent_id is not None and agent_id == draft_agent_id
-                )
-
-                for skill in card.skills:
-                    # System-level security block always wins, even in draft test
-                    # — security flags reflect proactive review and we never
-                    # want a draft to short-circuit a flagged tool.
-                    agent_flags = self.security_flags.get(agent_id, {})
-                    if skill.id in agent_flags and agent_flags[skill.id].get("blocked"):
-                        logger.debug(
-                            f"Tool '{skill.id}' excluded user={user_id} agent={agent_id} reason=system_blocked"
-                        )
-                        continue
-
-                    # Check if the user has allowed this tool for this agent
-                    # (Feature 013 / FR-013: per-(tool, kind) row > legacy
-                    # NULL-kind override > agent_scopes fallback). Skipped
-                    # for the draft being tested — see the comment above.
-                    if not in_draft_test_for_this_agent and not self.tool_permissions.is_tool_allowed(user_id, agent_id, skill.id):
-                        logger.debug(
-                            f"Tool '{skill.id}' excluded user={user_id} agent={agent_id} reason=scope_or_override"
-                        )
-                        continue
-
-                    # Feature 013 / FR-018, FR-020, FR-023: in-chat tool
-                    # picker narrowing. Only ever subtracts — applied AFTER
-                    # the scope/permission checks so it cannot widen.
-                    if selected_tools is not None and skill.id not in selected_tools:
-                        logger.debug(
-                            f"Tool '{skill.id}' excluded user={user_id} agent={agent_id} reason=user_selection"
-                        )
-                        continue
-
-                    eligible.append((agent_id, skill))
-
-        await asyncio.to_thread(_collect_eligible)
+        eligible = await asyncio.to_thread(
+            eligible_tool_pairs,
+            self,
+            user_id,
+            disabled_agents=disabled_agents,
+            draft_agent_id=draft_agent_id,
+            selected_tools=selected_tools,
+            log_exclusion=_log_exclusion,
+        )
 
         # Phase B: detect skill-id collisions across the surviving pairs.
         # A skill id owned by >1 distinct agent_id needs qualification so
@@ -10005,7 +10003,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 llm_name = skill.id
                 desc = skill.description
 
-            schema = self._sanitize_tool_schema(skill.input_schema or {"type": "object", "properties": {}})
+            schema = self._adapt_tool_schema_for_model(
+                skill.input_schema or {"type": "object", "properties": {}}
+            )
             tool_def = {
                 "type": "function",
                 "function": {
@@ -12515,8 +12515,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             alert = Alert(message=err_msg, variant="error")
             return GateRefusal(
                 response=MCPResponse(
-                    error={"message": err_msg, "retryable": False},
-                    ui_components=[alert.to_dict()]),
+                    error={"message": err_msg, "retryable": False}),
                 render_components=[alert.to_dict()],
                 render_target="chat")
 
@@ -12528,8 +12527,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             alert = Alert(message=err_msg, variant="warning")
             return GateRefusal(
                 response=MCPResponse(
-                    error={"message": err_msg, "retryable": False},
-                    ui_components=[alert.to_dict()]),
+                    error={"message": err_msg, "retryable": False}),
                 render_components=[alert.to_dict()])
 
         # Feature 063 US3: destructive-operation confirmation gate. Every dispatch
@@ -12539,6 +12537,32 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # tokens are minted for a call that may be refused. remote-compute-1 only;
         # evaluate() fires only for that agent's DESTRUCTIVE verbs (read verbs and
         # non-destructive mutating verbs classify to None and pass straight through).
+        _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+        if (
+            agent_id == "remote-compute-1"
+            and _session_claims.get("_invocation_channel") == "mcp"
+        ):
+            from orchestrator import remote_confirmation
+            if remote_confirmation.is_destructive_unattended(tool_name, args):
+                err_msg = (
+                    f"Tool '{tool_name}' is destructive and cannot run over the "
+                    "unattended MCP channel; use an interactive Astral session."
+                )
+                logger.warning(
+                    "mcp destructive refusal agent=%s tool=%s",
+                    agent_id,
+                    tool_name,
+                )
+                return GateRefusal(
+                    response=MCPResponse(
+                        error={"message": err_msg, "retryable": False}
+                    ),
+                    render_components=[
+                        Alert(message=err_msg, variant="error").to_dict()
+                    ],
+                    render_target="chat",
+                )
+
         if agent_id == "remote-compute-1":
             from orchestrator import remote_confirmation
             _conf = await asyncio.to_thread(
@@ -12548,8 +12572,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _msg, _comps = _conf
                 return GateRefusal(
                     response=MCPResponse(
-                        error={"message": _msg, "retryable": False},
-                        ui_components=_comps),
+                        error={"message": _msg, "retryable": False}),
                     render_components=_comps, render_target="chat")
 
         # Deterministic pre-action policy engine — an ordered, fail-closed rule
@@ -12585,8 +12608,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         alert = Alert(message=msg, variant="warning")
                         return GateRefusal(
                             response=MCPResponse(
-                                error={"message": msg, "retryable": False},
-                                ui_components=[alert.to_dict()]),
+                                error={"message": msg, "retryable": False}),
                             render_components=[alert.to_dict()])
                 elif decision.effect in (policy.DENY, policy.CONFIRM):
                     msg = decision.reason or (
@@ -12598,8 +12620,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=msg, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": msg, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": msg, "retryable": False}),
                         render_components=[alert.to_dict()])
                 if decision.args is not None:
                     args = decision.args  # rewritten (e.g. a secret arg redacted)
@@ -12631,8 +12652,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=msg, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": msg, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": msg, "retryable": False}),
                         render_components=[alert.to_dict()])
 
         # Intent-alignment supervisor (C-S5) + high-risk human-in-the-loop
@@ -12650,8 +12670,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=msg, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": msg, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": msg, "retryable": False}),
                         render_components=[alert.to_dict()])
             from orchestrator import hitl as _hitl
             if _hitl.hitl_enabled():
@@ -12670,8 +12689,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=req.summary, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": req.summary, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": req.summary, "retryable": False}),
                         render_components=[alert.to_dict()])
 
         # Map file paths if chat_id provided
@@ -12736,8 +12754,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 return GateRefusal(
                     response=MCPResponse(
-                        error={"message": alert.message, "retryable": False},
-                        ui_components=[alert.to_dict()]),
+                        error={"message": alert.message, "retryable": False}),
                     render_components=[alert.to_dict()],
                     render_target="chat")
 
@@ -12863,8 +12880,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 alert = Alert(message=err_msg, variant="warning")
                 return GateRefusal(
                     response=MCPResponse(
-                        error={"message": err_msg, "retryable": False},
-                        ui_components=[alert.to_dict()]),
+                        error={"message": err_msg, "retryable": False}),
                     render_components=[alert.to_dict()],
                     render_target="chat")
             # 056 US3 (FR-019): a chained hop charges BOTH the executing
@@ -12894,8 +12910,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=err_msg, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": err_msg, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": err_msg, "retryable": False}),
                         render_components=[alert.to_dict()],
                         render_target="chat")
                 self._hop_cap_entries[cap_job_id] = (user_id, initiating_agent_id)
@@ -12960,8 +12975,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                            tool_name, user_id, _json_err.msg)
             alert = Alert(message=msg, variant="error")
             await self.send_ui_render(websocket, [alert.to_dict()])
-            return MCPResponse(error={"message": msg, "retryable": True},
-                               ui_components=[alert.to_dict()])
+            return MCPResponse(error={"message": msg, "retryable": True})
 
         # 055 US2: the LLM-authored params as written, captured before
         # path-mapping / credential injection mutate `args` — the stream
@@ -13324,8 +13338,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             alert = Alert(message=message_text, variant="warning")
             return GateRefusal(
                 response=MCPResponse(
-                    error={"message": message_text, "retryable": False},
-                    ui_components=[alert.to_dict()]),
+                    error={"message": message_text, "retryable": False}),
                 render_components=[alert.to_dict()],
                 hop_audited=True)  # this path emitted its own hop record
 
@@ -13618,6 +13631,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             tool_name=tool_name,
             chat_id=chat_id,
             args_meta={k: v for k, v in (args or {}).items() if not (isinstance(k, str) and k.startswith("_"))},
+            invocation_channel=(claims or {}).get("_invocation_channel"),
         ) as _audit_ctx:
             result = await self._execute_with_retry(websocket, agent_id, tool_name, args)
             if result and result.error:
@@ -13660,6 +13674,62 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ))
         return result
 
+    async def execute_mcp_tool(
+        self,
+        *,
+        claims: Dict[str, Any],
+        user_id: str,
+        agent_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> MCPResponse:
+        """Execute one MCP call through the complete shared authorization stack."""
+
+        # This hashable sentinel supplies verified claims to policy, LLM-context,
+        # delegation, and audit seams without creating a UI transport or retaining
+        # the inbound bearer. It is removed in all outcomes.
+        invocation = object()
+        safe_claims = dict(claims)
+        safe_claims.pop("_raw_token", None)
+        safe_claims["_invocation_channel"] = "mcp"
+        self.ui_sessions[invocation] = safe_claims
+        auth = None
+        result: Optional[MCPResponse] = None
+        try:
+            auth = await self._authorize_and_prepare(
+                invocation,
+                agent_id,
+                tool_name,
+                dict(arguments),
+                None,
+                user_id,
+                stream_params=dict(arguments),
+            )
+            if isinstance(auth, GateRefusal):
+                return auth.response
+            result = await self._execute_with_retry_audited(
+                invocation,
+                agent_id,
+                tool_name,
+                auth.args,
+                chat_id=None,
+                user_id=user_id,
+            )
+            if result is None:
+                return MCPResponse(
+                    error={"message": "Tool returned no response", "retryable": True}
+                )
+            return result
+        finally:
+            cap_job_id = getattr(auth, "cap_job_id", None)
+            if cap_job_id and (result is None or result.error):
+                try:
+                    await self.concurrency_cap.release(user_id, agent_id, cap_job_id)
+                finally:
+                    self._pending_cap_entries.pop(cap_job_id, None)
+                await self._release_hop_cap_slot(cap_job_id)
+            self.ui_sessions.pop(invocation, None)
+
     async def execute_parallel_tools(self, websocket, tool_calls, tool_to_agent: Dict, chat_id: str = None, user_id: str = None, tool_to_unqualified: Optional[Dict[str, str]] = None) -> List[Optional[MCPResponse]]:
         """Execute multiple tool calls with concurrency safety.
 
@@ -13670,6 +13740,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """
         # Phase 1: Prepare all tool calls (args, permissions, credentials)
         prepared = []  # list of (index, tc, tool_name, agent_id, args | None, error_coro | None)
+        separately_rendered_refusals: set[int] = set()
 
         for idx, tc in enumerate(tool_calls):
             # Same qualified→unqualified resolution as the single-tool path:
@@ -13696,8 +13767,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                tool_name, user_id, _json_err.msg)
 
                 async def _arg_err(msg=_pj_msg):
-                    return MCPResponse(error={"message": msg, "retryable": True},
-                                       ui_components=[Alert(message=msg, variant="error").to_dict()])
+                    return MCPResponse(error={"message": msg, "retryable": True})
                 prepared.append((idx, tc, tool_name, agent_id, None, _arg_err()))
                 continue
 
@@ -13773,6 +13843,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 websocket, agent_id, tool_name, args, chat_id, user_id,
                 stream_params=stream_params)
             if isinstance(auth, GateRefusal):
+                if auth.render_components:
+                    if auth.render_target:
+                        await self.send_ui_render(
+                            websocket,
+                            auth.render_components,
+                            target=auth.render_target,
+                        )
+                    else:
+                        await self.send_ui_render(websocket, auth.render_components)
+                    separately_rendered_refusals.add(idx)
                 async def _refused(resp=auth.response):
                     return resp
                 prepared.append((idx, tc, tool_name, agent_id, None, _refused()))
@@ -13874,7 +13954,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 error_components.append(Alert(message=f"Tool error: {str(result)}", variant="error").to_dict())
             else:
                 final_results.append(result)
-                if result and result.error:
+                if result and result.error and i not in separately_rendered_refusals:
                     error_components.append(Alert(message=f"Tool '{tool_names[i]}' failed: {result.error.get('message')}", variant="error").to_dict())
 
         # Only render errors immediately — successful results are batched by caller
@@ -14123,7 +14203,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         request = MCPRequest(
             request_id=request_id,
             method="tools/call",
-            params={"name": tool_name, "arguments": args}
+            params={"name": tool_name, "arguments": args},
+            protocol_version=MCP_PROTOCOL_VERSION,
+            caller_capabilities={},
+            caller_info={"name": "AstralDeep Orchestrator", "version": "1.0.0"},
         )
 
         # Create a future for the response
@@ -14351,6 +14434,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             request_id=request_id,
             method="tools/call",
             params={"name": tool_name, "arguments": call_args},
+            protocol_version=MCP_PROTOCOL_VERSION,
+            caller_capabilities={},
+            caller_info={"name": "AstralDeep Orchestrator", "version": "1.0.0"},
         )
         future = asyncio.get_event_loop().create_future()
         self.pending_requests[request_id] = future
@@ -14533,7 +14619,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """
         try:
             session = self.ui_sessions.get(websocket, {}) or {}
-            if not session.get("_raw_token"):
+            if (
+                not session.get("_raw_token")
+                and session.get("_invocation_channel") != "mcp"
+            ):
                 return False
             scopes = await asyncio.to_thread(
                 self.tool_permissions.get_enabled_scope_names, user_id, agent_id)
@@ -14553,6 +14642,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if not card:
                 return None
             session = self.ui_sessions.get(websocket, {})
+            if session.get("_invocation_channel") == "mcp":
+                return await self._mint_mcp_delegation_token(
+                    agent_id,
+                    user_id,
+                    session,
+                )
             raw_token = session.get("_raw_token")
             if not raw_token:
                 return None
@@ -14606,6 +14701,57 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception as e:
             logger.warning(f"Delegation token generation failed: {e}")
             return None
+
+    async def _mint_mcp_delegation_token(
+        self,
+        agent_id: str,
+        user_id: str,
+        claims: Dict[str, Any],
+    ) -> Optional[str]:
+        """Mint downstream authority from verified claims, never bearer bytes."""
+
+        from orchestrator import delegation as _dg
+
+        card = self.agent_cards.get(agent_id)
+        if not card:
+            return None
+        agent_flags = self.security_flags.get(agent_id, {})
+
+        def _scope_reads():
+            allowed = [
+                skill.id
+                for skill in card.skills
+                if not agent_flags.get(skill.id, {}).get("blocked")
+                and self.tool_permissions.is_tool_allowed(
+                    user_id,
+                    agent_id,
+                    skill.id,
+                )
+            ]
+            scopes = self.tool_permissions.get_enabled_scope_names(user_id, agent_id)
+            return allowed, scopes
+
+        allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
+        if not enabled_scopes:
+            return None
+        now = int(time.time())
+        try:
+            inbound_exp = int(claims.get("exp", now + 300))
+        except (TypeError, ValueError):
+            inbound_exp = now + 300
+        payload = {
+            "sub": user_id,
+            "act": {"sub": f"agent:{agent_id}"},
+            "scope": " ".join(
+                list(enabled_scopes) + [f"tool:{tool}" for tool in allowed_tools]
+            ),
+            "iss": "astral-internal-delegation",
+            "aud": self.delegation.agent_service_client_id,
+            "iat": now,
+            "exp": min(inbound_exp, now + 300),
+            "delegation": True,
+        }
+        return _dg.encode_delegation_payload(payload)
 
     # =========================================================================
     # LIVE STREAMING SUBSCRIPTIONS
@@ -14677,6 +14823,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "_stream": True,
                 "_stream_id": stream_id,
             },
+            protocol_version=MCP_PROTOCOL_VERSION,
+            caller_capabilities={},
+            caller_info={"name": "AstralDeep Orchestrator", "version": "1.0.0"},
         )
         if agent_id in self.local_agents:
             # Feature 040 built-ins run in-process with no agent WS — the
@@ -16711,44 +16860,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return ""
 
     @staticmethod
-    def _sanitize_tool_schema(schema: dict) -> dict:
-        """Fix common agent-generated schema issues before sending to the LLM.
+    def _adapt_tool_schema_for_model(schema: dict) -> dict:
+        """Adapt an already-validated schema for the model function grammar.
 
-        Addresses: property-level "required": true/false (invalid in OpenAI tool
-        schemas) — must be an array at the object level instead.
+        Registration is the validation boundary. This downstream projection
+        does not repair invalid schemas; it only removes the dialect annotation
+        that some model providers reject.
         """
         if not isinstance(schema, dict):
-            return {"type": "object", "properties": {}}
-
-        schema = dict(schema)  # shallow copy
-        props = schema.get("properties")
-        if isinstance(props, dict):
-            required_fields = list(schema.get("required", []) if isinstance(schema.get("required"), list) else [])
-            cleaned_props = {}
-            for key, val in props.items():
-                if isinstance(val, dict):
-                    val = dict(val)  # shallow copy
-                    prop_req = val.pop("required", None)
-                    # If a property had "required": true, promote to object-level required array
-                    if prop_req is True and key not in required_fields:
-                        required_fields.append(key)
-                    # Recurse for nested object properties
-                    if val.get("type") == "object" and "properties" in val:
-                        val = Orchestrator._sanitize_tool_schema(val)
-                    cleaned_props[key] = val
-                else:
-                    cleaned_props[key] = val
-            schema["properties"] = cleaned_props
-            if required_fields:
-                schema["required"] = required_fields
-            elif "required" in schema and not isinstance(schema["required"], list):
-                del schema["required"]
-
-        # Ensure top-level type
-        if "type" not in schema:
-            schema["type"] = "object"
-
-        return schema
+            raise ProtocolValidationError("validated tool schema must be an object")
+        adapted = dict(schema)
+        adapted.pop("$schema", None)
+        return adapted
 
     def _is_draft_agent(self, agent_id: str) -> bool:
         """Hide any agent whose agent_id maps to a non-live draft record.
@@ -17722,6 +17845,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # in the caller's own log (FR-021). Added after CORS so OPTIONS
         # preflights are short-circuited before reaching the recorder.
         app.add_middleware(AuditHTTPMiddleware)
+
+        # Feature 064: the MCP resource server is absent — routes, metadata,
+        # renderer registration, and CORS policy included — unless the startup
+        # flag was enabled. FeatureFlags is import-time state; recreate the
+        # container to enable or disable this surface.
+        if flags.is_enabled("mcp_server"):
+            from orchestrator.mcp_server_endpoint import install_mcp_server
+
+            install_mcp_server(app, self)
+            logger.info("MCP 2026-07-28 endpoint mounted at /mcp")
 
         # Mount A2A JSON-RPC server (orchestrator as A2A agent)
         try:

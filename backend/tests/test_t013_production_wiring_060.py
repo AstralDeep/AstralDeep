@@ -194,7 +194,7 @@ class _ConfigurationCaptureRepository:
         self.configured = tuple(configs)
 
 
-def test_all_six_effective_rows_and_operator_retention_are_loaded_read_only() -> None:
+def test_all_effective_rows_and_operator_retention_are_loaded_read_only() -> None:
     rows = [
         {
             "class_name": "global",
@@ -210,6 +210,14 @@ def test_all_six_effective_rows_and_operator_retention_are_loaded_read_only() ->
             "active_limit": 29,
             "queue_limit": 41,
             "max_wait_ms": 2_500,
+            "config_revision": "operator-2026-07",
+        },
+        {
+            "class_name": "mcp",
+            "parent_class_name": "global",
+            "active_limit": 8,
+            "queue_limit": 32,
+            "max_wait_ms": 5_000,
             "config_revision": "operator-2026-07",
         },
         {

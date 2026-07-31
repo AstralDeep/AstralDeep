@@ -20,6 +20,7 @@ docs/*
 !docs/production-deployment.md
 !docs/byo-client-agents.md
 !docs/remote-compute-agents.md
+!docs/mcp-server-endpoint.md
 /.ruff_cache/
 Qualifying_Exam/
 .docker-cache/

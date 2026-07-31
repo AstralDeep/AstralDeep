@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -94,6 +95,73 @@ def test_tool_dispatch_records_failure_outcome(wired_recorder, repo):
     end = next(i for i in items if i.action_type == "tool.risky.end")
     assert end.outcome == "failure"
     assert end.outcome_detail == "boom"
+
+
+def test_mcp_dispatch_matches_chat_audit_pair_and_preserves_hash_chain(
+    wired_recorder,
+    repo,
+):
+    from orchestrator.orchestrator import Orchestrator
+    from shared.protocol import MCPResponse
+
+    user = f"u-{uuid.uuid4().hex[:8]}"
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    chat_invocation = object()
+    mcp_invocation = object()
+    orchestrator.ui_sessions = {
+        chat_invocation: {"sub": user},
+        mcp_invocation: {"sub": user, "_invocation_channel": "mcp"},
+    }
+
+    async def emit_hook(*_args, **_kwargs):
+        return None
+
+    orchestrator.hooks = SimpleNamespace(emit=emit_hook)
+
+    async def dispatch(*_args, **_kwargs):
+        return MCPResponse(result={"ok": True})
+
+    orchestrator._execute_with_retry = dispatch
+
+    async def run():
+        chat = await Orchestrator._execute_with_retry_audited(
+            orchestrator,
+            chat_invocation,
+            "agent-x",
+            "weather",
+            {"city": "Berlin"},
+            user_id=user,
+        )
+        mcp = await Orchestrator._execute_with_retry_audited(
+            orchestrator,
+            mcp_invocation,
+            "agent-x",
+            "weather",
+            {"city": "Berlin"},
+            user_id=user,
+        )
+        return chat, mcp
+
+    chat_result, mcp_result = asyncio.run(run())
+    items, _ = repo.list_for_user(user, limit=20)
+    pairs = {
+        result.correlation_id: [
+            item for item in items if item.correlation_id == result.correlation_id
+        ]
+        for result in (chat_result, mcp_result)
+    }
+    expected_actions = {"tool.weather.start", "tool.weather.end"}
+    assert {item.action_type for item in pairs[chat_result.correlation_id]} == expected_actions
+    assert {item.action_type for item in pairs[mcp_result.correlation_id]} == expected_actions
+    assert all(
+        "invocation_channel" not in item.inputs_meta
+        for item in pairs[chat_result.correlation_id]
+    )
+    assert all(
+        item.inputs_meta["invocation_channel"] == "mcp"
+        for item in pairs[mcp_result.correlation_id]
+    )
+    assert repo.verify_chain(user) is None
 
 
 def test_legacy_user_actions_are_not_recorded(wired_recorder, repo):

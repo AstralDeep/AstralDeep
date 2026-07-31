@@ -247,6 +247,7 @@ class ToolDispatchAudit:
         tool_name: str, chat_id: Optional[str],
         args_meta: Optional[Dict[str, Any]] = None,
         correlation_id: Optional[str] = None,
+        invocation_channel: Optional[str] = None,
     ):
         self._claims = claims
         self._agent_id = agent_id
@@ -258,6 +259,8 @@ class ToolDispatchAudit:
         self._correlation_id = correlation_id or make_correlation_id()
         self._started_at = now_utc()
         self._args_meta = self._sanitize_args_meta(args_meta or {})
+        if invocation_channel:
+            self._args_meta["invocation_channel"] = str(invocation_channel)[:32]
         # 056 FR-014: machine-turn records carry the run's authorizing consent
         # reference so authority is attributable from the row alone — while
         # cost attribution stays on the system LLM credential (054), the two

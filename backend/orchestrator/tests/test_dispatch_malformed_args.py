@@ -178,7 +178,8 @@ async def test_parallel_tool_malformed_json_returns_error_not_empty_args() -> No
     assert result.error["retryable"] is True
     assert "read_spreadsheet" in result.error["message"]
     assert "JSON" in result.error["message"]
-    assert result.ui_components and result.ui_components[0]["type"] == "alert"
+    assert result.ui_components is None
+    assert orch._rendered_ui[0]["components"][0]["type"] == "alert"
 
 
 @pytest.mark.asyncio

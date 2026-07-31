@@ -237,9 +237,8 @@ class MCPServer:
                         logger.warning(f"Tool '{{tool_name}}' returned error alert: {{error_msg}}")
                         return MCPResponse(
                             request_id=request.request_id,
-                            error={{"code": -32000, "message": error_msg,
-                                   "retryable": True}},
-                            ui_components=ui_comps
+                            error={{"code": -32603, "message": error_msg,
+                                   "retryable": True}}
                         )
 
                     data = result.get("_data")
@@ -410,9 +409,14 @@ def _valid_fenced_request(req, runtime):
 
 
 def _fence_response(req, response, runtime):
+    response = dict(response)
+    response.setdefault("result_type", "complete")
+    response.setdefault(
+        "responder_info",
+        {"name": AGENT_ID, "version": "1.0.0"},
+    )
     if runtime is None:
         return response
-    response = dict(response)
     response["fence"] = runtime["fence"]
     response["request_id"] = req["request_id"]
     response["request_generation"] = req["request_generation"]
@@ -453,10 +457,9 @@ def dispatch(req):
             # call as having succeeded.
             if tool_error is not None:
                 return {"type": "mcp_response", "request_id": rid,
-                        "error": {"code": -32000,
+                        "error": {"code": -32603,
                                   "message": tool_error,
-                                  "retryable": True},
-                        "ui_components": comps}
+                                  "retryable": True}}
             return {"type": "mcp_response", "request_id": rid,
                     "result": data, "ui_components": comps}
         except Exception as exc:

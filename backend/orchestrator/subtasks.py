@@ -40,7 +40,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from astralprims import Alert, Card, Text, create_ui_response
+from astralprims import Card, Text, create_ui_response
 from shared.feature_flags import flags
 
 logger = logging.getLogger("Orchestrator.Subtasks")
@@ -323,8 +323,7 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
     if not isinstance(specs, list) or not (MIN_SUBTASKS <= len(specs) <= MAX_SUBTASKS):
         msg = (f"delegate_subtasks needs between {MIN_SUBTASKS} and {MAX_SUBTASKS} "
                f"sub-tasks; answer directly instead.")
-        return MCPResponse(error={"message": msg, "retryable": False},
-                           ui_components=[Alert(message=msg, variant="warning").to_dict()])
+        return MCPResponse(error={"message": msg, "retryable": False})
 
     from audit.recorder import make_correlation_id
     correlation_id = make_correlation_id()
