@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import plistlib
 from pathlib import Path
 
@@ -31,6 +32,12 @@ MACOS_ENTITLEMENTS = (
 VOICE_SESSION_CONTROLLER = (
     REPO_ROOT
     / "apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift"
+)
+DEPENDENCY_APPROVAL_PATH = Path(
+    os.environ.get(
+        "ASTRAL_VOICE_DEPENDENCY_APPROVAL_PATH",
+        REPO_ROOT / "specs/065-conversational-voice/dependency-approval.md",
+    )
 )
 APP_TARGET_ID = "222F50262FFD60D80016B0D6"
 WATCH_TARGET_ID = "AA00000000000000000000B3"
@@ -84,9 +91,7 @@ def test_resolved_livekit_graph_is_exact_and_complete() -> None:
 
 
 def test_approved_binary_target_checksums_are_recorded() -> None:
-    approval = (
-        REPO_ROOT / "specs/065-conversational-voice/dependency-approval.md"
-    ).read_text(encoding="utf-8")
+    approval = DEPENDENCY_APPROVAL_PATH.read_text(encoding="utf-8")
 
     assert "07c5caf718058af3c528dcabd257298c40e5a8527e4fb9f47c48336ba5899853" in approval
     assert "0d3f2ce159a224c728f8b131068d53bbf9b13d968cda0edc68a6a2290f2651ed" in approval

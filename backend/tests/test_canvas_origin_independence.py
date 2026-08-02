@@ -72,7 +72,7 @@ def _frames(ws):
 
 def _canvas_renders(ws):
     return [f for f in _frames(ws)
-            if f.get("type") == "ui_render" and f.get("target") != "chat"]
+            if f.get("type") == "ui_render" and f.get("target") == "canvas"]
 
 
 def _last_done_index(ws):

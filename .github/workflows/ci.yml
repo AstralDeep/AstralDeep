@@ -363,22 +363,35 @@ jobs:
         run: |
           docker run --rm --network host \
             -v "$PWD/backend:/app/backend" \
+            -v "$PWD/android-client:/app/android-client:ro" \
+            -v "$PWD/apple-clients:/app/apple-clients:ro" \
+            -v "$PWD/windows-client:/app/windows-client:ro" \
             -v "$PWD/tooling/python-ci:/ci/python:ro" \
             -v "$PWD/deploy/livekit:/app/deploy/livekit:ro" \
             -v "$PWD/tooling/contract-ci/validate_voice_contracts.py:/app/tooling/contract-ci/validate_voice_contracts.py:ro" \
             -v "$PWD/tooling/evaluate_voice_recap_matrix_065.py:/app/tooling/evaluate_voice_recap_matrix_065.py:ro" \
+            -v "$PWD/tooling/web-ci/tests/release-060.spec.js:/app/tooling/web-ci/tests/release-060.spec.js:ro" \
             -v "$PWD/tooling/voice-worker/closure_manifest.py:/app/tooling/voice-worker/closure_manifest.py:ro" \
+            -v "$PWD/tooling/voice-worker/run_livekit_integration.py:/app/tooling/voice-worker/run_livekit_integration.py:ro" \
             -v "$PWD/scripts/validate_release_evidence.py:/ci/voice/validate_release_evidence.py:ro" \
+            -v "$PWD/.github/workflows/build-windows-candidate.yml:/ci/voice/workflows/build-windows-candidate.yml:ro" \
+            -v "$PWD/.github/workflows/ci.yml:/ci/voice/workflows/ci.yml:ro" \
+            -v "$PWD/.github/workflows/android-ci.yml:/ci/voice/workflows/android-ci.yml:ro" \
+            -v "$PWD/.github/workflows/apple-ci.yml:/ci/voice/workflows/apple-ci.yml:ro" \
             -v "$PWD/specs/065-conversational-voice/contracts/voice-control.schema.json:/ci/voice/voice-control.schema.json:ro" \
             -v "$PWD/specs/065-conversational-voice/dependency-audit-rtc-only-2026-07-31.md:/ci/voice/dependency-audit-rtc-only-2026-07-31.md:ro" \
+            -v "$PWD/specs/065-conversational-voice/dependency-approval.md:/ci/voice/dependency-approval.md:ro" \
             -v "$PWD/Dockerfile.voice:/app/Dockerfile.voice:ro" \
             -v "$PWD/Dockerfile.voice.dockerignore:/app/Dockerfile.voice.dockerignore:ro" \
             -v "$PWD/docker-compose.yml:/app/docker-compose.yml:ro" \
             -v "$PWD/docker-compose.staging.yml:/app/docker-compose.staging.yml:ro" \
+            -v "$PWD/docker-compose.voice-integration.yml:/app/docker-compose.voice-integration.yml:ro" \
             -e ASTRAL_ENV=development \
             -e ASTRAL_VOICE_SCHEMA_ENGINE_PATH=/ci/voice/validate_release_evidence.py \
             -e ASTRAL_VOICE_SCHEMA_PATH=/ci/voice/voice-control.schema.json \
             -e ASTRAL_VOICE_RTC_AUDIT_PATH=/ci/voice/dependency-audit-rtc-only-2026-07-31.md \
+            -e ASTRAL_VOICE_WORKFLOW_ROOT=/ci/voice/workflows \
+            -e ASTRAL_VOICE_DEPENDENCY_APPROVAL_PATH=/ci/voice/dependency-approval.md \
             -e DB_HOST=localhost \
             -e DB_PORT=5432 \
             -e DB_NAME=astraldeep \
@@ -436,21 +449,34 @@ jobs:
         run: |
           docker run --rm --network host \
             -v "$PWD/backend:/app/backend" \
+            -v "$PWD/android-client:/app/android-client:ro" \
+            -v "$PWD/apple-clients:/app/apple-clients:ro" \
+            -v "$PWD/windows-client:/app/windows-client:ro" \
             -v "$PWD/deploy/livekit:/app/deploy/livekit:ro" \
             -v "$PWD/tooling/contract-ci/validate_voice_contracts.py:/app/tooling/contract-ci/validate_voice_contracts.py:ro" \
             -v "$PWD/tooling/evaluate_voice_recap_matrix_065.py:/app/tooling/evaluate_voice_recap_matrix_065.py:ro" \
+            -v "$PWD/tooling/web-ci/tests/release-060.spec.js:/app/tooling/web-ci/tests/release-060.spec.js:ro" \
             -v "$PWD/tooling/voice-worker/closure_manifest.py:/app/tooling/voice-worker/closure_manifest.py:ro" \
+            -v "$PWD/tooling/voice-worker/run_livekit_integration.py:/app/tooling/voice-worker/run_livekit_integration.py:ro" \
             -v "$PWD/scripts/validate_release_evidence.py:/ci/voice/validate_release_evidence.py:ro" \
+            -v "$PWD/.github/workflows/build-windows-candidate.yml:/ci/voice/workflows/build-windows-candidate.yml:ro" \
+            -v "$PWD/.github/workflows/ci.yml:/ci/voice/workflows/ci.yml:ro" \
+            -v "$PWD/.github/workflows/android-ci.yml:/ci/voice/workflows/android-ci.yml:ro" \
+            -v "$PWD/.github/workflows/apple-ci.yml:/ci/voice/workflows/apple-ci.yml:ro" \
             -v "$PWD/specs/065-conversational-voice/contracts/voice-control.schema.json:/ci/voice/voice-control.schema.json:ro" \
             -v "$PWD/specs/065-conversational-voice/dependency-audit-rtc-only-2026-07-31.md:/ci/voice/dependency-audit-rtc-only-2026-07-31.md:ro" \
+            -v "$PWD/specs/065-conversational-voice/dependency-approval.md:/ci/voice/dependency-approval.md:ro" \
             -v "$PWD/Dockerfile.voice:/app/Dockerfile.voice:ro" \
             -v "$PWD/Dockerfile.voice.dockerignore:/app/Dockerfile.voice.dockerignore:ro" \
             -v "$PWD/docker-compose.yml:/app/docker-compose.yml:ro" \
             -v "$PWD/docker-compose.staging.yml:/app/docker-compose.staging.yml:ro" \
+            -v "$PWD/docker-compose.voice-integration.yml:/app/docker-compose.voice-integration.yml:ro" \
             -e ASTRAL_ENV=development \
             -e ASTRAL_VOICE_SCHEMA_ENGINE_PATH=/ci/voice/validate_release_evidence.py \
             -e ASTRAL_VOICE_SCHEMA_PATH=/ci/voice/voice-control.schema.json \
             -e ASTRAL_VOICE_RTC_AUDIT_PATH=/ci/voice/dependency-audit-rtc-only-2026-07-31.md \
+            -e ASTRAL_VOICE_WORKFLOW_ROOT=/ci/voice/workflows \
+            -e ASTRAL_VOICE_DEPENDENCY_APPROVAL_PATH=/ci/voice/dependency-approval.md \
             -e DB_HOST=localhost \
             -e DB_PORT=5432 \
             -e DB_NAME=astraldeep \

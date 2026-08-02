@@ -9,12 +9,19 @@ the stage-owned voice runtime identity before that validation runs.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW_ROOT = Path(
+    os.environ.get(
+        "ASTRAL_VOICE_WORKFLOW_ROOT",
+        REPO_ROOT / ".github" / "workflows",
+    )
+)
 PRODUCERS = {
     "backend": REPO_ROOT / "backend/tests/perf/release_backend_060.py",
     "web": REPO_ROOT / "tooling/web-ci/tests/release-060.spec.js",
@@ -97,9 +104,9 @@ def test_voice_identity_is_taken_from_the_staged_projection(
 
 
 def test_windows_coverage_producer_uses_one_unambiguous_source_root() -> None:
-    workflow = (
-        REPO_ROOT / ".github/workflows/build-windows-candidate.yml"
-    ).read_text(encoding="utf-8")
+    workflow = (WORKFLOW_ROOT / "build-windows-candidate.yml").read_text(
+        encoding="utf-8"
+    )
     step = workflow.split("- name: Run full Windows source suite with coverage", 1)[1]
     step = step.split("- name:", 1)[0]
 
@@ -118,7 +125,7 @@ def test_windows_coverage_producer_uses_one_unambiguous_source_root() -> None:
 
 
 def test_standard_ci_gates_contract_validation_windows_and_web_coverage() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    workflow = (WORKFLOW_ROOT / "ci.yml").read_text(encoding="utf-8")
 
     assert "voice-contract-validator:" in workflow
     assert "tooling/contract-ci/requirements.lock.txt" in workflow
@@ -141,13 +148,16 @@ def test_standard_ci_gates_contract_validation_windows_and_web_coverage() -> Non
 
 
 def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    workflow = (WORKFLOW_ROOT / "ci.yml").read_text(encoding="utf-8")
     test_job = workflow.split("  test:\n", 1)[1].split("  test-flags-off:\n", 1)[0]
     flags_off_job = workflow.split("  test-flags-off:\n", 1)[1].split(
         "  coverage-gate:\n", 1
     )[0]
 
     required_mounts = (
+        'android-client:/app/android-client:ro"',
+        'apple-clients:/app/apple-clients:ro"',
+        'windows-client:/app/windows-client:ro"',
         'deploy/livekit:/app/deploy/livekit:ro"',
         (
             "tooling/contract-ci/validate_voice_contracts.py:"
@@ -158,12 +168,36 @@ def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only()
             '/app/tooling/evaluate_voice_recap_matrix_065.py:ro"'
         ),
         (
+            "tooling/web-ci/tests/release-060.spec.js:"
+            '/app/tooling/web-ci/tests/release-060.spec.js:ro"'
+        ),
+        (
             "tooling/voice-worker/closure_manifest.py:"
             '/app/tooling/voice-worker/closure_manifest.py:ro"'
         ),
         (
+            "tooling/voice-worker/run_livekit_integration.py:"
+            '/app/tooling/voice-worker/run_livekit_integration.py:ro"'
+        ),
+        (
             "scripts/validate_release_evidence.py:"
             '/ci/voice/validate_release_evidence.py:ro"'
+        ),
+        (
+            ".github/workflows/build-windows-candidate.yml:"
+            '/ci/voice/workflows/build-windows-candidate.yml:ro"'
+        ),
+        (
+            ".github/workflows/ci.yml:"
+            '/ci/voice/workflows/ci.yml:ro"'
+        ),
+        (
+            ".github/workflows/android-ci.yml:"
+            '/ci/voice/workflows/android-ci.yml:ro"'
+        ),
+        (
+            ".github/workflows/apple-ci.yml:"
+            '/ci/voice/workflows/apple-ci.yml:ro"'
         ),
         (
             "specs/065-conversational-voice/contracts/voice-control.schema.json:"
@@ -174,10 +208,18 @@ def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only()
             "dependency-audit-rtc-only-2026-07-31.md:"
             '/ci/voice/dependency-audit-rtc-only-2026-07-31.md:ro"'
         ),
+        (
+            "specs/065-conversational-voice/dependency-approval.md:"
+            '/ci/voice/dependency-approval.md:ro"'
+        ),
         'Dockerfile.voice:/app/Dockerfile.voice:ro"',
         'Dockerfile.voice.dockerignore:/app/Dockerfile.voice.dockerignore:ro"',
         'docker-compose.yml:/app/docker-compose.yml:ro"',
         'docker-compose.staging.yml:/app/docker-compose.staging.yml:ro"',
+        (
+            "docker-compose.voice-integration.yml:"
+            '/app/docker-compose.voice-integration.yml:ro"'
+        ),
     )
     required_paths = (
         "ASTRAL_VOICE_SCHEMA_ENGINE_PATH=/ci/voice/validate_release_evidence.py",
@@ -185,6 +227,11 @@ def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only()
         (
             "ASTRAL_VOICE_RTC_AUDIT_PATH="
             "/ci/voice/dependency-audit-rtc-only-2026-07-31.md"
+        ),
+        "ASTRAL_VOICE_WORKFLOW_ROOT=/ci/voice/workflows",
+        (
+            "ASTRAL_VOICE_DEPENDENCY_APPROVAL_PATH="
+            "/ci/voice/dependency-approval.md"
         ),
     )
     for job in (test_job, flags_off_job):
@@ -197,9 +244,7 @@ def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only()
 
 
 def test_android_ci_gates_all_voice_suites_and_kover_inputs() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/android-ci.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (WORKFLOW_ROOT / "android-ci.yml").read_text(encoding="utf-8")
 
     assert "backend/tests/fixtures/voice_065/client_conformance.json" in workflow
     assert "backend/shared/ui_protocol.json" in workflow
@@ -218,9 +263,7 @@ def test_android_ci_gates_all_voice_suites_and_kover_inputs() -> None:
 
 
 def test_apple_ci_gates_voice_suites_and_every_xccov_input() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/apple-ci.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (WORKFLOW_ROOT / "apple-ci.yml").read_text(encoding="utf-8")
 
     assert "backend/tests/fixtures/voice_065/client_conformance.json" in workflow
     assert "swift test --package-path apple-clients/AstralCore" in workflow
