@@ -372,6 +372,57 @@ def test_missing_empty_or_unrecognized_evidence_directory_is_rejected(
     assert not output.exists()
 
 
+def test_failure_receipt_classifies_only_structural_missing_evidence(
+    prepare: Any,
+    contract_examples: Any,
+    matrix_helpers: Any,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "diagnostic.json"
+    failure = tmp_path / "missing-failure.json"
+    assert (
+        _run(
+            prepare,
+            contract_examples,
+            tmp_path / "absent",
+            output,
+            "--failure-output",
+            str(failure),
+        )
+        == 2
+    )
+    missing = json.loads(failure.read_text(encoding="utf-8"))
+    assert missing == {
+        "document_type": "release_evidence_local_failure",
+        "schema_version": 1,
+        "error_code": "missing_provider_inputs",
+        "error_message_sha256": missing["error_message_sha256"],
+        "base_sha": BASE_SHA,
+        "candidate_sha": contract_examples.GIT_SHA,
+        "protected_release_authorization": False,
+    }
+    assert len(missing["error_message_sha256"]) == 64
+
+    incomplete = tmp_path / "incomplete"
+    _write_matrix(incomplete, contract_examples, matrix_helpers)
+    (incomplete / "docs.json").unlink()
+    rejected_failure = tmp_path / "rejected-failure.json"
+    assert (
+        _run(
+            prepare,
+            contract_examples,
+            incomplete,
+            output,
+            "--failure-output",
+            str(rejected_failure),
+        )
+        == 2
+    )
+    rejected = json.loads(rejected_failure.read_text(encoding="utf-8"))
+    assert rejected["error_code"] == "release_evidence_rejected"
+    assert rejected["protected_release_authorization"] is False
+
+
 def test_passing_matrix_emits_the_diagnostic_contract(
     prepare: Any,
     contract_examples: Any,

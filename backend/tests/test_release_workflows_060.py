@@ -339,7 +339,7 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
 
     builder = _workflow_job(workflow, "trusted-builder")
     assert "uses: ./.github/workflows/release-trusted-builder.yml" in builder
-    assert "if: always()" in builder
+    assert "always()" in builder
     for producer in (
         "stage-deploy",
         *EVIDENCE_PRODUCER_JOBS,
@@ -348,7 +348,10 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
         assert producer in builder, f"trusted-builder must wait on {producer}"
 
     cleanup = _workflow_job(workflow, "stage-cleanup")
-    assert "if: ${{ always() && needs.stage-deploy.outputs.runner_name != '' }}" in cleanup
+    assert "github.event_name != 'workflow_dispatch'" in cleanup
+    assert "github.ref == 'refs/heads/main'" in cleanup
+    assert "always()" in cleanup
+    assert "needs.stage-deploy.outputs.runner_name != ''" in cleanup
     assert "runs-on: [self-hosted, astral-staging]" in cleanup
     assert "ubuntu-latest" not in cleanup
     assert "cleanup" in cleanup
@@ -1211,6 +1214,7 @@ def test_ci_release_tooling_lane_covers_the_new_release_test_files() -> None:
     for test_path in (
         "backend/tests/test_prepare_release_evidence_060.py",
         "backend/tests/test_extract_release_artifact_060.py",
+        "backend/tests/test_release_evidence_bootstrap.py",
         "backend/tests/test_release_workflows_060.py",
         "backend/tests/test_release_evidence_producers.py",
         "backend/tests/test_voice_dependency_locks_065.py",
@@ -1276,6 +1280,31 @@ def test_ci_voice_worker_is_distribution_disabled_but_keeps_test_lane() -> None:
 
     publish = _workflow_job(workflow, "publish")
     assert "voice-worker-test" in publish
+
+
+def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
+    guard = (
+        "github.event_name != 'workflow_dispatch' || "
+        "github.ref == 'refs/heads/main'"
+    )
+    workflows = (
+        WORKFLOWS / "apple-release.yml",
+        WORKFLOWS / "build-windows-candidate.yml",
+        EXCEPTION,
+        CONTROLLER,
+        BRIDGE,
+    )
+    for path in workflows:
+        workflow = _workflow_text(path)
+        assert "workflow_dispatch:" in _workflow_head(workflow)
+        for job_id in _job_ids(workflow):
+            assert guard in _workflow_job(workflow, job_id), (
+                f"{path.name}:{job_id} can run from a candidate dispatch ref"
+            )
+
+    # The readiness matrix is reachable only through the default-branch
+    # workflow_run caller; it deliberately exposes no manual dispatch surface.
+    assert "workflow_dispatch:" not in _workflow_head(_workflow_text(READINESS))
 
 
 # ---------------------------------------------------------------------------

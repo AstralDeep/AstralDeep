@@ -111,6 +111,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output", default="build/060/release-evidence/local-diagnostic.json"
     )
+    parser.add_argument(
+        "--failure-output",
+        help="Optional machine-readable, non-authorizing handled-failure receipt",
+    )
     parser.add_argument("--now")
     return parser
 
@@ -455,6 +459,29 @@ def _changed_coverage_summary(
     }
 
 
+def _failure_document(
+    exc: Exception, *, base_sha: str, candidate_sha: str
+) -> dict[str, Any]:
+    message = str(exc)
+    missing_provider_inputs = (
+        message.startswith("evidence directory does not exist:")
+        or message.startswith("evidence directory contains no release evidence documents:")
+    )
+    return {
+        "document_type": "release_evidence_local_failure",
+        "schema_version": 1,
+        "error_code": (
+            "missing_provider_inputs"
+            if missing_provider_inputs
+            else "release_evidence_rejected"
+        ),
+        "error_message_sha256": hashlib.sha256(message.encode()).hexdigest(),
+        "base_sha": base_sha,
+        "candidate_sha": candidate_sha,
+        "protected_release_authorization": False,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the deterministic, non-authorizing local pre-push evidence parse."""
 
@@ -551,6 +578,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(diagnostic, sort_keys=True))
         return 0
     except VALIDATOR.ReleaseEvidenceError as exc:
+        if args.failure_output:
+            _atomic_json(
+                Path(args.failure_output),
+                _failure_document(
+                    exc,
+                    base_sha=args.base_sha,
+                    candidate_sha=args.candidate_sha,
+                ),
+            )
         print(f"release evidence rejected: {exc}", file=sys.stderr)
         return 2
 

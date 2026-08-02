@@ -697,7 +697,8 @@ explicit verified base, and the unique request id rides the run-name
 (`release-readiness <request_id>`):
 
 ```bash
-gh workflow run release-readiness.yml --ref "$BRANCH" -f candidate_sha="$SHA" -f base_sha="$BASE_SHA" -f request_id="$REQUEST_ID"
+DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')"
+gh workflow run release-readiness.yml --ref "$DEFAULT_BRANCH" -f candidate_sha="$SHA" -f base_sha="$BASE_SHA" -f request_id="$REQUEST_ID"
 ```
 
 The run's `protected-decision` job uploads the canonical `release-evidence` bundle and attests the
@@ -731,17 +732,17 @@ workflow `run-name`; selecting merely the
 latest branch run is forbidden because it can attach evidence from a concurrent dispatch:
 
 ```bash
-BRANCH="$(git branch --show-current)"
 SHA="$(git rev-parse HEAD)"
-git fetch --no-tags origin main
-BASE_SHA="$(git merge-base "$SHA" origin/main)"
+DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')"
+git fetch --no-tags origin "$DEFAULT_BRANCH"
+BASE_SHA="$(git merge-base "$SHA" "origin/$DEFAULT_BRANCH")"
 git merge-base --is-ancestor "$BASE_SHA" "$SHA"
 test "$BASE_SHA" != "$SHA"
 REQUEST_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-gh workflow run release-readiness.yml --ref "$BRANCH" -f candidate_sha="$SHA" -f base_sha="$BASE_SHA" -f request_id="$REQUEST_ID"
+gh workflow run release-readiness.yml --ref "$DEFAULT_BRANCH" -f candidate_sha="$SHA" -f base_sha="$BASE_SHA" -f request_id="$REQUEST_ID"
 RUN_ID=""
 for _ in {1..30}; do
-  RUN_ID="$(gh run list --workflow release-readiness.yml --event workflow_dispatch --commit "$SHA" --limit 100 --json databaseId,displayTitle,headSha --jq ".[] | select(.headSha == \"$SHA\" and .displayTitle == \"release-readiness $REQUEST_ID\") | .databaseId" | head -n 1)"
+  RUN_ID="$(gh run list --workflow release-readiness.yml --event workflow_dispatch --branch "$DEFAULT_BRANCH" --limit 100 --json databaseId,displayTitle,headBranch --jq ".[] | select(.headBranch == \"$DEFAULT_BRANCH\" and .displayTitle == \"release-readiness $REQUEST_ID\") | .databaseId" | head -n 1)"
   test -n "$RUN_ID" && break
   sleep 2
 done

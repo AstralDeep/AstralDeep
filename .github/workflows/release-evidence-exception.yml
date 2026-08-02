@@ -47,6 +47,7 @@ jobs:
   # ── Read-only pre-verification: anyone can run it; it mutates nothing and
   #    prints the exact identity the release owner is being asked to approve. ──
   verify-request:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -137,6 +138,7 @@ jobs:
   #    structurally refuses self-approval (requester must differ from the
   #    dispatching approver). ──
   register:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: verify-request
     runs-on: ubuntu-latest
     timeout-minutes: 20

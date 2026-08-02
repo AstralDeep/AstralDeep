@@ -231,7 +231,8 @@ caching to automate this development-only migration.
 ## Signing & release runbook (053)
 
 Release is driven by **`.github/workflows/apple-release.yml`** (trigger:
-push a tag `apple-v*`, or `workflow_dispatch`; runner `macos-15`). It
+push a tag `apple-v*`, or `workflow_dispatch` from the `main`/default ref;
+runner `macos-15`). It
 automates **archive → sign → export → validate → upload** and nothing more.
 
 ### The tag namespace is `apple-v*`, not `v-apple-*`
