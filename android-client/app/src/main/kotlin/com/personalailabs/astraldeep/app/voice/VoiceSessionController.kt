@@ -10,6 +10,7 @@ import com.personalailabs.astraldeep.core.protocol.VoiceAnnouncementMedia
 import com.personalailabs.astraldeep.core.protocol.VoiceComposerModel
 import com.personalailabs.astraldeep.core.protocol.VoiceControlBinding
 import com.personalailabs.astraldeep.core.protocol.VoicePlayoutEvent
+import com.personalailabs.astraldeep.core.protocol.VoiceSpeechOutcome
 import com.personalailabs.astraldeep.core.protocol.VoiceSubmissionRejected
 import com.personalailabs.astraldeep.core.protocol.VoiceTranscript
 import com.personalailabs.astraldeep.core.protocol.VoiceTurnState
@@ -190,17 +191,30 @@ internal fun terminalNoticeFor(value: VoiceTurnState): VoiceTerminalNotice? =
                 turnId = value.turnId,
                 occurredAt = Instant.parse(value.occurredAt),
             )
-        "succeeded" ->
+        "succeeded" -> {
+            val speechUnavailable = value.speechOutcome == VoiceSpeechOutcome.FAILED
             VoiceTerminalNotice(
                 kind = VoiceTerminalNoticeKind.TEXT_RESULT_AVAILABLE,
-                title = "Text result is available",
+                title =
+                    if (speechUnavailable) {
+                        "Speech playback failed"
+                    } else {
+                        "Text result is available"
+                    },
                 serverMessage = value.message,
                 guidance =
-                    "The text result remains available in the conversation, " +
-                        "even if spoken playback is unavailable.",
+                    if (speechUnavailable) {
+                        "The request completed. Its committed text result remains available " +
+                            "in the conversation."
+                    } else {
+                        "The text result remains available in the conversation, " +
+                            "even if spoken playback is unavailable."
+                    },
                 turnId = value.turnId,
                 occurredAt = Instant.parse(value.occurredAt),
+                speechUnavailable = speechUnavailable,
             )
+        }
         else -> null
     }
 
@@ -221,7 +235,20 @@ internal fun reduceTerminalNotice(
     value: VoiceTurnState,
 ): VoiceTerminalNotice? {
     if (!terminalNoticeCanMoveTo(current, value.turnId, value.occurredAt)) return current
-    return terminalNoticeFor(value) ?: current?.takeIf { it.turnId == value.turnId }
+    val next = terminalNoticeFor(value) ?: return current?.takeIf { it.turnId == value.turnId }
+    if (
+        value.state == "succeeded" && value.speechOutcome != VoiceSpeechOutcome.SUPPRESSED &&
+        current?.turnId == value.turnId && current.speechUnavailable
+    ) {
+        return next.copy(
+            title = "Speech playback failed",
+            guidance =
+                "The request completed. Its committed text result remains available " +
+                    "in the conversation.",
+            speechUnavailable = true,
+        )
+    }
+    return next
 }
 
 internal fun terminalNoticeFor(value: VoiceSubmissionRejected): VoiceTerminalNotice =
@@ -971,6 +998,7 @@ class VoiceSessionController(
     private var submitter: ((VoiceTranscript, String) -> Boolean)? = null
     private var playoutReporter: ((VoicePlayoutEvent) -> Boolean)? = null
     private var playoutClientSequence = 0
+    private var observedTurnId: String? = null
     private var appForeground = true
     private var leaseRenewalJob: Job? = null
     private var leaseRenewalInFlight: Any? = null
@@ -1241,6 +1269,7 @@ class VoiceSessionController(
                 startLeaseRenewal()
                 transcriptSequence.clear()
                 announcementSequence.clear()
+                observedTurnId = null
                 _state.update { it.copy(takeover = null) }
                 if (outcome.session.chatContextSynced) {
                     connectMedia(outcome.grant, outcome.session, sessionFence(outcome.session))
@@ -1612,20 +1641,25 @@ class VoiceSessionController(
         ) {
             return
         }
+        observedTurnId = value.turnId
         if (value.state == "recognizing") media.interruptPlayout()
+        val notice = reduceTerminalNotice(_state.value.terminalNotice, value)
+        val speechUnavailable =
+            value.state == "succeeded" && notice?.turnId == value.turnId && notice.speechUnavailable
         val phase =
             when (value.state) {
                 "recognizing" -> "transcribing"
                 "submitting" -> "acknowledging"
                 "accepted", "processing" -> "processing"
                 "waiting_on_user" -> "waiting_on_user"
-                "succeeded" -> "speaking_result"
+                "succeeded" -> if (speechUnavailable) "error" else "speaking_result"
                 "failed", "refused", "cancelled", "abandoned" -> "listening"
                 else -> _state.value.phase
             }
-        val notice = reduceTerminalNotice(_state.value.terminalNotice, value)
         val reason =
-            if (notice?.isRequestFailure == true) {
+            if (speechUnavailable) {
+                "speech_error"
+            } else if (notice?.isRequestFailure == true) {
                 "voice_turn_${value.state}"
             } else {
                 "ready"
@@ -1654,9 +1688,14 @@ class VoiceSessionController(
             }
             VoiceMediaEvent.Failed -> {
                 if (session != null) {
-                    if (_state.value.terminalNotice?.kind == VoiceTerminalNoticeKind.TEXT_RESULT_AVAILABLE) {
+                    val resultTurnId =
+                        _state.value.terminalNotice
+                            ?.takeIf { it.kind == VoiceTerminalNoticeKind.TEXT_RESULT_AVAILABLE }
+                            ?.turnId
+                    if (resultTurnId != null) {
                         markResultSpeechUnavailable(
                             "Assistant audio was unavailable. The text result remains available in the conversation.",
+                            turnId = resultTurnId,
                         )
                         _state.update { it.copy(mediaConnected = false) }
                     } else {
@@ -1766,7 +1805,7 @@ class VoiceSessionController(
             if (value.kind == "result") {
                 markResultSpeechUnavailable(
                     "Assistant audio could not be played. The text result remains available in the conversation.",
-                    turnId = value.turnId,
+                    turnId = value.turnId ?: return,
                 )
             } else {
                 feedback("error", "speech_error", "Assistant audio could not be matched. Typed chat is still available.")
@@ -1856,7 +1895,7 @@ class VoiceSessionController(
         if (pending.manifest.kind == "result") {
             markResultSpeechUnavailable(
                 "Assistant audio was unavailable. The text result remains available in the conversation.",
-                turnId = pending.manifest.turnId,
+                turnId = pending.manifest.turnId ?: return,
             )
         } else {
             feedback("error", "speech_error", "Assistant audio was unavailable. Typed chat is still available.")
@@ -1865,12 +1904,17 @@ class VoiceSessionController(
 
     private fun markResultSpeechUnavailable(
         message: String,
-        turnId: String? = null,
+        turnId: String,
     ) {
         _state.update { current ->
+            if (observedTurnId != null && observedTurnId != turnId) return@update current
             val prior =
                 current.terminalNotice
-                    ?.takeIf { it.kind == VoiceTerminalNoticeKind.TEXT_RESULT_AVAILABLE }
+                    ?.takeIf {
+                        it.kind == VoiceTerminalNoticeKind.TEXT_RESULT_AVAILABLE &&
+                            it.turnId == turnId
+                    }
+            if (current.terminalNotice != null && prior == null) return@update current
             current.copy(
                 phase = "error",
                 reason = "speech_error",
@@ -1878,12 +1922,12 @@ class VoiceSessionController(
                 terminalNotice =
                     VoiceTerminalNotice(
                         kind = VoiceTerminalNoticeKind.TEXT_RESULT_AVAILABLE,
-                        title = "Text result is still available",
+                        title = "Speech playback failed",
                         serverMessage = prior?.serverMessage,
                         guidance =
-                            "Spoken playback was unavailable. The text result remains available " +
+                            "The request completed. Its committed text result remains available " +
                                 "in the conversation.",
-                        turnId = prior?.turnId ?: turnId,
+                        turnId = turnId,
                         occurredAt = prior?.occurredAt,
                         speechUnavailable = true,
                     ),
@@ -1970,6 +2014,7 @@ class VoiceSessionController(
         announcementSequence.clear()
         pendingAnnouncements.clear()
         resultBudgets.clear()
+        observedTurnId = null
         if (!retainPending) clearPendingFinals()
         _state.update { it.copy(mediaConnected = false) }
     }

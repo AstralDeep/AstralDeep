@@ -1227,7 +1227,7 @@ object Wire {
                 "spoken_output_policy", "output_reason", "state", "foreground",
                 "sensitive_result_pending", "sequence", "occurred_at",
             )
-        if (!root.hasRequiredAndOptional(required, setOf("result_id", "message"))) return null
+        if (!root.hasRequiredAndOptional(required, setOf("result_id", "message", "speech_outcome"))) return null
         if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
         val language = root.explicitNullableLanguage("detected_language") ?: return null
         val policy = root.strictString("spoken_output_policy")?.takeIf { it in SPOKEN_OUTPUT_POLICIES } ?: return null
@@ -1241,6 +1241,13 @@ object Wire {
         }
         if (turnState == "recognizing" && language.value != null) return null
         if (turnState !in setOf("recognizing", "abandoned") && language.value == null) return null
+        val speechOutcome =
+            if ("speech_outcome" in root) {
+                VoiceSpeechOutcome.fromWireValue(root.strictString("speech_outcome")) ?: return null
+            } else {
+                null
+            }
+        if (speechOutcome != null && turnState != "succeeded") return null
         return VoiceTurnState(
             canonicalUuid4(root.strictString("session_id")) ?: return null,
             canonicalUuid4(root.strictString("connection_generation")) ?: return null,
@@ -1259,6 +1266,7 @@ object Wire {
             root.strictBoolean("foreground") ?: return null,
             root.strictBoolean("sensitive_result_pending") ?: return null,
             root.strictNonNegativeInt("sequence") ?: return null,
+            speechOutcome,
             (root.optionalNullableOpaqueId("result_id") ?: return null).value,
             (root.optionalBoundedString("message", 240) ?: return null).value,
             root.strictString("occurred_at")?.takeIf(::isRfc3339Utc) ?: return null,

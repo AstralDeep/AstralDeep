@@ -107,6 +107,29 @@ class _QuantumBundle:
     turn: VoiceTurnRecord
     quanta: deque[_PreparedQuantum] = field(repr=False)
     completion: asyncio.Future[Any] = field(repr=False)
+    speech_outcome: str = "source_finished"
+    intentionally_suppressed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTerminalAnnouncementResult:
+    """Durable terminal turn plus its ephemeral source-speech outcome.
+
+    ``source_finished`` means only that every requested speech quantum reached
+    the worker/source terminal event.  It does not claim local client playout
+    or audibility, which remains independently observed by playout events.
+    """
+
+    turn: VoiceTurnRecord
+    speech_outcome: str
+
+    def __post_init__(self) -> None:
+        if self.speech_outcome not in {
+            "source_finished",
+            "failed",
+            "suppressed",
+        }:
+            raise ValueError("invalid_terminal_speech_outcome")
 
 
 class _SessionAnnouncementRunner:
@@ -144,10 +167,12 @@ class _SessionAnnouncementRunner:
         self._start_waiters: dict[str, list[asyncio.Future[Any]]] = {}
         self._waiting_waiters: dict[str, list[asyncio.Future[Any]]] = {}
         self._mute_waiters: list[asyncio.Future[Any]] = []
-        self._own_handoff_ready_at = 0.0
+        self._stop_waiters: list[asyncio.Future[Any]] = []
         self._muted = muted
         self._speaking = False
         self._active_bundle: _QuantumBundle | None = None
+        self._active_turn_id: str | None = None
+        self._stop_requested = False
         self._closing = False
         self.task = asyncio.create_task(
             self._run(),
@@ -226,11 +251,16 @@ class _SessionAnnouncementRunner:
                     raise
         if not self._commands:
             self._wake.clear()
-        if preempted:
+        stop_requested = self._stop_requested
+        self._stop_requested = False
+        if preempted or stop_requested:
             await self._stop_current_speech()
         for future in self._mute_waiters:
             _settle(future, None)
         self._mute_waiters.clear()
+        for future in self._stop_waiters:
+            _settle(future, None)
+        self._stop_waiters.clear()
         return preempted
 
     async def _apply_command(self, command: _AnnouncementCommand) -> bool:
@@ -242,6 +272,11 @@ class _SessionAnnouncementRunner:
                 self._mute_waiters.append(command.future)
             else:
                 _settle(command.future, None)
+            return preempted
+        if command.action == "stop":
+            preempted = self._mark_intentional_stop()
+            self._stop_requested = True
+            self._stop_waiters.append(command.future)
             return preempted
         turn = command.turn
         if turn is None:
@@ -315,7 +350,11 @@ class _SessionAnnouncementRunner:
             if lifecycle not in {"succeeded", "failed", "refused", "cancelled"}:
                 raise ValueError("invalid_terminal_kind")
             preempted = self._scheduler.set_lifecycle(turn.turn_id, lifecycle)
-            terminal_turn, quanta = await self._services._prepare_terminal_quanta(
+            (
+                terminal_turn,
+                quanta,
+                reservation_complete,
+            ) = await self._services._prepare_terminal_quanta(
                 turn,
                 terminal_kind=lifecycle,
                 recap_text=command.recap_text,
@@ -328,6 +367,15 @@ class _SessionAnnouncementRunner:
                 turn=terminal_turn,
                 quanta=deque(quanta),
                 completion=command.future,
+                speech_outcome=(
+                    "suppressed"
+                    if self._muted
+                    else (
+                        "source_finished"
+                        if quanta and reservation_complete
+                        else "failed"
+                    )
+                ),
             )
             if self._muted:
                 self._drop_muted_bundles()
@@ -410,13 +458,86 @@ class _SessionAnnouncementRunner:
             self._drop_muted_bundles()
         return (muted and self._speaking) or preempted
 
+    def _mark_intentional_stop(self) -> bool:
+        """Fence active and queued output for this exact session generation."""
+
+        bundle = self._active_bundle
+        if bundle is not None:
+            bundle.intentionally_suppressed = True
+            if bundle.quanta:
+                # Remaining quanta are deliberately discarded and therefore
+                # cannot truthfully be described as source-finished.
+                bundle.quanta.clear()
+                bundle.speech_outcome = "suppressed"
+        preempted = self._one_shot_scheduler_fence(self._active_turn_id)
+
+        queued = tuple(self._continuations)
+        self._continuations.clear()
+        completed_ids: set[int] = set()
+        for queued_bundle in queued:
+            queued_bundle.intentionally_suppressed = True
+            queued_bundle.quanta.clear()
+            queued_bundle.speech_outcome = "suppressed"
+            preempted = (
+                self._one_shot_scheduler_fence(queued_bundle.turn.turn_id)
+                or preempted
+            )
+            if self._terminal.get(queued_bundle.turn.turn_id) is queued_bundle:
+                self._complete_terminal_bundle(queued_bundle)
+            else:
+                _settle(queued_bundle.completion, None)
+            completed_ids.add(id(queued_bundle))
+
+        # A terminal bundle whose first quantum has not started is owned by the
+        # scheduler rather than the continuation deque. Suppress and settle it
+        # in the same stop command so an idle-boundary race cannot restart it.
+        for queued_bundle in tuple(self._terminal.values()):
+            if queued_bundle is bundle or id(queued_bundle) in completed_ids:
+                continue
+            queued_bundle.intentionally_suppressed = True
+            queued_bundle.quanta.clear()
+            queued_bundle.speech_outcome = "suppressed"
+            preempted = (
+                self._one_shot_scheduler_fence(queued_bundle.turn.turn_id)
+                or preempted
+            )
+            self._complete_terminal_bundle(queued_bundle)
+        return preempted
+
+    def _one_shot_scheduler_fence(self, turn_id: str | None) -> bool:
+        """Cancel one active/offered quantum without persisting user mute."""
+
+        if turn_id is None or not self._scheduler.has_turn(turn_id):
+            return False
+        snapshot = self._scheduler.snapshot(turn_id)
+        if snapshot.muted:
+            return False
+        preempted = self._scheduler.set_muted(turn_id, True)
+        if not self._muted:
+            # Explicit stop/background interruption is a one-shot fence. The
+            # durable user mute state remains authoritative for future speech.
+            self._scheduler.set_muted(turn_id, False)
+        return preempted
+
     def _drop_muted_bundles(self) -> None:
         """Discard queued result speech while preserving durable text outcomes."""
 
+        active = self._active_bundle
+        if active is not None:
+            # Mute/background is accepted while the source may already be
+            # racing to its normal terminal event.  Fence the remainder now so
+            # a late ``speech_finished`` cannot requeue it after the user has
+            # asked for silence.  The active bundle is settled only after its
+            # exact source waiter terminates.
+            active.intentionally_suppressed = True
+            active.quanta.clear()
+            active.speech_outcome = "suppressed"
         queued = tuple(self._continuations)
         self._continuations.clear()
         for bundle in queued:
             bundle.quanta.clear()
+            if bundle.speech_outcome == "source_finished":
+                bundle.speech_outcome = "suppressed"
             if self._terminal.get(bundle.turn.turn_id) is bundle:
                 self._complete_terminal_bundle(bundle)
             else:
@@ -425,6 +546,8 @@ class _SessionAnnouncementRunner:
             if bundle is self._active_bundle:
                 continue
             bundle.quanta.clear()
+            if bundle.speech_outcome == "source_finished":
+                bundle.speech_outcome = "suppressed"
             self._complete_terminal_bundle(bundle)
 
     def _abandon_turn(self, turn: VoiceTurnRecord) -> bool:
@@ -492,11 +615,12 @@ class _SessionAnnouncementRunner:
             started_at=self._clock.utcnow(),
         )
         self._active_bundle = terminal_bundle
+        self._active_turn_id = decision.turn_id
         try:
             status, preempted = await self._play_quantum(quantum)
         finally:
             self._active_bundle = None
-        self._own_handoff_ready_at = self._clock.monotonic() + HANDOFF_BUDGET_SECONDS
+            self._active_turn_id = None
         if not preempted:
             self._scheduler.finish(decision, self._completion(decision))
         if decision.kind == "acknowledgement":
@@ -508,6 +632,10 @@ class _SessionAnnouncementRunner:
             if self._terminal.get(decision.turn_id) is not terminal_bundle:
                 return
             if status != "speech_finished":
+                terminal_bundle.speech_outcome = self._terminal_speech_outcome(
+                    terminal_bundle,
+                    status=status,
+                )
                 terminal_bundle.quanta.clear()
             if terminal_bundle.quanta:
                 self._continuations.append(terminal_bundle)
@@ -527,16 +655,21 @@ class _SessionAnnouncementRunner:
     async def _execute_continuation(self, bundle: _QuantumBundle) -> None:
         quantum = bundle.quanta.popleft()
         self._active_bundle = bundle
+        self._active_turn_id = bundle.turn.turn_id
         try:
             status, preempted = await self._play_quantum(quantum)
         finally:
             self._active_bundle = None
+            self._active_turn_id = None
         if preempted and bundle.turn.turn_id not in self._turn_users:
             bundle.quanta.clear()
             _settle(bundle.completion, None)
             return
-        self._own_handoff_ready_at = self._clock.monotonic() + HANDOFF_BUDGET_SECONDS
         if status != "speech_finished":
+            bundle.speech_outcome = self._terminal_speech_outcome(
+                bundle,
+                status=status,
+            )
             bundle.quanta.clear()
         if bundle.quanta:
             self._continuations.append(bundle)
@@ -650,9 +783,9 @@ class _SessionAnnouncementRunner:
     def _next_continuation(self) -> _QuantumBundle | None:
         if not self._continuations:
             return None
-        now = self._clock.monotonic()
-        if now + 1e-9 < self._own_handoff_ready_at:
-            return None
+        # Handoff is a maximum switch-latency allowance, not an inter-quantum
+        # pause. Attempt eligible continuation media immediately; the cadence
+        # reservation below still protects an equally due peer's hard bound.
         bundle = self._continuations[0]
         claim = bundle.quanta[0].mutation.claim
         duration = claim.max_duration_samples / 24_000
@@ -664,19 +797,13 @@ class _SessionAnnouncementRunner:
     async def _wait_for_work(self) -> None:
         delay = self._scheduler.next_wake_delay()
         if self._continuations:
-            now = self._clock.monotonic()
-            continuation_delay = max(0.0, self._own_handoff_ready_at - now)
             deadline = self._scheduler.next_hard_deadline_delay()
             if deadline is None or deadline >= (
                 self._continuations[0].quanta[0].mutation.claim.max_duration_samples
                 / 24_000
                 + HANDOFF_BUDGET_SECONDS
             ):
-                delay = (
-                    continuation_delay
-                    if delay is None
-                    else min(delay, continuation_delay)
-                )
+                delay = 0.0
         timeout = (
             self._IDLE_WAIT_SECONDS
             if delay is None
@@ -734,7 +861,37 @@ class _SessionAnnouncementRunner:
             self._scheduler.remove_turn(bundle.turn.turn_id)
         self._turn_users.pop(bundle.turn.turn_id, None)
         self._turn_attribution.pop(bundle.turn.turn_id, None)
-        _settle(bundle.completion, bundle.turn)
+        _settle(
+            bundle.completion,
+            VoiceTerminalAnnouncementResult(
+                turn=bundle.turn,
+                speech_outcome=bundle.speech_outcome,
+            ),
+        )
+
+    def _terminal_speech_outcome(
+        self,
+        bundle: _QuantumBundle,
+        *,
+        status: str,
+    ) -> str:
+        """Classify intentional lifecycle fences separately from speech failure."""
+
+        # ``speech_interrupted`` is an authenticated, exact-announcement worker
+        # terminal.  Its protocol reasons are intentional fences (barge-in,
+        # user stop, mute, takeover, end, terminal supersession, or staleness),
+        # whereas synthesis/publication failures use ``speech_failed``.
+        if status == "speech_interrupted":
+            return "suppressed"
+        key = (bundle.turn.session_id, bundle.turn.session_generation)
+        if (
+            bundle.intentionally_suppressed
+            or self._muted
+            or key in self._services.announcement_closed_sessions
+            or bundle.turn.turn_id in self._services.announcement_abandoned_turns
+        ):
+            return "suppressed"
+        return "failed"
 
     @staticmethod
     def _settle_waiters(
@@ -759,6 +916,10 @@ class _SessionAnnouncementRunner:
             if not future.done():
                 future.set_exception(exc)
         self._mute_waiters.clear()
+        for future in self._stop_waiters:
+            if not future.done():
+                future.set_exception(exc)
+        self._stop_waiters.clear()
         bundles = [*self._terminal.values(), *self._continuations]
         self._terminal.clear()
         self._continuations.clear()
@@ -799,6 +960,11 @@ class VoiceServices:
         repr=False,
     )
     announcement_muted_sessions: set[tuple[str, int]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
+    announcement_suspended_sessions: set[tuple[str, int]] = field(
         default_factory=set,
         init=False,
         repr=False,
@@ -1415,6 +1581,7 @@ class VoiceServices:
         async with self.announcement_runner_lock:
             runner = self.announcement_runners.pop(key, None)
             self.announcement_muted_sessions.discard(key)
+            self.announcement_suspended_sessions.discard(key)
         if runner is not None:
             await runner.close()
 
@@ -1443,6 +1610,7 @@ class VoiceServices:
             )
             runner = self.announcement_runners.pop(key, None)
             self.announcement_muted_sessions.discard(key)
+            self.announcement_suspended_sessions.discard(key)
         if runner is not None:
             await runner.close()
 
@@ -1581,6 +1749,7 @@ class VoiceServices:
             else:
                 self.announcement_muted_sessions.discard(key)
             runner = self.announcement_runners.get(key)
+            blocked = muted or key in self.announcement_suspended_sessions
         if runner is None or runner.task.done():
             return
         future = asyncio.get_running_loop().create_future()
@@ -1590,7 +1759,7 @@ class VoiceServices:
                     "mute",
                     None,
                     future,
-                    muted=muted,
+                    muted=blocked,
                 )
             )
             await future
@@ -1601,6 +1770,45 @@ class VoiceServices:
                 "voice_speech_mute_fence_unavailable reason=%s",
                 _safe_failure_reason(exc),
             )
+
+    async def set_session_speech_suspended(
+        self,
+        session_id: str,
+        generation: int,
+        suspended: bool,
+    ) -> None:
+        """Persistently block unsolicited output for an exact background session."""
+
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("invalid_session_id")
+        if (
+            isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+        ):
+            raise ValueError("invalid_generation")
+        if not isinstance(suspended, bool):
+            raise ValueError("invalid_speech_suspended")
+        key = (session_id, generation)
+        async with self.announcement_runner_lock:
+            if suspended:
+                self.announcement_suspended_sessions.add(key)
+            else:
+                self.announcement_suspended_sessions.discard(key)
+            runner = self.announcement_runners.get(key)
+            blocked = suspended or key in self.announcement_muted_sessions
+        if runner is None or runner.task.done():
+            return
+        future = asyncio.get_running_loop().create_future()
+        runner.submit(
+            _AnnouncementCommand(
+                "mute",
+                None,
+                future,
+                muted=blocked,
+            )
+        )
+        await future
 
     async def handle_client_playout(
         self,
@@ -1818,7 +2026,8 @@ class VoiceServices:
         recap_source: str,
         sensitivity: str,
         result_commit_id: str | None,
-    ) -> VoiceTurnRecord:
+        with_delivery_status: bool = False,
+    ) -> VoiceTurnRecord | VoiceTerminalAnnouncementResult:
         """Fence stale progress and serialize one honest terminal outcome."""
 
         if terminal_kind not in {"succeeded", "failed", "refused", "cancelled"}:
@@ -1838,7 +2047,10 @@ class VoiceServices:
                     result_commit_id=result_commit_id,
                 )
             )
-            terminal_turn = await future
+            delivery = await future
+            if not isinstance(delivery, VoiceTerminalAnnouncementResult):
+                raise VoiceBootstrapError("terminal_speech_outcome_unavailable")
+            terminal_turn = delivery.turn
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1857,7 +2069,11 @@ class VoiceServices:
                     "turn",
                     refreshed.state,
                 )
-                return refreshed
+                delivery = VoiceTerminalAnnouncementResult(
+                    turn=refreshed,
+                    speech_outcome=self._fallback_terminal_speech_outcome(refreshed),
+                )
+                return delivery if with_delivery_status else refreshed
             if (
                 refreshed.state == "abandoned"
                 and refreshed.origin_chat_unavailable_at is not None
@@ -1880,6 +2096,10 @@ class VoiceServices:
                 now=datetime.now(UTC),
             )
             terminal_turn = terminal.turn
+            delivery = VoiceTerminalAnnouncementResult(
+                turn=terminal_turn,
+                speech_outcome=self._fallback_terminal_speech_outcome(terminal_turn),
+            )
         await self._record_turn_event(
             terminal_turn,
             "turn",
@@ -1894,7 +2114,53 @@ class VoiceServices:
                 listening=True,
                 user_input_gate=False,
             )
-        return terminal_turn
+        return delivery if with_delivery_status else terminal_turn
+
+    def _fallback_terminal_speech_outcome(self, turn: VoiceTurnRecord) -> str:
+        """Classify a failed scheduling path without consulting speech content."""
+
+        key = (turn.session_id, turn.session_generation)
+        if (
+            key in self.announcement_closed_sessions
+            or key in self.announcement_muted_sessions
+            or key in self.announcement_suspended_sessions
+            or turn.turn_id in self.announcement_abandoned_turns
+        ):
+            return "suppressed"
+        return "failed"
+
+    async def stop_session_speech(
+        self,
+        session_id: str,
+        generation: int,
+    ) -> None:
+        """Intentionally stop one exact session-generation output stream.
+
+        Routing runtime stop/background controls through the serialized runner
+        binds a later worker ``speech_interrupted`` event to the exact active
+        turn.  A session without a live runner still receives the same bounded
+        media stop command, but no unrelated turn is inferred or mutated.
+        """
+
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("invalid_session_id")
+        if (
+            isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+        ):
+            raise ValueError("invalid_generation")
+        key = (session_id, generation)
+        async with self.announcement_runner_lock:
+            runner = self.announcement_runners.get(key)
+        if runner is not None and not runner.task.done():
+            future = asyncio.get_running_loop().create_future()
+            runner.submit(_AnnouncementCommand("stop", None, future))
+            await future
+            return
+        session = await self.media.current_session(session_id, generation)
+        if session is not None:
+            await self.media.stop_speech(session)
 
     async def _announcement_runner(
         self,
@@ -1924,7 +2190,10 @@ class VoiceServices:
                 session_id=turn.session_id,
                 generation=turn.session_generation,
                 clock=clock,
-                muted=key in self.announcement_muted_sessions,
+                muted=(
+                    key in self.announcement_muted_sessions
+                    or key in self.announcement_suspended_sessions
+                ),
             )
             self.announcement_runners[key] = runner
             return runner
@@ -1948,7 +2217,7 @@ class VoiceServices:
         sensitivity: str,
         result_commit_id: str | None,
         attribution: str | None = None,
-    ) -> tuple[VoiceTurnRecord, list[_PreparedQuantum]]:
+    ) -> tuple[VoiceTurnRecord, list[_PreparedQuantum], bool]:
         """Reserve bounded terminal speech before the durable terminal fence."""
 
         refreshed = await asyncio.to_thread(
@@ -2015,15 +2284,19 @@ class VoiceServices:
             sensitivity=sensitivity,
             now=datetime.now(UTC),
         )
-        return terminal.turn, [
-            _PreparedQuantum(
-                turn=terminal.turn,
-                mutation=item.mutation,
-                text=item.text,
-                claim_completed=item.claim_completed,
-            )
-            for item in reserved
-        ]
+        return (
+            terminal.turn,
+            [
+                _PreparedQuantum(
+                    turn=terminal.turn,
+                    mutation=item.mutation,
+                    text=item.text,
+                    claim_completed=item.claim_completed,
+                )
+                for item in reserved
+            ],
+            len(reserved) == len(texts),
+        )
 
     async def _prepare_preacceptance_quantum(
         self,
@@ -2321,6 +2594,7 @@ class VoiceServices:
             runners = tuple(self.announcement_runners.values())
             self.announcement_runners.clear()
             self.announcement_muted_sessions.clear()
+            self.announcement_suspended_sessions.clear()
             self.preacceptance_guided_turns.clear()
         if runners:
             await asyncio.gather(
@@ -2441,6 +2715,8 @@ def build_voice_services(
         observability=voice_observability,
     )
     runtime.bind_speech_mute_handler(services.set_session_speech_muted)
+    runtime.bind_speech_stop_handler(services.stop_session_speech)
+    runtime.bind_speech_suspend_handler(services.set_session_speech_suspended)
     runtime.bind_session_end_handler(services.handle_runtime_session_end)
     return services
 
@@ -2540,6 +2816,7 @@ def _sensitive_result_quanta(text: str) -> list[str]:
 __all__ = [
     "VoiceBootstrapError",
     "VoiceServices",
+    "VoiceTerminalAnnouncementResult",
     "build_voice_services",
     "install_voice_worker_control",
 ]

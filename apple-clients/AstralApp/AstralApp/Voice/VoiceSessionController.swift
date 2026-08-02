@@ -64,12 +64,15 @@ enum AppleVoicePermission {
             _ = await AVCaptureDevice.requestAccess(for: .audio)
         }
         #if os(iOS)
+            let hasMicrophone = AVCaptureDevice.default(for: .audio) != nil
             let hasAudioOutput = !AVAudioSession.sharedInstance().currentRoute.outputs.isEmpty
         #else
-            let hasAudioOutput = hasUsableAudioOutputDevice(defaultAudioOutputDeviceID())
+            let availability = macOSHardwareAvailability(currentAudioRouteSnapshot())
+            let hasMicrophone = availability.hasMicrophone
+            let hasAudioOutput = availability.hasAudioOutput
         #endif
         return AppleVoiceMediaCapability(
-            hasMicrophone: AVCaptureDevice.default(for: .audio) != nil,
+            hasMicrophone: hasMicrophone,
             hasAudioOutput: hasAudioOutput,
             microphonePermission: status,
             fullDuplex: true)
@@ -182,6 +185,23 @@ enum AppleVoicePermission {
 
         /// Separates value validation from hardware access for deterministic tests.
         static func hasUsableAudioOutputDevice(_ deviceID: AudioObjectID?) -> Bool {
+            hasUsableAudioDevice(deviceID)
+        }
+
+        static func hasUsableAudioInputDevice(_ deviceID: AudioObjectID?) -> Bool {
+            hasUsableAudioDevice(deviceID)
+        }
+
+        static func macOSHardwareAvailability(
+            _ snapshot: AppleVoiceAudioRouteSnapshot?
+        ) -> (hasMicrophone: Bool, hasAudioOutput: Bool) {
+            (
+                hasUsableAudioInputDevice(snapshot?.input.deviceID),
+                hasUsableAudioOutputDevice(snapshot?.output.deviceID)
+            )
+        }
+
+        private static func hasUsableAudioDevice(_ deviceID: AudioObjectID?) -> Bool {
             guard let deviceID else { return false }
             return deviceID != AudioObjectID(kAudioObjectUnknown)
         }
@@ -2196,7 +2216,14 @@ final class AppleVoiceSessionController {
         currentTurn = value
         terminalNotice = VoiceTerminalNoticeReducer.reduce(
             current: terminalNotice, turn: value)
+        let speechFailed = value.state == "succeeded" && value.speechOutcome == .failed
         if value.foreground {
+            if speechFailed {
+                phase = "error"
+                reason = VoiceReason.speechError.rawValue
+                message = terminalNotice?.displayText ?? value.message
+                return
+            }
             phase =
                 switch value.state {
                 case "recognizing": "transcribing"
@@ -2453,8 +2480,8 @@ final class AppleVoiceSessionController {
             case .announcement(let announcement):
                 guard announcementLedger.accept(announcement) else { return }
                 guard media.authorize(announcement) else {
-                    feedback(
-                        "error", "speech_error",
+                    reportAnnouncementSpeechFailure(
+                        announcement,
                         "Assistant audio could not be matched. Typed chat is still available.")
                     return
                 }
@@ -2498,8 +2525,8 @@ final class AppleVoiceSessionController {
                 session.generation == announcement.generation,
                 session.mediaGrantRevision == announcement.mediaGrantRevision
             else { return }
-            feedback(
-                "error", "speech_error",
+            reportAnnouncementSpeechFailure(
+                announcement,
                 "Assistant audio was unavailable. Typed chat is still available.")
         }
     }
@@ -3141,6 +3168,37 @@ final class AppleVoiceSessionController {
                 message: resolvedMessage, turnId: currentTurn?.turnId,
                 occurredAt: terminalNotice?.occurredAt ?? currentTurn?.occurredAt)
         }
+    }
+
+    /// Local media events do not carry a lifecycle timestamp. Attribute a
+    /// durable text-result notice only when the result announcement matches
+    /// the current fenced turn (or its existing same-turn notice). A delayed
+    /// result from an older turn must not relabel the current request, while
+    /// greeting/progress failures remain session feedback rather than claims
+    /// about a text result.
+    private func reportAnnouncementSpeechFailure(
+        _ announcement: VoiceAnnouncementMedia, _ message: String
+    ) {
+        guard announcement.kind == "result" else {
+            phase = "error"
+            reason = VoiceReason.speechError.rawValue
+            self.message = message
+            return
+        }
+        guard let turnId = announcement.turnId,
+            terminalNotice == nil || terminalNotice?.turnId == turnId,
+            currentTurn?.turnId == turnId || terminalNotice?.turnId == turnId
+        else { return }
+
+        let occurredAt =
+            terminalNotice?.turnId == turnId
+            ? terminalNotice?.occurredAt : currentTurn?.occurredAt
+        phase = "error"
+        reason = VoiceReason.speechError.rawValue
+        self.message = message
+        terminalNotice = VoiceTerminalNoticeReducer.speechFailure(
+            message: message, turnId: turnId, occurredAt: occurredAt,
+            textResultCommitted: true)
     }
 
     private func messageFor(phase: String, reason: String) -> String {

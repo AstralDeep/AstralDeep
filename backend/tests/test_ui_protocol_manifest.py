@@ -102,6 +102,11 @@ def _assert_voice_manifest_complete(manifest):
     assert set(voice["required_server_pushes"]) == VOICE_REQUIRED_SERVER_CONTRACTS
     assert set(voice["required_dispositions"]) == VOICE_REQUIRED_DISPOSITIONS
     assert set(voice["client_frames"]) == {"voice_playout_event"}
+    assert voice["optional_server_push_fields"] == {
+        "voice_turn_state": {
+            "speech_outcome": ["source_finished", "failed", "suppressed"]
+        }
+    }
 
     manifested_pushes = _push_names(manifest)
     for contract in voice["required_server_pushes"]:

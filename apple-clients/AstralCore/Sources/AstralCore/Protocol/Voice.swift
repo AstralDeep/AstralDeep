@@ -167,6 +167,12 @@ public enum VoiceTransport: String, Sendable {
     case watchPCMWebSocket = "watch_pcm_websocket"
 }
 
+public enum VoiceSpeechOutcome: String, Sendable, CaseIterable {
+    case sourceFinished = "source_finished"
+    case failed
+    case suppressed
+}
+
 public struct VoiceControl: Sendable, Equatable, Identifiable {
     public let key: String
     public let action: VoiceControlAction
@@ -499,6 +505,7 @@ public struct VoiceTurnState: Sendable, Equatable {
     public let foreground: Bool
     public let sensitiveResultPending: Bool
     public let sequence: Int
+    public let speechOutcome: VoiceSpeechOutcome?
     public let resultId: String?
     public let message: String?
     public let occurredAt: String
@@ -512,7 +519,10 @@ public struct VoiceTurnState: Sendable, Equatable {
             "spoken_output_policy", "output_reason", "state", "foreground",
             "sensitive_result_pending", "sequence", "occurred_at",
         ]
-        guard voiceExact(object, required: required, optional: ["result_id", "message"]),
+        guard
+            voiceExact(
+                object, required: required,
+                optional: ["result_id", "message", "speech_outcome"]),
             object["schema_version"]?.stringValue == "1",
             let session = voiceUUID4(object["session_id"]),
             let connection = voiceUUID4(object["connection_generation"]),
@@ -554,6 +564,15 @@ public struct VoiceTurnState: Sendable, Equatable {
         }
         if state == "recognizing" && language != nil { return nil }
         if state != "recognizing" && state != "abandoned" && language == nil { return nil }
+        let speechOutcome: VoiceSpeechOutcome?
+        if let rawOutcome = object["speech_outcome"] {
+            guard let rawValue = rawOutcome.stringValue,
+                let parsed = VoiceSpeechOutcome(rawValue: rawValue), state == "succeeded"
+            else { return nil }
+            speechOutcome = parsed
+        } else {
+            speechOutcome = nil
+        }
         self.sessionId = session
         self.connectionGeneration = connection
         self.generation = generation
@@ -571,6 +590,7 @@ public struct VoiceTurnState: Sendable, Equatable {
         self.foreground = foreground
         self.sensitiveResultPending = sensitive
         self.sequence = sequence
+        self.speechOutcome = speechOutcome
         self.resultId = resultId
         self.message = voiceOptionalString(object, "message", maximum: 240).value
         self.occurredAt = occurred
@@ -720,6 +740,11 @@ public enum VoiceTerminalNoticeReducer {
         if completedStates.contains(turn.state) {
             return requestFailure(turn)
         }
+        if turn.state == "succeeded", turn.speechOutcome == .failed {
+            return speechFailure(
+                message: turn.message, turnId: turn.turnId,
+                occurredAt: turn.occurredAt, textResultCommitted: true)
+        }
         if supersedingStates.contains(turn.state), current?.turnId != turn.turnId {
             return nil
         }
@@ -727,7 +752,8 @@ public enum VoiceTerminalNoticeReducer {
     }
 
     public static func speechFailure(
-        message: String?, turnId: String?, occurredAt: String? = nil
+        message: String?, turnId: String?, occurredAt: String? = nil,
+        textResultCommitted: Bool = false
     ) -> VoiceTerminalNotice {
         VoiceTerminalNotice(
             kind: .speechFailure,
@@ -736,7 +762,9 @@ public enum VoiceTerminalNoticeReducer {
             title: "Speech playback failed.",
             serverMessage: resolvedMessage(
                 message, fallback: "Assistant speech could not be played."),
-            guidance: "The text result may still be available in the conversation.")
+            guidance: textResultCommitted
+                ? "The text result is still available in the conversation."
+                : "The text result may still be available in the conversation.")
     }
 
     public static func submissionRejected(

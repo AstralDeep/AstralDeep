@@ -122,6 +122,12 @@ class VoiceSessionRuntime:
         self._speech_mute_handler: (
             Callable[[str, int, bool], Awaitable[None]] | None
         ) = None
+        self._speech_stop_handler: (
+            Callable[[str, int], Awaitable[None]] | None
+        ) = None
+        self._speech_suspend_handler: (
+            Callable[[str, int, bool], Awaitable[None]] | None
+        ) = None
         self._session_end_handler: (
             Callable[[VoiceSessionRecord, str], Awaitable[None]] | None
         ) = None
@@ -138,6 +144,30 @@ class VoiceSessionRuntime:
         if self._speech_mute_handler is not None:
             raise RuntimeError("speech_mute_handler_already_bound")
         self._speech_mute_handler = handler
+
+    def bind_speech_stop_handler(
+        self,
+        handler: Callable[[str, int], Awaitable[None]],
+    ) -> None:
+        """Bind intentional source interruption to the serialized stream."""
+
+        if not callable(handler):
+            raise TypeError("speech stop handler must be callable")
+        if self._speech_stop_handler is not None:
+            raise RuntimeError("speech_stop_handler_already_bound")
+        self._speech_stop_handler = handler
+
+    def bind_speech_suspend_handler(
+        self,
+        handler: Callable[[str, int, bool], Awaitable[None]],
+    ) -> None:
+        """Bind foreground suspension to the server-owned output gate."""
+
+        if not callable(handler):
+            raise TypeError("speech suspend handler must be callable")
+        if self._speech_suspend_handler is not None:
+            raise RuntimeError("speech_suspend_handler_already_bound")
+        self._speech_suspend_handler = handler
 
     def bind_session_end_handler(
         self,
@@ -416,9 +446,37 @@ class VoiceSessionRuntime:
             )
             session = applied.session
         if request.get("foreground_active") is False:
+            if self._speech_suspend_handler is not None:
+                await self._speech_suspend_handler(
+                    session.session_id,
+                    session.generation,
+                    True,
+                )
+            else:
+                await self._media.stop_speech(session)
+            if request.get("speech_muted") is not None:
+                if self._speech_mute_handler is not None:
+                    await self._speech_mute_handler(
+                        session.session_id,
+                        session.generation,
+                        session.speech_muted,
+                    )
+                elif session.speech_muted:
+                    await self._media.stop_speech(session)
+            # Keep the persistent server-owned speech gate installed if the
+            # worker capture command fails.  The durable session is already
+            # backgrounded and must not publish unsolicited output.
             await self._media.set_capture(session, False)
-            await self._media.stop_speech(session)
         elif request.get("foreground_active") is True:
+            if request.get("speech_muted") is not None:
+                if self._speech_mute_handler is not None:
+                    await self._speech_mute_handler(
+                        session.session_id,
+                        session.generation,
+                        session.speech_muted,
+                    )
+                elif session.speech_muted:
+                    await self._media.stop_speech(session)
             await self._media.set_capture(session, bool(session.microphone_enabled))
             session = await asyncio.to_thread(
                 self._repository.mark_session_active,
@@ -428,7 +486,19 @@ class VoiceSessionRuntime:
                 expected_media_grant_revision=session.media_grant_revision,
                 now=self._now(),
             )
-        if request.get("speech_muted") is not None:
+            # Release queued speech only after context/capture restoration and
+            # the durable active transition both succeed.  A failed foreground
+            # attempt therefore remains safely suspended for an explicit retry.
+            if self._speech_suspend_handler is not None:
+                await self._speech_suspend_handler(
+                    session.session_id,
+                    session.generation,
+                    False,
+                )
+        if (
+            request.get("foreground_active") is None
+            and request.get("speech_muted") is not None
+        ):
             if self._speech_mute_handler is not None:
                 await self._speech_mute_handler(
                     session.session_id,
@@ -486,7 +556,13 @@ class VoiceSessionRuntime:
             control=_control(control),
             now=self._now(),
         )
-        await self._media.stop_speech(session)
+        if self._speech_stop_handler is not None:
+            await self._speech_stop_handler(
+                session.session_id,
+                session.generation,
+            )
+        else:
+            await self._media.stop_speech(session)
 
     async def get_media_grant_state(
         self,

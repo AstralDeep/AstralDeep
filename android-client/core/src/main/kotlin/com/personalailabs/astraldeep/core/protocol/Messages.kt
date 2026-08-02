@@ -170,6 +170,19 @@ data class VoiceSessionState(
     val occurredAt: String,
 )
 
+enum class VoiceSpeechOutcome(
+    val wireValue: String,
+) {
+    SOURCE_FINISHED("source_finished"),
+    FAILED("failed"),
+    SUPPRESSED("suppressed"),
+    ;
+
+    companion object {
+        fun fromWireValue(value: String?): VoiceSpeechOutcome? = entries.firstOrNull { it.wireValue == value }
+    }
+}
+
 data class VoiceTurnState(
     val sessionId: String,
     val connectionGeneration: String,
@@ -188,6 +201,7 @@ data class VoiceTurnState(
     val foreground: Boolean,
     val sensitiveResultPending: Boolean,
     val sequence: Int,
+    val speechOutcome: VoiceSpeechOutcome?,
     val resultId: String?,
     val message: String?,
     val occurredAt: String,

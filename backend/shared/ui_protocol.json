@@ -43,6 +43,11 @@
       },
       "conditional_final_transcript_fields": ["text_digest_sha256", "transcript_proof", "proof_expires_at"],
       "conditional_result_fields": ["result_reserved_samples_after"],
+      "optional_server_push_fields": {
+        "voice_turn_state": {
+          "speech_outcome": ["source_finished", "failed", "suppressed"]
+        }
+      },
       "client_frames": {
         "voice_playout_event": ["type", "schema_version", "device_id", "connection_generation", "session_id", "generation", "media_grant_revision", "announcement_id", "announcement_sequence", "turn_id", "kind", "quantum_role", "quantum_index", "phase", "client_sequence", "observed_at"]
       },

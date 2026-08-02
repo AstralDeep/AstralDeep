@@ -678,8 +678,15 @@ final class AppModel: NSObject {
             var descriptor = DeviceDescriptor.ios(viewportWidth: w, viewportHeight: h)
         #endif
         descriptor.deviceId = voiceDeviceId
-        descriptor.hasMicrophone = AVCaptureDevice.default(for: .audio) != nil
-        descriptor.hasAudioOutput = true
+        #if os(macOS)
+            let audioAvailability = AppleVoicePermission.macOSHardwareAvailability(
+                AppleVoicePermission.currentAudioRouteSnapshot())
+            descriptor.hasMicrophone = audioAvailability.hasMicrophone
+            descriptor.hasAudioOutput = audioAvailability.hasAudioOutput
+        #else
+            descriptor.hasMicrophone = AVCaptureDevice.default(for: .audio) != nil
+            descriptor.hasAudioOutput = true
+        #endif
         descriptor.microphonePermission = AppleVoicePermission.status
         descriptor.fullDuplex = true
         descriptor.voiceTransport = "livekit"

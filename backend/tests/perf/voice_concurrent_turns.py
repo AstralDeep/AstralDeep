@@ -481,7 +481,8 @@ def test_two_due_turns_reserve_four_second_quantum_and_positive_handoff() -> Non
     fake.advance(SINGLE_SAMPLES / SAMPLE_RATE_HZ)
     scheduler.finish(first, _completion(first, fake))
 
-    assert scheduler.next_decision() is None
+    # Inject the full allowed handoff latency. Production asks for the next
+    # decision immediately instead of deliberately sleeping to this boundary.
     fake.advance(HANDOFF_BUDGET_SECONDS)
     second = scheduler.next_decision()
     assert second is not None and second.turn_id != first.turn_id

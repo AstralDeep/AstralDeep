@@ -800,19 +800,20 @@ internal fun VoiceFeedback(voice: VoiceUiState) {
 
 @Composable
 private fun VoiceTerminalNoticeCard(notice: VoiceTerminalNotice) {
+    val prominentWarning = notice.isRequestFailure || notice.speechUnavailable
     val containerColor =
-        if (notice.isRequestFailure) {
+        if (prominentWarning) {
             MaterialTheme.colorScheme.errorContainer
         } else {
             MaterialTheme.colorScheme.tertiaryContainer
         }
     val contentColor =
-        if (notice.isRequestFailure) {
+        if (prominentWarning) {
             MaterialTheme.colorScheme.onErrorContainer
         } else {
             MaterialTheme.colorScheme.onTertiaryContainer
         }
-    val marker = if (notice.isRequestFailure) "!" else "i"
+    val marker = if (prominentWarning) "!" else "i"
     Surface(
         color = containerColor,
         contentColor = contentColor,

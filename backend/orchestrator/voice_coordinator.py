@@ -2750,7 +2750,9 @@ class SpeechCadenceScheduler:
         self._order = 0
         self._offered: CadenceDecision | None = None
         self._stream: CadenceDecision | None = None
-        self._handoff_ready_at: float | None = None
+        # Latest legal start for an already-due peer after stream release.
+        # This is a maximum latency budget; it never delays an earlier start.
+        self._handoff_deadline_at: float | None = None
         self._handoff_enforced = False
         self._failed = False
 
@@ -2859,8 +2861,6 @@ class SpeechCadenceScheduler:
         if not targets:
             return None
         target = min(targets)
-        if self._handoff_ready_at is not None:
-            target = max(target, self._handoff_ready_at)
         return max(0.0, target - now)
 
     def next_hard_deadline_delay(self) -> float | None:
@@ -2928,19 +2928,6 @@ class SpeechCadenceScheduler:
         candidates = self._due_candidates(now)
         if not candidates:
             return None
-        if self._handoff_ready_at is not None:
-            if now < self._handoff_ready_at:
-                return None
-            if (
-                self._handoff_enforced
-                and now > self._handoff_ready_at + 1e-9
-                and any(
-                    turn.target_start_monotonic <= self._handoff_ready_at
-                    for turn in candidates
-                )
-            ):
-                self._failed = True
-                raise VoiceCoordinatorError("stream_handoff_budget_exceeded")
         candidate = min(
             candidates,
             key=lambda turn: (
@@ -2952,6 +2939,17 @@ class SpeechCadenceScheduler:
         if now > candidate.latest_start_monotonic + 1e-9:
             self._failed = True
             raise VoiceCoordinatorError("cadence_deadline_exceeded")
+        if (
+            self._handoff_enforced
+            and self._handoff_deadline_at is not None
+            and now > self._handoff_deadline_at + 1e-9
+            and any(
+                turn.target_start_monotonic <= self._handoff_deadline_at
+                for turn in candidates
+            )
+        ):
+            self._failed = True
+            raise VoiceCoordinatorError("stream_handoff_budget_exceeded")
         decision = self._decision(candidate)
         other_deadlines = [
             item.latest_start_monotonic for item in candidates if item is not candidate
@@ -2976,6 +2974,14 @@ class SpeechCadenceScheduler:
         if now > decision.latest_start_monotonic + 1e-9:
             self._failed = True
             raise VoiceCoordinatorError("cadence_deadline_exceeded")
+        if (
+            self._handoff_enforced
+            and self._handoff_deadline_at is not None
+            and now > self._handoff_deadline_at + 1e-9
+            and decision.target_start_monotonic <= self._handoff_deadline_at
+        ):
+            self._failed = True
+            raise VoiceCoordinatorError("stream_handoff_budget_exceeded")
         turn = self._turn(decision.turn_id)
         snapshot = turn.snapshot
         lifecycle = snapshot.lifecycle
@@ -2998,7 +3004,7 @@ class SpeechCadenceScheduler:
             turn.terminal_pending = False
         self._stream = decision
         self._offered = None
-        self._handoff_ready_at = None
+        self._handoff_deadline_at = None
         self._handoff_enforced = False
 
     def finish(self, decision: CadenceDecision, completion: PlayoutCompletion) -> None:
@@ -3035,7 +3041,7 @@ class SpeechCadenceScheduler:
             turn.latest_start_monotonic = math.inf
             turn.snapshot = replace(turn.snapshot, next_due_at=None)
         due_others = self._due_candidates(now)
-        self._handoff_ready_at = now + HANDOFF_BUDGET_SECONDS
+        self._handoff_deadline_at = now + HANDOFF_BUDGET_SECONDS
         self._handoff_enforced = bool(due_others)
 
     def set_lifecycle(
@@ -3225,7 +3231,7 @@ class SpeechCadenceScheduler:
             return False
         self._stream = None
         now = self._clock.monotonic()
-        self._handoff_ready_at = now + HANDOFF_BUDGET_SECONDS
+        self._handoff_deadline_at = now + HANDOFF_BUDGET_SECONDS
         self._handoff_enforced = True
         return True
 

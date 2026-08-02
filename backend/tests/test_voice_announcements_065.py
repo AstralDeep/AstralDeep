@@ -154,28 +154,19 @@ async def test_concurrent_results_are_serialized_and_audibly_attributed() -> Non
             )
         )
 
-        clock.advance(0.25)
-        runner.wake()
         await _eventually(lambda: len(media.calls) == 3)
         assert media.calls[2]["turn_id"] == earlier.turn_id
         assert media.calls[2]["text"] == "Earlier request done."
         media.finish()
-        await _eventually(lambda: not runner._speaking)
 
-        clock.advance(0.25)
-        runner.wake()
         await _eventually(lambda: len(media.calls) == 4)
         assert media.calls[3]["turn_id"] == latest.turn_id
         assert media.calls[3]["text"] == "Latest request done."
         media.finish()
-        await _eventually(lambda: not runner._speaking)
 
         for expected_count in (5, 6):
-            clock.advance(0.25)
-            runner.wake()
             await _eventually(lambda: len(media.calls) == expected_count)
             media.finish()
-            await _eventually(lambda: not runner._speaking)
 
         await asyncio.gather(earlier_terminal, latest_terminal)
         assert [call["turn_id"] for call in media.calls[4:]] == [

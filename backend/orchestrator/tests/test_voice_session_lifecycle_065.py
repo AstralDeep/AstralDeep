@@ -610,6 +610,206 @@ async def test_mute_and_unmute_route_through_server_owned_cadence_stream() -> No
 
 
 @pytest.mark.asyncio
+async def test_stop_and_background_route_through_exact_speech_stop_handler() -> None:
+    runtime, repository, _capability, media = _runtime()
+    repository.session = replace(repository.session, state="active")
+    stops: list[tuple[str, int]] = []
+    suspensions: list[tuple[str, int, bool]] = []
+    lifecycle_order: list[tuple[str, bool]] = []
+
+    original_set_capture = media.set_capture
+
+    async def record_capture(session: Any, enabled: bool) -> None:
+        lifecycle_order.append(("capture", enabled))
+        await original_set_capture(session, enabled)
+
+    media.set_capture = record_capture  # type: ignore[method-assign]
+
+    async def stop_exact_session(session_id: str, generation: int) -> None:
+        stops.append((session_id, generation))
+
+    async def suspend_exact_session(
+        session_id: str,
+        generation: int,
+        suspended: bool,
+    ) -> None:
+        suspensions.append((session_id, generation, suspended))
+        lifecycle_order.append(("suspend", suspended))
+
+    runtime.bind_speech_stop_handler(stop_exact_session)
+    runtime.bind_speech_suspend_handler(suspend_exact_session)
+    fences = {
+        "expected_generation": 1,
+        "expected_media_grant_revision": 1,
+    }
+    await runtime.update_session(
+        user_id="user-a",
+        session_id=SESSION,
+        control=_control(),
+        request={
+            **fences,
+            "foreground_active": False,
+            "foreground_reason": "backgrounded",
+            "microphone_enabled": False,
+        },
+    )
+    await runtime.stop_speech(
+        user_id="user-a",
+        session_id=SESSION,
+        control=_control(),
+        request=fences,
+    )
+    await runtime.update_session(
+        user_id="user-a",
+        session_id=SESSION,
+        control=_control(),
+        request={
+            **fences,
+            "foreground_active": True,
+            "foreground_reason": "foreground",
+        },
+    )
+
+    assert stops == [(SESSION, 1)]
+    assert suspensions == [(SESSION, 1, True), (SESSION, 1, False)]
+    assert lifecycle_order == [
+        ("suspend", True),
+        ("capture", False),
+        ("capture", False),
+        ("suspend", False),
+    ]
+    assert ("capture", False) in media.calls
+    assert ("stop", SESSION) not in media.calls
+    with pytest.raises(RuntimeError, match="already_bound"):
+        runtime.bind_speech_stop_handler(stop_exact_session)
+    with pytest.raises(RuntimeError, match="already_bound"):
+        runtime.bind_speech_suspend_handler(suspend_exact_session)
+
+
+@pytest.mark.asyncio
+async def test_failed_foreground_transition_retains_server_speech_suspension() -> None:
+    runtime, repository, _capability, media = _runtime()
+    repository.session = replace(repository.session, state="active")
+    suspensions: list[bool] = []
+
+    async def suspend_exact_session(
+        _session_id: str,
+        _generation: int,
+        suspended: bool,
+    ) -> None:
+        suspensions.append(suspended)
+
+    async def fail_capture(_session: Any, _enabled: bool) -> None:
+        raise RuntimeError("capture transition failed")
+
+    runtime.bind_speech_suspend_handler(suspend_exact_session)
+    media.set_capture = fail_capture  # type: ignore[method-assign]
+    fences = {
+        "expected_generation": 1,
+        "expected_media_grant_revision": 1,
+    }
+
+    with pytest.raises(RuntimeError, match="capture transition failed"):
+        await runtime.update_session(
+            user_id="user-a",
+            session_id=SESSION,
+            control=_control(),
+            request={
+                **fences,
+                "foreground_active": False,
+                "foreground_reason": "backgrounded",
+                "microphone_enabled": False,
+            },
+        )
+    assert suspensions == [True]
+
+    with pytest.raises(RuntimeError, match="capture transition failed"):
+        await runtime.update_session(
+            user_id="user-a",
+            session_id=SESSION,
+            control=_control(),
+            request={
+                **fences,
+                "foreground_active": True,
+                "foreground_reason": "foreground",
+            },
+        )
+    # Foreground capture never recovered, so queued speech remains fenced.
+    assert suspensions == [True]
+
+
+@pytest.mark.asyncio
+async def test_combined_foreground_and_mute_changes_never_release_speech_early() -> None:
+    runtime, repository, _capability, media = _runtime()
+    repository.session = replace(repository.session, state="active")
+    lifecycle_order: list[tuple[str, bool]] = []
+
+    async def apply_mute(
+        _session_id: str,
+        _generation: int,
+        muted: bool,
+    ) -> None:
+        lifecycle_order.append(("mute", muted))
+
+    async def apply_suspension(
+        _session_id: str,
+        _generation: int,
+        suspended: bool,
+    ) -> None:
+        lifecycle_order.append(("suspend", suspended))
+
+    original_set_capture = media.set_capture
+
+    async def record_capture(session: Any, enabled: bool) -> None:
+        lifecycle_order.append(("capture", enabled))
+        await original_set_capture(session, enabled)
+
+    runtime.bind_speech_mute_handler(apply_mute)
+    runtime.bind_speech_suspend_handler(apply_suspension)
+    media.set_capture = record_capture  # type: ignore[method-assign]
+    fences = {
+        "expected_generation": 1,
+        "expected_media_grant_revision": 1,
+    }
+
+    await runtime.update_session(
+        user_id="user-a",
+        session_id=SESSION,
+        control=_control(),
+        request={
+            **fences,
+            "foreground_active": False,
+            "foreground_reason": "backgrounded",
+            "microphone_enabled": False,
+            "speech_muted": False,
+        },
+    )
+    assert lifecycle_order == [
+        ("suspend", True),
+        ("mute", False),
+        ("capture", False),
+    ]
+
+    lifecycle_order.clear()
+    await runtime.update_session(
+        user_id="user-a",
+        session_id=SESSION,
+        control=_control(),
+        request={
+            **fences,
+            "foreground_active": True,
+            "foreground_reason": "foreground",
+            "speech_muted": True,
+        },
+    )
+    assert lifecycle_order == [
+        ("mute", True),
+        ("capture", False),
+        ("suspend", False),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_stop_and_end_are_fenced_media_controls_not_task_cancellation() -> None:
     runtime, repository, _capability, media = _runtime()
     ended: list[tuple[str, int, str]] = []

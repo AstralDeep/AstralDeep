@@ -176,6 +176,34 @@ def _binding():
     }
 
 
+def _turn_state(*, state="succeeded", speech_outcome=...):
+    frame = {
+        "type": "voice_turn_state",
+        "schema_version": "1",
+        "session_id": SESSION,
+        "connection_generation": CONNECTION,
+        "generation": 2,
+        "media_grant_revision": 4,
+        "turn_id": TURN,
+        "client_turn_id": CLIENT_TURN,
+        "submission_id": SUBMISSION,
+        "request_generation": REQUEST,
+        "chat_id": CHAT,
+        "chat_context_revision": 3,
+        "detected_language": "en-US",
+        "spoken_output_policy": "full_recap",
+        "output_reason": "ready",
+        "state": state,
+        "foreground": False,
+        "sensitive_result_pending": False,
+        "sequence": 1,
+        "occurred_at": "2026-07-31T18:00:01Z",
+    }
+    if speech_outcome is not ...:
+        frame["speech_outcome"] = speech_outcome
+    return frame
+
+
 def _controller(audio=None):
     transport = FakeTransport()
     http = FakeHttp()
@@ -194,6 +222,55 @@ def _controller(audio=None):
     )
     controller.accept_frame(_binding())
     return controller, transport, http, media
+
+
+@pytest.mark.parametrize(
+    "speech_outcome",
+    (..., "source_finished", "failed", "suppressed"),
+)
+def test_turn_reducer_accepts_optional_exact_speech_outcome(qapp, speech_outcome):
+    controller, _transport, _http, _media = _controller()
+    controller.handle_action("voice_session_start")
+
+    assert controller.accept_frame(_turn_state(speech_outcome=speech_outcome))
+
+
+def test_turn_reducer_rejects_unknown_speech_outcome(qapp):
+    controller, _transport, _http, _media = _controller()
+    controller.handle_action("voice_session_start")
+
+    assert not controller.accept_frame(
+        _turn_state(speech_outcome="provider_failed")
+    )
+
+
+def test_turn_reducer_rejects_speech_outcome_before_success(qapp):
+    controller, _transport, _http, _media = _controller()
+    controller.handle_action("voice_session_start")
+
+    assert not controller.accept_frame(
+        _turn_state(state="processing", speech_outcome="failed")
+    )
+
+
+@pytest.mark.parametrize(
+    ("turn_state", "expected_phase"),
+    (
+        ("succeeded", "speaking_result"),
+        ("failed", "listening"),
+        ("refused", "listening"),
+        ("cancelled", "listening"),
+        ("abandoned", "listening"),
+    ),
+)
+def test_terminal_turn_state_never_coerces_session_to_error(
+    qapp, turn_state, expected_phase
+):
+    controller, _transport, _http, _media = _controller()
+    controller.handle_action("voice_session_start")
+
+    assert controller.accept_frame(_turn_state(state=turn_state))
+    assert controller.state == expected_phase
 
 
 @pytest.mark.parametrize("audio", [FakeAudio(permission="denied"), FakeAudio(microphone=False)])

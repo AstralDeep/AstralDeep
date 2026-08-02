@@ -159,6 +159,55 @@ tool-planning call before tool execution and did not produce a committed result.
 its device QR/code boundary. The web shell was live-tested in the existing local context.
 Windows-native verification is unavailable on this Mac.
 
+## 2026-08-02 authenticated live checkpoint
+
+Product commit `dfea619` was pushed after merging the same-tree remote changes. All simulators were
+closed and reopened with application data preserved. Android, macOS, and watchOS remained
+authenticated; the user reauthenticated iOS. No credentials were handled by automation.
+
+The requested switch to `zai-org/GLM-5.2-FP8` could not be saved because the provider returned a
+bounded `503` diagnostic indicating that the model had no live tunnels. The previously working
+`google/gemma-4-31B-it` configuration therefore remained active. A subsequent macOS end-to-end turn
+produced a committed text result and began its spoken result with the 1.5-second opening, but the
+remaining approximately 12 seconds of reserved continuation speech were dropped after the cadence
+runner reported `stream_handoff_budget_exceeded`. A later turn committed after the user had already
+ended the voice session and correctly emitted no media across that explicit session fence.
+
+The recap repair now treats the 250-ms handoff budget as a maximum source-start latency rather than
+an artificial minimum delay. Reserved recap quanta continue immediately, and a true late handoff
+still fails closed. Successful terminal turn frames carry an optional, exact-turn
+`speech_outcome` (`source_finished`, `failed`, or `suppressed`); `source_finished` asserts only
+worker/source completion, never client audibility. Web, Windows, Android, iOS, macOS, and watchOS
+reject the field outside a succeeded turn. Result-only local playout failures are fenced to the
+matching turn and surface a persistent, prominent `Speech playback failed` notice while stating
+that the committed text remains available. Greeting/progress loss cannot make that claim, and mute,
+background, stop, barge-in, stale media, and late worker-terminal races cannot replay or mislabel a
+recap.
+
+The first post-scheduler macOS retest committed a text result but the app then entered an AppKit
+view-update livelock before recap playout: CPU reached approximately 99.5%, memory reached 2.2 GB,
+and LiveKit disconnected. A local process sample at
+`/tmp/AstralDeep_2026-08-02_102254_WaFr.sample.txt` attributed the loop to continuously animated
+SwiftUI progress/shimmer views inside the transcript `LazyVStack`. macOS now uses static busy
+affordances while iOS retains animation, and the redundant nested turn identity was removed. The
+macOS microphone/output capability probe now reads the current CoreAudio route, restoring the voice
+button without relying on AVFoundation device enumeration.
+
+Post-repair integrated verification passed: 128 focused backend tests both on the host and in the
+new Python 3.11 product image; web Playwright 48/48 plus locked ESLint; Windows 77 focused tests;
+Android `ktlintCheck`, `:app:lintDebug`, `:core:test`, `:app:testDebugUnitTest`,
+`:core:koverVerify`, and `:app:assembleDebug`; AstralCore 168/168; macOS AstralApp unit tests
+136/136; strict recursive Swift formatting; and unsigned iOS/watchOS plus signed macOS builds. Ruff,
+JavaScript syntax, JSON parsing, and `git diff --check` passed. The rebuilt product image manifest
+list is `sha256:aa243d4e87777cb74587b679830decf673d8689c8f5b88c0096ffa83b066815f`, and its application
+manifest is `sha256:ba99ff772eacf4d5f12514400e161197a98f12fa708c5d0bd2477525203f148f`;
+the recreated backend returned `{"status":"ok","db":"ok","agents":10}` and the voice worker
+completed its expected challenge/reconnect. The rebuilt macOS app is awaiting user sign-in for the
+final audible full-recap confirmation, so no live audibility claim is made yet.
+
+A lower-priority follow-up is to replace verbose raw provider detail in the connection-test UI with
+bounded safe guidance while retaining content-free diagnostic codes on the server.
+
 ## Explicitly unverified or failing release claims
 
 - No immutable candidate SHA or candidate-bound evidence bundle exists for these uncommitted changes.

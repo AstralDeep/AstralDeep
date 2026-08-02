@@ -101,7 +101,14 @@ private struct CanvasArea: View {
                     model.backToLiveCanvas()
                 }
             } else if model.turnActive && !model.showSkeleton {
-                ProgressView().progressViewStyle(.linear).tint(p.secondary)
+                if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                    ProgressView().progressViewStyle(.linear).tint(p.secondary)
+                } else {
+                    Rectangle()
+                        .fill(p.secondary.opacity(0.65))
+                        .frame(height: 2)
+                        .accessibilityHidden(true)
+                }
             }
             ZStack(alignment: .topTrailing) {
                 // GeometryReader is a layout firewall: it answers every parent
@@ -201,7 +208,7 @@ private struct SkeletonCanvas: View {
                     .fill(theme.palette.surface.opacity(0.5))
                     .frame(height: i == 0 ? 90 : 60)
                     .frame(maxWidth: .infinity)
-                    .shimmer()
+                    .activityShimmer()
             }
             Spacer()
         }
@@ -403,7 +410,7 @@ private struct ChatList: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(visible) { turn in ChatBubble(turn: turn).id(turn.id) }
+                    ForEach(visible) { turn in ChatBubble(turn: turn) }
                     if let status = model.statusText { StatusLine(text: status).id("status") }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
@@ -425,7 +432,13 @@ private struct StatusLine: View {
     let text: String
     var body: some View {
         HStack(spacing: 6) {
-            ProgressView().controlSize(.small)
+            if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "ellipsis")
+                    .font(.caption2.weight(.semibold))
+                    .accessibilityHidden(true)
+            }
             Text(text).font(.caption).foregroundStyle(theme.palette.muted)
         }
     }
@@ -635,7 +648,12 @@ private struct VoiceComposerControls: View {
                                 } label: {
                                     HStack(spacing: 5) {
                                         if control.busy {
-                                            ProgressView().controlSize(.small)
+                                            if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                                                ProgressView().controlSize(.small)
+                                            } else {
+                                                Image(systemName: "ellipsis")
+                                                    .accessibilityHidden(true)
+                                            }
                                         } else {
                                             Image(systemName: symbol(control.icon))
                                         }
@@ -665,7 +683,13 @@ private struct VoiceComposerControls: View {
                         Image(systemName: model.voice.mediaConnected ? "waveform" : "waveform.slash")
                         Text(message).lineLimit(2)
                         if model.voice.awaitingAcceptance > 0 {
-                            ProgressView().controlSize(.mini)
+                            if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Image(systemName: "ellipsis")
+                                    .font(.caption2.weight(.semibold))
+                                    .accessibilityHidden(true)
+                            }
                         }
                     }
                     .font(.caption)
@@ -810,8 +834,32 @@ private struct SendButton: View {
 
 // MARK: - shimmer + safe index
 
+enum ContinuousActivityPresentation {
+    /// AppKit's indeterminate progress views and animation timelines can feed
+    /// their ticks back through the transcript LazyVStack. On macOS that can
+    /// keep the main view graph permanently dirty, starving websocket/media
+    /// work and growing memory without bound. Static busy affordances retain
+    /// the visible state while limiting layout to real model changes.
+    static var allowsAnimatedIndicators: Bool {
+        #if os(macOS)
+            false
+        #else
+            true
+        #endif
+    }
+}
+
 extension View {
     func shimmer() -> some View { modifier(ShimmerModifier()) }
+
+    @ViewBuilder
+    func activityShimmer() -> some View {
+        if ContinuousActivityPresentation.allowsAnimatedIndicators {
+            shimmer()
+        } else {
+            self
+        }
+    }
 }
 
 struct ShimmerModifier: ViewModifier {

@@ -6,6 +6,7 @@ import com.personalailabs.astraldeep.core.protocol.VoiceControl
 import com.personalailabs.astraldeep.core.protocol.VoiceControlBinding
 import com.personalailabs.astraldeep.core.protocol.VoiceOwnerDevice
 import com.personalailabs.astraldeep.core.protocol.VoiceSessionState
+import com.personalailabs.astraldeep.core.protocol.VoiceSpeechOutcome
 import com.personalailabs.astraldeep.core.protocol.VoiceSubmissionRejected
 import com.personalailabs.astraldeep.core.protocol.VoiceTurnState
 import kotlinx.coroutines.CompletableDeferred
@@ -796,6 +797,91 @@ class VoiceSessionController065Test {
         }
 
     @Test
+    fun failedSourceOutcomeCreatesExactTurnSpeechNoticeWithoutReplacingNewerTurn() =
+        runTest {
+            val fixture = fixture(this)
+            fixture.controller.activate(capability())
+            fixture.controller.handleInbound(
+                Inbound.VoiceTurnStateFrame(
+                    turnState(
+                        state = "succeeded",
+                        message = "The result audio could not be delivered.",
+                        occurredAt = "2026-07-31T12:05:00Z",
+                        speechOutcome = VoiceSpeechOutcome.FAILED,
+                    ),
+                ),
+            )
+
+            val failedSpeech = requireNotNull(fixture.controller.state.value.terminalNotice)
+            assertEquals(VoiceTerminalNoticeKind.TEXT_RESULT_AVAILABLE, failedSpeech.kind)
+            assertEquals("Speech playback failed", failedSpeech.title)
+            assertEquals(TURN_ID, failedSpeech.turnId)
+            assertTrue(failedSpeech.speechUnavailable)
+            assertTrue(failedSpeech.guidance.contains("text result remains available"))
+            assertFalse(failedSpeech.isRequestFailure)
+            assertEquals("error", fixture.controller.state.value.phase)
+            assertEquals("speech_error", fixture.controller.state.value.reason)
+
+            fixture.controller.handleInbound(
+                Inbound.VoiceTurnStateFrame(
+                    turnState(
+                        state = "succeeded",
+                        message = "The newer result completed.",
+                        turnId = OTHER_TURN_ID,
+                        occurredAt = "2026-07-31T12:05:01Z",
+                        speechOutcome = VoiceSpeechOutcome.SOURCE_FINISHED,
+                    ),
+                ),
+            )
+            val newer = requireNotNull(fixture.controller.state.value.terminalNotice)
+            assertEquals(OTHER_TURN_ID, newer.turnId)
+            assertFalse(newer.speechUnavailable)
+
+            fixture.controller.handleInbound(
+                Inbound.VoiceTurnStateFrame(
+                    turnState(
+                        state = "succeeded",
+                        message = "This older audio failure must stay hidden.",
+                        occurredAt = "2026-07-31T12:05:00Z",
+                        sequence = 2,
+                        speechOutcome = VoiceSpeechOutcome.FAILED,
+                    ),
+                ),
+            )
+            assertEquals(newer, fixture.controller.state.value.terminalNotice)
+            assertEquals("speaking_result", fixture.controller.state.value.phase)
+            assertEquals("ready", fixture.controller.state.value.reason)
+        }
+
+    @Test
+    fun nonFailureSpeechOutcomesRemainNormalSuccessfulResults() =
+        runTest {
+            listOf(
+                null,
+                VoiceSpeechOutcome.SOURCE_FINISHED,
+                VoiceSpeechOutcome.SUPPRESSED,
+            ).forEach { outcome ->
+                val fixture = fixture(this)
+                fixture.controller.activate(capability())
+                fixture.controller.handleInbound(
+                    Inbound.VoiceTurnStateFrame(
+                        turnState(
+                            state = "succeeded",
+                            message = "The text result is available.",
+                            speechOutcome = outcome,
+                        ),
+                    ),
+                )
+
+                val notice = requireNotNull(fixture.controller.state.value.terminalNotice)
+                assertEquals("Text result is available", notice.title)
+                assertFalse(notice.speechUnavailable)
+                assertEquals("speaking_result", fixture.controller.state.value.phase)
+                assertEquals("ready", fixture.controller.state.value.reason)
+            }
+        }
+
+    @Test
     fun droppedResultSpeechKeepsSuccessfulTextNoticeAndNeverBecomesRequestFailure() =
         runTest {
             val fixture = fixture(this)
@@ -827,12 +913,113 @@ class VoiceSessionController065Test {
 
             val notice = requireNotNull(fixture.controller.state.value.terminalNotice)
             assertEquals(VoiceTerminalNoticeKind.TEXT_RESULT_AVAILABLE, notice.kind)
-            assertEquals("Text result is still available", notice.title)
+            assertEquals("Speech playback failed", notice.title)
             assertEquals(safeServerMessage, notice.serverMessage)
             assertEquals("2026-07-31T12:00:00Z", notice.occurredAt.toString())
             assertTrue(notice.speechUnavailable)
             assertFalse(notice.isRequestFailure)
             assertEquals("speech_error", fixture.controller.state.value.reason)
+        }
+
+    @Test
+    fun localPlayoutFailureSurvivesSameTurnSourceFinishedAndAbsorbsServerDetail() =
+        runTest {
+            val fixture = fixture(this)
+            fixture.controller.activate(capability())
+            fixture.controller.handleInbound(
+                Inbound.VoiceTurnStateFrame(
+                    turnState(
+                        state = "processing",
+                        message = "The request is still running.",
+                    ),
+                ),
+            )
+            fixture.media.emit(
+                VoiceMediaEvent.Data(
+                    VOICE_ANNOUNCEMENT_TOPIC,
+                    WORKER,
+                    announcement(
+                        kind = "result",
+                        turnId = TURN_ID,
+                        quantumRole = "result_opening",
+                    ).encodeToByteArray(),
+                ),
+            )
+            runCurrent()
+            fixture.media.emit(VoiceMediaEvent.AnnouncementDropped(ANNOUNCEMENT_ID, 1))
+            runCurrent()
+
+            val localFailure = requireNotNull(fixture.controller.state.value.terminalNotice)
+            assertEquals(TURN_ID, localFailure.turnId)
+            assertEquals("Speech playback failed", localFailure.title)
+            assertTrue(localFailure.speechUnavailable)
+            assertEquals(null, localFailure.serverMessage)
+
+            val committedMessage = "Request completed. The text result is available in the conversation."
+            fixture.controller.handleInbound(
+                Inbound.VoiceTurnStateFrame(
+                    turnState(
+                        state = "succeeded",
+                        message = committedMessage,
+                        sequence = 2,
+                        speechOutcome = VoiceSpeechOutcome.SOURCE_FINISHED,
+                    ),
+                ),
+            )
+
+            val preserved = requireNotNull(fixture.controller.state.value.terminalNotice)
+            assertEquals(TURN_ID, preserved.turnId)
+            assertEquals("Speech playback failed", preserved.title)
+            assertEquals(committedMessage, preserved.serverMessage)
+            assertTrue(preserved.guidance.contains("committed text result remains available"))
+            assertTrue(preserved.speechUnavailable)
+            assertFalse(preserved.isRequestFailure)
+            assertEquals("error", fixture.controller.state.value.phase)
+            assertEquals("speech_error", fixture.controller.state.value.reason)
+        }
+
+    @Test
+    fun staleDroppedManifestCannotRelabelANewerTurnNotice() =
+        runTest {
+            val fixture = fixture(this)
+            fixture.controller.activate(capability())
+            fixture.controller.handleInbound(
+                Inbound.VoiceTurnStateFrame(
+                    turnState(state = "processing", message = "The older request is running."),
+                ),
+            )
+            fixture.media.emit(
+                VoiceMediaEvent.Data(
+                    VOICE_ANNOUNCEMENT_TOPIC,
+                    WORKER,
+                    announcement(
+                        kind = "result",
+                        turnId = TURN_ID,
+                        quantumRole = "result_opening",
+                    ).encodeToByteArray(),
+                ),
+            )
+            runCurrent()
+            fixture.controller.handleInbound(
+                Inbound.VoiceTurnStateFrame(
+                    turnState(
+                        state = "succeeded",
+                        message = "The newer result completed.",
+                        turnId = OTHER_TURN_ID,
+                        occurredAt = "2026-07-31T12:05:01Z",
+                        speechOutcome = VoiceSpeechOutcome.SOURCE_FINISHED,
+                    ),
+                ),
+            )
+            val newer = requireNotNull(fixture.controller.state.value.terminalNotice)
+
+            fixture.media.emit(VoiceMediaEvent.AnnouncementDropped(ANNOUNCEMENT_ID, 1))
+            runCurrent()
+
+            assertEquals(newer, fixture.controller.state.value.terminalNotice)
+            assertFalse(requireNotNull(fixture.controller.state.value.terminalNotice).speechUnavailable)
+            assertEquals("speaking_result", fixture.controller.state.value.phase)
+            assertEquals("ready", fixture.controller.state.value.reason)
         }
 
     @Test
@@ -1524,6 +1711,7 @@ class VoiceSessionController065Test {
             sequence: Int = 1,
             turnId: String = TURN_ID,
             occurredAt: String = "2026-07-31T12:00:00Z",
+            speechOutcome: VoiceSpeechOutcome? = null,
         ) =
             VoiceTurnState(
                 sessionId = SESSION_ID,
@@ -1543,6 +1731,7 @@ class VoiceSessionController065Test {
                 foreground = true,
                 sensitiveResultPending = false,
                 sequence = sequence,
+                speechOutcome = speechOutcome,
                 resultId = "result-1".takeIf { state == "succeeded" },
                 message = message,
                 occurredAt = occurredAt,

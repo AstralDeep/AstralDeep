@@ -1331,12 +1331,18 @@ final class WatchModel {
         currentVoiceTurnOccurredAt = turn.occurredAt
         voiceTerminalNotice = VoiceTerminalNoticeReducer.reduce(
             current: voiceTerminalNotice, turn: turn)
+        let speechFailed = turn.state == "succeeded" && turn.speechOutcome == .failed
         if turn.sensitiveResultPending, turn.resultId != nil {
             currentSensitiveVoiceTurn = turn
         } else if currentSensitiveVoiceTurn?.turnId == turn.turnId {
             currentSensitiveVoiceTurn = nil
         }
-        voiceMessage = turn.message
+        voiceMessage = speechFailed ? voiceTerminalNotice?.displayText : turn.message
+        if speechFailed {
+            voiceState = .error
+            voiceReason = VoiceReason.speechError.rawValue
+            return
+        }
         switch turn.state {
         case "recognizing": voiceState = .transcribing
         case "submitting": voiceState = .acknowledging

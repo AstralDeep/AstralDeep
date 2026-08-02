@@ -341,6 +341,10 @@
         "sequence": { "type": "integer", "minimum": 0 },
         "result_id": { "oneOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
         "sensitive_result_pending": { "type": "boolean" },
+        "speech_outcome": {
+          "description": "Optional exact-turn terminal speech-source outcome. source_finished means the requested quanta reached worker/source completion only; it does not assert client playout or local audibility.",
+          "enum": ["source_finished", "failed", "suppressed"]
+        },
         "message": { "type": "string", "maxLength": 240 },
         "occurred_at": { "$ref": "#/$defs/timestamp" }
       },
@@ -381,6 +385,10 @@
               }
             }
           }
+        },
+        {
+          "if": { "required": ["speech_outcome"] },
+          "then": { "properties": { "state": { "const": "succeeded" } } }
         }
       ]
     },

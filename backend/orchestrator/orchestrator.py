@@ -4497,8 +4497,17 @@ class Orchestrator:
         *,
         connection_generation: str,
         message: str,
+        speech_outcome: str | None = None,
     ) -> dict[str, Any]:
         """Build one content-safe lifecycle projection for a UI socket."""
+
+        if speech_outcome is not None:
+            if turn.state != "succeeded" or speech_outcome not in {
+                "source_finished",
+                "failed",
+                "suppressed",
+            }:
+                raise ValueError("invalid_voice_turn_speech_outcome")
 
         frame: dict[str, Any] = {
             "type": "voice_turn_state",
@@ -4527,6 +4536,10 @@ class Orchestrator:
         }
         if turn.state == "succeeded" and turn.result_commit_id:
             frame["result_id"] = turn.result_commit_id
+        if speech_outcome is not None:
+            # This describes worker/source completion only. Client playout and
+            # audibility are independently observed and are not inferred here.
+            frame["speech_outcome"] = speech_outcome
         return frame
 
     async def _broadcast_voice_turn_state(
@@ -4534,6 +4547,7 @@ class Orchestrator:
         turn: Any,
         *,
         message: str,
+        speech_outcome: str | None = None,
     ) -> None:
         """Fan a turn lifecycle notice to the user's current real UI sockets.
 
@@ -4561,6 +4575,7 @@ class Orchestrator:
                     turn,
                     connection_generation=str(context.connection_generation),
                     message=message,
+                    speech_outcome=speech_outcome,
                 )
                 await self._safe_send(
                     websocket,
@@ -11476,17 +11491,24 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     result_id=stage.commit_id,
                     text=sensitive_detail_recap,
                 )
-            terminal_turn = await services.finish_turn_announcements(
+            terminal_delivery = await services.finish_turn_announcements(
                 turn,
                 terminal_kind="succeeded",
                 recap_text=recap.text,
                 recap_source=recap.source,
                 sensitivity=recap.sensitivity or "unknown",
                 result_commit_id=stage.commit_id,
+                with_delivery_status=True,
             )
+            terminal_turn = getattr(terminal_delivery, "turn", terminal_delivery)
             await self._broadcast_voice_turn_state(
                 terminal_turn,
                 message=_VOICE_REQUEST_SUCCEEDED_MESSAGE,
+                speech_outcome=getattr(
+                    terminal_delivery,
+                    "speech_outcome",
+                    None,
+                ),
             )
             return True
         except asyncio.CancelledError:

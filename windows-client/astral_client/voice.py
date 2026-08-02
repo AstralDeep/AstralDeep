@@ -183,6 +183,11 @@ _TURN_OUTPUT_REASONS = {
     "ready",
     "output_language_unsupported",
 }
+_TURN_SPEECH_OUTCOMES = {
+    "source_finished",
+    "failed",
+    "suppressed",
+}
 _TERMINAL_TURN_NOTICES = {
     "failed": ("Request did not complete.", "Voice request did not complete"),
     "cancelled": ("Request did not complete.", "Voice request did not complete"),
@@ -195,6 +200,18 @@ _TURN_NOTICE_CLEAR_STATES = {
     "accepted",
     "processing",
     "succeeded",
+}
+_TURN_VOICE_PHASES = {
+    "recognizing": "transcribing",
+    "submitting": "acknowledging",
+    "accepted": "processing",
+    "processing": "processing",
+    "waiting_on_user": "waiting_on_user",
+    "succeeded": "speaking_result",
+    "failed": "listening",
+    "refused": "listening",
+    "cancelled": "listening",
+    "abandoned": "listening",
 }
 _LANGUAGE_TAG = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 
@@ -1364,7 +1381,7 @@ class VoiceComposerWidget(QWidget):
     ) -> None:
         """Show a persistent, non-color terminal outcome for one voice request."""
 
-        self.set_voice_status("processing" if state == "accepted" else state, message)
+        self.set_voice_status(_TURN_VOICE_PHASES.get(state, "error"), message)
         terminal_notice = _TERMINAL_TURN_NOTICES.get(state)
         if terminal_notice is None:
             self._clear_request_notice_for_newer_turn(
@@ -1412,25 +1429,47 @@ class VoiceComposerWidget(QWidget):
             occurred_at=occurred_at,
         )
 
-    def set_speech_error(self, message: str) -> None:
+    def set_speech_error(
+        self,
+        message: str,
+        *,
+        turn_id: Optional[str] = None,
+        occurred_at: Optional[str] = None,
+        update_status: bool = True,
+        text_result_available: bool = False,
+    ) -> None:
         """Distinguish failed speech output from the underlying text request."""
 
-        self.set_voice_status("error", message)
+        if update_status:
+            self.set_voice_status("error", message)
         self._show_request_notice(
             heading=(
-                "Speech playback failed. The text result may still be available "
-                "in the conversation."
+                "Speech playback failed."
+                if text_result_available
+                else (
+                    "Speech playback failed. The text result may still be available "
+                    "in the conversation."
+                )
             ),
             message=message,
+            guidance=(
+                "The text result is still available in the conversation. "
+                "Typed chat remains available."
+                if text_result_available
+                else None
+            ),
             accessible_name="Voice speech error",
             kind="speech_error",
+            turn_id=turn_id,
+            occurred_at=occurred_at,
         )
 
-    def clear_request_notice(self) -> None:
+    def clear_request_notice(self, *, preserve_fence: bool = False) -> None:
         """Hide and scrub the prior request outcome on an explicit reset."""
 
-        self._request_notice_turn_id = None
-        self._request_notice_occurred_at = None
+        if not preserve_fence:
+            self._request_notice_turn_id = None
+            self._request_notice_occurred_at = None
         self.request_notice_label.setText("")
         self.request_notice_label.setAccessibleName("Voice request outcome")
         self.request_notice_label.setAccessibleDescription("")
@@ -1446,17 +1485,22 @@ class VoiceComposerWidget(QWidget):
         """Clear only when a distinct, non-older turn has demonstrably begun."""
 
         next_occurred_at = _timestamp(occurred_at)
+        if state not in _TURN_NOTICE_CLEAR_STATES or not _uuid4(turn_id):
+            return
+        if next_occurred_at is None:
+            return
+        current_turn_id = self._request_notice_turn_id
+        current_occurred_at = self._request_notice_occurred_at
         if (
-            state not in _TURN_NOTICE_CLEAR_STATES
-            or not _uuid4(turn_id)
-            or not _uuid4(self._request_notice_turn_id)
-            or turn_id == self._request_notice_turn_id
-            or next_occurred_at is None
-            or self._request_notice_occurred_at is None
-            or next_occurred_at < self._request_notice_occurred_at
+            _uuid4(current_turn_id)
+            and current_occurred_at is not None
+            and next_occurred_at < current_occurred_at
         ):
             return
-        self.clear_request_notice()
+        self._request_notice_turn_id = turn_id
+        self._request_notice_occurred_at = next_occurred_at
+        if turn_id != current_turn_id:
+            self.clear_request_notice(preserve_fence=True)
 
     def _show_request_notice(
         self,
@@ -1476,6 +1520,14 @@ class VoiceComposerWidget(QWidget):
         if guidance:
             text += f"\n{guidance}"
         parsed_occurred_at = _timestamp(occurred_at)
+        if (
+            _uuid4(turn_id)
+            and parsed_occurred_at is not None
+            and _uuid4(self._request_notice_turn_id)
+            and self._request_notice_occurred_at is not None
+            and parsed_occurred_at < self._request_notice_occurred_at
+        ):
+            return
         self._request_notice_turn_id = turn_id if _uuid4(turn_id) else None
         self._request_notice_occurred_at = parsed_occurred_at
         self.request_notice_label.setProperty("noticeKind", kind)
@@ -1964,7 +2016,11 @@ class VoiceController(QObject):
             "occurred_at",
         }
         supplied = set(frame) if isinstance(frame, dict) else set()
-        if not required <= supplied <= required | {"result_id", "message"}:
+        if not required <= supplied <= required | {
+            "result_id",
+            "message",
+            "speech_outcome",
+        }:
             return False
         turn_id = frame.get("turn_id")
         sequence = frame.get("sequence")
@@ -2033,11 +2089,16 @@ class VoiceController(QObject):
             not isinstance(message, str) or len(message) > 240
         ):
             return False
+        speech_outcome = frame.get("speech_outcome")
+        if "speech_outcome" in frame and speech_outcome not in _TURN_SPEECH_OUTCOMES:
+            return False
+        if speech_outcome is not None and state != "succeeded":
+            return False
         if sequence <= self._turn_sequences.get(turn_id, -1):
             return False
         self._turn_sequences[turn_id] = sequence
         self._set_status(
-            "processing" if state == "accepted" else state,
+            _TURN_VOICE_PHASES[state],
             message or state,
         )
         return True

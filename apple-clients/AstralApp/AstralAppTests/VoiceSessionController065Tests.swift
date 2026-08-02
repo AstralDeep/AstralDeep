@@ -17,10 +17,27 @@ final class VoiceSessionController065Tests: XCTestCase {
     private let request = "00000000-0000-4000-8000-000000000008"
 
     #if os(macOS)
-        func testMacOSAudioOutputProbeRejectsMissingOrUnknownDeviceWithoutHardwareAccess() {
+        func testMacOSAudioHardwareProbeUsesDefaultRouteWithoutAVCaptureDiscovery() {
+            XCTAssertFalse(AppleVoicePermission.hasUsableAudioInputDevice(nil))
+            XCTAssertFalse(AppleVoicePermission.hasUsableAudioInputDevice(0))
+            XCTAssertTrue(AppleVoicePermission.hasUsableAudioInputDevice(41))
             XCTAssertFalse(AppleVoicePermission.hasUsableAudioOutputDevice(nil))
             XCTAssertFalse(AppleVoicePermission.hasUsableAudioOutputDevice(0))
             XCTAssertTrue(AppleVoicePermission.hasUsableAudioOutputDevice(42))
+
+            let available = AppleVoicePermission.macOSHardwareAvailability(
+                AppleVoiceAudioRouteSnapshot(
+                    inputDeviceID: 41, inputSampleRateHz: 48_000, inputChannelCount: 1,
+                    outputDeviceID: 42, outputSampleRateHz: 48_000, outputChannelCount: 2))
+            XCTAssertTrue(available.hasMicrophone)
+            XCTAssertTrue(available.hasAudioOutput)
+
+            let missingInput = AppleVoicePermission.macOSHardwareAvailability(
+                AppleVoiceAudioRouteSnapshot(
+                    inputDeviceID: nil, inputSampleRateHz: nil, inputChannelCount: nil,
+                    outputDeviceID: 42, outputSampleRateHz: 48_000, outputChannelCount: 2))
+            XCTAssertFalse(missingInput.hasMicrophone)
+            XCTAssertTrue(missingInput.hasAudioOutput)
         }
 
         func testMacOSSelfGeneratedAudioEngineChangeWithSameHardwareKeepsMediaAndLease() async throws {
@@ -684,6 +701,11 @@ final class VoiceSessionController065Tests: XCTestCase {
         }
         install(controller, replaceSender: false)
         await controller.activate()
+        controller.consume(
+            frame(
+                try voiceTurn(
+                    state: "processing", sequence: 1,
+                    occurredAt: "2099-07-31T12:05:00Z")))
 
         media.emit(
             .data(
@@ -694,7 +716,7 @@ final class VoiceSessionController065Tests: XCTestCase {
         XCTAssertEqual(controller.terminalNotice?.title, "Speech playback failed.")
         XCTAssertTrue(
             controller.terminalNotice?.displayText.contains(
-                "text result may still be available") == true)
+                "text result is still available") == true)
         XCTAssertFalse(
             controller.terminalNotice?.displayText.contains("Request did not complete") == true)
         XCTAssertTrue(sent.compactMap(InboundFrame.parse).allSatisfy { $0.name != "voice_playout_event" })
@@ -706,6 +728,78 @@ final class VoiceSessionController065Tests: XCTestCase {
             controller.terminalNotice?.serverMessage,
             "Assistant audio was unavailable. Typed chat is still available.")
         XCTAssertTrue(sent.compactMap(InboundFrame.parse).allSatisfy { $0.name != "voice_playout_event" })
+
+        let sameTurnNotice = controller.terminalNotice
+        controller.consume(
+            frame(
+                try voiceTurn(
+                    state: "succeeded", sequence: 2,
+                    message: "The text result is available.",
+                    occurredAt: "2099-07-31T12:05:01Z",
+                    speechOutcome: "source_finished")))
+        XCTAssertEqual(controller.terminalNotice, sameTurnNotice)
+        controller.close()
+    }
+
+    func testDelayedOlderResultDropCannotRelabelTheCurrentTurn() async throws {
+        let api = FakeVoiceAPI()
+        api.startOutcome = .started(restSession(synced: true), grant())
+        let media = FakeVoiceMedia()
+        let controller = makeController(api: api, media: media)
+        install(controller)
+        await controller.activate()
+
+        controller.consume(
+            frame(
+                try voiceTurn(
+                    state: "processing", sequence: 1,
+                    occurredAt: "2099-07-31T12:05:00Z")))
+        media.emit(
+            .data(
+                topic: voiceAnnouncementTopic, participantIdentity: "voice-worker-01",
+                payload: Data(announcement().utf8)))
+        let oldAnnouncement = try XCTUnwrap(media.authorized.first)
+
+        let newerTurn = "00000000-0000-4000-8000-000000000025"
+        controller.consume(
+            frame(
+                try voiceTurn(
+                    state: "succeeded", turnId: newerTurn, sequence: 1,
+                    message: "The newer text result is available.",
+                    occurredAt: "2099-07-31T12:05:01Z",
+                    speechOutcome: "source_finished")))
+        media.emit(.announcementDropped(oldAnnouncement))
+
+        XCTAssertNil(controller.terminalNotice)
+        XCTAssertNotEqual(controller.reason, "speech_error")
+        controller.close()
+    }
+
+    func testGreetingMediaFailureDoesNotClaimAResultExists() async throws {
+        let api = FakeVoiceAPI()
+        api.startOutcome = .started(restSession(synced: true), grant())
+        let media = FakeVoiceMedia()
+        media.authorizationResult = false
+        let controller = makeController(api: api, media: media)
+        install(controller)
+        await controller.activate()
+
+        media.emit(
+            .data(
+                topic: voiceAnnouncementTopic, participantIdentity: "voice-worker-01",
+                payload: Data(greetingAnnouncement().utf8)))
+        XCTAssertEqual(controller.reason, "speech_error")
+        XCTAssertNil(controller.terminalNotice)
+        XCTAssertFalse(
+            (controller.message ?? "").localizedCaseInsensitiveContains("text result"))
+
+        let greeting = try XCTUnwrap(media.authorized.first)
+        media.emit(.announcementDropped(greeting))
+        XCTAssertEqual(controller.reason, "speech_error")
+        XCTAssertNil(controller.terminalNotice)
+        XCTAssertFalse(
+            (controller.message ?? "").localizedCaseInsensitiveContains("text result"))
+        controller.close()
     }
 
     func testServerSpeechErrorAfterTextSuccessKeepsTextAvailableNotice() async throws {
@@ -734,6 +828,71 @@ final class VoiceSessionController065Tests: XCTestCase {
         XCTAssertTrue(notice.displayText.contains("text result may still be available"))
         XCTAssertFalse(notice.displayText.localizedCaseInsensitiveContains("request failed"))
         controller.close()
+    }
+
+    func testExactTurnSpeechFailureKeepsCommittedTextNoticeAndRejectsOlderFailure() async throws {
+        let api = FakeVoiceAPI()
+        api.startOutcome = .started(restSession(synced: true), grant())
+        let controller = makeController(api: api, media: FakeVoiceMedia())
+        install(controller)
+        await controller.activate()
+
+        controller.consume(
+            frame(
+                try voiceTurn(
+                    state: "succeeded", sequence: 1,
+                    message: "The result audio could not be delivered.",
+                    occurredAt: "2099-07-31T12:05:00Z", speechOutcome: "failed")))
+
+        let failedSpeech = try XCTUnwrap(controller.terminalNotice)
+        XCTAssertEqual(failedSpeech.kind, .speechFailure)
+        XCTAssertEqual(failedSpeech.turnId, turn)
+        XCTAssertEqual(failedSpeech.occurredAt, "2099-07-31T12:05:00Z")
+        XCTAssertTrue(failedSpeech.displayText.contains("text result is still available"))
+        XCTAssertFalse(failedSpeech.displayText.localizedCaseInsensitiveContains("request failed"))
+        XCTAssertEqual(controller.phase, "error")
+        XCTAssertEqual(controller.reason, "speech_error")
+
+        let newerTurn = "00000000-0000-4000-8000-000000000025"
+        controller.consume(
+            frame(
+                try voiceTurn(
+                    state: "succeeded", turnId: newerTurn, sequence: 1,
+                    message: "Newer result audio was unavailable.",
+                    occurredAt: "2099-07-31T12:05:01Z", speechOutcome: "failed")))
+        let newerNotice = try XCTUnwrap(controller.terminalNotice)
+        XCTAssertEqual(newerNotice.turnId, newerTurn)
+
+        controller.consume(
+            frame(
+                try voiceTurn(
+                    state: "succeeded", sequence: 2,
+                    message: "This older audio failure must stay hidden.",
+                    occurredAt: "2099-07-31T12:05:00Z", speechOutcome: "failed")))
+        XCTAssertEqual(controller.terminalNotice, newerNotice)
+        XCTAssertEqual(controller.message, newerNotice.displayText)
+        controller.close()
+    }
+
+    func testNonFailureSpeechOutcomesRemainNormalSuccessfulResults() async throws {
+        for outcome in [nil, "source_finished", "suppressed"] as [String?] {
+            let api = FakeVoiceAPI()
+            api.startOutcome = .started(restSession(synced: true), grant())
+            let controller = makeController(api: api, media: FakeVoiceMedia())
+            install(controller)
+            await controller.activate()
+
+            controller.consume(
+                frame(
+                    try voiceTurn(
+                        state: "succeeded", sequence: 1,
+                        message: "The result is ready.", speechOutcome: outcome)))
+
+            XCTAssertNil(controller.terminalNotice)
+            XCTAssertEqual(controller.phase, "speaking_result")
+            XCTAssertEqual(controller.reason, "ready")
+            controller.close()
+        }
     }
 
     func testBackgroundSuspendsCaptureWithoutCancellingAcceptedWork() async {
@@ -1481,7 +1640,8 @@ final class VoiceSessionController065Tests: XCTestCase {
         turnId: String? = nil,
         sequence: Int = 1,
         message: String? = nil,
-        occurredAt: String = "2099-07-31T12:00:00Z"
+        occurredAt: String = "2099-07-31T12:00:00Z",
+        speechOutcome: String? = nil
     ) throws -> String {
         var value: [String: JSONValue] = [
             "type": .string("voice_turn_state"),
@@ -1506,6 +1666,7 @@ final class VoiceSessionController065Tests: XCTestCase {
             "occurred_at": .string(occurredAt),
         ]
         if let message { value["message"] = .string(message) }
+        if let speechOutcome { value["speech_outcome"] = .string(speechOutcome) }
         return String(decoding: try JSONValue.object(value).encoded(), as: UTF8.self)
     }
 
@@ -1549,6 +1710,16 @@ final class VoiceSessionController065Tests: XCTestCase {
             format: "00000000-0000-4000-8000-%012llx", Int64(sequence))
         return """
             {"type":"voice_announcement_media","schema_version":"1","session_id":"\(voiceSession)","generation":1,"media_grant_revision":2,"announcement_id":"\(announcementId)","announcement_sequence":\(sequence),"turn_id":"\(turn)","kind":"result","quantum_role":"result_opening","quantum_index":0,"transport":"livekit","worker_identity":"voice-worker-01","sample_rate_hz":24000,"duration_samples":36000,"result_reserved_samples_after":36000,"track_sid":"\(sid)","track_name":"\(trackName)"}
+            """
+    }
+
+    private func greetingAnnouncement(
+        sequence: Int = 4, sid: String = "TR_audio_greeting"
+    ) -> String {
+        let announcementId = String(
+            format: "00000000-0000-4000-8000-%012llx", Int64(sequence))
+        return """
+            {"type":"voice_announcement_media","schema_version":"1","session_id":"\(voiceSession)","generation":1,"media_grant_revision":2,"announcement_id":"\(announcementId)","announcement_sequence":\(sequence),"turn_id":null,"kind":"greeting","quantum_role":"single","quantum_index":0,"transport":"livekit","worker_identity":"voice-worker-01","sample_rate_hz":24000,"duration_samples":24000,"track_sid":"\(sid)","track_name":"voice-greeting"}
             """
     }
 

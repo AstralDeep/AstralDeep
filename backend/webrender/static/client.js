@@ -465,11 +465,17 @@
     waiting_on_user: true, succeeded: true, failed: true, refused: true,
     cancelled: true, abandoned: true,
   });
+  var VOICE_SPEECH_OUTCOMES = Object.freeze({
+    source_finished: true,
+    failed: true,
+    suppressed: true,
+  });
   var VOICE_REQUEST_TERMINAL_TITLES = Object.freeze({
     failed: "Voice request did not complete.",
     refused: "Voice request did not start.",
     cancelled: "Voice request did not complete because it was cancelled.",
     abandoned: "Voice request did not complete.",
+    speech_error: "Speech playback failed.",
   });
   var VOICE_REQUEST_NOTICE_CLEAR_STATES = Object.freeze({
     recognizing: true,
@@ -570,6 +576,11 @@
     var title = VOICE_REQUEST_TERMINAL_TITLES[frame.state];
     if (!title || !voiceTurnNoticeEl || !voiceTurnNoticeTitleEl
         || !voiceTurnNoticeMessageEl) return;
+    if (voiceTurnNoticeState && isCanonicalUuid4(frame.turn_id)
+        && isCanonicalUuid4(voiceTurnNoticeState.turn_id)
+        && isRfc3339Utc(frame.occurred_at)
+        && isRfc3339Utc(voiceTurnNoticeState.occurred_at)
+        && Date.parse(frame.occurred_at) < Date.parse(voiceTurnNoticeState.occurred_at)) return;
     voiceTurnNoticeEl.setAttribute("data-state", frame.state);
     voiceTurnNoticeTitleEl.textContent = title;
     if (Object.prototype.hasOwnProperty.call(frame, "message")) {
@@ -591,8 +602,8 @@
     voiceTurnNoticeEl.hidden = false;
   }
 
-  function clearVoiceRequestTerminal() {
-    voiceTurnNoticeState = null;
+  function clearVoiceRequestTerminal(preserveFence) {
+    if (preserveFence !== true) voiceTurnNoticeState = null;
     if (voiceTurnNoticeEl) {
       voiceTurnNoticeEl.hidden = true;
       voiceTurnNoticeEl.removeAttribute("data-state");
@@ -608,10 +619,35 @@
   }
 
   function clearVoiceRequestTerminalForNewerTurn(frame) {
-    if (!voiceTurnNoticeState || !VOICE_REQUEST_NOTICE_CLEAR_STATES[frame.state]
-        || frame.turn_id === voiceTurnNoticeState.turn_id
-        || Date.parse(frame.occurred_at) < Date.parse(voiceTurnNoticeState.occurred_at)) return;
-    clearVoiceRequestTerminal();
+    if (!VOICE_REQUEST_NOTICE_CLEAR_STATES[frame.state]
+        || !isCanonicalUuid4(frame.turn_id) || !isRfc3339Utc(frame.occurred_at)) return;
+    var previous = voiceTurnNoticeState;
+    if (previous && isCanonicalUuid4(previous.turn_id)
+        && isRfc3339Utc(previous.occurred_at)
+        && Date.parse(frame.occurred_at) < Date.parse(previous.occurred_at)) return;
+    voiceTurnNoticeState = {
+      turn_id: frame.turn_id,
+      occurred_at: frame.occurred_at,
+    };
+    if (!previous || frame.turn_id !== previous.turn_id) clearVoiceRequestTerminal(true);
+  }
+
+  function showVoiceResultSpeechFailure(manifest) {
+    if (!manifest || manifest.kind !== "result" || !isCanonicalUuid4(manifest.turn_id)) return false;
+    if (voiceTurnNoticeState && isCanonicalUuid4(voiceTurnNoticeState.turn_id)
+        && voiceTurnNoticeState.turn_id !== manifest.turn_id) return false;
+    var occurredAt = new Date().toISOString();
+    if (voiceTurnNoticeState && voiceTurnNoticeState.turn_id === manifest.turn_id
+        && isRfc3339Utc(voiceTurnNoticeState.occurred_at)) {
+      occurredAt = voiceTurnNoticeState.occurred_at;
+    }
+    showVoiceRequestTerminal({
+      state: "speech_error",
+      turn_id: manifest.turn_id,
+      occurred_at: occurredAt,
+      message: "The result audio could not be delivered.",
+    }, "The text result is still available in the conversation. Typed chat remains available.");
+    return true;
   }
 
   function showVoiceAudioResume(message) {
@@ -1941,12 +1977,28 @@
   }
 
   function consumeVoiceTurnState(frame) {
+    var requiredKeys = [
+      "type", "schema_version", "session_id", "connection_generation", "generation",
+      "media_grant_revision", "turn_id", "client_turn_id", "submission_id",
+      "request_generation", "chat_id", "chat_context_revision", "detected_language",
+      "spoken_output_policy", "output_reason", "state", "foreground",
+      "sensitive_result_pending", "sequence", "occurred_at",
+    ];
+    var suppliedKeys = requiredKeys.slice();
+    ["result_id", "message", "speech_outcome"].forEach(function (key) {
+      if (frame && Object.prototype.hasOwnProperty.call(frame, key)) suppliedKeys.push(key);
+    });
     if (!frame || frame.type !== "voice_turn_state" || frame.schema_version !== "1"
+        || !exactKeys(frame, suppliedKeys)
         || frame.connection_generation !== connectionGeneration || !isCanonicalUuid4(frame.session_id)) return false;
     var fence = currentVoiceFence();
     if (!fence || frame.session_id !== fence.session_id || frame.generation !== fence.generation
         || frame.media_grant_revision !== fence.media_grant_revision
-        || !VOICE_TURN_STATES[frame.state]
+        || !Object.prototype.hasOwnProperty.call(VOICE_TURN_STATES, frame.state)
+        || (Object.prototype.hasOwnProperty.call(frame, "speech_outcome")
+          && (frame.state !== "succeeded"
+            || !Object.prototype.hasOwnProperty.call(
+              VOICE_SPEECH_OUTCOMES, frame.speech_outcome)))
         || !validVoiceTurnMessage(frame)
         || !isCanonicalUuid4(frame.turn_id)
         || !isRfc3339Utc(frame.occurred_at)
@@ -1967,8 +2019,18 @@
           || frame.output_reason !== "output_language_unsupported")) return false;
     }
     if (typeof frame.result_id === "string" && frame.result_id) voiceCurrentResultId = frame.result_id;
-    if (VOICE_REQUEST_TERMINAL_TITLES[frame.state]) showVoiceRequestTerminal(frame);
-    else clearVoiceRequestTerminalForNewerTurn(frame);
+    if (frame.state === "succeeded" && frame.speech_outcome === "failed") {
+      showVoiceRequestTerminal({
+        state: "speech_error",
+        turn_id: frame.turn_id,
+        occurred_at: frame.occurred_at,
+        message: "The result audio could not be delivered.",
+      }, "The text result is still available in the conversation. Typed chat remains available.");
+    } else if (VOICE_REQUEST_TERMINAL_TITLES[frame.state]) {
+      showVoiceRequestTerminal(frame);
+    } else {
+      clearVoiceRequestTerminalForNewerTurn(frame);
+    }
     return true;
   }
 
@@ -2339,16 +2401,23 @@
 
   function removeVoicePublishedTrack(sid) {
     if (typeof sid !== "string" || !sid) return;
+    var manifest = voiceAnnouncementByTrack[sid];
     var pending = voicePendingTracks[sid];
     if (pending) stopVoiceAudioTrack(pending.track);
     delete voicePendingTracks[sid];
     delete voicePublishedTracks[sid];
     voicePlayoutQueue = voicePlayoutQueue.filter(function (value) { return value !== sid; });
     if (voiceSubscribingTrackSid === sid) voiceSubscribingTrackSid = null;
+    var activeFound = false;
     Object.keys(voiceActivePlayout).forEach(function (announcementId) {
       var active = voiceActivePlayout[announcementId];
-      if (active && active.sid === sid) finishVoiceTrack(active, active.started ? "interrupted" : null);
+      if (active && active.sid === sid) {
+        activeFound = true;
+        finishVoiceTrack(active, active.started ? "interrupted" : null);
+      }
     });
+    if (!activeFound) showVoiceResultSpeechFailure(manifest);
+    delete voiceAnnouncementByTrack[sid];
     startNextVoiceTrack();
   }
 
@@ -2356,6 +2425,7 @@
     var manifest = voiceAnnouncementByTrack[sid];
     if (!manifest || voicePublishedTracks[sid] || voicePendingTracks[sid]
         || voicePlayoutQueue.indexOf(sid) !== -1 || voiceSubscribingTrackSid === sid) return;
+    showVoiceResultSpeechFailure(manifest);
     delete voiceAnnouncementByTrack[sid];
   }
 
@@ -2366,6 +2436,7 @@
     if ((published.publication.trackName || published.publication.name) !== manifest.track_name
         || published.participant.identity !== manifest.worker_identity) {
       try { published.publication.setSubscribed(false); } catch (e) {}
+      showVoiceResultSpeechFailure(manifest);
       delete voiceAnnouncementByTrack[sid];
       delete voicePublishedTracks[sid];
       return;
@@ -2388,11 +2459,17 @@
       var sid = voicePlayoutQueue.shift();
       var manifest = voiceAnnouncementByTrack[sid];
       var published = voicePublishedTracks[sid];
-      if (!manifest || !published) continue;
+      if (!manifest || !published) {
+        showVoiceResultSpeechFailure(manifest);
+        delete voiceAnnouncementByTrack[sid];
+        delete voicePublishedTracks[sid];
+        continue;
+      }
       voiceSubscribingTrackSid = sid;
       try { published.publication.setSubscribed(true); }
       catch (e) {
         voiceSubscribingTrackSid = null;
+        showVoiceResultSpeechFailure(manifest);
         delete voiceAnnouncementByTrack[sid];
         delete voicePublishedTracks[sid];
         continue;
@@ -2400,8 +2477,10 @@
       voiceMediaTimers.push(setTimeout(function (expectedSid) {
         if (voiceSubscribingTrackSid !== expectedSid) return;
         var value = voicePublishedTracks[expectedSid];
+        var expectedManifest = voiceAnnouncementByTrack[expectedSid];
         try { if (value) value.publication.setSubscribed(false); } catch (e) {}
         voiceSubscribingTrackSid = null;
+        showVoiceResultSpeechFailure(expectedManifest);
         delete voiceAnnouncementByTrack[expectedSid];
         delete voicePublishedTracks[expectedSid];
         startNextVoiceTrack();
@@ -2417,11 +2496,16 @@
 
   function interruptVoiceAudioTrack(track, publication) {
     var sid = publication && publication.trackSid || track && track.sid;
+    var activeFound = false;
     Object.keys(voiceActivePlayout).forEach(function (announcementId) {
       var active = voiceActivePlayout[announcementId];
-      if (active && active.sid === sid) finishVoiceTrack(active, active.started ? "interrupted" : null);
+      if (active && active.sid === sid) {
+        activeFound = true;
+        finishVoiceTrack(active, active.started ? "interrupted" : null);
+      }
     });
-    stopVoiceAudioTrack(track);
+    if (!activeFound) removeVoicePublishedTrack(sid);
+    else stopVoiceAudioTrack(track);
   }
 
   function voicePlayout(frame, phase) {
@@ -2454,7 +2538,15 @@
     var pending = voicePendingTracks[sid];
     var manifest = voiceAnnouncementByTrack[sid];
     var published = voicePublishedTracks[sid];
-    if (!pending || !manifest || !published || Object.keys(voiceActivePlayout).length) return;
+    if (Object.keys(voiceActivePlayout).length) return;
+    if (!pending || !manifest || !published) {
+      showVoiceResultSpeechFailure(manifest);
+      delete voicePendingTracks[sid];
+      delete voiceAnnouncementByTrack[sid];
+      delete voicePublishedTracks[sid];
+      startNextVoiceTrack();
+      return;
+    }
     delete voicePendingTracks[sid];
     var context = ensureVoiceAudioContext();
     var mediaTrack = pending.track.mediaStreamTrack;
@@ -2464,6 +2556,7 @@
         || typeof window.MediaStream !== "function" || !mediaTrack) {
       try { published.publication.setSubscribed(false); } catch (e) {}
       stopVoiceAudioTrack(pending.track);
+      showVoiceResultSpeechFailure(manifest);
       delete voiceAnnouncementByTrack[sid];
       delete voicePublishedTracks[sid];
       setVoiceFeedback("unavailable", "media_unavailable", null, true);
@@ -2477,6 +2570,7 @@
       processor = context.createScriptProcessor(1024, 1, 1);
     } catch (e) {
       try { published.publication.setSubscribed(false); } catch (_error) {}
+      showVoiceResultSpeechFailure(manifest);
       delete voiceAnnouncementByTrack[sid];
       delete voicePublishedTracks[sid];
       startNextVoiceTrack();
@@ -2536,6 +2630,9 @@
   function finishVoiceTrack(active, phase, suppressNext) {
     if (!active || active.finished) return;
     active.finished = true;
+    if (!active.started && suppressNext !== true) {
+      showVoiceResultSpeechFailure(active.manifest);
+    }
     if (active.timeout) clearTimeout(active.timeout);
     if (active.tailTimer) clearTimeout(active.tailTimer);
     try { active.processor.onaudioprocess = null; } catch (e) {}

@@ -246,4 +246,12 @@ final class AppModelLiveCanvasTests: XCTestCase {
         XCTAssertEqual(ShimmerModifier.phase(cycle: 0.5), 0.3, accuracy: 0.0001)
         XCTAssertEqual(ShimmerModifier.phase(cycle: 0.9999), 1.6, accuracy: 0.001)
     }
+
+    func testContinuousActivityPresentationMatchesPlatformLayoutSafetyPolicy() {
+        #if os(macOS)
+            XCTAssertFalse(ContinuousActivityPresentation.allowsAnimatedIndicators)
+        #else
+            XCTAssertTrue(ContinuousActivityPresentation.allowsAnimatedIndicators)
+        #endif
+    }
 }

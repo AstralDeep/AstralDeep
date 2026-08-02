@@ -170,9 +170,9 @@ class VoiceConversation065InstrumentedTest {
         val notice =
             VoiceTerminalNotice(
                 kind = VoiceTerminalNoticeKind.TEXT_RESULT_AVAILABLE,
-                title = "Text result is still available",
+                title = "Speech playback failed",
                 serverMessage = "Request completed. The text result is available in the conversation.",
-                guidance = "Spoken playback was unavailable. The text result remains available in the conversation.",
+                guidance = "The request completed. Its committed text result remains available in the conversation.",
                 speechUnavailable = true,
             )
         rule.setContent {
@@ -195,9 +195,10 @@ class VoiceConversation065InstrumentedTest {
                     notice.accessibilityText,
                 ),
             )
-        rule.onNodeWithText("Text result is still available", useUnmergedTree = true).assertIsDisplayed()
+        rule.onNodeWithText("!", useUnmergedTree = true).assertIsDisplayed()
+        rule.onNodeWithText("Speech playback failed", useUnmergedTree = true).assertIsDisplayed()
         rule.onNodeWithText(
-            "Spoken playback was unavailable. The text result remains available in the conversation.",
+            "The request completed. Its committed text result remains available in the conversation.",
             useUnmergedTree = true,
         ).assertIsDisplayed()
     }

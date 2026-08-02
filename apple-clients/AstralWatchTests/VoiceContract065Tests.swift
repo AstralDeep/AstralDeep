@@ -198,6 +198,52 @@ final class VoiceContract065Tests: XCTestCase {
         XCTAssertFalse(notice.displayText.contains("Request did not complete"))
     }
 
+    func testExactTurnSpeechFailureKeepsCommittedTextNoticeAndRejectsOlderFailure() throws {
+        let model = try configuredVoiceModel()
+        model.voiceSession = try XCTUnwrap(
+            WatchVoiceSession(
+                json: voiceSessionJSON(
+                    deviceId: model.voiceDeviceId, visibleChatId: chat)))
+
+        model.handleFrame(
+            try XCTUnwrap(
+                InboundFrame.parse(
+                    try voiceTurnJSON(
+                        state: "succeeded", sequence: 1,
+                        message: "The result audio could not be delivered.",
+                        occurredAt: "2099-07-31T12:05:00Z", speechOutcome: "failed"))))
+
+        let failedSpeech = try XCTUnwrap(model.voiceTerminalNotice)
+        XCTAssertEqual(failedSpeech.kind, .speechFailure)
+        XCTAssertEqual(failedSpeech.turnId, turn)
+        XCTAssertEqual(failedSpeech.occurredAt, "2099-07-31T12:05:00Z")
+        XCTAssertTrue(failedSpeech.displayText.contains("text result is still available"))
+        XCTAssertFalse(failedSpeech.displayText.localizedCaseInsensitiveContains("request failed"))
+        XCTAssertEqual(model.voiceState, .error)
+        XCTAssertEqual(model.voiceReason, "speech_error")
+
+        let newerTurn = "00000000-0000-4000-8000-000000000015"
+        model.handleFrame(
+            try XCTUnwrap(
+                InboundFrame.parse(
+                    try voiceTurnJSON(
+                        state: "succeeded", turnId: newerTurn, sequence: 1,
+                        message: "Newer result audio was unavailable.",
+                        occurredAt: "2099-07-31T12:05:01Z", speechOutcome: "failed"))))
+        let newerNotice = try XCTUnwrap(model.voiceTerminalNotice)
+        XCTAssertEqual(newerNotice.turnId, newerTurn)
+
+        model.handleFrame(
+            try XCTUnwrap(
+                InboundFrame.parse(
+                    try voiceTurnJSON(
+                        state: "succeeded", sequence: 2,
+                        message: "This older audio failure must stay hidden.",
+                        occurredAt: "2099-07-31T12:05:00Z", speechOutcome: "failed"))))
+        XCTAssertEqual(model.voiceTerminalNotice, newerNotice)
+        XCTAssertEqual(model.voiceMessage, newerNotice.displayText)
+    }
+
     func testCorrelatedSubmissionRejectionStopsRetryAndShowsExplicitRetryNotice() async throws {
         let model = try configuredVoiceModel()
         model.connected = true
@@ -899,7 +945,8 @@ final class VoiceContract065Tests: XCTestCase {
         turnId: String? = nil,
         sequence: Int = 1,
         message: String? = nil,
-        occurredAt: String? = nil
+        occurredAt: String? = nil,
+        speechOutcome: String? = nil
     ) throws -> String {
         var value: [String: JSONValue] = [
             "type": .string("voice_turn_state"),
@@ -924,6 +971,7 @@ final class VoiceContract065Tests: XCTestCase {
             "occurred_at": .string(occurredAt ?? timestamp(seconds: -1)),
         ]
         if let message { value["message"] = .string(message) }
+        if let speechOutcome { value["speech_outcome"] = .string(speechOutcome) }
         return String(decoding: try JSONValue.object(value).encoded(), as: UTF8.self)
     }
 

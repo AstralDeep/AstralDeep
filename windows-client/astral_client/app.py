@@ -3551,12 +3551,21 @@ class MainWindow(QMainWindow):
                 return
             state = msg.get("state")
             if isinstance(state, str):
-                self._voice_widget.set_voice_turn_status(
-                    state,
-                    str(msg.get("message") or state),
-                    turn_id=msg.get("turn_id"),
-                    occurred_at=msg.get("occurred_at"),
-                )
+                if state == "succeeded" and msg.get("speech_outcome") == "failed":
+                    self._voice_widget.set_speech_error(
+                        "The result audio could not be delivered.",
+                        turn_id=msg.get("turn_id"),
+                        occurred_at=msg.get("occurred_at"),
+                        update_status=False,
+                        text_result_available=True,
+                    )
+                else:
+                    self._voice_widget.set_voice_turn_status(
+                        state,
+                        str(msg.get("message") or state),
+                        turn_id=msg.get("turn_id"),
+                        occurred_at=msg.get("occurred_at"),
+                    )
             return
         if t == "voice_submission_rejected":
             self._finish_local_submission_by_id(str(msg.get("submission_id") or ""))

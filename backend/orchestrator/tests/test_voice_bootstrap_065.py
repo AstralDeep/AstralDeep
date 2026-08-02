@@ -21,6 +21,7 @@ from orchestrator.voice_bootstrap import (
 from orchestrator.voice_api import VoiceApiError
 from orchestrator.voice_coordinator import (
     APPROVED_PHRASE_KEYS,
+    CADENCE_TARGET_SECONDS,
     AnnouncementFence,
     AnnouncementState,
     AnnouncementStateAdapter,
@@ -1596,9 +1597,6 @@ async def test_session_runner_serializes_committed_result_recap_quanta() -> None
     assert media.calls[-1]["text"] == "Done."
     media.finish()
 
-    await _eventually(lambda: not runner._speaking)
-    clock.advance(0.25)
-    runner.wake()
     await _eventually(lambda: len(media.calls) == 3)
     assert media.calls[-1]["kind"] == "result"
     assert media.calls[-1]["text"] == recap_text
@@ -1608,6 +1606,73 @@ async def test_session_runner_serializes_committed_result_recap_quanta() -> None
     assert terminal_turn.state == "succeeded"
     assert terminal_turn.recap_source == "authoritative_summary"
     assert terminal_turn.result_quantum_count == 2
+    await _eventually(lambda: not runner._speaking)
+    await services._close_announcement_runner(session_id, 1)
+
+
+@pytest.mark.asyncio
+async def test_session_runner_preserves_recap_with_immediate_overlapping_handoffs() -> None:
+    session_id = "00000000-0000-4000-8000-0000000000d4"
+    earlier = _voice_turn(
+        session_id=session_id,
+        turn_id="00000000-0000-4000-8000-0000000000d5",
+    )
+    latest = _voice_turn(
+        session_id=session_id,
+        turn_id="00000000-0000-4000-8000-0000000000d6",
+        client_turn_id="00000000-0000-4000-8000-0000000000d7",
+        submission_id="00000000-0000-4000-8000-0000000000d8",
+        request_generation="00000000-0000-4000-8000-0000000000d9",
+    )
+    services, clock, repository, media = _runner_services(earlier, latest)
+
+    earlier_start = asyncio.create_task(services.start_turn_announcements(earlier))
+    await _eventually(lambda: len(media.calls) == 1)
+    media.finish()
+    await earlier_start
+
+    runner = services.announcement_runners[(session_id, 1)]
+    latest_start = asyncio.create_task(services.start_turn_announcements(latest))
+    await _eventually(lambda: len(media.calls) == 2)
+    media.finish()
+    await latest_start
+
+    clock.advance(CADENCE_TARGET_SECONDS)
+    terminal = asyncio.create_task(
+        services.finish_turn_announcements(
+            latest,
+            terminal_kind="succeeded",
+            recap_text="The requested report is complete and ready to review.",
+            recap_source="authoritative_summary",
+            sensitivity="non_sensitive",
+            result_commit_id="00000000-0000-4000-8000-0000000000da",
+        )
+    )
+    await _eventually(lambda: len(media.calls) == 3)
+    assert media.calls[-1]["turn_id"] == latest.turn_id
+    assert media.calls[-1]["kind"] == "result"
+    assert media.calls[-1]["text"] == "Latest request done."
+    media.finish()
+
+    # The runner must attempt the due handoff immediately. Waiting until the
+    # 250 ms maximum before scheduling would make normal timer jitter fatal.
+    await _eventually(lambda: len(media.calls) == 4)
+    assert media.calls[-1]["turn_id"] == earlier.turn_id
+    assert media.calls[-1]["kind"] == "progress"
+    assert not runner.task.done()
+    media.finish()
+    await _eventually(lambda: len(media.calls) == 5)
+    assert media.calls[-1]["turn_id"] == latest.turn_id
+    assert media.calls[-1]["kind"] == "result"
+    assert media.calls[-1]["text"] == (
+        "The requested report is complete and ready to review."
+    )
+    media.finish()
+
+    terminal_turn = await terminal
+    assert terminal_turn.state == "succeeded"
+    assert terminal_turn.result_quantum_count == 2
+    assert not runner.task.done()
     await _eventually(lambda: not runner._speaking)
     await services._close_announcement_runner(session_id, 1)
 

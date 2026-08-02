@@ -398,6 +398,59 @@ def test_speech_error_notice_does_not_claim_the_text_request_failed(qapp):
     typed.close()
 
 
+def test_turn_scoped_speech_error_cannot_overwrite_newer_success(qapp):
+    widget = VoiceComposerWidget()
+    widget.set_speech_error(
+        "The result audio could not be delivered.",
+        turn_id=TURN,
+        occurred_at="2026-07-31T12:00:02Z",
+    )
+    assert not widget.request_notice_label.isHidden()
+
+    widget.set_voice_turn_status(
+        "succeeded",
+        "The newer text result is available.",
+        turn_id=OTHER_TURN,
+        occurred_at="2026-07-31T12:00:03Z",
+    )
+    assert widget.request_notice_label.isHidden()
+    assert widget.property("voiceState") == "speaking_result"
+
+    widget.set_speech_error(
+        "Delayed older recap failure.",
+        turn_id=TURN,
+        occurred_at="2026-07-31T12:00:02Z",
+    )
+    assert widget.request_notice_label.isHidden()
+    widget.close()
+
+
+@pytest.mark.parametrize(
+    ("turn_state", "expected_phase"),
+    (
+        ("succeeded", "speaking_result"),
+        ("failed", "listening"),
+        ("refused", "listening"),
+        ("cancelled", "listening"),
+        ("abandoned", "listening"),
+    ),
+)
+def test_terminal_turn_notice_does_not_change_session_to_error(
+    qapp, turn_state, expected_phase
+):
+    widget = VoiceComposerWidget()
+
+    widget.set_voice_turn_status(
+        turn_state,
+        "Bounded terminal detail.",
+        turn_id=TURN,
+        occurred_at="2026-07-31T12:00:02Z",
+    )
+
+    assert widget.property("voiceState") == expected_phase
+    widget.close()
+
+
 @pytest.mark.parametrize(
     ("retry_policy", "guidance"),
     (
@@ -551,6 +604,75 @@ def test_main_window_routes_turn_failures_and_speech_errors_to_persistent_notice
     assert window._input.isEnabled()
     assert window._send_btn.isEnabled()
 
+    window.close()
+
+
+@pytest.mark.parametrize("speech_outcome", (None, "source_finished", "suppressed"))
+def test_main_window_keeps_normal_success_for_nonfailed_speech_outcome(
+    qapp, monkeypatch, speech_outcome
+):
+    monkeypatch.setenv("ASTRAL_WIN_AGENT", "0")
+    monkeypatch.setattr(MainWindow, "_start_integrity_check", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_init_workspace", lambda self: None)
+    monkeypatch.setattr(
+        appmod,
+        "load_or_create_host_id",
+        lambda: "77777777-7777-4777-8777-777777777777",
+    )
+    window = MainWindow("ws://127.0.0.1:9/ws", "dev-token", connect=False)
+    monkeypatch.setattr(window._voice_controller, "accept_frame", lambda _frame: True)
+    frame = {
+        "type": "voice_turn_state",
+        "state": "succeeded",
+        "turn_id": TURN,
+        "occurred_at": "2026-07-31T12:00:01Z",
+        "message": "Request completed. The text result is available.",
+    }
+    if speech_outcome is not None:
+        frame["speech_outcome"] = speech_outcome
+
+    window._on_message(frame)
+
+    assert window._voice_widget.request_notice_label.isHidden()
+    window.close()
+
+
+def test_main_window_routes_failed_speech_outcome_without_session_error(
+    qapp, monkeypatch
+):
+    monkeypatch.setenv("ASTRAL_WIN_AGENT", "0")
+    monkeypatch.setattr(MainWindow, "_start_integrity_check", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_init_workspace", lambda self: None)
+    monkeypatch.setattr(
+        appmod,
+        "load_or_create_host_id",
+        lambda: "77777777-7777-4777-8777-777777777777",
+    )
+    window = MainWindow("ws://127.0.0.1:9/ws", "dev-token", connect=False)
+    monkeypatch.setattr(window._voice_controller, "accept_frame", lambda _frame: True)
+
+    window._on_message(
+        {
+            "type": "voice_turn_state",
+            "state": "succeeded",
+            "speech_outcome": "failed",
+            "turn_id": TURN,
+            "occurred_at": "2026-07-31T12:00:02Z",
+            "message": "Request completed. The text result is available.",
+        }
+    )
+
+    notice = window._voice_widget.request_notice_label
+    assert notice.text().splitlines() == [
+        "⚠ Speech playback failed.",
+        "The result audio could not be delivered.",
+        (
+            "The text result is still available in the conversation. "
+            "Typed chat remains available."
+        ),
+    ]
+    assert notice.property("noticeKind") == "speech_error"
+    assert window._voice_controller.state != "error"
     window.close()
 
 

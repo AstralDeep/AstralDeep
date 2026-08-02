@@ -234,6 +234,7 @@ async function installHarness(page, {
     window.__rooms = [];
     window.__voiceProcessors = [];
     window.__audioBlocked = blocked;
+    window.__voiceAudioFault = null;
     window.requestIdleCallback = () => 0;
 
     class FakeVoiceProcessor {
@@ -268,12 +269,31 @@ async function installHarness(page, {
 
     class FakeAudioContext {
       constructor() {
-        this.sampleRate = 24000;
+        this.sampleRate = window.__voiceAudioFault === "invalid_context" ? 44100 : 24000;
         this.state = blocked ? "suspended" : "running";
         this.destination = {};
       }
-      createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
-      createScriptProcessor() { return new FakeVoiceProcessor(); }
+      createMediaStreamSource() {
+        if (window.__voiceAudioFault === "source_create") throw new Error("source create failed");
+        return {
+          connect() {
+            if (window.__voiceAudioFault === "source_connect") {
+              throw new Error("source connect failed");
+            }
+          },
+          disconnect() {},
+        };
+      }
+      createScriptProcessor() {
+        if (window.__voiceAudioFault === "processor_create") {
+          throw new Error("processor create failed");
+        }
+        const processor = new FakeVoiceProcessor();
+        if (window.__voiceAudioFault === "processor_connect") {
+          processor.connect = () => { throw new Error("processor connect failed"); };
+        }
+        return processor;
+      }
       async resume() {
         if (window.__audioBlocked) throw new DOMException("Autoplay blocked", "NotAllowedError");
         this.state = "running";
@@ -679,6 +699,7 @@ function sessionState(scope, state, reason = "ready", overrides = {}) {
 function turnState(scope, state, {
   message,
   sequence = 1,
+  speechOutcome,
   turnId = TURN_ID,
   occurredAt = "2026-07-31T12:00:01Z",
 } = {}) {
@@ -705,6 +726,7 @@ function turnState(scope, state, {
     occurred_at: occurredAt,
   };
   if (message !== undefined) frame.message = message;
+  if (speechOutcome !== undefined) frame.speech_outcome = speechOutcome;
   return frame;
 }
 
@@ -783,6 +805,106 @@ function announcementFrame({
     sample_rate_hz: 24000,
     duration_samples: durationSamples,
   };
+}
+
+
+function resultAnnouncementFrame({
+  announcementId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  sequence = 1,
+  trackSid = "TR_result_loss",
+  trackName = "astraldeep-result-loss",
+  turnId = TURN_ID,
+  durationSamples = 100,
+} = {}) {
+  return {
+    ...announcementFrame({
+      announcementId,
+      sequence,
+      trackSid,
+      trackName,
+      durationSamples,
+    }),
+    turn_id: turnId,
+    kind: "result",
+    quantum_role: "result_opening",
+    result_reserved_samples_after: durationSamples,
+  };
+}
+
+
+async function publishResultForLoss(page, manifest, {
+  audioFault = null,
+  missingMediaTrack = false,
+  publicationTrackName = manifest.track_name,
+  subscribe = true,
+  subscribeThrows = false,
+} = {}) {
+  await page.evaluate(({
+    announcement,
+    fault,
+    missingTrack,
+    publishedTrackName,
+    shouldSubscribe,
+    shouldThrow,
+    workerIdentity,
+  }) => {
+    window.__voiceAudioFault = fault;
+    const room = window.__rooms[0];
+    const participant = { identity: workerIdentity };
+    const track = {
+      kind: "audio",
+      sid: announcement.track_sid,
+      mediaStreamTrack: missingTrack ? null : {},
+      detach: () => [],
+    };
+    const publication = {
+      kind: "audio",
+      trackSid: announcement.track_sid,
+      trackName: publishedTrackName,
+      subscriptions: [],
+      setSubscribed(value) {
+        this.subscriptions.push(value);
+        if (value && shouldThrow) throw new Error("subscription failed");
+        if (value && shouldSubscribe) {
+          queueMicrotask(() => room.emit("trackSubscribed", track, publication, participant));
+        }
+      },
+    };
+    window.__lossPublication = publication;
+    window.__lossTrack = track;
+    room.emit("trackPublished", publication, participant);
+    room.emit(
+      "dataReceived",
+      new TextEncoder().encode(JSON.stringify(announcement)),
+      participant,
+      "reliable",
+      "astraldeep.voice.announcement.v1",
+    );
+  }, {
+    announcement: manifest,
+    fault: audioFault,
+    missingTrack: missingMediaTrack,
+    publishedTrackName: publicationTrackName,
+    shouldSubscribe: subscribe,
+    shouldThrow: subscribeThrows,
+    workerIdentity: WORKER_IDENTITY,
+  });
+}
+
+
+async function expectResultSpeechFailure(page) {
+  const notice = page.locator("#astral-voice-turn-notice");
+  await expect(notice).toBeVisible({ timeout: 3000 });
+  await expect(notice).toHaveAttribute("data-state", "speech_error");
+  await expect(page.locator("#astral-voice-turn-notice-title")).toHaveText(
+    "Speech playback failed.",
+  );
+  await expect(page.locator("#astral-voice-turn-notice-message")).toHaveText(
+    "The result audio could not be delivered.",
+  );
+  await expect(page.locator("#astral-voice-turn-notice-guidance")).toHaveText(
+    "The text result is still available in the conversation. Typed chat remains available.",
+  );
 }
 
 
@@ -1517,6 +1639,103 @@ test("server speech_error preserves its detail while identifying possible text o
 });
 
 
+test("failed recap outcome is a turn-scoped alert without changing session lifecycle", async ({ page }) => {
+  await installHarness(page);
+  const scope = await startReadyVoice(page);
+  const notice = page.locator("#astral-voice-turn-notice");
+  const title = page.locator("#astral-voice-turn-notice-title");
+  const detail = page.locator("#astral-voice-turn-notice-message");
+  const guidance = page.locator("#astral-voice-turn-notice-guidance");
+
+  await receive(page, turnState(scope, "succeeded", {
+    message: "Request completed. The text result is available in the conversation.",
+    speechOutcome: "failed",
+    occurredAt: "2026-07-31T12:00:02Z",
+  }));
+  await expect(notice).toBeVisible();
+  await expect(notice).toHaveAttribute("data-state", "speech_error");
+  await expect(title).toHaveText("Speech playback failed.");
+  await expect(detail).toHaveText("The result audio could not be delivered.");
+  await expect(guidance).toHaveText(
+    "The text result is still available in the conversation. Typed chat remains available.",
+  );
+  await expect(page.locator("#astral-input")).toBeEnabled();
+  await expect(page.locator("#astral-voice-feedback")).not.toHaveAttribute("data-state", "error");
+
+  const newerTurn = "99999999-9999-4999-8999-999999999999";
+  await receive(page, turnState(scope, "succeeded", {
+    turnId: newerTurn,
+    sequence: 2,
+    speechOutcome: "source_finished",
+    occurredAt: "2026-07-31T12:00:03Z",
+  }));
+  await expect(notice).toBeHidden();
+
+  await receive(page, turnState(scope, "succeeded", {
+    sequence: 3,
+    speechOutcome: "failed",
+    occurredAt: "2026-07-31T12:00:02Z",
+  }));
+  await expect(notice).toBeHidden();
+
+  for (const [index, outcome] of ["suppressed", undefined].entries()) {
+    await receive(page, turnState(scope, "succeeded", {
+      turnId: `88888888-8888-4888-8888-88888888888${index}`,
+      sequence: index + 4,
+      speechOutcome: outcome,
+      occurredAt: `2026-07-31T12:00:0${index + 4}Z`,
+    }));
+    await expect(notice).toBeHidden();
+  }
+
+  await receive(page, turnState(scope, "succeeded", {
+    turnId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    sequence: 6,
+    speechOutcome: "failed",
+    occurredAt: "2026-07-31T12:00:06Z",
+  }));
+  await expect(notice).toBeVisible();
+
+  await receive(page, turnState(scope, "succeeded", {
+    turnId: "77777777-7777-4777-8777-777777777777",
+    sequence: 7,
+    speechOutcome: "provider_failed",
+    occurredAt: "2026-07-31T12:00:07Z",
+  }));
+  await expect(notice).toBeVisible();
+  await expect(notice).toHaveAttribute("data-state", "speech_error");
+  await expect(detail).toHaveText("The result audio could not be delivered.");
+
+  for (const invalid of [
+    {
+      state: "succeeded",
+      turnId: "66666666-6666-4666-8666-666666666666",
+      sequence: 8,
+      speechOutcome: "toString",
+      occurredAt: "2026-07-31T12:00:08Z",
+    },
+    {
+      state: "processing",
+      turnId: "55555555-5555-4555-8555-555555555555",
+      sequence: 9,
+      speechOutcome: "failed",
+      occurredAt: "2026-07-31T12:00:09Z",
+    },
+    {
+      state: "toString",
+      turnId: "44444444-4444-4444-8444-444444444444",
+      sequence: 10,
+      occurredAt: "2026-07-31T12:00:10Z",
+    },
+  ]) {
+    await receive(page, turnState(scope, invalid.state, invalid));
+    await expect(notice).toBeVisible();
+    await expect(notice).toHaveAttribute("data-state", "speech_error");
+    await expect(detail).toHaveText("The result audio could not be delivered.");
+  }
+});
+
+
 test("out-of-contract terminal message cannot replace the persistent request notice", async ({ page }) => {
   await installHarness(page);
   const scope = await startReadyVoice(page);
@@ -2001,6 +2220,257 @@ test("announcement manifests gate exact serialized PCM playout", async ({ page }
     [second.announcement_id, "started"],
     [second.announcement_id, "finished"],
   ]);
+});
+
+
+test("expired result media raises an exact-turn notice that source completion cannot clear", async ({ page }) => {
+  await installHarness(page);
+  const scope = await startReadyVoice(page);
+  const manifest = resultAnnouncementFrame({
+    trackSid: "TR_result_without_track",
+    trackName: "astraldeep-result-without-track",
+  });
+
+  await page.evaluate(({ announcement, workerIdentity }) => {
+    window.__rooms[0].emit(
+      "dataReceived",
+      new TextEncoder().encode(JSON.stringify(announcement)),
+      { identity: workerIdentity },
+      "reliable",
+      "astraldeep.voice.announcement.v1",
+    );
+  }, { announcement: manifest, workerIdentity: WORKER_IDENTITY });
+
+  const notice = page.locator("#astral-voice-turn-notice");
+  await expectResultSpeechFailure(page);
+
+  await receive(page, turnState(scope, "succeeded", {
+    sequence: 2,
+    speechOutcome: "source_finished",
+    occurredAt: new Date(Date.now() + 1000).toISOString(),
+  }));
+  await expect(notice).toBeVisible();
+  await expect(page.locator("#astral-voice-turn-notice-message")).toHaveText(
+    "The result audio could not be delivered.",
+  );
+  await expect(page.locator("#astral-voice-feedback")).not.toHaveAttribute("data-state", "error");
+});
+
+
+test("expired media from an older result cannot overwrite a newer turn", async ({ page }) => {
+  await installHarness(page);
+  const scope = await startReadyVoice(page);
+  const staleManifest = resultAnnouncementFrame({
+    trackSid: "TR_stale_result_without_track",
+    trackName: "astraldeep-stale-result-without-track",
+  });
+
+  await page.evaluate(({ announcement, workerIdentity }) => {
+    window.__rooms[0].emit(
+      "dataReceived",
+      new TextEncoder().encode(JSON.stringify(announcement)),
+      { identity: workerIdentity },
+      "reliable",
+      "astraldeep.voice.announcement.v1",
+    );
+  }, { announcement: staleManifest, workerIdentity: WORKER_IDENTITY });
+
+  await receive(page, turnState(scope, "processing", {
+    turnId: "99999999-9999-4999-8999-999999999999",
+    sequence: 2,
+    occurredAt: new Date(Date.now() + 1000).toISOString(),
+  }));
+  await page.waitForTimeout(1250);
+  await expect(page.locator("#astral-voice-turn-notice")).toBeHidden();
+});
+
+
+test("media expiry does not misclassify greetings or unmatched non-result tracks", async ({ page }) => {
+  await installHarness(page);
+  await startReadyVoice(page);
+  const greeting = {
+    ...announcementFrame({
+      announcementId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      sequence: 1,
+      trackSid: "TR_greeting_without_track",
+      trackName: "astraldeep-greeting-without-track",
+    }),
+    turn_id: null,
+    kind: "greeting",
+  };
+  const progress = {
+    ...announcementFrame({
+      announcementId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      sequence: 2,
+      trackSid: "TR_progress_without_track",
+      trackName: "astraldeep-progress-without-track",
+    }),
+    kind: "progress",
+  };
+
+  await page.evaluate(({ greetingManifest, progressManifest, workerIdentity }) => {
+    const room = window.__rooms[0];
+    const participant = { identity: workerIdentity };
+    const unmatched = {
+      kind: "audio",
+      trackSid: "TR_unmatched_publication",
+      trackName: "astraldeep-unmatched-publication",
+      subscriptions: [],
+      setSubscribed(value) { this.subscriptions.push(value); },
+    };
+    window.__unmatchedVoicePublication = unmatched;
+    room.emit("trackPublished", unmatched, participant);
+    for (const manifest of [greetingManifest, progressManifest]) {
+      room.emit(
+        "dataReceived",
+        new TextEncoder().encode(JSON.stringify(manifest)),
+        participant,
+        "reliable",
+        "astraldeep.voice.announcement.v1",
+      );
+    }
+  }, {
+    greetingManifest: greeting,
+    progressManifest: progress,
+    workerIdentity: WORKER_IDENTITY,
+  });
+
+  await page.waitForTimeout(1250);
+  await expect(page.locator("#astral-voice-turn-notice")).toBeHidden();
+  expect(await page.evaluate(() => window.__unmatchedVoicePublication.subscriptions))
+    .toEqual([false]);
+});
+
+
+test("a result publication that never subscribes reports a turn-scoped speech failure", async ({ page }) => {
+  await installHarness(page);
+  await startReadyVoice(page);
+  const manifest = {
+    ...announcementFrame({
+      announcementId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      sequence: 1,
+      trackSid: "TR_result_never_subscribed",
+      trackName: "astraldeep-result-never-subscribed",
+    }),
+    kind: "result",
+    quantum_role: "result_opening",
+    result_reserved_samples_after: 100,
+  };
+
+  await page.evaluate(({ announcement, workerIdentity }) => {
+    const room = window.__rooms[0];
+    const participant = { identity: workerIdentity };
+    const publication = {
+      kind: "audio",
+      trackSid: announcement.track_sid,
+      trackName: announcement.track_name,
+      subscriptions: [],
+      setSubscribed(value) { this.subscriptions.push(value); },
+    };
+    window.__expiredResultPublication = publication;
+    room.emit("trackPublished", publication, participant);
+    room.emit(
+      "dataReceived",
+      new TextEncoder().encode(JSON.stringify(announcement)),
+      participant,
+      "reliable",
+      "astraldeep.voice.announcement.v1",
+    );
+  }, { announcement: manifest, workerIdentity: WORKER_IDENTITY });
+
+  await expect(page.locator("#astral-voice-turn-notice")).toBeVisible({ timeout: 2500 });
+  await expect(page.locator("#astral-voice-turn-notice")).toHaveAttribute(
+    "data-state", "speech_error",
+  );
+  expect(await page.evaluate(() => window.__expiredResultPublication.subscriptions))
+    .toEqual([false, true, false]);
+});
+
+
+for (const scenario of [
+  {
+    name: "track-name mismatch",
+    options: { publicationTrackName: "astraldeep-wrong-result-name" },
+  },
+  {
+    name: "subscription throw",
+    options: { subscribeThrows: true },
+  },
+  {
+    name: "invalid audio context",
+    options: { audioFault: "invalid_context" },
+  },
+  {
+    name: "missing media track",
+    options: { missingMediaTrack: true },
+  },
+  {
+    name: "media source creation throw",
+    options: { audioFault: "source_create" },
+  },
+  {
+    name: "processor creation throw",
+    options: { audioFault: "processor_create" },
+  },
+  {
+    name: "media source connection throw",
+    options: { audioFault: "source_connect" },
+  },
+  {
+    name: "processor connection throw",
+    options: { audioFault: "processor_connect" },
+  },
+]) {
+  test(`pre-playout result ${scenario.name} reports the exact-turn speech failure`, async ({ page }) => {
+    await installHarness(page);
+    await startReadyVoice(page);
+    await publishResultForLoss(page, resultAnnouncementFrame(), scenario.options);
+    await expectResultSpeechFailure(page);
+    await expect(page.locator("#astral-voice-feedback")).not.toHaveAttribute("data-state", "error");
+  });
+}
+
+
+test("pre-playout progress loss does not claim that result speech failed", async ({ page }) => {
+  await installHarness(page);
+  await startReadyVoice(page);
+  const progress = {
+    ...announcementFrame({
+      announcementId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      sequence: 1,
+      trackSid: "TR_progress_subscribe_failure",
+      trackName: "astraldeep-progress-subscribe-failure",
+    }),
+    kind: "progress",
+  };
+  await publishResultForLoss(page, progress, { subscribeThrows: true });
+  await page.waitForTimeout(1250);
+  await expect(page.locator("#astral-voice-turn-notice")).toBeHidden();
+});
+
+
+test("result interruption before audio starts reports the exact-turn speech failure", async ({ page }) => {
+  await installHarness(page);
+  await startReadyVoice(page);
+  await publishResultForLoss(page, resultAnnouncementFrame());
+  await page.waitForFunction(() => window.__voiceProcessors.length === 1);
+  await page.evaluate(() => {
+    window.__rooms[0].emit(
+      "trackUnsubscribed",
+      window.__lossTrack,
+      window.__lossPublication,
+    );
+  });
+  await expectResultSpeechFailure(page);
+});
+
+
+test("result timeout before audio starts reports the exact-turn speech failure", async ({ page }) => {
+  await installHarness(page);
+  await startReadyVoice(page);
+  await publishResultForLoss(page, resultAnnouncementFrame());
+  await page.waitForFunction(() => window.__voiceProcessors.length === 1);
+  await expectResultSpeechFailure(page);
 });
 
 

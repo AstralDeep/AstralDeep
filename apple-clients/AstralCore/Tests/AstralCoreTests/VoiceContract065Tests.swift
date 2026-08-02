@@ -312,6 +312,29 @@ final class VoiceContract065Tests: XCTestCase {
         XCTAssertNotNil(VoiceTurnState(frame: try XCTUnwrap(frame(.object(root)))))
     }
 
+    func testVoiceTurnSpeechOutcomeIsOptionalBoundedAndSuccessOnly() throws {
+        let fixture = try Fixture()
+
+        for outcome in VoiceSpeechOutcome.allCases {
+            let turn = try voiceTurn(
+                fixture: fixture, state: "succeeded",
+                speechOutcome: outcome.rawValue)
+            XCTAssertEqual(turn.speechOutcome, outcome)
+        }
+
+        let legacy = try voiceTurn(fixture: fixture, state: "succeeded")
+        XCTAssertNil(legacy.speechOutcome)
+
+        var root = try XCTUnwrap(fixture.positives["C4-P1-en"]?.objectValue)
+        root["state"] = .string("succeeded")
+        root["speech_outcome"] = .string("provider_detail")
+        XCTAssertNil(VoiceTurnState(frame: try XCTUnwrap(frame(.object(root)))))
+
+        root["state"] = .string("processing")
+        root["speech_outcome"] = .string("failed")
+        XCTAssertNil(VoiceTurnState(frame: try XCTUnwrap(frame(.object(root)))))
+    }
+
     func testTerminalTurnNoticeUsesExplicitNonColorWordingAndPreservesServerMessage() throws {
         let fixture = try Fixture()
         let expectedTitles = [
@@ -394,6 +417,43 @@ final class VoiceContract065Tests: XCTestCase {
         XCTAssertTrue(notice.displayText.contains("text result may still be available"))
         XCTAssertFalse(notice.displayText.localizedCaseInsensitiveContains("request failed"))
         XCTAssertFalse(notice.displayText.contains("Request did not complete"))
+    }
+
+    func testSucceededSpeechFailureUsesExactTurnAndCommittedTextGuidance() throws {
+        let fixture = try Fixture()
+        let failedTurn = try voiceTurn(
+            fixture: fixture, state: "succeeded",
+            message: "The result audio could not be delivered.",
+            occurredAt: "2026-07-31T12:05:00Z", speechOutcome: "failed")
+        let notice = try XCTUnwrap(
+            VoiceTerminalNoticeReducer.reduce(current: nil, turn: failedTurn))
+
+        XCTAssertEqual(notice.kind, .speechFailure)
+        XCTAssertEqual(notice.turnId, failedTurn.turnId)
+        XCTAssertEqual(notice.occurredAt, failedTurn.occurredAt)
+        XCTAssertEqual(notice.serverMessage, "The result audio could not be delivered.")
+        XCTAssertTrue(notice.displayText.contains("text result is still available"))
+        XCTAssertFalse(notice.displayText.localizedCaseInsensitiveContains("request failed"))
+
+        for outcome in [nil, "source_finished", "suppressed"] as [String?] {
+            let successfulTurn = try voiceTurn(
+                fixture: fixture, state: "succeeded", speechOutcome: outcome)
+            XCTAssertNil(
+                VoiceTerminalNoticeReducer.reduce(current: nil, turn: successfulTurn),
+                "\(outcome ?? "absent") must remain a normal successful result")
+        }
+
+        let newerFailedTurn = try voiceTurn(
+            fixture: fixture, state: "succeeded",
+            turnId: "00000000-0000-4000-8000-000000000205",
+            occurredAt: "2026-07-31T12:05:01Z", speechOutcome: "failed")
+        let newerNotice = try XCTUnwrap(
+            VoiceTerminalNoticeReducer.reduce(current: notice, turn: newerFailedTurn))
+        XCTAssertEqual(newerNotice.turnId, newerFailedTurn.turnId)
+        XCTAssertEqual(
+            VoiceTerminalNoticeReducer.reduce(current: newerNotice, turn: failedTurn),
+            newerNotice,
+            "an older different-turn speech error cannot replace the newer notice")
     }
 
     func testSubmissionRejectionNoticePreservesMessageAndRequiresExplicitRetry() throws {
@@ -501,7 +561,8 @@ final class VoiceContract065Tests: XCTestCase {
         turnId: String = "00000000-0000-4000-8000-000000000105",
         sequence: Int = 1,
         message: String? = nil,
-        occurredAt: String? = nil
+        occurredAt: String? = nil,
+        speechOutcome: String? = nil
     ) throws -> VoiceTurnState {
         var root = try XCTUnwrap(fixture.positives["C4-P1-en"]?.objectValue)
         root["state"] = .string(state)
@@ -513,6 +574,11 @@ final class VoiceContract065Tests: XCTestCase {
             root.removeValue(forKey: "message")
         }
         if let occurredAt { root["occurred_at"] = .string(occurredAt) }
+        if let speechOutcome {
+            root["speech_outcome"] = .string(speechOutcome)
+        } else {
+            root.removeValue(forKey: "speech_outcome")
+        }
         return try XCTUnwrap(
             VoiceTurnState(frame: try XCTUnwrap(frame(.object(root)))))
     }

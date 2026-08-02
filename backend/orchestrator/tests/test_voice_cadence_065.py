@@ -434,8 +434,6 @@ def test_wait_mute_terminal_and_progress_preemption_cancel_stale_audio() -> None
     assert progress is not None and progress.kind == "progress"
     scheduler.start(progress)
     assert scheduler.set_lifecycle(TURN_1, "succeeded") is True
-    assert scheduler.next_decision() is None
-    fake.advance(HANDOFF_BUDGET_SECONDS)
     terminal = scheduler.next_decision()
     assert terminal is not None and terminal.kind == "result"
 
@@ -461,12 +459,9 @@ def test_two_turn_arbitration_is_serial_and_preserves_positive_handoff_budget() 
     assert scheduler.next_decision() is None
     fake.advance(4)
     scheduler.finish(first, _completion(first, fake))
-    fake.advance(HANDOFF_BUDGET_SECONDS - 0.001)
-    assert scheduler.next_decision() is None
-    fake.advance(0.001)
     second = scheduler.next_decision()
     assert second is not None and second.turn_id != first.turn_id
-    assert fake.mono - 100.0 == pytest.approx(18.25)
+    assert fake.mono - 100.0 == pytest.approx(18.0)
     assert fake.mono <= second.latest_start_monotonic
 
     scheduler.start(second)
@@ -912,7 +907,7 @@ def test_client_playout_rate_is_eight_per_second_and_watch_range_is_exact() -> N
         tracker.record_manifest(_manifest(watch, last_media_sequence=24_100))
 
 
-def test_scheduler_fails_honestly_after_hard_deadline_or_handoff_overrun() -> None:
+def test_scheduler_fails_honestly_after_hard_deadline() -> None:
     fake = FakeClock()
     scheduler = SpeechCadenceScheduler(_clock(fake))
     _add_turn(scheduler, TURN_1, sequence=1, next_due_at=NOW)
@@ -920,6 +915,24 @@ def test_scheduler_fails_honestly_after_hard_deadline_or_handoff_overrun() -> No
     with pytest.raises(VoiceCoordinatorError, match="cadence_deadline_exceeded"):
         scheduler.next_decision()
 
+
+def test_scheduler_starts_due_handoff_without_consuming_its_latency_budget() -> None:
+    fake = FakeClock()
+    scheduler = SpeechCadenceScheduler(_clock(fake))
+    _add_turn(scheduler, TURN_1, sequence=1, next_due_at=NOW)
+    _add_turn(scheduler, TURN_2, sequence=1, next_due_at=NOW)
+    first = scheduler.next_decision()
+    assert first is not None
+    scheduler.start(first)
+    fake.advance(4)
+    scheduler.finish(first, _completion(first, fake))
+    second = scheduler.next_decision()
+    assert second is not None
+    assert second.turn_id != first.turn_id
+    assert fake.mono <= second.latest_start_monotonic
+
+
+def test_scheduler_fails_when_due_handoff_exceeds_its_latency_budget() -> None:
     fake = FakeClock()
     scheduler = SpeechCadenceScheduler(_clock(fake))
     _add_turn(scheduler, TURN_1, sequence=1, next_due_at=NOW)
@@ -931,6 +944,41 @@ def test_scheduler_fails_honestly_after_hard_deadline_or_handoff_overrun() -> No
     scheduler.finish(first, _completion(first, fake))
     fake.advance(HANDOFF_BUDGET_SECONDS + 0.001)
     with pytest.raises(VoiceCoordinatorError, match="stream_handoff_budget_exceeded"):
+        scheduler.next_decision()
+
+
+def test_scheduler_rechecks_handoff_budget_when_an_offered_stream_starts() -> None:
+    fake = FakeClock()
+    scheduler = SpeechCadenceScheduler(_clock(fake))
+    _add_turn(scheduler, TURN_1, sequence=1, next_due_at=NOW)
+    _add_turn(scheduler, TURN_2, sequence=1, next_due_at=NOW)
+    first = scheduler.next_decision()
+    assert first is not None
+    scheduler.start(first)
+    fake.advance(4)
+    scheduler.finish(first, _completion(first, fake))
+    second = scheduler.next_decision()
+    assert second is not None and second.turn_id != first.turn_id
+
+    # Reservation/preparation occurs between offer and start in the runner;
+    # it cannot silently consume the stream-switch budget.
+    fake.advance(HANDOFF_BUDGET_SECONDS + 0.001)
+    with pytest.raises(VoiceCoordinatorError, match="stream_handoff_budget_exceeded"):
+        scheduler.start(second)
+
+
+def test_scheduler_still_fails_when_handoff_wake_misses_true_hard_deadline() -> None:
+    fake = FakeClock()
+    scheduler = SpeechCadenceScheduler(_clock(fake))
+    _add_turn(scheduler, TURN_1, sequence=1, next_due_at=NOW)
+    _add_turn(scheduler, TURN_2, sequence=1, next_due_at=NOW)
+    first = scheduler.next_decision()
+    assert first is not None
+    scheduler.start(first)
+    fake.advance(4)
+    scheduler.finish(first, _completion(first, fake))
+    fake.advance(2.001)
+    with pytest.raises(VoiceCoordinatorError, match="cadence_deadline_exceeded"):
         scheduler.next_decision()
 
 

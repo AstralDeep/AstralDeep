@@ -92,6 +92,33 @@ class VoiceContract065Test {
     }
 
     @Test
+    fun voiceTurnSpeechOutcomeIsOptionalBoundedAndSuccessOnly() {
+        val base = materialize(requireNotNull(vectorsById["C4-P1-en"])).toMutableMap()
+        base["state"] = JsonPrimitive("succeeded")
+
+        mapOf(
+            "source_finished" to VoiceSpeechOutcome.SOURCE_FINISHED,
+            "failed" to VoiceSpeechOutcome.FAILED,
+            "suppressed" to VoiceSpeechOutcome.SUPPRESSED,
+        ).forEach { (wireValue, expected) ->
+            base["speech_outcome"] = JsonPrimitive(wireValue)
+            val decoded = assertIs<Inbound.VoiceTurnStateFrame>(Wire.decode(JsonObject(base)))
+            assertEquals(expected, decoded.value.speechOutcome)
+        }
+
+        base.remove("speech_outcome")
+        val legacy = assertIs<Inbound.VoiceTurnStateFrame>(Wire.decode(JsonObject(base)))
+        assertNull(legacy.value.speechOutcome)
+
+        base["speech_outcome"] = JsonPrimitive("provider_detail")
+        assertIs<Inbound.Unknown>(Wire.decode(JsonObject(base)))
+
+        base["speech_outcome"] = JsonPrimitive("failed")
+        base["state"] = JsonPrimitive("processing")
+        assertIs<Inbound.Unknown>(Wire.decode(JsonObject(base)))
+    }
+
+    @Test
     fun strictCorrelatedNewChatEncoderMatchesCanonicalC1Vector() {
         val canonical = materialize(requireNotNull(vectorsById["C1-P2-new-chat"]))
         val encoded =
