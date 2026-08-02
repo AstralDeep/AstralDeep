@@ -16,6 +16,11 @@ const CHAT_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_CHAT_ID = "22222222-2222-4222-8222-222222222222";
 const SNAPSHOT_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SNAPSHOT_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const OPERATION_A = "44444444-4444-4444-8444-444444444444";
+const OPERATION_B = "55555555-5555-4555-8555-555555555555";
+const OPERATION_C = "66666666-6666-4666-8666-666666666666";
+const OPERATION_D = "77777777-7777-4777-8777-777777777777";
+const OPERATION_E = "88888888-8888-4888-8888-888888888888";
 const COMMITTED_AT = "2026-07-16T12:00:00Z";
 const ADMISSION_REFUSAL_CODES = [
   "capacity_exceeded",
@@ -214,6 +219,31 @@ function snapshot(scope, overrides = {}) {
 }
 
 
+function operationStatus(scope, operationId, sequence, state, overrides = {}) {
+  const terminal = ["completed", "failed", "cancelled", "retryable"].includes(state);
+  const isError = ["failed", "cancelled", "retryable"].includes(state);
+  return {
+    type: "operation_status",
+    operation_id: operationId,
+    action: "chat_message",
+    surface: "chat",
+    chat_id: CHAT_ID,
+    connection_generation: scope.connection_generation,
+    request_generation: scope.request_generation || scope.resume.request_generation,
+    sequence,
+    state,
+    phase: state,
+    label: state === "completed" ? "Completed" : `Active ${operationId.slice(0, 1)}`,
+    terminal,
+    retryable: state === "retryable",
+    error: isError ? { code: "operation_failed", message: "Visible terminal failure" } : null,
+    retry_after_ms: state === "retryable" ? 500 : null,
+    updated_at: `2026-07-16T12:00:0${sequence}Z`,
+    ...overrides,
+  };
+}
+
+
 test("locator is present before registration and equal hydration replaces atomically", async ({ page }) => {
   await installHarness(page);
   const event = await registration(page);
@@ -234,6 +264,181 @@ test("locator is present before registration and equal hydration replaces atomic
   await expect(page.locator("#astral-chat #old-transcript")).toHaveCount(0);
   await expect(page.locator("#astral-canvas")).toContainText("ROTE-adapted canvas");
   await expect(page.locator("#astral-canvas #old-canvas")).toHaveCount(0);
+
+  // The bounded legacy acknowledgement may race behind the authoritative
+  // snapshot. It must not resurrect a completed hydration indicator.
+  await receive(page, {type: "chat_loaded", chat: {id: CHAT_ID}});
+  await expect(page.locator("#astral-status")).toHaveText("");
+  await expect(page.locator("#astral-status")).toHaveAttribute("aria-busy", "false");
+});
+
+
+test("operation status is visible only while active and terminal failures stay settled", async ({ page }) => {
+  await installHarness(page);
+  const { frame: scope } = await registration(page);
+  const status = page.locator("#astral-status");
+
+  const bootstrap = await page.evaluate(() => window.__socketEvents.find((candidate) => (
+    candidate.frame.type === "ui_event" && candidate.frame.action === "get_history"
+  )).frame);
+  // Startup metadata is protocol-visible but never presented as user work.
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+  await receive(page, operationStatus({
+    connection_generation: scope.connection_generation,
+    request_generation: bootstrap.request_generation,
+  }, OPERATION_D, 0, "accepted", {
+    action: "get_history",
+    surface: "history",
+    chat_id: null,
+  }));
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+  await receive(page, operationStatus({
+    connection_generation: scope.connection_generation,
+    request_generation: bootstrap.request_generation,
+  }, OPERATION_D, 1, "completed", {
+    action: "get_history",
+    surface: "history",
+    chat_id: null,
+  }));
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+
+  await receive(page, operationStatus(scope, OPERATION_A, 0, "accepted", {
+    label: "Preparing first operation…",
+  }));
+  await receive(page, operationStatus(scope, OPERATION_B, 0, "running", {
+    label: "Working on second operation…",
+  }));
+  await expect(status).toHaveText("Working on second operation…");
+  await expect(status).toHaveAttribute("aria-busy", "true");
+
+  // Content commit is not a terminal operation and cannot clear progress.
+  await receive(page, snapshot(scope));
+  await expect(status).toHaveText("Working on second operation…");
+  await expect(status).toHaveAttribute("aria-busy", "true");
+
+  // Completing the visible operation restores another genuinely active one;
+  // the terminal success label itself is never rendered.
+  await receive(page, operationStatus(scope, OPERATION_B, 1, "completed"));
+  await expect(status).toHaveText("Preparing first operation…");
+  await expect(status).toHaveAttribute("aria-busy", "true");
+
+  await receive(page, operationStatus(scope, OPERATION_C, 0, "failed"));
+  await expect(status).toHaveText("Visible terminal failure");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+
+  // A late generic chat terminal cannot erase another operation's error.
+  await receive(page, {
+    type: "chat_status",
+    status: "done",
+    chat_id: CHAT_ID,
+    connection_generation: scope.connection_generation,
+    request_generation: scope.request_generation,
+  });
+  await expect(status).toHaveText("Visible terminal failure");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+
+  // A different success cannot erase the failure notice.
+  await receive(page, operationStatus(scope, OPERATION_A, 1, "completed"));
+  await expect(status).toHaveText("Visible terminal failure");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+
+  // A new explicit request owns the line and its success returns it to idle.
+  await page.locator("#astral-input").fill("Next request");
+  await page.locator("#astral-form").evaluate((form) => form.requestSubmit());
+  const nextScope = await page.evaluate(() => {
+    const event = window.__socketEvents.findLast((candidate) => (
+      candidate.frame.type === "ui_event" && candidate.frame.action === "chat_message"
+    ));
+    return {
+      connection_generation: event.frame.connection_generation,
+      request_generation: event.frame.request_generation,
+    };
+  });
+  await expect(status).toHaveText("Submitting…");
+  await expect(status).toHaveAttribute("aria-busy", "true");
+  await receive(page, operationStatus(nextScope, OPERATION_E, 0, "completed"));
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+  await expect(status).toHaveAttribute("data-status-state", "idle");
+
+  await receive(page, {
+    type: "chat_status",
+    status: "thinking",
+    chat_id: CHAT_ID,
+    connection_generation: nextScope.connection_generation,
+    request_generation: nextScope.request_generation,
+  });
+  await expect(status).toHaveText("Thinking…");
+  await expect(status).toHaveAttribute("aria-busy", "true");
+  await receive(page, {
+    type: "chat_status",
+    status: "done",
+    chat_id: CHAT_ID,
+    connection_generation: nextScope.connection_generation,
+    request_generation: nextScope.request_generation,
+  });
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+});
+
+
+test("accepted completion restores a newer unacknowledged local submission", async ({ page }) => {
+  await installHarness(page);
+  const { frame: registrationFrame } = await registration(page);
+  const status = page.locator("#astral-status");
+
+  await page.locator("#astral-newchat-btn").click();
+  const first = await page.evaluate(() => window.__socketEvents.findLast((candidate) => (
+    candidate.frame.type === "ui_event" && candidate.frame.action === "new_chat"
+  )).frame);
+  const firstScope = {
+    connection_generation: registrationFrame.connection_generation,
+    request_generation: first.request_generation,
+  };
+  await receive(page, operationStatus(firstScope, OPERATION_A, 0, "accepted", {
+    action: "new_chat",
+    surface: "operation",
+    chat_id: null,
+    label: "Starting first operation…",
+  }));
+  await expect(status).toHaveText("Starting first operation…");
+
+  await page.locator("#astral-newchat-btn").click();
+  const second = await page.evaluate(() => window.__socketEvents.findLast((candidate) => (
+    candidate.frame.type === "ui_event" && candidate.frame.action === "new_chat"
+  )).frame);
+  await expect(status).toHaveText("Submitting…");
+
+  // A late update from the first operation can temporarily own the line.
+  await receive(page, operationStatus(firstScope, OPERATION_A, 1, "running", {
+    action: "new_chat",
+    surface: "operation",
+    chat_id: null,
+    label: "Finishing first operation…",
+  }));
+  await expect(status).toHaveText("Finishing first operation…");
+
+  await receive(page, operationStatus(firstScope, OPERATION_A, 2, "completed", {
+    action: "new_chat",
+    surface: "operation",
+    chat_id: null,
+  }));
+  await expect(status).toHaveText("Submitting…");
+  await expect(status).toHaveAttribute("aria-busy", "true");
+
+  await receive(page, operationStatus({
+    connection_generation: registrationFrame.connection_generation,
+    request_generation: second.request_generation,
+  }, OPERATION_B, 0, "completed", {
+    action: "new_chat",
+    surface: "operation",
+    chat_id: null,
+  }));
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-busy", "false");
 });
 
 

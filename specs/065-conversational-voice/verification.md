@@ -389,3 +389,44 @@ the CI-only transitive `brace-expansion` 5.0.7 package. The lockfile was advance
 semver range to 5.0.9; no direct or runtime dependency changed. A clean install with the pinned
 Node/npm image then reported zero vulnerabilities for both the complete and production-only trees,
 and the package-manager, product-isolation, and ESLint gates passed.
+
+## Idle and terminal-status presentation regression
+
+The cross-client status projection now distinguishes retained reconciliation state from visible
+activity. Canonical successful terminal operation records remain available to reconnect and
+concurrency logic, but initial load, hydration, and successful completion no longer render a
+`Completed` label or busy indicator. Only local submission and canonical nonterminal states render
+working chrome. Terminal failures remain prominent and explicitly non-busy, and a terminal update
+owned by one operation cannot clear a different operation that is still active.
+
+Source-level and simulator gates for this repair passed on the current tree:
+
+- backend web contracts: 30/30;
+- browser continuity contract: 17/17, with ESLint clean;
+- Windows offscreen suite: 711 passed and 6 skipped;
+- Android focused status suite plus full client gates, including 247/247 app unit tests, lint,
+  coverage verification, and debug assembly;
+- AstralCore: 168/168;
+- macOS/iOS status lifecycle and full macOS app-unit and Watch-unit suites passed;
+- unsigned iOS, macOS, and watchOS builds and strict recursive Swift formatting; and
+- full-repository Ruff plus `git diff --check`.
+
+The final ownership audit additionally proved that connection bootstrap metadata never claims user
+work, snapshots cannot act as operation terminals, late chat-terminal frames cannot erase a
+different active operation or settled error, and completion restores a newer local submission even
+when that submission has not received its first canonical status yet. The backend source was
+resynced into the running container after the final web ownership change;
+`/readyz` returned `status=ok`, `db=ok`, and ten agents. In the signed-in browser, first load was
+blank and non-busy, a harmless request transitioned through `Thinking…` and `Working…` with
+`aria-busy=true`, and its terminal upstream failure remained visibly actionable with
+`aria-busy=false`; no `Completed` residue appeared. The rebuilt signed-in Android APK opened to the
+welcome state with only `Voice is available.` and no spinner or terminal-success text. The current
+rebuilt macOS and iOS applications reached their SSO boundaries, and the paired Watch therefore
+remained unauthenticated; those visible authenticated checks require the user-owned sign-in and are
+not claimed here. Windows-native and physical-device visual evidence remain unavailable on this
+Mac host.
+
+An additional broad macOS scheme run that included the UI-test target was interrupted after Xcode
+repeatedly failed to materialize its UI runner with `DebuggerVersionStore` / `no debugger version`;
+the current application build, focused macOS and iOS lifecycle tests, complete macOS app-unit
+suite, and complete Watch-unit suite all passed independently.

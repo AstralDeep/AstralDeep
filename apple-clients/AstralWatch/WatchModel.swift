@@ -47,6 +47,9 @@ final class WatchModel {
     var transientEntries: [Entry] = []
     var transientCanvas: [AstralComponent]?
     var statusText: String?
+    /// Separates live progress from informational/error notices so the watch
+    /// never presents a terminal message with an indeterminate spinner.
+    var statusShowsActivity = false
     var errorBanner: String?
     var connected = false
     var accountName = ""
@@ -71,7 +74,14 @@ final class WatchModel {
     }
     var rootStatusText: String? {
         if let statusText, !statusText.isEmpty { return statusText }
-        if let operation = operationStatuses.values.max(by: {
+        var pendingGenerations = pendingChatRequestGenerations.union(
+            pendingSurfaceRequestGenerations)
+        if let currentRequest = continuity.requestGeneration {
+            pendingGenerations.insert(currentRequest)
+        }
+        if let operation = operationStatuses.values.filter({
+            !$0.terminal && pendingGenerations.contains($0.requestGeneration)
+        }).max(by: {
             ($0.updatedAt, $0.sequence) < ($1.updatedAt, $1.sequence)
         }) {
             return operation.error.objectValue?["message"]?.stringValue ?? operation.label
@@ -588,6 +598,8 @@ final class WatchModel {
         case .disconnected:
             connected = false
             clearPendingOperationSubmissions()
+            statusText = nil
+            statusShowsActivity = false
             transientEntries = []
             transientCanvas = nil
             voiceControlBinding = nil
@@ -606,6 +618,7 @@ final class WatchModel {
             localOperationSubmissions.removeValue(forKey: replay.identity.submissionId)
             if localOperationSubmissions.isEmpty && statusText == "Submitting…" {
                 statusText = nil
+                statusShowsActivity = false
             }
             errorBanner = "Not sent: \(replay.action) (\(reason))"
         case .sendRejected(let action):
@@ -665,6 +678,7 @@ final class WatchModel {
                 canvas = comps
             }
             statusText = nil
+            statusShowsActivity = false
             speakLegacy(frame.speech)
         case "ui_upsert":
             let ops = frame.upsertOps
@@ -678,9 +692,15 @@ final class WatchModel {
         case "ui_stream_data":
             if let text = frame.streamComponents.first?.textContent {
                 statusText = text
+                statusShowsActivity = true
             }
-        case "chat_status", "chat_step":
+        case "chat_status":
             statusText = frame.statusText
+            statusShowsActivity = ["thinking", "executing", "fixing", "processing_async"]
+                .contains(frame.payload["status"]?.stringValue)
+        case "chat_step":
+            statusText = frame.statusText
+            statusShowsActivity = frame.payload["step"]?["status"]?.stringValue == "in_progress"
         case "operation_status":
             reduceOperationStatus(frame)
         case "agent_lifecycle":
@@ -689,6 +709,7 @@ final class WatchModel {
             consumeVoiceMessageAcknowledgement(frame)
             if let chatId = nestedChatId(frame) { adoptChat(chatId) }
             statusText = "Thinking…"
+            statusShowsActivity = true
         case "chat_created":
             if consumeVoiceChatCreated(frame) { return }
             // Adopt the server-issued chat id; the transcript the user is
@@ -706,6 +727,7 @@ final class WatchModel {
         case "stream_error":
             errorBanner = frame.errorMessage
             statusText = nil
+            statusShowsActivity = false
             transientEntries = []
             transientCanvas = nil
             let code = frame.payload["code"]?.stringValue
@@ -724,10 +746,11 @@ final class WatchModel {
             let message = titled.isEmpty ? (frame.payload["message"]?.stringValue ?? "") : titled
             guard !message.isEmpty else { return }
             statusText = message
+            statusShowsActivity = false
             speakLegacy(AstralSpeech(ssml: "", text: message))
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
-                guard let self, self.statusText == message else { return }
+                guard let self, self.statusText == message, !self.statusShowsActivity else { return }
                 self.statusText = nil  // brief: clear unless something replaced it
             }
         case "auth_required":
@@ -748,14 +771,36 @@ final class WatchModel {
                 pendingSurfaceRequestGenerations: pendingSurfaceRequestGenerations)
         else { return }
         operationStatuses = statusLifecycle.operations
-        statusText = status.error.objectValue?["message"]?.stringValue ?? status.label
         if status.terminal {
             clearLocalOperationSubmission(requestGeneration: status.requestGeneration)
+            if let message = status.error.objectValue?["message"]?.stringValue {
+                errorBanner = message
+                transientEntries = []
+                transientCanvas = nil
+            }
+            statusText = latestActiveOperationStatusText()
+            statusShowsActivity = statusText != nil
+        } else {
+            statusText = status.label
+            statusShowsActivity = true
         }
-        if status.terminal && ["failed", "cancelled", "retryable"].contains(status.state) {
-            transientEntries = []
-            transientCanvas = nil
+    }
+
+    private func latestActiveOperationStatusText() -> String? {
+        var pendingGenerations = pendingChatRequestGenerations.union(
+            pendingSurfaceRequestGenerations)
+        if let currentRequest = continuity.requestGeneration {
+            pendingGenerations.insert(currentRequest)
         }
+        let active = operationStatuses.values.filter {
+            !$0.terminal && pendingGenerations.contains($0.requestGeneration)
+        }.max {
+            ($0.updatedAt, $0.sequence) < ($1.updatedAt, $1.sequence)
+        }
+        if let active {
+            return active.label
+        }
+        return localOperationSubmissions.isEmpty ? nil : "Submitting…"
     }
 
     private func reduceAgentLifecycle(_ frame: InboundFrame) {
@@ -765,6 +810,7 @@ final class WatchModel {
         agentLifecycles = statusLifecycle.agents
         let message = "\(lifecycle.agentId): \(lifecycle.label)"
         statusText = message
+        statusShowsActivity = false
         if lifecycle.state == "failed" {
             errorBanner = message
         }
@@ -775,7 +821,8 @@ final class WatchModel {
         guard let refusal = AdmissionRefusal(frame: frame),
             localOperationSubmissions.removeValue(forKey: refusal.submissionId) != nil
         else { return false }
-        statusText = refusal.message
+        statusText = latestActiveOperationStatusText()
+        statusShowsActivity = statusText != nil
         errorBanner = refusal.message
         return true
     }
@@ -816,6 +863,7 @@ final class WatchModel {
         transientEntries = []
         transientCanvas = nil
         statusText = nil
+        statusShowsActivity = false
         pendingCommitRequestGeneration = nil
     }
 
@@ -975,6 +1023,7 @@ final class WatchModel {
         }
         entries = loaded
         statusText = nil
+        statusShowsActivity = false
     }
 
     // MARK: US4 — conversation
@@ -990,6 +1039,7 @@ final class WatchModel {
         transientCanvas = nil
         activeChatId = nil
         statusText = nil
+        statusShowsActivity = false
         errorBanner = nil
         pendingCommitRequestGeneration = nil
         seqState.removeAll()
@@ -1011,6 +1061,7 @@ final class WatchModel {
         else { return }
         localOperationSubmissions[submission.submissionId] = submission
         statusText = submission.label
+        statusShowsActivity = true
     }
 
     /// Restore the exact client identity and current connection fence before
@@ -1042,6 +1093,7 @@ final class WatchModel {
         else { return false }
         localOperationSubmissions[submission.submissionId] = submission
         statusText = submission.label
+        statusShowsActivity = true
         return true
     }
 
@@ -1054,7 +1106,10 @@ final class WatchModel {
     private func clearPendingOperationSubmissions() {
         let wasSubmitting = statusText == "Submitting…"
         localOperationSubmissions.removeAll()
-        if wasSubmitting { statusText = nil }
+        if wasSubmitting {
+            statusText = nil
+            statusShowsActivity = false
+        }
     }
 
     private func rawSend(_ frame: String) {

@@ -233,6 +233,24 @@ final class AppModel: NSObject {
     var isViewingHistory: Bool { viewingIndex != nil }
     var showSkeleton: Bool { pendingReplace && !liveOpsThisTurn && viewingIndex == nil }
     var mutationsLocked: Bool { timelineReadOnly }
+    /// `statusText` also carries occasional non-progress notices.  Views must
+    /// only pair it with an indeterminate indicator while a locally correlated
+    /// operation or chat turn is genuinely still active.
+    var statusShowsActivity: Bool {
+        guard statusText != nil else { return false }
+        if localOperationSubmissions.values.contains(where: localSubmissionShowsActivity) {
+            return true
+        }
+        var pendingGenerations = pendingChatRequestGenerations.union(
+            pendingSurfaceRequestGenerations)
+        if let currentRequest = continuity.requestGeneration {
+            pendingGenerations.insert(currentRequest)
+        }
+        let acceptedOperationIsActive = operationStatuses.values.contains {
+            !$0.terminal && pendingGenerations.contains($0.requestGeneration)
+        }
+        return acceptedOperationIsActive || turnActive || asyncDetached
+    }
 
     // MARK: session plumbing (never read by views — not observation-tracked)
 
@@ -776,13 +794,16 @@ final class AppModel: NSObject {
             agentsLoading = false
             historyLoading = false
             auditLoading = false
+            statusText = nil
         case .sendDropped(let total):
             bannerIsError = true
             errorBanner = "Not sent while offline (queue full: \(total) dropped)"
         case .queuedOperationDropped(let replay, let reason):
             localOperationSubmissions.removeValue(forKey: replay.identity.submissionId)
-            if localOperationSubmissions.isEmpty && statusText == "Submitting…" {
-                statusText = nil
+            if statusText == "Submitting…" {
+                statusText =
+                    localOperationSubmissions.values.contains(
+                        where: localSubmissionShowsActivity) ? "Submitting…" : nil
             }
             bannerIsError = true
             errorBanner = "Not sent while offline: \(replay.action) (\(reason))"
@@ -1042,14 +1063,45 @@ final class AppModel: NSObject {
                 pendingSurfaceRequestGenerations: pendingSurfaceRequestGenerations)
         else { return }
         operationStatuses = statusLifecycle.operations
-        statusText = status.error.objectValue?["message"]?.stringValue ?? status.label
         if status.terminal {
+            let ownsActiveChatTurn = operationOwnsActiveChatTurn(
+                action: status.action,
+                requestGeneration: status.requestGeneration)
             clearLocalOperationSubmission(requestGeneration: status.requestGeneration)
+            if ownsActiveChatTurn {
+                settleActiveChatTurn(requestGeneration: status.requestGeneration)
+            }
+            if let message = status.error.objectValue?["message"]?.stringValue {
+                bannerIsError = true
+                errorBanner = message
+                transientTurns = []
+                transientCanvas = nil
+            }
+            // A terminal success is historical evidence, not live progress.
+            // If another correlated operation is still active, project that
+            // operation; otherwise remove the status row altogether.
+            statusText = latestActiveOperationStatusText()
+        } else {
+            statusText = status.label
         }
-        if status.terminal && ["failed", "cancelled", "retryable"].contains(status.state) {
-            transientTurns = []
-            transientCanvas = nil
+    }
+
+    private func latestActiveOperationStatusText() -> String? {
+        var pendingGenerations = pendingChatRequestGenerations.union(
+            pendingSurfaceRequestGenerations)
+        if let currentRequest = continuity.requestGeneration {
+            pendingGenerations.insert(currentRequest)
         }
+        let active = operationStatuses.values.filter {
+            !$0.terminal && pendingGenerations.contains($0.requestGeneration)
+        }.max {
+            ($0.updatedAt, $0.sequence) < ($1.updatedAt, $1.sequence)
+        }
+        if let active {
+            return active.label
+        }
+        return localOperationSubmissions.values.contains(where: localSubmissionShowsActivity)
+            ? "Submitting…" : nil
     }
 
     private func reduceAgentLifecycle(_ frame: InboundFrame) {
@@ -1064,10 +1116,16 @@ final class AppModel: NSObject {
     @discardableResult
     private func reduceAdmissionRefusal(_ frame: InboundFrame) -> Bool {
         guard let refusal = AdmissionRefusal(frame: frame),
-            localOperationSubmissions.removeValue(forKey: refusal.submissionId) != nil
+            let submission = localOperationSubmissions.removeValue(forKey: refusal.submissionId)
         else { return false }
-        statusText = refusal.message
-        bannerIsError = !refusal.retryable
+        if operationOwnsActiveChatTurn(
+            action: submission.action,
+            requestGeneration: submission.requestGeneration)
+        {
+            settleActiveChatTurn(requestGeneration: submission.requestGeneration)
+        }
+        statusText = latestActiveOperationStatusText()
+        bannerIsError = true
         errorBanner = refusal.message
         return true
     }
@@ -1645,6 +1703,11 @@ final class AppModel: NSObject {
                 pendingReplace = false
                 liveOpsThisTurn = false
             }
+        case "idle":
+            turnActive = false
+            statusText = nil
+            stepTrail = []
+            asyncDetached = false
         case "thinking", "executing", "fixing", "processing_async":
             turnActive = true
             statusText = label
@@ -1842,6 +1905,10 @@ final class AppModel: NSObject {
         if exposeStatus { statusText = submission.label }
     }
 
+    private func localSubmissionShowsActivity(_ submission: LocalOperationSubmission) -> Bool {
+        submission.action != "update_device" && submission.action != "chrome_llm_save"
+    }
+
     /// Rebind one exact retained UI event to this connection before its bytes
     /// leave the offline queue.
     @discardableResult
@@ -1870,13 +1937,36 @@ final class AppModel: NSObject {
                 connectionGeneration: connectionGeneration)
         else { return false }
         localOperationSubmissions[submission.submissionId] = submission
-        statusText = submission.label
+        if localSubmissionShowsActivity(submission) { statusText = submission.label }
         return true
     }
 
     private func clearLocalOperationSubmission(requestGeneration: String) {
         localOperationSubmissions = localOperationSubmissions.filter {
             $0.value.requestGeneration != requestGeneration
+        }
+    }
+
+    private func operationOwnsActiveChatTurn(
+        action: String,
+        requestGeneration: String
+    ) -> Bool {
+        action == "chat_message"
+            && (continuity.requestGeneration == requestGeneration
+                || pendingCommitRequestGeneration == requestGeneration)
+    }
+
+    private func settleActiveChatTurn(requestGeneration: String) {
+        turnActive = false
+        pendingReplace = false
+        pendingCanvas = []
+        liveOpsThisTurn = false
+        transientTurns = []
+        transientCanvas = nil
+        stepTrail = []
+        asyncDetached = false
+        if pendingCommitRequestGeneration == requestGeneration {
+            pendingCommitRequestGeneration = nil
         }
     }
 

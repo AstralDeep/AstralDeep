@@ -29,6 +29,8 @@ CHAT = "11111111-1111-4111-8111-111111111111"
 CONNECTION = "22222222-2222-4222-8222-222222222222"
 REQUEST = "33333333-3333-4333-8333-333333333333"
 OPERATION = "44444444-4444-4444-8444-444444444444"
+OPERATION_2 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+OPERATION_3 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 REVISION = "55555555-5555-4555-8555-555555555555"
 RUNTIME = "66666666-6666-4666-8666-666666666666"
 HOST = "77777777-7777-4777-8777-777777777777"
@@ -53,6 +55,7 @@ def operation(
     sequence: int,
     state: str,
     *,
+    operation_id: str = OPERATION,
     request: str = REQUEST,
     action: str = "curated_example",
     chat_id: str | None = CHAT,
@@ -65,7 +68,7 @@ def operation(
         error = {"code": "operation_failed", "message": "Safe failure"}
     return {
         "type": "operation_status",
-        "operation_id": OPERATION,
+        "operation_id": operation_id,
         "action": action,
         "surface": "chat",
         "chat_id": chat_id,
@@ -123,6 +126,151 @@ def test_operation_keeps_highest_sequence_and_first_terminal_visible(window):
     assert retained.state == "failed"
     assert "Safe failure" in window._banner.text()
     assert "Safe failure" in window.topbar._mark.toolTip()
+
+
+def test_success_is_idle_and_restores_a_different_active_operation(window):
+    assert window._banner.text() == ""
+
+    assert window._reduce_operation_status(operation(0, "accepted"))
+    assert window._banner.text() == "Accepted"
+    assert window._operation_banner_operation_id == OPERATION
+
+    assert window._reduce_operation_status(
+        operation(0, "running", operation_id=OPERATION_2)
+    )
+    assert window._banner.text() == "Running"
+    assert window._operation_banner_operation_id == OPERATION_2
+
+    # Completing the visible operation restores the other genuine activity;
+    # "Completed" itself is never projected as a banner or busy state.
+    assert window._reduce_operation_status(
+        operation(1, "completed", operation_id=OPERATION_2)
+    )
+    assert window._banner.text() == "Accepted"
+    assert window._operation_banner_operation_id == OPERATION
+
+    assert window._reduce_operation_status(operation(1, "completed"))
+    assert window._banner.text() == ""
+    assert window._banner.isHidden()
+    assert window.topbar._mark.toolTip() == "Connected"
+    assert window._operation_status_by_id[OPERATION].state == "completed"
+    assert window._operation_status_by_id[OPERATION_2].state == "completed"
+
+
+def test_success_restores_a_newer_unacknowledged_local_submission(window):
+    window.client.connection_generation = CONNECTION
+    window.client._send = lambda _frame: None
+    first = window.client.send_event("curated_example", {})
+
+    assert window._reduce_operation_status(
+        operation(
+            0,
+            "accepted",
+            request=first.request_generation,
+            action="curated_example",
+            chat_id=None,
+        )
+    )
+    second = window.client.send_event("table_paginate", {})
+    assert window._banner.text() == "Submitting…"
+
+    assert window._reduce_operation_status(
+        operation(
+            1,
+            "running",
+            request=first.request_generation,
+            action="curated_example",
+            chat_id=None,
+        )
+    )
+    assert window._banner.text() == "Running"
+    assert window._reduce_operation_status(
+        operation(
+            2,
+            "completed",
+            request=first.request_generation,
+            action="curated_example",
+            chat_id=None,
+        )
+    )
+    assert window._banner.text() == "Submitting…"
+    assert window._operation_banner_request_generation == second.request_generation
+
+    assert window._reduce_operation_status(
+        operation(
+            0,
+            "completed",
+            operation_id=OPERATION_2,
+            request=second.request_generation,
+            action="table_paginate",
+            chat_id=None,
+        )
+    )
+    assert window._banner.text() == ""
+    assert window._banner.isHidden()
+
+
+def test_replayed_success_on_initial_idle_does_not_create_completed_notice(window):
+    assert window._banner.text() == ""
+
+    assert window._reduce_operation_status(operation(0, "completed"))
+
+    assert window._banner.text() == ""
+    assert window._banner.isHidden()
+    assert "Completed" not in window.topbar._mark.toolTip()
+    assert window._operation_status_by_id[OPERATION].state == "completed"
+
+
+def test_startup_metadata_is_retained_without_activity_banner(window):
+    window.client.connection_generation = CONNECTION
+    window.client._send = lambda _frame: None
+
+    local = window.client.send_event("get_history", {})
+
+    assert local.request_generation in window._pending_submissions_by_generation
+    assert window._banner.text() == ""
+    assert window._banner.isHidden()
+    assert window._reduce_operation_status(
+        operation(
+            0,
+            "accepted",
+            request=local.request_generation,
+            action="get_history",
+            chat_id=None,
+        )
+    )
+    assert window._banner.text() == ""
+    assert window._banner.isHidden()
+    assert window._reduce_operation_status(
+        operation(
+            1,
+            "completed",
+            request=local.request_generation,
+            action="get_history",
+            chat_id=None,
+        )
+    )
+    assert local.request_generation not in window._pending_submissions_by_generation
+    assert window._banner.text() == ""
+
+
+def test_terminal_failure_is_settled_and_unrelated_success_cannot_erase_it(window):
+    assert window._reduce_operation_status(
+        operation(0, "running", operation_id=OPERATION_2)
+    )
+    assert window._reduce_operation_status(
+        operation(0, "failed", operation_id=OPERATION_3)
+    )
+    assert window._banner.text() == "Safe failure"
+    assert window._banner_kind == "error"
+    assert window._operation_banner_operation_id is None
+
+    assert window._reduce_operation_status(
+        operation(1, "completed", operation_id=OPERATION_2)
+    )
+    assert window._banner.text() == "Safe failure"
+    assert window._banner_kind == "error"
+    assert window.topbar._mark.toolTip() == "Safe failure"
 
 
 def test_operation_drops_a_stale_request_without_mutating_visible_state(window):

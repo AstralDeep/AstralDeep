@@ -343,9 +343,23 @@ def test_operation_status_reducer_is_scoped_monotonic_and_first_terminal(client_
     assert "current.terminal" in fn
     assert "frame.terminal !== expected[0]" in fn
     assert "frame.retryable !== expected[1]" in fn
-    assert "setStatus((frame.error && frame.error.message) || frame.label, !frame.terminal)" in fn
+    assert 'if (frame.state === "completed")' in fn
+    assert "restoreActiveStatusOrClear([operationOwner, submissionOwner])" in fn
+    assert 'setStatus(visible, false, "operation-error:" + frame.operation_id)' in fn
+    active = _norm(_js_function(client_js, "newestActiveOperationStatus"))
+    assert "candidate.terminal || !scopedStatusMatches(candidate)" in active
+    assert "!operationStatusShowsActivity(candidate)" in active
+    restore = _norm(_js_function(client_js, "restoreActiveStatusOrClear"))
+    assert "newestVisibleLocalSubmission()" in restore
+    assert '"operation-submission:" + local.request_generation' in restore
     block = _norm(_case_block(client_js, "operation_status"))
     assert "reduceOperationStatus(data)" in block
+
+
+def test_late_legacy_chat_loaded_cannot_resurrect_completed_hydration(client_js):
+    block = _norm(_case_block(client_js, "chat_loaded"))
+    assert "requestState && !requestState.snapshotApplied" in block
+    assert '"Restoring conversation…", true, "operation-submission:" + requestState.generation' in block
 
 
 def test_generic_actions_create_local_operation_identity_before_send(client_js):
@@ -355,12 +369,16 @@ def test_generic_actions_create_local_operation_identity_before_send(client_js):
     assert "body.request_generation = requestGeneration" in begin
     assert 'state: "submitting"' in begin
     assert 'label: "Submitting…"' in begin
+    assert "shows_status: exposeStatus !== false" in begin
     assert "operationSubmissionByGeneration[requestGeneration] = local" in begin
     assert "operationSubmissionById[submissionId] = local" in begin
-    assert "setStatus(local.label, true)" in begin
+    assert (
+        'setStatus(local.label, true, "operation-submission:" + requestGeneration)'
+        in begin
+    )
 
     action = _norm(_js_function(client_js, "action"))
-    assert "beginOperationSubmission(name, payload, suppliedGeneration)" in action
+    assert "beginOperationSubmission(name, payload, suppliedGeneration, exposeStatus)" in action
     assert "submission_id: submission.submissionId" in action
     assert "request_generation: submission.requestGeneration" in action
     assert "payload: submission.payload" in action
@@ -368,6 +386,10 @@ def test_generic_actions_create_local_operation_identity_before_send(client_js):
     chat = _norm(_js_function(client_js, "sendChat"))
     assert 'beginOperationSubmission("chat_message", payload, requestState.generation)' in chat
     assert "submission_id: submission.submissionId" in chat
+
+    connect = _norm(_js_function(client_js, "connect"))
+    assert 'action("get_history", {}, false)' in connect
+    assert 'action("watch_task", { task_id: tid }, false)' in connect
 
 
 def test_surface_status_and_refusal_correlate_to_local_submission(client_js):
@@ -379,7 +401,10 @@ def test_surface_status_and_refusal_correlate_to_local_submission(client_js):
     assert "frame.accepted !== false" in refusal
     assert "operationSubmissionById[frame.submission_id]" in refusal
     assert "finishOperationSubmission(local.request_generation)" in refusal
-    assert "setStatus(errorMessage(frame), false)" in refusal
+    assert (
+        'setStatus(errorMessage(frame), false, "operation-error:" + frame.submission_id)'
+        in refusal
+    )
 
     block = _norm(_case_block(client_js, "error"))
     assert "reduceAdmissionRefusal(data)" in block

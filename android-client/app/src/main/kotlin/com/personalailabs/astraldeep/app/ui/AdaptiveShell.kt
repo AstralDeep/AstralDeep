@@ -132,7 +132,7 @@ private fun StackedShell(
             modifier = Modifier.fillMaxWidth().weight(1f),
         )
         if (state.turnActive) StepTrail(state.stepTrail)
-        MessagesPanel(turns = state.visibleTurns, statusText = state.statusText, renderer = renderer)
+        MessagesPanel(turns = state.visibleTurns, statusText = state.workingStatusText, renderer = renderer)
         InputBar(
             staged = state.staged,
             readOnly = state.mutationsLocked,
@@ -207,7 +207,7 @@ private fun CanvasArea(
                 label = state.canvasHistory.getOrNull(state.viewingIndex ?: -1)?.label,
                 onBackToLive = onBackToLive,
             )
-        } else if (state.turnActive && !state.showSkeleton) {
+        } else if (state.hasActiveWork && !state.showSkeleton) {
             WorkingBar()
         }
 

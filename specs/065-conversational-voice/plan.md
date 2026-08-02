@@ -294,6 +294,14 @@ operation and private result commit remain staged. They expose no uncommitted re
 retain every existing authorization/expiry/idempotency rule, and resume the same operation/stage
 after the user's normal response.
 
+Canonical `operation_status` frames remain retained on every client through their first-terminal,
+monotonic reconciliation rules, but retention is separate from presentation. Each client derives its
+working label and indeterminate activity indicator only from accepted scoped nonterminal operations;
+terminal success clears that presentation (including hydration and reconnect replay), while terminal
+failure/refusal/cancellation/retry guidance uses the existing prominent non-busy outcome surface.
+When operations overlap, completing one operation cannot hide another accepted operation that is
+still nonterminal.
+
 One per-user scheduler serializes all assistant audio for at most two active voice turns. It targets
 each next utterance at 14 seconds, pre-synthesizes coincident result openings, cancels stale progress,
 and alternates preemptible attributed chunks. Admission to the stream reserves another equally due

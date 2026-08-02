@@ -46,6 +46,7 @@
   var operationStatusById = Object.create(null);
   var operationSubmissionByGeneration = Object.create(null);
   var operationSubmissionById = Object.create(null);
+  var operationSubmissionOrdinal = 0;
   var agentLifecycleById = Object.create(null);
   var ACCOUNT_SESSION_KEY = "astraldeep.active_chat.account.v1";
   var VOICE_DEVICE_KEY = "astraldeep.voice.device.v1";
@@ -337,6 +338,10 @@
     if (canvasEmpty && !canvasEmpty.parentNode) canvas.insertBefore(canvasEmpty, canvas.firstChild);
   }
   var statusEl = document.getElementById("astral-status");
+  // Identifies the operation/submission that currently owns the shared status
+  // line. A successful terminal frame may clear only its own progress; it
+  // must not erase a different operation or an unrelated persistent notice.
+  var statusOwner = null;
   var input = document.getElementById("astral-input");
   var form = document.getElementById("astral-form");
   var voiceControlsEl = document.getElementById("astral-voice-controls");
@@ -423,10 +428,11 @@
   }
   configureStatusElement(statusEl);
 
-  function setStatus(s, busy) {
+  function setStatus(s, busy, owner) {
     var current = document.getElementById("astral-status");
     if (current !== statusEl) statusEl = configureStatusElement(current);
     if (!statusEl) return;
+    statusOwner = owner || null;
     statusEl.textContent = s || "";
     statusEl.setAttribute("aria-busy", busy === true ? "true" : "false");
     statusEl.setAttribute("data-status-state", s ? (busy === true ? "busy" : "settled") : "idle");
@@ -2118,10 +2124,13 @@
         chat_id: pending.chat_id,
         state: "submitting",
         label: "Submitting spoken request…",
+        status_order: ++operationSubmissionOrdinal,
       };
       operationSubmissionByGeneration[pending.request_generation] = local;
       operationSubmissionById[pending.submission_id] = local;
-      if (pending.chat_id === activeChatId) setStatus(local.label, true);
+      if (pending.chat_id === activeChatId) {
+        setStatus(local.label, true, "operation-submission:" + pending.request_generation);
+      }
     }
     send(voiceChatMessageFrame(pending));
   }
@@ -2751,7 +2760,7 @@
   function send(obj) { try { ws.send(JSON.stringify(obj)); } catch (e) {} }
 
   /** Create the client-owned retry/generation identity before any socket I/O. */
-  function beginOperationSubmission(name, payload, suppliedGeneration) {
+  function beginOperationSubmission(name, payload, suppliedGeneration, exposeStatus) {
     var body = Object.assign({}, payload || {});
     var submissionId = isCanonicalUuid4(body.submission_id) ? body.submission_id : randomUuid4();
     var requestGeneration = isCanonicalUuid4(suppliedGeneration)
@@ -2766,10 +2775,14 @@
       chat_id: activeChatId || null,
       state: "submitting",
       label: "Submitting…",
+      shows_status: exposeStatus !== false,
+      status_order: ++operationSubmissionOrdinal,
     };
     operationSubmissionByGeneration[requestGeneration] = local;
     operationSubmissionById[submissionId] = local;
-    setStatus(local.label, true);
+    if (local.shows_status) {
+      setStatus(local.label, true, "operation-submission:" + requestGeneration);
+    }
     return { payload: body, submissionId: submissionId, requestGeneration: requestGeneration };
   }
 
@@ -2781,11 +2794,11 @@
     return true;
   }
 
-  function action(name, payload) {
+  function action(name, payload, exposeStatus) {
     if (name === "chat_message") openRequest("commit", activeChatId);
     var suppliedGeneration = requestState && (name === "chat_message" || name === "load_chat")
       ? requestState.generation : null;
-    var submission = beginOperationSubmission(name, payload, suppliedGeneration);
+    var submission = beginOperationSubmission(name, payload, suppliedGeneration, exposeStatus);
     var frame = {
       type: "ui_event",
       action: name,
@@ -3346,7 +3359,9 @@
     }
     hideSkeleton();
     timelineMode = false;
-    setStatus("");
+    // The committed snapshot is content, not an operation terminal. Keep the
+    // correlated progress owner until its canonical terminal frame arrives;
+    // otherwise a snapshot from one turn can also erase another active task.
     readCanvasFlags();
     syncCanvasToolbar();
     // Keep the named revision read in this atomic commit seam for audit/source
@@ -3522,6 +3537,57 @@
     return frame.chat_id == null || !!(activeChatId && frame.chat_id === activeChatId);
   }
 
+  function operationStatusShowsActivity(frame) {
+    var local = operationSubmissionByGeneration[frame.request_generation];
+    return !(local && local.shows_status === false);
+  }
+
+  function newestActiveOperationStatus() {
+    var active = null;
+    Object.keys(operationStatusById).forEach(function (operationId) {
+      var candidate = operationStatusById[operationId];
+      if (candidate.terminal || !scopedStatusMatches(candidate)
+          || !operationStatusShowsActivity(candidate)) return;
+      if (!active || candidate.updated_at > active.updated_at
+          || (candidate.updated_at === active.updated_at && candidate.sequence > active.sequence)
+          || (candidate.updated_at === active.updated_at && candidate.sequence === active.sequence
+            && candidate.operation_id > active.operation_id)) active = candidate;
+    });
+    return active;
+  }
+
+  function newestVisibleLocalSubmission() {
+    var newest = null;
+    Object.keys(operationSubmissionByGeneration).forEach(function (requestGeneration) {
+      var candidate = operationSubmissionByGeneration[requestGeneration];
+      if (candidate.shows_status === false
+          || (candidate.chat_id != null && candidate.chat_id !== activeChatId)) return;
+      if (!newest || (candidate.status_order || 0) > (newest.status_order || 0)) newest = candidate;
+    });
+    return newest;
+  }
+
+  function restoreActiveStatusOrClear(owners) {
+    if (owners.indexOf(statusOwner) === -1) return;
+    var active = newestActiveOperationStatus();
+    if (active) {
+      setStatus(
+        (active.error && active.error.message) || active.label,
+        true,
+        "operation:" + active.operation_id
+      );
+    } else {
+      var local = newestVisibleLocalSubmission();
+      if (local) {
+        setStatus(
+          local.label,
+          true,
+          "operation-submission:" + local.request_generation
+        );
+      } else setStatus("");
+    }
+  }
+
   /** Retain/render one canonical operation projection. */
   function reduceOperationStatus(frame) {
     var flags = {
@@ -3564,8 +3630,24 @@
     var current = operationStatusById[frame.operation_id];
     if (current && (current.terminal || frame.sequence <= current.sequence)) return false;
     operationStatusById[frame.operation_id] = frame;
-    setStatus((frame.error && frame.error.message) || frame.label, !frame.terminal);
+    var visible = (frame.error && frame.error.message) || frame.label;
+    var operationOwner = "operation:" + frame.operation_id;
+    var submissionOwner = "operation-submission:" + frame.request_generation;
+    var localSubmission = operationSubmissionByGeneration[frame.request_generation];
     if (frame.terminal) finishOperationSubmission(frame.request_generation);
+    if (frame.state === "completed") {
+      // Completion is reconciliation state, not user-facing progress. Clear it
+      // only if this operation (or its local submission) still owns the line.
+      // A concurrent operation or unrelated notice must remain visible.
+      restoreActiveStatusOrClear([operationOwner, submissionOwner]);
+    } else if (frame.terminal) {
+      // Failure/cancellation/retry guidance persists, but is settled and must
+      // never look like work is still in progress.
+      setStatus(visible, false, "operation-error:" + frame.operation_id);
+    } else if ((!localSubmission || localSubmission.shows_status !== false)
+        && !(statusOwner && statusOwner.indexOf("operation-error:") === 0)) {
+      setStatus(visible, true, operationOwner);
+    }
     if (frame.terminal && ["failed", "cancelled", "retryable"].indexOf(frame.state) !== -1) {
       clearTransientOverlay();
     }
@@ -3598,7 +3680,7 @@
     var local = operationSubmissionById[frame.submission_id];
     if (!local) return false;
     finishOperationSubmission(local.request_generation);
-    setStatus(errorMessage(frame), false);
+    setStatus(errorMessage(frame), false, "operation-error:" + frame.submission_id);
     return true;
   }
 
@@ -3813,6 +3895,9 @@
         break;
       case "chat_status":
         if (!scopedStatusMatches(data)) break;
+        var chatStatusOwner = data.request_generation
+          ? "operation-submission:" + data.request_generation
+          : "chat-status";
         // A turn that ends with no canvas output (text-only answer, error,
         // cancellation) must still clear the query-start skeleton.
         if (data.status === "done" || data.status === "idle") {
@@ -3826,10 +3911,21 @@
           // Background dispatch ack (055): status text only — never the turn
           // lock (no skeleton), so the user can keep chatting or switch chats.
           hideSkeleton();
-          setStatus("Running in background…");
+          setStatus(
+            "Running in background…",
+            true,
+            chatStatusOwner
+          );
           break;
         }
-        setStatus({ idle: "", thinking: "Thinking…", executing: "Working…", done: "" }[data.status] || "");
+        var chatStatusLabel = { idle: "", thinking: "Thinking…", executing: "Working…", done: "" }[data.status] || "";
+        if (chatStatusLabel) {
+          setStatus(
+            chatStatusLabel,
+            true,
+            chatStatusOwner
+          );
+        } else restoreActiveStatusOrClear([chatStatusOwner]);
         break;
       case "chat_step":
         if (scopedStatusMatches(data)) renderStep(data.step);
@@ -3849,7 +3945,15 @@
         // chat_loaded + ui_render pair; the atomic snapshot must follow.
         if (data.chat && isCanonicalUuid4(data.chat.id)) {
           if (!activeChatId) selectActiveChat(data.chat.id, "hydration");
-          if (data.chat.id === activeChatId) setStatus("Restoring conversation…");
+          // A compatibility ack may race behind the authoritative snapshot.
+          // Never resurrect hydration progress once that snapshot committed.
+          if (data.chat.id === activeChatId && requestState && !requestState.snapshotApplied) {
+            setStatus(
+              "Restoring conversation…",
+              true,
+              "operation-submission:" + requestState.generation
+            );
+          }
         }
         break;
       case "user_preferences":
@@ -5072,11 +5176,13 @@
       // resumed: firstConnect ? serverResumed : true
       sendRegistration(firstConnect ? serverResumed : true);
       firstConnect = false;
-      action("get_history", {});
+      // Startup/reconnect metadata is retained and reconciled like every other
+      // operation, but it is not user work and must not flash a global spinner.
+      action("get_history", {}, false);
       // Re-attach to still-running background tasks: watch_task re-registers
       // this socket as a watcher and answers task_completed immediately when
       // the task finished while the socket was down.
-      for (var tid in bgTaskChips) action("watch_task", { task_id: tid });
+      for (var tid in bgTaskChips) action("watch_task", { task_id: tid }, false);
     };
     ws.onmessage = onMessage;
     ws.onerror = function () { try { ws.close(); } catch (e) {} };

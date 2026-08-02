@@ -24,7 +24,9 @@ struct WatchChatView: View {
                     if let status = model.statusText {
                         let accessibility = WatchAccessibility060.operationStatus(status)
                         HStack(spacing: 4) {
-                            ProgressView().controlSize(.mini)
+                            if model.statusShowsActivity {
+                                ProgressView().controlSize(.mini)
+                            }
                             Text(InlineMarkdown.attributed(status))
                                 .font(.footnote).foregroundStyle(.secondary)
                         }

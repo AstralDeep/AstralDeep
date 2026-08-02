@@ -512,7 +512,8 @@ class ConversationContinuityTest {
 
         val terminal = model.reduce(committed, terminalStatus)
         assertTrue(terminal.pendingSubmissions.isEmpty())
-        assertEquals("Completed", terminal.statusText)
+        assertNull(terminal.statusText)
+        assertNull(terminal.workingStatusText)
     }
 
     @Test
@@ -574,7 +575,8 @@ class ConversationContinuityTest {
                 ),
             )
         assertTrue(completed.pendingSubmissions.isEmpty())
-        assertEquals("Completed", completed.statusText)
+        assertNull(completed.statusText)
+        assertNull(completed.workingStatusText)
     }
 
     @Test
@@ -661,7 +663,8 @@ class ConversationContinuityTest {
                 ),
             )
         assertTrue(terminal.pendingSubmissions.isEmpty())
-        assertEquals("Completed", terminal.statusText)
+        assertNull(terminal.statusText)
+        assertNull(terminal.workingStatusText)
     }
 
     @Test

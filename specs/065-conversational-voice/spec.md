@@ -137,6 +137,7 @@ After AstralDeep accepts each spoken query, the assistant says “On it!” or a
 10. **Given** the user mutes speech while leaving conversation mode active, **When** work continues or finishes, **Then** visible progress and results continue normally but no audio plays until the user explicitly unmutes; muted announcements are not replayed in a burst.
 11. **Given** generated acknowledgement or progress text, **When** the turn later continues, **Then** that ephemeral speech has not been inserted into the authoritative conversation transcript or model context as an assistant answer.
 12. **Given** a spoken request is refused, cancelled, abandoned, or fails, **When** that outcome reaches a client, **Then** the client presents a persistent, visually prominent, non-color, assertively announced notice distinguishing “did not start” from “did not complete,” includes the bounded safe explanation and recovery action, and keeps typed input usable; a spoken-playback failure after a committed result instead says that the text result remains available and MUST NOT claim that the request failed.
+13. **Given** a client starts, reconnects, or hydrates after successful work has already completed, **When** no accepted nonterminal operation remains, **Then** it shows neither a working spinner nor a residual success label such as “Completed”; the terminal record remains available internally for monotonic reconciliation, while failures and refusals remain visible through their non-busy terminal notice.
 
 ---
 
@@ -201,6 +202,7 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 - The user activates voice but never speaks; after five continuous minutes of idle listening with no active turn or user-input gate, the session ends, releases media ownership, and submits no empty turn.
 - Recognition returns partial text and then an error; partial text is shown as non-authoritative, is not submitted, and can be retried without duplication.
 - Speech ends just as the 20-second progress deadline or final result arrives; one serialized truthful utterance wins, and stale queued speech is cancelled.
+- A client receives or replays a terminal-success operation frame while idle, including on first load; it retains the frame for ordering but presents no working indicator or completed-status residue, and it does not clear a different operation that is still active.
 - A task completes while the app is muted, backgrounded, disconnected, or owned by another client; the text result persists, and old audio is not replayed automatically on resume or takeover.
 - The user changes chats during an in-flight voice turn; future spoken turns follow the newly visible chat, while announcements and results for existing turns remain bound to their originating chat and are not spoken as if they belong to the new chat.
 - Two background tasks finish together; completion summaries are queued, clearly attributed, bounded, and dismissible rather than overlapping.
@@ -297,6 +299,7 @@ A user moving among web, Windows, Android, macOS, iOS, and watchOS finds the sam
 - **FR-055**: Automated verification MUST cover golden, denial, malformed-event, low/no-audio, timeout, upstream error, cancellation, duplicate, reconnect, takeover, multi-user isolation, PHI redaction, credential non-disclosure, 20-second cadence, final-summary fidelity, accessibility, protocol drift, and cleanup paths.
 - **FR-056**: Live E2E verification MUST exercise the exact candidate against the real Docker backend, real Keycloak, real configured LiveKit and speech services, representative agent/tool work lasting beyond 20 seconds, and every affected client target. Authentication requiring user credentials MUST pause for user login rather than use fabricated success.
 - **FR-057**: Mac-hosted verification MAY exercise web, the PySide desktop client, Android emulator, and Apple simulators/devices, but MUST NOT be reported as Windows-native packaging/audio or physical acoustic-loop evidence; those remain explicit release evidence on an appropriate Windows and physical-device environment.
+- **FR-058**: Across every client, the visible working label and activity indicator MUST be derived only from accepted, scoped, nonterminal work. A terminal-success projection MAY remain retained for monotonic reconciliation but MUST clear from the visible working surface and MUST NOT reappear during initial load, hydration, reconnect, or idle. Terminal failure, refusal, cancellation, and retry guidance MUST use the existing prominent non-busy outcome/error presentation, and completion of one operation MUST NOT hide another operation that remains active.
 
 ### Key Entities
 

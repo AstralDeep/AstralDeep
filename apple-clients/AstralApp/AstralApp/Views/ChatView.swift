@@ -100,7 +100,7 @@ private struct CanvasArea: View {
                 ReadOnlyBanner(label: model.viewingIndex.flatMap { model.canvasHistory[safe: $0]?.label }) {
                     model.backToLiveCanvas()
                 }
-            } else if model.turnActive && !model.showSkeleton {
+            } else if model.turnActive && model.statusShowsActivity && !model.showSkeleton {
                 if ContinuousActivityPresentation.allowsAnimatedIndicators {
                     ProgressView().progressViewStyle(.linear).tint(p.secondary)
                 } else {
@@ -411,7 +411,10 @@ private struct ChatList: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(visible) { turn in ChatBubble(turn: turn) }
-                    if let status = model.statusText { StatusLine(text: status).id("status") }
+                    if let status = model.statusText {
+                        StatusLine(text: status, showsActivity: model.statusShowsActivity)
+                            .id("status")
+                    }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
             }
@@ -430,14 +433,17 @@ private struct ChatList: View {
 private struct StatusLine: View {
     @Environment(ThemeStore.self) var theme
     let text: String
+    let showsActivity: Bool
     var body: some View {
         HStack(spacing: 6) {
-            if ContinuousActivityPresentation.allowsAnimatedIndicators {
-                ProgressView().controlSize(.small)
-            } else {
-                Image(systemName: "ellipsis")
-                    .font(.caption2.weight(.semibold))
-                    .accessibilityHidden(true)
+            if showsActivity {
+                if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "ellipsis")
+                        .font(.caption2.weight(.semibold))
+                        .accessibilityHidden(true)
+                }
             }
             Text(text).font(.caption).foregroundStyle(theme.palette.muted)
         }

@@ -101,6 +101,13 @@ logger = logging.getLogger("astral.client")
 #: python.exe's icon). Keep it stable: changing it splits pinned taskbar entries.
 APP_USER_MODEL_ID = "AstralDeep.WindowsClient"
 
+# Connection bootstrap and background reconciliation are protocol operations,
+# but they are not user work. Retain them for exact acknowledgement/terminal
+# handling without flashing the global activity banner on first load.
+_SILENT_LOCAL_STATUS_ACTIONS = frozenset(
+    {"discover_agents", "get_history", "register_external_agent", "watch_task"}
+)
+
 
 def _canonical_uuid4(value: object) -> bool:
     if not isinstance(value, str):
@@ -1765,6 +1772,12 @@ class MainWindow(QMainWindow):
         # Feature 055: tap-to-open target for a background-completion banner —
         # a click loads this chat instead of just dismissing (None = dismiss).
         self._banner_chat: Optional[str] = None
+        self._banner_kind: Optional[str] = None
+        # The request generation whose in-flight operation currently owns the
+        # banner. A successful terminal frame may clear only this banner, never
+        # a different operation or a persistent failure/notification.
+        self._operation_banner_request_generation: Optional[str] = None
+        self._operation_banner_operation_id: Optional[str] = None
         self._pending_voice_chat: Optional[dict[str, str]] = None
 
         ctx = RenderContext(emit=self._emit, download=self._download,
@@ -2089,11 +2102,21 @@ class MainWindow(QMainWindow):
         # (FR-019), not a silent no-op.
 
     # --- banner (connection state / errors / notices) ------------------- #
-    def _show_banner(self, text: str, kind: str = "info",
-                     chat_id: Optional[str] = None) -> None:
+    def _show_banner(
+        self,
+        text: str,
+        kind: str = "info",
+        chat_id: Optional[str] = None,
+        *,
+        operation_request_generation: Optional[str] = None,
+        operation_id: Optional[str] = None,
+    ) -> None:
         # Every banner (re)sets the tap-to-open target, so a plain notice can
         # never inherit a stale chat link from an earlier task banner (055).
         self._banner_chat = chat_id
+        self._banner_kind = kind
+        self._operation_banner_request_generation = operation_request_generation
+        self._operation_banner_operation_id = operation_id
         color = {
             "error": T.VARIANT_COLORS["error"][0],
             "warning": T.VARIANT_COLORS["warning"][0],
@@ -2108,6 +2131,9 @@ class MainWindow(QMainWindow):
 
     def _hide_banner(self) -> None:
         self._banner_chat = None
+        self._banner_kind = None
+        self._operation_banner_request_generation = None
+        self._operation_banner_operation_id = None
         self._banner.setVisible(False)
         self._banner.setText("")
         self._banner.setAccessibleDescription("")
@@ -2771,10 +2797,16 @@ class MainWindow(QMainWindow):
             submission.request_generation
         ] = submission
         self._pending_submissions_by_id[submission.submission_id] = submission
+        if submission.action in _SILENT_LOCAL_STATUS_ACTIONS:
+            return True
         self.topbar.set_status(
             submission.label, T.VARIANT_COLORS["accent"][0]
         )
-        self._show_banner(submission.label, "info")
+        self._show_banner(
+            submission.label,
+            "info",
+            operation_request_generation=submission.request_generation,
+        )
         return True
 
     def _finish_local_submission_by_generation(
@@ -3399,20 +3431,16 @@ class MainWindow(QMainWindow):
             and msg.get("request_generation") == self._continuity.request_generation
         )
 
-    def _reduce_operation_status(self, msg: dict[str, Any]) -> bool:
-        """Retain and visibly render one newer canonical operation state."""
+    def _operation_status_in_scope(self, status: OperationStatus) -> bool:
+        """Whether a retained canonical operation still belongs to this view."""
 
-        try:
-            status = OperationStatus.from_dict(msg)
-        except (TypeError, WindowsProtocolError):
-            return False
         if status.connection_generation != self._continuity.connection_generation:
             return False
         pending = self._pending_submissions_by_generation.get(
             status.request_generation
         )
         if status.chat_id is not None:
-            in_scope = status.chat_id == self.active_chat and (
+            return status.chat_id == self.active_chat and (
                 status.request_generation == self._continuity.request_generation
                 or (
                     pending is not None
@@ -3426,40 +3454,136 @@ class MainWindow(QMainWindow):
                     )
                 )
             )
-        else:
-            in_scope = (
-                pending is not None
-                and pending.action == status.action
-                and (
-                    pending.action != "chat_message"
-                    or (pending.chat_id is None and self.active_chat is None)
-                )
+        return (
+            pending is not None
+            and pending.action == status.action
+            and (
+                pending.action != "chat_message"
+                or (pending.chat_id is None and self.active_chat is None)
             )
-        if not in_scope:
+        )
+
+    def _newest_active_operation_status(self) -> Optional[OperationStatus]:
+        """Return one remaining in-scope nonterminal operation, if any."""
+
+        candidates = (
+            status
+            for status in self._operation_status_by_id.values()
+            if (
+                not status.terminal
+                and self._operation_status_in_scope(status)
+                and self._operation_status_shows_activity(status)
+            )
+        )
+        return max(
+            candidates,
+            key=lambda status: (
+                status.updated_at,
+                status.sequence,
+                status.operation_id,
+            ),
+            default=None,
+        )
+
+    def _newest_visible_local_submission(
+        self,
+    ) -> Optional[LocalOperationSubmission]:
+        """Return the newest still-submitting user-visible operation."""
+
+        for submission in reversed(
+            tuple(self._pending_submissions_by_generation.values())
+        ):
+            if submission.action in _SILENT_LOCAL_STATUS_ACTIONS:
+                continue
+            if submission.chat_id is None or submission.chat_id == self.active_chat:
+                return submission
+        return None
+
+    def _show_local_submission_progress(
+        self,
+        submission: LocalOperationSubmission,
+    ) -> None:
+        self.topbar.set_status(
+            submission.label,
+            T.VARIANT_COLORS["accent"][0],
+        )
+        self._show_banner(
+            submission.label,
+            "info",
+            operation_request_generation=submission.request_generation,
+        )
+
+    def _operation_status_shows_activity(self, status: OperationStatus) -> bool:
+        pending = self._pending_submissions_by_generation.get(
+            status.request_generation
+        )
+        return pending is None or pending.action not in _SILENT_LOCAL_STATUS_ACTIONS
+
+    def _show_operation_progress(self, status: OperationStatus) -> None:
+        visible = (status.error or {}).get("message") or status.label
+        self.topbar.set_status(str(visible), T.VARIANT_COLORS["accent"][0])
+        self._show_banner(
+            str(visible),
+            "info",
+            operation_request_generation=status.request_generation,
+            operation_id=status.operation_id,
+        )
+
+    def _reduce_operation_status(self, msg: dict[str, Any]) -> bool:
+        """Retain and visibly render one newer canonical operation state."""
+
+        try:
+            status = OperationStatus.from_dict(msg)
+        except (TypeError, WindowsProtocolError):
+            return False
+        if not self._operation_status_in_scope(status):
             return False
         current = self._operation_status_by_id.get(status.operation_id)
         if current is not None and (
             current.terminal or status.sequence <= current.sequence
         ):
             return False
+        owned_visible_progress = (
+            self._operation_banner_operation_id == status.operation_id
+            or (
+                self._operation_banner_operation_id is None
+                and self._operation_banner_request_generation
+                == status.request_generation
+            )
+        )
         self._operation_status_by_id[status.operation_id] = status
         visible = (status.error or {}).get("message") or status.label
-        color = (
-            T.VARIANT_COLORS["error"][0]
-            if status.state in {"failed", "cancelled", "retryable"}
-            else T.VARIANT_COLORS["accent"][0]
-        )
-        self.topbar.set_status(str(visible), color)
-        self._show_banner(
-            str(visible),
-            "error" if status.state in {"failed", "cancelled", "retryable"} else "info",
-        )
         if status.terminal:
             self._finish_local_submission_by_generation(
                 status.request_generation
             )
-        if status.terminal and status.state in {"failed", "cancelled", "retryable"}:
+        if status.state == "completed":
+            # A successful terminal projection is retained for reconciliation,
+            # but is not a persistent status message. It may clear only the
+            # progress banner it owns. If another operation is still active,
+            # restore that operation instead of leaving a false idle state.
+            if owned_visible_progress:
+                active = self._newest_active_operation_status()
+                if active is not None:
+                    self._show_operation_progress(active)
+                else:
+                    local = self._newest_visible_local_submission()
+                    if local is not None:
+                        self._show_local_submission_progress(local)
+                    else:
+                        self._hide_banner()
+                        self._reset_status_line()
+        elif status.terminal:
+            # Failures/cancellations/retry guidance remain prominent, but are
+            # settled outcomes rather than animated activity.
+            self.topbar.set_status(str(visible), T.VARIANT_COLORS["error"][0])
+            self._show_banner(str(visible), "error")
             self._clear_transient_conversation()
+        elif (
+            self._operation_status_shows_activity(status)
+            and self._banner_kind != "error"
+        ):
+            self._show_operation_progress(status)
         return True
 
     def _reduce_admission_refusal(self, msg: dict[str, Any]) -> bool:
