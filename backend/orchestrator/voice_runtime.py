@@ -68,6 +68,8 @@ class VoiceMediaActivator(Protocol):
 
     async def set_capture(self, session: VoiceSessionRecord, enabled: bool) -> None: ...
 
+    async def barge_in(self, session: VoiceSessionRecord) -> None: ...
+
     async def stop_speech(self, session: VoiceSessionRecord) -> None: ...
 
     async def end(self, session: VoiceSessionRecord, reason: str) -> None: ...
@@ -562,7 +564,7 @@ class VoiceSessionRuntime:
                 session.generation,
             )
         else:
-            await self._media.stop_speech(session)
+            await self._media.barge_in(session)
 
     async def get_media_grant_state(
         self,

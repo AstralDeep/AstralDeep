@@ -433,6 +433,11 @@ async def test_notice_translation_covers_content_free_worker_frames() -> None:
             metadata={"client_turn_id": _uuid(11)},
         ),
         SessionNotice(
+            "recognition_failed",
+            reason="self_speech",
+            metadata={"client_turn_id": _uuid(11)},
+        ),
+        SessionNotice(
             "speech_finished",
             announcement_id=_uuid(12),
             metadata={
@@ -475,6 +480,7 @@ async def test_notice_translation_covers_content_free_worker_frames() -> None:
         "session_context_applied",
         "media_grant_applied",
         "recognition_started",
+        "recognition_failed",
         "recognition_failed",
         "speech_finished",
         "transcript_emitted",

@@ -254,7 +254,7 @@ class _SessionAnnouncementRunner:
         stop_requested = self._stop_requested
         self._stop_requested = False
         if preempted or stop_requested:
-            await self._stop_current_speech()
+            await self._stop_current_speech(barge_in=stop_requested)
         for future in self._mute_waiters:
             _settle(future, None)
         self._mute_waiters.clear()
@@ -763,7 +763,7 @@ class _SessionAnnouncementRunner:
                 await asyncio.gather(terminal_task, return_exceptions=True)
             self._speaking = False
 
-    async def _stop_current_speech(self) -> None:
+    async def _stop_current_speech(self, *, barge_in: bool = False) -> None:
         session = await self._services.media.current_session(
             self.session_id,
             self.generation,
@@ -771,7 +771,10 @@ class _SessionAnnouncementRunner:
         if session is None:
             return
         try:
-            await self._services.media.stop_speech(session)
+            if barge_in:
+                await self._services.media.barge_in(session)
+            else:
+                await self._services.media.stop_speech(session)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1101,21 +1104,30 @@ class VoiceServices:
                 await self._apply_worker_idle_state(frame, listening=False)
                 await self._record_frame_event(frame, "turn", "recognizing")
             elif frame_type == "recognition_failed":
-                logger.warning(
-                    "voice_recognition_failed reason=%s",
-                    frame.get("reason", "invalid_asr_result"),
-                )
-                rejection = await self.coordinator.reject_recognition_failed(frame)
-                self.schedule_preacceptance_rejection(
-                    rejection.turn,
-                    reason="malformed_final",
-                )
+                self_speech = frame.get("reason") == "self_speech"
+                if self_speech:
+                    logger.info("voice_self_speech_suppressed reason=self_speech")
+                    await self.coordinator.suppress_self_speech(frame)
+                else:
+                    logger.warning(
+                        "voice_recognition_failed reason=%s",
+                        frame.get("reason", "invalid_asr_result"),
+                    )
+                    rejection = await self.coordinator.reject_recognition_failed(frame)
+                    self.schedule_preacceptance_rejection(
+                        rejection.turn,
+                        reason="malformed_final",
+                    )
                 await self._apply_worker_idle_state(frame, listening=False)
                 await self._record_frame_event(
                     frame,
                     "turn",
                     "rejected",
-                    reason="speech_unavailable",
+                    reason=(
+                        "self_speech_suppressed"
+                        if self_speech
+                        else "speech_unavailable"
+                    ),
                 )
             elif frame_type in {
                 "media_state",
@@ -2160,7 +2172,7 @@ class VoiceServices:
             return
         session = await self.media.current_session(session_id, generation)
         if session is not None:
-            await self.media.stop_speech(session)
+            await self.media.barge_in(session)
 
     async def _announcement_runner(
         self,

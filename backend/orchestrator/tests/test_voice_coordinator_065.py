@@ -182,6 +182,21 @@ class FakeCoordinatorRepository:
         turn.rejection_retry_policy = "explicit_user_retry"
         return SimpleNamespace(turn=turn, replayed=replayed)
 
+    async def suppress_worker_self_speech(self, **values):
+        if self.failure:
+            raise self.failure
+        binding = values["binding"]
+        turn = next(
+            item
+            for item in self.recognition_turns
+            if item.client_turn_id == binding.client_turn_id
+        )
+        replayed = getattr(turn, "state", None) == "abandoned"
+        turn.state = "abandoned"
+        turn.rejection_reason = "malformed_final"
+        turn.rejection_retry_policy = "none"
+        return SimpleNamespace(turn=turn, replayed=replayed)
+
 
 def _policy(**changes: object) -> WorkerPoolPolicy:
     values: dict[str, object] = {
@@ -839,6 +854,131 @@ async def test_recognition_failure_is_bounded_durable_and_replay_fenced() -> Non
         await pool.receive_worker_frame(
             reservation.connection_id,
             json.dumps(stale),
+        )
+
+
+@pytest.mark.asyncio
+async def test_self_speech_is_durably_suppressed_without_worker_disposition() -> None:
+    clock = FakeClock()
+    socket = FakeSocket()
+    pool = WorkerPool(_policy(), utcnow=clock.utcnow, monotonic=clock.monotonic)
+    await pool.register_worker(
+        _registration("worker-a"),
+        socket,
+        authenticated_identity="worker-a",
+    )
+    reservation = await pool.reserve_session(_request(SESSION_1))
+    await pool.receive_worker_frame(
+        reservation.connection_id,
+        json.dumps(_worker_ready(reservation, sequence=0)),
+    )
+    await pool.receive_worker_frame(
+        reservation.connection_id,
+        json.dumps(
+            {
+                "type": "session_context_applied",
+                "schema_version": "1",
+                "message_id": deterministic_uuid4("context-applied", SESSION_1),
+                "session_id": SESSION_1,
+                "generation": 1,
+                "sequence": 1,
+                "sent_at": "2026-07-31T18:00:01Z",
+                "media_grant_revision": 1,
+                "visible_chat_id": CHAT,
+                "chat_context_revision": 1,
+                "occurred_at": "2026-07-31T18:00:01Z",
+            }
+        ),
+    )
+    repository = FakeCoordinatorRepository()
+    coordinator = VoiceCoordinator(
+        pool,
+        repository,
+        replica_id="replica-a",
+        utcnow=clock.utcnow,
+    )
+    client_turn_id = deterministic_uuid4("client-turn", "self-speech")
+    started = await pool.receive_worker_frame(
+        reservation.connection_id,
+        json.dumps(
+            {
+                "type": "recognition_started",
+                "schema_version": "1",
+                "message_id": deterministic_uuid4(
+                    "recognition-started", client_turn_id
+                ),
+                "session_id": SESSION_1,
+                "generation": 1,
+                "sequence": 2,
+                "sent_at": "2026-07-31T18:00:02Z",
+                "client_turn_id": client_turn_id,
+                "media_grant_revision": 1,
+                "visible_chat_id": CHAT,
+                "chat_context_revision": 1,
+                "occurred_at": "2026-07-31T18:00:02Z",
+            }
+        ),
+    )
+    binding = await coordinator.bind_recognition_started(started)
+    failure = {
+        "type": "recognition_failed",
+        "schema_version": "1",
+        "message_id": deterministic_uuid4("recognition-failed", client_turn_id),
+        "session_id": SESSION_1,
+        "generation": 1,
+        "sequence": 3,
+        "sent_at": "2026-07-31T18:00:03Z",
+        "client_turn_id": client_turn_id,
+        "reason": "self_speech",
+        "occurred_at": "2026-07-31T18:00:03Z",
+    }
+    accepted = await pool.receive_worker_frame(
+        reservation.connection_id,
+        json.dumps(failure),
+    )
+
+    with pytest.raises(
+        ControlProtocolError,
+        match="invalid_recognition_failure_reason",
+    ):
+        await coordinator.reject_recognition_failed(accepted)
+    with pytest.raises(StaleFence, match="stale_worker_assignment"):
+        await pool.clear_suppressed_recognition(
+            replace(binding, assignment_id=deterministic_uuid4("assignment", "stale"))
+        )
+    assert (
+        await pool.current_recognition_binding(
+            session_id=SESSION_1,
+            generation=1,
+            client_turn_id=client_turn_id,
+        )
+        == binding
+    )
+
+    sent_before = tuple(socket.sent)
+    mutation = await coordinator.suppress_self_speech(accepted)
+    assert mutation.turn.turn_id == binding.turn_id
+    assert mutation.turn.state == "abandoned"
+    assert mutation.turn.rejection_reason == "malformed_final"
+    assert mutation.turn.rejection_retry_policy == "none"
+    assert tuple(socket.sent) == sent_before
+    assert [json.loads(value)["type"] for value in socket.sent[1:]] == ["turn_bound"]
+
+    with pytest.raises(StaleFence, match="recognition_not_bound"):
+        await pool.current_recognition_binding(
+            session_id=SESSION_1,
+            generation=1,
+            client_turn_id=client_turn_id,
+        )
+    replay = {
+        **failure,
+        "message_id": deterministic_uuid4("recognition-failed-replay", client_turn_id),
+        "sequence": 4,
+    }
+    with pytest.raises(StaleFence, match="recognition_not_bound"):
+        await pool.receive_worker_frame(
+            reservation.connection_id,
+            json.dumps(replay),
         )
 
 

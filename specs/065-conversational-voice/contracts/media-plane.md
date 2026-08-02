@@ -77,7 +77,10 @@ audit metadata, and generic protocol-frame capture.
   fences current assistant frames. The worker advances a speech epoch, clears its small
   `AudioSource` queue, boundedly quiesces the producer, clears again, and replaces the track on
   timeout; local queue completion is not client playout proof. ASR ingestion is gated while
-  assistant output is active, then promptly resumes so playback cannot become a user turn.
+  assistant output is active. An authenticated, generation/connection/grant-fenced explicit
+  barge-in command reopens capture immediately after that stop fence and bypasses the normal
+  post-playout acoustic-tail timer; ordinary playback completion retains the tail before capture
+  resumes so playback cannot become a user turn.
 - Foreground loss, OS interruption, logout, auth expiry, takeover, and session end follow the exact
   cleanup table below. Accepted AstralDeep tasks are unaffected.
 
@@ -142,9 +145,15 @@ through the normal AstralDeep acknowledgement/snapshot path after server accepta
    `turn_bound` returns the immutable binding before the worker publishes any transcript.
    If ASR fails or returns an empty/invalid final, the worker instead sends the strictly bounded
    `recognition_failed` frame with only that exact `client_turn_id` and an allowlisted safe reason.
-   The authenticated coordinator resolves the existing turn binding and atomically abandons the
-   still-`recognizing` row as `malformed_final`/`explicit_user_retry`; replayed, unbound, stale-
-   generation, and cross-assignment failures have no side effect.
+   For `asr_failed`, `empty_transcript`, and `invalid_asr_result`, the authenticated coordinator
+   resolves the existing turn binding and atomically abandons the still-`recognizing` row as
+   `malformed_final`/`explicit_user_retry`. `self_speech` is a distinct internal suppression
+   disposition: after the same owner/session/generation/grant/assignment validation, the coordinator
+   abandons the still-`recognizing` row using the existing durable `malformed_final` classification
+   with retry policy `none`, records only the content-free `self_speech_suppressed` audit reason,
+   emits no user-visible rejection/retry frame, and never accepts a transcript proof or dispatches
+   work.
+   Replayed, unbound, stale-generation, and cross-assignment failures have no side effect.
 4. The worker canonicalizes the final (`CRLF` to `LF`, Unicode NFC, outer whitespace removed;
    NUL/other controls except tab/newline rejected), computes lowercase SHA-256 over its UTF-8 bytes,
    and attaches an HMAC proof expiring no more than two minutes after the final. The proof input is the fixed newline-delimited ASCII

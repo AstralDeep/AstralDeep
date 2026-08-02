@@ -2,9 +2,9 @@
 
 **Recorded**: 2026-08-02 (America/New_York)
 **Status**: local implementation diagnostic; not an immutable release candidate
-**Local base**: `16e401b` plus uncommitted work
-**Remote state at verification start**: local `065-conversational-voice` was four commits ahead of
-and two commits behind `origin/065-conversational-voice`; no implementation push is claimed.
+**Local base**: `2332234` plus uncommitted work
+**Remote state at current verification start**: local `065-conversational-voice` matched
+`origin/065-conversational-voice`; the current repair remains uncommitted and no new push is claimed.
 
 This record deliberately separates source/build/test evidence, local live evidence, login-bound
 evidence, and unavailable release evidence. It contains no transcript, recap, audio, credential,
@@ -28,6 +28,15 @@ checkpoints, and the user later completed current-build macOS sign-in and heard 
 `af_heart` greeting. The user then spoke a real request: transcription entered the ordinary
 dispatcher, title generation succeeded, but the first tool-planning LLM call failed before any tool
 was selected or run. No result was committed and no success recap was synthesized.
+
+The later exact repaired macOS build completed the previously missing authenticated success path.
+The first intentional utterance mapped to one accepted turn and one completed operation, produced a
+committed visible fallback recap, and completed client playout; the user confirmed hearing the full
+recap. A second intentional follow-up after playout independently mapped one-to-one to a second
+completed operation. No accepted turn occurred during either assistant playout, the session renewed
+past its initial lease and ended normally at the user's request, and the Mac returned to idle without
+the prior CPU loop, spinner, or terminal-success residue. This closes the focused macOS recap retest,
+not the open Windows-native, physical-device, staging, percentile, or immutable-candidate gates.
 
 The real request failure was diagnosed without exposing credentials, transcript text, or provider
 bodies. The user's encrypted in-product configuration is present for the LLM Factory endpoint and
@@ -80,7 +89,7 @@ pass” is not a claim that the full candidate-bound C0–C6 or physical acousti
 | Windows | Equivalent composer action and voice state reducer; no caller speech configuration | Qt accessible labels/state plus a persistent plain-text non-color alert exposed with the Qt Alert role | Current full offscreen suite: 685 passed, 6 skipped, including exact rejection correlation/no replay, failure persistence, timestamp-fenced clearing, distinct speech failure, and typed fallback | PySide on macOS is diagnostic only; Windows-native audio and package run unavailable | **Pass for source/offscreen slice**; Windows-native and authenticated E2E open |
 | Android | Equivalent composer action; permission, listening, mute, speaking, recover, and stop controller states | TalkBack descriptions/state plus a prominent persistent assertive outcome card with icon, title, safe body, and guidance | Core 100 passed; current app 236 passed; connected emulator suite 27 passed with 1 expected release-evidence skip; ktlint, lint, Kover verification/XML, and assemble passed. Older different-turn lifecycle/rejection frames cannot erase a newer notice | Signed-in `emulator-5554` completed selected/no-chat greeting/lifecycle, reconnect, cold-relaunch, and teardown-race checks described below. The new alert behavior is automation-verified; a fresh spoken failure was not injected into the signed-in emulator | **Pass for signed-in local lifecycle and automated terminal-alert slices**; committed result and physical acoustic journey open |
 | iOS | Shared Apple reducer with iOS/macOS LiveKit controller and equivalent composer placement | VoiceOver/Switch Control labels, values, hints, non-audio state, and a prominent persistent request-outcome notice | AstralCore 166 passed; current focused iOS controller target passed 39/39; strict format and generic iOS build passed. Older different-turn lifecycle/rejection frames cannot erase a newer notice, and post-result speech failure retains the result timestamp | The normally ad-hoc-signed rebuild preserved the user's sign-in and completed the control/lifecycle journey described below. The new alert behavior is automation-verified; a fresh spoken failure was not injected into iOS | **Pass for source/test/build and signed-in simulator control/lifecycle slice**; committed result and physical audio remain open |
-| macOS | Same shared reducer/controller contract and composer placement as iOS | VoiceOver/keyboard state plus the same prominent persistent request-outcome notice | AstralCore 166 passed; current focused macOS controller target passed 45/45; strict format and unsigned macOS build passed | The user completed current-build sign-in, heard the included greeting, and submitted one spoken request. It failed during the first LLM tool-planning call before tool execution; no committed result or spoken recap was produced | **Pass for source/test/build, authenticated greeting, ASR, and failure-path slice**; successful committed result and physical acoustic checks remain open |
+| macOS | Same shared reducer/controller contract and composer placement as iOS | VoiceOver/keyboard state plus the same prominent persistent request-outcome notice | AstralCore 166 passed; current focused macOS controller target passed 45/45; strict format and unsigned macOS build passed | The exact repaired build stayed connected for about 94 seconds, completed the first intentional speech as one accepted turn/operation, delivered its committed fallback recap, and returned to clean idle after explicit End. The user confirmed full recap audibility; a later intentional follow-up also mapped one-to-one, with no accepted dispatch during assistant playout | **Pass for source/test/build and authenticated local greeting/ASR/dispatch/commit/full-recap slice**; physical acoustic, percentile, and staging checks remain open |
 | watchOS | Primary chat affordance drives the ticket-bound PCM bridge; no platform-speech substitution | VoiceOver labels/state plus the same persistent request-outcome notice and dictation fallback | Current focused watch target passed 23/23; strict format and generic watchOS build passed. The shared timestamp fence and watch controller retain newer terminal notices across stale churn | App remains at the device QR/code login boundary; current preserved-data sandbox scan found no network-cache, token, provider, voice, audio, or crash marker | **Pass for source/simulator-build/retention slice**; authenticated bridge and physical Watch audio open |
 
 All clients classify the required voice protocol dispositions in their checked-in manifest guards.
@@ -102,7 +111,7 @@ evidence, not physical, Windows-native, staging, or complete voice-journey evide
 | Speech profile | Authenticated capability returned ready for LiveKit, worker, ASR, TTS, and voice. The content-free worker preflight passed exact Whisper/Kokoro/`af_heart`/WAV 24 kHz. Selected-provider inventory SHA-256 is `1f143aafa0647ecfbf491e81bd7019545aefeaed41b8604a2d5ff2b8f94dc8b4`; fixed-profile SHA-256 is `fd663421899c76f54cff4d8a425d24860a0e2f4e8297a9600a9603ce5eb0cc3b`. Live attributed result openings synthesized at 32,768 and 33,792 samples, below the 36,000-sample opening bound | Local configured service, not an inventory/availability SLA claim |
 | Cadence/lifecycle | Deterministic 2/19/21/65-second, multi-minute, concurrent-turn, result-attribution, mute, terminal-fence, and ephemeral-acoustic-boundary tests passed | The candidate-bound 100-trial percentile matrix remains open |
 | Direct client playout | Web, Windows, Android, and Apple implementations enforce manifest-before-media identity, sequence, sample, aggregate, serialization, and interruption bounds. Web and Windows now clear local playout before starting the generation-fenced stop request, matching the existing Android/Apple local-first behavior; delayed-success and transport-failure tests prove the local fence does not wait on HTTP. Android additionally rendered a greeting through the reproduced publication/subscriber race | The candidate-bound acoustic p95 <=500-millisecond / 100% <=1-second interruption oracle, physical speaker/microphone/AEC behavior, and natural spoken barge-in remain open |
-| Capture-after-playout fence | Worker capture remains closed across source drain; the coordinator releases it only after matching client and worker terminals. Missing proof times out closed after eight seconds; stale/duplicate/older announcements, routine capture enables, mute/end/reconnect/rotation, and stale listening are covered | Live web greeting produced no turn after the repaired images were deployed; physical echo-tail and spoken barge-in remain open |
+| Capture-after-playout fence | Worker capture remains closed across source drain and for a bounded 500-millisecond acoustic tail after matching client and worker terminals. An ephemeral exact-match fingerprint additionally abandons recently published self-speech before proof/dispatch; missing proof times out closed after eight seconds, and stale/duplicate/older announcements, timeout/tail epochs, routine capture enables, mute/end/reconnect/rotation, and stale listening are covered | The repaired authenticated Mac run produced no accepted dispatch during assistant playout. Each of the user's two intentional utterances mapped one-to-one to a completed operation; two unaccepted partial captures were abandoned at explicit session end. Deterministic tests cover exact echo rejection and expiry; physical echo-tail and spoken barge-in remain open |
 | Admission/isolation | Five real repository/runtime sessions plus a 15-thread PostgreSQL admission race passed owner/room/device/connection/worker/takeover/capacity isolation checks; no content appeared in controls, errors, or metrics | Deterministic local isolation evidence, not the five-user 30-minute soak |
 | Locked worker test profile | The ordinary one-shot `voice-worker-test` remains `network_mode: none`, read-only, non-root, capability-dropped, and free of environment, ports, volumes, dependencies, credentials, and product data. The freshly rebuilt Linux/arm64 test image is `sha256:aebe3588b4fd3d3c720cde29cf1aa2f505386901d9e5d8c957a6464a5cc6c4a8`; its default suite passed `261` with the opt-in integration case deselected. The separate internal-network lane then passed one real-server test in 2.25 seconds and removed every disposable container/network. It pre-pulls the digest-pinned server and builds the worker before minting separate 90-second grants, so cold image preparation cannot consume grant lifetime. Nonzero client PCM crossed real LiveKit/Opus into the production ASR adapter; reliable correlated transcript/result data and nonzero 24-kHz TTS PCM returned through the production RTC session. | Local uncommitted diagnostic only. The RTC-only dependency audit requires this exact run and its digests to be repeated as candidate-bound evidence, so T168 remains open; this also does not satisfy T174 staging/topology evidence. |
 | RTC diagnostic-retention boundary | LiveKit server profiles pin vendor logging to `warn` and Pion to `error`; web selects `silent`, Windows and the worker disable LiveKit loggers, Android selects `LoggingLevel.OFF` and disables WebRTC logging, and Apple calls `LiveKitSDK.disableLogging()` before constructing a room | Prior local info-level participant diagnostics included SDP and ephemeral ICE fields. After zero active sessions were confirmed, the LiveKit container was recreated and those old logs were removed; post-hardening web, Android, and server checks exposed no signaling/SDP/ICE/bearer fields. This is bounded local evidence, not T177 certification |
@@ -136,15 +145,15 @@ The following completed results were observed from the current local tree:
 | Backend exact CI sequence | Python 3.11 root, every explicit nested module suite, then `tests/perf/concurrent_surfaces.py`, using an isolated disposable PostgreSQL database | 5,302 passed, 31 skipped, 2 deselected; 1,900 passed, 7 skipped; performance 1 passed. Cobertura covered 114,862/140,344 executable lines (81.84% overall diagnostic coverage), SHA-256 `ab0689b0349947c9c391a71aaba49cf518c2a5fa1e6e95780c220e20f920d32f` |
 | Backend flags-off CI sequence | Same Python 3.11 root/nested/performance sequence with every CI rollback flag forced off, using a separate isolated disposable PostgreSQL database | 5,298 passed, 35 skipped, 2 deselected; 1,900 passed, 7 skipped; performance 1 passed |
 | Release-tooling Python | Exact maintained-script coverage lane and release-policy tests | The final combined Python 3.11 run passed 499 tests plus the 28-document link check; 4,187/4,629 lines (90.45%), XML SHA-256 `42053b2855fa202b36873714ff88ac698e962e4e81b68e0d1448b167d49c6ab6` |
-| Local cross-language coverage plumbing | Collector, evidence-input, schema, producer, protected-workflow, and decision-attestation tests plus parser hardening | The focused provenance/exporter review suite passed 394 cases; the post-repair release-contract/validator/workflow aggregate passed 275; the current release-contract/quickstart/workflow slice passed 215; the current publisher/bridge workflow suite passed 36; and the exact 20-file release-tooling lane above passed 499. Strict mode requires ten explicit native producer slots: backend, voice-worker, tooling, Windows, web, Android app/core, and iOS/macOS/watchOS. Reports are parsed once and bound by raw, mapped-semantic, and native-semantic identities; aggregate contributions are filtered to producer-owned paths; worker runtime copies map to their tracked shared sources without assigning overwritten shims to two producers; Watch may contain Core but contributes only Watch; changed Core lines must map completely in at least one iOS/macOS archive; and a useful report witness must be a bounded in-range source line from the immutable candidate tree. Regressions reject irrelevant-metadata duplicates, producer masking, wrong Apple targets, path-only/out-of-range witnesses, candidate `sitecustomize`, unbound report bytes, false OCI identity, and mutated raw Apple/Windows artifacts. Protected policy now normalizes candidate-produced Apple xcresults in a fresh job, binds backend/web to the separately attested deployed OCI digest, binds Windows to every member of the build-once artifact, and attests the exact final decision. Decision consumers use a bounded safe extractor rather than raw `unzip`, verify the installed signer digest, and bind the single expected decision member to exact numeric run/artifact identities. The publisher treats the candidate checkout as data, installs the verifier only from the owner-pinned hash lock, writes tag-ownership state before dispatch, and dispatches the exact protected bridge at the new tag ref with tag/readiness/artifact inputs; the 2026-03-10 API-returned `workflow_run_id` is polled directly. Freshness is checked with a 900-second margin before dispatch/signing and again before draft/official mutations. Only the caller/publisher carry scoped `actions: write`; both also carry read-only deployment provenance access, and exact non-self-approved environment review/deployment binding occurs before tag creation. This remains local/static diagnostic plumbing: no immutable candidate diff, real ten-report strict decision, installed protected authorization, live protected/release run, or T003/T180 closure is claimed. Spec 060 T120 remains blocked by the live reviewer, tag-cleanup, durable-orphan, and direct tag-workflow authority contradictions below. |
+| Local cross-language coverage plumbing | Collector, evidence-input, schema, producer, protected-workflow, and decision-attestation tests plus parser hardening | The focused provenance/exporter review suite passed 394 cases; the post-repair release-contract/validator/workflow aggregate passed 275; the current release-contract/quickstart/workflow slice passed 215; the current publisher/bridge workflow suite passed 36; and the exact 20-file release-tooling lane above passed 499. Strict mode requires ten explicit native producer slots: backend, voice-worker, tooling, Windows, web, Android app/core, and iOS/macOS/watchOS. Reports are parsed once and bound by raw, mapped-semantic, and native-semantic identities; aggregate contributions are filtered to producer-owned paths; worker runtime copies map to their tracked shared sources without assigning overwritten shims to two producers; Watch may contain Core but contributes only Watch; changed Core lines must map completely in at least one iOS/macOS archive; and a useful report witness must be a bounded in-range source line from the immutable candidate tree. Regressions reject irrelevant-metadata duplicates, producer masking, wrong Apple targets, path-only/out-of-range witnesses, candidate `sitecustomize`, unbound report bytes, false OCI identity, and mutated raw Apple/Windows artifacts. Protected policy now normalizes candidate-produced Apple xcresults in a fresh job, binds backend/web to the separately attested deployed OCI digest, binds Windows to every member of the build-once artifact, and attests the exact final decision. Decision consumers use a bounded safe extractor rather than raw `unzip`, verify the installed signer digest, and bind the single expected decision member to exact numeric run/artifact identities. The publisher treats the candidate checkout as data, installs the verifier only from the owner-pinned hash lock, writes tag-ownership state before dispatch, and dispatches the exact protected bridge at the new tag ref with tag/readiness/artifact inputs; the 2026-03-10 API-returned `workflow_run_id` is polled directly. Freshness is checked with a 900-second margin before dispatch/signing and again before draft/official mutations. Only the caller/publisher carry scoped `actions: write`; both also carry read-only deployment provenance access, and exact non-self-approved environment review/deployment binding occurs before tag creation. T189 records this local/static plumbing as complete. No immutable candidate diff, fresh ten-report strict decision, installed protected authorization, live protected/release run, or T003/T180 closure is claimed. Spec 060 T120 remains blocked by the live reviewer, tag-cleanup, durable-orphan, and direct tag-workflow authority contradictions below. |
 | Live-DB test isolation | Register pipeline, BYO host registration, and repository guard in the Python 3.11 backend container; host Ruff and diff checks | Three consecutive 16-case runs passed (48 total). Tests now use disposable UUID-scoped mock owners and remove their LLM/user rows; the interactive `test_user` config fingerprint remained unchanged and residual disposable LLM/user row counts were `0/0` after every repeated run |
 | Python lint | `ruff 0.15.21 check .` | all checks passed |
-| Voice worker Python 3.11 | Earlier no-cache Compose test image plus the exact post-fence Python 3.11 diagnostic image | Earlier candidate slice passed 257 with Linux/arm64 image ID/repo digest `sha256:4dcd04169afc4b60339c5a172a22c88e3ffcff9decf39174506e006bb4bad64f`; the post-fence image passed all 261 worker tests. The latter is a local diagnostic image, not retained candidate evidence |
-| Self-speech/playout hardening | Full host voice backend/orchestrator suites; worker host suite; exact Python 3.11 worker image; focused main-agent rerun | 550 passed; 251 passed with 2 staging skips; 261 passed; focused dual-terminal/timeout/reconnect plus history cases passed 15 with 1 environment skip. Ruff, pycompile, and diff checks passed |
+| Voice worker Python 3.11 | Earlier no-cache Compose test image plus the current post-tail/fingerprint Python 3.11 diagnostic image | Earlier candidate slice passed 257 with Linux/arm64 image ID/repo digest `sha256:4dcd04169afc4b60339c5a172a22c88e3ffcff9decf39174506e006bb4bad64f`; the current read-only/networkless image passed 270 tests with one expected integration skip. The latter is a local diagnostic image, not retained candidate evidence |
+| Self-speech/playout hardening | Host voice backend/orchestrator suites; Python 3.11 app-container suites; exact Python 3.11 worker image; focused client ordering/layout regressions | Current focused logic passed 119 on host and 122 in the app container; the worker image passed 270 with one expected integration skip; Windows/web/Android/macOS/watchOS focused results are recorded in the second authenticated checkpoint above. Ruff, strict Swift formatting, schema parsing, and diff checks passed |
 | Focused privacy/topology/reconnect hardening | Backend client/deployment/retention aggregate; worker session; Windows, Android, web, and Apple voice paths | Prior backend/worker privacy and topology aggregates remain green. Current terminal-alert additions pass web 32/32, full Windows 685 with 6 skips, Android app 236/236 plus core 100/100 and connected 27 with 1 skip, AstralCore 166/166, and focused iOS/macOS/watchOS 39/45/23. |
-| Worker distribution closure | strict fake/exact-profile suite, real isolated LiveKit lane, closure/packaging guards, current image audit, and LiveKit scan | The locked default worker suite passed 261 with one integration deselection; the opt-in real-LiveKit lane passed 1/1; the current repository dependency/closure/topology aggregate passed 56 with one expected host skip. The local test-image digest is `sha256:aebe3588b4fd3d3c720cde29cf1aa2f505386901d9e5d8c957a6464a5cc6c4a8`; LiveKit is pinned to `sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1`; integration Compose/config SHA-256 values are `d83c7c17fb936354bc8bafb9f4c9215da28cdbcbb09196abf72653b54d475cd2` / `b935d38ad1f39cbb57cdfdf883e02c5a474783f325924f78fad39b1d7f052d85`; `CLOSURE.json`, worker lock, and Silero VAD SHA-256 values are `9ef9e195cd73ba3ff536b7c4d3ec4c15f8ab13472c7fcfe8dc10e4749da6b074`, `fb86c9318d01ce59afaccba57842ddde1d098444e527c70b272b81af4ebc61b3`, and `597d30b3ec076608d059477bb14cfeffdf951bf5cae370d38f65d33bbfe82004`. Exact speech inventory/profile digests remain `1f143aafa0647ecfbf491e81bd7019545aefeaed41b8604a2d5ff2b8f94dc8b4` / `fd663421899c76f54cff4d8a425d24860a0e2f4e8297a9600a9603ce5eb0cc3b`. The inventory is not a final approval fingerprint. DHI-backed signature/SBOM/VEX, same-candidate dual-architecture evidence, clean worker scans, owner approval, and candidate-bound repetition are absent; the fallback worker scan found 18 HIGH and 6 CRITICAL findings. T004 and T168 remain open. |
+| Worker distribution closure | strict fake/exact-profile suite, real isolated LiveKit lane, closure/packaging guards, current image audit, and LiveKit scan | The locked default worker suite passed 261 with one integration deselection; the opt-in real-LiveKit lane passed 1/1; the current repository dependency/closure/topology aggregate passed 56 with one expected host skip. The local test-image digest is `sha256:aebe3588b4fd3d3c720cde29cf1aa2f505386901d9e5d8c957a6464a5cc6c4a8`; LiveKit is pinned to `sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1`; integration Compose/config SHA-256 values are `d83c7c17fb936354bc8bafb9f4c9215da28cdbcbb09196abf72653b54d475cd2` / `b935d38ad1f39cbb57cdfdf883e02c5a474783f325924f78fad39b1d7f052d85`; `CLOSURE.json`, worker lock, and Silero VAD SHA-256 values are `9ef9e195cd73ba3ff536b7c4d3ec4c15f8ab13472c7fcfe8dc10e4749da6b074`, `fb86c9318d01ce59afaccba57842ddde1d098444e527c70b272b81af4ebc61b3`, and `597d30b3ec076608d059477bb14cfeffdf951bf5cae370d38f65d33bbfe82004`. Exact speech inventory/profile digests remain `1f143aafa0647ecfbf491e81bd7019545aefeaed41b8604a2d5ff2b8f94dc8b4` / `fd663421899c76f54cff4d8a425d24860a0e2f4e8297a9600a9603ce5eb0cc3b`. T190 records these local closure inputs as complete, but the inventory is not a final approval fingerprint. DHI-backed signature/SBOM/VEX, same-candidate dual-architecture evidence, clean worker scans, owner approval, and candidate-bound repetition are absent; the fallback worker scan found 18 HIGH and 6 CRITICAL findings. T004 and T168 remain open. |
 | Contract validator | isolated hash-locked validator plus `git diff --check` | Passed C0–C6: 5 aggregate cases, 23 voice positives, 25 worker positives, 40 negatives, 6 proof vectors, 2 OpenAPI positives; diff check clean |
-| Spec Kit Analyze | Exact `SPECIFY_FEATURE_DIRECTORY=specs/065-conversational-voice` ownership/preflight and fresh read-only cross-artifact analysis after numeric interruption/reconnect/readiness/egress and T120/T168/T180 corrections | 57 functional requirements, 13 success criteria, 180 contiguous unique tasks, and 100% requirement coverage; zero ambiguities, duplications, constitution issues, critical issues, unmapped tasks, or other findings. Ledger remains 166 complete and 14 open |
+| Spec Kit Analyze | Exact `SPECIFY_FEATURE_DIRECTORY=specs/065-conversational-voice` ownership/preflight and final read-only cross-artifact analysis after the recap, self-speech, barge-in, evidence-task split, and measurement corrections | 58 functional requirements plus 13 success criteria have 100% semantic task coverage; 190 task IDs are contiguous and unique, with 175 complete and 15 open; no placeholders remain. The prior recap modality, self-speech outcome, T004 split/dependency, and SC-004 denominator findings are resolved. T003 is the sole remaining execution blocker because the clean exact candidate still lacks its fresh ten-report/canonical-evidence pre-push run |
 | Six-surface C0–C6 reducer checkpoint | Canonical fixture through backend/web renderer and shipped web client, Windows reducer, Android wire/controller, shared Apple and iOS/macOS controllers, and watchOS reducer | Current failure-notice/order additions pass web 32, full Windows 685 with 6 skips, Android core 100/app 236/connected 27 with 1 skip, AstralCore 166, and focused iOS/macOS/watchOS 39/45/23; no required frame/action is ignored. Mac simulator/offscreen limits retained. |
 
 ## Live-login boundary
@@ -202,15 +211,112 @@ JavaScript syntax, JSON parsing, and `git diff --check` passed. The rebuilt prod
 list is `sha256:aa243d4e87777cb74587b679830decf673d8689c8f5b88c0096ffa83b066815f`, and its application
 manifest is `sha256:ba99ff772eacf4d5f12514400e161197a98f12fa708c5d0bd2477525203f148f`;
 the recreated backend returned `{"status":"ok","db":"ok","agents":10}` and the voice worker
-completed its expected challenge/reconnect. The rebuilt macOS app is awaiting user sign-in for the
-final audible full-recap confirmation, so no live audibility claim is made yet.
+completed its expected challenge/reconnect. At that checkpoint the rebuilt macOS app was awaiting
+user sign-in. The later exact-build result in the second regression section supersedes that boundary
+and supplies the focused audible-recap evidence.
 
 A lower-priority follow-up is to replace verbose raw provider detail in the connection-test UI with
 bounded safe guidance while retaining content-free diagnostic codes on the server.
 
+### Second macOS recap regression and current repair
+
+The next authenticated macOS retest admitted a real voice session and recognized the user's
+utterance, but exposed two additional defects before a recap could be heard. The app's main thread
+again entered one nonconverging SwiftUI AttributeGraph transaction during pending-row/status churn;
+the exact five-second sample at `/tmp/astraldeep-065-idle-recap.sample.txt` kept all `3,343` sampled
+main-thread ticks in that transaction, including `997` lazy-placement and `803` `ForEach` frames.
+The process remained near 100% CPU, stopped renewing its media lease, and the session ended after
+approximately 31 seconds. The surviving operation completed about 59 seconds after that session
+ended, so the terminal recap correctly had no live media recipient and no audibility claim is made.
+
+Content-free database correlation also showed that local acknowledgement playback was recognized as
+a second utterance: the first recognized turn did not match any approved system phrase, while the
+second normalized exactly to one approved acknowledgement phrase. That second turn took ownership
+and cancelled the first operation. No transcript, speech text, provider body, credential, or audio
+was copied into this record.
+
+The current repair replaces the macOS transcript's `LazyVStack` with eager bounded placement while
+retaining lazy rows on iOS, defers automatic scrolling until a real row-count increase has settled,
+and preserves a successful transient answer until the authoritative conversation snapshot replaces
+it. The same terminal-before-snapshot preservation is now explicit on Android and regression-tested
+on web, Windows, Android, macOS/iOS, and watchOS; terminal failures still discard optimistic
+content. A hosted AppKit churn test now settles in about 0.03 seconds instead of remaining in a graph
+flush.
+
+The worker now holds capture for a further generation-fenced 500-millisecond acoustic-tail window
+after exact client/source playout completion. As defense in depth, it keeps at most eight ephemeral
+SHA-256 fingerprints of speech that was actually published, never raw text; an exact
+case/punctuation/whitespace-normalized match whose VAD starts within three seconds of terminal
+playout is durably abandoned as content-free `self_speech` before transcript proof or dispatch,
+without visible retry/error guidance. Different speech and the same speech after expiry are
+accepted, explicit barge-in adds no delay, and teardown clears the guard, timers, and fingerprints.
+
+Current focused evidence is green: changed Python suites passed `119/119` on the host and
+`122/122` in the Python 3.11 app container; the rebuilt read-only/networkless Python 3.11 worker-test
+image passed `270` with one expected integration skip; Windows status ordering passed `20/20`; the
+web ordering scenario passed `1/1`; Android app tests passed `248/248` with ktlint clean; macOS
+ordering/layout tests passed `28/28`; and watchOS status tests passed `10/10`. Ruff, strict Swift
+formatting, JSON parsing, and `git diff --check` passed. The rebuilt runtime worker image is
+`sha256:35791c144b31c0d46c61b1782c33e99433bcaa01404a3de8c464b2334bc767e0`; the rebuilt test image is
+`sha256:2d60cd33c1e7268faa617df380ee4d3ae5bf9cc95049d268323bf565c111763f`. The backend is healthy,
+the worker completed its expected challenge/registration sequence, and the exact macOS app build
+succeeded.
+
+After the user completed that build's SSO flow, session
+`228c0a1a-cac3-459d-9a55-2ad15ec39c99` stayed active from `17:07:49` through `17:09:23` UTC and
+ended normally with `end_reason=user`. That approximately 94-second lifetime proves renewal beyond
+the 45-second launch lease. The first intentional utterance became turn
+`215baa2b-0751-4a97-aba6-77bfcd48ac31`, exactly one accepted message and operation
+`72bacd51-2e91-4920-92e7-7ef96eeb06de`, and reached committed `succeeded` in 11.775 seconds with a
+four-quantum `committed_visible_fallback` result recap. Client playout completed and the user
+confirmed hearing the full recap. A second intentional follow-up after that playout became exactly
+one additional accepted turn/operation and also completed with a five-quantum fallback recap. No
+accepted turn occurred during either assistant playout; two unaccepted partial captures carried no
+message, operation, or announcement and were abandoned when the user ended the session. Worker
+assignment, control lease, RTC grant, and media grant remained current; backend, worker, PostgreSQL,
+and LiveKit reported zero restarts and no worker disconnect, quarantine, or speech failure.
+
+During the active request the sampled Mac process used 24.8% CPU and about 196 MiB RSS, rather than
+the prior sustained approximately 100% / 2.2 GiB livelock. After explicit End it returned to 0.0%
+CPU at about 147 MiB RSS. The visible composer returned to Start with no idle spinner or `Completed`
+residue. T188 is therefore complete. T183 remains open because the current-build presentation
+matrix is not yet live-verified on every Mac-hosted client, and Windows-native/physical-device
+limitations remain unchanged.
+
+The subsequent final diff review found that `self_speech` still flowed through the generic durable
+retry classification and that the direct worker barge-in unit path was not reachable through the
+authenticated runtime/media coordinator. Both are now corrected. The dedicated self-speech path
+retains every owner/session/generation/assignment/turn-binding fence, persists the existing
+`abandoned`/`malformed_final` tuple with retry policy `none`, clears coordinator and worker bindings,
+records only `self_speech_suppressed`, and emits no client rejection/retry frame. Authenticated
+explicit stop now serializes worker reason `barge_in`, clears the matching coordinator and worker
+playout holds, and permits capture immediately; ordinary mute, end, reconnect, and playback
+completion retain their normal terminal proof and acoustic-tail behavior.
+
+Those post-live changes passed 212 focused tests on both the host and synced Python 3.11 application
+container, plus a broader host voice sweep of 931 passes and 3 skips; eight image-only packaging
+checks remained intentionally unavailable on the host and were covered by the rebuilt worker image.
+The exact read-only/networkless worker-test image passed 271 tests with one expected integration
+skip. Its local digest is
+`sha256:b22ce5a96e37e74c7ae16d3ffe6eede9a1c5a11a100a68571345bc53ce81b074`;
+the rebuilt runtime worker digest is
+`sha256:5c2d8786ef8596f36272d3f3f1b7af3c2569c5456fcd67357c74a9879922d1dc`.
+The recreated worker completed its expected initial 401 challenge and authenticated control-channel
+acceptance while all four local services remained running and the backend healthy. Ruff and diff
+checks passed. This deterministic post-live repair does not create a second live acoustic claim;
+physical barge-in/echo-tail evidence remains open.
+
 ## Explicitly unverified or failing release claims
 
 - No immutable candidate SHA or candidate-bound evidence bundle exists for these uncommitted changes.
+- The Feature-065 pre-push diagnostic gate was not complete before implementation checkpoints
+  `dfea619`, `43fba94`, and `2332234` were pushed. The corrected T003 records that historical
+  violation without retroactively treating a later run as compliance. The next implementation push
+  is blocked until one clean committed candidate regenerates all ten native coverage inputs plus the
+  canonical evidence set and passes strict `BASE_SHA="$(git rev-parse origin/main)" make
+  prepare-release-evidence`. At this checkpoint the canonical evidence set and nine report paths
+  are absent, while the remaining tooling report predates the candidate; none of the ten required
+  inputs is fresh, and qualifying external staging remains unavailable. T003 is open.
 - The worker is deliberately marked `distribution-approved=false`: `backend/voice_agent/CLOSURE.json`
   is an inventory schema rather than a final approval fingerprint, the development marker is all
   zeroes, and the required DHI login-backed signature/SBOM/VEX plus same-candidate dual-architecture
@@ -261,17 +367,14 @@ bounded safe guidance while retaining content-free diagnostic codes on the serve
   been completed; T178 remains open.
 - No Windows-native package/audio evidence exists, and no physical Android, iPhone, Watch, headset,
   Bluetooth, echo-cancellation, acoustic-loop, or natural barge-in result is claimed.
-- The full signed-in success path through an ordinary user/System LLM, committed result, and spoken
-  result summary has not yet been exercised. The current user-owned provider row is encrypted,
-  configured, and independently healthy for model inventory, title generation, plain, streaming,
-  tool-choice, and full-catalog probes. The user's real spoken request nevertheless failed during
-  its first tool-planning call before selecting or running a tool. The exact retired provider body is
-  intentionally unavailable; evidence supports an intermittent or request-specific upstream
-  failure, not a deterministic configuration failure. The operation and result commit aborted
-  honestly, and the ended turn was repaired to `failed` from durable terminal metadata.
+- The full signed-in macOS success path through the ordinary user/System LLM, committed result, and
+  audible spoken result recap now passes on the exact local repaired build. This is one local client
+  checkpoint and does not supply Windows-native, physical-device, external-staging, percentile, or
+  immutable-candidate evidence. The earlier request-specific provider failure remains an honestly
+  recorded failure-path observation rather than being rewritten as a successful run.
 
-These limitations keep T003–T004, T061, T168, and T171–T180 open. They are not converted into pass
-claims by simulator, mocked, offscreen, or Mac-only evidence.
+These limitations keep T003–T004, T061, T168, T171–T180, and T183 open. They are not
+converted into pass claims by simulator, mocked, offscreen, or Mac-only evidence.
 
 ## Final integrated rerun
 
@@ -421,9 +524,12 @@ blank and non-busy, a harmless request transitioned through `Thinking…` and `W
 `aria-busy=true`, and its terminal upstream failure remained visibly actionable with
 `aria-busy=false`; no `Completed` residue appeared. The rebuilt signed-in Android APK opened to the
 welcome state with only `Voice is available.` and no spinner or terminal-success text. The current
-rebuilt macOS and iOS applications reached their SSO boundaries, and the paired Watch therefore
-remained unauthenticated; those visible authenticated checks require the user-owned sign-in and are
-not claimed here. Windows-native and physical-device visual evidence remain unavailable on this
+rebuilt iOS application reached its SSO boundary, and the paired Watch therefore remained
+unauthenticated; those visible authenticated checks require the user-owned sign-in and are not
+claimed here. The user subsequently authenticated the exact rebuilt macOS application. Its live
+successful voice turn showed working chrome only while the request was nonterminal; after the
+spoken recap and explicit End, the composer returned to Start with neither an idle spinner nor a
+`Completed` label. Windows-native and physical-device visual evidence remain unavailable on this
 Mac host.
 
 An additional broad macOS scheme run that included the UI-test target was interrupted after Xcode

@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import re
+import time
 from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -45,6 +46,14 @@ SPEECH_QUIESCE_TIMEOUT_SECONDS = 0.25
 OUTPUT_OPERATION_TIMEOUT_SECONDS = 0.25
 OUTPUT_DRAIN_TIMEOUT_SECONDS = 0.5
 CLIENT_PLAYOUT_CONFIRMATION_TIMEOUT_SECONDS = 8.0
+# A client terminal event proves that the authenticated device finished its
+# declared playout, but it cannot prove that the device audio route and the
+# upstream LiveKit microphone buffer contain no final render-tail frames. Keep
+# capture fenced for one short, bounded tail window after ordinary playout.
+# Explicit barge-in still reopens immediately through the separate stop path.
+POST_PLAYOUT_CAPTURE_GUARD_SECONDS = 0.5
+SELF_SPEECH_SUPPRESSION_WINDOW_SECONDS = 3.0
+MAX_RECENT_SPEECH_FINGERPRINTS = 8
 VAD_THRESHOLD = 0.5
 # Silero's streaming iterator uses a lower negative threshold once speech has
 # started so small posterior dips do not split an utterance. Keep the launch
@@ -562,6 +571,15 @@ class _RecognitionBinding:
     turn_id: str | None = None
     submission_id: str | None = None
     request_generation: str | None = None
+    echo_fingerprints: frozenset[bytes] = frozenset()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _RecentSpeechFingerprint:
+    """Content-free fingerprint retained only for bounded echo suppression."""
+
+    digest: bytes = field(repr=False)
+    expires_at: float
 
 
 @dataclass(slots=True, repr=False)
@@ -595,6 +613,21 @@ class _SpeechMeta:
     quantum_index: int
     result_reserved_samples_after: int | None
     duration_ms: int | None = None
+
+
+def _speech_fingerprint(text: str) -> bytes | None:
+    """Hash a punctuation/case-insensitive speech form without retaining text."""
+
+    try:
+        canonical = canonical_transcript(text)
+    except TranscriptProofError:
+        return None
+    normalized = "".join(
+        character for character in canonical.casefold() if character.isalnum()
+    )
+    if not normalized:
+        return None
+    return hashlib.sha256(normalized.encode("utf-8", errors="strict")).digest()
 
 
 def validate_announcement_binding(frame: Mapping[str, Any]) -> None:
@@ -659,6 +692,7 @@ class DirectRtcSession(BoundControlSession):
         notice_sink: Callable[[SessionNotice], Any],
         worker_control_secret: bytes,
         utcnow: Callable[[], datetime] | None = None,
+        monotonic: Callable[[], float] | None = None,
         input_audio_gate: Callable[[str], bool] | None = None,
         queue_size: int = SESSION_QUEUE_SIZE,
         rtc_event_queue_size: int = RTC_EVENT_QUEUE_SIZE,
@@ -672,6 +706,7 @@ class DirectRtcSession(BoundControlSession):
         self._tts = tts
         self._notice_sink = notice_sink
         self._utcnow = utcnow or (lambda: datetime.now(UTC))
+        self._monotonic = monotonic or time.monotonic
         # Platform SDKs own acoustic echo cancellation and route-specific audio
         # processing. This synchronous seam lets their verified route state
         # fail ASR ingestion closed without making the media worker claim it
@@ -732,6 +767,13 @@ class DirectRtcSession(BoundControlSession):
         self._speech_producer: asyncio.Task[None] | None = None
         self._playout_capture_hold = False
         self._playout_confirmation_task: asyncio.Task[None] | None = None
+        self._playout_tail_guard = False
+        self._playout_tail_task: asyncio.Task[None] | None = None
+        self._playout_hold_epoch = 0
+        self._playout_echo_fingerprint: bytes | None = None
+        self._recent_speech_fingerprints: deque[_RecentSpeechFingerprint] = deque(
+            maxlen=MAX_RECENT_SPEECH_FINGERPRINTS
+        )
         self._retired_output_tasks: set[asyncio.Task[Any]] = set()
         self._output_source: Any | None = None
         self._output_publication: Any | None = None
@@ -1176,7 +1218,7 @@ class DirectRtcSession(BoundControlSession):
                 # false command is also allowed to retire the playout fence;
                 # capture remains closed while lifecycle or microphone policy
                 # is false, without leaking a timeout task.
-                self._release_playout_capture_hold()
+                self._release_playout_capture_hold(guard_tail=enabled)
                 self._capture_requested = enabled
                 if not enabled:
                     await self._abort_utterance("capture_disabled", emit=False)
@@ -1490,8 +1532,14 @@ class DirectRtcSession(BoundControlSession):
         elif kind == "speech_complete":
             await self._speech_complete(*args)
         elif kind == "client_playout_timeout":
-            if self._playout_capture_hold:
+            if (
+                args == (self._playout_hold_epoch,)
+                and self._playout_capture_hold
+                and not self._playout_tail_guard
+            ):
                 raise RtcSessionError("client_playout_timeout")
+        elif kind == "playout_tail_guard_elapsed":
+            await self._finish_playout_tail_guard(*args)
 
     async def _reconcile_input(self) -> bool:
         room = self._room
@@ -1720,6 +1768,7 @@ class DirectRtcSession(BoundControlSession):
                     media_grant_revision=self.binding.media_grant_revision,
                     visible_chat_id=self.binding.visible_chat_id,
                     chat_context_revision=self.binding.chat_context_revision,
+                    echo_fingerprints=self._active_speech_fingerprints(),
                 )
                 self._recognition_bindings[self._recognition_binding.client_turn_id] = (
                     self._recognition_binding
@@ -1816,11 +1865,25 @@ class DirectRtcSession(BoundControlSession):
                         or _LANGUAGE.fullmatch(language) is None
                     ):
                         raise TranscriptProofError("invalid_transcript_language")
-                    await self._retain_final(
-                        recognition,
-                        canonical,
-                        language,
-                    )
+                    fingerprint = _speech_fingerprint(canonical)
+                    if (
+                        fingerprint is not None
+                        and fingerprint in recognition.echo_fingerprints
+                    ):
+                        await self._emit(
+                            SessionNotice(
+                                "recognition_failed",
+                                reason="self_speech",
+                                metadata={"client_turn_id": recognition.client_turn_id},
+                            )
+                        )
+                        self._clear_retained_final(recognition.client_turn_id)
+                    else:
+                        await self._retain_final(
+                            recognition,
+                            canonical,
+                            language,
+                        )
                 except TranscriptProofError:
                     self._discard_retained_final_content(
                         "" if recognition is None else recognition.client_turn_id
@@ -2062,6 +2125,9 @@ class DirectRtcSession(BoundControlSession):
             )
             return
         await self._stop_speech("superseded", emit=True)
+        # A replacement command is the only path that retires an older
+        # published announcement without waiting for its client terminal.
+        self._remember_playout_echo_fingerprint()
         await self._abort_utterance("assistant_speech", emit=False)
         self._seen_announcements.append(announcement_id)
         self._hold_capture_for_client_playout()
@@ -2163,6 +2229,7 @@ class DirectRtcSession(BoundControlSession):
             await self._speech_failed("announcement_manifest_publish_failed")
             return
         self._announcement_manifest_published = True
+        self._playout_echo_fingerprint = _speech_fingerprint(meta.text)
         await self._emit(self._speech_notice(meta, "speech_started"))
         self._speech_producer = asyncio.create_task(
             self._produce_speech(epoch, pcm_s16le, source),
@@ -2267,6 +2334,22 @@ class DirectRtcSession(BoundControlSession):
             and self._synthesis_task is None
             and self._speech_producer is None
         ):
+            # Source completion is not client playout completion. An explicit,
+            # authenticated barge-in may therefore arrive after the source has
+            # drained while its local-playout fence is still active. Retire
+            # that fence immediately; ordinary user-stop/mute/end paths remain
+            # proof-gated and retain the acoustic-tail behavior.
+            if reason == "barge_in" and self._playout_capture_hold:
+                self._fence_capture()
+                self._release_playout_capture_hold()
+                became_listening = self._update_capture_open()
+                if became_listening:
+                    await self._emit(
+                        SessionNotice(
+                            "media_state",
+                            metadata={"state": "listening"},
+                        )
+                    )
             return
         # This fence is deliberately the first mutation: callbacks, source
         # captures, and already-queued microphone frames from the old speech
@@ -2307,20 +2390,98 @@ class DirectRtcSession(BoundControlSession):
     def _hold_capture_for_client_playout(self) -> None:
         """Keep ASR closed until the coordinator proves local playout ended."""
 
-        task = self._playout_confirmation_task
+        confirmation_task = self._playout_confirmation_task
         self._playout_confirmation_task = None
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
+        if (
+            confirmation_task is not None
+            and confirmation_task is not asyncio.current_task()
+        ):
+            confirmation_task.cancel()
+        tail_task = self._playout_tail_task
+        self._playout_tail_task = None
+        if tail_task is not None and tail_task is not asyncio.current_task():
+            tail_task.cancel()
+        self._playout_hold_epoch += 1
+        self._playout_tail_guard = False
         self._playout_capture_hold = True
 
-    def _release_playout_capture_hold(self) -> None:
-        """Release one coordinator-authorized local-playout capture fence."""
+    def _release_playout_capture_hold(self, *, guard_tail: bool = False) -> None:
+        """Release one local-playout fence, optionally after an acoustic tail."""
 
-        self._playout_capture_hold = False
-        task = self._playout_confirmation_task
+        self._remember_playout_echo_fingerprint()
+        confirmation_task = self._playout_confirmation_task
         self._playout_confirmation_task = None
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
+        if (
+            confirmation_task is not None
+            and confirmation_task is not asyncio.current_task()
+        ):
+            confirmation_task.cancel()
+        if guard_tail and self._playout_capture_hold:
+            if self._playout_tail_guard:
+                return
+            self._playout_tail_guard = True
+            epoch = self._playout_hold_epoch
+            self._playout_tail_task = asyncio.create_task(
+                self._wait_for_playout_tail_guard(epoch),
+                name=f"voice-playout-tail-{self.binding.session_id}",
+            )
+            return
+        self._playout_hold_epoch += 1
+        self._playout_tail_guard = False
+        self._playout_capture_hold = False
+        tail_task = self._playout_tail_task
+        self._playout_tail_task = None
+        if tail_task is not None and tail_task is not asyncio.current_task():
+            tail_task.cancel()
+
+    def _remember_playout_echo_fingerprint(self) -> None:
+        fingerprint = self._playout_echo_fingerprint
+        self._playout_echo_fingerprint = None
+        if fingerprint is None:
+            return
+        now = self._monotonic()
+        self._prune_speech_fingerprints(now)
+        self._recent_speech_fingerprints.append(
+            _RecentSpeechFingerprint(
+                digest=fingerprint,
+                expires_at=now + SELF_SPEECH_SUPPRESSION_WINDOW_SECONDS,
+            )
+        )
+
+    def _active_speech_fingerprints(self) -> frozenset[bytes]:
+        now = self._monotonic()
+        self._prune_speech_fingerprints(now)
+        return frozenset(item.digest for item in self._recent_speech_fingerprints)
+
+    def _prune_speech_fingerprints(self, now: float) -> None:
+        while (
+            self._recent_speech_fingerprints
+            and self._recent_speech_fingerprints[0].expires_at <= now
+        ):
+            self._recent_speech_fingerprints.popleft()
+
+    async def _wait_for_playout_tail_guard(self, epoch: int) -> None:
+        try:
+            await asyncio.sleep(POST_PLAYOUT_CAPTURE_GUARD_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        self._enqueue_rtc(_OwnedEvent("playout_tail_guard_elapsed", (epoch,)))
+
+    async def _finish_playout_tail_guard(self, epoch: int) -> None:
+        if (
+            epoch != self._playout_hold_epoch
+            or not self._playout_capture_hold
+            or not self._playout_tail_guard
+        ):
+            return
+        self._playout_tail_task = None
+        self._playout_tail_guard = False
+        self._playout_capture_hold = False
+        became_listening = self._update_capture_open()
+        if became_listening:
+            await self._emit(
+                SessionNotice("media_state", metadata={"state": "listening"})
+            )
 
     def _schedule_playout_confirmation_timeout(self) -> None:
         """Fail closed when published output lacks a client terminal event."""
@@ -2330,17 +2491,18 @@ class DirectRtcSession(BoundControlSession):
         task = self._playout_confirmation_task
         if task is not None and not task.done():
             return
+        epoch = self._playout_hold_epoch
         self._playout_confirmation_task = asyncio.create_task(
-            self._wait_for_playout_confirmation(),
+            self._wait_for_playout_confirmation(epoch),
             name=f"voice-playout-confirmation-{self.binding.session_id}",
         )
 
-    async def _wait_for_playout_confirmation(self) -> None:
+    async def _wait_for_playout_confirmation(self, epoch: int) -> None:
         try:
             await asyncio.sleep(CLIENT_PLAYOUT_CONFIRMATION_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             raise
-        self._enqueue_rtc(_OwnedEvent("client_playout_timeout"))
+        self._enqueue_rtc(_OwnedEvent("client_playout_timeout", (epoch,)))
 
     async def _release_output(
         self,
@@ -2594,6 +2756,8 @@ class DirectRtcSession(BoundControlSession):
             self._retained_final_bytes = 0
             self._seen_transcript_dispositions.clear()
             self._seen_announcements.clear()
+            self._playout_echo_fingerprint = None
+            self._recent_speech_fingerprints.clear()
             for index in range(len(self._transcript_proof_key)):
                 self._transcript_proof_key[index] = 0
             self._client_turn_id = None

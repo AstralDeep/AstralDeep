@@ -1732,6 +1732,11 @@ class AppViewModel(
             }
         val chatOperation = status.action == "chat_message"
         val ownsCurrentChatTurn = chatOperation && status.requestGeneration == s.requestGeneration
+        // Completion can race ahead of the authoritative conversation snapshot.
+        // Keep the disposable answer/canvas overlay visible across that ordering;
+        // the snapshot remains the only event allowed to replace it atomically.
+        // Failed/cancelled/retryable terminals still discard the optimistic turn.
+        val discardsCurrentChatPreview = ownsCurrentChatTurn && status.state != "completed"
         return if (status.terminal) {
             val errorNotice =
                 status.error?.let { error ->
@@ -1752,13 +1757,17 @@ class AppViewModel(
                 banner = errorNotice ?: s.banner,
                 bannerKind = if (errorNotice != null) "error" else s.bannerKind,
                 turnActive = if (ownsCurrentChatTurn) false else s.turnActive,
+                // The operation is no longer busy, so retire the loading
+                // skeleton even while its already-rendered overlay awaits the
+                // authoritative snapshot.
                 pendingReplace = if (ownsCurrentChatTurn) false else s.pendingReplace,
-                pendingCanvas = if (ownsCurrentChatTurn) emptyList() else s.pendingCanvas,
-                preTurnCanvas = if (ownsCurrentChatTurn) emptyList() else s.preTurnCanvas,
-                turnOpsApplied = if (ownsCurrentChatTurn) false else s.turnOpsApplied,
-                transientCanvas = if (ownsCurrentChatTurn) null else s.transientCanvas,
-                pendingTurns = if (ownsCurrentChatTurn) emptyList() else s.pendingTurns,
-                lastTransientFrameSequence = if (ownsCurrentChatTurn) 0UL else s.lastTransientFrameSequence,
+                pendingCanvas = if (discardsCurrentChatPreview) emptyList() else s.pendingCanvas,
+                preTurnCanvas = if (discardsCurrentChatPreview) emptyList() else s.preTurnCanvas,
+                turnOpsApplied = if (discardsCurrentChatPreview) false else s.turnOpsApplied,
+                transientCanvas = if (discardsCurrentChatPreview) null else s.transientCanvas,
+                pendingTurns = if (discardsCurrentChatPreview) emptyList() else s.pendingTurns,
+                lastTransientFrameSequence =
+                    if (discardsCurrentChatPreview) 0UL else s.lastTransientFrameSequence,
                 stepTrail = if (ownsCurrentChatTurn) emptyList() else s.stepTrail,
                 asyncDetached = if (ownsCurrentChatTurn) false else s.asyncDetached,
             )

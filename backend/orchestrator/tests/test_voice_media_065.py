@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from orchestrator.voice_bootstrap import VoiceServices
 from orchestrator.voice_control_binding import VoiceControlClaims
 from orchestrator.voice_coordinator import (
     AnnouncementClaim,
@@ -18,7 +19,9 @@ from orchestrator.voice_coordinator import (
 )
 from orchestrator.voice_media import DirectRtcVoiceMedia, VoiceMediaActivationError
 from orchestrator.runtime_observability import RuntimeObservability
+from orchestrator.voice_runtime import VoiceSessionRuntime
 from orchestrator.voice_sessions import VoiceSessionRecord, VoiceTurnRecord
+from orchestrator.voice_worker_endpoint import WorkerControlSettings
 from shared.protocol import VoicePlayoutEvent
 from shared.watch_ticket import (
     derive_watch_nonce,
@@ -613,6 +616,122 @@ async def test_control_commands_share_one_assignment_and_end_releases_room() -> 
         "voice_interruption_total",
     }
     assert SESSION not in repr(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_authenticated_runtime_stop_barges_in_before_capture_can_be_reenabled() -> (
+    None
+):
+    workers = _Workers()
+    media = DirectRtcVoiceMedia(
+        livekit=_LiveKit(),
+        workers=workers,
+        clock=lambda: NOW,
+        monotonic=lambda: 100.0,
+    )
+    session = _session()
+    await media.activate(session)
+    active = await media.current_session(SESSION, 1)
+    assert active is not None
+    await media.speak_turn(_turn(), _claim(), text="On it!")
+    assert media._capture_playout_holds[(SESSION, 1)] == _claim().announcement_id
+
+    class Repository:
+        def get_controlled_session(self, **kwargs):
+            assert kwargs["user_id"] == "user-a"
+            assert kwargs["session_id"] == SESSION
+            assert kwargs["expected_generation"] == 1
+            assert kwargs["expected_media_grant_revision"] == 1
+            assert kwargs["control"].device_id == DEVICE
+            assert kwargs["control"].connection_generation == CONNECTION
+            return active
+
+    repository = Repository()
+    runtime = VoiceSessionRuntime(
+        repository=repository,  # type: ignore[arg-type]
+        capability=object(),
+        media=media,
+        replica_id="replica-a",
+        clock=lambda: NOW,
+    )
+    services = VoiceServices(
+        livekit=object(),  # type: ignore[arg-type]
+        worker_pool=workers,  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        coordinator=object(),  # type: ignore[arg-type]
+        capability=object(),  # type: ignore[arg-type]
+        media=media,
+        runtime=runtime,
+        worker_control_settings=WorkerControlSettings(
+            secret=b"voice-control-test-secret-with-32-bytes-minimum"
+        ),
+    )
+    runtime.bind_speech_stop_handler(services.stop_session_speech)
+    runner = await services._announcement_runner(_turn())
+
+    try:
+        capture_commands_before = len(
+            [name for name, _fields in workers.calls if name == "set_capture"]
+        )
+        await runtime.stop_speech(
+            user_id="user-a",
+            session_id=SESSION,
+            control={
+                "subject": "user-a",
+                "device_id": DEVICE,
+                "connection_generation": CONNECTION,
+                "binding_id": BINDING,
+                "binding_expires_at": NOW + timedelta(minutes=10),
+            },
+            request={
+                "expected_generation": 1,
+                "expected_media_grant_revision": 1,
+            },
+        )
+
+        assert not runner.task.done()
+        assert workers.calls[-1] == (
+            "stop_speech",
+            {"media_grant_revision": 1, "reason": "barge_in"},
+        )
+        assert (SESSION, 1) not in media._capture_playout_holds
+        assert len(
+            [name for name, _fields in workers.calls if name == "set_capture"]
+        ) == capture_commands_before
+
+        # A later authenticated enable must reach the worker. A stale
+        # coordinator playout hold would swallow it and strand capture closed.
+        await media.set_capture(active, True)
+        assert workers.calls[-1] == (
+            "set_capture",
+            {"media_grant_revision": 1, "enabled": True},
+        )
+    finally:
+        await services._close_announcement_runner(SESSION, 1)
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_stop_retains_playout_hold_for_authenticated_terminal() -> None:
+    workers = _Workers()
+    media = DirectRtcVoiceMedia(
+        livekit=_LiveKit(),
+        workers=workers,
+        clock=lambda: NOW,
+    )
+    session = _session()
+    await media.activate(session)
+    active = await media.current_session(SESSION, 1)
+    assert active is not None
+    claim = _claim()
+    await media.speak_turn(_turn(), claim, text="On it!")
+
+    await media.stop_speech(active)
+
+    assert workers.calls[-1] == (
+        "stop_speech",
+        {"media_grant_revision": 1, "reason": "user_stop"},
+    )
+    assert media._capture_playout_holds[(SESSION, 1)] == claim.announcement_id
 
 
 @pytest.mark.asyncio

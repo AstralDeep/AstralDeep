@@ -451,6 +451,31 @@ final class StatusLifecycleTests: XCTestCase {
         XCTAssertEqual(model.errorBanner, "The request failed.")
     }
 
+    func testTerminalChatSuccessBeforeSnapshotPreservesTransientTranscript() {
+        let model = preparedModel()
+        let sent = capturedFrame(model) { model.sendChat("hello") }
+        let requestGeneration = sent["request_generation"]!.stringValue!
+        model.transientTurns.append(
+            .init(id: "preview-1", role: "assistant", text: "Visible result"))
+
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"operation_status","operation_id":"\(operation)",
+                 "action":"chat_message","surface":"chat","chat_id":"\(chat)",
+                 "connection_generation":"\(connection)","request_generation":"\(requestGeneration)",
+                 "sequence":0,"state":"completed","phase":"completed","label":"Completed",
+                 "terminal":true,"retryable":false,"error":null,
+                 "retry_after_ms":null,"updated_at":"2026-07-16T12:00:00Z"}
+                """))
+
+        XCTAssertEqual(model.visibleTurns.map(\.text), ["hello", "Visible result"])
+        XCTAssertNil(model.statusText)
+        XCTAssertFalse(model.statusShowsActivity)
+        XCTAssertFalse(model.turnActive)
+        XCTAssertFalse(model.showSkeleton)
+    }
+
     func testChatTerminalAfterSnapshotUsesRetainedSubmissionFence() {
         let model = preparedModel()
         let sent = capturedFrame(model) { model.sendChat("hello") }

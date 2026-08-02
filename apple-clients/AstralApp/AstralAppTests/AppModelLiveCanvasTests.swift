@@ -1,4 +1,9 @@
 import AstralCore
+import SwiftUI
+import XCTest
+
+@testable import AstralDeep
+
 // Live-op rule (retires the 044 origin/co-viewer divergence): while a turn is
 // armed (`pendingReplace`), identity-keyed `ui_upsert`/stream ops apply
 // IMMEDIATELY to the visible canvas — morph-in-place, exactly as when no turn
@@ -8,10 +13,6 @@ import AstralCore
 // wins at commit, with mid-turn ops mirrored into it so nothing applied live
 // is lost. The first live op clears the query-start skeleton (web parity:
 // first canvas content hides it) without ending the turn-active state.
-import XCTest
-
-@testable import AstralDeep
-
 @MainActor
 final class AppModelLiveCanvasTests: XCTestCase {
 
@@ -254,4 +255,53 @@ final class AppModelLiveCanvasTests: XCTestCase {
             XCTAssertTrue(ContinuousActivityPresentation.allowsAnimatedIndicators)
         #endif
     }
+
+    func testTranscriptRowsMatchPlatformLayoutSafetyPolicy() {
+        #if os(macOS)
+            XCTAssertFalse(TranscriptLayoutPresentation.usesLazyRows)
+        #else
+            XCTAssertTrue(TranscriptLayoutPresentation.usesLazyRows)
+        #endif
+    }
+
+    #if os(macOS)
+        func testMacTranscriptLayoutSettlesAcrossVoiceCommitChurn() {
+            let model = AppModel()
+            model.turns = (0..<10).map { index in
+                .init(
+                    id: "committed-\(index)",
+                    role: index.isMultiple(of: 2) ? "user" : "assistant",
+                    text: String(repeating: "A bounded transcript row. ", count: 12))
+            }
+            let controller = NSHostingController(
+                rootView: ChatShell()
+                    .environment(model)
+                    .environment(model.themeStore))
+            controller.view.frame = CGRect(x: 0, y: 0, width: 960, height: 640)
+            controller.view.layoutSubtreeIfNeeded()
+
+            let started = CFAbsoluteTimeGetCurrent()
+            model.transientTurns = [
+                .init(id: "pending-voice", role: "user", text: "Voice question"),
+                .init(
+                    id: "preview-1", role: "assistant",
+                    text: String(repeating: "Streaming answer. ", count: 24)),
+            ]
+            model.turnActive = true
+            model.statusText = "Working…"
+            controller.view.needsLayout = true
+            controller.view.layoutSubtreeIfNeeded()
+
+            model.turns.append(contentsOf: model.transientTurns)
+            model.transientTurns = []
+            model.turnActive = false
+            model.statusText = nil
+            controller.view.needsLayout = true
+            controller.view.layoutSubtreeIfNeeded()
+
+            XCTAssertLessThan(
+                CFAbsoluteTimeGetCurrent() - started, 2,
+                "voice transcript replacement must not trap AppKit in lazy row placement")
+        }
+    #endif
 }

@@ -549,19 +549,81 @@ class DirectRtcVoiceMedia:
                     return True
                 return False
 
+    async def barge_in(self, session: VoiceSessionRecord) -> None:
+        """Interrupt explicit user-requested output and reopen eligible capture."""
+
+        await self._send_speech_stop(
+            session,
+            reason="barge_in",
+            release_capture_hold=True,
+        )
+
     async def stop_speech(self, session: VoiceSessionRecord) -> None:
-        reservation = await self._reservation(session)
+        """Fence lifecycle/mute output without bypassing client playout proof."""
+
+        await self._send_speech_stop(
+            session,
+            reason="user_stop" if not session.speech_muted else "mute",
+            release_capture_hold=False,
+        )
+
+    async def _send_speech_stop(
+        self,
+        session: VoiceSessionRecord,
+        *,
+        reason: str,
+        release_capture_hold: bool,
+    ) -> None:
         key = (session.session_id, session.generation)
+        async with self._lock:
+            reservation = self._reservations.get(key)
+            capture_lock = self._capture_command_locks.get(key)
+            active = self._sessions.get(key)
+            if (
+                reservation is None
+                or capture_lock is None
+                or active is None
+                or active.media_grant_revision != session.media_grant_revision
+            ):
+                raise VoiceMediaActivationError("worker_assignment_unavailable")
         started_at = self._monotonic_now()
         try:
-            await self._workers.send_session_command(
-                reservation,
-                "stop_speech",
-                {
-                    "media_grant_revision": session.media_grant_revision,
-                    "reason": "user_stop" if not session.speech_muted else "mute",
-                },
-            )
+            async with capture_lock:
+                async with self._lock:
+                    current = self._sessions.get(key)
+                    if (
+                        self._reservations.get(key) != reservation
+                        or self._capture_command_locks.get(key) is not capture_lock
+                        or current is None
+                        or current.media_grant_revision
+                        != session.media_grant_revision
+                    ):
+                        raise VoiceMediaActivationError(
+                            "worker_assignment_unavailable"
+                        )
+                await self._workers.send_session_command(
+                    reservation,
+                    "stop_speech",
+                    {
+                        "media_grant_revision": session.media_grant_revision,
+                        "reason": reason,
+                    },
+                )
+                if release_capture_hold:
+                    # The authenticated worker command fences its speech epoch
+                    # before reopening capture. Retire the matching
+                    # coordinator-side hold in the same serialized command
+                    # lane so a later microphone enable cannot be swallowed.
+                    async with self._lock:
+                        current = self._sessions.get(key)
+                        if (
+                            self._reservations.get(key) == reservation
+                            and self._capture_command_locks.get(key) is capture_lock
+                            and current is not None
+                            and current.media_grant_revision
+                            == session.media_grant_revision
+                        ):
+                            self._capture_playout_holds.pop(key, None)
         except asyncio.CancelledError:
             self._record_event(
                 session,
@@ -579,7 +641,14 @@ class DirectRtcVoiceMedia:
             )
             raise
         async with self._lock:
-            self._interruption_started_at[key] = started_at
+            if any(
+                current[0] == session.session_id
+                and current[1] == session.generation
+                for current in self._speech_waiters.values()
+            ):
+                self._interruption_started_at[key] = started_at
+            else:
+                self._interruption_started_at.pop(key, None)
         self._record_event(
             session,
             "interruption",

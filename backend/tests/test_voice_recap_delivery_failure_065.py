@@ -176,6 +176,7 @@ async def test_intentional_stop_marks_exact_success_recap_suppressed() -> None:
         assert delivery.turn.state == "succeeded"
         assert repository.turns[turn.turn_id].state == "succeeded"
         assert media.stops == 1
+        assert media.stop_kinds == ["barge_in"]
         await asyncio.sleep(0)
         assert len(media.calls) == 2
     finally:

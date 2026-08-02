@@ -140,6 +140,30 @@ final class StatusLifecycleTests: XCTestCase {
         XCTAssertFalse(model.statusShowsActivity)
     }
 
+    func testTerminalChatSuccessBeforeSnapshotPreservesTransientAnswer() {
+        let model = preparedModel()
+        model.transientEntries = [
+            .status(id: "preview-answer", text: "Visible result")
+        ]
+
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"operation_status","operation_id":"\(operation)",
+                 "action":"chat_message","surface":"chat","chat_id":"\(chat)",
+                 "connection_generation":"\(connection)","request_generation":"\(request)",
+                 "sequence":0,"state":"completed","phase":"completed","label":"Completed",
+                 "terminal":true,"retryable":false,"error":null,
+                 "retry_after_ms":null,"updated_at":"2026-07-16T12:00:00Z"}
+                """))
+
+        XCTAssertEqual(
+            model.transientEntries,
+            [.status(id: "preview-answer", text: "Visible result")])
+        XCTAssertNil(model.statusText)
+        XCTAssertFalse(model.statusShowsActivity)
+    }
+
     func testDisconnectClearsPendingSurfaceGeneration() async {
         let model = WatchModel()
         XCTAssertTrue(model.beginConversationConnection(connection))

@@ -257,6 +257,9 @@ class _Media:
     async def stop_speech(self, session):
         self.calls.append(("stop", session.session_id))
 
+    async def barge_in(self, session):
+        self.calls.append(("barge_in", session.session_id))
+
     async def end(self, session, reason):
         self.calls.append(("end", reason))
         if self.end_failure is not None:
@@ -832,7 +835,7 @@ async def test_stop_and_end_are_fenced_media_controls_not_task_cancellation() ->
         control=_control(),
         request=fences,
     )
-    assert ("stop", SESSION) in media.calls
+    assert ("barge_in", SESSION) in media.calls
     assert ("end", "user") in media.calls
     assert ended == [(SESSION, 1, "user")]
     assert not any(name == "cancel" for name, _ in repository.calls)

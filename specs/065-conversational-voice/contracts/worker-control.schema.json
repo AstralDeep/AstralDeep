@@ -349,7 +349,12 @@
             "type": { "const": "recognition_failed" },
             "client_turn_id": { "$ref": "#/$defs/uuid" },
             "reason": {
-              "enum": ["asr_failed", "empty_transcript", "invalid_asr_result"]
+              "enum": [
+                "asr_failed",
+                "empty_transcript",
+                "invalid_asr_result",
+                "self_speech"
+              ]
             },
             "occurred_at": { "$ref": "#/$defs/timestamp" }
           }

@@ -137,6 +137,7 @@ _VOICE_EVENT_REASONS = frozenset(
         "protocol_violation",
         "ready",
         "reconnecting",
+        "self_speech_suppressed",
         "speech_unavailable",
         "takeover",
         "transcript_replay",

@@ -590,12 +590,27 @@ test("sequenced transient overlay never mutates committed transcript or canvas",
   await receive(page, transient);
   await receive(page, { ...transient, frame_sequence: 1, html: '<div>Duplicate must not win</div>' });
   await receive(page, { ...transient, frame_sequence: 2, base_render_revision: 9, html: '<div>Wrong base</div>' });
+  await receive(page, {
+    ...transient,
+    target: "chat",
+    frame_sequence: 2,
+    html: '<div id="transient-answer">Transient answer</div>',
+  });
 
   await expect(page.locator("#astral-canvas [data-astral-transient-overlay]")).toContainText("Disposable preview");
+  await expect(page.locator("#astral-chat [data-astral-transient-overlay]")).toContainText("Transient answer");
   await expect(page.locator("#astral-canvas")).toContainText("ROTE-adapted canvas");
   await expect(page.locator("#astral-canvas")).not.toContainText("Duplicate must not win");
   await expect(page.locator("#astral-canvas")).not.toContainText("Wrong base");
   await expect(page.locator("#astral-chat")).toContainText("Committed answer");
+
+  // A successful operation terminal may race ahead of the authoritative
+  // snapshot. It settles activity but cannot discard the visible answer.
+  await receive(page, operationStatus(previewScope, OPERATION_A, 0, "completed"));
+  await expect(page.locator("#astral-status")).toHaveText("");
+  await expect(page.locator("#astral-status")).toHaveAttribute("aria-busy", "false");
+  await expect(page.locator("#astral-chat [data-astral-transient-overlay]")).toContainText("Transient answer");
+  await expect(page.locator("#astral-canvas [data-astral-transient-overlay]")).toContainText("Disposable preview");
 });
 
 

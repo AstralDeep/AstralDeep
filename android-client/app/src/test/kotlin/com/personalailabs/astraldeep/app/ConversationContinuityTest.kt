@@ -10,6 +10,7 @@ import com.personalailabs.astraldeep.app.transport.LocalSubmission
 import com.personalailabs.astraldeep.app.transport.OrchestratorClient
 import com.personalailabs.astraldeep.app.ui.AppViewModel
 import com.personalailabs.astraldeep.app.ui.ChatSegmentKind
+import com.personalailabs.astraldeep.app.ui.ChatTurn
 import com.personalailabs.astraldeep.app.ui.UiState
 import com.personalailabs.astraldeep.core.protocol.DeviceCapabilities
 import com.personalailabs.astraldeep.core.protocol.Inbound
@@ -345,6 +346,74 @@ class ConversationContinuityTest {
                 scope = transientScope(sequence = 2UL),
             )
         assertEquals("preview-2", vm.reduce(overlaid, second).transientCanvas?.single()?.id)
+    }
+
+    @Test
+    fun successful_terminal_before_commit_snapshot_keeps_transient_answer_visible() {
+        val committedCanvas = listOf(component("text", "committed", "Committed"))
+        var state =
+            vm.bindConversationGeneration(
+                UiState(
+                    activeChatId = chatId,
+                    turns = listOf(ChatTurn("assistant", "Earlier answer")),
+                    pendingTurns = listOf(ChatTurn("user", "Current question")),
+                    canvas = committedCanvas,
+                    preTurnCanvas = committedCanvas,
+                    lastCommittedRenderRevision = 4UL,
+                    turnActive = true,
+                    pendingReplace = true,
+                    statusText = "Running",
+                ),
+                commitBinding(),
+            )
+        state =
+            vm.reduce(
+                state,
+                Inbound.UiRender(
+                    target = "chat",
+                    components = listOf(component("text", "answer", "Transient answer")),
+                    scope = transientScope(sequence = 1UL),
+                ),
+            )
+        state =
+            vm.reduce(
+                state,
+                Inbound.UiRender(
+                    target = "canvas",
+                    components = listOf(component("text", "preview", "Transient canvas")),
+                    scope = transientScope(sequence = 2UL),
+                ),
+            )
+
+        val completed =
+            vm.reduce(
+                state,
+                queuedOperation(
+                    action = "chat_message",
+                    chat = chatId,
+                    connectionGeneration = connection,
+                    requestGeneration = commitRequest,
+                    state = "completed",
+                    sequence = 1UL,
+                ),
+            )
+
+        assertFalse(completed.hasActiveWork)
+        assertNull(completed.workingStatusText)
+        assertEquals(listOf("Current question", "Transient answer"), completed.pendingTurns.map { it.text })
+        assertEquals("preview", completed.transientCanvas?.single()?.id)
+        assertEquals(2UL, completed.lastTransientFrameSequence)
+        assertFalse(completed.pendingReplace)
+
+        val ready =
+            vm.reduce(
+                completed,
+                Inbound.ConversationCommitReady(1, chatId, connection, commitRequest, 5UL),
+            )
+        val committed = vm.reduce(ready, snapshot(5UL, "commit", request = commitRequest))
+        assertEquals("The result is 21.", committed.turns.single().text)
+        assertTrue(committed.pendingTurns.isEmpty())
+        assertNull(committed.transientCanvas)
     }
 
     @Test

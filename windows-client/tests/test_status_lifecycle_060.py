@@ -221,6 +221,35 @@ def test_replayed_success_on_initial_idle_does_not_create_completed_notice(windo
     assert window._operation_status_by_id[OPERATION].state == "completed"
 
 
+def test_success_before_commit_snapshot_preserves_transient_answer(window):
+    window._apply_transient_frame(
+        {
+            "type": "ui_render",
+            "target": "chat",
+            "components": [{"type": "text", "content": "Transient answer"}],
+        }
+    )
+    window._apply_transient_frame(
+        {
+            "type": "ui_render",
+            "target": "canvas",
+            "components": [{"type": "text", "content": "Transient canvas"}],
+        }
+    )
+
+    assert window._reduce_operation_status(
+        operation(0, "completed", action="chat_message")
+    )
+
+    assert window._transient_chat_lines == ["Transient answer"]
+    assert window._transient_canvas_components == [
+        {"type": "text", "content": "Transient canvas"}
+    ]
+    assert window.canvas._transient_overlay is not None
+    assert window._banner.text() == ""
+    assert window._banner.isHidden()
+
+
 def test_startup_metadata_is_retained_without_activity_banner(window):
     window.client.connection_generation = CONNECTION
     window.client._send = lambda _frame: None

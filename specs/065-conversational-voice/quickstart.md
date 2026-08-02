@@ -600,9 +600,10 @@ infrastructure candidate there is a non-waivable **pre-merge** prerequisite, not
 follow-up. Do not mark local Compose, mocks, simulator audio, Mac PySide, or a different candidate
 as staged/Windows-native/physical proof.
 
-Setup task T003 must first extend this collector and its protected schemas for all new voice
-identity and coverage inputs. Before every later user-requested implementation push, run the
-diagnostic collector:
+Task T189 records the completed collector and schema plumbing for all new voice identity and
+coverage inputs. T003 requires all ten native reports to be regenerated and the following
+diagnostic collector to run against one clean committed candidate before the next requested
+implementation push; every later requested implementation push requires an equivalent fresh run:
 
 ```bash
 BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence

@@ -235,6 +235,7 @@ class _RunnerMedia:
         self.futures: dict[str, asyncio.Future[str]] = {}
         self.active_announcement_id: str | None = None
         self.stops = 0
+        self.stop_kinds: list[str] = []
 
     async def speak_turn(self, turn, claim, **kwargs) -> None:
         if self.active_announcement_id is not None:
@@ -269,6 +270,12 @@ class _RunnerMedia:
 
     async def stop_speech(self, _session) -> None:
         self.stops += 1
+        self.stop_kinds.append("normal")
+        self.finish("speech_interrupted")
+
+    async def barge_in(self, _session) -> None:
+        self.stops += 1
+        self.stop_kinds.append("barge_in")
         self.finish("speech_interrupted")
 
     def finish(self, status: str = "speech_finished") -> None:
@@ -1135,6 +1142,95 @@ async def test_authenticated_recognition_failure_is_durably_rejected(
     assert len(services.preacceptance_guidance_tasks) == 1
     guidance_release.set()
     await _eventually(lambda: not services.preacceptance_guidance_tasks)
+
+
+@pytest.mark.asyncio
+async def test_self_speech_is_durably_abandoned_without_retry_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = {
+        "type": "recognition_failed",
+        "session_id": "00000000-0000-4000-8000-000000000051",
+        "generation": 1,
+        "client_turn_id": "00000000-0000-4000-8000-000000000052",
+        "reason": "self_speech",
+    }
+    rejected_turn = _voice_turn(
+        session_id=frame["session_id"],
+        turn_id="00000000-0000-4000-8000-000000000053",
+        state="abandoned",
+        rejection_reason="malformed_final",
+    )
+    session = SimpleNamespace(
+        user_id="user-a",
+        session_id=frame["session_id"],
+        generation=1,
+        foreground_active=True,
+        microphone_enabled=True,
+        device_kind="web",
+        transport="livekit",
+    )
+    idle_updates: list[dict[str, object]] = []
+    guidance: list[tuple[object, str]] = []
+    suppressions: list[object] = []
+    metrics = RuntimeObservability(deployment_instance="test")
+
+    class Coordinator:
+        async def suppress_self_speech(self, received):
+            assert received is frame
+            suppressions.append(received)
+            return SimpleNamespace(turn=rejected_turn)
+
+        async def reject_recognition_failed(self, _received):
+            raise AssertionError("self speech must not use the retrying rejection path")
+
+    class Repository:
+        def set_true_idle(self, **kwargs):
+            idle_updates.append(kwargs)
+            return session
+
+    class Media:
+        async def current_session(self, session_id: str, generation: int):
+            if (session_id, generation) == (session.session_id, 1):
+                return session
+            return None
+
+    services = VoiceServices(
+        livekit=object(),  # type: ignore[arg-type]
+        worker_pool=object(),  # type: ignore[arg-type]
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=Coordinator(),  # type: ignore[arg-type]
+        capability=object(),  # type: ignore[arg-type]
+        media=Media(),  # type: ignore[arg-type]
+        runtime=object(),  # type: ignore[arg-type]
+        worker_control_settings=WorkerControlSettings(
+            secret=b"voice-control-test-secret-with-32-bytes-minimum"
+        ),
+        observability=metrics,
+    )
+
+    def schedule_rejection(_services, turn, *, reason):
+        guidance.append((turn, reason))
+
+    monkeypatch.setattr(
+        VoiceServices,
+        "schedule_preacceptance_rejection",
+        schedule_rejection,
+    )
+
+    await services.handle_worker_frame(None, frame)  # type: ignore[arg-type]
+
+    assert len(idle_updates) == 1
+    assert idle_updates[0]["listening"] is False
+    assert suppressions == [frame]
+    assert guidance == []
+    assert services.preacceptance_guidance_tasks == set()
+    assert any(
+        sample.name == "voice_turn_total"
+        and sample.labels["result_code"] == "rejected"
+        and sample.labels["voice_reason"] == "self_speech_suppressed"
+        for sample in metrics.snapshot()
+    )
 
 
 @pytest.mark.asyncio

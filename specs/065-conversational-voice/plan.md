@@ -127,6 +127,17 @@ manifests mechanically cap each 24 kHz quantum at 96,000 samples and a result op
 no schema-valid track can consume the aggregate 30-second allowance at once. Five simultaneous users remain isolated
 for 30 minutes; a second accepted same-chat turn holds a running lease without waiting for the first.
 
+**Acoustic self-speech fence**: Normal capture resumes only after both authenticated client playout
+and worker-source completion, followed by a generation-fenced 500-millisecond acoustic-tail guard.
+The worker keeps at most eight ephemeral SHA-256 fingerprints of speech it actually published for
+three seconds after terminal playout. An exact normalized match whose VAD began in that window takes
+a dedicated `self_speech_suppressed` path: the recognizing row is abandoned with the existing
+`malformed_final`/`none` durable tuple, no retry/error frame or proof is emitted, and no dispatch is
+possible. Different speech and the same phrase after expiry remain eligible. Authenticated explicit
+barge-in advances the speech epoch and reopens capture immediately instead of waiting for the tail;
+ordinary playback completion, mute, end, reconnect, and stale epochs retain their stricter fences.
+Only digests, epochs, timers, and content-free disposition metadata exist; teardown clears them.
+
 **Constraints**: One foreground media session and at most two active voice-originated turns per
 authenticated user; five-minute true-idle
 expiry; foreground-only capture/playback; exact ASR/TTS/voice with no silent fallback; no raw or
@@ -180,8 +191,10 @@ disposable/failure tags; and uniquely labeled protected publisher hosts with ind
 recovery across cancellation, runner loss, host restart, and stale-lease expiry. T180 cannot
 complete while any of those four trust gaps remains open.
 
-After Setup task T003 and before any requested push containing feature code or release-evidence
-changes, run the deterministic diagnostic collector against the intended base:
+Task T189 establishes the deterministic diagnostic collector. Setup task T003 binds a fresh set of
+all ten native reports and the next run to one clean committed candidate before a requested push
+containing feature code or release-evidence changes; every later requested implementation push
+requires an equivalent fresh run against the intended base:
 
 ```bash
 BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence

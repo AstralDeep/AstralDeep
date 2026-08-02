@@ -19,7 +19,7 @@ from voice_agent.session import (
     SessionNotice,
     _OwnedEvent,
 )
-from voice_agent.speech_adapters import SynthesizedAudio
+from voice_agent.speech_adapters import SynthesizedAudio, Transcript
 from voice_agent.tests.test_session_start_065 import (
     NOW,
     FakeAsr,
@@ -368,7 +368,14 @@ async def test_assistant_output_and_platform_aec_gate_suppress_asr_then_resume()
 
 
 @pytest.mark.asyncio
-async def test_source_drain_completion_is_not_client_playout_proof() -> None:
+async def test_source_drain_and_client_terminal_keep_capture_closed_for_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        session_module,
+        "POST_PLAYOUT_CAPTURE_GUARD_SECONDS",
+        0.01,
+    )
     publication = FakePublication("TR_mic", track=FakeTrack())
     room = FakeRoom([FakeParticipant("client-a", [publication])])
     factory = FakeRtcFactory(room)
@@ -397,8 +404,157 @@ async def test_source_drain_completion_is_not_client_playout_proof() -> None:
 
     # This generation-fenced command models the coordinator's release only
     # after an exact authenticated client terminal playout event.
+    tail_epoch = session.capture_epoch
+    session.deliver(_set_capture(True))
+    await _wait_for(lambda: session._playout_tail_guard)
+    assert session.capture_open is False
+
+    # A confirmation timeout already queued at the terminal boundary is stale
+    # once the authenticated release has entered its tail phase.
+    session._enqueue_rtc(
+        _OwnedEvent("client_playout_timeout", (session._playout_hold_epoch,))
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert task.done() is False
+
+    # Render-tail frames that arrive after the client terminal remain fenced,
+    # and their old epoch cannot cross the later listening transition.
+    session._enqueue_rtc(_audio_event(tail_epoch))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert vad.calls == []
+    await _wait_for(lambda: session.capture_open)
+    assert session.capture_epoch > tail_epoch
+    session._enqueue_rtc(_audio_event(tail_epoch))
+    session._enqueue_rtc(_audio_event(session.capture_epoch))
+    await _wait_for(lambda: len(vad.calls) == 1)
+
+    await session.close("test")
+    await task
+
+
+@pytest.mark.asyncio
+async def test_authenticated_barge_in_releases_post_source_playout_hold_immediately() -> (
+    None
+):
+    publication = FakePublication("TR_mic", track=FakeTrack())
+    room = FakeRoom([FakeParticipant("client-a", [publication])])
+    notices: list[SessionNotice] = []
+    session = _direct_session(FakeRtcFactory(room), notices=notices)
+    task = asyncio.create_task(session.run())
+    await session.wait_started()
     session.deliver(_set_capture(True))
     await _wait_for(lambda: session.capture_open)
+
+    session.deliver(_speak())
+    await _wait_for(lambda: any(item.kind == "speech_finished" for item in notices))
+    assert session.capture_open is False
+    assert session._playout_capture_hold is True
+    assert session._playout_confirmation_task is not None
+
+    session.deliver(
+        {
+            "type": "stop_speech",
+            "session_id": _uuid(1),
+            "generation": 1,
+            "media_grant_revision": 1,
+            "reason": "barge_in",
+        }
+    )
+    await _wait_for(lambda: session.capture_open)
+
+    assert session._playout_capture_hold is False
+    assert session._playout_tail_guard is False
+    assert session._playout_confirmation_task is None
+
+    await session.close("test")
+    await task
+
+
+@pytest.mark.asyncio
+async def test_recent_speech_fingerprint_suppresses_only_bounded_exact_echo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        session_module,
+        "POST_PLAYOUT_CAPTURE_GUARD_SECONDS",
+        0.001,
+    )
+    suppression_window = session_module.SELF_SPEECH_SUPPRESSION_WINDOW_SECONDS
+    monotonic_now = [0.0]
+    publication = FakePublication("TR_mic", track=FakeTrack())
+    room = FakeRoom([FakeParticipant("client-a", [publication])])
+    probabilities = ([0.9] * 4 + [0.0] * 40) * 3
+    vad = FakeVad(probabilities)
+    asr = FakeAsr(
+        [
+            Transcript(" hello, WHAT can I help with ", "en"),
+            Transcript("Please show my tasks", "en"),
+            Transcript("Hello. What can I help with?", "en"),
+        ]
+    )
+    notices: list[SessionNotice] = []
+    session = DirectRtcSession(
+        _binding(),
+        rtc_factory=FakeRtcFactory(room),
+        vad=vad,
+        asr=asr,
+        tts=FakeTts(),
+        notice_sink=notices.append,
+        worker_control_secret=b"c" * 32,
+        utcnow=lambda: NOW,
+        monotonic=lambda: monotonic_now[0],
+    )
+    task = asyncio.create_task(session.run())
+    await session.wait_started()
+    session.deliver(_set_capture(True))
+    await _wait_for(lambda: session.capture_open)
+    session.deliver(_speak())
+    await _wait_for(lambda: any(item.kind == "speech_finished" for item in notices))
+    assert session._recent_speech_fingerprints == deque()
+
+    # A playout longer than the suppression window must not age out the
+    # fingerprint before the exact authenticated terminal release.
+    monotonic_now[0] += suppression_window + 1.0
+    session.deliver(_set_capture(True))
+    await _wait_for(lambda: session.capture_open)
+
+    assert len(session._recent_speech_fingerprints) == 1
+    fingerprint = session._recent_speech_fingerprints[0]
+    assert isinstance(fingerprint.digest, bytes)
+    assert not hasattr(fingerprint, "text")
+
+    def feed_utterance() -> None:
+        epoch = session.capture_epoch
+        for _ in range(44):
+            session._enqueue_rtc(_audio_event(epoch))
+
+    feed_utterance()
+    await _wait_for(
+        lambda: any(
+            item.kind == "recognition_failed" and item.reason == "self_speech"
+            for item in notices
+        )
+    )
+    assert session._retained_finals == {}
+    assert session._recognition_bindings == {}
+    await _wait_for(lambda: session.capture_open)
+
+    feed_utterance()
+    await _wait_for(lambda: len(session._retained_finals) == 1)
+    assert {item.text for item in session._retained_finals.values()} == {
+        "Please show my tasks"
+    }
+    await _wait_for(lambda: session.capture_open)
+
+    monotonic_now[0] += suppression_window + 1.0
+    feed_utterance()
+    await _wait_for(lambda: len(session._retained_finals) == 2)
+    assert {item.text for item in session._retained_finals.values()} == {
+        "Hello. What can I help with?",
+        "Please show my tasks",
+    }
 
     await session.close("test")
     await task

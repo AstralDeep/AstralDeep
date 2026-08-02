@@ -2361,21 +2361,42 @@ class VoiceSessionRepository:
         """Abandon one authenticated pre-final ASR failure without content."""
 
         return await asyncio.to_thread(
-            self._reject_worker_recognition_sync,
+            self._abandon_worker_recognition_sync,
             binding=binding,
             control_owner_id=control_owner_id,
             now=now,
+            retry_policy="explicit_user_retry",
         )
 
-    def _reject_worker_recognition_sync(
+    async def suppress_worker_self_speech(
         self,
         *,
         binding: TranscriptTurnBinding,
         control_owner_id: str,
         now: datetime,
     ) -> TurnMutation:
+        """Content-freely abandon recognized playback without inviting a retry."""
+
+        return await asyncio.to_thread(
+            self._abandon_worker_recognition_sync,
+            binding=binding,
+            control_owner_id=control_owner_id,
+            now=now,
+            retry_policy="none",
+        )
+
+    def _abandon_worker_recognition_sync(
+        self,
+        *,
+        binding: TranscriptTurnBinding,
+        control_owner_id: str,
+        now: datetime,
+        retry_policy: str,
+    ) -> TurnMutation:
         if not isinstance(binding, TranscriptTurnBinding):
             raise TypeError("binding must be TranscriptTurnBinding")
+        if retry_policy not in {"explicit_user_retry", "none"}:
+            raise ValueError("invalid_recognition_retry_policy")
         control_owner_id = _opaque(
             control_owner_id,
             "invalid_control_owner_id",
@@ -2438,8 +2459,7 @@ class VoiceSessionRepository:
             if row["state"] == "abandoned":
                 if (
                     row.get("rejection_reason") == "malformed_final"
-                    and row.get("rejection_retry_policy")
-                    == "explicit_user_retry"
+                    and row.get("rejection_retry_policy") == retry_policy
                 ):
                     return TurnMutation(_turn(row), replayed=True)
                 raise IdempotencyConflict("transcript_rejection_conflict")
@@ -2450,12 +2470,12 @@ class VoiceSessionRepository:
                 UPDATE voice_turn
                 SET state = 'abandoned', terminal_kind = 'abandoned',
                     rejection_reason = 'malformed_final',
-                    rejection_retry_policy = 'explicit_user_retry',
+                    rejection_retry_policy = %s,
                     terminal_at = %s, updated_at = %s
                 WHERE turn_id = %s
                 RETURNING *
                 """,
-                (now, now, binding.turn_id),
+                (retry_policy, now, now, binding.turn_id),
             )
             row = cursor.fetchone()
         return TurnMutation(_turn(row))

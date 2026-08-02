@@ -228,7 +228,7 @@ _TRANSCRIPT_REJECTION_REASONS = frozenset(
 )
 _TRANSCRIPT_RETRY_POLICIES = frozenset({"explicit_user_retry", "none"})
 _RECOGNITION_FAILURE_REASONS = frozenset(
-    {"asr_failed", "empty_transcript", "invalid_asr_result"}
+    {"asr_failed", "empty_transcript", "invalid_asr_result", "self_speech"}
 )
 
 
@@ -1540,6 +1540,45 @@ class WorkerPool:
             ):
                 raise StaleFence("recognition_binding_conflict")
             return binding
+
+    async def clear_suppressed_recognition(
+        self,
+        binding: TranscriptTurnBinding,
+    ) -> None:
+        """Clear one exact recognition binding without sending a disposition."""
+
+        if not isinstance(binding, TranscriptTurnBinding):
+            raise TypeError("binding must be TranscriptTurnBinding")
+        async with self._lock:
+            assignment = self._assignments.get(binding.session_id)
+            if assignment is None:
+                raise StaleFence("stale_assignment")
+            if assignment.request.generation != binding.generation:
+                raise StaleFence("stale_generation")
+            if (
+                assignment.assignment_id != binding.assignment_id
+                or assignment.worker_identity != binding.worker_identity
+            ):
+                raise StaleFence("stale_worker_assignment")
+            self._current_connection_locked(assignment.connection_id)
+            recognition = assignment.recognitions.get(binding.client_turn_id)
+            current = assignment.turn_bindings.get(binding.client_turn_id)
+            if recognition is None or current is None:
+                raise StaleFence("recognition_not_bound")
+            if current != binding or (
+                recognition.session_id != binding.session_id
+                or recognition.generation != binding.generation
+                or recognition.assignment_id != binding.assignment_id
+                or recognition.worker_identity != binding.worker_identity
+                or recognition.client_turn_id != binding.client_turn_id
+                or recognition.media_grant_revision != binding.media_grant_revision
+                or recognition.chat_id != binding.chat_id
+                or recognition.chat_context_revision
+                != binding.chat_context_revision
+            ):
+                raise StaleFence("recognition_binding_conflict")
+            assignment.turn_bindings.pop(binding.client_turn_id)
+            assignment.recognitions.pop(binding.client_turn_id)
 
     async def _await_assignment_state(
         self,
@@ -4217,6 +4256,14 @@ class VoiceCoordinatorRepository(Protocol):
         now: datetime,
     ) -> Any: ...
 
+    async def suppress_worker_self_speech(
+        self,
+        *,
+        binding: TranscriptTurnBinding,
+        control_owner_id: str,
+        now: datetime,
+    ) -> Any: ...
+
 
 class VoiceCoordinator:
     """Thin authority facade joining worker-pool and durable claim seams."""
@@ -4399,7 +4446,7 @@ class VoiceCoordinator:
             "invalid_client_turn_id",
             ControlProtocolError,
         )
-        if frame.get("reason") not in _RECOGNITION_FAILURE_REASONS:
+        if frame.get("reason") not in _RECOGNITION_FAILURE_REASONS - {"self_speech"}:
             raise ControlProtocolError("invalid_recognition_failure_reason")
         binding = await self.worker_pool.current_recognition_binding(
             session_id=session_id,
@@ -4438,6 +4485,65 @@ class VoiceCoordinator:
             reason="malformed_final",
             retry_policy="explicit_user_retry",
         )
+        return mutation
+
+    async def suppress_self_speech(
+        self,
+        frame: Mapping[str, Any],
+    ) -> Any:
+        """Durably suppress authenticated playback recognition without output."""
+
+        if not isinstance(frame, Mapping) or frame.get("type") != "recognition_failed":
+            raise ControlProtocolError("invalid_recognition_failed_frame")
+        session_id = _uuid4(
+            frame.get("session_id"),
+            "invalid_session_id",
+            ControlProtocolError,
+        )
+        generation = _positive(
+            frame.get("generation"),
+            "invalid_generation",
+            ControlProtocolError,
+        )
+        client_turn_id = _uuid4(
+            frame.get("client_turn_id"),
+            "invalid_client_turn_id",
+            ControlProtocolError,
+        )
+        if frame.get("reason") != "self_speech":
+            raise ControlProtocolError("invalid_recognition_failure_reason")
+        binding = await self.worker_pool.current_recognition_binding(
+            session_id=session_id,
+            generation=generation,
+            client_turn_id=client_turn_id,
+        )
+        now = _aware(self._utcnow(), "invalid_coordinator_clock")
+        try:
+            mutation = await self._repository.suppress_worker_self_speech(
+                binding=binding,
+                control_owner_id=self._replica_id,
+                now=now,
+            )
+        except VoiceCoordinatorError:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise ClaimUnavailable("coordinator_repository_failed") from None
+        turn = getattr(mutation, "turn", None)
+        returned = TranscriptTurnBinding.from_turn(
+            turn,
+            assignment_id=binding.assignment_id,
+            worker_identity=binding.worker_identity,
+        )
+        if (
+            returned != binding
+            or getattr(turn, "state", None) != "abandoned"
+            or getattr(turn, "rejection_reason", None) != "malformed_final"
+            or getattr(turn, "rejection_retry_policy", None) != "none"
+        ):
+            raise ClaimUnavailable("invalid_repository_self_speech_suppression")
+        await self.worker_pool.clear_suppressed_recognition(binding)
         return mutation
 
     async def emit_transcript_accepted(

@@ -1069,7 +1069,9 @@ final class AppModel: NSObject {
                 requestGeneration: status.requestGeneration)
             clearLocalOperationSubmission(requestGeneration: status.requestGeneration)
             if ownsActiveChatTurn {
-                settleActiveChatTurn(requestGeneration: status.requestGeneration)
+                settleActiveChatTurn(
+                    requestGeneration: status.requestGeneration,
+                    discardUncommitted: status.state != "completed")
             }
             if let message = status.error.objectValue?["message"]?.stringValue {
                 bannerIsError = true
@@ -1122,7 +1124,9 @@ final class AppModel: NSObject {
             action: submission.action,
             requestGeneration: submission.requestGeneration)
         {
-            settleActiveChatTurn(requestGeneration: submission.requestGeneration)
+            settleActiveChatTurn(
+                requestGeneration: submission.requestGeneration,
+                discardUncommitted: true)
         }
         statusText = latestActiveOperationStatusText()
         bannerIsError = true
@@ -1956,17 +1960,26 @@ final class AppModel: NSObject {
                 || pendingCommitRequestGeneration == requestGeneration)
     }
 
-    private func settleActiveChatTurn(requestGeneration: String) {
+    private func settleActiveChatTurn(
+        requestGeneration: String,
+        discardUncommitted: Bool
+    ) {
         turnActive = false
         pendingReplace = false
-        pendingCanvas = []
         liveOpsThisTurn = false
-        transientTurns = []
-        transientCanvas = nil
         stepTrail = []
         asyncDetached = false
-        if pendingCommitRequestGeneration == requestGeneration {
-            pendingCommitRequestGeneration = nil
+        // A successful operation status is only lifecycle evidence. The
+        // authoritative conversation_snapshot may follow it, so keep the
+        // visible transient result until that atomic commit replaces it.
+        // Only a definitive failure/refusal is allowed to discard the overlay.
+        if discardUncommitted {
+            pendingCanvas = []
+            transientTurns = []
+            transientCanvas = nil
+            if pendingCommitRequestGeneration == requestGeneration {
+                pendingCommitRequestGeneration = nil
+            }
         }
     }
 

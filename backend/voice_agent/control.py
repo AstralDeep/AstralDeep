@@ -1686,6 +1686,7 @@ class PoolClient:
                 "asr_failed",
                 "empty_transcript",
                 "invalid_asr_result",
+                "self_speech",
             }:
                 raise ProtocolViolation("invalid_notice_recognition_failure_reason")
             return {

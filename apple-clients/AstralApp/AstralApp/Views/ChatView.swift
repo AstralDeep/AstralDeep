@@ -406,25 +406,48 @@ private struct ChatList: View {
     private var visible: [AppModel.ChatTurn] {
         model.visibleTurns.filter { !$0.text.isEmpty || !$0.components.isEmpty }
     }
+
+    @ViewBuilder
+    private var rows: some View {
+        ForEach(visible) { turn in ChatBubble(turn: turn) }
+        if let status = model.statusText {
+            StatusLine(text: status, showsActivity: model.statusShowsActivity)
+                .id("status")
+        }
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(visible) { turn in ChatBubble(turn: turn) }
-                    if let status = model.statusText {
-                        StatusLine(text: status, showsActivity: model.statusShowsActivity)
-                            .id("status")
+                if TranscriptLayoutPresentation.usesLazyRows {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        rows
                     }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                } else {
+                    // AppKit's lazy placement engine can fail to converge when
+                    // a voice turn replaces pending rows with committed rows
+                    // while the status row disappears. An eager stack has a
+                    // deterministic content height and avoids that graph loop.
+                    VStack(alignment: .leading, spacing: 8) {
+                        rows
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
                 }
-                .padding(.horizontal, 12).padding(.vertical, 8)
             }
             .accessibilityIdentifier("conversation-message-scroll")
             .scrollDismissesKeyboard(.immediately)
-            .onChange(of: visible.count) { _, _ in
-                // Unanimated: an animated scrollTo re-lays-out the transcript
-                // every animation frame, compounding the live-turn layout storm
-                // (063 livelock). A jump costs exactly one pass.
-                if let last = visible.last { proxy.scrollTo(last.id, anchor: .bottom) }
+            .onChange(of: visible.count) { oldCount, newCount in
+                guard newCount > oldCount, let lastID = visible.last?.id else { return }
+                // Do not mutate scroll geometry inside the same AttributeGraph
+                // transaction that inserted the row. Even an unanimated
+                // synchronous scroll can feed AppKit's anchor translation back
+                // into lazy placement before that transaction settles.
+                Task { @MainActor in
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    proxy.scrollTo(lastID, anchor: .bottom)
+                }
             }
         }
     }
@@ -839,6 +862,20 @@ private struct SendButton: View {
 }
 
 // MARK: - shimmer + safe index
+
+enum TranscriptLayoutPresentation {
+    /// AppKit's `LazyVStack` placement can remain inside one AttributeGraph
+    /// transaction when transcript identities and heights change together.
+    /// iOS keeps lazy rows for long mobile transcripts; macOS uses bounded,
+    /// eager placement inside the rail's concrete viewport.
+    static var usesLazyRows: Bool {
+        #if os(macOS)
+            false
+        #else
+            true
+        #endif
+    }
+}
 
 enum ContinuousActivityPresentation {
     /// AppKit's indeterminate progress views and animation timelines can feed

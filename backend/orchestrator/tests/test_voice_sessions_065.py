@@ -1566,6 +1566,163 @@ def test_worker_recognition_failure_is_atomic_idempotent_and_assignment_fenced(
         )
 
 
+def test_worker_self_speech_suppression_is_content_free_and_non_retrying(
+    repository: VoiceSessionRepository,
+    database: Database,
+) -> None:
+    chat_id = str(uuid.uuid4())
+    create = _create(chat_id=uuid.UUID(chat_id))
+    database.execute(
+        "INSERT INTO chats (id, user_id, title, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (chat_id, create.user_id, "Voice self speech", 1, 1),
+    )
+    session = _activate_and_sync(repository, create)
+    start = RecognitionStart(
+        session_id=session.session_id,
+        generation=session.generation,
+        assignment_id=session.worker_assignment_id,
+        worker_identity=session.worker_identity,
+        client_turn_id=str(uuid.uuid4()),
+        media_grant_revision=session.media_grant_revision,
+        chat_id=chat_id,
+        chat_context_revision=session.chat_context_revision,
+    )
+    created = asyncio.run(
+        repository.bind_worker_recognition(
+            start=start,
+            control_owner_id="replica-a",
+            now=NOW,
+        )
+    )
+    binding = TranscriptTurnBinding.from_turn(
+        created.turn,
+        assignment_id=session.worker_assignment_id,
+        worker_identity=session.worker_identity,
+    )
+
+    with pytest.raises(ClaimUnavailable, match="control_lease_not_owned"):
+        asyncio.run(
+            repository.suppress_worker_self_speech(
+                binding=binding,
+                control_owner_id="replica-b",
+                now=NOW + timedelta(milliseconds=100),
+            )
+        )
+    with pytest.raises(StaleSessionFence, match="stale_generation"):
+        asyncio.run(
+            repository.suppress_worker_self_speech(
+                binding=replace(binding, generation=binding.generation + 1),
+                control_owner_id="replica-a",
+                now=NOW + timedelta(milliseconds=200),
+            )
+        )
+    with pytest.raises(StaleSessionFence, match="recognition_binding_conflict"):
+        asyncio.run(
+            repository.suppress_worker_self_speech(
+                binding=replace(binding, chat_id=str(uuid.uuid4())),
+                control_owner_id="replica-a",
+                now=NOW + timedelta(milliseconds=300),
+            )
+        )
+
+    suppressed = asyncio.run(
+        repository.suppress_worker_self_speech(
+            binding=binding,
+            control_owner_id="replica-a",
+            now=NOW + timedelta(seconds=1),
+        )
+    )
+    replay = asyncio.run(
+        repository.suppress_worker_self_speech(
+            binding=binding,
+            control_owner_id="replica-a",
+            now=NOW + timedelta(seconds=2),
+        )
+    )
+
+    assert suppressed.turn.state == "abandoned"
+    assert suppressed.turn.rejection_reason == "malformed_final"
+    assert suppressed.turn.rejection_retry_policy == "none"
+    assert replay.replayed is True
+    row = database.fetch_one(
+        "SELECT state, rejection_reason, rejection_retry_policy "
+        "FROM voice_turn WHERE turn_id = ?",
+        (binding.turn_id,),
+    )
+    assert row == {
+        "state": "abandoned",
+        "rejection_reason": "malformed_final",
+        "rejection_retry_policy": "none",
+    }
+
+    proof_binding = TranscriptProofBinding(
+        session_id=binding.session_id,
+        generation=binding.generation,
+        media_grant_revision=binding.media_grant_revision,
+        assignment_id=binding.assignment_id,
+        worker_identity=binding.worker_identity,
+        turn_id=binding.turn_id,
+        client_turn_id=binding.client_turn_id,
+        submission_id=binding.submission_id,
+        request_generation=binding.request_generation,
+        chat_id=binding.chat_id,
+        chat_context_revision=binding.chat_context_revision,
+        detected_language="en",
+    )
+    issued = issue_transcript_proof(
+        b"c" * 32,
+        proof_binding,
+        "Echoed assistant speech",
+        now=NOW,
+    )
+    submission = TranscriptSubmission(
+        user_id=create.user_id,
+        session_id=binding.session_id,
+        generation=binding.generation,
+        media_grant_revision=binding.media_grant_revision,
+        turn_id=binding.turn_id,
+        client_turn_id=binding.client_turn_id,
+        submission_id=binding.submission_id,
+        request_generation=binding.request_generation,
+        chat_id=binding.chat_id,
+        chat_context_revision=binding.chat_context_revision,
+        source_participant_identity=binding.worker_identity,
+        detected_language="en",
+        text=issued.canonical_text,
+        text_digest_sha256=issued.text_digest_sha256,
+        transcript_proof=issued.transcript_proof,
+        proof_expires_at=issued.proof_expires_at,
+    )
+    with pytest.raises(TranscriptSubmissionRejected) as refusal:
+        repository.admit_transcript(
+            submission,
+            worker_control_secret=b"c" * 32,
+            now=NOW + timedelta(seconds=2, milliseconds=500),
+        )
+    assert (refusal.value.reason, refusal.value.retry_policy) == (
+        "invalid_binding",
+        "none",
+    )
+
+    with pytest.raises(IdempotencyConflict, match="transcript_rejection_conflict"):
+        asyncio.run(
+            repository.reject_worker_recognition(
+                binding=binding,
+                control_owner_id="replica-a",
+                now=NOW + timedelta(seconds=3),
+            )
+        )
+    with pytest.raises(StaleSessionFence, match="stale_worker_assignment"):
+        asyncio.run(
+            repository.suppress_worker_self_speech(
+                binding=replace(binding, assignment_id=str(uuid.uuid4())),
+                control_owner_id="replica-a",
+                now=NOW + timedelta(seconds=4),
+            )
+        )
+
+
 def _admit_bound_turn(
     repository: VoiceSessionRepository,
     session,
