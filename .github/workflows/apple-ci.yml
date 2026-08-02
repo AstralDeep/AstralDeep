@@ -190,6 +190,18 @@ jobs:
             build/060/coverage/apple-${{ matrix.slug }}-unit-xccov.json
           if-no-files-found: error
           retention-days: 14
+      - name: Stage app unit success marker
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/apple-required"
+          printf '%s\n' '${{ matrix.slug }}' > "${RUNNER_TEMP}/apple-required/app-unit-${{ matrix.slug }}.ok"
+      - name: Publish app unit success marker
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-required-app-unit-${{ matrix.slug }}
+          path: ${{ runner.temp }}/apple-required/app-unit-${{ matrix.slug }}.ok
+          if-no-files-found: error
+          retention-days: 1
 
   first-login-ui:
     name: Required · ${{ matrix.name }} first-login and voice UI
@@ -271,6 +283,7 @@ jobs:
               -scheme AstralApp \
               -destination "$dest" \
               -configuration Debug \
+              CODE_SIGNING_ALLOWED=NO \
               -enableCodeCoverage YES \
               -test-timeouts-enabled YES \
               -default-test-execution-time-allowance 180 \
@@ -318,6 +331,18 @@ jobs:
             build/060/coverage/apple-${{ matrix.slug }}-first-login-xccov.json
           if-no-files-found: error
           retention-days: 14
+      - name: Stage first-login success marker
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/apple-required"
+          printf '%s\n' '${{ matrix.slug }}' > "${RUNNER_TEMP}/apple-required/first-login-${{ matrix.slug }}.ok"
+      - name: Publish first-login success marker
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-required-first-login-${{ matrix.slug }}
+          path: ${{ runner.temp }}/apple-required/first-login-${{ matrix.slug }}.ok
+          if-no-files-found: error
+          retention-days: 1
 
   watch-continuity:
     name: Required · watchOS 26.5 continuity coverage
@@ -415,6 +440,29 @@ jobs:
       - first-login-ui
       - watch-continuity
     steps:
+      # `needs.<matrix-job>.result` can report the result of only one matrix
+      # child. Requiring one current-run artifact from every child prevents a
+      # later successful sibling from hiding a failed platform.
+      - name: Require iOS app-unit success
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: apple-required-app-unit-ios
+          path: ${{ runner.temp }}/apple-required/app-unit-ios
+      - name: Require macOS app-unit success
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: apple-required-app-unit-macos
+          path: ${{ runner.temp }}/apple-required/app-unit-macos
+      - name: Require iOS first-login success
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: apple-required-first-login-ios
+          path: ${{ runner.temp }}/apple-required/first-login-ios
+      - name: Require macOS first-login success
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: apple-required-first-login-macos
+          path: ${{ runner.temp }}/apple-required/first-login-macos
       - name: Enforce every non-waivable Apple result
         shell: bash
         run: |

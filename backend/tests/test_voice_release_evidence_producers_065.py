@@ -154,6 +154,10 @@ def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only()
             '/app/tooling/contract-ci/validate_voice_contracts.py:ro"'
         ),
         (
+            "tooling/evaluate_voice_recap_matrix_065.py:"
+            '/app/tooling/evaluate_voice_recap_matrix_065.py:ro"'
+        ),
+        (
             "tooling/voice-worker/closure_manifest.py:"
             '/app/tooling/voice-worker/closure_manifest.py:ro"'
         ),
@@ -222,6 +226,11 @@ def test_apple_ci_gates_voice_suites_and_every_xccov_input() -> None:
     assert "swift test --package-path apple-clients/AstralCore" in workflow
     assert "-only-testing:AstralAppTests" in workflow
     assert "-only-testing:AstralAppUITests/VoiceConversationUITests" in workflow
+    first_login_job = workflow.split("  first-login-ui:", 1)[1].split(
+        "  watch-continuity:", 1
+    )[0]
+    assert "-configuration Debug" in first_login_job
+    assert "CODE_SIGNING_ALLOWED=NO" in first_login_job
     assert "-only-testing:AstralWatchTests" in workflow
     assert "apple-${{ matrix.slug }}-unit-xccov.json" in workflow
     assert "apple-${{ matrix.slug }}-first-login-xccov.json" in workflow
@@ -230,3 +239,24 @@ def test_apple_ci_gates_voice_suites_and_every_xccov_input() -> None:
     assert "needs.app-unit-tests.result" in workflow
     assert "needs.first-login-ui.result" in workflow
     assert "needs.watch-continuity.result" in workflow
+    app_unit_job = workflow.split("  app-unit-tests:", 1)[1].split(
+        "  first-login-ui:", 1
+    )[0]
+    app_unit_marker = app_unit_job.split("- name: Stage app unit success marker", 1)[1]
+    assert "name: apple-required-app-unit-${{ matrix.slug }}" in app_unit_marker
+    assert "if: always()" not in app_unit_marker
+    first_login_marker = first_login_job.split(
+        "- name: Stage first-login success marker", 1
+    )[1]
+    assert "name: apple-required-first-login-${{ matrix.slug }}" in first_login_marker
+    assert "if: always()" not in first_login_marker
+    for marker in (
+        "apple-required-app-unit-ios",
+        "apple-required-app-unit-macos",
+        "apple-required-first-login-ios",
+        "apple-required-first-login-macos",
+    ):
+        assert marker in workflow
+    assert workflow.count(
+        "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+    ) >= 4

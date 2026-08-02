@@ -3437,6 +3437,12 @@
     requestState.acceptedPresentation = candidate.presentationCanonical;
     if (requestState.purpose === "hydration") requestState.hydrationApplied = true;
     requestState.snapshotApplied = true;
+    if (requestState.purpose === "hydration") {
+      // The atomic hydration snapshot is the authoritative completion of a
+      // load_chat request. Retire only that local submission/status owner;
+      // committed result snapshots still wait for their operation terminal.
+      settleHydrationStatus(frame.request_generation);
+    }
     continueVoiceAfterHydration(frame);
     return continuityDisposition("snapshot_applied");
   }
@@ -3539,7 +3545,13 @@
 
   function operationStatusShowsActivity(frame) {
     var local = operationSubmissionByGeneration[frame.request_generation];
-    return !(local && local.shows_status === false);
+    if (local && local.shows_status === false) return false;
+    // load_chat can still emit compatibility work after its atomic snapshot.
+    // That late operation projection is reconciliation state, not visible
+    // activity, because the requested conversation is already restored.
+    return !(frame.action === "load_chat" && requestState
+      && requestState.purpose === "hydration" && requestState.snapshotApplied
+      && frame.request_generation === requestState.generation);
   }
 
   function newestActiveOperationStatus() {
@@ -3586,6 +3598,17 @@
         );
       } else setStatus("");
     }
+  }
+
+  function settleHydrationStatus(requestGeneration) {
+    var owners = ["operation-submission:" + requestGeneration];
+    Object.keys(operationStatusById).forEach(function (operationId) {
+      if (operationStatusById[operationId].request_generation === requestGeneration) {
+        owners.push("operation:" + operationId);
+      }
+    });
+    finishOperationSubmission(requestGeneration);
+    restoreActiveStatusOrClear(owners);
   }
 
   /** Retain/render one canonical operation projection. */
@@ -3644,7 +3667,8 @@
       // Failure/cancellation/retry guidance persists, but is settled and must
       // never look like work is still in progress.
       setStatus(visible, false, "operation-error:" + frame.operation_id);
-    } else if ((!localSubmission || localSubmission.shows_status !== false)
+    } else if (operationStatusShowsActivity(frame)
+        && (!localSubmission || localSubmission.shows_status !== false)
         && !(statusOwner && statusOwner.indexOf("operation-error:") === 0)) {
       setStatus(visible, true, operationOwner);
     }

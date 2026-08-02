@@ -273,6 +273,96 @@ test("locator is present before registration and equal hydration replaces atomic
 });
 
 
+test("interactive hydration snapshot settles load activity and ignores late progress", async ({ page }) => {
+  await installHarness(page);
+  const { frame: registrationFrame } = await registration(page);
+  await page.evaluate((chatId) => {
+    const button = document.createElement("button");
+    button.className = "astral-action";
+    button.dataset.action = "load_chat";
+    button.dataset.payload = JSON.stringify({ chat_id: chatId });
+    document.body.appendChild(button);
+    button.click();
+  }, CHAT_ID);
+  const load = await page.evaluate(() => window.__socketEvents.findLast((candidate) => (
+    candidate.frame.type === "ui_event" && candidate.frame.action === "load_chat"
+  )).frame);
+  const loadScope = {
+    connection_generation: registrationFrame.connection_generation,
+    request_generation: load.request_generation,
+  };
+  const status = page.locator("#astral-status");
+  await expect(status).toHaveText("Submitting…");
+  await receive(page, operationStatus(loadScope, OPERATION_A, 0, "accepted", {
+    action: "load_chat",
+    surface: "history",
+    label: "Restoring conversation…",
+  }));
+  await expect(status).toHaveText("Restoring conversation…");
+
+  await receive(page, snapshot(loadScope));
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+
+  await receive(page, operationStatus(loadScope, OPERATION_A, 1, "running", {
+    action: "load_chat",
+    surface: "history",
+    label: "Late restore must stay hidden",
+  }));
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+  await receive(page, operationStatus(loadScope, OPERATION_A, 2, "completed", {
+    action: "load_chat",
+    surface: "history",
+  }));
+  await expect(status).toHaveText("");
+});
+
+
+test("hydration completion preserves a newer local submission", async ({ page }) => {
+  await installHarness(page);
+  const { frame: registrationFrame } = await registration(page);
+  await page.evaluate((chatId) => {
+    for (const [action, payload] of [
+      ["load_chat", { chat_id: chatId }],
+      ["get_dashboard", {}],
+    ]) {
+      const button = document.createElement("button");
+      button.className = "astral-action";
+      button.dataset.action = action;
+      button.dataset.payload = JSON.stringify(payload);
+      document.body.appendChild(button);
+      button.click();
+    }
+  }, CHAT_ID);
+  const load = await page.evaluate(() => window.__socketEvents.find((candidate) => (
+    candidate.frame.type === "ui_event" && candidate.frame.action === "load_chat"
+  )).frame);
+  const newer = await page.evaluate(() => window.__socketEvents.findLast((candidate) => (
+    candidate.frame.type === "ui_event" && candidate.frame.action === "get_dashboard"
+  )).frame);
+  const status = page.locator("#astral-status");
+  await expect(status).toHaveText("Submitting…");
+
+  await receive(page, snapshot({
+    connection_generation: registrationFrame.connection_generation,
+    request_generation: load.request_generation,
+  }));
+  await expect(status).toHaveText("Submitting…");
+  await expect(status).toHaveAttribute("aria-busy", "true");
+
+  await receive(page, operationStatus({
+    connection_generation: registrationFrame.connection_generation,
+    request_generation: newer.request_generation,
+  }, OPERATION_B, 0, "completed", {
+    action: "get_dashboard",
+    surface: "dashboard",
+  }));
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-busy", "false");
+});
+
+
 test("operation status is visible only while active and terminal failures stay settled", async ({ page }) => {
   await installHarness(page);
   const { frame: scope } = await registration(page);

@@ -1433,6 +1433,8 @@ test("fresh-chat activation hydrates, adopts its first commit, and refreshes his
     transcript: [],
     canvas: { target: "canvas", components: [] },
   });
+  await expect(page.locator("#astral-status")).toHaveText("");
+  await expect(page.locator("#astral-status")).toHaveAttribute("aria-busy", "false");
   await page.waitForFunction(() => window.__rooms.some((room) => room.connected));
   expect(await page.evaluate(() => window.__gumCalls)).toBe(1);
 
