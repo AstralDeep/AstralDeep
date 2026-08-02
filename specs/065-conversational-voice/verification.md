@@ -656,3 +656,39 @@ release, distribution, staging, or dependency-closure claim and cannot be reused
 Because the successor also expands the approved changed-path set, it requires nine newly generated
 reports, a fresh external inventory, a fresh unedited allowlisted-lead approval, fresh verification
 and push-preflight records, and a new lease-bound push receipt. T003 therefore remains open.
+
+## Successor bootstrap and Android aggregate follow-up
+
+Exact successor `7139ac2fe7bb119aff722cc1f117c5de201a1cb2` completed a separate bounded
+Constitution 2.9 bootstrap from the clean `bfb49c8` policy checkout. Its nine fresh local report
+SHA-256 values were `b7be7f51e70bcee383d7736532d793ba04d967d52520076edb6f409278bfa838`
+(backend), `0158c5acc61e88011279365924c1eabf2a1fda076876a2e7155be44a5d984858`
+(worker), `d870f404753112d6d4ce6ad753c9091ed9acb09a62425de72bf0e79290b1fe1c`
+(tooling), `6c8ac62aa33eac1d126175e2fca7c805aa55750e95d005551a280afe261ea7f4`
+(web), `ee0b3c199d8547837de7c47ee110d2952b7761db3370de01429be1cdd82472f0`
+(Android app), `0f9576b20304c883140e6e233a4cc1736954f3f58775aa8f1ec042c3a7960f6e`
+(Android core), `99613cc1aa1a302166ef540005473877ae06792e72b23cb12cd76e876ee6315e`
+(iOS), `255860103cd95b8f98727d1070eda5aff88306a360fa07bc37928d1747b8f3e4`
+(macOS), and `fbaed75bb3843bc0f0b69e4315af36abc84e9aff61fa3307c2807602d891da9b`
+(watchOS). The inventory SHA-256 was
+`445049e837925f3b4a9ae2750f140d10118ac3e2989eb208a704a0bc4047ec5a`; unedited
+allowlisted-lead approval comment `5160690143` had canonical payload SHA-256
+`dba97e42edadcc63dc453f59a10b20eb16e84397d747b45a6f61676d6f66cfa5`.
+Verification, push-preflight, and receipt file SHA-256 values were
+`4ad6751f98348dbb34658d27fc54ff941d8c9c72f419027a159bf623e883c891`,
+`57e86d2b22f1885bc3538586a8409570c864430c731a34bad6b223f0160334fa`, and
+`9f210c4953739dff10c66cbb3d0c6fa73407db38b7487fb7d701ef8310ef68de`.
+The receipt records the lease-bound push at `2026-08-02T22:41:35Z`, binds verification identity
+`ffaa88c49dbb0b6629282aa41a8a0f4df82c88b483924233927cb7afd045c8f4`, and retains
+`protected_release_authorization=false`.
+
+That run confirmed the two intended repairs: `voice-web-conformance` passed and uploaded its
+host-readable coverage report, while Android `build-test` and the required instrumented-emulator
+job both passed through strict AAPT2 verification. The only Android failure was the required
+aggregate wrapper itself. Its no-checkout job inherited the workflow-level
+`working-directory: android-client`, so the runner could not start `/usr/bin/bash` in a directory
+that did not exist. The current local successor explicitly runs that aggregate step from repository
+root and adds a scoped source-contract regression. The four affected release/workflow test modules
+pass 152/152 and `actionlint` accepts the workflow. Because this is another candidate SHA, a third
+fresh report/inventory/approval/verification/lease-push cycle is required before CI can validate the
+wrapper repair. T003 and T180 remain open; no merge or release authority is claimed.

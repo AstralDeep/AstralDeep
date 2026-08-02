@@ -167,6 +167,7 @@ jobs:
       - instrumented
     steps:
       - name: Enforce every Android conformance and coverage producer
+        working-directory: .
         run: |
           [[ '${{ needs.build-test.result }}' == 'success' ]]
           [[ '${{ needs.instrumented.result }}' == 'success' ]]

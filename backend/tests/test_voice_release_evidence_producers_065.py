@@ -271,6 +271,13 @@ def test_android_ci_gates_all_voice_suites_and_kover_inputs() -> None:
     assert "needs.instrumented.result" in workflow
     assert "needs.build-test.result" in workflow
 
+    aggregate = workflow.split("  android-required:", 1)[1]
+    assert (
+        "      - name: Enforce every Android conformance and coverage producer\n"
+        "        working-directory: .\n"
+        "        run: |"
+    ) in aggregate
+
 
 def test_apple_ci_gates_voice_suites_and_every_xccov_input() -> None:
     workflow = (WORKFLOW_ROOT / "apple-ci.yml").read_text(encoding="utf-8")
