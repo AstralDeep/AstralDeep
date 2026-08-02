@@ -504,6 +504,7 @@ jobs:
       - name: Scan the complete Git history without repository secrets
         run: >-
           gitleaks git --redact --config "$GITHUB_WORKSPACE/.gitleaks.toml"
+          --gitleaks-ignore-path "$GITHUB_WORKSPACE/.gitleaksignore"
           --log-opts="--all" "$GITHUB_WORKSPACE"
 
   # ── Feature 060 (T107/T119/T120): the same-candidate release-readiness

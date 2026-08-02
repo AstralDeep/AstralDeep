@@ -69,7 +69,9 @@ release archive, pinned by SHA-256
 `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`.
 CI verifies the archive before extraction and executes the CLI over `--all`
 history without exposing `GITLEAKS_LICENSE` or another repository secret to a
-candidate workflow.
+candidate workflow. `.gitleaksignore` contains only 12 exact
+commit/path/rule/line fingerprints for reviewed historical false positives; it
+does not add a path, rule, regex, or future-finding wildcard.
 
 Added by the T107/T119 protected-trust implementation on 2026-07-16 (both
 resolved live against their official upstreams before pinning):

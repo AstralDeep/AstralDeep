@@ -63,6 +63,8 @@
          the privileged-readiness draft and candidate-ref dispatch exclusions
       ✅ backend/tests/test_python_ci_supply_chain_060.py — pins and verifies
          the secret-free Gitleaks CLI supply chain
+      ✅ .gitleaksignore — exact fingerprints retain 12 reviewed historical
+         false positives without weakening future or path-wide detection
       ✅ specs/060-runtime-reliability-hardening/verification/dependencies.md —
          records the Gitleaks action-to-checksum-pinned-CLI transition
       ✅ specs/029-agents-adaptive-ui-ci/contracts/ci-pipeline.md — authoritative

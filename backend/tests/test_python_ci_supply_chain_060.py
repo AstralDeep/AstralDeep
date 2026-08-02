@@ -20,6 +20,7 @@ TOOLING_ROOT = REPO_ROOT / "tooling" / "python-ci"
 INPUT = TOOLING_ROOT / "requirements.in"
 LOCK = TOOLING_ROOT / "requirements.lock.txt"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+GITLEAKS_IGNORE = REPO_ROOT / ".gitleaksignore"
 WINDOWS_CANDIDATE = (
     REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 )
@@ -150,9 +151,22 @@ def test_ci_secret_scan_uses_checksum_pinned_secret_free_cli() -> None:
     assert "sha256sum --check --strict" in job
     assert 'test "$("$install_root/gitleaks" version)" = "$GITLEAKS_VERSION"' in job
     assert 'gitleaks git --redact --config "$GITHUB_WORKSPACE/.gitleaks.toml"' in job
+    assert '--gitleaks-ignore-path "$GITHUB_WORKSPACE/.gitleaksignore"' in job
     assert '--log-opts="--all"' in job
     assert "secrets." not in job
     assert "GITLEAKS_LICENSE" not in job
+
+
+def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
+    fingerprints = GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
+    assert len(fingerprints) == 12
+    assert len(fingerprints) == len(set(fingerprints))
+    assert all(
+        re.fullmatch(
+            r"[0-9a-f]{40}:[^:]+:generic-api-key:[1-9][0-9]*", fingerprint
+        )
+        for fingerprint in fingerprints
+    )
 
 
 def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> None:
