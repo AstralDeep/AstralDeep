@@ -11,6 +11,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
 
@@ -142,7 +143,7 @@ jobs:
             -w /work/tooling/web-ci \
             -e ASTRAL_VOICE_COVERAGE_ISTANBUL_OUTPUT=/work/build/065/coverage/web-istanbul.json \
             "$PLAYWRIGHT_IMAGE" sh -lc \
-            'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run check:product-isolation && corepack npm exec -- playwright test tests/voice-conversation-065.spec.js'
+            'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run check:product-isolation && corepack npm exec -- playwright test tests/voice-conversation-065.spec.js && chmod 0644 /work/build/065/coverage/web-istanbul.json'
           test -s build/065/coverage/web-istanbul.json
       - name: Archive the web Istanbul input
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -503,13 +504,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: test
-    # TEMPORARY (2026-07-17): coverage enforcement is deferred while the 060
-    # branch's single-lane changed-product-coverage is brought to 90% (the
-    # honest measurement excludes test files; residual product-code gaps —
-    # orchestrator.py et al. — get targeted tests when we circle back). The job
-    # still runs and reports the number as an annotation, but does not block.
-    # Re-enable by removing this one line. See verification/HANDOFF.md.
-    continue-on-error: true
+    # The legacy backend-only report cannot consume the separate worker,
+    # tooling, Windows, web, Android, or Apple producers used by the canonical
+    # multi-lane gate. PR 151's bounded bootstrap remains draft-only, so only
+    # that exact draft diagnostic may retain the existing non-blocking posture.
+    # Ready-for-review and main runs remain hard failures below 90%.
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -544,10 +543,22 @@ jobs:
       # the spec's multi-lane authority is check_changed_coverage.py. This gate
       # measures CHANGED PRODUCT code.
       - name: Enforce 90% on changed Python lines
+        id: backend_diff_coverage
+        continue-on-error: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && github.event.pull_request.number == 151 && github.head_ref == '065-conversational-voice' }}
         run: >
           diff-cover backend/coverage.xml --compare-branch origin/main
           --fail-under 90
           --exclude '*/tests/*' 'backend/tests/*' 'backend/conftest.py' '*/conftest.py'
+      - name: Report the draft-only backend coverage diagnostic
+        if: ${{ always() && steps.backend_diff_coverage.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.draft == true && github.event.pull_request.number == 151 && github.head_ref == '065-conversational-voice' }}
+        run: |
+          echo "::warning title=Draft-only backend coverage diagnostic::The legacy backend-only report did not meet the required 90% threshold. The canonical multi-lane coverage gate remains required before merge or release."
+          {
+            echo "### Draft-only backend coverage diagnostic"
+            echo
+            echo "The legacy backend-only report did not meet its 90% threshold."
+            echo "PR 151 remains draft; canonical multi-lane coverage is still required before merge or release."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── FR-036: boot-smoke the built image. (1) dev posture answers /healthz +
   #    /readyz with a real DB; (2) production posture with placeholder/missing

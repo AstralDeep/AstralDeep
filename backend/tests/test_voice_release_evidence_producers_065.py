@@ -138,6 +138,16 @@ def test_standard_ci_gates_contract_validation_windows_and_web_coverage() -> Non
     assert "build/065/coverage/web-istanbul.json" in workflow
     assert "name: web-voice-istanbul" in workflow
 
+    web_job = workflow.split("\n  voice-web-conformance:", 1)[1].split(
+        "\n  release-tooling-tests:", 1
+    )[0]
+    conformance_step = web_job.split(
+        "- name: Run C0-C6 in the digest-pinned Playwright image", 1
+    )[1].split("- name:", 1)[0]
+    assert "tests/voice-conversation-065.spec.js" in conformance_step
+    assert "ASTRAL_VOICE_COVERAGE_ISTANBUL_OUTPUT" in conformance_step
+    assert "chmod 0644 /work/build/065/coverage/web-istanbul.json" in conformance_step
+
     publish_needs = workflow.split("  publish:", 1)[1].split("    if:", 1)[0]
     for required_job in (
         "voice-contract-validator",

@@ -4,10 +4,10 @@
 **Status**: local implementation diagnostic and draft-PR candidate preparation; not an immutable
 release candidate
 **Local base**: Constitution 2.9 merge `bfb49c800be27546b527a6dc844f9f21a333d7fe`
-**Remote state at current verification start**: PR 151 remains at
-`a5daf99068ec82e93f86f6a9acdc4d5c0fc3aa2e` and is now draft. Local commits `cf30319`, `dcc84ff`,
-and merge `8404de4` remain unpushed; this artifact refresh is also uncommitted, so no bootstrap
-candidate SHA or new push is claimed.
+**Current draft-PR candidate**: PR 151 is draft at
+`db8df82e308f126c53194c7fda5001209635d067`. That exact SHA was pushed through the bounded
+Constitution 2.9 diagnostic bootstrap described below; the current uncommitted CI repair is a
+successor candidate and has no bootstrap approval or remote identity yet.
 
 This record deliberately separates source/build/test evidence, local live evidence, login-bound
 evidence, and unavailable release evidence. It contains no transcript, recap, audio, credential,
@@ -23,9 +23,14 @@ is tied to committed lifecycle/result metadata rather than being inserted into m
 
 Constitution 2.9 and its fail-closed exact-SHA evidence bootstrap merged through PR 152 at
 `bfb49c800be27546b527a6dc844f9f21a333d7fe` after every required CI check passed. PR 151 was then
-converted to draft before that exact main commit was integrated. The bootstrap is planned but has
-not yet run: no inventory, lead approval, verification, preflight, push receipt, or remote candidate
-exists for the pending local tree.
+converted to draft before that exact main commit was integrated. The first bounded bootstrap then
+completed for exact candidate `db8df82e308f126c53194c7fda5001209635d067`: nine fresh local
+reports passed, the external inventory failed closed with only the nine permitted provider-bound
+inputs absent, an allowlisted lead approved that exact diagnostic push, and the separate clean
+default-branch verifier produced verification, push-preflight, and lease-bound push receipts. That
+approval authorized only the one draft diagnostic push. Its CI run exposed three additional
+diagnostic failures, now repaired locally for a successor SHA that must repeat the complete
+bootstrap before it can be pushed.
 
 The real local direct-RTC probe has exercised LiveKit media, Silero VAD, Whisper transcription,
 transcript proof validation, and ordinary dispatch. The synthetic local user was rejected by the
@@ -317,9 +322,10 @@ physical barge-in/echo-tail evidence remains open.
 
 ## Explicitly unverified or failing release claims
 
-- No final immutable release candidate or candidate-bound release-evidence bundle exists for these
-  pending local changes. The bounded bootstrap can authorize only one exact draft diagnostic push;
-  it cannot establish merge, distribution, or release readiness.
+- No final immutable release candidate or candidate-bound release-evidence bundle exists. The
+  bounded bootstrap authorized only the exact `db8df82` draft diagnostic push; it did not establish
+  merge, distribution, or release readiness. The current local CI repair is a new candidate and has
+  no inherited approval.
 - The Feature-065 pre-push diagnostic gate was not complete before implementation checkpoints
   `dfea619`, `43fba94`, `2332234`, and `a5daf99` were pushed. T003 records that historical violation
   without retroactively treating later evidence as compliance. The ordinary path still requires all
@@ -327,8 +333,9 @@ physical barge-in/echo-tail evidence remains open.
   `BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence`. For the bounded Darwin
   bootstrap, the next clean candidate instead requires nine fresh local coverage inputs and an
   external handled-exit-2 inventory that classifies only the Windows report plus eight platform
-  evidence documents as provider-bound. The exact lead approval and verifier receipts do not yet
-  exist, qualifying external staging remains unavailable, and T003 remains open.
+  evidence documents as provider-bound. Candidate `db8df82` completed that bounded path, but T003
+  explicitly requires a complete repetition for every repair SHA. The current successor has not
+  done so, qualifying external staging remains unavailable, and T003 remains open.
 - The worker is deliberately marked `distribution-approved=false`: `backend/voice_agent/CLOSURE.json`
   is an inventory schema rather than a final approval fingerprint, the development marker is all
   zeroes, and the required DHI login-backed signature/SBOM/VEX plus same-candidate dual-architecture
@@ -580,8 +587,72 @@ T003 remains open. Before Constitution 2.9 existed, clean candidate `cf30319` ra
 `BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence`; it exited 2 and failed
 closed with `evidence directory does not exist: build/060/release-evidence`. That diagnostic was
 correct for the policy then in force and does not become a bootstrap approval retroactively.
-`cf30319`, documentation commit `dcc84ff`, and Constitution-integration merge `8404de4` remain
-local and unpushed. PR 151 is now draft and contains no new remote SHA. The next candidate must
-generate the nine required Darwin-local reports, pass every named local gate, then obtain a fresh
-external inventory, unedited allowlisted-lead approval, verification, and lease-bound push receipt
-from the exact default-branch verifier. No such external record is claimed yet.
+`cf30319`, documentation commit `dcc84ff`, and Constitution-integration merge `8404de4` were local
+and unpushed at that historical checkpoint. The later exact `db8df82` bootstrap supersedes only
+that remote-state description; it does not make any earlier push retroactively compliant.
+
+## Constitution 2.9 bootstrap for `db8df82`
+
+PR 151 remained draft throughout the first bounded bootstrap. The external inventory bound base
+and policy commit `bfb49c800be27546b527a6dc844f9f21a333d7fe`, previous remote head
+`a5daf99068ec82e93f86f6a9acdc4d5c0fc3aa2e`, and exact candidate
+`db8df82e308f126c53194c7fda5001209635d067`. Strict evidence preparation exited 2 and classified
+exactly these provider-bound inputs as missing: `android_evidence`, `backend_evidence`,
+`docs_evidence`, `ios_evidence`, `macos_evidence`, `watchos_evidence`, `web_evidence`,
+`windows_evidence`, and `windows_python`. The nine required local inputs were fresh for that exact
+candidate and had these SHA-256 identities:
+
+- backend Python: `51eabc68326ede46fd5eb585570ec33778e9d7f40fd189084c5112a5fd981270`;
+- voice-worker Python: `535c68b9796a87e8f4e2ef635926c3abf7066efb649fb98e2a873fbd7711a7a8`;
+- tooling Python: `58c08448722efb1d934406ceeea5fd4552a51609829c2bb4dbafe6e702fc736a`;
+- JavaScript: `6c8ac62aa33eac1d126175e2fca7c805aa55750e95d005551a280afe261ea7f4`;
+- Android app/core: `ee0b3c199d8547837de7c47ee110d2952b7761db3370de01429be1cdd82472f0` /
+  `0f9576b20304c883140e6e233a4cc1736954f3f58775aa8f1ec042c3a7960f6e`;
+- iOS: `0c2a81310d74a33aefca36ae8bbda5b42252a7c0e0c60c20a1e261a0647f7cbb`;
+- macOS: `f1f5df7ddb860c2b71e7a72dfa7a2311d98f9c3c14976c135763592407b4fa9d`;
+  and
+- watchOS: `510f96122ffb4f4cb1d25bc02f7a287ed44e0e390b9a98ae0f53789141454189`.
+
+Only content-free record identities are mirrored here. The raw external inventory SHA-256 is
+`10ccc7fa7aa89d7d5c506e5e0abe7168b63565b647449d9cc5689ddb093f014f`. Allowlisted-lead
+approval comment 5160537086 is retained at
+`https://github.com/AstralDeep/AstralDeep/pull/151#issuecomment-5160537086`; its canonical approval
+SHA-256 is `bc701bf8e38a9baa8e6c4cfb9434c19913ed7a2bb0041f4a70893c8ed00dc59b`, its raw retained
+snapshot SHA-256 is `b856158de7d6df50adb3647f6762e7bb48719e8fce70afb80318fab7b5899afe`, and it expires
+`2026-08-04T00:00:00Z`. The allowlist and verifier SHA-256 identities are
+`2882305099ce2ce2ad77956e150ef4b08f69283e444c6cbc33b185890b9b4b96` and
+`89a450cf4ad065d1e22d572f4e5e19c992971b5014944d8c16df13a9592db2d8`. The verification,
+distinct push-preflight, and push-receipt raw SHA-256 identities are
+`a35fa8170a81da604373ccaae0e0ff5acddfd6d260de0d59b81f369944e7dd20`,
+`fe49e98c2dc869080a24e0a56cf500b4f5891a4cc3874bfc73597ed6b01f4082`, and
+`b74b8c6352a93cd1903f262539ce8bdf4d28e657b95a34f8e08509019b964b70`. The receipt binds
+verification SHA-256 `6a6e4005f19c361d339c5a82863535abeb6117b7b6d947501123cd0702d6b90f`
+and records the lease-bound push at `2026-08-02T22:00:56Z`.
+
+The resulting diagnostic CI run found two independent cross-host gaps. All 48 web conformance tests
+passed, but artifact upload could not read the root-created Istanbul file because it retained mode
+`0600`. Android build and instrumented jobs stopped before test execution because strict dependency
+verification lacked the official Linux AAPT2 artifact hash; the Android aggregate failure was
+downstream. The local successor makes the successful container set the report to mode `0644` and
+adds the independently verified exact Linux artifact SHA-256. Both paths have focused regression
+guards, and the exact digest-pinned web rerun passed 48/48 with a host-readable report.
+
+The legacy backend-only coverage diagnostic also reported 71% over 15,166 changed Python lines,
+with 4,285 uncovered. That report cannot consume the separate worker, tooling, Windows, web,
+Android, or Apple producers used by the canonical multi-lane decision, and its job already carried
+an unconditional non-blocking setting. The successor narrows that posture to only draft PR 151 on
+this exact branch, leaves the `--fail-under 90` command and every product path unchanged, and emits
+an explicit warning plus job summary when the diagnostic remains below threshold. A
+`ready_for_review` transition now reruns the same SHA without that tolerance, and main remains
+blocking. This conditional diagnostic result does not satisfy T180's final exact-SHA ten-report
+coverage decision or authorize merge or release.
+
+The original candidate's backend test and flags-off jobs, Windows client job, and every Apple
+continuity, first-login/voice-UI, formatting, core, and aggregate job completed successfully. No
+additional failure category appeared after those long-running jobs finished.
+
+This bootstrap explicitly records `protected_release_authorization=false`. It authorizes no merge,
+release, distribution, staging, or dependency-closure claim and cannot be reused by the successor.
+Because the successor also expands the approved changed-path set, it requires nine newly generated
+reports, a fresh external inventory, a fresh unedited allowlisted-lead approval, fresh verification
+and push-preflight records, and a new lease-bound push receipt. T003 therefore remains open.

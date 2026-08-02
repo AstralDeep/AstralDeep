@@ -1282,6 +1282,43 @@ def test_ci_voice_worker_is_distribution_disabled_but_keeps_test_lane() -> None:
     assert "voice-worker-test" in publish
 
 
+def test_ci_draft_151_coverage_diagnostic_cannot_waive_merge_gate() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    head = _workflow_head(workflow)
+    assert (
+        "types: [opened, synchronize, reopened, ready_for_review, "
+        "converted_to_draft]" in head
+    )
+
+    job = _workflow_job(workflow, "coverage-gate")
+    job_header = job.split("    steps:", 1)[0]
+    assert "continue-on-error" not in job_header
+
+    coverage_step = job.split("- name: Enforce 90% on changed Python lines", 1)[
+        1
+    ].split("- name:", 1)[0]
+    assert "id: backend_diff_coverage" in coverage_step
+    assert "continue-on-error:" in coverage_step
+    assert "github.event_name == 'pull_request'" in coverage_step
+    assert "github.event.pull_request.draft == true" in coverage_step
+    assert "github.event.pull_request.number == 151" in coverage_step
+    assert "github.head_ref == '065-conversational-voice'" in coverage_step
+    assert "--fail-under 90" in coverage_step
+    assert "voice_agent" not in coverage_step
+
+    warning_step = job.split(
+        "- name: Report the draft-only backend coverage diagnostic", 1
+    )[1]
+    assert "always()" in warning_step
+    assert "steps.backend_diff_coverage.outcome == 'failure'" in warning_step
+    assert "::warning title=Draft-only backend coverage diagnostic::" in warning_step
+    assert '>> "$GITHUB_STEP_SUMMARY"' in warning_step
+    assert "canonical multi-lane coverage" in warning_step
+
+    publish = _workflow_job(workflow, "publish")
+    assert "coverage-gate" in publish
+
+
 def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
     guard = (
         "github.event_name != 'workflow_dispatch' || "

@@ -192,3 +192,18 @@ def test_android_verification_metadata_hashes_approved_binary_artifacts() -> Non
         assert component in metadata
         assert artifact in metadata
         assert f'value="{digest}"' in metadata
+
+    aapt2 = metadata.split(
+        '<component group="com.android.tools.build" name="aapt2" '
+        'version="9.2.1-15009934">',
+        1,
+    )[1].split("</component>", 1)[0]
+    assert 'name="aapt2-9.2.1-15009934-linux.jar"' in aapt2
+    linux_aapt2 = aapt2.split(
+        '<artifact name="aapt2-9.2.1-15009934-linux.jar">',
+        1,
+    )[1].split("</artifact>", 1)[0]
+    assert (
+        'value="755f6727fb3f4cce5e319eac0f3618ed4b36b49a46d4bb2cbb6fa8e9175a54d6"'
+        in linux_aapt2
+    )
