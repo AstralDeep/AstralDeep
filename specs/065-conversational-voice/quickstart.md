@@ -14,17 +14,18 @@ git log -5 --oneline --decorate
 ```
 
 Expected branch: `065-conversational-voice`. Re-inventory remote spec trees before Spec Kit work.
-Feature 064 has separate ownership and may land from another machine; do not edit it, and rebase
-065 before choosing the final schema revision or editing overlapping client/project files.
+The authorized feature-064 handoff is now integrated: its final schema revision `064.001` is the
+strict predecessor of target `065.001`. Preserve that boundary and fail closed if the checked-out
+schema no longer matches it; do not edit the separately owned 064 spec or reconstruct its work.
 
 The current working tree already contains an unrelated owner edit to
 `apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj`. Preserve and review that diff before
 any project-file change; never replace or regenerate it blindly.
 
-Before installing any dependency, record lead-developer approval in the implementation PR for the
-exact LiveKit server/Agents/API/VAD/web/Windows/Android/Apple pins, all transitives/native
-artifacts, licenses/notices, CVEs, hashes/locks, model artifact, package/image impact, and the
-isolated test-only contract validators/lock.
+The owner has approved the RTC-only architecture. Before distribution, retain matching PR review
+for the exact LiveKit server, orchestrator API, worker RTC/NumPy/ONNX/Silero,
+web/Windows/Android/Apple pins, all transitives/native artifacts, licenses/notices, CVEs,
+hashes/locks, model artifact, package/image impact, and isolated test-only validator lock.
 
 ## 2. Configuration Without Secret Disclosure
 
@@ -56,7 +57,9 @@ Compose maps these inputs only into the voice worker as `VOICE_SPEECH_BASE_URL` 
 `VOICE_SPEECH_API_KEY`. The orchestrator and agents must not receive or read them. Configure
 separate operator-only LiveKit API key/secret, public WSS URL, and voice-control signing secret via
 the deployment secret mechanism. Generate strong values locally/through the secret manager; do not
-commit defaults or ask end users for them.
+commit defaults or ask end users for them. `livekit-api` and the API key/secret are orchestrator-
+only. The worker receives a separate short-lived room join grant only after its control channel is
+authenticated; clients receive separate least-privilege grants.
 
 Local development may explicitly use non-TLS loopback/LAN media and speech endpoints. Staging and
 production must use trusted TLS, public/reachable WSS and ICE/TURN, and an advertised address usable
@@ -66,7 +69,8 @@ by every test device. A container-local `localhost` URL is not valid client conf
 
 ### 3.1 Shared authority and persistence first
 
-1. Rebase over feature 064 and set the next schema revision; add repeat-safe `voice_session` and
+1. Verify the integrated guarded `064.001`→`065.001` migration and its wrong-predecessor refusal,
+   then retain the repeat-safe `voice_session` and
    `voice_turn` migrations, immutable execution-base commit/revision anchors and component/layout digests on
    `conversation_commit`, commit/revision versioning on `workspace_layout`, and the no-queue
    `voice_interactive` admission class plus representative-data/idempotency/rollback tests. Keep
@@ -109,9 +113,15 @@ by every test device. A container-local `localhost` URL is not valid client conf
 1. Add the digest-pinned LiveKit service/config and exact locked worker image.
 2. Implement `streaming_egress` with fixed-origin DNS/peer/TLS/redirect/proxy/time/frame/body/session
    controls and redacted typed errors.
-3. Build the no-LLM/no-tools worker with AgentSession, Silero VAD, exact realtime ASR, exact Kokoro
-   TTS, barge-in, self-speech suppression, and bounded ephemeral buffers.
-4. Implement one-time worker-control grants, recognition-time chat binding, two-layer final-
+3. Build the no-Agents/no-LLM/no-tools direct-RTC worker with the exact vendored Silero VAD,
+   AstralDeep-owned endpointing/reconnect/playout state, exact bounded batch ASR, exact Kokoro TTS,
+   barge-in, self-speech suppression, and bounded ephemeral buffers.
+   Pin SDK behavior with tests for manual identity/source subscription, connect-return/initial-state
+   reconciliation, synchronous callback queueing, finite 16-kHz/32-ms stream overrun, output-epoch
+   double-clear interruption, changed track SID on full reconnect, and fresh-Room terminal recovery.
+4. Implement the challenge-authenticated worker-pool control channel, coordinator-selected
+   `session_bind` assignment with a separate room-scoped worker RTC grant, recognition-time chat
+   binding, two-layer final-
    transcript accepted/rejected dispositions and bounded replay, normalized-text digest/HMAC proof, idempotent media-grant
    refresh with worker `media_grant_rotated`/`media_grant_applied`, announcement-media manifests,
    and the strict control schema; test replay, expiry, altered text/proof, wrong
@@ -278,20 +288,33 @@ crash/retry must not refund or reset the reservation.
 Run narrow backend suites first (exact filenames are finalized by `$speckit-tasks`), including:
 
 ```bash
-docker compose --profile test build --no-cache astraldeep voice-agent voice-agent-test
+docker compose --profile test build --no-cache astraldeep voice-worker voice-worker-test
 make up
 make sync
 docker exec astraldeep bash -c \
   "cd /app/backend && python -m pytest -q tests/test_voice_* orchestrator/tests/test_voice_*"
-docker compose --profile test run --rm --no-deps voice-agent-test \
+docker compose --profile test run --rm --no-deps voice-worker-test \
   python -m pytest -q /app/backend/voice_agent/tests
 docker exec astraldeep bash -c \
   "cd /app/backend && python -m pytest -q tests/test_llm_env_inert.py tests/test_schema_revision_guard.py"
 ```
 
-The strict fake speech server must verify Bearer authentication, exact models/voice, realtime
-partial/final events, WAV/24 kHz, redirect rejection, DNS/private policy, timeouts, frame/body
+The strict fake speech server must verify Bearer authentication, exact models/voice, bounded
+in-memory multipart transcription, WAV/24 kHz, redirect rejection, DNS/private policy, timeouts, frame/body
 bounds, malformed audio, 401/404/429/5xx, cancellation, and provider-body/secret redaction.
+
+Run the opt-in real-RTC lane separately; it preserves the ordinary test service's
+`network_mode: none`, creates a disposable internal Compose network, injects random test-only LiveKit
+credentials without printing them, and destroys the project and its tmpfs-backed buffers on exit:
+
+```bash
+python3 tooling/voice-worker/run_livekit_integration.py
+```
+
+The lane uses the locked worker test image and digest-pinned LiveKit server. Its in-process strict
+fake speech origin exercises the production fixed-origin transport, exact Whisper/Kokoro/`af_heart`
+profile, 24 kHz output, real client/worker grants, audio tracks, reliable transcript/announcement
+data, correlation, and teardown. It never uses the operator speech endpoint or stores audio.
 
 Then mirror every explicit backend/module invocation in `.github/workflows/ci.yml`; the default
 `backend/pytest.ini` invocation alone does not discover nested module suites:
@@ -305,15 +328,18 @@ docker exec astraldeep bash -c \
   onboarding/tests personalization/tests scheduler/tests dreaming/tests verification/tests \
   agents/tests agents/journal_review/tests agents/ml_services/tests agents/summarizer/tests \
   agents/web_research/tests feedback/tests security_benchmark/tests shared/tests -q"
-docker compose --profile test run --rm --no-deps voice-agent-test \
+docker compose --profile test run --rm --no-deps voice-worker-test \
   python -m pytest -q /app/backend/voice_agent/tests
 docker exec -e PERF_CONCURRENT_FLOOR_MS=5000 astraldeep bash -c \
   "cd /app/backend && python -m pytest tests/perf/concurrent_surfaces.py \
   tests/perf/voice_concurrent_turns.py -q"
 ```
 
-Changed Python lines must meet at least 90% coverage and the candidate must not rely on the current
-soft diff-coverage job.
+Produce backend/tooling/Windows Python, web Istanbul, Android app/core Kover, and
+iOS/macOS/watchOS xccov reports, then run the existing protected-policy implementation of
+`scripts/check_changed_coverage.py --fail-under 90`. The combined changed-code result must cover
+all maintained languages changed by the candidate and must be blocking; the candidate cannot rely
+on the current Python-only soft diff-coverage job.
 
 `backend/tests/perf/voice_concurrent_turns.py` and the corresponding explicit CI invocation must
 include two voice turns admitted to the same chat while the first is
@@ -518,12 +544,18 @@ Use deterministic server tasks lasting approximately 2, 19, 21, 65 seconds and s
 Collect non-content worker source events, generation/revision-fenced client
 `voice_playout_event` receipts, and an ephemeral in-memory locally rendered acoustic probe. Treat
 client event receipt as an operational observation and the probe as audible proof; discard waveform
-bytes immediately and persist only non-content timing measurements. Verify:
+bytes immediately and persist only non-content timing measurements.
+
+For percentile claims, use the spec's `voice-warm-standard` profile: exact readiness green for ten
+minutes; five unscored warm-ups; at least 100 eligible measured trials per client; at least 5 Mbps
+in each direction; p95 RTT <=120 ms; p95 jitter <=30 ms; and packet loss <=1% before and throughout
+the run. Use the nearest-rank percentile, retain timeouts/reconnects/product failures as misses, and
+invalidate the whole run if the network/profile preconditions breach. Verify:
 
 - exactly one acknowledgement after durable acceptance and before progress;
 - acknowledgement start within 1.5 seconds for at least 95% warm turns;
 - next audible start no more than 20.0 seconds after prior audible end for active, unmuted,
-  non-waiting turns (at least 99% across the controlled set);
+  non-waiting turns in 100% of deterministic and staged measured intervals;
 - no back-to-back identical progress key and no unverified claim;
 - no progress start after terminal/wait/mute/end/takeover fence;
 - result audio starts within 2 seconds for at least 95%, at most 80 words/30 seconds;
@@ -541,6 +573,14 @@ bytes immediately and persist only non-content timing measurements. Verify:
 Run five distinct authenticated users/rooms concurrently for 30 minutes with takeovers,
 reconnects, background results, and overlapping completion times. Assert zero cross-user/chat/room/
 turn/audio/transcript/result leakage and bounded capacity errors.
+
+Run the recap review against a fixed synthetic/non-PHI matrix of 20 authoritative-summary
+successes, 20 fallback successes, 20 failures, 15 refusals, 10 cancellations, and 15 sensitive
+results. Retain every selected case; require at least 95% rubric correctness, zero fabricated
+progress, and zero sensitive detail before per-result consent. Separately use at least five
+independent raters and at least 30 balanced, blinded synthetic/non-PHI clips spanning greeting,
+acknowledgement, progress, interruption, and recap; require mean `af_heart` naturalness/clarity of at
+least 4.0/5 and no back-to-back duplicate progress phrase.
 
 ## 8. Qualifying Candidate Staging and Release Evidence
 
@@ -560,7 +600,9 @@ infrastructure candidate there is a non-waivable **pre-merge** prerequisite, not
 follow-up. Do not mark local Compose, mocks, simulator audio, Mac PySide, or a different candidate
 as staged/Windows-native/physical proof.
 
-Before a user-requested push, run the diagnostic collector:
+Setup task T003 must first extend this collector and its protected schemas for all new voice
+identity and coverage inputs. Before every later user-requested implementation push, run the
+diagnostic collector:
 
 ```bash
 BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence
@@ -572,6 +614,12 @@ exception workflow; candidate staging, trust/security, schema, exact speech, PHI
 checks cannot be waived.
 
 ## 9. Exit Criteria
+
+Before rollback or an operator drain, follow `deploy/livekit/README.md`: disable
+`FF_CONVERSATIONAL_VOICE`, recreate the backend to close admission/advertising, let leases and active
+sessions drain without cancelling accepted agentic work, and stop the worker/media services only
+after content-free capacity reports zero. Recovery requires the matching image/config/closure
+digests and a fresh explicit client activation; never replay prior media or retained submissions.
 
 - Every FR/SC maps to an automated or live-evidence assertion.
 - No required voice frame/action is ignored by any client.

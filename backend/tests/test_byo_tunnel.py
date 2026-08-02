@@ -4,9 +4,11 @@ path with a fake UI socket (only the real Windows host needs a live client)."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import sys
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +29,24 @@ AID = "byo058-greeter"
 async def _t(fn, *a, **k):
     """Run a synchronous (DB-touching) helper off the event loop (052)."""
     return await asyncio.to_thread(fn, *a, **k)
+
+
+def _isolated_mock_identity(prefix: str) -> tuple[str, str]:
+    """Build a unique mock-auth subject without touching ``test_user``."""
+    user_id = f"{prefix}-{uuid.uuid4().hex}"
+    claims = {
+        "sub": user_id,
+        "preferred_username": user_id,
+        "email": f"{user_id}@invalid.example",
+        "realm_access": {"roles": ["admin", "user"]},
+        "resource_access": {
+            "astral-frontend": {"roles": ["admin", "user"]}
+        },
+    }
+    payload = base64.b64encode(
+        json.dumps(claims, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return user_id, f"mock.{payload}.signature"
 
 
 class FakeUI:
@@ -204,22 +224,31 @@ async def test_register_ui_marks_only_a_declared_host(monkeypatch):
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     o = await _t(Orchestrator)
-    await _t(o._llm_store.set_sync, "test_user", provider="custom",
-             base_url="http://t.invalid/v1", model="m", api_key="k")
+    user_id, token = _isolated_mock_identity("pytest-byo-host")
 
     async def _register(**extra):
         ws = VirtualWebSocket(BackgroundTask(task_id=_uuid.uuid4().hex, chat_id="",
                                              user_id=""))
         o._registered_events[id(ws)] = _asyncio.Event()
         await o.handle_ui_message(ws, json.dumps(
-            {"type": "register_ui", "token": "dev-token", "device": {}, **extra}))
+            {"type": "register_ui", "token": token, "device": {}, **extra}))
         return ws
 
-    tab = await _register()                                   # a browser tab
-    host = await _register(agent_host=True, host_session_id="hs-9")
-    assert o.is_agent_host_socket(tab) is False
-    assert o.is_agent_host_socket(host) is True
-    assert o._agent_host_sockets[id(host)] == "hs-9"
+    try:
+        await _t(o._llm_store.set_sync, user_id, provider="custom",
+                 base_url="http://t.invalid/v1", model="m", api_key="k")
+        tab = await _register()                               # a browser tab
+        host = await _register(agent_host=True, host_session_id="hs-9")
+        assert o.is_agent_host_socket(tab) is False
+        assert o.is_agent_host_socket(host) is True
+        assert o._agent_host_sockets[id(host)] == "hs-9"
+    finally:
+        await _t(o._llm_store.clear_sync, user_id)
+        await _t(
+            o.history.db.execute,
+            "DELETE FROM users WHERE id = ?",
+            (user_id,),
+        )
 
 
 async def test_delete_user_agent_soft_deletes_and_stops_host(orch):

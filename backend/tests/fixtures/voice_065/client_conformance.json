@@ -1,0 +1,1913 @@
+{
+  "schema_version": "1",
+  "description": "Canonical Feature 065 C0-C6 client, worker, REST, proof, packet, and speech-quantum conformance vectors. All values are synthetic and non-PHI.",
+  "expected_discriminators": {
+    "voice_control": [
+      "composer_state",
+      "voice_session_state",
+      "voice_turn_state",
+      "voice_control_binding",
+      "ui_event:new_chat",
+      "chat_created",
+      "user_message_acked",
+      "voice_submission_rejected",
+      "voice_transcript",
+      "voice_announcement_media",
+      "voice_playout_event"
+    ],
+    "worker_control": [
+      "worker_register",
+      "worker_registered",
+      "pool_heartbeat",
+      "session_bind",
+      "media_grant_rotated",
+      "media_grant_applied",
+      "session_context_update",
+      "session_context_applied",
+      "recognition_started",
+      "recognition_failed",
+      "turn_bound",
+      "transcript_accepted",
+      "transcript_rejected",
+      "speak",
+      "stop_speech",
+      "set_capture",
+      "end_session",
+      "worker_ready",
+      "heartbeat",
+      "speech_started",
+      "speech_finished",
+      "speech_interrupted",
+      "speech_failed",
+      "media_state",
+      "transcript_emitted"
+    ],
+    "openapi_media_grant": [
+      "livekit",
+      "watch_pcm_websocket"
+    ]
+  },
+  "rest_operation_mapping": {
+    "voice_session_start": "createVoiceSession",
+    "voice_session_takeover": "takeOverVoiceSession",
+    "voice_session_end": "endVoiceSession",
+    "voice_microphone_set": "updateVoiceSession",
+    "voice_speech_mute_set": "updateVoiceSession",
+    "voice_visible_chat_update": "updateVoiceSession",
+    "voice_speech_stop": "stopVoiceSpeech",
+    "voice_sensitive_recap_request": "consentToSensitiveRecap"
+  },
+  "cases": [
+    {
+      "id": "C0",
+      "title": "composer parity",
+      "positive": [
+        {
+          "id": "C0-P1-composer",
+          "contract": "voice_control",
+          "payload": {
+            "type": "composer_state",
+            "schema_version": "1",
+            "revision": 7,
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "voice": {
+              "available": true,
+              "state": "off",
+              "speech_muted": false,
+              "microphone_enabled": false,
+              "foreground_active": false,
+              "reason": "ready",
+              "output_locale": "en-US",
+              "chat_context_revision": null,
+              "applied_chat_context_revision": null,
+              "chat_context_synced": false,
+              "session_id": null,
+              "generation": null,
+              "media_grant_revision": null,
+              "visible_chat_id": "00000000-0000-4000-8000-000000000004",
+              "foreground_turn_id": null,
+              "owner_device": null,
+              "idle_expires_at": null,
+              "controls": [
+                {
+                  "key": "voice-start",
+                  "action": "voice_session_start",
+                  "label": "Start voice conversation",
+                  "icon": "microphone",
+                  "visible": true,
+                  "enabled": true,
+                  "pressed": false,
+                  "busy": false
+                },
+                {
+                  "key": "voice-takeover",
+                  "action": "voice_session_takeover",
+                  "label": "Take over voice session",
+                  "icon": "device-transfer",
+                  "visible": false,
+                  "enabled": false,
+                  "pressed": false,
+                  "busy": false
+                },
+                {
+                  "key": "voice-end",
+                  "action": "voice_session_end",
+                  "label": "End voice conversation",
+                  "icon": "stop",
+                  "visible": false,
+                  "enabled": false,
+                  "pressed": false,
+                  "busy": false
+                },
+                {
+                  "key": "voice-microphone",
+                  "action": "voice_microphone_set",
+                  "label": "Microphone",
+                  "icon": "microphone",
+                  "visible": false,
+                  "enabled": false,
+                  "pressed": false,
+                  "busy": false
+                },
+                {
+                  "key": "voice-stop-speech",
+                  "action": "voice_speech_stop",
+                  "label": "Stop speaking",
+                  "icon": "speaker-stop",
+                  "visible": false,
+                  "enabled": false,
+                  "pressed": false,
+                  "busy": false
+                },
+                {
+                  "key": "voice-mute",
+                  "action": "voice_speech_mute_set",
+                  "label": "Mute assistant speech",
+                  "icon": "speaker-muted",
+                  "visible": false,
+                  "enabled": false,
+                  "pressed": false,
+                  "busy": false
+                },
+                {
+                  "key": "voice-chat-context",
+                  "action": "voice_visible_chat_update",
+                  "label": "Update voice chat",
+                  "icon": "chat",
+                  "visible": false,
+                  "enabled": false,
+                  "pressed": false,
+                  "busy": false
+                },
+                {
+                  "key": "voice-sensitive-recap",
+                  "action": "voice_sensitive_recap_request",
+                  "label": "Read sensitive result",
+                  "icon": "speaker-consent",
+                  "visible": false,
+                  "enabled": false,
+                  "pressed": false,
+                  "busy": false
+                }
+              ]
+            }
+          },
+          "assertions": [
+            "server_owned_order",
+            "accessible_state",
+            "all_actions_have_rest_mapping"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "id": "C0-N1-extra-field",
+          "contract": "voice_control",
+          "base_vector": "C0-P1-composer",
+          "mutations": [
+            {
+              "op": "add",
+              "path": "/unexpected",
+              "value": true
+            }
+          ],
+          "expected_error": "schema"
+        }
+      ]
+    },
+    {
+      "id": "C1",
+      "title": "activation and binding",
+      "positive": [
+        {
+          "id": "C1-P1-control-binding",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_control_binding",
+            "schema_version": "1",
+            "device_id": "00000000-0000-4000-8000-000000000001",
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "binding_id": "00000000-0000-4000-8000-00000000000a",
+            "binding": "synthetic-binding-value-000000000000",
+            "expires_at": "2026-07-31T12:10:00Z"
+          },
+          "assertions": [
+            "memory_only",
+            "device_connection_bound"
+          ]
+        },
+        {
+          "id": "C1-P2-new-chat",
+          "contract": "voice_control",
+          "payload": {
+            "type": "ui_event",
+            "action": "new_chat",
+            "schema_version": "1",
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "submission_id": "00000000-0000-4000-8000-000000000007",
+            "request_generation": "00000000-0000-4000-8000-000000000008",
+            "payload": {
+              "schema_version": "1",
+              "connection_generation": "00000000-0000-4000-8000-000000000002",
+              "submission_id": "00000000-0000-4000-8000-000000000007",
+              "request_generation": "00000000-0000-4000-8000-000000000008"
+            }
+          },
+          "assertions": [
+            "outer_payload_correlation_equal",
+            "idempotent_exact_retry"
+          ]
+        },
+        {
+          "id": "C1-P3-chat-created",
+          "contract": "voice_control",
+          "payload": {
+            "type": "chat_created",
+            "schema_version": "1",
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "submission_id": "00000000-0000-4000-8000-000000000007",
+            "request_generation": "00000000-0000-4000-8000-000000000008",
+            "payload": {
+              "schema_version": "1",
+              "chat_id": "00000000-0000-4000-8000-000000000004",
+              "from_message": false,
+              "connection_generation": "00000000-0000-4000-8000-000000000002",
+              "submission_id": "00000000-0000-4000-8000-000000000007",
+              "request_generation": "00000000-0000-4000-8000-000000000008"
+            }
+          },
+          "assertions": [
+            "outer_payload_correlation_equal",
+            "stale_delayed_creation_does_not_navigate"
+          ]
+        },
+        {
+          "id": "C1-P4-context-unsynced",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_session_state",
+            "schema_version": "1",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "generation": 1,
+            "media_grant_revision": 2,
+            "visible_chat_id": "00000000-0000-4000-8000-000000000004",
+            "chat_context_revision": 3,
+            "applied_chat_context_revision": null,
+            "chat_context_synced": false,
+            "state": "connecting",
+            "speech_muted": false,
+            "microphone_enabled": false,
+            "foreground_active": true,
+            "reason": "ready",
+            "occurred_at": "2026-07-31T12:00:00Z"
+          },
+          "assertions": [
+            "no_capture_before_context_sync",
+            "no_greeting_before_context_sync"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "id": "C1-N1-correlation-mismatch",
+          "contract": "voice_control",
+          "base_vector": "C1-P2-new-chat",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/payload/connection_generation",
+              "value": "00000000-0000-4000-8000-00000000000b"
+            }
+          ],
+          "expected_error": "correlation equality"
+        },
+        {
+          "id": "C1-N2-prior-connection",
+          "contract": "voice_control",
+          "base_vector": "C1-P4-context-unsynced",
+          "context": {
+            "expected_connection_generation": "00000000-0000-4000-8000-00000000000b"
+          },
+          "expected_error": "connection generation"
+        }
+      ]
+    },
+    {
+      "id": "C2",
+      "title": "transcript delivery",
+      "positive": [
+        {
+          "id": "C2-P1-partial",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_transcript",
+            "schema_version": "1",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "generation": 1,
+            "turn_id": "00000000-0000-4000-8000-000000000005",
+            "client_turn_id": "00000000-0000-4000-8000-000000000006",
+            "submission_id": "00000000-0000-4000-8000-000000000007",
+            "request_generation": "00000000-0000-4000-8000-000000000008",
+            "chat_id": "00000000-0000-4000-8000-000000000004",
+            "chat_context_revision": 3,
+            "media_grant_revision": 2,
+            "sequence": 0,
+            "final": false,
+            "text": "Please review",
+            "detected_language": null,
+            "source_participant_identity": "voice-worker-01"
+          },
+          "context": {
+            "expected_worker_identity": "voice-worker-01",
+            "expected_session_id": "00000000-0000-4000-8000-000000000003",
+            "expected_generation": 1,
+            "expected_media_grant_revision": 2
+          },
+          "assertions": [
+            "presentation_only",
+            "does_not_submit"
+          ]
+        },
+        {
+          "id": "C2-P2-final",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_transcript",
+            "schema_version": "1",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "generation": 1,
+            "turn_id": "00000000-0000-4000-8000-000000000005",
+            "client_turn_id": "00000000-0000-4000-8000-000000000006",
+            "submission_id": "00000000-0000-4000-8000-000000000007",
+            "request_generation": "00000000-0000-4000-8000-000000000008",
+            "chat_id": "00000000-0000-4000-8000-000000000004",
+            "chat_context_revision": 3,
+            "media_grant_revision": 2,
+            "sequence": 1,
+            "final": true,
+            "text": "Please review Café.\nKeep caveats.",
+            "detected_language": "en-US",
+            "text_digest_sha256": "5b6c9147d242ef629cc5731bd8844b86f5ef8bcf4e6d4d741bb80d2bc446ab04",
+            "transcript_proof": "af81ff8058e12f5622e53f8c1dc3ed460b753c13a3df46f9e09e40ca8f96a7f9",
+            "proof_expires_at": "2026-07-31T12:02:00Z",
+            "source_participant_identity": "voice-worker-01"
+          },
+          "context": {
+            "expected_worker_identity": "voice-worker-01",
+            "expected_session_id": "00000000-0000-4000-8000-000000000003",
+            "expected_generation": 1,
+            "expected_media_grant_revision": 2
+          },
+          "assertions": [
+            "normal_chat_message_only",
+            "exact_retry_until_correlated_terminal_disposition"
+          ]
+        },
+        {
+          "id": "C2-P3-acknowledged",
+          "contract": "voice_control",
+          "payload": {
+            "type": "user_message_acked",
+            "schema_version": "1",
+            "chat_id": "00000000-0000-4000-8000-000000000004",
+            "message_id": 41,
+            "submission_id": "00000000-0000-4000-8000-000000000007",
+            "request_generation": "00000000-0000-4000-8000-000000000008",
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "voice_turn_id": "00000000-0000-4000-8000-000000000005"
+          },
+          "assertions": [
+            "all_correlations_match_before_clear"
+          ]
+        },
+        {
+          "id": "C2-P4-rejected",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_submission_rejected",
+            "schema_version": "1",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "generation": 1,
+            "media_grant_revision": 2,
+            "turn_id": "00000000-0000-4000-8000-000000000005",
+            "client_turn_id": "00000000-0000-4000-8000-000000000006",
+            "submission_id": "00000000-0000-4000-8000-000000000007",
+            "request_generation": "00000000-0000-4000-8000-000000000008",
+            "chat_id": "00000000-0000-4000-8000-000000000004",
+            "reason": "chat_unavailable",
+            "retry_policy": "explicit_user_retry",
+            "occurred_at": "2026-07-31T12:00:10Z"
+          },
+          "assertions": [
+            "terminal_clear",
+            "explicit_retry_uses_fresh_ids",
+            "does_not_create_or_navigate"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "id": "C2-N1-final-missing-proof",
+          "contract": "voice_control",
+          "base_vector": "C2-P2-final",
+          "mutations": [
+            {
+              "op": "remove",
+              "path": "/transcript_proof"
+            }
+          ],
+          "expected_error": "schema"
+        },
+        {
+          "id": "C2-N2-packet-too-large",
+          "contract": "voice_control",
+          "base_vector": "C2-P2-final",
+          "mutations": [
+            {
+              "op": "repeat",
+              "path": "/text",
+              "value": "💬",
+              "count": 3072
+            }
+          ],
+          "expected_error": "packet size"
+        }
+      ]
+    },
+    {
+      "id": "C3",
+      "title": "announcement and local playout",
+      "positive": [
+        {
+          "id": "C3-P1-livekit-opening",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_announcement_media",
+            "schema_version": "1",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "generation": 1,
+            "media_grant_revision": 2,
+            "announcement_id": "00000000-0000-4000-8000-000000000009",
+            "announcement_sequence": 3,
+            "turn_id": "00000000-0000-4000-8000-000000000005",
+            "kind": "result",
+            "quantum_role": "result_opening",
+            "quantum_index": 0,
+            "transport": "livekit",
+            "worker_identity": "voice-worker-01",
+            "sample_rate_hz": 24000,
+            "duration_samples": 36000,
+            "result_reserved_samples_after": 36000,
+            "track_sid": "TR_audio_001",
+            "track_name": "voice-result-opening"
+          },
+          "context": {
+            "expected_worker_identity": "voice-worker-01",
+            "expected_session_id": "00000000-0000-4000-8000-000000000003",
+            "expected_generation": 1,
+            "expected_media_grant_revision": 2
+          },
+          "assertions": [
+            "manifest_precedes_audio",
+            "hard_stop_at_declared_samples"
+          ]
+        },
+        {
+          "id": "C3-P2-watch-single",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_announcement_media",
+            "schema_version": "1",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "generation": 1,
+            "media_grant_revision": 2,
+            "announcement_id": "00000000-0000-4000-8000-00000000000c",
+            "announcement_sequence": 4,
+            "turn_id": "00000000-0000-4000-8000-000000000005",
+            "kind": "acknowledgement",
+            "quantum_role": "single",
+            "quantum_index": 0,
+            "transport": "watch_pcm_websocket",
+            "worker_identity": "voice-worker-01",
+            "sample_rate_hz": 24000,
+            "duration_samples": 24000,
+            "first_media_sequence": 100,
+            "last_media_sequence": 149
+          },
+          "context": {
+            "expected_worker_identity": "voice-worker-01"
+          },
+          "assertions": [
+            "manifest_precedes_pcm_range",
+            "exact_declared_samples"
+          ]
+        },
+        {
+          "id": "C3-P3-playout",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_playout_event",
+            "schema_version": "1",
+            "device_id": "00000000-0000-4000-8000-000000000001",
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "generation": 1,
+            "media_grant_revision": 2,
+            "announcement_id": "00000000-0000-4000-8000-000000000009",
+            "announcement_sequence": 3,
+            "turn_id": "00000000-0000-4000-8000-000000000005",
+            "kind": "result",
+            "quantum_role": "result_opening",
+            "quantum_index": 0,
+            "result_reserved_samples_after": 36000,
+            "phase": "started",
+            "client_sequence": 12,
+            "observed_at": "2026-07-31T12:00:12Z"
+          },
+          "context": {
+            "expected_device_id": "00000000-0000-4000-8000-000000000001",
+            "expected_connection_generation": "00000000-0000-4000-8000-000000000002",
+            "expected_session_id": "00000000-0000-4000-8000-000000000003",
+            "expected_generation": 1,
+            "expected_media_grant_revision": 2
+          },
+          "assertions": [
+            "content_free",
+            "local_playout_only",
+            "server_receipt_time_authoritative"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "id": "C3-N1-opening-too-long",
+          "contract": "voice_control",
+          "base_vector": "C3-P1-livekit-opening",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/duration_samples",
+              "value": 36001
+            }
+          ],
+          "expected_error": "schema"
+        },
+        {
+          "id": "C3-N2-playout-text-bearing",
+          "contract": "voice_control",
+          "base_vector": "C3-P3-playout",
+          "mutations": [
+            {
+              "op": "add",
+              "path": "/text",
+              "value": "must not cross this frame"
+            }
+          ],
+          "expected_error": "schema"
+        },
+        {
+          "id": "C3-N3-watch-range-mismatch",
+          "contract": "voice_control",
+          "base_vector": "C3-P2-watch-single",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/last_media_sequence",
+              "value": 148
+            }
+          ],
+          "expected_error": "sample range"
+        },
+        {
+          "id": "C3-N4-track-over-four-seconds",
+          "contract": "voice_control",
+          "base_vector": "C3-P1-livekit-opening",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/quantum_role",
+              "value": "result_continuation"
+            },
+            {
+              "op": "replace",
+              "path": "/quantum_index",
+              "value": 1
+            },
+            {
+              "op": "replace",
+              "path": "/duration_samples",
+              "value": 96001
+            },
+            {
+              "op": "replace",
+              "path": "/result_reserved_samples_after",
+              "value": 132001
+            }
+          ],
+          "expected_error": "schema"
+        },
+        {
+          "id": "C3-N5-non-result-continuation",
+          "contract": "voice_control",
+          "base_vector": "C3-P1-livekit-opening",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/kind",
+              "value": "progress"
+            },
+            {
+              "op": "replace",
+              "path": "/quantum_role",
+              "value": "result_continuation"
+            },
+            {
+              "op": "replace",
+              "path": "/quantum_index",
+              "value": 1
+            }
+          ],
+          "expected_error": "schema"
+        },
+        {
+          "id": "C3-N6-announcement-packet-too-large",
+          "contract": "voice_control",
+          "base_vector": "C3-P1-livekit-opening",
+          "mutations": [
+            {
+              "op": "repeat",
+              "path": "/track_name",
+              "value": "x",
+              "count": 5000
+            }
+          ],
+          "expected_error": "packet size"
+        }
+      ]
+    },
+    {
+      "id": "C4",
+      "title": "per-turn language policy",
+      "positive": [
+        {
+          "id": "C4-P1-en",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_turn_state",
+            "schema_version": "1",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "generation": 1,
+            "media_grant_revision": 2,
+            "turn_id": "00000000-0000-4000-8000-000000000105",
+            "client_turn_id": "00000000-0000-4000-8000-000000000106",
+            "submission_id": "00000000-0000-4000-8000-000000000107",
+            "request_generation": "00000000-0000-4000-8000-000000000108",
+            "chat_id": "00000000-0000-4000-8000-000000000004",
+            "chat_context_revision": 3,
+            "detected_language": "en",
+            "spoken_output_policy": "full_recap",
+            "output_reason": "ready",
+            "state": "accepted",
+            "foreground": true,
+            "sensitive_result_pending": false,
+            "sequence": 1,
+            "occurred_at": "2026-07-31T12:01:00Z"
+          },
+          "assertions": [
+            "fixed_af_heart_en_us_output"
+          ]
+        },
+        {
+          "id": "C4-P2-en-US",
+          "contract": "voice_control",
+          "base_vector": "C4-P1-en",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/detected_language",
+              "value": "en-US"
+            }
+          ],
+          "assertions": [
+            "fixed_af_heart_en_us_output"
+          ]
+        },
+        {
+          "id": "C4-P3-en-GB",
+          "contract": "voice_control",
+          "base_vector": "C4-P1-en",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/detected_language",
+              "value": "en-GB"
+            }
+          ],
+          "assertions": [
+            "fixed_af_heart_en_us_output"
+          ]
+        },
+        {
+          "id": "C4-P4-fr",
+          "contract": "voice_control",
+          "base_vector": "C4-P1-en",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/detected_language",
+              "value": "fr"
+            },
+            {
+              "op": "replace",
+              "path": "/spoken_output_policy",
+              "value": "english_lifecycle_only"
+            },
+            {
+              "op": "replace",
+              "path": "/output_reason",
+              "value": "output_language_unsupported"
+            }
+          ],
+          "assertions": [
+            "visible_text_unchanged",
+            "safe_english_notice_only"
+          ]
+        },
+        {
+          "id": "C4-P5-und",
+          "contract": "voice_control",
+          "base_vector": "C4-P4-fr",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/detected_language",
+              "value": "und"
+            }
+          ],
+          "assertions": [
+            "safe_english_notice_only"
+          ]
+        },
+        {
+          "id": "C4-P6-en-US-recovery",
+          "contract": "voice_control",
+          "base_vector": "C4-P1-en",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/detected_language",
+              "value": "en-US"
+            },
+            {
+              "op": "replace",
+              "path": "/sequence",
+              "value": 6
+            }
+          ],
+          "assertions": [
+            "recovers_without_session_recreation"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "id": "C4-N1-en-wrong-policy",
+          "contract": "voice_control",
+          "base_vector": "C4-P1-en",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/spoken_output_policy",
+              "value": "english_lifecycle_only"
+            }
+          ],
+          "expected_error": "schema"
+        }
+      ]
+    },
+    {
+      "id": "C5",
+      "title": "foreground and recovery lifecycle",
+      "positive": [
+        {
+          "id": "C5-P1-active",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_session_state",
+            "schema_version": "1",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "connection_generation": "00000000-0000-4000-8000-000000000002",
+            "generation": 1,
+            "media_grant_revision": 2,
+            "visible_chat_id": "00000000-0000-4000-8000-000000000004",
+            "chat_context_revision": 3,
+            "applied_chat_context_revision": 3,
+            "chat_context_synced": true,
+            "state": "listening",
+            "speech_muted": false,
+            "microphone_enabled": true,
+            "foreground_active": true,
+            "reason": "ready",
+            "occurred_at": "2026-07-31T12:02:00Z"
+          },
+          "assertions": [
+            "capture_requires_foreground_and_context"
+          ]
+        },
+        {
+          "id": "C5-P2-suspended",
+          "contract": "voice_control",
+          "base_vector": "C5-P1-active",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/state",
+              "value": "suspended"
+            },
+            {
+              "op": "replace",
+              "path": "/foreground_active",
+              "value": false
+            },
+            {
+              "op": "replace",
+              "path": "/microphone_enabled",
+              "value": false
+            },
+            {
+              "op": "replace",
+              "path": "/reason",
+              "value": "backgrounded"
+            }
+          ],
+          "assertions": [
+            "immediate_local_teardown",
+            "accepted_work_continues"
+          ]
+        },
+        {
+          "id": "C5-P3-reconnecting",
+          "contract": "voice_control",
+          "base_vector": "C5-P2-suspended",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/state",
+              "value": "reconnecting"
+            },
+            {
+              "op": "replace",
+              "path": "/reason",
+              "value": "network_interrupted"
+            }
+          ],
+          "assertions": [
+            "no_stale_autoplay",
+            "fresh_grant_and_context_required"
+          ]
+        },
+        {
+          "id": "C5-P4-ended",
+          "contract": "voice_control",
+          "base_vector": "C5-P2-suspended",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/state",
+              "value": "ended"
+            },
+            {
+              "op": "replace",
+              "path": "/reason",
+              "value": "ended_by_user"
+            }
+          ],
+          "assertions": [
+            "media_ends_without_task_cancellation"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "id": "C5-N1-background-mic-enabled",
+          "contract": "voice_control",
+          "base_vector": "C5-P2-suspended",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/microphone_enabled",
+              "value": true
+            }
+          ],
+          "expected_error": "schema"
+        }
+      ]
+    },
+    {
+      "id": "C6",
+      "title": "null-turn and identity edges",
+      "positive": [
+        {
+          "id": "C6-P1-greeting-null-turn",
+          "contract": "voice_control",
+          "payload": {
+            "type": "voice_announcement_media",
+            "schema_version": "1",
+            "session_id": "00000000-0000-4000-8000-000000000003",
+            "generation": 1,
+            "media_grant_revision": 2,
+            "announcement_id": "00000000-0000-4000-8000-00000000000d",
+            "announcement_sequence": 1,
+            "turn_id": null,
+            "kind": "greeting",
+            "quantum_role": "single",
+            "quantum_index": 0,
+            "transport": "livekit",
+            "worker_identity": "voice-worker-01",
+            "sample_rate_hz": 24000,
+            "duration_samples": 24000,
+            "track_sid": "TR_audio_greeting",
+            "track_name": "voice-greeting"
+          },
+          "context": {
+            "expected_worker_identity": "voice-worker-01",
+            "expected_session_id": "00000000-0000-4000-8000-000000000003",
+            "expected_generation": 1,
+            "expected_media_grant_revision": 2
+          },
+          "assertions": [
+            "only_greeting_may_have_null_turn"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "id": "C6-N1-result-null-turn",
+          "contract": "voice_control",
+          "base_vector": "C3-P1-livekit-opening",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/turn_id",
+              "value": null
+            }
+          ],
+          "expected_error": "schema"
+        },
+        {
+          "id": "C6-N2-unexpected-worker",
+          "contract": "voice_control",
+          "base_vector": "C6-P1-greeting-null-turn",
+          "mutations": [
+            {
+              "op": "replace",
+              "path": "/worker_identity",
+              "value": "voice-worker-evil"
+            }
+          ],
+          "context": {
+            "expected_worker_identity": "voice-worker-01"
+          },
+          "expected_error": "worker identity"
+        },
+        {
+          "id": "C6-N3-wrong-device",
+          "contract": "voice_control",
+          "base_vector": "C3-P3-playout",
+          "context": {
+            "expected_device_id": "00000000-0000-4000-8000-00000000000e"
+          },
+          "expected_error": "device identity"
+        },
+        {
+          "id": "C6-N4-stale-grant-revision",
+          "contract": "voice_control",
+          "base_vector": "C3-P1-livekit-opening",
+          "context": {
+            "expected_media_grant_revision": 3
+          },
+          "expected_error": "media grant revision"
+        }
+      ]
+    }
+  ],
+  "payload_bases": {
+    "worker_pool": {
+      "schema_version": "1",
+      "message_id": "00000000-0000-4000-8000-000000000020",
+      "sequence": 0,
+      "sent_at": "2026-07-31T12:00:00Z"
+    },
+    "worker_session": {
+      "schema_version": "1",
+      "message_id": "00000000-0000-4000-8000-000000000021",
+      "session_id": "00000000-0000-4000-8000-000000000003",
+      "generation": 1,
+      "sequence": 0,
+      "sent_at": "2026-07-31T12:00:00Z"
+    }
+  },
+  "worker_control_vectors": {
+    "positive": [
+      {
+        "id": "W-P01-register",
+        "contract": "worker_control",
+        "payload_base": "worker_pool",
+        "payload": {
+          "type": "worker_register",
+          "worker_identity": "voice-worker-01",
+          "max_sessions": 8,
+          "runtime_closure_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "profile": {
+            "asr_model": "Systran/faster-whisper-large-v3",
+            "tts_model": "speaches-ai/Kokoro-82M-v1.0-ONNX",
+            "voice": "af_heart",
+            "output_locale": "en-US",
+            "format": "wav",
+            "sample_rate_hz": 24000
+          }
+        }
+      },
+      {
+        "id": "W-P02-registered",
+        "contract": "worker_control",
+        "payload_base": "worker_pool",
+        "payload": {
+          "type": "worker_registered",
+          "worker_identity": "voice-worker-01",
+          "connection_id": "00000000-0000-4000-8000-000000000022",
+          "accepted_max_sessions": 8,
+          "heartbeat_interval_seconds": 15,
+          "registered_at": "2026-07-31T12:00:00Z"
+        }
+      },
+      {
+        "id": "W-P02b-pool-heartbeat",
+        "contract": "worker_control",
+        "payload_base": "worker_pool",
+        "payload": {
+          "type": "pool_heartbeat",
+          "sequence": 1,
+          "worker_identity": "voice-worker-01",
+          "connection_id": "00000000-0000-4000-8000-000000000022"
+        }
+      },
+      {
+        "id": "W-P03-bind",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "session_bind",
+          "assignment_id": "00000000-0000-4000-8000-000000000023",
+          "room_name": "voice-room-01",
+          "worker_identity": "voice-worker-01",
+          "transport": "livekit",
+          "media_grant_revision": 2,
+          "worker_rtc_grant_revision": 5,
+          "client_participant_identity": "voice-client-r2",
+          "grant_expires_at": "2026-07-31T12:05:00Z",
+          "worker_rtc_grant": {
+            "revision": 5,
+            "livekit_url": "wss://media.astraldeep.invalid",
+            "join_token": "synthetic-worker-room-token-0000000000000000",
+            "issued_at": "2026-07-31T12:00:00Z",
+            "expires_at": "2026-07-31T12:05:00Z",
+            "room_name": "voice-room-01",
+            "worker_identity": "voice-worker-01"
+          },
+          "visible_chat_id": "00000000-0000-4000-8000-000000000004",
+          "chat_context_revision": 3,
+          "profile": {
+            "asr_model": "Systran/faster-whisper-large-v3",
+            "tts_model": "speaches-ai/Kokoro-82M-v1.0-ONNX",
+            "voice": "af_heart",
+            "output_locale": "en-US",
+            "format": "wav",
+            "sample_rate_hz": 24000
+          }
+        }
+      },
+      {
+        "id": "W-P04-grant-rotated",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "media_grant_rotated",
+          "refresh_id": "00000000-0000-4000-8000-000000000024",
+          "previous_media_grant_revision": 1,
+          "media_grant_revision": 2,
+          "client_participant_identity": "voice-client-r2",
+          "transport": "livekit",
+          "grant_expires_at": "2026-07-31T12:05:00Z"
+        }
+      },
+      {
+        "id": "W-P05-grant-applied",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "media_grant_applied",
+          "refresh_id": "00000000-0000-4000-8000-000000000024",
+          "media_grant_revision": 2,
+          "client_participant_identity": "voice-client-r2",
+          "occurred_at": "2026-07-31T12:00:01Z"
+        }
+      },
+      {
+        "id": "W-P06-context-update",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "session_context_update",
+          "media_grant_revision": 2,
+          "visible_chat_id": "00000000-0000-4000-8000-000000000004",
+          "chat_context_revision": 3
+        }
+      },
+      {
+        "id": "W-P07-context-applied",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "session_context_applied",
+          "media_grant_revision": 2,
+          "visible_chat_id": "00000000-0000-4000-8000-000000000004",
+          "chat_context_revision": 3,
+          "occurred_at": "2026-07-31T12:00:01Z"
+        }
+      },
+      {
+        "id": "W-P08-recognition-started",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "recognition_started",
+          "client_turn_id": "00000000-0000-4000-8000-000000000006",
+          "media_grant_revision": 2,
+          "visible_chat_id": "00000000-0000-4000-8000-000000000004",
+          "chat_context_revision": 3,
+          "occurred_at": "2026-07-31T12:00:02Z"
+        }
+      },
+      {
+        "id": "W-P09-turn-bound",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "turn_bound",
+          "client_turn_id": "00000000-0000-4000-8000-000000000006",
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "chat_id": "00000000-0000-4000-8000-000000000004",
+          "chat_context_revision": 3,
+          "media_grant_revision": 2,
+          "submission_id": "00000000-0000-4000-8000-000000000007",
+          "request_generation": "00000000-0000-4000-8000-000000000008"
+        }
+      },
+      {
+        "id": "W-P10-transcript-accepted",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "transcript_accepted",
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "client_turn_id": "00000000-0000-4000-8000-000000000006",
+          "submission_id": "00000000-0000-4000-8000-000000000007",
+          "request_generation": "00000000-0000-4000-8000-000000000008",
+          "chat_id": "00000000-0000-4000-8000-000000000004",
+          "media_grant_revision": 2,
+          "accepted_message_id": 41
+        }
+      },
+      {
+        "id": "W-P11-transcript-rejected",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "transcript_rejected",
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "client_turn_id": "00000000-0000-4000-8000-000000000006",
+          "submission_id": "00000000-0000-4000-8000-000000000007",
+          "request_generation": "00000000-0000-4000-8000-000000000008",
+          "chat_id": "00000000-0000-4000-8000-000000000004",
+          "media_grant_revision": 2,
+          "reason": "chat_unavailable",
+          "retry_policy": "explicit_user_retry"
+        }
+      },
+      {
+        "id": "W-P12-speak",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "speak",
+          "announcement_id": "00000000-0000-4000-8000-000000000009",
+          "announcement_sequence": 3,
+          "media_grant_revision": 2,
+          "transport": "livekit",
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "kind": "result",
+          "quantum_role": "result_opening",
+          "quantum_index": 0,
+          "max_duration_samples": 36000,
+          "result_reserved_samples_after": 36000,
+          "text": "Your latest request is ready.",
+          "sensitive_authorized": false,
+          "expires_at": "2026-07-31T12:00:10Z"
+        }
+      },
+      {
+        "id": "W-P13-stop-speech",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "stop_speech",
+          "media_grant_revision": 2,
+          "announcement_id": "00000000-0000-4000-8000-000000000009",
+          "reason": "barge_in"
+        }
+      },
+      {
+        "id": "W-P14-set-capture",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "set_capture",
+          "media_grant_revision": 2,
+          "enabled": true
+        }
+      },
+      {
+        "id": "W-P15-end-session",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "end_session",
+          "media_grant_revision": 2,
+          "reason": "user"
+        }
+      },
+      {
+        "id": "W-P16-ready",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "worker_ready",
+          "assignment_id": "00000000-0000-4000-8000-000000000023",
+          "worker_identity": "voice-worker-01",
+          "worker_rtc_grant_revision": 5,
+          "profile_ready": true
+        }
+      },
+      {
+        "id": "W-P17-heartbeat",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "heartbeat",
+          "media_state": "ready"
+        }
+      },
+      {
+        "id": "W-P18-speech-started",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "speech_started",
+          "announcement_id": "00000000-0000-4000-8000-000000000009",
+          "announcement_sequence": 3,
+          "media_grant_revision": 2,
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "kind": "result",
+          "quantum_role": "result_opening",
+          "quantum_index": 0,
+          "result_reserved_samples_after": 36000,
+          "occurred_at": "2026-07-31T12:00:03Z",
+          "duration_ms": 0
+        }
+      },
+      {
+        "id": "W-P19-speech-finished",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "speech_finished",
+          "announcement_id": "00000000-0000-4000-8000-000000000009",
+          "announcement_sequence": 3,
+          "media_grant_revision": 2,
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "kind": "result",
+          "quantum_role": "result_opening",
+          "quantum_index": 0,
+          "result_reserved_samples_after": 36000,
+          "occurred_at": "2026-07-31T12:00:04Z",
+          "duration_ms": 1500
+        }
+      },
+      {
+        "id": "W-P20-speech-interrupted",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "speech_interrupted",
+          "announcement_id": "00000000-0000-4000-8000-000000000009",
+          "announcement_sequence": 3,
+          "media_grant_revision": 2,
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "kind": "result",
+          "quantum_role": "result_continuation",
+          "quantum_index": 1,
+          "result_reserved_samples_after": 132000,
+          "occurred_at": "2026-07-31T12:00:05Z",
+          "duration_ms": 1200,
+          "reason": "barge_in"
+        }
+      },
+      {
+        "id": "W-P21-speech-failed",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "speech_failed",
+          "announcement_id": "00000000-0000-4000-8000-000000000009",
+          "announcement_sequence": 3,
+          "media_grant_revision": 2,
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "kind": "result",
+          "quantum_role": "result_continuation",
+          "quantum_index": 2,
+          "result_reserved_samples_after": 228000,
+          "occurred_at": "2026-07-31T12:00:06Z",
+          "duration_ms": 0,
+          "reason": "over_budget"
+        }
+      },
+      {
+        "id": "W-P22-media-state",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "media_state",
+          "state": "listening",
+          "occurred_at": "2026-07-31T12:00:07Z"
+        }
+      },
+      {
+        "id": "W-P23-transcript-emitted",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "transcript_emitted",
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "client_turn_id": "00000000-0000-4000-8000-000000000006",
+          "submission_id": "00000000-0000-4000-8000-000000000007",
+          "request_generation": "00000000-0000-4000-8000-000000000008",
+          "chat_id": "00000000-0000-4000-8000-000000000004",
+          "chat_context_revision": 3,
+          "media_grant_revision": 2,
+          "final": true,
+          "detected_language": "en-US",
+          "utf8_bytes": 34,
+          "text_digest_sha256": "5b6c9147d242ef629cc5731bd8844b86f5ef8bcf4e6d4d741bb80d2bc446ab04",
+          "proof_expires_at": "2026-07-31T12:02:00Z",
+          "occurred_at": "2026-07-31T12:00:08Z"
+        }
+      },
+      {
+        "id": "W-P24-recognition-failed",
+        "contract": "worker_control",
+        "payload_base": "worker_session",
+        "payload": {
+          "type": "recognition_failed",
+          "client_turn_id": "00000000-0000-4000-8000-000000000006",
+          "reason": "asr_failed",
+          "occurred_at": "2026-07-31T12:00:09Z"
+        }
+      }
+    ],
+    "negative": [
+      {
+        "id": "W-N01-register-extra",
+        "contract": "worker_control",
+        "base_vector": "W-P01-register",
+        "mutations": [
+          {
+            "op": "add",
+            "path": "/credential",
+            "value": "forbidden"
+          }
+        ],
+        "expected_error": "schema"
+      },
+      {
+        "id": "W-N02-bind-room-mismatch",
+        "contract": "worker_control",
+        "base_vector": "W-P03-bind",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/worker_rtc_grant/room_name",
+            "value": "other-room"
+          }
+        ],
+        "expected_error": "worker room equality"
+      },
+      {
+        "id": "W-N03-bind-worker-mismatch",
+        "contract": "worker_control",
+        "base_vector": "W-P03-bind",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/worker_rtc_grant/worker_identity",
+            "value": "voice-worker-02"
+          }
+        ],
+        "expected_error": "worker identity equality"
+      },
+      {
+        "id": "W-N04-bind-revision-mismatch",
+        "contract": "worker_control",
+        "base_vector": "W-P03-bind",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/worker_rtc_grant/revision",
+            "value": 6
+          }
+        ],
+        "expected_error": "worker grant revision equality"
+      },
+      {
+        "id": "W-N05-bind-outer-expiry-mismatch",
+        "contract": "worker_control",
+        "base_vector": "W-P03-bind",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/grant_expires_at",
+            "value": "2026-07-31T12:04:59Z"
+          }
+        ],
+        "expected_error": "worker grant expiry equality"
+      },
+      {
+        "id": "W-N06-bind-expiry-over-five-minutes",
+        "contract": "worker_control",
+        "base_vector": "W-P03-bind",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/grant_expires_at",
+            "value": "2026-07-31T12:05:01Z"
+          },
+          {
+            "op": "replace",
+            "path": "/worker_rtc_grant/expires_at",
+            "value": "2026-07-31T12:05:01Z"
+          }
+        ],
+        "expected_error": "five minutes"
+      },
+      {
+        "id": "W-N07-bind-expired-at-receipt",
+        "contract": "worker_control",
+        "base_vector": "W-P03-bind",
+        "context": {
+          "server_received_at": "2026-07-31T12:05:00Z"
+        },
+        "expected_error": "server receipt"
+      },
+      {
+        "id": "W-N08-non-uuid4-message",
+        "contract": "worker_control",
+        "base_vector": "W-P14-set-capture",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/message_id",
+            "value": "00000000-0000-3000-8000-000000000021"
+          }
+        ],
+        "expected_error": "schema"
+      },
+      {
+        "id": "W-N09-opening-over-quantum",
+        "contract": "worker_control",
+        "base_vector": "W-P12-speak",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/max_duration_samples",
+            "value": 36001
+          }
+        ],
+        "expected_error": "schema"
+      },
+      {
+        "id": "W-N10-continuation-over-quantum",
+        "contract": "worker_control",
+        "base_vector": "W-P12-speak",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/quantum_role",
+            "value": "result_continuation"
+          },
+          {
+            "op": "replace",
+            "path": "/quantum_index",
+            "value": 1
+          },
+          {
+            "op": "replace",
+            "path": "/max_duration_samples",
+            "value": 96001
+          },
+          {
+            "op": "replace",
+            "path": "/result_reserved_samples_after",
+            "value": 132001
+          }
+        ],
+        "expected_error": "schema"
+      },
+      {
+        "id": "W-N11-opening-lifecycle-too-long",
+        "contract": "worker_control",
+        "base_vector": "W-P18-speech-started",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/duration_ms",
+            "value": 1501
+          }
+        ],
+        "expected_error": "schema"
+      },
+      {
+        "id": "W-N12-result-reservation-echo-missing",
+        "contract": "worker_control",
+        "base_vector": "W-P12-speak",
+        "mutations": [
+          {
+            "op": "remove",
+            "path": "/result_reserved_samples_after"
+          }
+        ],
+        "expected_error": "schema"
+      },
+      {
+        "id": "W-N13-recognition-failure-reason",
+        "contract": "worker_control",
+        "base_vector": "W-P24-recognition-failed",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/reason",
+            "value": "provider_body"
+          }
+        ],
+        "expected_error": "schema"
+      }
+    ]
+  },
+  "openapi_instances": {
+    "positive": [
+      {
+        "id": "O-P1-livekit-grant",
+        "schema": "MediaGrant",
+        "payload": {
+          "grant_id": "grant-livekit-01",
+          "transport": "livekit",
+          "session_id": "00000000-0000-4000-8000-000000000003",
+          "generation": 1,
+          "media_grant_revision": 2,
+          "expires_at": "2026-07-31T12:05:00Z",
+          "url": "wss://media.astraldeep.invalid",
+          "join_token": "synthetic-client-room-token-0000000000000000",
+          "room_name": "voice-room-01",
+          "participant_identity": "voice-client-r2",
+          "worker_identity": "voice-worker-01"
+        }
+      },
+      {
+        "id": "O-P2-watch-grant",
+        "schema": "MediaGrant",
+        "payload": {
+          "grant_id": "grant-watch-01",
+          "transport": "watch_pcm_websocket",
+          "session_id": "00000000-0000-4000-8000-000000000003",
+          "generation": 1,
+          "media_grant_revision": 2,
+          "expires_at": "2026-07-31T12:05:00Z",
+          "url": "wss://voice.astraldeep.invalid/api/voice/watch",
+          "ticket": "synthetic-watch-ticket-000000000000000000",
+          "worker_identity": "voice-worker-01",
+          "capture": {
+            "encoding": "pcm_s16le",
+            "channels": 1,
+            "sample_rate_hz": 16000,
+            "frame_duration_ms": 20
+          },
+          "playback": {
+            "encoding": "pcm_s16le",
+            "channels": 1,
+            "sample_rate_hz": 24000,
+            "frame_duration_ms": 20
+          }
+        }
+      }
+    ],
+    "negative": [
+      {
+        "id": "O-N1-livekit-extra",
+        "schema": "MediaGrant",
+        "base_vector": "O-P1-livekit-grant",
+        "mutations": [
+          {
+            "op": "add",
+            "path": "/api_secret",
+            "value": "forbidden"
+          }
+        ],
+        "expected_error": "schema"
+      },
+      {
+        "id": "O-N2-watch-wrong-discriminator",
+        "schema": "MediaGrant",
+        "base_vector": "O-P2-watch-grant",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/transport",
+            "value": "livekit"
+          }
+        ],
+        "expected_error": "schema"
+      }
+    ]
+  },
+  "proof_vectors": {
+    "golden": [
+      {
+        "id": "P-G1-normalized-final",
+        "expect": "accept",
+        "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "text_input": "  Please review Café.\r\nKeep caveats.  ",
+        "canonical_text": "Please review Café.\nKeep caveats.",
+        "text_digest_sha256": "5b6c9147d242ef629cc5731bd8844b86f5ef8bcf4e6d4d741bb80d2bc446ab04",
+        "binding": {
+          "session_id": "00000000-0000-4000-8000-000000000003",
+          "generation": 1,
+          "media_grant_revision": 2,
+          "turn_id": "00000000-0000-4000-8000-000000000005",
+          "client_turn_id": "00000000-0000-4000-8000-000000000006",
+          "submission_id": "00000000-0000-4000-8000-000000000007",
+          "request_generation": "00000000-0000-4000-8000-000000000008",
+          "chat_id": "00000000-0000-4000-8000-000000000004",
+          "chat_context_revision": 3,
+          "source_participant_identity": "voice-worker-01",
+          "detected_language": "en-US"
+        },
+        "issued_at": "2026-07-31T12:00:00Z",
+        "proof_expires_at": "2026-07-31T12:02:00Z",
+        "validation_at": "2026-07-31T12:01:00Z",
+        "proof_input": "ADVT1\n00000000-0000-4000-8000-000000000003\n1\n2\n00000000-0000-4000-8000-000000000005\n00000000-0000-4000-8000-000000000006\n00000000-0000-4000-8000-000000000007\n00000000-0000-4000-8000-000000000008\n00000000-0000-4000-8000-000000000004\n3\nvoice-worker-01\nen-US\n5b6c9147d242ef629cc5731bd8844b86f5ef8bcf4e6d4d741bb80d2bc446ab04\n2026-07-31T12:02:00Z",
+        "transcript_proof": "af81ff8058e12f5622e53f8c1dc3ed460b753c13a3df46f9e09e40ca8f96a7f9"
+      }
+    ],
+    "negative": [
+      {
+        "id": "P-N1-altered-text",
+        "expect": "reject",
+        "base_vector": "P-G1-normalized-final",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/text_input",
+            "value": "Please review Café.\nDrop caveats."
+          }
+        ],
+        "expected_error": "text digest"
+      },
+      {
+        "id": "P-N2-expired",
+        "expect": "reject",
+        "base_vector": "P-G1-normalized-final",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/validation_at",
+            "value": "2026-07-31T12:02:01Z"
+          }
+        ],
+        "expected_error": "expired"
+      },
+      {
+        "id": "P-N3-transplanted-chat",
+        "expect": "reject",
+        "base_vector": "P-G1-normalized-final",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/binding/chat_id",
+            "value": "00000000-0000-4000-8000-00000000000f"
+          }
+        ],
+        "expected_error": "proof input"
+      },
+      {
+        "id": "P-N4-expiry-over-two-minutes",
+        "expect": "reject",
+        "base_vector": "P-G1-normalized-final",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/proof_expires_at",
+            "value": "2026-07-31T12:02:01Z"
+          }
+        ],
+        "expected_error": "two minutes"
+      },
+      {
+        "id": "P-N5-control-character",
+        "expect": "reject",
+        "base_vector": "P-G1-normalized-final",
+        "mutations": [
+          {
+            "op": "replace",
+            "path": "/text_input",
+            "value": "unsafe\u0000text"
+          }
+        ],
+        "expected_error": "control character"
+      }
+    ]
+  },
+  "aggregate_reservation_cases": [
+    {
+      "id": "A-P1-exact-retry-no-refund",
+      "expect": "accept",
+      "commands": [
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000100",
+          "quantum_role": "result_opening",
+          "quantum_index": 0,
+          "max_duration_samples": 36000,
+          "result_reserved_samples_after": 36000
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000100",
+          "quantum_role": "result_opening",
+          "quantum_index": 0,
+          "max_duration_samples": 36000,
+          "result_reserved_samples_after": 36000,
+          "retry": true
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000101",
+          "quantum_role": "result_continuation",
+          "quantum_index": 1,
+          "max_duration_samples": 96000,
+          "result_reserved_samples_after": 132000
+        }
+      ]
+    },
+    {
+      "id": "A-P2-exact-aggregate-boundary",
+      "expect": "accept",
+      "commands": [
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000110",
+          "quantum_role": "result_opening",
+          "quantum_index": 0,
+          "max_duration_samples": 36000,
+          "result_reserved_samples_after": 36000
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000111",
+          "quantum_role": "result_continuation",
+          "quantum_index": 1,
+          "max_duration_samples": 96000,
+          "result_reserved_samples_after": 132000
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000112",
+          "quantum_role": "result_continuation",
+          "quantum_index": 2,
+          "max_duration_samples": 96000,
+          "result_reserved_samples_after": 228000
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000113",
+          "quantum_role": "result_continuation",
+          "quantum_index": 3,
+          "max_duration_samples": 96000,
+          "result_reserved_samples_after": 324000
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000114",
+          "quantum_role": "result_continuation",
+          "quantum_index": 4,
+          "max_duration_samples": 96000,
+          "result_reserved_samples_after": 420000
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000115",
+          "quantum_role": "result_continuation",
+          "quantum_index": 5,
+          "max_duration_samples": 96000,
+          "result_reserved_samples_after": 516000
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000116",
+          "quantum_role": "result_continuation",
+          "quantum_index": 6,
+          "max_duration_samples": 96000,
+          "result_reserved_samples_after": 612000
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000117",
+          "quantum_role": "result_continuation",
+          "quantum_index": 7,
+          "max_duration_samples": 96000,
+          "result_reserved_samples_after": 708000
+        },
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000118",
+          "quantum_role": "result_continuation",
+          "quantum_index": 8,
+          "max_duration_samples": 12000,
+          "result_reserved_samples_after": 720000
+        }
+      ]
+    },
+    {
+      "id": "A-N1-aggregate-overrun",
+      "expect": "reject",
+      "base_case": "A-P2-exact-aggregate-boundary",
+      "append_commands": [
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000119",
+          "quantum_role": "result_continuation",
+          "quantum_index": 9,
+          "max_duration_samples": 1,
+          "result_reserved_samples_after": 720001
+        }
+      ],
+      "expected_error": "aggregate reservation"
+    },
+    {
+      "id": "A-N2-reservation-echo-mismatch",
+      "expect": "reject",
+      "commands": [
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000120",
+          "quantum_role": "result_opening",
+          "quantum_index": 0,
+          "max_duration_samples": 36000,
+          "result_reserved_samples_after": 35999
+        }
+      ],
+      "expected_error": "reservation echo"
+    },
+    {
+      "id": "A-N3-role-index-mismatch",
+      "expect": "reject",
+      "commands": [
+        {
+          "announcement_id": "00000000-0000-4000-8000-000000000121",
+          "quantum_role": "result_opening",
+          "quantum_index": 1,
+          "max_duration_samples": 36000,
+          "result_reserved_samples_after": 36000
+        }
+      ],
+      "expected_error": "quantum index"
+    }
+  ]
+}

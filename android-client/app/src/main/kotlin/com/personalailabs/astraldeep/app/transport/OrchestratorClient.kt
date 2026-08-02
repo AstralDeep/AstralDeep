@@ -5,6 +5,8 @@ import com.personalailabs.astraldeep.core.protocol.ChatAttachment
 import com.personalailabs.astraldeep.core.protocol.ConversationResume
 import com.personalailabs.astraldeep.core.protocol.DeviceCapabilities
 import com.personalailabs.astraldeep.core.protocol.Inbound
+import com.personalailabs.astraldeep.core.protocol.VoicePlayoutEvent
+import com.personalailabs.astraldeep.core.protocol.VoiceTranscript
 import com.personalailabs.astraldeep.core.protocol.Wire
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.awaitClose
@@ -334,6 +336,74 @@ class OrchestratorClient(
         )
         return submission
     }
+
+    /**
+     * Submit one proof-bearing final ASR transcript through the ordinary chat
+     * dispatcher. Unlike typed input this is deliberately never placed in the
+     * generic offline queue: the voice controller owns exactly one bounded,
+     * unacknowledged final and replays those same immutable identifiers only
+     * after a fresh UI binding is installed.
+     */
+    fun sendVoiceTranscript(
+        transcript: VoiceTranscript,
+        expectedConnectionGeneration: String,
+        onSubmission: (LocalSubmission) -> Unit = {},
+    ): Boolean {
+        val currentSocket = socket
+        if (!open || currentSocket == null || connectionGeneration != expectedConnectionGeneration) return false
+        val submission =
+            LocalSubmission(
+                action = "chat_message",
+                chatId = transcript.chatId,
+                submissionId = transcript.submissionId,
+                requestGeneration = transcript.requestGeneration,
+            )
+        val frame =
+            runCatching { Wire.encodeVoiceChatMessage(transcript, expectedConnectionGeneration) }
+                .getOrNull() ?: return false
+        val request = conversationRequest(submission, ConversationRequestPurpose.COMMIT)
+        bindRequest(request, generationObserver)
+        onSubmission(submission)
+        return currentSocket.send(frame)
+    }
+
+    /**
+     * Report a local render observation only on its still-current UI socket.
+     * Playout evidence is intentionally not queued or replayed after reconnect.
+     */
+    fun sendVoicePlayoutEvent(value: VoicePlayoutEvent): Boolean {
+        val currentSocket = socket
+        if (
+            !open || currentSocket == null ||
+            connectionGeneration != value.connectionGeneration
+        ) {
+            return false
+        }
+        val frame = runCatching { Wire.encodeVoicePlayoutEvent(value) }.getOrNull() ?: return false
+        return currentSocket.send(frame)
+    }
+
+    /**
+     * Create the initial chat for an explicit voice tap with the strict C1
+     * correlation envelope. This handshake is live-only and never enters the
+     * generic offline message queue.
+     */
+    fun createChatForVoice(): LocalSubmission? {
+        val currentSocket = socket
+        val currentGeneration = connectionGeneration
+        if (!open || currentSocket == null || currentGeneration == null) return null
+        val submission = newSubmission("new_chat", null)
+        val frame =
+            Wire.encodeCorrelatedVoiceNewChat(
+                connectionGeneration = currentGeneration,
+                submissionId = submission.submissionId,
+                requestGeneration = submission.requestGeneration,
+            )
+        return submission.takeIf { currentSocket.send(frame) }
+    }
+
+    /** Current registered UI generation, exposed only for voice equality fencing. */
+    fun currentConnectionGeneration(): String? = connectionGeneration.takeIf { open }
 
     fun sendEvent(
         action: String,

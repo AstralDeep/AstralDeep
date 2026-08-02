@@ -11,6 +11,7 @@ import uuid
 import pytest
 
 from personalization import memory_guard as mg
+from personalization import project_scope as ps
 from personalization.memory_tools import MemoryTools
 
 
@@ -111,15 +112,19 @@ class _Repo:
         self.created = []
 
     def create_memory(self, user_id, category, value, *, source="explicit",
-                       salience=0.0, keywords=None):
+                       salience=0.0, keywords=None, project_id=None):
         item = {"id": f"m{len(self.created)}", "user_id": user_id, "category": category,
-                "value": value, "source": source, "keywords": keywords, "superseded_at": None}
+                "value": value, "source": source, "keywords": keywords,
+                "superseded_at": None, "project_id": project_id}
         self.created.append(item)
         self.rows.append(item)
         return dict(item)
 
-    def list_memory(self, user_id):
-        return [dict(r) for r in self.rows]
+    def list_memory(self, user_id, *, project_id=None, include_global=True):
+        rows = [dict(row) for row in self.rows if row.get("user_id") == user_id]
+        if project_id is None:
+            return rows
+        return ps.filter_to_project(rows, project_id, include_global=include_global)
 
     def add_link(self, *a):
         return True

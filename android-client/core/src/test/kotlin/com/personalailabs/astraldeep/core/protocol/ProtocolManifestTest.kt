@@ -79,6 +79,25 @@ class ProtocolManifestTest {
     }
 
     @Test
+    fun conversational_voice_frames_are_required_and_handled() {
+        listOf(
+            "composer_state",
+            "voice_control_binding",
+            "voice_session_state",
+            "voice_turn_state",
+            "voice_submission_rejected",
+            "voice_transcript",
+            "voice_announcement_media",
+        ).forEach { frame ->
+            assertEquals(
+                ProtocolManifest.HANDLED,
+                ProtocolManifest.classification[frame],
+                "$frame is required by feature 065 and may not drift to ignored",
+            )
+        }
+    }
+
+    @Test
     fun author_only_client_explicitly_ignores_host_control_frames() {
         listOf(
             "agent_host_inventory_reconciled",

@@ -4,8 +4,9 @@
 # reusable call shares github.run_id with its caller) and NEVER from
 # producer-uploaded bytes, writes one trusted_workflow_provenance manifest per
 # evidence producer, consumes stage-deploy's trusted_stage_deploy manifest,
-# attests every manifest, and uploads them as the `trusted-manifests` run
-# artifact. The protected commit SHA of THIS FILE is the validator's
+# attests every manifest, and uploads them under an exact attempt-scoped
+# `trusted-manifests-<request>-<attempt>` artifact name. The protected commit
+# SHA of THIS FILE is the validator's
 # --protected-builder-sha (repository variable RELEASE_TRUSTED_BUILDER_SHA,
 # recorded at the first T120 checkpoint); its attestation certificate identity
 # is RELEASE_TRUSTED_BUILDER_IDENTITY.
@@ -37,9 +38,30 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      STAGE_ARTIFACT_SUFFIX: ${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
       RELEASE_TRUSTED_BUILDER_SHA: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
       RELEASE_TRUSTED_BUILDER_IDENTITY: ${{ vars.RELEASE_TRUSTED_BUILDER_IDENTITY }}
     steps:
+      - name: Refuse authority outside the installed protected workflow commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re
+
+          expected = os.environ.get("RELEASE_TRUSTED_BUILDER_SHA", "")
+          actual = os.environ.get("GITHUB_WORKFLOW_SHA", "")
+          if not re.fullmatch(r"[0-9a-f]{40}", expected) or actual != expected:
+              raise SystemExit("trusted builder is not executing at the installed protected commit")
+          if not os.environ.get("RELEASE_TRUSTED_BUILDER_IDENTITY", ""):
+              raise SystemExit("trusted builder certificate identity is not installed")
+          PY
+      - name: Check out the installed protected artifact extractor
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.RELEASE_TRUSTED_BUILDER_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
       # Identity reconstruction source: the CURRENT run's own job and artifact
       # listings. Self-declared values inside any downloaded artifact are never
       # a trust root here.
@@ -47,6 +69,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -e build || -L build ]]; then
+            echo "::error::protected builder checkout unexpectedly contains build output" >&2
+            exit 1
+          fi
           mkdir -p build/060/trust/producers build/060/trust/stage build/060/api
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
             --paginate --jq '.jobs[]' > build/060/api/jobs.ndjson
@@ -58,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, pathlib, subprocess
+          import json, os, pathlib, re, subprocess
 
           api = pathlib.Path("build/060/api")
           artifacts = [
@@ -66,16 +92,67 @@ jobs:
               for line in api.joinpath("artifacts.ndjson").read_text(encoding="utf-8").splitlines()
               if line.strip()
           ]
+          suffix = os.environ["STAGE_ARTIFACT_SUFFIX"]
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", suffix):
+              raise SystemExit("stage artifact suffix is not canonical")
+          expected_stage_outputs = f"stage-outputs-{suffix}"
+          expected_stage_manifest = f"stage-manifest-{suffix}"
+          expected_evidence = {
+              f"evidence-{platform}-{suffix}"
+              for platform in ("backend", "web", "windows", "android", "macos", "ios", "watchos", "docs")
+          }
+          expected_raw_apple = {
+              f"raw-apple-evidence-{platform}-{suffix}"
+              for platform in ("macos", "ios", "watchos")
+          }
+          candidate = os.environ["CANDIDATE_SHA"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          run_attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          if (
+              not re.fullmatch(r"[0-9a-f]{40}", candidate)
+              or not re.fullmatch(r"[1-9][0-9]*", run_id)
+              or not re.fullmatch(r"[1-9][0-9]*", run_attempt)
+          ):
+              raise SystemExit("candidate or current-run identity is not canonical")
+          expected_windows_product = (
+              f"windows-unsigned-{candidate}-{run_id}-{run_attempt}"
+          )
+          expected_names = expected_evidence | expected_raw_apple | {
+              expected_stage_outputs,
+              expected_stage_manifest,
+              expected_windows_product,
+          }
           wanted = {}
           for artifact in artifacts:
               name = artifact["name"]
-              if name.startswith("evidence-") or name.startswith("stage-outputs-"):
-                  # Exact-id selection; a duplicate name from a reused run is refused.
-                  if name in wanted:
-                      raise SystemExit(f"duplicate run artifact name: {name}")
-                  wanted[name] = artifact
-          if not any(name.startswith("stage-outputs-") for name in wanted):
-              raise SystemExit("shared run exposes no stage-outputs artifact")
+              if name.startswith((
+                  "evidence-",
+                  "raw-apple-evidence-",
+                  "stage-outputs-",
+                  "stage-manifest-",
+                  "windows-unsigned-",
+              )) and name not in expected_names:
+                  raise SystemExit(f"wrong attempt-scoped input artifact name: {name}")
+              if name not in expected_names:
+                  continue
+              if artifact.get("expired") is not False:
+                  raise SystemExit(f"selected run artifact is expired: {name}")
+              if name in wanted:
+                  raise SystemExit(f"duplicate run artifact name: {name}")
+              wanted[name] = artifact
+          missing = expected_names - set(wanted)
+          if missing:
+              raise SystemExit(f"shared run lacks required artifact(s): {sorted(missing)}")
+          artifact_ids = [str(artifact.get("id", "")) for artifact in wanted.values()]
+          if (
+              any(not re.fullmatch(r"[1-9][0-9]*", artifact_id) for artifact_id in artifact_ids)
+              or len(artifact_ids) != len(set(artifact_ids))
+          ):
+              raise SystemExit("selected artifacts lack unique canonical ids")
+          for name, artifact in wanted.items():
+              size = artifact.get("size_in_bytes")
+              if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= 512 * 1024 * 1024:
+                  raise SystemExit(f"selected run artifact has an invalid size: {name}")
           downloads = pathlib.Path("build/060/downloads")
           downloads.mkdir(parents=True, exist_ok=True)
           for name, artifact in sorted(wanted.items()):
@@ -87,8 +164,17 @@ jobs:
                       check=True, stdout=handle,
                   )
               target = downloads / str(artifact["id"])
-              target.mkdir(parents=True, exist_ok=True)
-              subprocess.run(["unzip", "-o", "-q", str(zip_path), "-d", str(target)], check=True)
+              subprocess.run(
+                  [
+                      "python3",
+                      "scripts/extract_release_artifact.py",
+                      "--archive",
+                      str(zip_path),
+                      "--target",
+                      str(target),
+                  ],
+                  check=True,
+              )
           api.joinpath("selected.json").write_text(
               json.dumps({name: a["id"] for name, a in wanted.items()}, indent=2),
               encoding="utf-8",
@@ -134,7 +220,13 @@ jobs:
               ]
               if len(matches) != 1:
                   raise SystemExit(f"expected exactly one run job for {job_id}: {len(matches)}")
-              return matches[0]
+              job = matches[0]
+              if (
+                  job.get("status") != "completed"
+                  or job.get("conclusion") != "success"
+              ):
+                  raise SystemExit(f"producer job did not complete successfully: {job_id}")
+              return job
 
           def runner_identity(job: dict) -> dict:
               labels = [str(item).lower() for item in job.get("labels", [])]
@@ -156,7 +248,8 @@ jobs:
                   if not path.is_file():
                       continue
                   member = path.relative_to(root).as_posix()
-                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  with path.open("rb") as stream:
+                      digest = hashlib.file_digest(stream, "sha256").hexdigest()
                   records.append({
                       "kind": "github_actions_artifact_member",
                       "repository": repo,
@@ -176,13 +269,60 @@ jobs:
           name_by_id = {str(v): k for k, v in selected.items()}
           now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
           producers = ("backend", "web", "windows", "android", "macos", "ios", "watchos", "docs")
+          suffix = os.environ["STAGE_ARTIFACT_SUFFIX"]
+          stage_manifest_name = f"stage-manifest-{suffix}"
+          stage_manifest_id = str(selected[stage_manifest_name])
+          stage_manifest_path = (
+              pathlib.Path("build/060/downloads")
+              / stage_manifest_id
+              / "trusted-stage-deploy.json"
+          )
+          stage_document = json.loads(stage_manifest_path.read_text(encoding="utf-8"))
+          deployment = stage_document.get("deployment")
+          candidate_image = (
+              deployment.get("candidate_image_reference")
+              if isinstance(deployment, dict)
+              else None
+          )
+          candidate_image_sha256 = (
+              deployment.get("candidate_image_sha256")
+              if isinstance(deployment, dict)
+              else None
+          )
+          image_match = re.fullmatch(
+              r"(?P<registry>[A-Za-z0-9.-]+(?::[0-9]{1,5})?)/"
+              r"(?P<repository>[A-Za-z0-9._/-]+)@"
+              r"(?P<digest>sha256:[0-9a-f]{64})",
+              candidate_image or "",
+          )
+          if (
+              image_match is None
+              or image_match.group("registry") != "ghcr.io"
+              or image_match.group("repository") != repo.lower()
+              or image_match.group("digest").removeprefix("sha256:")
+              != candidate_image_sha256
+          ):
+              raise SystemExit("stage manifest has a noncanonical candidate OCI identity")
+          candidate_product_claim = {
+              "kind": "oci_manifest",
+              "registry": image_match.group("registry"),
+              "repository_path": image_match.group("repository"),
+              "digest": image_match.group("digest"),
+              "immutable_reference": f"oci://{candidate_image}",
+              "sha256": candidate_image_sha256,
+          }
           index = {"producers": {}, "stage": {}}
           for platform in producers:
-              artifact_name = f"evidence-{platform}"
+              artifact_name = f"evidence-{platform}-{os.environ['STAGE_ARTIFACT_SUFFIX']}"
               if artifact_name not in selected:
                   raise SystemExit(f"missing run artifact: {artifact_name}")
               artifact_id = selected[artifact_name]
               job = job_for(f"{platform}-producer")
+              artifact_claims = members(
+                  artifact_id, pathlib.Path("build/060/downloads") / str(artifact_id)
+              )
+              if platform in {"backend", "web"}:
+                  artifact_claims.append(dict(candidate_product_claim))
               manifest = {
                   "document_type": "trusted_workflow_provenance",
                   "schema_version": 1,
@@ -204,10 +344,58 @@ jobs:
                       "certificate_identity": builder_identity,
                   },
                   "generated_at": now,
-                  "artifacts": members(
-                      artifact_id, pathlib.Path("build/060/downloads") / str(artifact_id)
-                  ),
+                  "artifacts": artifact_claims,
               }
+              if platform in {"macos", "ios", "watchos"}:
+                  raw_name = (
+                      f"raw-apple-evidence-{platform}-"
+                      f"{os.environ['STAGE_ARTIFACT_SUFFIX']}"
+                  )
+                  if raw_name not in selected:
+                      raise SystemExit(f"missing raw Apple run artifact: {raw_name}")
+                  raw_artifact_id = selected[raw_name]
+                  raw_job_id = f"{platform}-raw-producer"
+                  raw_job = job_for(raw_job_id)
+                  manifest["source_provenance"] = {
+                      "workflow": {
+                          "name": os.environ["GITHUB_WORKFLOW"],
+                          "run_id": run_id,
+                          "run_attempt": run_attempt,
+                          "job_id": raw_job_id,
+                      },
+                      "runner": runner_identity(raw_job),
+                      "artifacts": members(
+                          raw_artifact_id,
+                          pathlib.Path("build/060/downloads") / str(raw_artifact_id),
+                      ),
+                  }
+              elif platform == "windows":
+                  source_name = (
+                      f"windows-unsigned-{candidate}-{run_id}-{run_attempt}"
+                  )
+                  if source_name not in selected:
+                      raise SystemExit(f"missing Windows product artifact: {source_name}")
+                  source_artifact_id = selected[source_name]
+                  source_claims = members(
+                      source_artifact_id,
+                      pathlib.Path("build/060/downloads") / str(source_artifact_id),
+                  )
+                  if len(
+                      [claim for claim in source_claims if claim["member"] == "AstralDeep.exe"]
+                  ) != 1:
+                      raise SystemExit(
+                          "Windows product artifact lacks one exact AstralDeep.exe member"
+                      )
+                  manifest["source_provenance"] = {
+                      "workflow": {
+                          "name": os.environ["GITHUB_WORKFLOW"],
+                          "run_id": run_id,
+                          "run_attempt": int(run_attempt),
+                          "job_id": "windows-candidate",
+                      },
+                      "runner": runner_identity(job_for("windows-candidate")),
+                      "artifacts": source_claims,
+                  }
               out = pathlib.Path(f"build/060/trust/producers/{platform}.json")
               out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
               index["producers"][platform] = {
@@ -217,27 +405,60 @@ jobs:
                   "source_artifact_id": str(artifact_id),
               }
 
-          # The stage manifest is produced by run_candidate_staging.py
-          # --trusted-manifest under the stage-deploy env gate; it is carried
-          # through unchanged and attested here so the protected decision can
-          # verify one signer for the whole trust set.
-          stage_names = [n for n in selected if n.startswith("stage-outputs-")]
-          if len(stage_names) != 1:
-              raise SystemExit(f"expected exactly one stage-outputs artifact: {stage_names}")
-          stage_dir = pathlib.Path("build/060/downloads") / str(selected[stage_names[0]])
-          stage_manifest = stage_dir / "trusted-stage-deploy.json"
-          if not stage_manifest.is_file():
-              raise SystemExit("stage-outputs artifact lacks trusted-stage-deploy.json")
+          # Stage outputs are uploaded first. The protected staging driver then
+          # writes a manifest containing the actual immutable artifact id, and
+          # that manifest is uploaded as a separate immutable artifact.
+          stage_outputs_name = f"stage-outputs-{suffix}"
+          if stage_outputs_name not in selected or stage_manifest_name not in selected:
+              raise SystemExit("exact stage output/manifest artifacts are missing")
+          job_for("stage-deploy")
+          stage_outputs_id = str(selected[stage_outputs_name])
+          stage_dir = pathlib.Path("build/060/downloads") / stage_outputs_id
+          manifest_dir = pathlib.Path("build/060/downloads") / stage_manifest_id
+          stage_output = stage_dir / "staging-outputs.json"
+          stage_manifest = manifest_dir / "trusted-stage-deploy.json"
+          for root, expected_file in (
+              (stage_dir, stage_output),
+              (manifest_dir, stage_manifest),
+          ):
+              members_found = sorted(path for path in root.rglob("*") if path.is_file())
+              if members_found != [expected_file] or any(path.is_symlink() for path in root.rglob("*")):
+                  raise SystemExit("stage artifact has unexpected or symlinked members")
           document = json.loads(stage_manifest.read_text(encoding="utf-8"))
           if document.get("document_type") != "trusted_stage_deploy":
               raise SystemExit("stage manifest has the wrong document_type")
+          expected_claim = {
+              "kind": "github_actions_artifact_member",
+              "repository": repo,
+              "run_id": run_id,
+              "run_attempt": run_attempt,
+              "artifact_id": stage_outputs_id,
+              "artifact_name": stage_outputs_name,
+              "member": "staging-outputs.json",
+              "immutable_reference": (
+                  f"gh://{repo}/runs/{run_id}/attempts/{run_attempt}"
+                  f"/artifacts/{stage_outputs_id}/members/staging-outputs.json"
+              ),
+              "sha256": hashlib.sha256(stage_output.read_bytes()).hexdigest(),
+          }
+          if document.get("stage_outputs_artifact") != expected_claim:
+              raise SystemExit("stage manifest does not bind the exact immutable outputs artifact")
+          stage_output_document = json.loads(stage_output.read_text(encoding="utf-8"))
+          expected_deployment = {
+              key: value
+              for key, value in stage_output_document.items()
+              if key not in {"deployed_at", "macos_personal_agent_host"}
+          }
+          if document.get("deployment") != expected_deployment:
+              raise SystemExit("stage manifest deployment differs from the uploaded stage outputs")
           target = pathlib.Path("build/060/trust/stage/trusted-stage-deploy.json")
-          target.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          target.write_bytes(stage_manifest.read_bytes())
           index["stage"] = {
               "manifest_id": document.get("manifest_id"),
               "role": "stage_deploy",
               "member": "stage/trusted-stage-deploy.json",
-              "source_artifact_id": str(selected[stage_names[0]]),
+              "source_artifact_id": stage_manifest_id,
+              "stage_outputs_artifact_id": stage_outputs_id,
           }
           pathlib.Path("build/060/trust/receipt-index.json").write_text(
               json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -254,7 +475,7 @@ jobs:
       - name: Upload trusted manifests and receipt index
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: trusted-manifests
+          name: trusted-manifests-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/trust/
           if-no-files-found: error
           retention-days: 14

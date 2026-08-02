@@ -1,6 +1,8 @@
 package com.personalailabs.astraldeep.core.protocol
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -11,6 +13,28 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class WireTest {
+    @Test
+    fun encodes_identified_ui_event_at_envelope_and_payload_levels() {
+        val requestGeneration = "00000000-0000-4000-8000-000000000011"
+        val submissionId = "00000000-0000-4000-8000-000000000012"
+        val encoded =
+            Json.parseToJsonElement(
+                Wire.encodeUiEvent(
+                    action = "chat_message",
+                    sessionId = "chatA",
+                    payload = JsonObject(mapOf("message" to JsonPrimitive("hello"))),
+                    requestGeneration = requestGeneration,
+                    submissionId = submissionId,
+                ),
+            ).jsonObject
+        assertEquals(requestGeneration, encoded["request_generation"]?.jsonPrimitive?.content)
+        assertEquals(submissionId, encoded["submission_id"]?.jsonPrimitive?.content)
+        val payload = encoded["payload"]!!.jsonObject
+        assertEquals(requestGeneration, payload["request_generation"]?.jsonPrimitive?.content)
+        assertEquals(submissionId, payload["submission_id"]?.jsonPrimitive?.content)
+        assertEquals("hello", payload["message"]?.jsonPrimitive?.content)
+    }
+
     @Test
     fun decodes_ui_render() {
         val r =
@@ -112,6 +136,25 @@ class WireTest {
         assertEquals("s1", r.streamId)
         assertEquals("blocked", r.error.code)
         assertEquals("no", r.error.message)
+    }
+
+    @Test
+    fun decodes_legacy_stream_error_and_unsubscribe_frames() {
+        val error =
+            assertIs<Inbound.StreamErrorMsg>(
+                Wire.decode(
+                    """{"type":"stream_error","session_id":"chatA","tool_name":"ticker","error":"offline"}""",
+                ),
+            )
+        assertEquals("ticker", error.toolName)
+        assertEquals("offline", error.error.code)
+        assertEquals("offline", error.error.message)
+
+        val unsubscribed =
+            assertIs<Inbound.StreamUnsubscribed>(
+                Wire.decode("""{"type":"stream_unsubscribed","tool_name":"ticker"}"""),
+            )
+        assertEquals("ticker", unsubscribed.toolName)
     }
 
     @Test

@@ -155,9 +155,9 @@ def _index_exists(sandbox: _Sandbox, name: str) -> bool:
                       (name,)) is not None
 
 
-def _set_revision(sandbox: _Sandbox, value: str) -> None:
+def _clear_revision(sandbox: _Sandbox) -> None:
     with sandbox.connect() as conn, conn.cursor() as c:
-        c.execute("UPDATE schema_meta SET value = %s WHERE key = 'revision'", (value,))
+        c.execute("DELETE FROM schema_meta WHERE key = 'revision'")
         conn.commit()
 
 
@@ -170,9 +170,9 @@ def test_delta_reapplies_idempotently_over_representative_rows(sandbox):
     Database(sandbox.dsn)
     assert _snapshot(sandbox) == expected
 
-    # Forced full re-apply from a pre-063 marker: the guarded delta runs again
+    # Forced full re-apply from an absent marker: the guarded delta runs again
     # over REAL rows — CREATE IF NOT EXISTS + the merge cleanup, no data loss.
-    _set_revision(sandbox, "060.004")
+    _clear_revision(sandbox)
     Database(sandbox.dsn)
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"

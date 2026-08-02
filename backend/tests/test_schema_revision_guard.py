@@ -21,9 +21,9 @@ except Exception:  # pragma: no cover - import guard
     Database = None  # type: ignore
     SCHEMA_REVISION = None  # type: ignore
 
-EXPECTED_SCHEMA_REVISION = "064.001"
+EXPECTED_SCHEMA_REVISION = "065.001"
 EXPECTED_SOURCE_SHA256 = (
-    "2965a268f3ffdd86788a38e98aa11ad67c971202799bcda2ecd6bdecf98f484c"
+    "e96c58028d462df28e7c131b755663ad65ec27078ecbb2801057e8de7c766c22"
 )
 EXPECTED_USER_AGENT_POLICY_REVISION = "constitution=0.1.0;analyze=1"
 EXPECTED_USER_AGENT_POLICY_SOURCE_SHA256 = (
@@ -115,6 +115,7 @@ def test_guard_covers_all_migration_helpers():
     assert "_apply_full_schema" in names
     assert "_migrate_backfill_tool_kinds_052" in names
     assert "_migrate_runtime_reliability_060" in names
+    assert "_migrate_conversational_voice_065" in names
     assert any(name.startswith("_cleanup_") for name in names)
 
 

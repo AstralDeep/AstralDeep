@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 
+from personalization import project_scope as ps
 from personalization.memory_tools import (
     MemoryTools,
     pagerank_enabled,
@@ -91,16 +92,19 @@ class _GraphRepo:
         self.edges = set()  # directed (a, b)
 
     def create_memory(self, user_id, category, value, *, source="explicit",
-                       salience=0.0, keywords=None):
+                       salience=0.0, keywords=None, project_id=None):
         item = {"id": f"m{len(self.rows)}", "user_id": user_id, "category": category,
                 "value": value, "source": source, "keywords": keywords,
-                "superseded_at": None}
+                "superseded_at": None, "project_id": project_id}
         self.rows.append(item)
         return dict(item)
 
-    def list_memory(self, user_id):
-        return [dict(r) for r in self.rows
+    def list_memory(self, user_id, *, project_id=None, include_global=True):
+        rows = [dict(r) for r in self.rows
                 if r["user_id"] == user_id and r["superseded_at"] is None]
+        if project_id is None:
+            return rows
+        return ps.filter_to_project(rows, project_id, include_global=include_global)
 
     def add_link(self, user_id, a, b):
         if not a or not b or a == b:

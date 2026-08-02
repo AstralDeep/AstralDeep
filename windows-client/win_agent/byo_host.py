@@ -61,7 +61,7 @@ HOST_FRAME_TYPES = (
 BYO_RUNTIME_CONTRACT_VERSION = 2
 PACKAGED_RUNTIME_LOCK_ARTIFACT = "requirements-release.lock.txt"
 PACKAGED_RUNTIME_LOCK_SHA256 = (
-    "6041036906881c59868b9e53e16d1e22d8371b68af2f36701022a5a239dd43ba"
+    "82d58a54a8cd1a7ffd925d724ba247f0cfb09e4de0747aeca4a869f7dd87ba35"
 )
 BUNDLE_FILE_NAMES = ("agent_main.py", "astralprims_ui.py", "mcp_tools.py")
 _RUNTIME_METADATA_FILE = ".astraldeep-runtime.json"

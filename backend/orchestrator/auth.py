@@ -281,6 +281,20 @@ async def native_logout(request: Request,
         )
 
     user_id = (payload or {}).get("sub") or "unknown"
+    app_state = getattr(getattr(request, "app", None), "state", None)
+    voice_services = getattr(
+        getattr(app_state, "orchestrator", None), "voice_services", None
+    )
+    if voice_services is not None:
+        try:
+            await voice_services.end_user_voice_session(
+                user_id=user_id,
+                reason="logout",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("native logout: voice cleanup failed", exc_info=True)
     from orchestrator import web_auth
     outcome = await web_auth._revoke_or_queue(user_id, refresh_token, client_id=client_id)
 

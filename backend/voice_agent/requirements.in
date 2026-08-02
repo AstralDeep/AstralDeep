@@ -1,0 +1,11 @@
+# Feature 065 isolated direct-RTC media-worker runtime dependencies.
+#
+# The repository owner approved this exact RTC-only boundary on 2026-07-31.
+# AstralDeep owns endpointing and speech adapters; LiveKit Agents, provider/LLM
+# plugins, livekit-api, PyAV, BlingFire, and local-inference packages are
+# deliberately prohibited from this image. The exact WebSocket client is the
+# bounded authenticated pool-control transport; speech HTTP uses stdlib.
+livekit==1.1.14
+numpy==2.4.6
+onnxruntime==1.28.0
+websockets==17.0.1

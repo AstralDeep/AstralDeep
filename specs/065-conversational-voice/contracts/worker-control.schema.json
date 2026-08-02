@@ -2,14 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://astraldeep.example/contracts/065/worker-control.schema.json",
   "title": "AstralDeep Voice Worker Control Channel",
-  "description": "Service-authenticated, session/generation-scoped control frames. Raw audio and final transcript text are forbidden on this channel; client media/data or the watch bridge carries them. Implementations must redact speak text and bearer grants from all logs/traces.",
+  "description": "Connection-scoped pool frames and session/generation-scoped control frames multiplexed over one challenge-authenticated worker-pool WebSocket. Raw audio and final transcript text are forbidden on this channel; client media/data or the watch bridge carries them. The only bearer allowed is the short-lived direct-worker room grant nested in session_bind; implementations must redact it and speak text from all logs/traces.",
   "oneOf": [
+    { "$ref": "#/$defs/workerRegister" },
+    { "$ref": "#/$defs/workerRegistered" },
+    { "$ref": "#/$defs/poolHeartbeat" },
     { "$ref": "#/$defs/bind" },
     { "$ref": "#/$defs/mediaGrantRotated" },
     { "$ref": "#/$defs/mediaGrantApplied" },
     { "$ref": "#/$defs/sessionContextUpdate" },
     { "$ref": "#/$defs/sessionContextApplied" },
     { "$ref": "#/$defs/recognitionStarted" },
+    { "$ref": "#/$defs/recognitionFailed" },
     { "$ref": "#/$defs/turnBound" },
     { "$ref": "#/$defs/transcriptAccepted" },
     { "$ref": "#/$defs/transcriptRejected" },
@@ -42,6 +46,21 @@
       "oneOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }]
     },
     "timestamp": { "type": "string", "format": "date-time" },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "poolBase": {
+      "type": "object",
+      "required": ["type", "schema_version", "message_id", "sequence", "sent_at"],
+      "properties": {
+        "type": { "type": "string" },
+        "schema_version": { "const": "1" },
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "sent_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
     "base": {
       "type": "object",
       "required": [
@@ -76,6 +95,103 @@
         "sample_rate_hz": { "const": 24000 }
       }
     },
+    "workerRegister": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/poolBase" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "worker_identity",
+            "max_sessions",
+            "runtime_closure_sha256",
+            "profile"
+          ],
+          "properties": {
+            "type": { "const": "worker_register" },
+            "worker_identity": { "$ref": "#/$defs/opaqueId" },
+            "max_sessions": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "runtime_closure_sha256": { "$ref": "#/$defs/sha256" },
+            "profile": { "$ref": "#/$defs/voiceProfile" }
+          }
+        }
+      ]
+    },
+    "workerRegistered": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/poolBase" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "worker_identity",
+            "connection_id",
+            "accepted_max_sessions",
+            "heartbeat_interval_seconds",
+            "registered_at"
+          ],
+          "properties": {
+            "type": { "const": "worker_registered" },
+            "worker_identity": { "$ref": "#/$defs/opaqueId" },
+            "connection_id": { "$ref": "#/$defs/uuid" },
+            "accepted_max_sessions": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "heartbeat_interval_seconds": { "type": "integer", "minimum": 5, "maximum": 60 },
+            "registered_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ]
+    },
+    "poolHeartbeat": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/poolBase" },
+        {
+          "type": "object",
+          "required": ["type", "worker_identity", "connection_id"],
+          "properties": {
+            "type": { "const": "pool_heartbeat" },
+            "sequence": { "type": "integer", "minimum": 1 },
+            "worker_identity": { "$ref": "#/$defs/opaqueId" },
+            "connection_id": { "$ref": "#/$defs/uuid" }
+          }
+        }
+      ]
+    },
+    "workerRtcGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Memory-only direct-RTC room grant minted by orchestrator-only livekit-api after control-channel authentication. It is not a LiveKit API credential and must be redacted from every log, trace, error, and durable record.",
+      "required": [
+        "revision",
+        "livekit_url",
+        "join_token",
+        "issued_at",
+        "expires_at",
+        "room_name",
+        "worker_identity"
+      ],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 1 },
+        "livekit_url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048,
+          "pattern": "^wss?://"
+        },
+        "join_token": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 8192,
+          "description": "Short-lived room-scoped JWT; never the API key or secret."
+        },
+        "issued_at": { "$ref": "#/$defs/timestamp" },
+        "expires_at": { "$ref": "#/$defs/timestamp" },
+        "room_name": { "$ref": "#/$defs/opaqueId" },
+        "worker_identity": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
     "bind": {
       "unevaluatedProperties": false,
       "allOf": [
@@ -84,24 +200,30 @@
           "type": "object",
           "required": [
             "type",
+            "assignment_id",
             "room_name",
             "worker_identity",
             "transport",
             "media_grant_revision",
+            "worker_rtc_grant_revision",
             "client_participant_identity",
             "grant_expires_at",
+            "worker_rtc_grant",
             "visible_chat_id",
             "chat_context_revision",
             "profile"
           ],
           "properties": {
             "type": { "const": "session_bind" },
+            "assignment_id": { "$ref": "#/$defs/uuid" },
             "room_name": { "$ref": "#/$defs/opaqueId" },
             "worker_identity": { "$ref": "#/$defs/opaqueId" },
             "transport": { "enum": ["livekit", "watch_pcm_websocket"] },
             "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "worker_rtc_grant_revision": { "type": "integer", "minimum": 1 },
             "client_participant_identity": { "$ref": "#/$defs/opaqueId" },
             "grant_expires_at": { "$ref": "#/$defs/timestamp" },
+            "worker_rtc_grant": { "$ref": "#/$defs/workerRtcGrant" },
             "visible_chat_id": { "$ref": "#/$defs/uuid" },
             "chat_context_revision": { "type": "integer", "minimum": 1 },
             "profile": { "$ref": "#/$defs/voiceProfile" }
@@ -206,6 +328,29 @@
             "media_grant_revision": { "type": "integer", "minimum": 1 },
             "visible_chat_id": { "$ref": "#/$defs/uuid" },
             "chat_context_revision": { "type": "integer", "minimum": 1 },
+            "occurred_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ]
+    },
+    "recognitionFailed": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "client_turn_id",
+            "reason",
+            "occurred_at"
+          ],
+          "properties": {
+            "type": { "const": "recognition_failed" },
+            "client_turn_id": { "$ref": "#/$defs/uuid" },
+            "reason": {
+              "enum": ["asr_failed", "empty_transcript", "invalid_asr_result"]
+            },
             "occurred_at": { "$ref": "#/$defs/timestamp" }
           }
         }
@@ -465,10 +610,12 @@
         { "$ref": "#/$defs/base" },
         {
           "type": "object",
-          "required": ["type", "worker_identity", "profile_ready"],
+          "required": ["type", "assignment_id", "worker_identity", "worker_rtc_grant_revision", "profile_ready"],
           "properties": {
             "type": { "const": "worker_ready" },
+            "assignment_id": { "$ref": "#/$defs/uuid" },
             "worker_identity": { "$ref": "#/$defs/opaqueId" },
+            "worker_rtc_grant_revision": { "type": "integer", "minimum": 1 },
             "profile_ready": { "type": "boolean" },
             "reason": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9_]+$" }
           }

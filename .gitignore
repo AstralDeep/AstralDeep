@@ -83,6 +83,8 @@ yarn-error.log*
 dist/
 coverage/
 tooling/web-ci/test-results/
+test-results/
+*.profraw
 
 # Environment Variables
 .env

@@ -621,11 +621,33 @@ class WorkspaceManager:
                     ),
                 )
             )
-        rows = self.db.fetch_all(
-            "SELECT layout_key, position, layout FROM workspace_layout "
-            "WHERE chat_id = ? AND user_id = ? ORDER BY position ASC, id ASC",
+        chat = self.db.fetch_one(
+            "SELECT render_revision, conversation_commit_id FROM chats "
+            "WHERE id = ? AND user_id = ?",
             (chat_id, user_id),
         )
+        render_revision = int((chat or {}).get("render_revision") or 0)
+        if render_revision == 0:
+            rows = self.db.fetch_all(
+                "SELECT layout_key, position, layout FROM workspace_layout "
+                "WHERE chat_id = ? AND user_id = ? "
+                "AND conversation_commit_id IS NULL "
+                "AND committed_render_revision IS NULL "
+                "ORDER BY position ASC, id ASC",
+                (chat_id, user_id),
+            )
+        else:
+            commit_id = (chat or {}).get("conversation_commit_id")
+            if commit_id is None:
+                return []
+            rows = self.db.fetch_all(
+                "SELECT layout_key, position, layout FROM workspace_layout "
+                "WHERE chat_id = ? AND user_id = ? "
+                "AND conversation_commit_id = ? "
+                "AND committed_render_revision = ? "
+                "ORDER BY position ASC, id ASC",
+                (chat_id, user_id, str(commit_id), render_revision),
+            )
         out = []
         for row in rows:
             try:

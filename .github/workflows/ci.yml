@@ -38,6 +38,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
@@ -58,6 +60,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24"
@@ -92,6 +96,62 @@ jobs:
             "$PLAYWRIGHT_IMAGE" sh -lc \
             'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run test:coverage-conversion:browser'
 
+  # Feature 065: validate the single C0-C6 fixture against the authoritative
+  # JSON Schemas and OpenAPI document in an isolated, hash-locked Python 3.11
+  # environment before any client is allowed to claim conformance.
+  voice-contract-validator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tooling/contract-ci/requirements.lock.txt
+      - name: Validate the canonical Feature 065 voice contracts
+        run: |
+          set -euo pipefail
+          python -m venv build/065/contract-validator
+          build/065/contract-validator/bin/python -m pip install \
+            --require-hashes \
+            -r tooling/contract-ci/requirements.lock.txt
+          build/065/contract-validator/bin/python \
+            tooling/contract-ci/validate_voice_contracts.py
+
+  # Feature 065: run the shipped browser reducer/media adapter through C0-C6
+  # and retain its Istanbul input for the protected combined changed-code gate.
+  voice-web-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Run C0-C6 in the digest-pinned Playwright image
+        run: |
+          set -euo pipefail
+          PLAYWRIGHT_IMAGE="$(tr -d '\n' < tooling/web-ci/playwright-image.txt)"
+          test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"
+          docker pull "$PLAYWRIGHT_IMAGE"
+          mkdir -p build/065/coverage
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work/tooling/web-ci \
+            -e ASTRAL_VOICE_COVERAGE_ISTANBUL_OUTPUT=/work/build/065/coverage/web-istanbul.json \
+            "$PLAYWRIGHT_IMAGE" sh -lc \
+            'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run check:product-isolation && corepack npm exec -- playwright test tests/voice-conversation-065.spec.js'
+          test -s build/065/coverage/web-istanbul.json
+      - name: Archive the web Istanbul input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: web-voice-istanbul
+          path: build/065/coverage/web-istanbul.json
+          if-no-files-found: error
+          retention-days: 14
+
   # ── Feature 060 (FR-053/SC-015): exercise the standard-library
   #    cross-language coverage collector separately and measure the root
   #    release-tooling Python that the backend-only coverage job cannot see. ──
@@ -101,6 +161,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -123,8 +184,15 @@ jobs:
             backend/tests/test_candidate_staging_060.py
             backend/tests/test_release_evidence_validator.py
             backend/tests/test_prepare_release_evidence_060.py
+            backend/tests/test_extract_release_artifact_060.py
             backend/tests/test_release_workflows_060.py
             backend/tests/test_release_evidence_producers.py
+            backend/tests/test_voice_dependency_locks_065.py
+            backend/tests/test_voice_dependency_supply_chain_065.py
+            backend/tests/test_apple_livekit_dependency_065.py
+            backend/tests/test_voice_deployment_topology_065.py
+            backend/tests/test_voice_release_evidence_producers_065.py
+            backend/tests/test_voice_worker_packaging_065.py
             windows-client/tests/test_release_lock_060.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
@@ -150,6 +218,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
@@ -173,6 +243,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
@@ -188,6 +260,67 @@ jobs:
           name: image
           path: /tmp/astraldeep.tar
           retention-days: 1
+
+  # ── Feature 065 (T003/T004): build the isolated voice worker's production
+  #    and test targets from one clean checkout. The test target alone carries
+  #    pytest/coverage tooling. Runtime export/upload remains physically absent
+  #    while the exact closure is reopened. This lane is intentionally blocking. ──
+  voice-worker-test:
+    # Fail closed while the exact worker closure is reopened. Only an
+    # owner-controlled repository variable, set after the dependency record and
+    # matching review are complete, may authorize a CI-only rebuild. Runtime
+    # export and upload are absent from this job. An unset variable evaluates false.
+    if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Build the voice-worker runtime and test images
+        run: |
+          set -euo pipefail
+          test -f Dockerfile.voice.dockerignore
+          docker build \
+            --file Dockerfile.voice \
+            --target runtime \
+            --tag astraldeep-voice-worker:ci \
+            .
+          docker build \
+            --file Dockerfile.voice \
+            --target test \
+            --tag astraldeep-voice-worker:test \
+            .
+      - name: Run the isolated voice-worker suite with Cobertura coverage
+        run: |
+          set -euo pipefail
+          mkdir -p build/065/coverage
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e COVERAGE_FILE=/tmp/.coverage \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -v "$PWD/build/065/coverage:/coverage" \
+            --entrypoint /bin/sh \
+            astraldeep-voice-worker:test \
+            -ec '
+              /opt/voice-test-venv/bin/python -m coverage run \
+                --source=voice_agent \
+                --omit="*/voice_agent/tests/*" \
+                -m pytest voice_agent/tests -q -p no:cacheprovider
+              /opt/voice-test-venv/bin/python -m coverage xml \
+                -o /coverage/voice-worker.xml
+              /opt/voice-test-venv/bin/python -m coverage report \
+                --fail-under=90
+              /opt/voice-test-venv/bin/python -c \
+                "from xml.etree import ElementTree; root = ElementTree.parse(\"/coverage/voice-worker.xml\").getroot(); assert root.tag == \"coverage\"; statements = int(root.attrib[\"lines-valid\"]); rate = float(root.attrib[\"line-rate\"]); assert statements == 0 or rate >= 0.90"
+            '
+          test -s build/065/coverage/voice-worker.xml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: voice-worker-coverage
+          path: build/065/coverage/voice-worker.xml
+          if-no-files-found: error
+          retention-days: 14
 
   # ── FR-034: complete backend test suite inside the built image against a real
   #    Postgres, development posture. Both invocations per the contract; combined
@@ -212,6 +345,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: image
@@ -228,7 +363,20 @@ jobs:
           docker run --rm --network host \
             -v "$PWD/backend:/app/backend" \
             -v "$PWD/tooling/python-ci:/ci/python:ro" \
+            -v "$PWD/deploy/livekit:/app/deploy/livekit:ro" \
+            -v "$PWD/tooling/contract-ci/validate_voice_contracts.py:/app/tooling/contract-ci/validate_voice_contracts.py:ro" \
+            -v "$PWD/tooling/voice-worker/closure_manifest.py:/app/tooling/voice-worker/closure_manifest.py:ro" \
+            -v "$PWD/scripts/validate_release_evidence.py:/ci/voice/validate_release_evidence.py:ro" \
+            -v "$PWD/specs/065-conversational-voice/contracts/voice-control.schema.json:/ci/voice/voice-control.schema.json:ro" \
+            -v "$PWD/specs/065-conversational-voice/dependency-audit-rtc-only-2026-07-31.md:/ci/voice/dependency-audit-rtc-only-2026-07-31.md:ro" \
+            -v "$PWD/Dockerfile.voice:/app/Dockerfile.voice:ro" \
+            -v "$PWD/Dockerfile.voice.dockerignore:/app/Dockerfile.voice.dockerignore:ro" \
+            -v "$PWD/docker-compose.yml:/app/docker-compose.yml:ro" \
+            -v "$PWD/docker-compose.staging.yml:/app/docker-compose.staging.yml:ro" \
             -e ASTRAL_ENV=development \
+            -e ASTRAL_VOICE_SCHEMA_ENGINE_PATH=/ci/voice/validate_release_evidence.py \
+            -e ASTRAL_VOICE_SCHEMA_PATH=/ci/voice/voice-control.schema.json \
+            -e ASTRAL_VOICE_RTC_AUDIT_PATH=/ci/voice/dependency-audit-rtc-only-2026-07-31.md \
             -e DB_HOST=localhost \
             -e DB_PORT=5432 \
             -e DB_NAME=astraldeep \
@@ -272,6 +420,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: image
@@ -284,7 +434,20 @@ jobs:
         run: |
           docker run --rm --network host \
             -v "$PWD/backend:/app/backend" \
+            -v "$PWD/deploy/livekit:/app/deploy/livekit:ro" \
+            -v "$PWD/tooling/contract-ci/validate_voice_contracts.py:/app/tooling/contract-ci/validate_voice_contracts.py:ro" \
+            -v "$PWD/tooling/voice-worker/closure_manifest.py:/app/tooling/voice-worker/closure_manifest.py:ro" \
+            -v "$PWD/scripts/validate_release_evidence.py:/ci/voice/validate_release_evidence.py:ro" \
+            -v "$PWD/specs/065-conversational-voice/contracts/voice-control.schema.json:/ci/voice/voice-control.schema.json:ro" \
+            -v "$PWD/specs/065-conversational-voice/dependency-audit-rtc-only-2026-07-31.md:/ci/voice/dependency-audit-rtc-only-2026-07-31.md:ro" \
+            -v "$PWD/Dockerfile.voice:/app/Dockerfile.voice:ro" \
+            -v "$PWD/Dockerfile.voice.dockerignore:/app/Dockerfile.voice.dockerignore:ro" \
+            -v "$PWD/docker-compose.yml:/app/docker-compose.yml:ro" \
+            -v "$PWD/docker-compose.staging.yml:/app/docker-compose.staging.yml:ro" \
             -e ASTRAL_ENV=development \
+            -e ASTRAL_VOICE_SCHEMA_ENGINE_PATH=/ci/voice/validate_release_evidence.py \
+            -e ASTRAL_VOICE_SCHEMA_PATH=/ci/voice/voice-control.schema.json \
+            -e ASTRAL_VOICE_RTC_AUDIT_PATH=/ci/voice/dependency-audit-rtc-only-2026-07-31.md \
             -e DB_HOST=localhost \
             -e DB_PORT=5432 \
             -e DB_NAME=astraldeep \
@@ -321,6 +484,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -428,7 +592,7 @@ jobs:
             -e AUDIT_HMAC_SECRET=ci-test-hmac-secret \
             astraldeep:ci
           ok=""
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -fsS -o /dev/null http://localhost:8001/healthz \
                && curl -fsS -o /dev/null http://localhost:8001/readyz; then
               ok=1
@@ -484,6 +648,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
@@ -494,29 +659,10 @@ jobs:
           # Only required if the repo is organization-owned; no-op when unset.
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
-  # ── Feature 060 (T107/T119/T120): the same-candidate release-readiness
-  #    evidence matrix. The caller job id is EXACTLY `release-readiness` so
-  #    the ruleset-required check is "release-readiness / protected-decision".
-  #    Dark until the T120 second checkpoint sets the RELEASE_READINESS_ACTIVE
-  #    repository variable. ──
-  release-readiness:
-    if: ${{ vars.RELEASE_READINESS_ACTIVE == 'true' }}
-    needs: [build]
-    # Reusable-workflow grants are capped by the caller job: the called
-    # pipeline needs OIDC attest (trusted builder), Actions API reads
-    # (protected decision), and GHCR push (candidate image publication).
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-      attestations: write
-      packages: write
-    uses: ./.github/workflows/release-readiness.yml
-    with:
-      candidate_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-      base_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-      request_id: ci-${{ github.run_id }}
-    secrets: inherit
+  # Release readiness is deliberately not called from candidate-controlled CI.
+  # The default-branch workflow_run entrypoint in
+  # release-readiness-protected.yml consumes this run's exact artifacts after
+  # CI succeeds and only after the owner activates the protected checkpoint.
 
   # ── FR-038: publish the EXACT verified image to GHCR on main pushes only.
   #    Needs every verification gate, so a publish failure is distinguishable
@@ -527,8 +673,12 @@ jobs:
     needs:
       - lint
       - javascript-lint
+      - voice-contract-validator
+      - voice-web-conformance
       - release-tooling-tests
+      - windows-client
       - build
+      - voice-worker-test
       - test
       - test-flags-off
       - coverage-gate

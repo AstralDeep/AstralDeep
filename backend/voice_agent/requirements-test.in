@@ -1,0 +1,6 @@
+# Feature 065 voice-worker test-only dependency.
+#
+# The shared tooling/python-ci lock supplies pytest, pytest-cov, coverage, and
+# Ruff.  Async worker tests additionally require the plugin below; it never
+# enters the runtime target.
+pytest-asyncio==1.4.0

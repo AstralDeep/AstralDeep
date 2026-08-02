@@ -3,11 +3,14 @@
 # evidence producers that all test the SAME candidate SHA and the SAME staged
 # artifacts; the protected trusted builder attests reconstructed identities;
 # the protected-decision job re-validates everything with the PINNED policy
-# copy and emits the only trusted release decision. Candidate-facing jobs are
-# read-only; the sole OIDC/attest authority is the trusted-builder call.
+# copy and emits and attests the only trusted release decision. Candidate-facing
+# jobs are read-only; only the trusted-builder call and protected-decision job
+# receive narrowly scoped OIDC/attestation authority.
 #
-# Required check (rulesets, T120): "release-readiness / protected-decision" —
-# produced when ci.yml's caller job id is `release-readiness`.
+# This protected executor produces candidate-bound evidence, but a workflow_run
+# job attaches to the default-branch SHA. It is not itself a PR required check;
+# activation remains blocked until an exact required-workflow control is
+# available and installed by the repository owner.
 name: release-readiness
 
 run-name: release-readiness ${{ inputs.request_id }}
@@ -23,19 +26,8 @@ on:
         description: Verified comparison base for the changed-code gate
         required: true
         type: string
-      request_id:
-        description: Unique request id embedded in the run-name
-        required: false
-        type: string
-        default: ""
-  workflow_dispatch:
-    inputs:
-      candidate_sha:
-        description: Exact candidate commit every producer must test
-        required: true
-        type: string
-      base_sha:
-        description: Verified comparison base for the changed-code gate
+      source_run_id:
+        description: Successful candidate CI run that owns build and coverage artifacts
         required: true
         type: string
       request_id:
@@ -43,12 +35,13 @@ on:
         required: false
         type: string
         default: ""
-
 permissions:
   contents: read
 
 concurrency:
-  group: release-readiness-${{ inputs.candidate_sha }}
+  # One labeled host owns fixed WSS/ICE/TURN listeners. Different candidates
+  # must never overlap or probe/clean each other's media namespace.
+  group: release-readiness-staging
   cancel-in-progress: false
 
 jobs:
@@ -61,40 +54,98 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
       packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      BASE_SHA: ${{ inputs.base_sha }}
     outputs:
       candidate_image: ${{ steps.digest.outputs.candidate_image }}
+      voice_worker_image: ${{ steps.digest.outputs.voice_worker_image }}
+      livekit_image: ${{ steps.digest.outputs.livekit_image }}
     steps:
+      - name: Verify the exact successful candidate CI run before accepting artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > /tmp/source-run.json
+          python3 - <<'PY'
+          import json, os, pathlib, re
+
+          run = json.loads(pathlib.Path("/tmp/source-run.json").read_text(encoding="utf-8"))
+          pulls = run.get("pull_requests")
+          if (
+              str(run.get("id")) != os.environ["SOURCE_RUN_ID"]
+              or run.get("name") != "CI"
+              or run.get("path") != ".github/workflows/ci.yml"
+              or run.get("event") != "pull_request"
+              or run.get("status") != "completed"
+              or run.get("conclusion") != "success"
+              or run.get("head_sha") != os.environ["CANDIDATE_SHA"]
+              or run.get("head_repository", {}).get("full_name") != os.environ["GITHUB_REPOSITORY"]
+              or not isinstance(pulls, list)
+              or len(pulls) != 1
+              or pulls[0].get("base", {}).get("sha") != os.environ["BASE_SHA"]
+              or not re.fullmatch(r"[0-9a-f]{40}", os.environ["CANDIDATE_SHA"])
+              or not re.fullmatch(r"[0-9a-f]{40}", os.environ["BASE_SHA"])
+          ):
+              raise SystemExit("source run is not the exact successful protected CI candidate")
+          PY
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push the shared-run image under the immutable candidate tag
-        if: github.event_name != 'workflow_dispatch'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: image
           path: /tmp
-      - name: Load, tag, and push the exact built image
-        if: github.event_name != 'workflow_dispatch'
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Download the shared-run voice-worker image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: voice-worker-image
+          path: /tmp
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Load, tag, and push the exact built images
         run: |
           set -euo pipefail
           docker load -i /tmp/astraldeep.tar
+          docker load -i /tmp/astraldeep-voice-worker.tar
           REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           docker tag astraldeep:ci "ghcr.io/$REPO_LC:candidate-${{ inputs.candidate_sha }}"
+          docker tag astraldeep-voice-worker:ci \
+            "ghcr.io/$REPO_LC/voice-worker:candidate-${{ inputs.candidate_sha }}"
           docker push "ghcr.io/$REPO_LC:candidate-${{ inputs.candidate_sha }}"
-      - name: Resolve the immutable candidate image digest
+          docker push "ghcr.io/$REPO_LC/voice-worker:candidate-${{ inputs.candidate_sha }}"
+      - name: Resolve the immutable candidate and media image digests
         id: digest
         run: |
           set -euo pipefail
           REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           TAG="ghcr.io/$REPO_LC:candidate-${{ inputs.candidate_sha }}"
+          VOICE_TAG="ghcr.io/$REPO_LC/voice-worker:candidate-${{ inputs.candidate_sha }}"
+          LIVEKIT_IMAGE="livekit/livekit-server:v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1"
           if ! DIGEST=$(docker buildx imagetools inspect "$TAG" --format '{{.Manifest.Digest}}'); then
             echo "::error::no candidate image for ${{ inputs.candidate_sha }} — run the ci.yml build (which calls this workflow) for the candidate first" >&2
             exit 1
           fi
+          if ! VOICE_DIGEST=$(docker buildx imagetools inspect "$VOICE_TAG" --format '{{.Manifest.Digest}}'); then
+            echo "::error::no voice-worker image for ${{ inputs.candidate_sha }} — run the blocking voice-worker-test lane first" >&2
+            exit 1
+          fi
+          LIVEKIT_DIGEST=$(docker buildx imagetools inspect \
+            "$LIVEKIT_IMAGE" --format '{{.Manifest.Digest}}')
+          test "$LIVEKIT_DIGEST" = \
+            "sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1"
           echo "candidate_image=ghcr.io/$REPO_LC@$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "voice_worker_image=ghcr.io/$REPO_LC/voice-worker@$VOICE_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "livekit_image=$LIVEKIT_IMAGE" >> "$GITHUB_OUTPUT"
 
   # ── Qualifying staging deployment.
   #    IMPORTANT: this job requires an EXTERNAL, persistent staging host that
@@ -111,10 +162,15 @@ jobs:
   #    Env gate mirrors scripts/run_candidate_staging.py::_required_environment.
   stage-deploy:
     needs: publish-candidate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, astral-staging]
+    environment: release-readiness-staging
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
     env:
       ASTRAL_STAGING_RUNNER_TRUSTED: "true"
+      ASTRAL_STAGING_EXPECTED_RUNNER_NAME: ${{ vars.ASTRAL_STAGING_RUNNER_NAME }}
       ASTRAL_STAGING_ENDPOINT: ${{ secrets.ASTRAL_STAGING_ENDPOINT }}
       ASTRAL_STAGING_PROBE_TOKEN: ${{ secrets.ASTRAL_STAGING_PROBE_TOKEN }}
       STAGING_POSTGRES_IMAGE: ${{ secrets.STAGING_POSTGRES_IMAGE }}
@@ -132,33 +188,254 @@ jobs:
       STAGING_BIND_PORT: ${{ secrets.STAGING_BIND_PORT }}
       RELEASE_TRUSTED_BUILDER_SHA: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
       RELEASE_TRUSTED_BUILDER_IDENTITY: ${{ vars.RELEASE_TRUSTED_BUILDER_IDENTITY }}
-      ASTRAL_STAGE_OUTPUTS_ARTIFACT_NAME: stage-outputs-${{ inputs.request_id || github.run_id }}
       ASTRAL_CANDIDATE_IMAGE: ${{ needs.publish-candidate.outputs.candidate_image }}
       STAGING_ENVIRONMENT_ID: rr-${{ github.run_id }}-${{ github.run_attempt }}
     outputs:
       endpoint: ${{ steps.stage.outputs.endpoint }}
       environment_id: ${{ steps.stage.outputs.environment_id }}
-      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      runner_name: ${{ steps.runner-binding.outputs.runner_name }}
+      artifact_id: ${{ steps.outputs-upload.outputs.artifact-id }}
+      manifest_artifact_id: ${{ steps.manifest-upload.outputs.artifact-id }}
     steps:
-      - name: Check out the exact candidate
+      - name: Block staging until the external ephemeral credential issuer is integrated
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::error::external ephemeral credential issuer integration is not implemented; candidate staging remains fail-closed" >&2
+          exit 1
+      - name: Validate and export the canonical staging runner name
+        id: runner-binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner_name_pattern='^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$'
+          test -n "$ASTRAL_STAGING_EXPECTED_RUNNER_NAME"
+          if [[ ! "$RUNNER_NAME" =~ $runner_name_pattern ]]; then
+            echo "::error::staging runner name is not canonical" >&2
+            exit 1
+          fi
+          test "$RUNNER_NAME" = "$ASTRAL_STAGING_EXPECTED_RUNNER_NAME"
+          printf 'runner_name=%s\n' "$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+      - name: Create job-temporary Docker registry configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker_config="$RUNNER_TEMP/release-readiness-docker-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          case "$docker_config" in
+            "$RUNNER_TEMP"/release-readiness-docker-*) ;;
+            *)
+              echo "::error::refusing unexpected Docker configuration path" >&2
+              exit 1
+              ;;
+          esac
+          printf 'DOCKER_CONFIG=%s\n' "$docker_config" >> "$GITHUB_ENV"
+          if [[ -e "$docker_config" || -L "$docker_config" ]]; then
+            echo "::error::job-temporary Docker configuration already exists" >&2
+            exit 1
+          fi
+          install -d -m 0700 "$docker_config"
+      - name: Log in to GHCR for private candidate image pulls
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+          logout: false
+      - name: Check out the exact candidate source without executing its staging policy
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
+          path: candidate-source
           persist-credentials: false
+      - name: Check out the owner-reviewed protected staging policy
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
+          path: protected-policy
+          persist-credentials: false
+      - name: Bind this workflow and policy checkout to the protected checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_WORKFLOW_SHA" = "$RELEASE_TRUSTED_BUILDER_SHA"
+          test -n "$ASTRAL_STAGING_EXPECTED_RUNNER_NAME"
+          test "$RUNNER_NAME" = "$ASTRAL_STAGING_EXPECTED_RUNNER_NAME"
+          test "$(git -C protected-policy rev-parse HEAD)" = "$RELEASE_TRUSTED_BUILDER_SHA"
+          test "$(git -C candidate-source rev-parse HEAD)" = "${{ inputs.candidate_sha }}"
+      - name: Hash the exact LiveKit staging configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONFIG=protected-policy/deploy/livekit/livekit.staging.yaml
+          test -f "$CONFIG" && test ! -L "$CONFIG"
+          LIVEKIT_CONFIG_SHA256="$(sha256sum "$CONFIG" | cut -d ' ' -f 1)"
+          test "${#LIVEKIT_CONFIG_SHA256}" -eq 64
+          echo "LIVEKIT_CONFIG_SHA256=$LIVEKIT_CONFIG_SHA256" >> "$GITHUB_ENV"
+      - name: Probe and hash the exact speech inventory and profile
+        shell: bash
+        env:
+          VOICE_SPEECH_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          VOICE_SPEECH_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import hashlib
+          import json
+          import os
+          import ssl
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          base = os.environ.get("VOICE_SPEECH_BASE_URL", "").rstrip("/")
+          api_key = os.environ.get("VOICE_SPEECH_API_KEY", "")
+          parsed = urllib.parse.urlsplit(base)
+          if (
+              parsed.scheme != "https"
+              or not parsed.hostname
+              or parsed.username is not None
+              or parsed.password is not None
+              or parsed.query
+              or parsed.fragment
+              or not api_key
+          ):
+              raise SystemExit("protected speech inventory inputs are absent or invalid")
+          request = urllib.request.Request(
+              f"{base}/models",
+              headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+          )
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  raise urllib.error.HTTPError(
+                      req.full_url, code, "speech inventory redirects are forbidden", headers, fp
+                  )
+
+          opener = urllib.request.build_opener(
+              urllib.request.ProxyHandler({}),
+              urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+              NoRedirect(),
+          )
+          try:
+              with opener.open(request, timeout=20) as response:
+                  body = response.read(4 * 1024 * 1024 + 1)
+          except Exception:
+              raise SystemExit("exact speech inventory probe failed") from None
+          if len(body) > 4 * 1024 * 1024:
+              raise SystemExit("speech inventory exceeds the protected size bound")
+          try:
+              document = json.loads(body)
+          except (UnicodeError, json.JSONDecodeError):
+              raise SystemExit("speech inventory is not one bounded JSON document") from None
+          entries = document.get("data") if isinstance(document, dict) else None
+          if not isinstance(entries, list):
+              raise SystemExit("speech inventory lacks a model list")
+          by_id = {}
+          for entry in entries:
+              if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+                  raise SystemExit("speech inventory contains a malformed model")
+              if entry["id"] in by_id:
+                  raise SystemExit("speech inventory contains a duplicate model id")
+              by_id[entry["id"]] = entry
+
+          asr_id = "Systran/faster-whisper-large-v3"
+          tts_id = "speaches-ai/Kokoro-82M-v1.0-ONNX"
+          try:
+              asr = by_id[asr_id]
+              tts = by_id[tts_id]
+          except KeyError:
+              raise SystemExit("the exact ASR/TTS model is absent") from None
+          voices = tts.get("voices")
+          if (
+              asr.get("task") != "automatic-speech-recognition"
+              or tts.get("task") != "text-to-speech"
+              or tts.get("sample_rate") != 24000
+              or not isinstance(voices, list)
+              or not any(
+                  isinstance(voice, dict)
+                  and voice.get("id") == "af_heart"
+                  and voice.get("language") == "en-us"
+                  for voice in voices
+              )
+          ):
+              raise SystemExit("the exact speech profile is not ready")
+
+          def selected_model(entry):
+              value = {
+                  key: entry[key]
+                  for key in ("id", "language", "task", "sample_rate", "voices")
+                  if key in entry
+              }
+              if isinstance(value.get("language"), list):
+                  value["language"] = sorted(value["language"])
+              if isinstance(value.get("voices"), list):
+                  value["voices"] = sorted(
+                      value["voices"], key=lambda voice: json.dumps(voice, sort_keys=True)
+                  )
+              return value
+
+          inventory = {"asr": selected_model(asr), "tts": selected_model(tts)}
+          inventory_bytes = json.dumps(
+              inventory, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+          ).encode("utf-8")
+          profile = {
+              "asr_model": asr_id,
+              "tts_model": tts_id,
+              "voice": "af_heart",
+              "sample_rate_hz": 24000,
+          }
+          profile_bytes = json.dumps(
+              profile, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+          ).encode("utf-8")
+          profile_sha256 = hashlib.sha256(profile_bytes).hexdigest()
+          expected_profile_sha256 = "9b857a3d788a5d6c4ff67278eca4a169028fb2e185ccaf0b01961283f629445b"
+          if profile_sha256 != expected_profile_sha256:
+              raise SystemExit("canonical speech-profile digest drifted")
+          print(f"SPEECH_INVENTORY_SHA256={hashlib.sha256(inventory_bytes).hexdigest()}")
+          print(f"SPEECH_PROFILE_SHA256={profile_sha256}")
+          PY
+      - name: Generate request-scoped LiveKit and control credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          LIVEKIT_API_KEY="stage_$(openssl rand -hex 12)"
+          LIVEKIT_API_SECRET="$(openssl rand -hex 32)"
+          VOICE_CONTROL_SECRET="$(openssl rand -hex 32)"
+          echo "::add-mask::$LIVEKIT_API_KEY"
+          echo "::add-mask::$LIVEKIT_API_SECRET"
+          echo "::add-mask::$VOICE_CONTROL_SECRET"
+          echo "LIVEKIT_API_KEY=$LIVEKIT_API_KEY" >> "$GITHUB_ENV"
+          echo "LIVEKIT_API_SECRET=$LIVEKIT_API_SECRET" >> "$GITHUB_ENV"
+          echo "VOICE_CONTROL_SECRET=$VOICE_CONTROL_SECRET" >> "$GITHUB_ENV"
       - name: Validate the tracked staging fixture set
-        run: python3 scripts/run_candidate_staging.py validate-fixtures --manifest backend/tests/fixtures/runtime_reliability_060/staging/fixture-manifest.json
+        run: >-
+          python3 protected-policy/scripts/run_candidate_staging.py validate-fixtures
+          --manifest protected-policy/backend/tests/fixtures/runtime_reliability_060/staging/fixture-manifest.json
       - name: Deploy the candidate namespace and leave it running
         id: stage
+        env:
+          # Scoped to the deploy step: candidate-facing producer jobs never
+          # receive these runtime-only media/speech values.
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LIVEKIT_PUBLIC_URL: ${{ secrets.LIVEKIT_PUBLIC_URL }}
+          LIVEKIT_TURN_DOMAIN: ${{ secrets.LIVEKIT_TURN_DOMAIN }}
         run: |
           set -euo pipefail
           mkdir -p build/060
-          python3 scripts/run_candidate_staging.py deploy \
+          python3 protected-policy/scripts/run_candidate_staging.py deploy \
             --candidate-sha "${{ inputs.candidate_sha }}" \
+            --candidate-source-root "$GITHUB_WORKSPACE/candidate-source" \
             --candidate-image "$ASTRAL_CANDIDATE_IMAGE" \
-            --fixture-manifest backend/tests/fixtures/runtime_reliability_060/staging/fixture-manifest.json \
+            --voice-worker-image "${{ needs.publish-candidate.outputs.voice_worker_image }}" \
+            --livekit-image "${{ needs.publish-candidate.outputs.livekit_image }}" \
+            --livekit-config-sha256 "$LIVEKIT_CONFIG_SHA256" \
+            --speech-inventory-sha256 "$SPEECH_INVENTORY_SHA256" \
+            --speech-profile-sha256 "$SPEECH_PROFILE_SHA256" \
+            --fixture-manifest protected-policy/backend/tests/fixtures/runtime_reliability_060/staging/fixture-manifest.json \
             --environment-id "$STAGING_ENVIRONMENT_ID" \
             --outputs build/060/staging-outputs.json \
-            --trusted-manifest build/060/trusted-stage-deploy.json \
             --leave-running
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -166,16 +443,63 @@ jobs:
           print(f"endpoint={outputs['endpoint']}")
           print(f"environment_id={outputs['environment_id']}")
           PY
-      - name: Archive the trusted stage outputs
-        id: upload
+      - name: Archive the immutable stage outputs
+        id: outputs-upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: stage-outputs-${{ inputs.request_id || github.run_id }}
-          path: |
-            build/060/staging-outputs.json
-            build/060/trusted-stage-deploy.json
+          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/staging-outputs.json
           if-no-files-found: error
           retention-days: 14
+      - name: Generate the protected manifest from the actual immutable artifact id
+        shell: bash
+        env:
+          STAGE_OUTPUTS_ARTIFACT_ID: ${{ steps.outputs-upload.outputs.artifact-id }}
+          STAGE_OUTPUTS_ARTIFACT_NAME: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 protected-policy/scripts/run_candidate_staging.py write-trusted-manifest \
+            --candidate-sha "${{ inputs.candidate_sha }}" \
+            --environment-id "$STAGING_ENVIRONMENT_ID" \
+            --outputs build/060/staging-outputs.json \
+            --trusted-manifest build/060/trusted-stage-deploy.json \
+            --stage-outputs-artifact-id "$STAGE_OUTPUTS_ARTIFACT_ID" \
+            --stage-outputs-artifact-name "$STAGE_OUTPUTS_ARTIFACT_NAME" \
+            --stage-outputs-member staging-outputs.json
+      - name: Archive the post-upload protected stage manifest separately
+        id: manifest-upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage-manifest-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/trusted-stage-deploy.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove job-temporary Docker registry credentials
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${DOCKER_CONFIG:-}" ]]; then
+            exit 0
+          fi
+          case "$DOCKER_CONFIG" in
+            "$RUNNER_TEMP"/release-readiness-docker-*) ;;
+            *)
+              echo "::error::refusing to remove unexpected Docker configuration path" >&2
+              exit 1
+              ;;
+          esac
+          if [[ -L "$DOCKER_CONFIG" ]]; then
+            echo "::error::refusing to traverse a symlinked Docker configuration" >&2
+            exit 1
+          fi
+          if [[ -d "$DOCKER_CONFIG" ]]; then
+            find "$DOCKER_CONFIG" -mindepth 1 -depth -delete
+            rmdir -- "$DOCKER_CONFIG"
+          elif [[ -e "$DOCKER_CONFIG" ]]; then
+            echo "::error::Docker configuration path is not a directory" >&2
+            exit 1
+          fi
 
   # ── Build-once Windows candidate (feature 068 reusable workflow); its exact
   #    artifact id / executable digest feed the windows producer and, later,
@@ -216,7 +540,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: stage-outputs-${{ inputs.request_id || github.run_id }}
+          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
       - name: Pull the exact staged candidate image by digest
         run: docker pull "${{ needs.publish-candidate.outputs.candidate_image }}"
@@ -258,7 +582,7 @@ jobs:
             -c "python -m pip install --require-hashes -r /ci/python/requirements.lock.txt && python -m pytest tests/perf/release_backend_060.py -q -m perf"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: evidence-backend
+          name: evidence-backend-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/release-evidence/
           if-no-files-found: error
           retention-days: 14
@@ -282,7 +606,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: stage-outputs-${{ inputs.request_id || github.run_id }}
+          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
       - name: Run the browser release lane in the digest-pinned image
         run: |
@@ -304,7 +628,7 @@ jobs:
             'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run browser:release -- --base-url "${{ needs.stage-deploy.outputs.endpoint }}" --candidate-sha "${{ inputs.candidate_sha }}" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/release-evidence/coverage/web-v8.json --coverage-istanbul-output /work/build/060/release-evidence/coverage/web-istanbul.json'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: evidence-web
+          name: evidence-web-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/release-evidence/
           if-no-files-found: error
           retention-days: 14
@@ -344,7 +668,7 @@ jobs:
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: stage-outputs-${{ inputs.request_id || github.run_id }}
+          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
       - name: Download the build-once candidate by exact artifact id
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -375,7 +699,7 @@ jobs:
           python -m pytest windows-client/tests/release_evidence_060.py -q
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: evidence-windows
+          name: evidence-windows-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/release-evidence/
           if-no-files-found: error
           retention-days: 14
@@ -414,7 +738,7 @@ jobs:
           gradle-version: ${{ steps.wrapper.outputs.version }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: stage-outputs-${{ inputs.request_id || github.run_id }}
+          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
       # The toolchain canary is a reached fail-closed diagnostic; its JSON is
       # handed to the instrumented producer as a base64 argument.
@@ -480,13 +804,16 @@ jobs:
           cp core/build/reports/kover/report.xml ../build/060/release-evidence/coverage/android-core.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: evidence-android
+          name: evidence-android-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/release-evidence/
           if-no-files-found: error
           retention-days: 14
 
-  macos-producer:
+  macos-raw-producer:
     needs: stage-deploy
+    outputs:
+      raw_artifact_id: ${{ steps.raw-evidence-upload.outputs.artifact-id }}
+      archive_repo_root: ${{ steps.raw-archive-root.outputs.archive_repo_root }}
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -503,6 +830,13 @@ jobs:
         with:
           ref: ${{ inputs.candidate_sha }}
           persist-credentials: false
+      - name: Record the raw archive checkout root before candidate execution
+        id: raw-archive-root
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_WORKSPACE" == /* && "$GITHUB_WORKSPACE" != */ ]]
+          printf 'archive_repo_root=%s\n' "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
       - name: Select exact Xcode
         shell: bash
         run: |
@@ -520,7 +854,7 @@ jobs:
           sudo xcode-select --switch "$selected/Contents/Developer"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: stage-outputs-${{ inputs.request_id || github.run_id }}
+          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
       - name: Materialize the staging capability file from stage outputs
         run: |
@@ -560,7 +894,7 @@ jobs:
           TEST_RUNNER_ASTRAL_RUNNER_IMAGE: macos-26
         run: |
           set -euo pipefail
-          mkdir -p build/060/release-evidence/coverage
+          mkdir -p build/060/release-evidence/coverage/raw
           export TEST_RUNNER_ASTRAL_RELEASE_EVIDENCE_OUTPUT="$PWD/build/060/release-evidence/macos.json"
           export TEST_RUNNER_ASTRAL_RELEASE_STAGING_FILE="$PWD/build/060/stage/staging-outputs.json"
           export TEST_RUNNER_ASTRAL_STAGING_CAPABILITY_FILE="$PWD/build/060/stage/capability.json"
@@ -569,31 +903,34 @@ jobs:
           export TEST_RUNNER_GITHUB_JOB="$GITHUB_JOB" TEST_RUNNER_GITHUB_RUN_ID="$GITHUB_RUN_ID"
           export TEST_RUNNER_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" TEST_RUNNER_GITHUB_WORKFLOW="$GITHUB_WORKFLOW"
           export TEST_RUNNER_RUNNER_OS="$RUNNER_OS" TEST_RUNNER_RUNNER_ARCH="$RUNNER_ARCH" TEST_RUNNER_RUNNER_NAME="$RUNNER_NAME"
-          result="build/060/coverage-result.xcresult"
+          result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}.xcresult"
           rm -rf "$result"
-          set +e
           xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
             -destination "${DESTINATION}" -configuration Debug \
             CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
             -derivedDataPath build/060/dd \
             -resultBundlePath "$result" \
-            -only-testing:${PRODUCER_ONLY_TESTING} \
+            "-only-testing:${PRODUCER_ONLY_TESTING}" \
             test-without-building
-          status=$?
-          set -e
-          if [[ -d "$result" ]]; then
-            xcrun xccov view --archive --json "$result" > "build/060/release-evidence/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"
-          fi
-          exit "$status"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          test -d "$result"
+      - id: raw-evidence-upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: evidence-macos
-          path: build/060/release-evidence/
+          name: raw-apple-evidence-macos-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/060/release-evidence/macos.json
+            build/060/release-evidence/macos/
+            build/060/release-evidence/macos-raw/
+            build/060/release-evidence/coverage/raw/apple-macos.xcresult/
           if-no-files-found: error
-          retention-days: 14
+          include-hidden-files: true
+          retention-days: 1
 
-  ios-producer:
+  ios-raw-producer:
     needs: stage-deploy
+    outputs:
+      raw_artifact_id: ${{ steps.raw-evidence-upload.outputs.artifact-id }}
+      archive_repo_root: ${{ steps.raw-archive-root.outputs.archive_repo_root }}
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -611,6 +948,13 @@ jobs:
         with:
           ref: ${{ inputs.candidate_sha }}
           persist-credentials: false
+      - name: Record the raw archive checkout root before candidate execution
+        id: raw-archive-root
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_WORKSPACE" == /* && "$GITHUB_WORKSPACE" != */ ]]
+          printf 'archive_repo_root=%s\n' "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
       - name: Select exact Xcode
         shell: bash
         run: |
@@ -634,7 +978,7 @@ jobs:
           xcrun simctl list devicetypes | grep -F "iPhone 17 Pro"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: stage-outputs-${{ inputs.request_id || github.run_id }}
+          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
       - name: Build for testing and digest the exact tested app
         shell: bash
@@ -664,7 +1008,7 @@ jobs:
           TEST_RUNNER_ASTRAL_RUNNER_IMAGE: macos-26
         run: |
           set -euo pipefail
-          mkdir -p build/060/release-evidence/coverage
+          mkdir -p build/060/release-evidence/coverage/raw
           export TEST_RUNNER_ASTRAL_RELEASE_EVIDENCE_OUTPUT="$PWD/build/060/release-evidence/ios.json"
           export TEST_RUNNER_ASTRAL_RELEASE_STAGING_FILE="$PWD/build/060/stage/staging-outputs.json"
           export TEST_RUNNER_ASTRAL_RELEASE_ARTIFACT_REFERENCE="bundle://${PRODUCER_PLATFORM}/AstralApp.app.zip"
@@ -672,31 +1016,34 @@ jobs:
           export TEST_RUNNER_GITHUB_JOB="$GITHUB_JOB" TEST_RUNNER_GITHUB_RUN_ID="$GITHUB_RUN_ID"
           export TEST_RUNNER_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" TEST_RUNNER_GITHUB_WORKFLOW="$GITHUB_WORKFLOW"
           export TEST_RUNNER_RUNNER_OS="$RUNNER_OS" TEST_RUNNER_RUNNER_ARCH="$RUNNER_ARCH" TEST_RUNNER_RUNNER_NAME="$RUNNER_NAME"
-          result="build/060/coverage-result.xcresult"
+          result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}.xcresult"
           rm -rf "$result"
-          set +e
           xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
             -destination "${DESTINATION}" -configuration Debug \
             CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
             -derivedDataPath build/060/dd \
             -resultBundlePath "$result" \
-            -only-testing:${PRODUCER_ONLY_TESTING} \
+            "-only-testing:${PRODUCER_ONLY_TESTING}" \
             test-without-building
-          status=$?
-          set -e
-          if [[ -d "$result" ]]; then
-            xcrun xccov view --archive --json "$result" > "build/060/release-evidence/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"
-          fi
-          exit "$status"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          test -d "$result"
+      - id: raw-evidence-upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: evidence-ios
-          path: build/060/release-evidence/
+          name: raw-apple-evidence-ios-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/060/release-evidence/ios.json
+            build/060/release-evidence/ios/
+            build/060/release-evidence/ios-raw/
+            build/060/release-evidence/coverage/raw/apple-ios.xcresult/
           if-no-files-found: error
-          retention-days: 14
+          include-hidden-files: true
+          retention-days: 1
 
-  watchos-producer:
+  watchos-raw-producer:
     needs: stage-deploy
+    outputs:
+      raw_artifact_id: ${{ steps.raw-evidence-upload.outputs.artifact-id }}
+      archive_repo_root: ${{ steps.raw-archive-root.outputs.archive_repo_root }}
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -711,6 +1058,13 @@ jobs:
         with:
           ref: ${{ inputs.candidate_sha }}
           persist-credentials: false
+      - name: Record the raw archive checkout root before candidate execution
+        id: raw-archive-root
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_WORKSPACE" == /* && "$GITHUB_WORKSPACE" != */ ]]
+          printf 'archive_repo_root=%s\n' "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
       - name: Select exact Xcode
         shell: bash
         run: |
@@ -741,7 +1095,7 @@ jobs:
           xcrun simctl bootstatus "Apple Watch Series 11 (46mm)" -b
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: stage-outputs-${{ inputs.request_id || github.run_id }}
+          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
       - name: Build for testing and digest the exact tested watch app
         shell: bash
@@ -770,7 +1124,7 @@ jobs:
           TEST_RUNNER_ASTRAL_RUNNER_IMAGE: macos-26
         run: |
           set -euo pipefail
-          mkdir -p build/060/release-evidence/coverage
+          mkdir -p build/060/release-evidence/coverage/raw
           export TEST_RUNNER_ASTRAL_RELEASE_EVIDENCE_OUTPUT="$PWD/build/060/release-evidence/watchos.json"
           export TEST_RUNNER_ASTRAL_RELEASE_STAGING_FILE="$PWD/build/060/stage/staging-outputs.json"
           export TEST_RUNNER_ASTRAL_RELEASE_ARTIFACT_REFERENCE="bundle://${PRODUCER_PLATFORM}/AstralWatch.app.zip"
@@ -778,9 +1132,8 @@ jobs:
           export TEST_RUNNER_GITHUB_JOB="$GITHUB_JOB" TEST_RUNNER_GITHUB_RUN_ID="$GITHUB_RUN_ID"
           export TEST_RUNNER_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" TEST_RUNNER_GITHUB_WORKFLOW="$GITHUB_WORKFLOW"
           export TEST_RUNNER_RUNNER_OS="$RUNNER_OS" TEST_RUNNER_RUNNER_ARCH="$RUNNER_ARCH" TEST_RUNNER_RUNNER_NAME="$RUNNER_NAME"
-          result="build/060/coverage-result.xcresult"
+          result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}.xcresult"
           rm -rf "$result"
-          set +e
           xcodebuild -project "${APP_PROJECT}" -scheme AstralWatch \
             -destination "platform=watchOS Simulator,name=Apple Watch Series 11 (46mm),OS=${WATCHOS_RUNTIME}" \
             -configuration Debug CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
@@ -788,19 +1141,69 @@ jobs:
             -resultBundlePath "$result" \
             -only-testing:AstralWatchTests/ReleaseEvidenceTests \
             test-without-building
-          status=$?
-          set -e
-          if [[ -d "$result" ]]; then
-            xcrun xccov view --archive --json "$result" > "build/060/release-evidence/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"
-          fi
-          exit "$status"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          test -d "$result"
+      - id: raw-evidence-upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: evidence-watchos
-          path: build/060/release-evidence/
+          name: raw-apple-evidence-watchos-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/060/release-evidence/watchos.json
+            build/060/release-evidence/watchos/
+            build/060/release-evidence/watchos-raw/
+            build/060/release-evidence/coverage/raw/apple-watchos.xcresult/
           if-no-files-found: error
-          retention-days: 14
+          include-hidden-files: true
+          retention-days: 1
 
+  # The final Apple producer jobs are fresh protected normalizers. Candidate
+  # build phases run only in the corresponding *-raw-producer job above.
+  macos-producer:
+    needs: macos-raw-producer
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-apple-evidence-normalizer.yml
+    with:
+      candidate_sha: ${{ inputs.candidate_sha }}
+      raw_artifact_id: ${{ needs.macos-raw-producer.outputs.raw_artifact_id }}
+      raw_artifact_name: raw-apple-evidence-macos-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+      archive_repo_root: ${{ needs.macos-raw-producer.outputs.archive_repo_root }}
+      platform: macos
+      app_archive: AstralApp.app.zip
+      producer_job_id: macos-producer
+      final_artifact_name: evidence-macos-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+
+  ios-producer:
+    needs: ios-raw-producer
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-apple-evidence-normalizer.yml
+    with:
+      candidate_sha: ${{ inputs.candidate_sha }}
+      raw_artifact_id: ${{ needs.ios-raw-producer.outputs.raw_artifact_id }}
+      raw_artifact_name: raw-apple-evidence-ios-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+      archive_repo_root: ${{ needs.ios-raw-producer.outputs.archive_repo_root }}
+      platform: ios
+      app_archive: AstralApp.app.zip
+      producer_job_id: ios-producer
+      final_artifact_name: evidence-ios-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+
+  watchos-producer:
+    needs: watchos-raw-producer
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-apple-evidence-normalizer.yml
+    with:
+      candidate_sha: ${{ inputs.candidate_sha }}
+      raw_artifact_id: ${{ needs.watchos-raw-producer.outputs.raw_artifact_id }}
+      raw_artifact_name: raw-apple-evidence-watchos-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+      archive_repo_root: ${{ needs.watchos-raw-producer.outputs.archive_repo_root }}
+      platform: watchos
+      app_archive: AstralWatch.app.zip
+      producer_job_id: watchos-producer
+      final_artifact_name: evidence-watchos-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
   docs-producer:
     needs: stage-deploy
     runs-on: ubuntu-latest
@@ -922,14 +1325,15 @@ jobs:
           test -f build/060/release-evidence/docs.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: evidence-docs
+          name: evidence-docs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/release-evidence/
           if-no-files-found: error
           retention-days: 14
 
-  # ── The ONLY OIDC/attest authority in the pipeline: the protected reusable
-  #    trusted builder reconstructs producer identities from the shared run's
-  #    API state and attests one manifest per producer plus the stage manifest. ──
+  # ── The manifest-attestation authority: the protected reusable trusted
+  #    builder reconstructs producer identities from the shared run's API state
+  #    and attests one manifest per producer plus the stage manifest. The
+  #    protected-decision job separately attests only its final decision. ──
   trusted-builder:
     needs:
       - stage-deploy
@@ -937,6 +1341,9 @@ jobs:
       - web-producer
       - windows-producer
       - android-producer
+      - macos-raw-producer
+      - ios-raw-producer
+      - watchos-raw-producer
       - macos-producer
       - ios-producer
       - watchos-producer
@@ -952,9 +1359,8 @@ jobs:
       candidate_sha: ${{ inputs.candidate_sha }}
       request_id: ${{ inputs.request_id }}
 
-  # ── The protected decision. Job id is EXACTLY protected-decision — the
-  #    validator refuses --decision-output from any other job, and the ruleset
-  #    required check name is "release-readiness / protected-decision". ──
+  # ── The protected decision. Job id is EXACTLY protected-decision; the
+  #    validator refuses --decision-output from any other job. ──
   protected-decision:
     needs:
       - trusted-builder
@@ -962,6 +1368,9 @@ jobs:
       - web-producer
       - windows-producer
       - android-producer
+      - macos-raw-producer
+      - ios-raw-producer
+      - watchos-raw-producer
       - macos-producer
       - ios-producer
       - watchos-producer
@@ -971,12 +1380,17 @@ jobs:
     permissions:
       contents: read
       actions: read
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TRUSTED_BUILDER_SHA: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
       RELEASE_TRUSTED_BUILDER_IDENTITY: ${{ vars.RELEASE_TRUSTED_BUILDER_IDENTITY }}
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
       BASE_SHA: ${{ inputs.base_sha }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      STAGE_ARTIFACT_SUFFIX: ${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+      PYTHONNOUSERSITE: "1"
     steps:
       - name: Check out the exact candidate with full history
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -988,66 +1402,243 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -e build || -L build ]]; then
+            echo "::error::candidate checkout contains protected-decision build output" >&2
+            exit 1
+          fi
           mkdir -p build/060/api build/060/release-evidence build/060/coverage-inputs \
             build/060/trust/approvals build/060/trust/resolutions \
             build/060/attestation-verification build/060/protected-decision \
             build/060/exception-ledger
-          # The backend/tooling coverage artifacts come from the SHARED ci.yml
-          # run; producers may still be uploading, so poll briefly.
-          for _ in $(seq 1 40); do
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
-              --paginate --jq '.artifacts[]' > build/060/api/artifacts.ndjson
-            if grep -q '"name":"coverage"' build/060/api/artifacts.ndjson \
-               && grep -q '"name":"tooling-python-coverage"' build/060/api/artifacts.ndjson; then
-              break
-            fi
-            [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ] && break
-            sleep 30
-          done
-          python3 - <<'PY'
-          import json, os, pathlib, subprocess
+          RELEASE_ARTIFACT_EXTRACTOR="$RUNNER_TEMP/release-artifact-extractor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
+          if [[ -e "$RELEASE_ARTIFACT_EXTRACTOR" || -L "$RELEASE_ARTIFACT_EXTRACTOR" ]]; then
+            echo "::error::protected artifact extractor path already exists" >&2
+            exit 1
+          fi
+          git show "$RELEASE_TRUSTED_BUILDER_SHA:scripts/extract_release_artifact.py" \
+            > "$RELEASE_ARTIFACT_EXTRACTOR"
+          test -s "$RELEASE_ARTIFACT_EXTRACTOR"
+          chmod 0500 "$RELEASE_ARTIFACT_EXTRACTOR"
+          export RELEASE_ARTIFACT_EXTRACTOR
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --paginate --jq '.artifacts[]' > build/060/api/artifacts-current.ndjson
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" \
+            --paginate --jq '.artifacts[]' > build/060/api/artifacts-source.ndjson
+          python3 -I - <<'PY'
+          import json, os, pathlib, re, subprocess
 
-          lines = pathlib.Path("build/060/api/artifacts.ndjson").read_text(encoding="utf-8")
-          artifacts = [json.loads(line) for line in lines.splitlines() if line.strip()]
           repo = os.environ["GITHUB_REPOSITORY"]
 
-          def wanted(name: str) -> str | None:
-              if name.startswith("evidence-"):
-                  return "build/060/release-evidence"
-              if name.startswith("stage-outputs-"):
-                  return "build/060/stage"
-              if name == "trusted-manifests":
-                  return "build/060/trust"
-              if name.startswith("windows-unsigned-"):
-                  return "build/060/coverage-inputs/windows"
-              if name == "coverage":
-                  return "build/060/coverage-inputs/backend"
-              if name == "tooling-python-coverage":
-                  return "build/060/coverage-inputs/tooling"
-              return None
+          def records(name):
+              lines = pathlib.Path(f"build/060/api/{name}").read_text(encoding="utf-8")
+              return [json.loads(line) for line in lines.splitlines() if line.strip()]
 
-          listing = {}
-          for artifact in artifacts:
-              target = wanted(artifact["name"])
-              if target is None:
-                  continue
-              listing.setdefault(artifact["name"], []).append(artifact["id"])
-              zip_path = pathlib.Path(f"build/060/api/{artifact['id']}.zip")
-              with zip_path.open("wb") as handle:
-                  subprocess.run(
-                      ["gh", "api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"],
-                      check=True, stdout=handle,
+          current_artifacts = records("artifacts-current.ndjson")
+          source_artifacts = records("artifacts-source.ndjson")
+          suffix = os.environ["STAGE_ARTIFACT_SUFFIX"]
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", suffix):
+              raise SystemExit("stage artifact suffix is not canonical")
+          stage_outputs_name = f"stage-outputs-{suffix}"
+          stage_manifest_name = f"stage-manifest-{suffix}"
+          trusted_name = f"trusted-manifests-{suffix}"
+          evidence_names = {
+              f"evidence-{platform}-{suffix}"
+              for platform in (
+                  "backend", "web", "windows", "android", "macos", "ios", "watchos", "docs"
+              )
+          }
+          raw_apple_names = {
+              f"raw-apple-evidence-{platform}-{suffix}"
+              for platform in ("macos", "ios", "watchos")
+          }
+          raw_apple_targets = {
+              f"raw-apple-evidence-{platform}-{suffix}":
+                  f"build/060/raw-apple-evidence/{platform}"
+              for platform in ("macos", "ios", "watchos")
+          }
+          candidate = os.environ["CANDIDATE_SHA"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          run_attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          if not re.fullmatch(r"[0-9a-f]{40}", candidate):
+              raise SystemExit("candidate SHA is not canonical")
+          if not re.fullmatch(r"[1-9][0-9]*", run_id) or not re.fullmatch(
+              r"[1-9][0-9]*", run_attempt
+          ):
+              raise SystemExit("protected run identity is not canonical")
+          windows_name = f"windows-unsigned-{candidate}-{run_id}-{run_attempt}"
+          current_targets = {
+              **{name: "build/060/release-evidence" for name in evidence_names},
+              **raw_apple_targets,
+              stage_outputs_name: "build/060/stage",
+              stage_manifest_name: "build/060/stage-manifest",
+              trusted_name: "build/060/trust",
+              windows_name: "build/060/coverage-inputs/windows",
+          }
+          source_targets = {
+              "coverage": "build/060/coverage-inputs/backend",
+              "tooling-python-coverage": "build/060/coverage-inputs/tooling",
+              "voice-worker-coverage": "build/060/coverage-inputs/voice-worker",
+          }
+          protected_prefixes = (
+              "evidence-",
+              "raw-apple-evidence-",
+              "stage-outputs-",
+              "stage-manifest-",
+              "trusted-manifests-",
+              "windows-unsigned-",
+          )
+
+          listing: dict[str, list[dict]] = {}
+          for artifacts, targets, scope in (
+              (current_artifacts, current_targets, "current"),
+              (source_artifacts, source_targets, "source"),
+          ):
+              for artifact in artifacts:
+                  name = artifact.get("name")
+                  if not isinstance(name, str):
+                      raise SystemExit("run artifact lacks a string name")
+                  if scope == "current" and name in source_targets:
+                      raise SystemExit(f"candidate coverage appeared in protected run: {name}")
+                  if (
+                      scope == "current"
+                      and name.startswith(protected_prefixes)
+                      and name not in current_targets
+                      and name not in raw_apple_names
+                  ):
+                      raise SystemExit(f"wrong attempt-scoped input artifact name: {name}")
+                  if name not in targets:
+                      continue
+                  if artifact.get("expired") is not False:
+                      raise SystemExit(f"selected run artifact is expired: {name}")
+                  artifact_id = str(artifact.get("id", ""))
+                  size = artifact.get("size_in_bytes")
+                  if not re.fullmatch(r"[1-9][0-9]*", artifact_id):
+                      raise SystemExit(f"selected run artifact lacks a canonical id: {name}")
+                  if (
+                      isinstance(size, bool)
+                      or not isinstance(size, int)
+                      or not 0 < size <= 512 * 1024 * 1024
+                  ):
+                      raise SystemExit(f"selected run artifact has an invalid size: {name}")
+                  listing.setdefault(name, []).append(
+                      {"artifact_id": artifact_id, "scope": scope, "size_in_bytes": size}
                   )
-              pathlib.Path(target).mkdir(parents=True, exist_ok=True)
-              subprocess.run(["unzip", "-o", "-q", str(zip_path), "-d", target], check=True)
-          for name in ("trusted-manifests", "coverage", "tooling-python-coverage"):
-              if name not in listing:
-                  raise SystemExit(f"required run artifact is missing: {name}")
-              if len(listing[name]) != 1:
-                  raise SystemExit(f"ambiguous run artifact name: {name}")
+
+          for name in (*current_targets, *source_targets):
+              selections = listing.get(name)
+              if not isinstance(selections, list) or len(selections) != 1:
+                  raise SystemExit(f"required run artifact is missing or ambiguous: {name}")
+              expected_scope = "current" if name in current_targets else "source"
+              if selections[0]["scope"] != expected_scope:
+                  raise SystemExit(f"run artifact has the wrong scope: {name}")
+          selected_ids = [
+              selection[0]["artifact_id"]
+              for selection in listing.values()
+          ]
+          if len(selected_ids) != len(set(selected_ids)):
+              raise SystemExit("selected run artifacts do not have unique immutable ids")
+
+          extractor = os.environ["RELEASE_ARTIFACT_EXTRACTOR"]
+          for name in sorted(listing):
+              selection = listing[name][0]
+              artifact_id = selection["artifact_id"]
+              target = (current_targets | source_targets)[name]
+              zip_path = pathlib.Path(
+                  f"build/060/api/{selection['scope']}-{artifact_id}.zip"
+              )
+              with zip_path.open("xb") as handle:
+                  subprocess.run(
+                      ["gh", "api", f"repos/{repo}/actions/artifacts/{artifact_id}/zip"],
+                      check=True,
+                      stdout=handle,
+                  )
+              if zip_path.stat().st_size > 512 * 1024 * 1024:
+                  raise SystemExit(f"downloaded run artifact exceeds the byte limit: {name}")
+              subprocess.run(
+                  [
+                      "python3",
+                      "-I",
+                      extractor,
+                      "--archive",
+                      str(zip_path),
+                      "--target",
+                      target,
+                  ],
+                  check=True,
+              )
           pathlib.Path("build/060/api/selected.json").write_text(
               json.dumps(listing, indent=2, sort_keys=True), encoding="utf-8"
           )
+          PY
+      - name: Independently reconcile the protected stage manifest to current-run API state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import hashlib, json, os, pathlib
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+          suffix = os.environ["STAGE_ARTIFACT_SUFFIX"]
+          outputs_name = f"stage-outputs-{suffix}"
+          manifest_name = f"stage-manifest-{suffix}"
+          listing = json.loads(
+              pathlib.Path("build/060/api/selected.json").read_text(encoding="utf-8")
+          )
+          outputs_selection = listing.get(outputs_name)
+          manifest_selection = listing.get(manifest_name)
+          if (
+              not isinstance(outputs_selection, list)
+              or len(outputs_selection) != 1
+              or outputs_selection[0].get("scope") != "current"
+              or not isinstance(manifest_selection, list)
+              or len(manifest_selection) != 1
+              or manifest_selection[0].get("scope") != "current"
+          ):
+              raise SystemExit("stage artifacts are not unique current-run selections")
+          outputs_id = str(outputs_selection[0]["artifact_id"])
+          output_path = pathlib.Path("build/060/stage/staging-outputs.json")
+          source_manifest_path = pathlib.Path(
+              "build/060/stage-manifest/trusted-stage-deploy.json"
+          )
+          trusted_manifest_path = pathlib.Path(
+              "build/060/trust/stage/trusted-stage-deploy.json"
+          )
+          for root, expected in (
+              (pathlib.Path("build/060/stage"), output_path),
+              (pathlib.Path("build/060/stage-manifest"), source_manifest_path),
+          ):
+              members = sorted(path for path in root.rglob("*") if path.is_file())
+              if members != [expected] or any(path.is_symlink() for path in root.rglob("*")):
+                  raise SystemExit("stage artifact has unexpected or symlinked members")
+          if source_manifest_path.read_bytes() != trusted_manifest_path.read_bytes():
+              raise SystemExit("attested stage manifest differs from its immutable source artifact")
+          manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+          expected_claim = {
+              "kind": "github_actions_artifact_member",
+              "repository": repo,
+              "run_id": run_id,
+              "run_attempt": run_attempt,
+              "artifact_id": outputs_id,
+              "artifact_name": outputs_name,
+              "member": "staging-outputs.json",
+              "immutable_reference": (
+                  f"gh://{repo}/runs/{run_id}/attempts/{run_attempt}"
+                  f"/artifacts/{outputs_id}/members/staging-outputs.json"
+              ),
+              "sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+          }
+          if manifest.get("stage_outputs_artifact") != expected_claim:
+              raise SystemExit("attested stage manifest has a false stage-output artifact claim")
+          output = json.loads(output_path.read_text(encoding="utf-8"))
+          expected_deployment = {
+              key: value
+              for key, value in output.items()
+              if key not in {"deployed_at", "macos_personal_agent_host"}
+          }
+          if manifest.get("deployment") != expected_deployment:
+              raise SystemExit("attested stage deployment differs from immutable stage outputs")
           PY
       # The protected debt-ledger branch is created at the T120 bootstrap; an
       # absent ref FAILS this job by design — never tolerated silently.
@@ -1064,22 +1655,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$RELEASE_TRUSTED_BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$RELEASE_TRUSTED_BUILDER_IDENTITY"
+          test "$GITHUB_WORKFLOW_SHA" = "$RELEASE_TRUSTED_BUILDER_SHA"
           for manifest in build/060/trust/producers/*.json build/060/trust/stage/*.json; do
             receipt="build/060/api/attest-$(basename "$manifest").json"
             gh attestation verify "$manifest" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-trusted-builder.yml" \
+              --signer-digest "$RELEASE_TRUSTED_BUILDER_SHA" \
+              --cert-identity "$RELEASE_TRUSTED_BUILDER_IDENTITY" \
               --format json > "$receipt"
           done
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import hashlib, json, os, pathlib
           from datetime import datetime, timezone
 
           repo = os.environ["GITHUB_REPOSITORY"]
           run_id = os.environ["GITHUB_RUN_ID"]
           run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+          trust_artifact_name = f"trusted-manifests-{os.environ['STAGE_ARTIFACT_SUFFIX']}"
           listing = json.loads(pathlib.Path("build/060/api/selected.json").read_text(encoding="utf-8"))
-          trust_artifact_id = str(listing["trusted-manifests"][0])
+          trust_artifact_id = str(
+              listing[trust_artifact_name][0]["artifact_id"]
+          )
           now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
           for directory, role in (("producers", "producer"), ("stage", "stage_deploy")):
               for path in sorted(pathlib.Path(f"build/060/trust/{directory}").glob("*.json")):
@@ -1100,7 +1699,7 @@ jobs:
                           "run_id": run_id,
                           "run_attempt": run_attempt,
                           "artifact_id": trust_artifact_id,
-                          "artifact_name": "trusted-manifests",
+                          "artifact_name": trust_artifact_name,
                           "member": member,
                           "immutable_reference": (
                               f"gh://{repo}/runs/{run_id}/attempts/{run_attempt}"
@@ -1121,8 +1720,10 @@ jobs:
           set -euo pipefail
           test -n "$RELEASE_TRUSTED_BUILDER_SHA"
           git archive "$RELEASE_TRUSTED_BUILDER_SHA" \
+            scripts/extract_release_artifact.py \
             scripts/validate_release_evidence.py \
             scripts/check_changed_coverage.py \
+            scripts/prepare_release_evidence.py \
             specs/060-runtime-reliability-hardening/contracts/windows-deployment-profile.schema.json \
             specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json \
             specs/060-runtime-reliability-hardening/contracts/release-trust.schema.json \
@@ -1138,25 +1739,28 @@ jobs:
         run: |
           set -euo pipefail
           sed -i 's|/app/backend|backend|g' build/060/coverage-inputs/backend/coverage.xml
+          sed -i 's|/app/backend|backend|g' build/060/coverage-inputs/voice-worker/voice-worker.xml
           WINDOWS_COVERAGE="$(find build/060/coverage-inputs/windows -name windows-coverage.xml -print -quit)"
           test -n "$WINDOWS_COVERAGE"
-          python3 build/060/protected-policy/scripts/check_changed_coverage.py \
+          python3 -I build/060/protected-policy/scripts/check_changed_coverage.py \
             --repo . \
             --event-name "${GITHUB_EVENT_NAME/workflow_dispatch/manual}" \
             --base-sha "$BASE_SHA" \
             --candidate-sha "$CANDIDATE_SHA" \
             --backend-python build/060/coverage-inputs/backend/coverage.xml \
+            --voice-worker-python build/060/coverage-inputs/voice-worker/voice-worker.xml \
             --tooling-python build/060/coverage-inputs/tooling/tooling-python.xml \
             --windows-python "$WINDOWS_COVERAGE" \
             --javascript build/060/release-evidence/coverage/web-istanbul.json \
             --android-app build/060/release-evidence/coverage/android-app.xml \
             --android-core build/060/release-evidence/coverage/android-core.xml \
-            --apple build/060/release-evidence/coverage/apple-ios-xccov.json \
-            --apple build/060/release-evidence/coverage/apple-macos-xccov.json \
-            --apple build/060/release-evidence/coverage/apple-watchos-xccov.json \
+            --ios build/060/release-evidence/coverage/apple-ios-xccov.json \
+            --macos build/060/release-evidence/coverage/apple-macos-xccov.json \
+            --watchos build/060/release-evidence/coverage/apple-watchos-xccov.json \
+            --coverage-mode strict \
             --fail-under 90 \
             --output build/060/release-evidence/coverage/changed-code.json
-          COVERAGE_PERCENT="$(python3 -c "import json; print(json.load(open('build/060/release-evidence/coverage/changed-code.json'))['combined']['percent'])")"
+          COVERAGE_PERCENT="$(python3 -I -c "import json; print(json.load(open('build/060/release-evidence/coverage/changed-code.json'))['combined']['percent'])")"
           echo "COVERAGE_PERCENT=$COVERAGE_PERCENT" >> "$GITHUB_ENV"
       # Mechanical canonical assembly (content-derived UUIDv5); every claim in
       # the assembled set is still re-validated by the protected policy below.
@@ -1164,12 +1768,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import importlib.util, json, pathlib, sys
           from datetime import datetime, timezone
 
           spec = importlib.util.spec_from_file_location(
-              "astral_prepare_release_evidence", "scripts/prepare_release_evidence.py"
+              "astral_prepare_release_evidence",
+              "build/060/protected-policy/scripts/prepare_release_evidence.py",
           )
           prepare = importlib.util.module_from_spec(spec)
           sys.modules[spec.name] = prepare
@@ -1208,7 +1813,7 @@ jobs:
           EVIDENCE_ARTIFACT_ID: ${{ steps.evidence-upload.outputs.artifact-id }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import hashlib, json, os, pathlib
 
           repo = os.environ["GITHUB_REPOSITORY"]
@@ -1252,7 +1857,7 @@ jobs:
         run: |
           set -euo pipefail
           VALID_UNTIL="$(date -u -d '+20 hours' +%Y-%m-%dT%H:%M:%SZ)"
-          python3 build/060/protected-policy/scripts/validate_release_evidence.py \
+          python3 -I build/060/protected-policy/scripts/validate_release_evidence.py \
             --schema build/060/protected-policy/specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json \
             --trust-schema build/060/protected-policy/specs/060-runtime-reliability-hardening/contracts/release-trust.schema.json \
             --deployment-profile-schema build/060/protected-policy/specs/060-runtime-reliability-hardening/contracts/windows-deployment-profile.schema.json \
@@ -1261,6 +1866,8 @@ jobs:
             --candidate-sha "$CANDIDATE_SHA" \
             --repository "$GITHUB_REPOSITORY" \
             --trusted-provenance-dir build/060/trust/producers \
+            --raw-apple-evidence-dir build/060/raw-apple-evidence \
+            --windows-product-evidence-dir build/060/coverage-inputs/windows \
             --trusted-stage-deploy build/060/trust/stage/trusted-stage-deploy.json \
             --trusted-approvals-dir build/060/trust/approvals \
             --trusted-debt-resolutions-dir build/060/trust/resolutions \
@@ -1275,7 +1882,7 @@ jobs:
             --coverage-percent "$COVERAGE_PERCENT" \
             --coverage-artifact build/060/protected-decision/coverage-artifact.json \
             --evidence-set-artifact build/060/protected-decision/evidence-set-artifact.json \
-            --protected-workflow-ref "$GITHUB_REPOSITORY/.github/workflows/release-trusted-builder.yml@$RELEASE_TRUSTED_BUILDER_SHA" \
+            --protected-workflow-ref "$GITHUB_REPOSITORY/.github/workflows/release-readiness.yml@$GITHUB_WORKFLOW_SHA" \
             --valid-until "$VALID_UNTIL" \
             --decision-output build/060/protected-decision/trusted-release-decision.json
       - name: Re-read the protected debt-ledger head (after evaluation)
@@ -1284,16 +1891,20 @@ jobs:
           set -euo pipefail
           AFTER="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/release-evidence-debt" --jq .object.sha)"
           test "$AFTER" = "$LEDGER_SHA" || { echo "::error::debt ledger moved during evaluation" >&2; exit 1; }
+      - name: Attest the exact protected release decision
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: build/060/protected-decision/trusted-release-decision.json
       - name: Upload the trusted release decision
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: trusted-release-decision
-          path: build/060/protected-decision/
+          path: build/060/protected-decision/trusted-release-decision.json
           if-no-files-found: error
           retention-days: 90
 
   stage-cleanup:
-    if: always()
+    if: ${{ always() && needs.stage-deploy.outputs.runner_name != '' }}
     needs:
       - stage-deploy
       - windows-candidate
@@ -1301,39 +1912,43 @@ jobs:
       - web-producer
       - windows-producer
       - android-producer
+      - macos-raw-producer
+      - ios-raw-producer
+      - watchos-raw-producer
       - macos-producer
       - ios-producer
       - watchos-producer
       - docs-producer
       - trusted-builder
       - protected-decision
-    # Runs against the same external staging host as stage-deploy (see the
-    # note there); a dedicated persistent staging runner is not provisioned.
-    runs-on: ubuntu-latest
+    # Runs on the same labeled persistent staging host as stage-deploy.
+    runs-on: [self-hosted, astral-staging]
     timeout-minutes: 20
     env:
       ASTRAL_STAGING_RUNNER_TRUSTED: "true"
-      ASTRAL_STAGING_ENDPOINT: ${{ secrets.ASTRAL_STAGING_ENDPOINT }}
-      ASTRAL_STAGING_PROBE_TOKEN: ${{ secrets.ASTRAL_STAGING_PROBE_TOKEN }}
-      STAGING_POSTGRES_IMAGE: ${{ secrets.STAGING_POSTGRES_IMAGE }}
-      STAGING_KEYCLOAK_IMAGE: ${{ secrets.STAGING_KEYCLOAK_IMAGE }}
-      STAGING_SCHEMA_BASELINE_IMAGE: ${{ secrets.STAGING_SCHEMA_BASELINE_IMAGE }}
-      STAGING_RUNTIME_ENV_FILE: ${{ secrets.STAGING_RUNTIME_ENV_FILE }}
-      STAGING_DB_USER: ${{ secrets.STAGING_DB_USER }}
-      STAGING_DB_PASSWORD: ${{ secrets.STAGING_DB_PASSWORD }}
-      STAGING_DB_NAME: ${{ secrets.STAGING_DB_NAME }}
-      STAGING_KEYCLOAK_DB_USER: ${{ secrets.STAGING_KEYCLOAK_DB_USER }}
-      STAGING_KEYCLOAK_DB_PASSWORD: ${{ secrets.STAGING_KEYCLOAK_DB_PASSWORD }}
-      STAGING_KEYCLOAK_DB_NAME: ${{ secrets.STAGING_KEYCLOAK_DB_NAME }}
-      STAGING_KEYCLOAK_ADMIN_USER: ${{ secrets.STAGING_KEYCLOAK_ADMIN_USER }}
-      STAGING_KEYCLOAK_ADMIN_PASSWORD: ${{ secrets.STAGING_KEYCLOAK_ADMIN_PASSWORD }}
-      STAGING_BIND_PORT: ${{ secrets.STAGING_BIND_PORT }}
+      ASTRAL_STAGING_EXPECTED_RUNNER_NAME: ${{ needs.stage-deploy.outputs.runner_name }}
       STAGING_ENVIRONMENT_ID: rr-${{ github.run_id }}-${{ github.run_attempt }}
+      RELEASE_TRUSTED_BUILDER_SHA: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
     steps:
-      - name: Check out the exact candidate
+      - name: Check out the owner-reviewed cleanup policy
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
-          ref: ${{ inputs.candidate_sha }}
+          ref: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
+          path: protected-policy
           persist-credentials: false
+      - name: Bind cleanup to the protected checkpoint
+        run: |
+          set -euo pipefail
+          runner_name_pattern='^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$'
+          test "$GITHUB_WORKFLOW_SHA" = "$RELEASE_TRUSTED_BUILDER_SHA"
+          test -n "$ASTRAL_STAGING_EXPECTED_RUNNER_NAME"
+          if [[ ! "$RUNNER_NAME" =~ $runner_name_pattern ]]; then
+            echo "::error::cleanup runner name is not canonical" >&2
+            exit 1
+          fi
+          test "$RUNNER_NAME" = "$ASTRAL_STAGING_EXPECTED_RUNNER_NAME"
+          test "$(git -C protected-policy rev-parse HEAD)" = "$RELEASE_TRUSTED_BUILDER_SHA"
       - name: Tear down the staging namespace
-        run: python3 scripts/run_candidate_staging.py cleanup --environment-id "$STAGING_ENVIRONMENT_ID"
+        run: >-
+          python3 protected-policy/scripts/run_candidate_staging.py cleanup
+          --environment-id "$STAGING_ENVIRONMENT_ID"

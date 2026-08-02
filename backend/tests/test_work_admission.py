@@ -408,6 +408,24 @@ def test_finite_queue_is_fifo_and_full_refusal_is_immutable() -> None:
     assert reconciled == refused
 
 
+def test_ordinary_interactive_class_keeps_existing_per_user_capacity_behavior() -> None:
+    """Feature 065's voice limit must not narrow ordinary typed chat."""
+
+    clock = _FakeClock()
+    coordinator = _coordinator(clock, active_limit=3, queue_limit=1)
+
+    running = tuple(
+        coordinator.submit(_request(f"typed-{index}")) for index in range(3)
+    )
+    queued = coordinator.submit(_request("typed-queued"))
+
+    assert all(result.accepted for result in running)
+    assert all(result.state is OperationState.RUNNING for result in running)
+    assert queued.accepted is True
+    assert queued.state is OperationState.QUEUED
+    assert queued.queue_position == 1
+
+
 def test_idempotency_reuses_original_operation_and_conflicts_on_new_input() -> None:
     clock = _FakeClock()
     coordinator = _coordinator(clock, active_limit=2, queue_limit=8)

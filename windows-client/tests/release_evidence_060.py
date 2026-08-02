@@ -16,7 +16,7 @@ is present):
 - ``ASTRAL_WINDOWS_EXE_SHA256``      expected digest from the candidate job
 - ``ASTRAL_STAGING_URL``             trusted staging endpoint (HTTPS)
 - ``ASTRAL_RELEASE_EVIDENCE_OUTPUT`` where ``windows.json`` is written
-- ``ASTRAL_RELEASE_STAGING_FILE``    the stage-deploy outputs JSON (16 fields)
+- ``ASTRAL_RELEASE_STAGING_FILE``    trusted stage-deploy outputs JSON
 - ``ASTRAL_WINDOWS_CANDIDATE_DIR``   downloaded candidate artifact directory
                                      (``reproducibility.json`` lives here)
 - ``ASTRAL_WINDOWS_ARTIFACT_ID``     numeric candidate Actions artifact id
@@ -38,6 +38,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 import subprocess
@@ -83,8 +84,31 @@ STAGING_FIELDS = (
     "representative_dataset_sha256",
     "source_schema_revision",
     "topology",
+    "voice_runtime",
     "worker_paths",
 )
+VOICE_RUNTIME_FIELDS = {
+    "voice_worker_image_reference",
+    "voice_worker_image_sha256",
+    "livekit_image_reference",
+    "livekit_image_sha256",
+    "livekit_config_sha256",
+    "livekit_public_url",
+    "livekit_turn_domain",
+    "speech_profile",
+}
+SPEECH_PROFILE_FIELDS = {
+    "asr_model",
+    "tts_model",
+    "voice",
+    "sample_rate_hz",
+    "inventory_sha256",
+    "profile_sha256",
+}
+ASR_MODEL = "Systran/faster-whisper-large-v3"
+TTS_MODEL = "speaches-ai/Kokoro-82M-v1.0-ONNX"
+TTS_VOICE = "af_heart"
+TTS_SAMPLE_RATE_HZ = 24000
 REQUIRED_LIFECYCLE_STATES = {"starting", "online", "updating", "failed", "offline"}
 
 _STARTED_AT = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -241,7 +265,49 @@ def _staging_environment() -> dict:
     assert endpoint == _staging_url(), (
         "ASTRAL_STAGING_URL differs from the staged endpoint"
     )
+    worker_paths = stage["worker_paths"]
+    assert isinstance(worker_paths, list) and "voice" in worker_paths, (
+        "trusted staging output does not include the voice worker path"
+    )
+    _validate_voice_runtime(stage["voice_runtime"])
     return {field: stage[field] for field in STAGING_FIELDS}
+
+
+def _validate_voice_runtime(value: object) -> None:
+    """Validate, but never reconstruct, the trusted stage voice identity."""
+
+    assert isinstance(value, dict) and set(value) == VOICE_RUNTIME_FIELDS, (
+        "trusted voice_runtime has a missing, extra, or non-object field"
+    )
+    profile = value["speech_profile"]
+    assert isinstance(profile, dict) and set(profile) == SPEECH_PROFILE_FIELDS, (
+        "trusted speech_profile has a missing, extra, or non-object field"
+    )
+    assert profile["asr_model"] == ASR_MODEL
+    assert profile["tts_model"] == TTS_MODEL
+    assert profile["voice"] == TTS_VOICE
+    assert profile["sample_rate_hz"] == TTS_SAMPLE_RATE_HZ
+    for digest_field in (
+        "voice_worker_image_sha256",
+        "livekit_image_sha256",
+        "livekit_config_sha256",
+    ):
+        assert isinstance(value[digest_field], str) and re.fullmatch(
+            r"[0-9a-f]{64}", value[digest_field]
+        ), f"trusted voice_runtime {digest_field} is not a SHA-256 digest"
+    for digest_field in ("inventory_sha256", "profile_sha256"):
+        assert isinstance(profile[digest_field], str) and re.fullmatch(
+            r"[0-9a-f]{64}", profile[digest_field]
+        ), f"trusted speech_profile {digest_field} is not a SHA-256 digest"
+    for reference_field in (
+        "voice_worker_image_reference",
+        "livekit_image_reference",
+        "livekit_public_url",
+        "livekit_turn_domain",
+    ):
+        assert (
+            isinstance(value[reference_field], str) and value[reference_field].strip()
+        ), f"trusted voice_runtime {reference_field} is empty"
 
 
 def _runner_identity() -> dict:

@@ -149,7 +149,7 @@ Release-evidence collection, normalization, and parsing run locally before push 
 
 ## Knowledge vault and handoffs
 
-When available, the local knowledge vault is at `../../../Karpathy-my-g`. Use `index.md` to route, then read the relevant concept/entity pages, the tail of `log.md`, and any active `sessions/resume-*.md`. The vault is project memory, not current-state authority; verify its claims against the live repositories.
+When available, the local knowledge vault is the sibling repository at `../kos-wiki`. Use `index.md` to route, then read the relevant concept/entity pages, the tail of `log.md`, and any active `sessions/resume-*.md`. The vault is project memory, not current-state authority; verify its claims against the live repositories.
 
 The user has established an always-on checkpoint rule: whenever a major checkpoint occurs — a
 branch is pushed for handoff, a spec/plan/tasks phase finishes, a PR opens or merges, a feature or
@@ -167,7 +167,7 @@ Finish with an evidence-backed summary: files changed, behavior changed, exact t
 <!-- SPECKIT START -->
 ## Active Technologies
 
-- Python 3.11, vanilla JavaScript, Python/PySide6, Kotlin/JVM 17, and Swift 5.9-compatible sources + pinned self-hosted LiveKit server/Agents/client SDKs, FastAPI, PostgreSQL, Keycloak, astralprims/ROTE (065-conversational-voice)
+- Python 3.11, vanilla JavaScript, Python/PySide6, Kotlin/JVM 17, and Swift 5.9-compatible sources + pinned self-hosted LiveKit server/direct-RTC/client SDKs, bounded WebSocket worker control, ONNX Runtime + exact Silero VAD, FastAPI, PostgreSQL, Keycloak, astralprims/ROTE (065-conversational-voice)
 - PostgreSQL additive `voice_session`/`voice_turn` metadata plus immutable execution-base commit anchors/digests and commit-scoped workspace-layout versioning; ephemeral LiveKit media and speech buffers with no audio retention (065-conversational-voice)
 
 ## Recent Changes

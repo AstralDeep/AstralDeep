@@ -332,6 +332,12 @@ def test_complete_same_candidate_matrix_passes_local_policy(
         (lambda doc: doc["evidence"][1]["checks"].append(copy.deepcopy(doc["evidence"][1]["checks"][0])), "duplicate check"),
         (lambda doc: doc["evidence"][2].__setitem__("candidate_sha", "b" * 40), "candidate_sha"),
         (lambda doc: doc["evidence"][3]["staging_environment"].__setitem__("environment_id", "other-stage"), "staging"),
+        (
+            lambda doc: doc["evidence"][3]["staging_environment"]["voice_runtime"][
+                "speech_profile"
+            ].__setitem__("inventory_sha256", "0" * 64),
+            "staging",
+        ),
         (lambda doc: doc["evidence"][1]["checks"][0].__setitem__("outcome", "not_applicable"), "not_applicable"),
         (lambda doc: doc["evidence"][0]["checks"][1].__setitem__("measurements", []), "measurement"),
     ],
@@ -379,6 +385,109 @@ def test_policy_rejects_every_matrix_shape_and_product_failure_class(
         validator.evaluate_evidence_set(
             evidence_set, now=datetime(2026, 7, 16, 12, tzinfo=UTC)
         )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda staging: staging["worker_paths"].remove("voice"),
+            "voice worker path",
+        ),
+        (
+            lambda staging: staging["voice_runtime"].__setitem__(
+                "voice_worker_image_sha256", "0" * 64
+            ),
+            "voice worker image",
+        ),
+        (
+            lambda staging: staging["voice_runtime"].__setitem__(
+                "livekit_image_sha256", "0" * 64
+            ),
+            "LiveKit image",
+        ),
+        (
+            lambda staging: staging["voice_runtime"].__setitem__(
+                "livekit_image_reference",
+                "docker.io/livekit/livekit-server@sha256:"
+                "3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1",
+            ),
+            "approved exact server image",
+        ),
+        (
+            lambda staging: staging["voice_runtime"]["speech_profile"].__setitem__(
+                "voice", "af_alloy"
+            ),
+            "speech profile",
+        ),
+        (
+            lambda staging: staging["voice_runtime"]["speech_profile"].__setitem__(
+                "profile_sha256", "0" * 64
+            ),
+            "speech profile",
+        ),
+        (
+            lambda staging: staging["voice_runtime"].__setitem__(
+                "livekit_public_url", "ws://localhost:7880"
+            ),
+            "public URL",
+        ),
+        (
+            lambda staging: staging["voice_runtime"].__setitem__(
+                "livekit_turn_domain", "localhost"
+            ),
+            "TURN domain",
+        ),
+    ],
+)
+def test_canonical_staging_rejects_unbound_voice_runtime_identity(
+    validator: Any,
+    contract_examples: Any,
+    mutation: Any,
+    message: str,
+) -> None:
+    staging = contract_examples._staging_environment()
+    mutation(staging)
+    with pytest.raises(validator.PolicyError, match=message):
+        validator._canonical_staging(staging)
+
+
+def test_trusted_stage_binds_support_images_and_livekit_public_443_route(
+    validator: Any,
+    contract_examples: Any,
+) -> None:
+    staging = contract_examples._staging_environment()
+    support_image = "registry.invalid/support@sha256:" + "9" * 64
+    staging["service_image_references"] = {
+        "postgres": support_image,
+        "keycloak-postgres": support_image,
+        "keycloak": "registry.invalid/keycloak@sha256:" + "6" * 64,
+        "livekit": staging["voice_runtime"]["livekit_image_reference"],
+        "schema-baseline": "registry.invalid/baseline@sha256:" + "5" * 64,
+        "astraldeep": staging["candidate_image_reference"],
+        "voice-worker": staging["voice_runtime"]["voice_worker_image_reference"],
+    }
+    staging["livekit_turn_tls"] = {
+        "advertised_uri": (
+            "turns:turn.stage-060.astraldeep.invalid:443?transport=tcp"
+        ),
+        "public_port": 443,
+        "external_tls": True,
+        "terminator_upstream_host": "127.0.0.1",
+        "terminator_upstream_port": 15349,
+        "livekit_listener_port": 5349,
+    }
+    validator._canonical_staging(staging)
+
+    mutable = copy.deepcopy(staging)
+    mutable["service_image_references"]["keycloak"] = "keycloak:latest"
+    with pytest.raises(validator.PolicyError, match="incomplete or mutable"):
+        validator._canonical_staging(mutable)
+
+    wrong_route = copy.deepcopy(staging)
+    wrong_route["livekit_turn_tls"]["public_port"] = 5349
+    with pytest.raises(validator.PolicyError, match="public-443 route"):
+        validator._canonical_staging(wrong_route)
 
 
 def _unavailable_windows_set(contract_examples: Any) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -925,21 +1034,58 @@ def test_timestamp_parser_rejects_noncanonical_invalid_and_naive_values(
         validator._format_matches("value", "unsupported")
 
 
-def test_producer_binding_requires_external_builder_identity_and_exact_job_runner(
-    validator: Any, contract_examples: Any
+@pytest.mark.parametrize("platform", ["backend", "web"])
+def test_oci_producer_binding_uses_the_attested_stage_product_identity(
+    validator: Any,
+    contract_examples: Any,
+    tmp_path: Path,
+    platform: str,
 ) -> None:
-    report = contract_examples._platform_evidence("backend")
+    report = contract_examples._platform_evidence(platform)
+    report["workflow"] = contract_examples._workflow(f"{platform}-producer")
+    report["artifact"] = {
+        "name": f"astraldeep-{platform}-candidate",
+        "kind": "container" if platform == "backend" else "web_deployment",
+        "immutable_reference": (
+            "oci://" + report["staging_environment"]["candidate_image_reference"]
+        ),
+        "sha256": report["staging_environment"]["candidate_image_sha256"],
+        "build_identity": f"candidate-container:{contract_examples.GIT_SHA}",
+    }
     manifest = contract_examples._trusted_workflow_provenance()
-    manifest["artifacts"].append(
+    manifest["workflow"] = copy.deepcopy(report["workflow"])
+    manifest["runner"] = copy.deepcopy(report["runner"])
+    report_bytes = (
+        json.dumps(report, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+    )
+    report_path = tmp_path / f"{platform}.json"
+    report_path.write_bytes(report_bytes)
+    member = contract_examples._trusted_member()
+    member.update(
+        artifact_id="701",
+        artifact_name=f"evidence-{platform}-12345-1",
+        member=f"{platform}.json",
+        immutable_reference=(
+            "gh://AstralDeep/AstralDeep/runs/12345/attempts/1/"
+            f"artifacts/701/members/{platform}.json"
+        ),
+        sha256=hashlib.sha256(report_bytes).hexdigest(),
+    )
+    image_reference = report["staging_environment"]["candidate_image_reference"]
+    registry_repository, digest = image_reference.rsplit("@", 1)
+    registry, repository_path = registry_repository.split("/", 1)
+    manifest["artifacts"] = [
+        member,
         {
             "kind": "oci_manifest",
-            "registry": "ghcr.io",
-            "repository_path": "astraldeep/astraldeep",
-            "digest": f"sha256:{contract_examples.SHA256}",
-            "immutable_reference": report["artifact"]["immutable_reference"],
-            "sha256": report["artifact"]["sha256"],
-        }
-    )
+            "registry": registry,
+            "repository_path": repository_path,
+            "digest": digest,
+            "immutable_reference": f"oci://{image_reference}",
+            "sha256": digest.removeprefix("sha256:"),
+        },
+    ]
+    stage = {"deployment": copy.deepcopy(report["staging_environment"])}
     validator.bind_report_to_producer(
         report,
         [manifest],
@@ -947,13 +1093,277 @@ def test_producer_binding_requires_external_builder_identity_and_exact_job_runne
         candidate_sha=contract_examples.GIT_SHA,
         protected_builder_sha=contract_examples.OTHER_GIT_SHA,
         protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+        trusted_stage_deploy=stage,
+        report_artifact_sha256=hashlib.sha256(report_bytes).hexdigest(),
     )
-    spoofed = copy.deepcopy(manifest)
-    spoofed["workflow"]["job_id"] = "protected-decision"
+
+    spoofed_stage = copy.deepcopy(stage)
+    spoofed_stage["deployment"]["candidate_image_sha256"] = "0" * 64
+    with pytest.raises(validator.ProvenanceError, match="producer|stage"):
+        validator.bind_report_to_producer(
+            report,
+            [manifest],
+            repository="AstralDeep/AstralDeep",
+            candidate_sha=contract_examples.GIT_SHA,
+            protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+            protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+            trusted_stage_deploy=spoofed_stage,
+            report_artifact_sha256=hashlib.sha256(report_bytes).hexdigest(),
+        )
+
+    with pytest.raises(validator.ProvenanceError, match="producer|report"):
+        validator.bind_report_to_producer(
+            report,
+            [manifest],
+            repository="AstralDeep/AstralDeep",
+            candidate_sha=contract_examples.GIT_SHA,
+            protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+            protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+            trusted_stage_deploy=stage,
+            report_artifact_sha256="0" * 64,
+        )
+
+
+def test_windows_producer_binding_rehashes_unsigned_product_source(
+    validator: Any,
+    contract_examples: Any,
+    tmp_path: Path,
+) -> None:
+    report = contract_examples._platform_evidence("windows")
+    report["workflow"] = contract_examples._workflow("windows-producer")
+    product = b"unsigned AstralDeep executable"
+    report["artifact"].update(
+        name="AstralDeep.exe",
+        immutable_reference=(
+            "gh://AstralDeep/AstralDeep/runs/12345/attempts/1/"
+            "artifacts/703/members/AstralDeep.exe"
+        ),
+        sha256=hashlib.sha256(product).hexdigest(),
+    )
+    report_bytes = (
+        json.dumps(report, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+    )
+
+    def member(path: str, content: bytes, *, artifact_id: str, name: str) -> dict[str, Any]:
+        claim = contract_examples._trusted_member()
+        claim.update(
+            artifact_id=artifact_id,
+            artifact_name=name,
+            member=path,
+            immutable_reference=(
+                "gh://AstralDeep/AstralDeep/runs/12345/attempts/1/"
+                f"artifacts/{artifact_id}/members/{path}"
+            ),
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
+        return claim
+
+    final_name = "evidence-windows-12345-1"
+    source_name = (
+        f"windows-unsigned-{contract_examples.GIT_SHA}-12345-1"
+    )
+    manifest = contract_examples._trusted_workflow_provenance()
+    manifest["workflow"] = copy.deepcopy(report["workflow"])
+    manifest["runner"] = copy.deepcopy(report["runner"])
+    manifest["artifacts"] = [
+        member("windows.json", report_bytes, artifact_id="702", name=final_name)
+    ]
+    source_payloads = {
+        "AstralDeep.exe": product,
+        "candidate-manifest.json": b"{}\n",
+    }
+    manifest["source_provenance"] = {
+        "workflow": contract_examples._workflow("windows-candidate"),
+        "runner": contract_examples._runner("windows"),
+        "artifacts": [
+            member(path, content, artifact_id="703", name=source_name)
+            for path, content in source_payloads.items()
+        ],
+    }
+    source_root = tmp_path / "windows-product"
+    source_root.mkdir()
+    for path, content in source_payloads.items():
+        (source_root / path).write_bytes(content)
+
+    assert validator.bind_report_to_producer(
+        report,
+        [manifest],
+        repository="AstralDeep/AstralDeep",
+        candidate_sha=contract_examples.GIT_SHA,
+        protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+        protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+        windows_product_source_root=source_root,
+        report_artifact_sha256=hashlib.sha256(report_bytes).hexdigest(),
+    ) is manifest
+
+    (source_root / "AstralDeep.exe").write_bytes(b"mutated")
+    with pytest.raises(validator.ProvenanceError, match="digest differs"):
+        validator.bind_report_to_producer(
+            report,
+            [manifest],
+            repository="AstralDeep/AstralDeep",
+            candidate_sha=contract_examples.GIT_SHA,
+            protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+            protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+            windows_product_source_root=source_root,
+            report_artifact_sha256=hashlib.sha256(report_bytes).hexdigest(),
+        )
+
+    (source_root / "AstralDeep.exe").write_bytes(product)
+    (source_root / "unexpected.txt").write_text("extra", encoding="utf-8")
+    with pytest.raises(validator.ProvenanceError, match="members differ"):
+        validator.bind_report_to_producer(
+            report,
+            [manifest],
+            repository="AstralDeep/AstralDeep",
+            candidate_sha=contract_examples.GIT_SHA,
+            protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+            protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+            windows_product_source_root=source_root,
+            report_artifact_sha256=hashlib.sha256(report_bytes).hexdigest(),
+        )
+
+
+def test_apple_producer_binding_preserves_and_rehashes_raw_origin_chain(
+    validator: Any,
+    contract_examples: Any,
+    tmp_path: Path,
+) -> None:
+    report = contract_examples._platform_evidence("ios")
+    report["workflow"]["job_id"] = "ios-raw-producer"
+    payloads = {
+        "ios.json": b"raw platform report bytes\n",
+        "artifacts/client.bin": b"tested app bytes",
+        "raw/metrics.json": b"raw metric bytes",
+        "coverage/raw/apple-ios.xcresult/Data/coverage.data": b"xccov archive bytes",
+    }
+    report["artifact"]["sha256"] = hashlib.sha256(
+        payloads["artifacts/client.bin"]
+    ).hexdigest()
+    report["checks"][0]["evidence_artifacts"][0]["sha256"] = hashlib.sha256(
+        payloads["raw/metrics.json"]
+    ).hexdigest()
+    payloads["ios.json"] = (
+        json.dumps(report, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+    )
+
+    def member(
+        path: str,
+        content: bytes,
+        *,
+        artifact_id: str,
+        artifact_name: str,
+    ) -> dict[str, Any]:
+        return {
+            "kind": "github_actions_artifact_member",
+            "repository": "AstralDeep/AstralDeep",
+            "run_id": "12345",
+            "run_attempt": 1,
+            "artifact_id": artifact_id,
+            "artifact_name": artifact_name,
+            "member": path,
+            "immutable_reference": (
+                "gh://AstralDeep/AstralDeep/runs/12345/attempts/1/"
+                f"artifacts/{artifact_id}/members/{path}"
+            ),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+
+    raw_name = "raw-apple-evidence-ios-12345-1"
+    final_name = "evidence-ios-12345-1"
+    source_artifacts = [
+        member(path, content, artifact_id="701", artifact_name=raw_name)
+        for path, content in payloads.items()
+    ]
+    final_payloads = {
+        key: value
+        for key, value in payloads.items()
+        if not key.startswith("coverage/raw/")
+    }
+    final_payloads["coverage/apple-ios-xccov.json"] = b"{}\n"
+    final_artifacts = [
+        member(path, content, artifact_id="702", artifact_name=final_name)
+        for path, content in final_payloads.items()
+    ]
+    manifest = contract_examples._trusted_workflow_provenance()
+    manifest["workflow"] = contract_examples._workflow("ios-producer")
+    manifest["runner"] = contract_examples._runner("macos")
+    manifest["artifacts"] = final_artifacts
+    manifest["source_provenance"] = {
+        "workflow": copy.deepcopy(report["workflow"]),
+        "runner": copy.deepcopy(report["runner"]),
+        "artifacts": source_artifacts,
+    }
+    source_root = tmp_path / "ios"
+    for path, content in payloads.items():
+        target = source_root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+
+    bound = validator.bind_report_to_producer(
+        report,
+        [manifest],
+        repository="AstralDeep/AstralDeep",
+        candidate_sha=contract_examples.GIT_SHA,
+        protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+        protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+        raw_apple_source_root=source_root,
+    )
+    assert bound is manifest
+
+    mutated = copy.deepcopy(manifest)
+    mutated["source_provenance"]["artifacts"][-1]["sha256"] = "0" * 64
+    with pytest.raises(validator.ProvenanceError, match="differ|bytes"):
+        validator.bind_report_to_producer(
+            report,
+            [mutated],
+            repository="AstralDeep/AstralDeep",
+            candidate_sha=contract_examples.GIT_SHA,
+            protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+            protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+            raw_apple_source_root=source_root,
+        )
+
+    (source_root / "raw" / "extra.json").write_text("extra", encoding="utf-8")
+    with pytest.raises(validator.ProvenanceError, match="members differ"):
+        validator.bind_report_to_producer(
+            report,
+            [manifest],
+            repository="AstralDeep/AstralDeep",
+            candidate_sha=contract_examples.GIT_SHA,
+            protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+            protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+            raw_apple_source_root=source_root,
+        )
+
+
+def test_source_provenance_is_forbidden_without_an_upstream_product_boundary(
+    validator: Any, contract_examples: Any
+) -> None:
+    report = contract_examples._platform_evidence("android")
+    report["workflow"] = contract_examples._workflow("android-producer")
+    manifest = contract_examples._trusted_workflow_provenance()
+    manifest["workflow"] = copy.deepcopy(report["workflow"])
+    manifest["runner"] = copy.deepcopy(report["runner"])
+    product_claim = contract_examples._trusted_member()
+    product_claim.update(
+        member="artifacts/client.bin",
+        immutable_reference=(
+            "gh://AstralDeep/AstralDeep/runs/12345/attempts/1/"
+            "artifacts/67890/members/artifacts/client.bin"
+        ),
+        sha256=report["artifact"]["sha256"],
+    )
+    manifest["artifacts"] = [product_claim]
+    manifest["source_provenance"] = {
+        "workflow": copy.deepcopy(report["workflow"]),
+        "runner": copy.deepcopy(report["runner"]),
+        "artifacts": [contract_examples._trusted_member()],
+    }
     with pytest.raises(validator.ProvenanceError, match="producer"):
         validator.bind_report_to_producer(
             report,
-            [spoofed],
+            [manifest],
             repository="AstralDeep/AstralDeep",
             candidate_sha=contract_examples.GIT_SHA,
             protected_builder_sha=contract_examples.OTHER_GIT_SHA,
@@ -1203,7 +1613,8 @@ def test_protected_decision_generation_requires_context_and_schema_valid_inputs(
             "release-trusted-builder.yml@refs/heads/main"
         ),
         protected_workflow_ref=(
-            "AstralDeep/AstralDeep/.github/workflows/release-trusted-builder.yml@" + "f" * 40
+            "AstralDeep/AstralDeep/.github/workflows/release-readiness.yml@"
+            + "f" * 40
         ),
         coverage_percent=95.0,
         coverage_artifact=str(coverage_artifact_path),
@@ -1236,10 +1647,50 @@ def test_protected_decision_generation_requires_context_and_schema_valid_inputs(
     )
     assert decision["decision"] == "passed"
     assert decision["coverage_percent"] == 95.0
+    assert decision["workflow_ref"].endswith(
+        "/.github/workflows/release-readiness.yml@" + "f" * 40
+    )
+    assert decision["trusted_builder"]["workflow_path"] == (
+        ".github/workflows/release-trusted-builder.yml"
+    )
     assert {item["role"] for item in decision["input_manifests"]} == {
         "producer",
         "stage_deploy",
     }
+    invalid_args = SimpleNamespace(**vars(args))
+    invalid_args.protected_workflow_ref = (
+        "AstralDeep/AstralDeep/.github/workflows/release-trusted-builder.yml@"
+        + "f" * 40
+    )
+    with pytest.raises(validator.ProvenanceError, match="protected workflow ref"):
+        validator._decision_manifest(
+            args=invalid_args,
+            evidence_set=evidence_set,
+            policy_result=policy_result,
+            ledger=ledger,
+            verification_receipts=verification,
+            approvals=[],
+            now=datetime(2026, 7, 16, 12, tzinfo=UTC),
+            trust_schema=trust_schema,
+        )
+
+    invalid_args = SimpleNamespace(**vars(args))
+    invalid_args.protected_workflow_ref = (
+        "AstralDeep/AstralDeep/.github/workflows/release-readiness.yml@"
+        + "e" * 40
+    )
+    with pytest.raises(validator.ProvenanceError, match="builder pin"):
+        validator._decision_manifest(
+            args=invalid_args,
+            evidence_set=evidence_set,
+            policy_result=policy_result,
+            ledger=ledger,
+            verification_receipts=verification,
+            approvals=[],
+            now=datetime(2026, 7, 16, 12, tzinfo=UTC),
+            trust_schema=trust_schema,
+        )
+
     invalid_args = SimpleNamespace(**vars(args))
     invalid_args.coverage_percent = None
     with pytest.raises(validator.PolicyError, match="coverage-percent"):
@@ -1269,10 +1720,32 @@ def test_main_diagnostic_orchestrates_same_stage_without_authorizing_release(
         (tmp_path / name).mkdir()
     stage_path = tmp_path / "stage.json"
     stage = copy.deepcopy(evidence_set["evidence"][0]["staging_environment"])
+    support_image = "registry.invalid/support@sha256:" + "9" * 64
     stage.update(
         request_namespace="astral060-request",
         capability_manifest_sha256="7" * 64,
         service_identity_sha256="8" * 64,
+        service_image_references={
+            "postgres": support_image,
+            "keycloak-postgres": support_image,
+            "keycloak": "registry.invalid/keycloak@sha256:" + "6" * 64,
+            "livekit": stage["voice_runtime"]["livekit_image_reference"],
+            "schema-baseline": "registry.invalid/baseline@sha256:" + "5" * 64,
+            "astraldeep": stage["candidate_image_reference"],
+            "voice-worker": stage["voice_runtime"][
+                "voice_worker_image_reference"
+            ],
+        },
+        livekit_turn_tls={
+            "advertised_uri": (
+                "turns:turn.stage-060.astraldeep.invalid:443?transport=tcp"
+            ),
+            "public_port": 443,
+            "external_tls": True,
+            "terminator_upstream_host": "127.0.0.1",
+            "terminator_upstream_port": 15349,
+            "livekit_listener_port": 5349,
+        },
     )
     stage_document = {"deployment": stage}
     schemas = {
@@ -1343,6 +1816,17 @@ def test_main_diagnostic_orchestrates_same_stage_without_authorizing_release(
     result = json.loads(capsys.readouterr().out)
     assert result["decision"] == "diagnostic_policy_passed"
     assert result["protected_release_authorization"] is False
+
+    original_inventory_sha256 = stage["voice_runtime"]["speech_profile"][
+        "inventory_sha256"
+    ]
+    stage["voice_runtime"]["speech_profile"]["inventory_sha256"] = "0" * 64
+    assert validator.main(argv) == 2
+    assert "staging differs from protected stage deploy" in capsys.readouterr().err
+    stage["voice_runtime"]["speech_profile"][
+        "inventory_sha256"
+    ] = original_inventory_sha256
+
     rejected = list(argv)
     rejected[rejected.index("--base-sha") + 1] = "a" * 40
     assert validator.main(rejected) == 2
@@ -1363,6 +1847,8 @@ def test_cli_help_exposes_protected_inputs_and_never_has_network_fallback(valida
         "--trust-schema",
         "--deployment-profile-schema",
         "--evidence-dir",
+        "--raw-apple-evidence-dir",
+        "--windows-product-evidence-dir",
         "--trusted-provenance-dir",
         "--trusted-stage-deploy",
         "--trusted-approvals-dir",

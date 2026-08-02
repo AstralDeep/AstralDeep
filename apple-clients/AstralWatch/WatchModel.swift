@@ -87,6 +87,53 @@ final class WatchModel {
 
     let speaker = Speaker()
 
+    // Feature 065 — conversational voice is server-owned and independent of
+    // the legacy spoken-rendition `Speaker` above. The bridge carries exact
+    // worker ASR/TTS media; `Speaker` is never used as a conversation fallback.
+    var voiceComposer: WatchVoiceComposer?
+    var voiceState: WatchVoiceState = .off
+    var voiceReason = "ready"
+    var voiceMessage: String?
+    var voiceTerminalNotice: VoiceTerminalNotice?
+    var voicePartialTranscript: String?
+    var voiceActivationBusy = false
+
+    var visibleVoiceControls: [WatchVoiceControl] {
+        voiceComposer?.controls.filter(\.visible) ?? []
+    }
+
+    var primaryVoiceControl: WatchVoiceControl? {
+        for action in ["voice_session_end", "voice_session_takeover", "voice_session_start"] {
+            if let control = visibleVoiceControls.first(where: { $0.action == action }) {
+                return control
+            }
+        }
+        return nil
+    }
+
+    var voiceStatusLabel: String {
+        if let voiceMessage, !voiceMessage.isEmpty { return voiceMessage }
+        switch voiceState {
+        case .off: return "Voice conversation off"
+        case .unavailable: return "Voice conversation unavailable"
+        case .connecting: return "Connecting voice conversation"
+        case .greeting: return "Greeting"
+        case .listening: return "Listening"
+        case .speechDetected: return "Speech detected"
+        case .transcribing: return "Transcribing"
+        case .acknowledging: return "On it"
+        case .processing: return "Working"
+        case .waitingOnUser: return "Waiting for you"
+        case .speakingProgress: return "Speaking progress"
+        case .speakingResult: return "Speaking result"
+        case .muted: return "Assistant speech muted"
+        case .suspended: return "Voice conversation suspended"
+        case .reconnecting: return "Reconnecting voice conversation"
+        case .error: return "Voice conversation error"
+        case .ended: return "Voice conversation ended"
+        }
+    }
+
     // MARK: config + session
 
     /// The backend this watch talks to: a validated override pushed by the iPhone
@@ -126,9 +173,33 @@ final class WatchModel {
     @ObservationIgnored private var pendingCommitRequestGeneration: String?
     @ObservationIgnored private var seqState: [String: Int] = [:]
     @ObservationIgnored private var statusLifecycle = StatusLifecycleReducer()
+    @ObservationIgnored private(set) var voiceDeviceId = WatchVoiceDeviceIdentity.load()
+    @ObservationIgnored var voiceBridge: WatchVoiceBridgeControlling = WatchVoiceBridge()
+    @ObservationIgnored var voiceRESTTransport: WatchVoiceRESTClient.Transport?
+    @ObservationIgnored var voiceTokenProvider: (@Sendable () async -> String?)?
+    @ObservationIgnored private var voiceControlBinding: WatchVoiceControlBinding?
+    @ObservationIgnored var voiceSession: WatchVoiceSession?
+    @ObservationIgnored var voiceGrant: WatchVoiceBridgeGrant?
+    @ObservationIgnored private var pendingVoiceActivation: PendingVoiceActivation?
+    @ObservationIgnored private var pendingVoiceSubmissions: [String: PendingVoiceSubmission] = [:]
+    @ObservationIgnored private var voiceTranscriptSequences: [String: UInt64] = [:]
+    @ObservationIgnored private var voiceTurnSequences: [String: Int] = [:]
+    @ObservationIgnored private var currentVoiceTurnId: String?
+    @ObservationIgnored private var currentVoiceTurnOccurredAt: String?
+    @ObservationIgnored private var currentSensitiveVoiceTurn: VoiceTurnState?
+    @ObservationIgnored private var voiceRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var voiceResumeTask: Task<Void, Never>?
+    @ObservationIgnored private var voiceLeaseTask: Task<Void, Never>?
+    @ObservationIgnored var voiceLeaseInterval: Duration = .seconds(20)
+    @ObservationIgnored private var voicePlayoutSequence: UInt64 = 0
+    @ObservationIgnored private var voiceForegroundActive = true
 
     /// Test seam: observes the exact frame before it reaches the socket.
     @ObservationIgnored var outboundTap: ((String) -> Void)?
+
+    /// Test-only override for the dedicated, current-connection voice path.
+    /// Production always falls through to `WSClient.sendCurrentConnectionVoice`.
+    @ObservationIgnored var currentConnectionVoiceSendOverride: ((String) -> Void)?
 
     var deviceLogin: DeviceLoginClient {
         DeviceLoginClient(serverBase: serverBase)
@@ -182,10 +253,16 @@ final class WatchModel {
             }
         }
         let (width, height) = viewport
+        var device = DeviceDescriptor.watch(viewportWidth: width, viewportHeight: height)
+        device.deviceId = voiceDeviceId
+        device.hasAudioOutput = true
+        device.microphonePermission = voiceBridge.microphonePermission.rawValue
+        device.fullDuplex = false
+        device.voiceTransport = "watch_pcm_websocket"
         return Outbound.registerUI(
             token: token,
             sessionId: activeChatId,
-            device: .watch(viewportWidth: width, viewportHeight: height),
+            device: device,
             resumed: resumed,
             connectionGeneration: connection,
             resume: resume)
@@ -196,7 +273,20 @@ final class WatchModel {
         clearPendingOperationSubmissions()
         transientEntries = []
         transientCanvas = nil
-        return continuity.beginConnection(generation)
+        guard continuity.beginConnection(generation) else { return false }
+        reframePendingVoiceSubmissions(for: generation)
+        voiceControlBinding = nil
+        pendingVoiceActivation = nil
+        voiceResumeTask?.cancel()
+        voiceResumeTask = nil
+        stopVoiceLeaseRenewal()
+        voiceBridge.disconnect(reason: "ui_connection_replaced")
+        if voiceSession != nil {
+            voiceState = .reconnecting
+            voiceReason = "network_interrupted"
+            voiceMessage = "Reconnecting voice conversation…"
+        }
+        return true
     }
 
     @discardableResult
@@ -395,6 +485,8 @@ final class WatchModel {
         let refresh = tokens?.refreshToken
         let logoutClient = RestClient(serverBase: serverBase) { access }
         let socket = ws
+        let voiceSessionToEnd = voiceSession
+        let voiceEndClient = access.flatMap { makeVoiceRESTClient(accessToken: $0) }
         if let account = conversationAccount {
             _ = conversationResumeStore.clear(.signOut, for: account)
         }
@@ -414,12 +506,16 @@ final class WatchModel {
         operationStatuses = [:]
         agentLifecycles = [:]
         recents = []
+        resetVoiceState(reason: "sign_out")
         speaker.stop()
         beginDeviceLogin()
 
         // The local account is already gone; these network operations cannot
         // make the prior Keychain session durable again.
         await socket?.stop()
+        if let voiceSessionToEnd, let voiceEndClient {
+            try? await voiceEndClient.endSession(voiceSessionToEnd)
+        }
         if revokeRemote, let refresh {
             _ = try? await logoutClient.logout(
                 clientId: AstralConfig.watchClientId, refreshToken: refresh)
@@ -427,6 +523,13 @@ final class WatchModel {
     }
 
     func clearConversationForAccountRemoval() {
+        let voiceSessionToEnd = voiceSession
+        let voiceEndClient: WatchVoiceRESTClient?
+        if let accessToken = tokens?.accessToken {
+            voiceEndClient = makeVoiceRESTClient(accessToken: accessToken)
+        } else {
+            voiceEndClient = makeVoiceRESTClient()
+        }
         if let account = conversationAccount {
             _ = conversationResumeStore.clear(.accountRemoval, for: account)
         }
@@ -437,6 +540,10 @@ final class WatchModel {
         statusLifecycle.clear()
         operationStatuses = [:]
         agentLifecycles = [:]
+        resetVoiceState(reason: "account_removed")
+        if let voiceSessionToEnd, let voiceEndClient {
+            Task { try? await voiceEndClient.endSession(voiceSessionToEnd) }
+        }
     }
 
     // MARK: WS
@@ -483,6 +590,16 @@ final class WatchModel {
             clearPendingOperationSubmissions()
             transientEntries = []
             transientCanvas = nil
+            voiceControlBinding = nil
+            voiceResumeTask?.cancel()
+            voiceResumeTask = nil
+            stopVoiceLeaseRenewal()
+            voiceBridge.disconnect(reason: "ui_socket_disconnected")
+            if voiceSession != nil {
+                voiceState = .reconnecting
+                voiceReason = "network_interrupted"
+                voiceMessage = "Reconnecting voice conversation…"
+            }
         case .sendDropped:
             errorBanner = "Connection is behind; some input was dropped."
         case .queuedOperationDropped(let replay, let reason):
@@ -502,6 +619,25 @@ final class WatchModel {
     func handleFrame(_ frame: InboundFrame) {
         // Dispositions: ClientDispositions.watch — unlisted/ignored frames
         // fall through the default silently (FR-003).
+        switch frame.name {
+        case "composer_state":
+            consumeVoiceComposer(frame)
+            return
+        case "voice_control_binding":
+            consumeVoiceControlBinding(frame)
+            return
+        case "voice_session_state":
+            consumeVoiceSessionState(frame)
+            return
+        case "voice_turn_state":
+            consumeVoiceTurnState(frame)
+            return
+        case "voice_submission_rejected":
+            consumeVoiceSubmissionRejected(frame)
+            return
+        default:
+            break
+        }
         if continuity.connectionGeneration != nil,
             ["ui_render", "ui_update", "ui_upsert", "ui_append", "ui_stream_data"]
                 .contains(frame.name)
@@ -529,7 +665,7 @@ final class WatchModel {
                 canvas = comps
             }
             statusText = nil
-            speaker.speak(frame.speech)
+            speakLegacy(frame.speech)
         case "ui_upsert":
             let ops = frame.upsertOps
             guard !ops.isEmpty else { return }
@@ -538,7 +674,7 @@ final class WatchModel {
             // content must never render under a retained welcome (the empty
             // blanking render was always dropped by the guard above).
             canvas = Canvas.apply(canvas.dropWelcome(), ops)
-            speaker.speak(frame.speech)
+            speakLegacy(frame.speech)
         case "ui_stream_data":
             if let text = frame.streamComponents.first?.textContent {
                 statusText = text
@@ -550,9 +686,11 @@ final class WatchModel {
         case "agent_lifecycle":
             reduceAgentLifecycle(frame)
         case "user_message_acked":
+            consumeVoiceMessageAcknowledgement(frame)
             if let chatId = nestedChatId(frame) { adoptChat(chatId) }
             statusText = "Thinking…"
         case "chat_created":
+            if consumeVoiceChatCreated(frame) { return }
             // Adopt the server-issued chat id; the transcript the user is
             // looking at (their just-sent bubble) must NOT be wiped.
             if let chatId = nestedChatId(frame) { adoptChat(chatId) }
@@ -586,7 +724,7 @@ final class WatchModel {
             let message = titled.isEmpty ? (frame.payload["message"]?.stringValue ?? "") : titled
             guard !message.isEmpty else { return }
             statusText = message
-            speaker.speak(AstralSpeech(ssml: "", text: message))
+            speakLegacy(AstralSpeech(ssml: "", text: message))
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
                 guard let self, self.statusText == message else { return }
@@ -703,7 +841,7 @@ final class WatchModel {
             } else {
                 transientCanvas = components
             }
-            speaker.speak(frame.speech)
+            speakLegacy(frame.speech)
         case "ui_append":
             let components = frame.renderComponents
             if frame.renderTarget == "chat" {
@@ -716,10 +854,10 @@ final class WatchModel {
             } else {
                 transientCanvas = (transientCanvas ?? canvas) + components
             }
-            speaker.speak(frame.speech)
+            speakLegacy(frame.speech)
         case "ui_upsert":
             transientCanvas = Canvas.apply(transientCanvas ?? canvas, frame.upsertOps)
-            speaker.speak(frame.speech)
+            speakLegacy(frame.speech)
         case "ui_stream_data":
             transientCanvas = Canvas.apply(
                 transientCanvas ?? canvas,
@@ -734,11 +872,20 @@ final class WatchModel {
             ?? frame.payload["chat_id"]?.stringValue
     }
 
+    private func speakLegacy(_ speech: AstralSpeech?) {
+        guard voiceSession == nil else { return }
+        speaker.speak(speech)
+    }
+
     private func adoptChat(_ chatId: String) {
         if let account = conversationAccount {
             _ = conversationResumeStore.save(chatId: chatId, for: account)
         }
         activeChatId = chatId
+        if voiceSession?.visibleChatId != chatId {
+            voiceBridge.setCaptureEnabled(false)
+            Task { await self.updateVoiceVisibleChat(chatId) }
+        }
         guard let request = pendingCommitRequestGeneration else { return }
         if openConversationRequest(
             chatId: chatId,
@@ -755,6 +902,9 @@ final class WatchModel {
                 .confirmedDeletion,
                 for: account,
                 chatId: chatId)
+        }
+        if voiceSession?.visibleChatId == chatId {
+            endVoiceConversation(reason: "chat_deleted")
         }
         guard activeChatId == chatId else { return }
         clearContinuityChatKeepingConnection()
@@ -912,7 +1062,25 @@ final class WatchModel {
         Task { await ws?.send(frame) }
     }
 
+    /// Voice submissions and content-free playout evidence are fenced to the
+    /// currently established UI socket. The voice controller owns transcript
+    /// retry; none of these frames may enter the generic offline replay queue.
+    private func sendCurrentConnectionVoice(_ frame: String) {
+        guard connected, VoiceCurrentConnectionFrame(frameText: frame) != nil else { return }
+        outboundTap?(frame)
+        if let override = currentConnectionVoiceSendOverride {
+            override(frame)
+        } else if let ws {
+            Task { _ = await ws.sendCurrentConnectionVoice(frame) }
+        }
+    }
+
     func newConversation() {
+        pendingVoiceActivation = nil
+        if voiceSession != nil {
+            voiceBridge.setCaptureEnabled(false)
+            voiceMessage = "Select the new chat before speaking."
+        }
         if let account = conversationAccount {
             _ = conversationResumeStore.clear(.newChat, for: account)
         }
@@ -932,6 +1100,7 @@ final class WatchModel {
     }
 
     func openChat(_ chat: ChatSummary) {
+        pendingVoiceActivation = nil
         if let account = conversationAccount {
             guard conversationResumeStore.save(chatId: chat.id, for: account) else { return }
         }
@@ -957,6 +1126,10 @@ final class WatchModel {
                 chatId: chat.id,
                 submissionId: identity.submissionId,
                 requestGeneration: request))
+        if voiceSession?.visibleChatId != chat.id {
+            voiceBridge.setCaptureEnabled(false)
+            Task { await self.updateVoiceVisibleChat(chat.id) }
+        }
     }
 
     /// Dictated text goes through the STANDARD chat path (FR-029) after the
@@ -1000,6 +1173,920 @@ final class WatchModel {
                 submissionId: identity.submissionId,
                 requestGeneration: request))
     }
+
+    // MARK: Feature 065 — conversational voice
+
+    func performVoiceAction(_ action: String) {
+        guard let control = visibleVoiceControls.first(where: { $0.action == action }),
+            control.enabled, !control.busy, !voiceActivationBusy
+        else { return }
+        switch action {
+        case "voice_session_start":
+            Task { await self.beginVoiceActivation(takeover: false) }
+        case "voice_session_takeover":
+            Task { await self.beginVoiceActivation(takeover: true) }
+        case "voice_session_end":
+            endVoiceConversation(reason: "ended_by_user")
+        case "voice_microphone_set":
+            Task { await self.setVoiceMicrophone(!(self.voiceSession?.microphoneEnabled ?? false)) }
+        case "voice_speech_mute_set":
+            Task { await self.setVoiceSpeechMuted(!(self.voiceSession?.speechMuted ?? false)) }
+        case "voice_speech_stop":
+            stopVoiceSpeech()
+        case "voice_visible_chat_update":
+            guard let chatId = activeChatId else { return }
+            Task { await self.updateVoiceVisibleChat(chatId) }
+        case "voice_sensitive_recap_request":
+            Task { await self.consentSensitiveVoiceRecap() }
+        default:
+            break
+        }
+    }
+
+    func performPrimaryVoiceAction() {
+        guard let primaryVoiceControl else { return }
+        performVoiceAction(primaryVoiceControl.action)
+    }
+
+    func handleVoiceScenePhase(_ phase: ScenePhase) {
+        switch phase {
+        case .active:
+            guard !voiceForegroundActive else { return }
+            voiceForegroundActive = true
+            scheduleVoiceResume()
+        case .inactive, .background:
+            guard voiceForegroundActive else { return }
+            voiceForegroundActive = false
+            voiceResumeTask?.cancel()
+            voiceResumeTask = nil
+            stopVoiceLeaseRenewal()
+            suspendVoiceImmediately(reason: "backgrounded")
+        @unknown default:
+            suspendVoiceImmediately(reason: "backgrounded")
+        }
+    }
+
+    private func consumeVoiceComposer(_ frame: InboundFrame) {
+        guard
+            let composer = WatchVoiceComposer(
+                frame: frame,
+                expectedConnection: continuity.connectionGeneration)
+        else { return }
+        let shouldAcceptComposer =
+            voiceComposer.map {
+                composer.connectionGeneration != $0.connectionGeneration
+                    || composer.revision > $0.revision
+            } ?? true
+        guard shouldAcceptComposer else { return }
+        voiceComposer = composer
+        voiceState = composer.state
+        voiceReason = composer.reason
+        voiceMessage = composer.message
+        if composer.state == .off || composer.state == .ended {
+            voiceTerminalNotice = nil
+            currentVoiceTurnId = nil
+            currentVoiceTurnOccurredAt = nil
+        } else if composer.reason == VoiceReason.speechError.rawValue {
+            voiceTerminalNotice = VoiceTerminalNoticeReducer.speechFailure(
+                message: composer.message, turnId: currentVoiceTurnId,
+                occurredAt: voiceTerminalNotice?.occurredAt ?? currentVoiceTurnOccurredAt)
+        }
+        if composer.state == .ended {
+            voiceBridge.disconnect(reason: "server_ended")
+            voiceSession = nil
+            voiceGrant = nil
+        }
+    }
+
+    private func consumeVoiceControlBinding(_ frame: InboundFrame) {
+        guard
+            let binding = WatchVoiceControlBinding(
+                frame: frame,
+                expectedDeviceId: voiceDeviceId,
+                expectedConnection: continuity.connectionGeneration)
+        else { return }
+        voiceControlBinding = binding
+        if voiceSession != nil, voiceForegroundActive, voiceState == .reconnecting {
+            scheduleVoiceResume()
+        }
+    }
+
+    private func consumeVoiceSessionState(_ frame: InboundFrame) {
+        guard let update = VoiceSessionState(frame: frame),
+            update.connectionGeneration == continuity.connectionGeneration,
+            let session = voiceSession,
+            update.sessionId == session.sessionId,
+            UInt64(update.generation) == session.generation,
+            UInt64(update.mediaGrantRevision) == session.mediaGrantRevision,
+            let state = WatchVoiceState(rawValue: update.state.rawValue)
+        else { return }
+        voiceState = state
+        voiceReason = update.reason.rawValue
+        voiceMessage = update.message
+        if state == .ended {
+            voiceTerminalNotice = nil
+            currentVoiceTurnId = nil
+            currentVoiceTurnOccurredAt = nil
+        } else if update.reason == .speechError {
+            voiceTerminalNotice = VoiceTerminalNoticeReducer.speechFailure(
+                message: update.message, turnId: currentVoiceTurnId,
+                occurredAt: voiceTerminalNotice?.occurredAt ?? currentVoiceTurnOccurredAt)
+        }
+        if update.foregroundActive && update.microphoneEnabled && update.chatContextSynced
+            && voiceForegroundActive && state.active
+        {
+            voiceBridge.setCaptureEnabled(true)
+        } else {
+            voiceBridge.setCaptureEnabled(false)
+        }
+        switch state {
+        case .reconnecting:
+            voiceBridge.disconnect(reason: update.reason.rawValue)
+            scheduleVoiceResume()
+        case .suspended, .error, .ended:
+            voiceBridge.disconnect(reason: update.reason.rawValue)
+            if state == .ended {
+                voiceSession = nil
+                voiceGrant = nil
+            }
+        default:
+            break
+        }
+    }
+
+    private func consumeVoiceTurnState(_ frame: InboundFrame) {
+        guard let turn = VoiceTurnState(frame: frame),
+            turn.connectionGeneration == continuity.connectionGeneration,
+            let session = voiceSession,
+            turn.sessionId == session.sessionId,
+            UInt64(turn.generation) == session.generation,
+            UInt64(turn.mediaGrantRevision) == session.mediaGrantRevision,
+            VoiceTerminalNoticeReducer.canApply(
+                current: voiceTerminalNotice, turnId: turn.turnId,
+                occurredAt: turn.occurredAt),
+            voiceTurnSequences[turn.turnId].map({ turn.sequence > $0 }) ?? true
+        else { return }
+        voiceTurnSequences[turn.turnId] = turn.sequence
+        currentVoiceTurnId = turn.turnId
+        currentVoiceTurnOccurredAt = turn.occurredAt
+        voiceTerminalNotice = VoiceTerminalNoticeReducer.reduce(
+            current: voiceTerminalNotice, turn: turn)
+        if turn.sensitiveResultPending, turn.resultId != nil {
+            currentSensitiveVoiceTurn = turn
+        } else if currentSensitiveVoiceTurn?.turnId == turn.turnId {
+            currentSensitiveVoiceTurn = nil
+        }
+        voiceMessage = turn.message
+        switch turn.state {
+        case "recognizing": voiceState = .transcribing
+        case "submitting": voiceState = .acknowledging
+        case "accepted", "processing": voiceState = .processing
+        case "waiting_on_user": voiceState = .waitingOnUser
+        case "succeeded": voiceState = .speakingResult
+        case "failed", "refused": voiceState = .error
+        case "cancelled", "abandoned": voiceState = .listening
+        default: return
+        }
+    }
+
+    private func consumeVoiceMessageAcknowledgement(_ frame: InboundFrame) {
+        guard let acknowledgement = VoiceMessageAcknowledgement(frame: frame),
+            acknowledgement.connectionGeneration == continuity.connectionGeneration,
+            let turnId = acknowledgement.voiceTurnId,
+            let pending = pendingVoiceSubmissions[turnId],
+            acknowledgement.chatId == pending.transcript.chatId,
+            acknowledgement.submissionId == pending.transcript.submissionId,
+            acknowledgement.requestGeneration == pending.transcript.requestGeneration
+        else { return }
+        clearPendingVoiceSubmission(turnId)
+        voicePartialTranscript = nil
+    }
+
+    private func consumeVoiceSubmissionRejected(_ frame: InboundFrame) {
+        guard let rejection = VoiceSubmissionRejected(frame: frame),
+            rejection.connectionGeneration == continuity.connectionGeneration,
+            let pending = pendingVoiceSubmissions[rejection.turnId],
+            rejection.sessionId == pending.transcript.sessionId,
+            UInt64(rejection.generation) == pending.transcript.generation,
+            UInt64(rejection.mediaGrantRevision) == pending.transcript.mediaGrantRevision,
+            rejection.clientTurnId == pending.transcript.clientTurnId,
+            rejection.submissionId == pending.transcript.submissionId,
+            rejection.requestGeneration == pending.transcript.requestGeneration,
+            rejection.chatId == pending.transcript.chatId
+        else { return }
+        clearPendingVoiceSubmission(rejection.turnId)
+        guard
+            VoiceTerminalNoticeReducer.canApply(
+                current: voiceTerminalNotice, turnId: rejection.turnId,
+                occurredAt: rejection.occurredAt)
+        else { return }
+        currentVoiceTurnId = rejection.turnId
+        currentVoiceTurnOccurredAt = rejection.occurredAt
+        voiceTerminalNotice = VoiceTerminalNoticeReducer.reduce(
+            current: voiceTerminalNotice, rejection: rejection)
+        voiceState = .error
+        voiceReason = rejection.reason
+        voiceMessage = voiceTerminalNotice?.displayText
+    }
+
+    @discardableResult
+    private func consumeVoiceChatCreated(_ frame: InboundFrame) -> Bool {
+        guard let pending = pendingVoiceActivation,
+            let root = frame.payload.objectValue,
+            root["submission_id"]?.stringValue == pending.submissionId,
+            root["request_generation"]?.stringValue == pending.requestGeneration
+        else { return false }
+        pendingVoiceActivation = nil
+        guard root["schema_version"]?.stringValue == "1",
+            root["connection_generation"]?.stringValue == pending.connectionGeneration,
+            continuity.connectionGeneration == pending.connectionGeneration,
+            activeChatId == pending.selectedChatAtRequest,
+            let payload = root["payload"]?.objectValue,
+            payload["schema_version"]?.stringValue == "1",
+            payload["connection_generation"]?.stringValue == pending.connectionGeneration,
+            payload["submission_id"]?.stringValue == pending.submissionId,
+            payload["request_generation"]?.stringValue == pending.requestGeneration,
+            payload["from_message"]?.boolValue == false,
+            let chatId = payload["chat_id"]?.stringValue
+        else {
+            voiceActivationBusy = false
+            voiceMessage = "Voice start was cancelled because the chat changed."
+            return true
+        }
+        adoptChat(chatId)
+        Task {
+            await self.activateVoiceSession(
+                chatId: chatId,
+                activationId: pending.activationId,
+                takeover: pending.takeover)
+        }
+        return true
+    }
+
+    private func beginVoiceActivation(takeover: Bool) async {
+        guard voiceForegroundActive, connected,
+            let connection = continuity.connectionGeneration,
+            voiceControlBinding?.connectionGeneration == connection
+        else {
+            voiceState = .unavailable
+            voiceReason = "network_interrupted"
+            voiceMessage = "Voice will be available after the chat reconnects."
+            return
+        }
+        voiceActivationBusy = true
+        voiceState = .connecting
+        voiceMessage = "Preparing voice conversation…"
+        let permission = await voiceBridge.requestMicrophonePermission()
+        guard permission == .authorized else {
+            voiceActivationBusy = false
+            voiceState = .unavailable
+            voiceReason = permission == .restricted ? "permission_restricted" : "permission_denied"
+            voiceMessage = "Microphone permission is required for voice conversation."
+            return
+        }
+        let activationId = UUID().uuidString.lowercased()
+        guard let chatId = activeChatId else {
+            let submissionId = UUID().uuidString.lowercased()
+            let requestGeneration = UUID().uuidString.lowercased()
+            pendingVoiceActivation = PendingVoiceActivation(
+                activationId: activationId,
+                submissionId: submissionId,
+                requestGeneration: requestGeneration,
+                connectionGeneration: connection,
+                selectedChatAtRequest: nil,
+                takeover: takeover)
+            guard
+                let frame = watchVoiceJSON([
+                    "type": .string("ui_event"),
+                    "action": .string("new_chat"),
+                    "schema_version": .string("1"),
+                    "connection_generation": .string(connection),
+                    "submission_id": .string(submissionId),
+                    "request_generation": .string(requestGeneration),
+                    "payload": .object([
+                        "schema_version": .string("1"),
+                        "connection_generation": .string(connection),
+                        "submission_id": .string(submissionId),
+                        "request_generation": .string(requestGeneration),
+                    ]),
+                ])
+            else {
+                pendingVoiceActivation = nil
+                voiceActivationBusy = false
+                voiceState = .error
+                voiceReason = "internal_error"
+                return
+            }
+            sendCurrentConnectionVoice(frame)
+            voiceMessage = "Creating a chat for voice…"
+            return
+        }
+        await activateVoiceSession(
+            chatId: chatId,
+            activationId: activationId,
+            takeover: takeover)
+    }
+
+    private func activateVoiceSession(
+        chatId: String,
+        activationId: String,
+        takeover: Bool
+    ) async {
+        defer { voiceActivationBusy = false }
+        guard let client = makeVoiceRESTClient() else {
+            voiceState = .unavailable
+            voiceReason = "authentication_required"
+            voiceMessage = "Voice control authorization expired. Reconnect and try again."
+            return
+        }
+        do {
+            let result: WatchVoiceSessionGrant
+            if takeover {
+                guard let sessionId = voiceComposer?.sessionId,
+                    let generation = voiceComposer?.generation,
+                    let revision = voiceComposer?.mediaGrantRevision
+                else { throw WatchVoiceRESTError.invalidRequest }
+                result = try await client.takeOverSession(
+                    sessionId: sessionId,
+                    chatId: chatId,
+                    activationId: activationId,
+                    expectedGeneration: generation,
+                    expectedMediaGrantRevision: revision,
+                    permission: .authorized)
+            } else {
+                result = try await client.createSession(
+                    chatId: chatId,
+                    activationId: activationId,
+                    permission: .authorized)
+            }
+            try await installVoiceSession(result)
+        } catch WatchVoiceRESTError.refused(let status, let code) {
+            voiceState = status == 409 ? .unavailable : .error
+            voiceReason = status == 409 ? "takeover_required" : safeVoiceReason(code)
+            voiceMessage =
+                status == 409
+                ? "Voice is active on another device. Choose Take Over to continue here."
+                : "Voice conversation could not start."
+        } catch {
+            voiceState = .error
+            voiceReason = "media_unavailable"
+            voiceMessage = "Voice media is unavailable right now."
+        }
+    }
+
+    private func installVoiceSession(_ result: WatchVoiceSessionGrant) async throws {
+        guard result.session.deviceId == voiceDeviceId,
+            result.session.ownerConnectionGeneration == continuity.connectionGeneration,
+            result.session.sessionId == result.grant.sessionId
+        else { throw WatchVoiceRESTError.malformedResponse }
+        if voiceSession?.sessionId != result.session.sessionId
+            || voiceSession?.generation != result.session.generation
+        {
+            voiceTurnSequences.removeAll()
+            currentVoiceTurnId = nil
+            currentVoiceTurnOccurredAt = nil
+            currentSensitiveVoiceTurn = nil
+        }
+        voiceSession = result.session
+        voiceGrant = result.grant
+        voiceState = .connecting
+        voiceReason = "ready"
+        voiceMessage = "Connecting voice conversation…"
+        speaker.stop()
+        try await voiceBridge.connect(
+            grant: result.grant,
+            onState: { [weak self] state in self?.consumeVoiceBridgeState(state) },
+            onTranscript: { [weak self] transcript in self?.consumeVoiceTranscript(transcript) },
+            onPlayout: { [weak self] observation in self?.sendVoicePlayout(observation) })
+        voiceState = .greeting
+        voiceMessage = nil
+        voiceBridge.setCaptureEnabled(
+            result.session.foregroundActive && result.session.microphoneEnabled
+                && result.session.chatContextSynced && voiceForegroundActive)
+        startVoiceLeaseRenewal()
+    }
+
+    private func consumeVoiceBridgeState(_ state: WatchVoiceBridgeState) {
+        switch state {
+        case .idle:
+            break
+        case .connecting:
+            voiceState = .connecting
+        case .ready:
+            if voiceState == .connecting { voiceState = .greeting }
+        case .reconnecting:
+            voiceState = .reconnecting
+            voiceReason = "network_interrupted"
+            voiceMessage = "Reconnecting voice conversation…"
+            scheduleVoiceResume()
+        case .failed(let reason):
+            if reason == "network_interrupted" {
+                voiceState = .reconnecting
+                voiceReason = "network_interrupted"
+                voiceMessage = "Reconnecting voice conversation…"
+                scheduleVoiceResume()
+            } else if reason == "audio_interrupted" || reason == "route_unavailable" {
+                suspendVoiceImmediately(reason: reason)
+            } else {
+                voiceState = .error
+                voiceReason = reason == "audio_interrupted" ? "audio_interrupted" : "media_error"
+                voiceMessage = "Voice media stopped."
+            }
+        case .ended:
+            if voiceSession != nil, voiceState != .suspended {
+                voiceState = .reconnecting
+                voiceReason = "network_interrupted"
+            }
+        }
+    }
+
+    func consumeVoiceTranscript(_ transcript: WatchVoiceTranscript) {
+        guard let grant = voiceGrant, transcript.matches(grant: grant) else { return }
+        if let last = voiceTranscriptSequences[transcript.turnId], transcript.sequence <= last {
+            if transcript.final, let pending = pendingVoiceSubmissions[transcript.turnId],
+                pending.transcript == transcript, connected,
+                pending.connectionGeneration == continuity.connectionGeneration
+            {
+                sendCurrentConnectionVoice(pending.frame)
+            }
+            return
+        }
+        voiceTranscriptSequences[transcript.turnId] = transcript.sequence
+        guard transcript.final else {
+            voicePartialTranscript = transcript.text
+            voiceState = .transcribing
+            return
+        }
+        guard let proofExpiry = transcript.proofExpiresAt.flatMap(parseVoiceDate),
+            proofExpiry > Date(),
+            let connection = continuity.connectionGeneration,
+            let frame = voiceChatFrame(transcript, connectionGeneration: connection)
+        else {
+            voiceState = .error
+            voiceReason = "stale_generation"
+            voiceMessage = "The voice transcript expired. Please say it again."
+            return
+        }
+        let bytes = frame.utf8.count
+        let retainedBytes = pendingVoiceSubmissions.values.reduce(0) { $0 + $1.frame.utf8.count }
+        guard
+            pendingVoiceSubmissions[transcript.turnId] != nil
+                || (pendingVoiceSubmissions.count < VoiceContractLimits.pendingFinalCount
+                    && retainedBytes + bytes <= VoiceContractLimits.pendingFinalBytes)
+        else {
+            voiceState = .error
+            voiceReason = "capacity_exhausted"
+            voiceMessage = "Too many voice requests are awaiting confirmation. Try again."
+            return
+        }
+        pendingVoiceSubmissions[transcript.turnId] = PendingVoiceSubmission(
+            transcript: transcript,
+            frame: frame,
+            connectionGeneration: connection)
+        voicePartialTranscript = nil
+        voiceState = .acknowledging
+        sendCurrentConnectionVoice(frame)
+        startVoiceRetryLoopIfNeeded()
+    }
+
+    private func reframePendingVoiceSubmissions(for connectionGeneration: String) {
+        // Connection generation is a socket fence, not part of the worker's
+        // transcript proof. Rebuild only that binding from the retained exact
+        // transcript so an unacknowledged final can continue on the new UI
+        // socket without entering the generic offline queue.
+        var retainedBytes = pendingVoiceSubmissions.values.reduce(0) {
+            $0 + $1.frame.utf8.count
+        }
+        var dropped = false
+        for turnId in Array(pendingVoiceSubmissions.keys) {
+            guard let pending = pendingVoiceSubmissions[turnId],
+                pending.connectionGeneration != connectionGeneration
+            else { continue }
+            let oldBytes = pending.frame.utf8.count
+            guard
+                let frame = voiceChatFrame(
+                    pending.transcript,
+                    connectionGeneration: connectionGeneration),
+                VoiceCurrentConnectionFrame(frameText: frame) != nil
+            else {
+                retainedBytes -= oldBytes
+                pendingVoiceSubmissions.removeValue(forKey: turnId)
+                dropped = true
+                continue
+            }
+            let nextBytes = retainedBytes - oldBytes + frame.utf8.count
+            guard nextBytes <= VoiceContractLimits.pendingFinalBytes else {
+                retainedBytes -= oldBytes
+                pendingVoiceSubmissions.removeValue(forKey: turnId)
+                dropped = true
+                continue
+            }
+            pendingVoiceSubmissions[turnId] = PendingVoiceSubmission(
+                transcript: pending.transcript,
+                frame: frame,
+                connectionGeneration: connectionGeneration)
+            retainedBytes = nextBytes
+        }
+        if pendingVoiceSubmissions.isEmpty {
+            voiceRetryTask?.cancel()
+            voiceRetryTask = nil
+        }
+        if dropped {
+            voiceState = .error
+            voiceReason = "stale_generation"
+            voiceMessage = "That spoken request could not be restored. Please say it again."
+        }
+    }
+
+    private func voiceChatFrame(
+        _ transcript: WatchVoiceTranscript,
+        connectionGeneration: String
+    ) -> String? {
+        guard let digest = transcript.textDigest,
+            let proof = transcript.transcriptProof,
+            let proofExpiry = transcript.proofExpiresAt,
+            let language = transcript.detectedLanguage
+        else { return nil }
+        return watchVoiceJSON([
+            "type": .string("ui_event"),
+            "action": .string("chat_message"),
+            "session_id": .string(transcript.chatId),
+            "connection_generation": .string(connectionGeneration),
+            "submission_id": .string(transcript.submissionId),
+            "request_generation": .string(transcript.requestGeneration),
+            "payload": .object([
+                "message": .string(transcript.text),
+                "chat_id": .string(transcript.chatId),
+                "connection_generation": .string(connectionGeneration),
+                "submission_id": .string(transcript.submissionId),
+                "request_generation": .string(transcript.requestGeneration),
+                "snapshot_purpose": .string("commit"),
+                "voice_origin": .object([
+                    "schema_version": .string("1"),
+                    "session_id": .string(transcript.sessionId),
+                    "generation": .number(Double(transcript.generation)),
+                    "media_grant_revision": .number(Double(transcript.mediaGrantRevision)),
+                    "turn_id": .string(transcript.turnId),
+                    "client_turn_id": .string(transcript.clientTurnId),
+                    "chat_context_revision": .number(Double(transcript.chatContextRevision)),
+                    "source_participant_identity": .string(
+                        transcript.sourceParticipantIdentity),
+                    "detected_language": .string(language),
+                    "text_digest_sha256": .string(digest),
+                    "transcript_proof": .string(proof),
+                    "proof_expires_at": .string(proofExpiry),
+                ]),
+            ]),
+        ])
+    }
+
+    private func startVoiceRetryLoopIfNeeded() {
+        guard voiceRetryTask == nil else { return }
+        voiceRetryTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(2500))
+                guard let self else { return }
+                if self.pendingVoiceSubmissions.isEmpty {
+                    self.voiceRetryTask = nil
+                    return
+                }
+                guard self.connected, let connection = self.continuity.connectionGeneration else {
+                    continue
+                }
+                for pending in self.pendingVoiceSubmissions.values
+                where pending.connectionGeneration == connection {
+                    self.sendCurrentConnectionVoice(pending.frame)
+                }
+            }
+        }
+    }
+
+    private func clearPendingVoiceSubmission(_ turnId: String) {
+        pendingVoiceSubmissions.removeValue(forKey: turnId)
+        if pendingVoiceSubmissions.isEmpty {
+            voiceRetryTask?.cancel()
+            voiceRetryTask = nil
+        }
+    }
+
+    func sendVoicePlayout(_ observation: WatchVoicePlayoutObservation) {
+        guard let connection = continuity.connectionGeneration,
+            voicePlayoutSequence < UInt64.max
+        else { return }
+        let announcement = observation.announcement
+        var frame: [String: JSONValue] = [
+            "type": .string("voice_playout_event"),
+            "schema_version": .string("1"),
+            "device_id": .string(voiceDeviceId),
+            "connection_generation": .string(connection),
+            "session_id": .string(announcement.sessionId),
+            "generation": .number(Double(announcement.generation)),
+            "media_grant_revision": .number(Double(announcement.mediaGrantRevision)),
+            "announcement_id": .string(announcement.announcementId),
+            "announcement_sequence": .number(Double(announcement.announcementSequence)),
+            "turn_id": announcement.turnId.map(JSONValue.string) ?? .null,
+            "kind": .string(announcement.kind),
+            "quantum_role": .string(announcement.quantumRole),
+            "quantum_index": .number(Double(announcement.quantumIndex)),
+            "phase": .string(observation.phase.rawValue),
+            "client_sequence": .number(Double(voicePlayoutSequence)),
+            "observed_at": .string(voiceTimestamp()),
+        ]
+        if let reserved = announcement.resultReservedSamplesAfter {
+            frame["result_reserved_samples_after"] = .number(Double(reserved))
+        }
+        guard let encoded = watchVoiceJSON(frame), encoded.utf8.count <= 2 * 1024 else { return }
+        voicePlayoutSequence += 1
+        sendCurrentConnectionVoice(encoded)
+    }
+
+    private func setVoiceMicrophone(_ enabled: Bool) async {
+        guard let session = voiceSession, let client = makeVoiceRESTClient() else { return }
+        if !enabled { voiceBridge.setCaptureEnabled(false) }
+        if enabled {
+            let permission = await voiceBridge.requestMicrophonePermission()
+            guard permission == .authorized else {
+                voiceState = .unavailable
+                voiceReason = "permission_denied"
+                return
+            }
+        }
+        do {
+            let updated = try await client.updateSession(
+                session,
+                changes: ["microphone_enabled": .bool(enabled)])
+            voiceSession = updated
+            voiceBridge.setCaptureEnabled(
+                enabled && updated.chatContextSynced && updated.foregroundActive)
+        } catch {
+            voiceState = .error
+            voiceReason = "stale_generation"
+        }
+    }
+
+    private func setVoiceSpeechMuted(_ muted: Bool) async {
+        guard let session = voiceSession, let client = makeVoiceRESTClient() else { return }
+        do {
+            voiceSession = try await client.updateSession(
+                session,
+                changes: ["speech_muted": .bool(muted)])
+            if muted { voiceBridge.interruptPlayback() }
+            voiceState = muted ? .muted : .listening
+        } catch {
+            voiceState = .error
+            voiceReason = "stale_generation"
+        }
+    }
+
+    private func stopVoiceSpeech() {
+        voiceBridge.interruptPlayback()
+        guard let session = voiceSession, let client = makeVoiceRESTClient() else { return }
+        Task { try? await client.stopSpeech(session) }
+    }
+
+    private func consentSensitiveVoiceRecap() async {
+        guard let session = voiceSession,
+            let turn = currentSensitiveVoiceTurn,
+            turn.sessionId == session.sessionId,
+            UInt64(turn.generation) == session.generation,
+            UInt64(turn.mediaGrantRevision) == session.mediaGrantRevision,
+            turn.sensitiveResultPending,
+            let resultId = turn.resultId,
+            let client = makeVoiceRESTClient()
+        else { return }
+        do {
+            try await client.consentSensitiveRecap(
+                session,
+                resultId: resultId,
+                turnId: turn.turnId)
+            voiceMessage = "Reading the approved result…"
+        } catch {
+            voiceState = .error
+            voiceReason = "stale_generation"
+            voiceMessage = "That result can no longer be read aloud."
+        }
+    }
+
+    private func updateVoiceVisibleChat(_ chatId: String) async {
+        guard let session = voiceSession, session.visibleChatId != chatId,
+            let client = makeVoiceRESTClient()
+        else { return }
+        do {
+            voiceSession = try await client.updateSession(
+                session,
+                changes: ["visible_chat_id": .string(chatId)])
+            voiceMessage = "Updating voice chat…"
+        } catch {
+            voiceState = .error
+            voiceReason = "chat_context_unavailable"
+            voiceMessage = "Voice paused because this chat is unavailable."
+        }
+    }
+
+    private func suspendVoiceImmediately(reason: String) {
+        guard let session = voiceSession else { return }
+        stopVoiceLeaseRenewal()
+        voiceBridge.disconnect(reason: reason)
+        voiceState = .suspended
+        voiceReason = reason == "route_unavailable" ? "audio_interrupted" : reason
+        voiceMessage =
+            reason == "backgrounded"
+            ? "Voice conversation suspended."
+            : "Voice paused until audio is available again."
+        guard let client = makeVoiceRESTClient() else { return }
+        Task {
+            self.voiceSession = try? await client.updateSession(
+                session,
+                changes: [
+                    "foreground_active": .bool(false),
+                    "foreground_reason": .string(reason),
+                    "microphone_enabled": .bool(false),
+                ])
+        }
+    }
+
+    private func resumeVoiceInForeground() async {
+        guard let session = voiceSession, let client = makeVoiceRESTClient() else { return }
+        let permission = await voiceBridge.requestMicrophonePermission()
+        guard permission == .authorized else {
+            voiceState = .unavailable
+            voiceReason = "permission_denied"
+            return
+        }
+        voiceState = .reconnecting
+        voiceMessage = "Reconnecting voice conversation…"
+        do {
+            let refreshed = try await client.refreshGrant(
+                session,
+                refreshId: UUID().uuidString.lowercased())
+            let updated = try await client.updateSession(
+                refreshed.session,
+                changes: [
+                    "foreground_active": .bool(true),
+                    "foreground_reason": .string("foreground"),
+                    "microphone_enabled": .bool(true),
+                ])
+            guard
+                let resumed = WatchVoiceSessionGrant(
+                    session: updated,
+                    grant: refreshed.grant)
+            else { throw WatchVoiceRESTError.malformedResponse }
+            try await installVoiceSession(resumed)
+        } catch {
+            voiceState = .error
+            voiceReason = "media_unavailable"
+            voiceMessage = "Voice could not reconnect. End it and start again."
+        }
+    }
+
+    private func scheduleVoiceResume() {
+        guard voiceResumeTask == nil, voiceForegroundActive, voiceSession != nil else { return }
+        stopVoiceLeaseRenewal()
+        voiceResumeTask = Task { [weak self] in
+            guard let self else { return }
+            await self.resumeVoiceInForeground()
+            self.voiceResumeTask = nil
+        }
+    }
+
+    func startVoiceLeaseRenewal() {
+        stopVoiceLeaseRenewal()
+        guard voiceForegroundActive, voiceSession != nil else { return }
+        voiceLeaseTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    try await Task.sleep(for: self.voiceLeaseInterval)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, self.voiceForegroundActive,
+                    let session = self.voiceSession,
+                    session.foregroundActive,
+                    let client = self.makeVoiceRESTClient()
+                else { return }
+                // A lease renewal is transport liveness, never user activity:
+                // omitting `interaction` preserves the server's true idle timer.
+                _ = try? await client.updateSession(
+                    session,
+                    changes: [
+                        "foreground_active": .bool(true),
+                        "foreground_reason": .string("foreground"),
+                    ])
+            }
+        }
+    }
+
+    private func stopVoiceLeaseRenewal() {
+        voiceLeaseTask?.cancel()
+        voiceLeaseTask = nil
+    }
+
+    private func endVoiceConversation(reason: String) {
+        let session = voiceSession
+        let client = makeVoiceRESTClient()
+        voiceBridge.disconnect(reason: reason)
+        voiceSession = nil
+        voiceGrant = nil
+        voiceTurnSequences.removeAll()
+        currentVoiceTurnId = nil
+        currentVoiceTurnOccurredAt = nil
+        currentSensitiveVoiceTurn = nil
+        voiceTerminalNotice = nil
+        voiceResumeTask?.cancel()
+        voiceResumeTask = nil
+        stopVoiceLeaseRenewal()
+        pendingVoiceActivation = nil
+        voiceState = .ended
+        voiceReason = reason == "chat_deleted" ? "chat_context_unavailable" : "ended_by_user"
+        voiceMessage = nil
+        if let session, let client {
+            Task { try? await client.endSession(session) }
+        }
+    }
+
+    private func resetVoiceState(reason: String) {
+        voiceRetryTask?.cancel()
+        voiceRetryTask = nil
+        voiceBridge.disconnect(reason: reason)
+        voiceControlBinding = nil
+        voiceSession = nil
+        voiceGrant = nil
+        pendingVoiceActivation = nil
+        pendingVoiceSubmissions.removeAll()
+        voiceTranscriptSequences.removeAll()
+        voiceTurnSequences.removeAll()
+        currentVoiceTurnId = nil
+        currentVoiceTurnOccurredAt = nil
+        currentSensitiveVoiceTurn = nil
+        voiceTerminalNotice = nil
+        voiceResumeTask?.cancel()
+        voiceResumeTask = nil
+        stopVoiceLeaseRenewal()
+        voiceComposer = nil
+        voicePartialTranscript = nil
+        voiceActivationBusy = false
+        voiceState = .off
+        voiceReason = "ready"
+        voiceMessage = nil
+    }
+
+    private func makeVoiceRESTClient(accessToken: String? = nil) -> WatchVoiceRESTClient? {
+        guard let connection = continuity.connectionGeneration,
+            let binding = voiceControlBinding,
+            binding.connectionGeneration == connection,
+            binding.deviceId == voiceDeviceId,
+            binding.expiresAt > Date()
+        else { return nil }
+        let tokenProvider: @Sendable () async -> String?
+        if let accessToken {
+            tokenProvider = { accessToken }
+        } else {
+            tokenProvider =
+                voiceTokenProvider ?? { [weak self] in
+                    await self?.freshAccessToken()
+                }
+        }
+        return WatchVoiceRESTClient(
+            serverBase: serverBase,
+            deviceId: voiceDeviceId,
+            connectionGeneration: connection,
+            controlBinding: binding,
+            tokenProvider: tokenProvider,
+            transport: voiceRESTTransport)
+    }
+
+    private func safeVoiceReason(_ code: String) -> String {
+        WatchVoiceContract.reasons.contains(code) ? code : "internal_error"
+    }
+
+    private func parseVoiceDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value)
+    }
+
+    private func voiceTimestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date())
+    }
+}
+
+private struct PendingVoiceActivation: Sendable {
+    let activationId: String
+    let submissionId: String
+    let requestGeneration: String
+    let connectionGeneration: String
+    let selectedChatAtRequest: String?
+    let takeover: Bool
+}
+
+private struct PendingVoiceSubmission: Sendable {
+    let transcript: WatchVoiceTranscript
+    let frame: String
+    let connectionGeneration: String
 }
 
 private actor WatchRegistrationResumeState {

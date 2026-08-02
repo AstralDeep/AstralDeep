@@ -7,11 +7,13 @@ on:
     paths:
       - "apple-clients/**"
       - "backend/shared/ui_protocol.json"
+      - "backend/tests/fixtures/voice_065/client_conformance.json"
       - ".github/workflows/apple-ci.yml"
   pull_request:
     paths:
       - "apple-clients/**"
       - "backend/shared/ui_protocol.json"
+      - "backend/tests/fixtures/voice_065/client_conformance.json"
       - ".github/workflows/apple-ci.yml"
 
 permissions:
@@ -156,6 +158,7 @@ jobs:
           result="${COVERAGE_ROOT}/AstralApp-${{ matrix.slug }}-unit.xcresult"
           report="${COVERAGE_ROOT}/apple-${{ matrix.slug }}-unit-xccov.json"
           rm -rf "$result"
+          rm -f "$report"
           set +e
           xcodebuild \
             -project "${APP_PROJECT}" \
@@ -170,7 +173,11 @@ jobs:
           status=$?
           set -e
           if [[ -d "$result" ]]; then
-            xcrun xccov view --archive --json "$result" > "$report"
+            python3 scripts/export_xccov_line_coverage.py \
+              --repo "$PWD" \
+              --xcresult "$result" \
+              --platform '${{ matrix.slug }}' \
+              --output "$report"
           fi
           exit "$status"
       - name: Upload mapped app unit coverage
@@ -185,7 +192,7 @@ jobs:
           retention-days: 14
 
   first-login-ui:
-    name: Required · ${{ matrix.name }} first-login UI
+    name: Required · ${{ matrix.name }} first-login and voice UI
     runs-on: macos-26
     timeout-minutes: 35
     strategy:
@@ -245,13 +252,14 @@ jobs:
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
-      - name: Run deterministic first-login UI tests with coverage
+      - name: Run deterministic first-login and voice UI tests with coverage
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${COVERAGE_ROOT}"
           result="${COVERAGE_ROOT}/AstralApp-${{ matrix.slug }}-first-login.xcresult"
           report="${COVERAGE_ROOT}/apple-${{ matrix.slug }}-first-login-xccov.json"
+          rm -f "$report"
           dest='${{ matrix.destination }}'
           if [[ "${{ matrix.slug }}" == "ios" ]]; then
             dest="platform=iOS Simulator,id=${{ steps.ios_sim.outputs.udid }}"
@@ -271,6 +279,7 @@ jobs:
               -test-iterations 3 \
               -resultBundlePath "$result" \
               -only-testing:AstralAppUITests/LLMFirstLoginUITests \
+              -only-testing:AstralAppUITests/VoiceConversationUITests \
               test
           }
           set +e
@@ -292,7 +301,11 @@ jobs:
           fi
           set -e
           if [[ -d "$result" ]]; then
-            xcrun xccov view --archive --json "$result" > "$report"
+            python3 scripts/export_xccov_line_coverage.py \
+              --repo "$PWD" \
+              --xcresult "$result" \
+              --platform '${{ matrix.slug }}' \
+              --output "$report"
           fi
           exit "$status"
       - name: Upload mapped first-login coverage
@@ -357,6 +370,7 @@ jobs:
           result="${COVERAGE_ROOT}/AstralWatch.xcresult"
           report="${COVERAGE_ROOT}/apple-watchos-xccov.json"
           rm -rf "$result"
+          rm -f "$report"
           set +e
           xcodebuild \
             -project "${APP_PROJECT}" \
@@ -371,7 +385,11 @@ jobs:
           status=$?
           set -e
           if [[ -d "$result" ]]; then
-            xcrun xccov view --archive --json "$result" > "$report"
+            python3 scripts/export_xccov_line_coverage.py \
+              --repo "$PWD" \
+              --xcresult "$result" \
+              --platform watchos \
+              --output "$report"
           fi
           exit "$status"
       - name: Upload mapped Watch coverage

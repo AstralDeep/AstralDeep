@@ -60,6 +60,126 @@ final class DeviceLoginTests: XCTestCase {
         XCTAssertEqual(broker.calls.first?.1["client"]?.stringValue, "astral-watch")
     }
 
+    func testDefaultBrokerRequestCannotEnterURLCache() throws {
+        let url = try XCTUnwrap(URL(string: "https://astral.example.test/api/auth/device/poll"))
+        let body = Data(#"{"handle":"synthetic-handle"}"#.utf8)
+
+        let request = DeviceLoginClient.brokerRequest(url: url, body: body)
+
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.httpBody, body)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Pragma"), "no-cache")
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
+    }
+
+    func testNoStoreSessionHasNoPersistentCredentialOrResponseStores() {
+        let configuration = NoStoreHTTP.configuration()
+
+        XCTAssertEqual(
+            configuration.requestCachePolicy,
+            .reloadIgnoringLocalAndRemoteCacheData)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+    }
+
+    func testNoStoreSessionPurgesOnlyLegacyBundleCacheDatabase() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "astral-no-store-\(UUID().uuidString)",
+            isDirectory: true)
+        let legacy = root.appendingPathComponent("test.astraldeep.watch", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: legacy,
+            withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for filename in [
+            "Cache.db",
+            "Cache.db-shm",
+            "Cache.db-wal",
+            "Cache.db-journal",
+            "keep.txt",
+        ] {
+            try Data(filename.utf8).write(
+                to: legacy.appendingPathComponent(filename))
+        }
+
+        let payloadDirectory = legacy.appendingPathComponent(
+            "fsCachedData",
+            isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: payloadDirectory,
+            withIntermediateDirectories: true)
+        try Data("legacy-response-body".utf8).write(
+            to: payloadDirectory.appendingPathComponent("payload"))
+
+        XCTAssertTrue(
+            NoStoreHTTP.purgeLegacyPersistentURLCache(
+                cacheRoot: root,
+                bundleIdentifier: "test.astraldeep.watch"))
+
+        for filename in [
+            "Cache.db",
+            "Cache.db-shm",
+            "Cache.db-wal",
+            "Cache.db-journal",
+            "fsCachedData",
+        ] {
+            XCTAssertFalse(
+                FileManager.default.fileExists(
+                    atPath: legacy.appendingPathComponent(filename).path))
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: legacy.appendingPathComponent("keep.txt").path))
+    }
+
+    func testLegacyCachePurgeReportsRemovalFailure() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "astral-no-store-failure-\(UUID().uuidString)",
+            isDirectory: true)
+        let legacy = root.appendingPathComponent("test.astraldeep.watch", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: legacy,
+            withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = legacy.appendingPathComponent("Cache.db")
+        try Data("legacy".utf8).write(to: cache)
+
+        let succeeded = NoStoreHTTP.purgeLegacyPersistentURLCache(
+            cacheRoot: root,
+            bundleIdentifier: "test.astraldeep.watch",
+            removeItem: { _ in throw CocoaError(.fileWriteNoPermission) })
+
+        XCTAssertFalse(succeeded)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cache.path))
+    }
+
+    func testDirectRefreshRequestCannotEnterURLCache() throws {
+        let authority = try XCTUnwrap(URL(string: "https://idp.example.test/realms/astral"))
+        let config = OIDCConfig(
+            authority: authority,
+            clientId: "synthetic-client",
+            redirectURI: "synthetic-app:/callback")
+
+        let request = RefreshStrategy.directRequest(
+            config: config,
+            refreshToken: "synthetic-refresh-value")
+
+        XCTAssertEqual(request.url, config.tokenEndpoint)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertNotNil(request.httpBody)
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "Content-Type"),
+            "application/x-www-form-urlencoded")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Pragma"), "no-cache")
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
+    }
+
     func testBrokerUnavailableMapsTo503Error() async {
         let broker = ScriptedBroker([
             (503, #"{"detail":{"error":"device_login_unavailable","detail":"realm lacks grant"}}"#)

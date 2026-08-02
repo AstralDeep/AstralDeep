@@ -12,7 +12,7 @@ import json
 import re
 import uuid
 from dataclasses import asdict, dataclass, field, fields, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, ClassVar, Dict, List, Mapping, Optional
 
@@ -27,10 +27,19 @@ _STRICT_SEMVER = re.compile(
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
+_VOICE_LANGUAGE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+_VOICE_OPAQUE_ID = re.compile(r"^[A-Za-z0-9._:-]+$")
+_VOICE_UTC_TIMESTAMP = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$"
+)
+_VOICE_SCHEMA_VERSION = "1"
+_VOICE_PLAYOUT_MAX_BYTES = 2 * 1024
+_VOICE_CONTROL_BINDING_MAX_LIFETIME = timedelta(minutes=10)
 
 
 class ProtocolValidationError(ValueError):
-    """A feature-060 wire value failed its public protocol contract."""
+    """A wire value failed its public protocol contract."""
 
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
@@ -121,6 +130,132 @@ def _require_snake_case(value: object, field_name: str) -> str:
         raise ProtocolValidationError(f"{field_name} must be a snake-case value")
     return value
 
+
+def _require_voice_schema_version(value: object, field_name: str = "schema_version") -> str:
+    if value != _VOICE_SCHEMA_VERSION:
+        raise ProtocolValidationError(f"{field_name} must be exactly \"1\"")
+    return value
+
+
+def _require_positive_integer(
+    value: object,
+    field_name: str,
+    *,
+    minimum: int = 1,
+    maximum: Optional[int] = None,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ProtocolValidationError(
+            f"{field_name} must be an integer greater than or equal to {minimum}"
+        )
+    if maximum is not None and value > maximum:
+        raise ProtocolValidationError(
+            f"{field_name} must be no greater than {maximum}"
+        )
+    return value
+
+
+def _require_bounded_string(
+    value: object,
+    field_name: str,
+    *,
+    minimum: int = 0,
+    maximum: int,
+) -> str:
+    if not isinstance(value, str) or not minimum <= len(value) <= maximum:
+        raise ProtocolValidationError(
+            f"{field_name} must contain between {minimum} and {maximum} characters"
+        )
+    return value
+
+
+def _require_voice_timestamp(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or _VOICE_UTC_TIMESTAMP.fullmatch(value) is None:
+        raise ProtocolValidationError(
+            f"{field_name} must be a canonical RFC3339 UTC timestamp"
+        )
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ProtocolValidationError(
+            f"{field_name} must be a canonical RFC3339 UTC timestamp"
+        ) from exc
+    if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
+        raise ProtocolValidationError(
+            f"{field_name} must be a canonical RFC3339 UTC timestamp"
+        )
+    return value
+
+
+def _voice_timestamp_datetime(value: object, field_name: str) -> datetime:
+    canonical = _require_voice_timestamp(value, field_name)
+    return datetime.fromisoformat(canonical[:-1] + "+00:00").astimezone(UTC)
+
+
+def _require_aware_datetime(value: object, field_name: str) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ProtocolValidationError(f"{field_name} must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _require_exact_fields(
+    data: Mapping[str, Any],
+    required: set[str],
+    *,
+    optional: set[str] | None = None,
+    label: str,
+) -> None:
+    optional = optional or set()
+    supplied = set(data)
+    if not required <= supplied or supplied - required - optional:
+        raise ProtocolValidationError(
+            f"{label} must contain exactly its canonical fields"
+        )
+
+
+def _voice_json(data: Mapping[str, Any]) -> str:
+    try:
+        return json.dumps(
+            dict(data),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ProtocolValidationError("voice frame must be valid JSON") from exc
+
+
+def _require_raw_utf8_size(value: object, *, maximum: int, label: str) -> None:
+    if isinstance(value, str):
+        encoded = value.encode("utf-8")
+    elif isinstance(value, (bytes, bytearray)):
+        encoded = bytes(value)
+    else:
+        return
+    if len(encoded) > maximum:
+        raise ProtocolValidationError(
+            f"{label} exceeds the {maximum}-byte UTF-8 envelope limit"
+        )
+
+
+def _reject_json_duplicate_keys(
+    pairs: List[tuple[str, Any]],
+) -> Dict[str, Any]:
+    value: Dict[str, Any] = {}
+    for name, item in pairs:
+        if name in value:
+            raise ProtocolValidationError("message contains a duplicate JSON key")
+        value[name] = item
+    return value
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ProtocolValidationError("message contains a non-finite JSON number")
+
 # --- Base Message ---
 @dataclass
 class Message:
@@ -132,7 +267,13 @@ class Message:
     @staticmethod
     def from_json(json_str: str) -> 'Message':
         try:
-            data = json.loads(json_str)
+            data = json.loads(
+                json_str,
+                object_pairs_hook=_reject_json_duplicate_keys,
+                parse_constant=_reject_json_constant,
+            )
+        except ProtocolValidationError:
+            raise
         except (TypeError, json.JSONDecodeError) as exc:
             raise ProtocolValidationError("message must be valid JSON") from exc
         if not isinstance(data, Mapping):
@@ -145,6 +286,10 @@ class Message:
             return MCPRequest(**_known_dataclass_fields(MCPRequest, data))
         elif msg_type == 'mcp_response':
             return MCPResponse(**_known_dataclass_fields(MCPResponse, data))
+        elif msg_type == 'ui_event' and data.get("action") == "new_chat" and (
+            "schema_version" in data
+        ):
+            return CorrelatedNewChat.from_dict(data)
         elif msg_type == 'ui_event':
             return UIEvent(**data)
         elif msg_type == 'ui_render':
@@ -193,6 +338,21 @@ class Message:
             return AgentLifecycle.from_dict(data)
         elif msg_type == 'agent_host_registered':
             return AgentHostRegistered.from_dict(data)
+        elif msg_type == 'chat_created':
+            return ChatCreated.from_dict(data)
+        elif msg_type == 'voice_control_binding':
+            return VoiceControlBinding.from_dict(data)
+        elif msg_type == 'user_message_acked':
+            return UserMessageAcknowledged.from_dict(data)
+        elif msg_type == 'voice_submission_rejected':
+            return VoiceSubmissionRejected.from_dict(data)
+        elif msg_type == 'voice_playout_event':
+            _require_raw_utf8_size(
+                json_str,
+                maximum=_VOICE_PLAYOUT_MAX_BYTES,
+                label="voice_playout_event",
+            )
+            return VoicePlayoutEvent.from_dict(data)
         return Message(**data)
 
 # --- MCP Protocol Wrappers ---
@@ -355,6 +515,12 @@ class UIEvent(Message):
         _require_snake_case(self.action, "action")
         if not isinstance(self.payload, dict):
             raise ProtocolValidationError("payload must be an object")
+        if "voice_origin" in self.payload:
+            if self.action != "chat_message":
+                raise ProtocolValidationError(
+                    "voice_origin is valid only on the chat_message action"
+                )
+            VoiceOrigin.from_dict(self.payload["voice_origin"])
 
         identity_fields = (
             "submission_id",
@@ -407,9 +573,737 @@ class UIEvent(Message):
                 "snapshot_purpose must match payload.snapshot_purpose"
             )
 
+    @property
+    def voice_origin(self) -> Optional["VoiceOrigin"]:
+        """Return a validated voice binding without mutating the open payload."""
+
+        value = self.payload.get("voice_origin")
+        if value is None:
+            return None
+        return VoiceOrigin.from_dict(value)
+
     def to_json(self) -> str:
         self.validate()
         return super().to_json()
+
+
+@dataclass(frozen=True)
+class VoiceOrigin:
+    """Immutable proof-bearing origin copied onto a normal chat message.
+
+    This parser validates the complete public shape only. Equality with
+    server-created turn state, proof freshness, and constant-time proof
+    verification remain at the authenticated ingress boundary (T071).
+    """
+
+    schema_version: str
+    session_id: str
+    generation: int
+    media_grant_revision: int
+    turn_id: str
+    client_turn_id: str
+    chat_context_revision: int
+    source_participant_identity: str
+    detected_language: str
+    text_digest_sha256: str
+    transcript_proof: str = field(repr=False)
+    proof_expires_at: str = ""
+
+    _FIELDS: ClassVar[set[str]] = {
+        "schema_version",
+        "session_id",
+        "generation",
+        "media_grant_revision",
+        "turn_id",
+        "client_turn_id",
+        "chat_context_revision",
+        "source_participant_identity",
+        "detected_language",
+        "text_digest_sha256",
+        "transcript_proof",
+        "proof_expires_at",
+    }
+
+    def validate(self) -> None:
+        _require_voice_schema_version(self.schema_version)
+        for name in ("session_id", "turn_id", "client_turn_id"):
+            _require_uuid4(getattr(self, name), name)
+        _require_positive_integer(self.generation, "generation")
+        _require_positive_integer(
+            self.media_grant_revision, "media_grant_revision"
+        )
+        _require_positive_integer(
+            self.chat_context_revision, "chat_context_revision"
+        )
+        identity = _require_bounded_string(
+            self.source_participant_identity,
+            "source_participant_identity",
+            minimum=1,
+            maximum=128,
+        )
+        if _VOICE_OPAQUE_ID.fullmatch(identity) is None:
+            raise ProtocolValidationError(
+                "source_participant_identity is not a canonical opaque ID"
+            )
+        language = _require_bounded_string(
+            self.detected_language,
+            "detected_language",
+            minimum=2,
+            maximum=32,
+        )
+        if _VOICE_LANGUAGE.fullmatch(language) is None:
+            raise ProtocolValidationError("detected_language is not canonical")
+        if _LOWER_SHA256.fullmatch(self.text_digest_sha256) is None:
+            raise ProtocolValidationError(
+                "text_digest_sha256 must be 64 lowercase hexadecimal characters"
+            )
+        if _LOWER_SHA256.fullmatch(self.transcript_proof) is None:
+            raise ProtocolValidationError(
+                "transcript_proof must be 64 lowercase hexadecimal characters"
+            )
+        _require_voice_timestamp(self.proof_expires_at, "proof_expires_at")
+
+    def to_dict(self) -> Dict[str, Any]:
+        self.validate()
+        return {name: getattr(self, name) for name in self._FIELDS}
+
+    @classmethod
+    def from_dict(cls, data: object) -> "VoiceOrigin":
+        if not isinstance(data, Mapping):
+            raise ProtocolValidationError("voice_origin must be an object")
+        _require_exact_fields(data, cls._FIELDS, label="voice_origin")
+        origin = cls(**dict(data))
+        origin.validate()
+        return origin
+
+
+@dataclass
+class CorrelatedNewChat(UIEvent):
+    """Strict idempotent ordinary ``new_chat`` action used by voice start."""
+
+    action: str = "new_chat"
+    schema_version: str = _VOICE_SCHEMA_VERSION
+
+    _FIELDS: ClassVar[set[str]] = {
+        "type",
+        "action",
+        "schema_version",
+        "connection_generation",
+        "submission_id",
+        "request_generation",
+        "payload",
+    }
+    _CORRELATIONS: ClassVar[tuple[str, ...]] = (
+        "schema_version",
+        "connection_generation",
+        "submission_id",
+        "request_generation",
+    )
+
+    def validate(self) -> None:
+        if self.type != "ui_event" or self.action != "new_chat":
+            raise ProtocolValidationError(
+                "correlated new_chat must be a ui_event new_chat action"
+            )
+        if any(
+            value is not None
+            for value in (
+                self.session_id,
+                self.snapshot_purpose,
+                self.surface,
+            )
+        ):
+            raise ProtocolValidationError(
+                "correlated new_chat cannot carry unrelated UI-event fields"
+            )
+        _require_voice_schema_version(self.schema_version)
+        for name in (
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+        ):
+            _require_uuid4(getattr(self, name), name)
+        if not isinstance(self.payload, Mapping):
+            raise ProtocolValidationError("new_chat payload must be an object")
+        payload_fields = set(self._CORRELATIONS)
+        _require_exact_fields(
+            self.payload,
+            payload_fields,
+            label="new_chat payload",
+        )
+        for name in self._CORRELATIONS:
+            if getattr(self, name) != self.payload.get(name):
+                raise ProtocolValidationError(
+                    f"{name} must match payload.{name}"
+                )
+
+    def to_json(self) -> str:
+        self.validate()
+        return _voice_json(
+            {
+                "type": self.type,
+                "action": self.action,
+                "schema_version": self.schema_version,
+                "connection_generation": self.connection_generation,
+                "submission_id": self.submission_id,
+                "request_generation": self.request_generation,
+                "payload": dict(self.payload),
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "CorrelatedNewChat":
+        _require_exact_fields(data, cls._FIELDS, label="correlated new_chat")
+        frame = cls(**dict(data))
+        frame.validate()
+        return frame
+
+
+@dataclass
+class ChatCreated(Message):
+    """Strict owner-validated reply to :class:`CorrelatedNewChat`."""
+
+    type: str = "chat_created"
+    schema_version: str = _VOICE_SCHEMA_VERSION
+    connection_generation: str = ""
+    submission_id: str = ""
+    request_generation: str = ""
+    payload: Dict[str, Any] = field(default_factory=dict)
+
+    _FIELDS: ClassVar[set[str]] = {
+        "type",
+        "schema_version",
+        "connection_generation",
+        "submission_id",
+        "request_generation",
+        "payload",
+    }
+    _PAYLOAD_FIELDS: ClassVar[set[str]] = {
+        "schema_version",
+        "chat_id",
+        "from_message",
+        "connection_generation",
+        "submission_id",
+        "request_generation",
+    }
+
+    def validate(self) -> None:
+        if self.type != "chat_created":
+            raise ProtocolValidationError("type must be chat_created")
+        _require_voice_schema_version(self.schema_version)
+        for name in (
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+        ):
+            _require_uuid4(getattr(self, name), name)
+        if not isinstance(self.payload, Mapping):
+            raise ProtocolValidationError("chat_created payload must be an object")
+        _require_exact_fields(
+            self.payload,
+            self._PAYLOAD_FIELDS,
+            label="chat_created payload",
+        )
+        _require_uuid4(self.payload.get("chat_id"), "payload.chat_id")
+        if self.payload.get("from_message") is not False:
+            raise ProtocolValidationError(
+                "correlated chat_created payload.from_message must be false"
+            )
+        for name in (
+            "schema_version",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+        ):
+            if getattr(self, name) != self.payload.get(name):
+                raise ProtocolValidationError(
+                    f"{name} must match payload.{name}"
+                )
+
+    def to_json(self) -> str:
+        self.validate()
+        return _voice_json(
+            {
+                "type": self.type,
+                "schema_version": self.schema_version,
+                "connection_generation": self.connection_generation,
+                "submission_id": self.submission_id,
+                "request_generation": self.request_generation,
+                "payload": dict(self.payload),
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ChatCreated":
+        _require_exact_fields(data, cls._FIELDS, label="chat_created")
+        frame = cls(**dict(data))
+        frame.validate()
+        return frame
+
+
+@dataclass
+class VoiceControlBinding(Message):
+    """One-use delivery frame for an opaque, memory-only control bearer."""
+
+    type: str = "voice_control_binding"
+    schema_version: str = _VOICE_SCHEMA_VERSION
+    device_id: str = ""
+    connection_generation: str = ""
+    binding_id: str = ""
+    binding: str = field(default="", repr=False)
+    expires_at: str = ""
+
+    _FIELDS: ClassVar[set[str]] = {
+        "type",
+        "schema_version",
+        "device_id",
+        "connection_generation",
+        "binding_id",
+        "binding",
+        "expires_at",
+    }
+
+    def validate(self) -> None:
+        if self.type != "voice_control_binding":
+            raise ProtocolValidationError("type must be voice_control_binding")
+        _require_voice_schema_version(self.schema_version)
+        for name in ("device_id", "connection_generation", "binding_id"):
+            _require_uuid4(getattr(self, name), name)
+        _require_bounded_string(
+            self.binding,
+            "binding",
+            minimum=32,
+            maximum=512,
+        )
+        _require_voice_timestamp(self.expires_at, "expires_at")
+
+    def validate_lifetime(
+        self,
+        *,
+        received_at: datetime,
+        credential_expires_at: datetime,
+    ) -> None:
+        """Reject a stale bearer or one that outlives its bounded authority."""
+
+        self.validate()
+        received = _require_aware_datetime(received_at, "received_at")
+        credential_expiry = _require_aware_datetime(
+            credential_expires_at, "credential_expires_at"
+        )
+        expiry = _voice_timestamp_datetime(self.expires_at, "expires_at")
+        if expiry <= received:
+            raise ProtocolValidationError("control binding is expired")
+        if expiry > received + _VOICE_CONTROL_BINDING_MAX_LIFETIME:
+            raise ProtocolValidationError(
+                "control binding lifetime exceeds ten minutes"
+            )
+        if expiry > credential_expiry:
+            raise ProtocolValidationError(
+                "control binding outlives the authenticated credential"
+            )
+
+    def redacted_dict(self) -> Dict[str, Any]:
+        """Return the only representation safe for diagnostics."""
+
+        self.validate()
+        return {
+            "type": self.type,
+            "schema_version": self.schema_version,
+            "device_id": self.device_id,
+            "connection_generation": self.connection_generation,
+            "binding_id": self.binding_id,
+            "binding": "[REDACTED]",
+            "expires_at": self.expires_at,
+        }
+
+    def to_json(self) -> str:
+        self.validate()
+        return _voice_json(
+            {
+                "type": self.type,
+                "schema_version": self.schema_version,
+                "device_id": self.device_id,
+                "connection_generation": self.connection_generation,
+                "binding_id": self.binding_id,
+                "binding": self.binding,
+                "expires_at": self.expires_at,
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceControlBinding":
+        _require_exact_fields(data, cls._FIELDS, label="voice_control_binding")
+        frame = cls(**dict(data))
+        frame.validate()
+        return frame
+
+
+class VoiceControlBindingMemory:
+    """Ephemeral per-socket binding slot with rotation and expiry fencing."""
+
+    __slots__ = ("_current",)
+
+    def __init__(self) -> None:
+        self._current: Optional[VoiceControlBinding] = None
+
+    def __repr__(self) -> str:
+        return f"VoiceControlBindingMemory(active={self._current is not None})"
+
+    def rotate(
+        self,
+        binding: VoiceControlBinding,
+        *,
+        received_at: datetime,
+        credential_expires_at: datetime,
+    ) -> None:
+        """Install a fresh bearer and irreversibly supersede the prior one."""
+
+        if not isinstance(binding, VoiceControlBinding):
+            raise ProtocolValidationError("binding must be a voice control binding")
+        binding.validate_lifetime(
+            received_at=received_at,
+            credential_expires_at=credential_expires_at,
+        )
+        prior = self._current
+        if prior is not None:
+            if binding.device_id != prior.device_id:
+                raise ProtocolValidationError(
+                    "control binding rotation cannot change device identity"
+                )
+            if (
+                binding.binding_id == prior.binding_id
+                or binding.binding == prior.binding
+            ):
+                raise ProtocolValidationError(
+                    "control binding rotation must replace bearer identity"
+                )
+        self._current = binding
+
+    def current(
+        self,
+        *,
+        device_id: str,
+        connection_generation: str,
+        at: datetime,
+    ) -> Optional[VoiceControlBinding]:
+        """Return only a live exact-scope binding, clearing expired memory."""
+
+        _require_uuid4(device_id, "device_id")
+        _require_uuid4(connection_generation, "connection_generation")
+        now = _require_aware_datetime(at, "at")
+        current = self._current
+        if current is None:
+            return None
+        if _voice_timestamp_datetime(current.expires_at, "expires_at") <= now:
+            self._current = None
+            return None
+        if (
+            current.device_id != device_id
+            or current.connection_generation != connection_generation
+        ):
+            return None
+        return current
+
+    def clear(self) -> None:
+        """Drop the bearer synchronously on socket/auth teardown."""
+
+        self._current = None
+
+
+@dataclass
+class UserMessageAcknowledged(Message):
+    """Durable message acceptance with complete retry correlation."""
+
+    type: str = "user_message_acked"
+    schema_version: str = _VOICE_SCHEMA_VERSION
+    chat_id: str = ""
+    message_id: int = 0
+    submission_id: str = ""
+    request_generation: str = ""
+    connection_generation: str = ""
+    voice_turn_id: Optional[str] = None
+
+    _FIELDS: ClassVar[set[str]] = {
+        "type",
+        "schema_version",
+        "chat_id",
+        "message_id",
+        "submission_id",
+        "request_generation",
+        "connection_generation",
+        "voice_turn_id",
+    }
+
+    def validate(self) -> None:
+        if self.type != "user_message_acked":
+            raise ProtocolValidationError("type must be user_message_acked")
+        _require_voice_schema_version(self.schema_version)
+        for name in (
+            "chat_id",
+            "submission_id",
+            "request_generation",
+            "connection_generation",
+        ):
+            _require_uuid4(getattr(self, name), name)
+        _require_positive_integer(self.message_id, "message_id")
+        if self.voice_turn_id is not None:
+            _require_uuid4(self.voice_turn_id, "voice_turn_id")
+
+    def to_json(self) -> str:
+        self.validate()
+        return _voice_json(asdict(self))
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "UserMessageAcknowledged":
+        _require_exact_fields(data, cls._FIELDS, label="user_message_acked")
+        frame = cls(**dict(data))
+        frame.validate()
+        return frame
+
+
+@dataclass
+class VoiceSubmissionRejected(Message):
+    """Terminal, fully correlated refusal of one voice-origin submission."""
+
+    type: str = "voice_submission_rejected"
+    schema_version: str = _VOICE_SCHEMA_VERSION
+    session_id: str = ""
+    connection_generation: str = ""
+    generation: int = 0
+    media_grant_revision: int = 0
+    turn_id: str = ""
+    client_turn_id: str = ""
+    submission_id: str = ""
+    request_generation: str = ""
+    chat_id: str = ""
+    reason: str = ""
+    retry_policy: str = ""
+    occurred_at: str = ""
+    message: Optional[str] = None
+
+    _REQUIRED_FIELDS: ClassVar[set[str]] = {
+        "type",
+        "schema_version",
+        "session_id",
+        "connection_generation",
+        "generation",
+        "media_grant_revision",
+        "turn_id",
+        "client_turn_id",
+        "submission_id",
+        "request_generation",
+        "chat_id",
+        "reason",
+        "retry_policy",
+        "occurred_at",
+    }
+    _REASONS: ClassVar[set[str]] = {
+        "capacity_exhausted",
+        "chat_unavailable",
+        "invalid_binding",
+        "invalid_proof",
+        "proof_expired",
+        "permission_denied",
+        "stale_session",
+        "malformed_final",
+    }
+
+    def validate(self) -> None:
+        if self.type != "voice_submission_rejected":
+            raise ProtocolValidationError("type must be voice_submission_rejected")
+        _require_voice_schema_version(self.schema_version)
+        for name in (
+            "session_id",
+            "connection_generation",
+            "turn_id",
+            "client_turn_id",
+            "submission_id",
+            "request_generation",
+            "chat_id",
+        ):
+            _require_uuid4(getattr(self, name), name)
+        _require_positive_integer(self.generation, "generation")
+        _require_positive_integer(
+            self.media_grant_revision, "media_grant_revision"
+        )
+        if self.reason not in self._REASONS:
+            raise ProtocolValidationError("reason is not canonical")
+        if self.retry_policy not in {"explicit_user_retry", "none"}:
+            raise ProtocolValidationError("retry_policy is not canonical")
+        if self.message is not None:
+            _require_bounded_string(self.message, "message", maximum=240)
+        _require_voice_timestamp(self.occurred_at, "occurred_at")
+
+    def to_json(self) -> str:
+        self.validate()
+        data = asdict(self)
+        if data["message"] is None:
+            data.pop("message")
+        return _voice_json(data)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceSubmissionRejected":
+        _require_exact_fields(
+            data,
+            cls._REQUIRED_FIELDS,
+            optional={"message"},
+            label="voice_submission_rejected",
+        )
+        frame = cls(**dict(data))
+        frame.validate()
+        return frame
+
+
+@dataclass
+class VoicePlayoutEvent(Message):
+    """Content-free local playout observation; never a UI action or task."""
+
+    type: str = "voice_playout_event"
+    schema_version: str = _VOICE_SCHEMA_VERSION
+    device_id: str = ""
+    connection_generation: str = ""
+    session_id: str = ""
+    generation: int = 0
+    media_grant_revision: int = 0
+    announcement_id: str = ""
+    announcement_sequence: int = 0
+    turn_id: Optional[str] = None
+    kind: str = ""
+    quantum_role: str = ""
+    quantum_index: int = 0
+    phase: str = ""
+    client_sequence: int = 0
+    observed_at: str = ""
+    result_reserved_samples_after: Optional[int] = None
+
+    _REQUIRED_FIELDS: ClassVar[set[str]] = {
+        "type",
+        "schema_version",
+        "device_id",
+        "connection_generation",
+        "session_id",
+        "generation",
+        "media_grant_revision",
+        "announcement_id",
+        "announcement_sequence",
+        "turn_id",
+        "kind",
+        "quantum_role",
+        "quantum_index",
+        "phase",
+        "client_sequence",
+        "observed_at",
+    }
+    _KINDS: ClassVar[set[str]] = {
+        "greeting",
+        "acknowledgement",
+        "progress",
+        "waiting",
+        "result",
+        "sensitive_notice",
+        "failure",
+        "refusal",
+        "cancellation",
+    }
+
+    def validate(self) -> None:
+        if self.type != "voice_playout_event":
+            raise ProtocolValidationError("type must be voice_playout_event")
+        _require_voice_schema_version(self.schema_version)
+        for name in (
+            "device_id",
+            "connection_generation",
+            "session_id",
+            "announcement_id",
+        ):
+            _require_uuid4(getattr(self, name), name)
+        _require_positive_integer(self.generation, "generation")
+        _require_positive_integer(
+            self.media_grant_revision, "media_grant_revision"
+        )
+        _require_positive_integer(
+            self.announcement_sequence, "announcement_sequence"
+        )
+        _require_positive_integer(
+            self.quantum_index,
+            "quantum_index",
+            minimum=0,
+            maximum=31,
+        )
+        _require_positive_integer(
+            self.client_sequence,
+            "client_sequence",
+            minimum=0,
+        )
+        if self.kind not in self._KINDS:
+            raise ProtocolValidationError("kind is not canonical")
+        if self.phase not in {"started", "finished", "interrupted"}:
+            raise ProtocolValidationError("phase is not canonical")
+        if self.kind == "greeting":
+            if self.turn_id is not None:
+                raise ProtocolValidationError("greeting turn_id must be null")
+        else:
+            _require_uuid4(self.turn_id, "turn_id")
+
+        if self.quantum_role == "single":
+            if self.kind == "result" or self.quantum_index != 0:
+                raise ProtocolValidationError("single playout quantum is malformed")
+            if self.result_reserved_samples_after is not None:
+                raise ProtocolValidationError(
+                    "single playout cannot carry a result reservation"
+                )
+        elif self.quantum_role == "result_opening":
+            if self.kind != "result" or self.quantum_index != 0:
+                raise ProtocolValidationError("result opening quantum is malformed")
+            _require_positive_integer(
+                self.result_reserved_samples_after,
+                "result_reserved_samples_after",
+                maximum=36_000,
+            )
+        elif self.quantum_role == "result_continuation":
+            if self.kind != "result" or self.quantum_index < 1:
+                raise ProtocolValidationError(
+                    "result continuation quantum is malformed"
+                )
+            _require_positive_integer(
+                self.result_reserved_samples_after,
+                "result_reserved_samples_after",
+                maximum=720_000,
+            )
+        else:
+            raise ProtocolValidationError("quantum_role is not canonical")
+        _require_voice_timestamp(self.observed_at, "observed_at")
+        if len(self.to_wire_json().encode("utf-8")) > _VOICE_PLAYOUT_MAX_BYTES:
+            raise ProtocolValidationError(
+                "voice_playout_event exceeds the 2048-byte UTF-8 envelope limit"
+            )
+
+    def _wire_dict(self) -> Dict[str, Any]:
+        data = asdict(self)
+        if data["result_reserved_samples_after"] is None:
+            data.pop("result_reserved_samples_after")
+        return data
+
+    def to_wire_json(self) -> str:
+        """Serialize without recursively invoking validation."""
+
+        return _voice_json(self._wire_dict())
+
+    def to_json(self) -> str:
+        self.validate()
+        return self.to_wire_json()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoicePlayoutEvent":
+        _require_exact_fields(
+            data,
+            cls._REQUIRED_FIELDS,
+            optional={"result_reserved_samples_after"},
+            label="voice_playout_event",
+        )
+        frame = cls(**dict(data))
+        frame.validate()
+        return frame
 
 
 # --- Feature 004 UI event action names ---------------------------------
@@ -1504,6 +2398,10 @@ class RegisterUI(Message):
     capabilities: List[str] = field(default_factory=list)
     session_id: Optional[str] = None
     token: Optional[str] = None
+    # Feature 065: stable, non-secret installation identity. It identifies a
+    # client but grants no authority without the authenticated connection and
+    # short-lived control binding.
+    device_id: Optional[str] = None
     device: Optional[Dict[str, Any]] = None  # ROTE: frontend device capabilities
     # Feature 006: optional initial LLM config carried from the user's
     # browser localStorage at register time. Shape: {api_key, base_url, model}.
@@ -1534,6 +2432,10 @@ class RegisterUI(Message):
         data = asdict(self)
         if self.resume is not None:
             data["resume"] = dict(self.resume)
+        if self.device_id is None:
+            # Preserve legacy RegisterUI wire bytes: this field is additive
+            # and absent, rather than null, until a client adopts feature 065.
+            data.pop("device_id", None)
         if isinstance(self.agent_host, AgentHostRegistration):
             data["agent_host"] = self.agent_host.to_dict()
             data.pop("host_session_id", None)
@@ -1542,6 +2444,12 @@ class RegisterUI(Message):
     def validate(self) -> None:
         if self.type != "register_ui":
             raise ProtocolValidationError("type must be register_ui")
+        if self.device_id is not None:
+            _require_uuid4(self.device_id, "device_id")
+            if self.connection_generation is None:
+                raise ProtocolValidationError(
+                    "connection_generation is required when device_id is present"
+                )
         if self.connection_generation is not None:
             _require_uuid4(self.connection_generation, "connection_generation")
         elif self.resume is not None:

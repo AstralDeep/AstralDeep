@@ -74,7 +74,10 @@ public struct QueuedOperationReplay: Sendable, Equatable {
     public let conversationPurpose: ConversationGenerationPurpose?
 
     public init?(frameText: String) {
-        guard let data = frameText.data(using: .utf8),
+        guard
+            !VoiceCurrentConnectionFrame.claimsCurrentConnectionSemantics(
+                frameText: frameText),
+            let data = frameText.data(using: .utf8),
             let root = try? JSONValue.parse(data),
             root["type"]?.stringValue == "ui_event",
             let action = root["action"]?.stringValue,

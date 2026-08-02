@@ -7,12 +7,44 @@ classification tables against the same file; these backend guards assert the
 manifest stays equal to the code, so a new frame/action/component that is not
 manifested fails the build (FR-014/FR-023, SC-001).
 """
+import copy
 import json
 import re
 from pathlib import Path
 
+import pytest
+
 BACKEND = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = BACKEND / "shared" / "ui_protocol.json"
+VOICE_FIXTURE_PATH = (
+    BACKEND / "tests" / "fixtures" / "voice_065" / "client_conformance.json"
+)
+
+VOICE_REQUIRED_DISPOSITIONS = {
+    "accepted",
+    "rejected",
+    "partial",
+    "final",
+    "listening",
+    "speaking",
+    "interrupted",
+    "failed",
+    "ended",
+    "takeover_required",
+    "permission_denied",
+    "typed_fallback",
+}
+VOICE_REQUIRED_SERVER_CONTRACTS = {
+    "composer_state",
+    "voice_control_binding",
+    "voice_session_state",
+    "voice_turn_state",
+    "voice_transcript",
+    "user_message_acked.voice",
+    "voice_submission_rejected",
+    "voice_announcement_media.livekit",
+    "voice_announcement_media.watch",
+}
 
 # Modules that send frames on the UI websocket (or define their dataclasses).
 UI_SEND_MODULES = [
@@ -37,6 +69,7 @@ SWEEP_ALLOWLIST = {
     "ui_event", "register_ui", "register_agent", "mcp_request", "mcp_response",
     "llm_config_set", "llm_config_clear",
     "tool_stream_data", "tool_stream_end", "tool_stream_cancel",
+    "voice_playout_event",
     # Bidirectional transport controls are handled before UI dispatch and do
     # not enter the semantic server-push vocabulary.
     "ping", "pong", "close", "cancel", "cancel_task",
@@ -60,6 +93,40 @@ def _manifest():
 
 def _push_names(manifest):
     return {entry["name"] for entry in manifest["push_types"]}
+
+
+def _assert_voice_manifest_complete(manifest):
+    """Assert the exact required Feature-065 directions and dispositions."""
+
+    voice = manifest["frame_contracts"]["voice_065"]
+    assert set(voice["required_server_pushes"]) == VOICE_REQUIRED_SERVER_CONTRACTS
+    assert set(voice["required_dispositions"]) == VOICE_REQUIRED_DISPOSITIONS
+    assert set(voice["client_frames"]) == {"voice_playout_event"}
+
+    manifested_pushes = _push_names(manifest)
+    for contract in voice["required_server_pushes"]:
+        frame = contract.removesuffix(".voice").removesuffix(".livekit").removesuffix(
+            ".watch"
+        )
+        assert frame in manifested_pushes
+    assert "voice_playout_event" not in manifested_pushes
+
+    fixture = json.loads(VOICE_FIXTURE_PATH.read_text(encoding="utf-8"))
+    expected = set(fixture["expected_discriminators"]["voice_control"])
+    declared = {
+        "composer_state",
+        "voice_control_binding",
+        "voice_session_state",
+        "voice_turn_state",
+        "voice_transcript",
+        "user_message_acked",
+        "voice_submission_rejected",
+        "voice_announcement_media",
+        "voice_playout_event",
+        "ui_event:new_chat",
+        "chat_created",
+    }
+    assert declared == expected
 
 
 def test_manifest_is_well_formed():
@@ -169,6 +236,133 @@ def test_runtime_reliability_frames_and_structured_host_registration_are_manifes
         "runtime_contract_versions",
         "source_feature",
     }
+
+
+def test_conversational_voice_contract_is_complete_and_directional():
+    manifest = _manifest()
+    voice = manifest["frame_contracts"]["voice_065"]
+    _assert_voice_manifest_complete(manifest)
+    required_pushes = {
+        "composer_state",
+        "voice_announcement_media",
+        "voice_control_binding",
+        "voice_session_state",
+        "voice_submission_rejected",
+        "voice_transcript",
+        "voice_turn_state",
+    }
+    assert required_pushes <= _push_names(manifest)
+    assert set(voice["voice_origin_fields"]) == {
+        "schema_version",
+        "session_id",
+        "generation",
+        "media_grant_revision",
+        "turn_id",
+        "client_turn_id",
+        "chat_context_revision",
+        "source_participant_identity",
+        "detected_language",
+        "text_digest_sha256",
+        "transcript_proof",
+        "proof_expires_at",
+    }
+    assert set(voice["composer_actions"]) == {
+        "voice_session_start",
+        "voice_session_takeover",
+        "voice_session_end",
+        "voice_microphone_set",
+        "voice_speech_stop",
+        "voice_speech_mute_set",
+        "voice_visible_chat_update",
+        "voice_sensitive_recap_request",
+    }
+    assert set(voice["composer_actions"]) <= set(manifest["accept_actions"])
+    assert set(voice["client_frames"]) == {"voice_playout_event"}
+    assert "transcript_proof" not in voice["client_frames"]["voice_playout_event"]
+    correlated = voice["correlated_chat_creation"]
+    assert correlated["client_new_chat"] == {
+        "type": "ui_event",
+        "action": "new_chat",
+        "exact_fields": [
+            "type",
+            "action",
+            "schema_version",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+            "payload",
+        ],
+        "payload_fields": [
+            "schema_version",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+        ],
+        "correlated_fields": [
+            "schema_version",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+        ],
+    }
+    assert correlated["server_chat_created"] == {
+        "type": "chat_created",
+        "exact_fields": [
+            "type",
+            "schema_version",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+            "payload",
+        ],
+        "payload_fields": [
+            "schema_version",
+            "chat_id",
+            "from_message",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+        ],
+        "correlated_fields": [
+            "schema_version",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+        ],
+        "from_message": False,
+    }
+    assert set(voice["required_dispositions"]) == VOICE_REQUIRED_DISPOSITIONS
+
+
+def test_voice_manifest_guard_fails_for_missing_or_unknown_required_contracts():
+    manifest = _manifest()
+    mutations = []
+
+    missing_disposition = copy.deepcopy(manifest)
+    missing_disposition["frame_contracts"]["voice_065"][
+        "required_dispositions"
+    ].remove("rejected")
+    mutations.append(missing_disposition)
+
+    unknown_disposition = copy.deepcopy(manifest)
+    unknown_disposition["frame_contracts"]["voice_065"][
+        "required_dispositions"
+    ].append("silently_ignored")
+    mutations.append(unknown_disposition)
+
+    missing_frame = copy.deepcopy(manifest)
+    del missing_frame["frame_contracts"]["voice_065"]["required_server_pushes"][
+        "voice_submission_rejected"
+    ]
+    mutations.append(missing_frame)
+
+    ignored_client_frame = copy.deepcopy(manifest)
+    ignored_client_frame["frame_contracts"]["voice_065"]["client_frames"] = {}
+    mutations.append(ignored_client_frame)
+
+    for broken in mutations:
+        with pytest.raises(AssertionError):
+            _assert_voice_manifest_complete(broken)
 
 
 def test_component_vocabulary_matches_renderer():

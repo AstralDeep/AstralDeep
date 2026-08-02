@@ -25,6 +25,7 @@ import json
 import math
 import re
 import threading
+import unicodedata
 import uuid
 from collections import deque
 from collections.abc import Mapping
@@ -41,6 +42,7 @@ from . import __version__
 _MAX_UINT64 = (1 << 64) - 1
 _SNAKE_CASE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_VOICE_OPAQUE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _SEMVER = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
@@ -49,9 +51,26 @@ _SEMVER = re.compile(
 
 RUNTIME_CONTRACT_VERSIONS = (2,)
 RUNTIME_LOCK_ARTIFACT = "requirements-release.lock.txt"
-RUNTIME_LOCK_SHA256 = (
-    "6041036906881c59868b9e53e16d1e22d8371b68af2f36701022a5a239dd43ba"
+RUNTIME_LOCK_SHA256 = "82d58a54a8cd1a7ffd925d724ba247f0cfb09e4de0747aeca4a869f7dd87ba35"
+
+VOICE_DEVICE_ID_KEY = "astraldeep.voice.device_id.v1"
+VOICE_TRANSCRIPT_TOPIC = "astraldeep.voice.transcript.v1"
+MAX_PENDING_VOICE_FINALS = 4
+MAX_PENDING_VOICE_BYTES = 48 * 1024
+_VOICE_PLAYOUT_KINDS = frozenset(
+    {
+        "greeting",
+        "acknowledgement",
+        "progress",
+        "waiting",
+        "result",
+        "sensitive_notice",
+        "failure",
+        "refusal",
+        "cancellation",
+    }
 )
+_VOICE_SINGLE_KINDS = _VOICE_PLAYOUT_KINDS - {"result"}
 
 
 class WindowsProtocolError(ValueError):
@@ -102,6 +121,19 @@ def _is_uuid4(value: object) -> bool:
     except WindowsProtocolError:
         return False
     return True
+
+
+def load_or_create_voice_device_id(settings: Optional[QSettings] = None) -> str:
+    """Return one stable, non-secret installation UUID4 for voice ownership."""
+
+    store = settings or QSettings("AstralDeep", "WindowsClient")
+    current = store.value(VOICE_DEVICE_ID_KEY, "", type=str) or ""
+    if _is_uuid4(current):
+        return current
+    device_id = str(uuid.uuid4())
+    store.setValue(VOICE_DEVICE_ID_KEY, device_id)
+    store.sync()
+    return device_id
 
 
 def _validate_semantic_json(value: object, name: str = "semantic value") -> None:
@@ -997,6 +1029,161 @@ class LocalOperationSubmission:
 
 
 @dataclass(frozen=True)
+class VoiceTranscriptSubmission:
+    """One worker-bound final retained only until correlated disposition."""
+
+    transcript: dict[str, Any]
+
+    _BASE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "type",
+            "schema_version",
+            "session_id",
+            "generation",
+            "turn_id",
+            "client_turn_id",
+            "submission_id",
+            "request_generation",
+            "chat_id",
+            "chat_context_revision",
+            "media_grant_revision",
+            "sequence",
+            "final",
+            "text",
+            "detected_language",
+            "source_participant_identity",
+            "text_digest_sha256",
+            "transcript_proof",
+            "proof_expires_at",
+        }
+    )
+
+    def validate(self) -> None:
+        value = self.transcript
+        if not isinstance(value, dict) or set(value) != self._BASE_FIELDS:
+            raise WindowsProtocolError("final voice transcript fields are invalid")
+        if value["type"] != "voice_transcript" or value["schema_version"] != "1":
+            raise WindowsProtocolError("voice transcript discriminator is invalid")
+        if value["final"] is not True:
+            raise WindowsProtocolError("only final voice transcripts can be submitted")
+        for field_name in (
+            "session_id",
+            "turn_id",
+            "client_turn_id",
+            "submission_id",
+            "request_generation",
+            "chat_id",
+        ):
+            _uuid4(value[field_name], field_name)
+        for field_name in (
+            "generation",
+            "chat_context_revision",
+            "media_grant_revision",
+        ):
+            if (
+                isinstance(value[field_name], bool)
+                or not isinstance(value[field_name], int)
+                or value[field_name] < 1
+            ):
+                raise WindowsProtocolError(f"{field_name} must be a positive integer")
+        _uint64(value["sequence"], "sequence")
+        text = value["text"]
+        if (
+            not isinstance(text, str)
+            or not text
+            or len(text) > 8000
+            or text != text.strip()
+            or unicodedata.normalize("NFC", text) != text
+            or "\r" in text
+            or any(
+                ord(character) < 32 and character not in {"\t", "\n"}
+                for character in text
+            )
+        ):
+            raise WindowsProtocolError("final transcript text is not canonical")
+        language = value["detected_language"]
+        if (
+            not isinstance(language, str)
+            or re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", language) is None
+        ):
+            raise WindowsProtocolError("detected_language is invalid")
+        worker = value["source_participant_identity"]
+        if not isinstance(worker, str) or _VOICE_OPAQUE.fullmatch(worker) is None:
+            raise WindowsProtocolError("source participant identity is invalid")
+        digest = value["text_digest_sha256"]
+        if (
+            not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+            or hashlib.sha256(text.encode("utf-8")).hexdigest() != digest
+        ):
+            raise WindowsProtocolError("voice transcript text digest is invalid")
+        proof = value["transcript_proof"]
+        if not isinstance(proof, str) or _SHA256.fullmatch(proof) is None:
+            raise WindowsProtocolError("voice transcript proof is invalid")
+        _utc(value["proof_expires_at"], "proof_expires_at")
+        encoded_size = len(
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        if encoded_size > 12 * 1024:
+            raise WindowsProtocolError("voice transcript exceeds the data envelope")
+
+    @property
+    def turn_id(self) -> str:
+        return str(self.transcript["turn_id"])
+
+    @property
+    def local_projection(self) -> LocalOperationSubmission:
+        return LocalOperationSubmission(
+            submission_id=str(self.transcript["submission_id"]),
+            request_generation=str(self.transcript["request_generation"]),
+            action="chat_message",
+            chat_id=str(self.transcript["chat_id"]),
+        )
+
+    def expired(self, now: Optional[datetime] = None) -> bool:
+        expiry = datetime.fromisoformat(
+            str(self.transcript["proof_expires_at"])[0:-1] + "+00:00"
+        )
+        return expiry <= (now or datetime.now(timezone.utc))
+
+    def to_frame(self, connection_generation: str) -> dict[str, Any]:
+        self.validate()
+        _uuid4(connection_generation, "connection_generation")
+        value = self.transcript
+        voice_origin = {
+            "schema_version": "1",
+            "session_id": value["session_id"],
+            "generation": value["generation"],
+            "media_grant_revision": value["media_grant_revision"],
+            "turn_id": value["turn_id"],
+            "client_turn_id": value["client_turn_id"],
+            "chat_context_revision": value["chat_context_revision"],
+            "source_participant_identity": value["source_participant_identity"],
+            "detected_language": value["detected_language"],
+            "text_digest_sha256": value["text_digest_sha256"],
+            "transcript_proof": value["transcript_proof"],
+            "proof_expires_at": value["proof_expires_at"],
+        }
+        return {
+            "type": "ui_event",
+            "action": "chat_message",
+            "session_id": value["chat_id"],
+            "connection_generation": connection_generation,
+            "submission_id": value["submission_id"],
+            "request_generation": value["request_generation"],
+            "payload": {
+                "message": value["text"],
+                "chat_id": value["chat_id"],
+                "connection_generation": connection_generation,
+                "submission_id": value["submission_id"],
+                "request_generation": value["request_generation"],
+                "snapshot_purpose": "commit",
+                "voice_origin": voice_origin,
+            },
+        }
+
+
+@dataclass(frozen=True)
 class QueuedReplayPreparation:
     """Exact queued identity plus the new connection fence to install first."""
 
@@ -1240,8 +1427,12 @@ def backoff_delay_s(attempt: int, base: float = BACKOFF_BASE_S,
     return min(base * (2 ** (attempt - 1)), cap)
 
 
-def device_caps(width: int = 1280, height: int = 860,
-                supported_types=None) -> dict:
+def device_caps(
+    width: int = 1280,
+    height: int = 860,
+    supported_types=None,
+    voice_capability: Optional[dict[str, Any]] = None,
+) -> dict:
     """Report this client as a native ``windows`` device with the set of SDUI
     primitive types it renders natively. ROTE keys off ``device_type`` for the
     desktop host-config and uses ``supported_types`` to substitute web-only
@@ -1256,6 +1447,8 @@ def device_caps(width: int = 1280, height: int = 860,
     }
     if supported_types:
         caps["supported_types"] = list(supported_types)
+    if voice_capability is not None:
+        caps["voice"] = dict(voice_capability)
     return caps
 
 
@@ -1272,6 +1465,8 @@ class OrchestratorClient(QObject):
     # transport/GUI thread boundary. The receiver installs the new connection
     # and request fence plus the exact local projection, then completes ack.
     queued_replay_preparation = Signal(object, object)
+    connection_generation_changed = Signal(str)
+    voice_submission_settled = Signal(str, str)
     # "connecting" | "connected" | "reconnecting:<attempt>" |
     # "auth_required:<reason>" | "closed:<why>" | "send_dropped:<action>"
     status = Signal(str)
@@ -1283,11 +1478,16 @@ class OrchestratorClient(QObject):
         device: Optional[dict] = None,
         *,
         host_id: Optional[str] = None,
+        device_id: Optional[str] = None,
     ):
         super().__init__()
         self.url = url
         self.token = token
         self.device = device or device_caps()
+        self.device_id = _uuid4(
+            device_id or load_or_create_voice_device_id(),
+            "device_id",
+        )
         # register_ui session id. The app points this at the ACTIVE CHAT id so
         # a reconnect's re-register resumes that chat's fan-out + background-
         # task replay server-side (feature 055); "win-client" is the no-chat
@@ -1320,6 +1520,7 @@ class OrchestratorClient(QObject):
         self._connected = False
         self._had_session = False
         self._pending: deque[str] = deque()
+        self._voice_pending: dict[str, VoiceTranscriptSubmission] = {}
         self._queued_replay_preparation_required = False
 
     def require_queued_replay_preparation(self) -> None:
@@ -1418,6 +1619,16 @@ class OrchestratorClient(QObject):
         elif isinstance(parsed, AgentHostRegistrationRefused):
             self.host_session_id = None
             self._safe_status(f"agent_host_registration_refused:{parsed.code}")
+        frame_type = msg.get("type")
+        if frame_type in {"user_message_acked", "voice_submission_rejected"}:
+            settled = self.settle_voice_submission(msg)
+            is_voice_ack = (
+                frame_type == "user_message_acked"
+                and msg.get("voice_turn_id") is not None
+            )
+            if not settled and (frame_type == "voice_submission_rejected" or is_voice_ack):
+                self._safe_status(f"protocol_error:{frame_type}")
+                return False
         return True
 
     @property
@@ -1480,11 +1691,19 @@ class OrchestratorClient(QObject):
         """The register_ui handshake frame, rebuilt per (re)connect so
         ``session_id`` reflects the chat that was open when the drop happened."""
         self.connection_generation = str(uuid.uuid4())
+        try:
+            self.connection_generation_changed.emit(self.connection_generation)
+        except RuntimeError:
+            pass
         self.host_session_id = None
+        capabilities = ["render", "stream", "agent_host"]
+        if isinstance(self.device.get("voice"), dict):
+            capabilities.append("voice")
         frame = {
             "type": "register_ui",
             "token": self.token,
-            "capabilities": ["render", "stream", "agent_host"],
+            "capabilities": capabilities,
+            "device_id": self.device_id,
             "connection_generation": self.connection_generation,
             "agent_host": self.host_registration.to_dict(),
             "session_id": self.session_id,
@@ -1544,6 +1763,7 @@ class OrchestratorClient(QObject):
         await self._flush_pending(ws)
         self._connected = True
         await self._flush_pending(ws)
+        await self._resend_voice_pending(ws)
         self._safe_status("connected")
 
     # --- outbound -------------------------------------------------------- #
@@ -1839,6 +2059,328 @@ class OrchestratorClient(QObject):
         self.submission.emit(local)
         self._send(frame)
         return local
+
+    def send_voice_transcript(
+        self,
+        transcript: dict[str, Any],
+    ) -> LocalOperationSubmission:
+        """Submit one proven final through the ordinary ``chat_message`` path.
+
+        The immutable recognition binding is retained only in memory until a
+        fully correlated acknowledgement or rejection arrives. Reconnects
+        replace only the UI connection fence; they never mint new turn IDs.
+        """
+
+        submission = VoiceTranscriptSubmission(copy.deepcopy(transcript))
+        submission.validate()
+        if submission.expired():
+            raise WindowsProtocolError("voice transcript proof has expired")
+        existing = self._voice_pending.get(submission.turn_id)
+        if existing is not None:
+            if existing.transcript != submission.transcript:
+                raise WindowsProtocolError("voice turn identity was reused")
+            return existing.local_projection
+        if len(self._voice_pending) >= MAX_PENDING_VOICE_FINALS:
+            raise WindowsProtocolError("voice transcript retention is full")
+        retained_size = sum(
+            len(_stable_json(item.transcript).encode("utf-8"))
+            for item in self._voice_pending.values()
+        )
+        retained_size += len(_stable_json(submission.transcript).encode("utf-8"))
+        if retained_size > MAX_PENDING_VOICE_BYTES:
+            raise WindowsProtocolError("voice transcript retention is full")
+        if not _is_uuid4(self.connection_generation):
+            raise WindowsProtocolError("voice submission requires a current connection")
+        self._voice_pending[submission.turn_id] = submission
+        local = submission.local_projection
+        local.validate()
+        self.submission.emit(local)
+        self._send_voice_frame(submission.to_frame(self.connection_generation))
+        return local
+
+    def send_correlated_new_chat(
+        self,
+        submission_id: str,
+        request_generation: str,
+    ) -> bool:
+        """Send the strict current-socket new-chat prelude for voice activation."""
+
+        _uuid4(submission_id, "submission_id")
+        _uuid4(request_generation, "request_generation")
+        connection = _uuid4(
+            self.connection_generation,
+            "connection_generation",
+        )
+        correlation = {
+            "schema_version": "1",
+            "connection_generation": connection,
+            "submission_id": submission_id,
+            "request_generation": request_generation,
+        }
+        frame = {
+            "type": "ui_event",
+            "action": "new_chat",
+            **correlation,
+            "payload": dict(correlation),
+        }
+        loop = self._loop
+        ws = self._ws
+        if not self._connected or loop is None or ws is None:
+            self._safe_status("voice_activation_cancelled:connection_unavailable")
+            return False
+        future = asyncio.run_coroutine_threadsafe(
+            ws.send(json.dumps(frame, separators=(",", ":"))), loop
+        )
+        future.add_done_callback(self._consume_host_send_result)
+        return True
+
+    def _send_voice_frame(self, frame: dict[str, Any]) -> None:
+        """Send without the ordinary offline queue; the proof-bound store retries."""
+
+        loop = self._loop
+        ws = self._ws
+        if not self._connected or loop is None or ws is None:
+            self._safe_status("voice_submission_pending")
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            ws.send(json.dumps(frame, ensure_ascii=False, separators=(",", ":"))),
+            loop,
+        )
+        future.add_done_callback(self._consume_host_send_result)
+
+    def send_voice_playout_event(self, frame: dict[str, Any]) -> None:
+        """Send one strict, content-free local playout observation.
+
+        Playout evidence is current-socket telemetry, never a replayable UI
+        action.  It therefore uses the direct voice send seam but is not added
+        to either the ordinary offline queue or the retained transcript store.
+        """
+
+        required = {
+            "type",
+            "schema_version",
+            "device_id",
+            "connection_generation",
+            "session_id",
+            "generation",
+            "media_grant_revision",
+            "announcement_id",
+            "announcement_sequence",
+            "turn_id",
+            "kind",
+            "quantum_role",
+            "quantum_index",
+            "phase",
+            "client_sequence",
+            "observed_at",
+        }
+        supplied = set(frame) if isinstance(frame, dict) else set()
+        if supplied != required and supplied != required | {
+            "result_reserved_samples_after"
+        }:
+            raise WindowsProtocolError("voice playout fields are invalid")
+        if frame.get("type") != "voice_playout_event" or frame.get(
+            "schema_version"
+        ) != "1":
+            raise WindowsProtocolError("voice playout discriminator is invalid")
+        if frame.get("device_id") != self.device_id:
+            raise WindowsProtocolError("voice playout device is invalid")
+        connection = _uuid4(
+            frame.get("connection_generation"),
+            "connection_generation",
+        )
+        if connection != self.connection_generation:
+            raise WindowsProtocolError("voice playout connection is stale")
+        for name in ("session_id", "announcement_id"):
+            _uuid4(frame.get(name), name)
+        for name in (
+            "generation",
+            "media_grant_revision",
+            "announcement_sequence",
+        ):
+            value = frame.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise WindowsProtocolError(f"{name} must be a positive integer")
+        _uint64(frame.get("quantum_index"), "quantum_index")
+        if frame["quantum_index"] > 31:
+            raise WindowsProtocolError("quantum_index exceeds the contract")
+        _uint64(frame.get("client_sequence"), "client_sequence")
+        if frame.get("kind") not in _VOICE_PLAYOUT_KINDS:
+            raise WindowsProtocolError("voice playout kind is invalid")
+        if frame["kind"] == "greeting":
+            if frame.get("turn_id") is not None:
+                raise WindowsProtocolError("greeting turn_id must be null")
+        else:
+            _uuid4(frame.get("turn_id"), "turn_id")
+        reservation = frame.get("result_reserved_samples_after")
+        role = frame.get("quantum_role")
+        if role == "single":
+            if (
+                frame["kind"] not in _VOICE_SINGLE_KINDS
+                or frame["quantum_index"] != 0
+                or reservation is not None
+            ):
+                raise WindowsProtocolError("single playout quantum is invalid")
+        elif role == "result_opening":
+            if (
+                frame["kind"] != "result"
+                or frame["quantum_index"] != 0
+                or isinstance(reservation, bool)
+                or not isinstance(reservation, int)
+                or not 1 <= reservation <= 36_000
+            ):
+                raise WindowsProtocolError("result opening playout is invalid")
+        elif role == "result_continuation":
+            if (
+                frame["kind"] != "result"
+                or not 1 <= frame["quantum_index"] <= 31
+                or isinstance(reservation, bool)
+                or not isinstance(reservation, int)
+                or not 1 <= reservation <= 720_000
+            ):
+                raise WindowsProtocolError("result continuation playout is invalid")
+        else:
+            raise WindowsProtocolError("voice playout quantum role is invalid")
+        if frame.get("phase") not in {"started", "finished", "interrupted"}:
+            raise WindowsProtocolError("voice playout phase is invalid")
+        _utc(frame.get("observed_at"), "observed_at")
+        try:
+            encoded = json.dumps(
+                frame,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise WindowsProtocolError("voice playout is not canonical JSON") from exc
+        if len(encoded) > 2 * 1024:
+            raise WindowsProtocolError("voice playout exceeds the data envelope")
+        self._send_voice_frame(copy.deepcopy(frame))
+
+    def _pending_voice_frames(self) -> list[dict[str, Any]]:
+        """Return current-connection retries, expiring stale proofs visibly."""
+
+        if not _is_uuid4(self.connection_generation):
+            return []
+        frames: list[dict[str, Any]] = []
+        for turn_id, submission in list(self._voice_pending.items()):
+            if submission.expired():
+                self._voice_pending.pop(turn_id, None)
+                self._safe_status("voice_submission_expired")
+                continue
+            frames.append(submission.to_frame(self.connection_generation))
+        return frames
+
+    async def _resend_voice_pending(self, ws) -> None:
+        for frame in self._pending_voice_frames():
+            await ws.send(
+                json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
+            )
+
+    def settle_voice_submission(self, frame: dict[str, Any]) -> bool:
+        """Clear only a fully correlated current-connection ack/rejection."""
+
+        if not isinstance(frame, dict):
+            return False
+        frame_type = frame.get("type")
+        if frame_type == "user_message_acked":
+            required = {
+                "type",
+                "schema_version",
+                "chat_id",
+                "message_id",
+                "submission_id",
+                "request_generation",
+                "connection_generation",
+                "voice_turn_id",
+            }
+            if set(frame) != required:
+                return False
+            turn_id = frame.get("voice_turn_id")
+            submission = self._voice_pending.get(str(turn_id))
+            if submission is None:
+                return False
+            value = submission.transcript
+            valid = (
+                frame.get("schema_version") == "1"
+                and isinstance(frame.get("message_id"), int)
+                and not isinstance(frame.get("message_id"), bool)
+                and frame["message_id"] >= 1
+                and frame.get("chat_id") == value["chat_id"]
+                and frame.get("submission_id") == value["submission_id"]
+                and frame.get("request_generation") == value["request_generation"]
+                and frame.get("connection_generation") == self.connection_generation
+            )
+            disposition = "accepted"
+        elif frame_type == "voice_submission_rejected":
+            required = {
+                "type",
+                "schema_version",
+                "session_id",
+                "connection_generation",
+                "generation",
+                "media_grant_revision",
+                "turn_id",
+                "client_turn_id",
+                "submission_id",
+                "request_generation",
+                "chat_id",
+                "reason",
+                "retry_policy",
+                "occurred_at",
+            }
+            supplied = set(frame)
+            if supplied != required and supplied != required | {"message"}:
+                return False
+            turn_id = frame.get("turn_id")
+            submission = self._voice_pending.get(str(turn_id))
+            if submission is None:
+                return False
+            value = submission.transcript
+            try:
+                _utc(frame.get("occurred_at"), "occurred_at")
+            except WindowsProtocolError:
+                return False
+            message = frame.get("message")
+            if message is not None and (
+                not isinstance(message, str) or len(message) > 240
+            ):
+                return False
+            valid = (
+                frame.get("schema_version") == "1"
+                and frame.get("session_id") == value["session_id"]
+                and frame.get("connection_generation") == self.connection_generation
+                and frame.get("generation") == value["generation"]
+                and frame.get("media_grant_revision")
+                == value["media_grant_revision"]
+                and frame.get("client_turn_id") == value["client_turn_id"]
+                and frame.get("submission_id") == value["submission_id"]
+                and frame.get("request_generation") == value["request_generation"]
+                and frame.get("chat_id") == value["chat_id"]
+                and frame.get("reason")
+                in {
+                    "capacity_exhausted",
+                    "chat_unavailable",
+                    "invalid_binding",
+                    "invalid_proof",
+                    "proof_expired",
+                    "permission_denied",
+                    "stale_session",
+                    "malformed_final",
+                }
+                and frame.get("retry_policy") in {"explicit_user_retry", "none"}
+            )
+            disposition = "rejected"
+        else:
+            return False
+        if not valid:
+            return False
+        self._voice_pending.pop(str(turn_id), None)
+        try:
+            self.voice_submission_settled.emit(str(turn_id), disposition)
+        except RuntimeError:
+            pass
+        return True
 
     def send_host_frame(self, frame: dict[str, Any]) -> None:
         """Send one exact v2 host frame only on its currently bound socket.

@@ -75,6 +75,16 @@ CLASSIFICATION: dict[str, str] = {
     "conversation_snapshot": HANDLED,
     "operation_status": HANDLED,
     "agent_lifecycle": HANDLED,
+    # 065 server-owned conversational voice. Control frames are reduced by
+    # MainWindow/VoiceController, while transcript and announcement manifests
+    # are strictly reduced by VoiceController on the authenticated RTC channel.
+    "composer_state": HANDLED,
+    "voice_control_binding": HANDLED,
+    "voice_session_state": HANDLED,
+    "voice_turn_state": HANDLED,
+    "voice_submission_rejected": HANDLED,
+    "voice_transcript": HANDLED,
+    "voice_announcement_media": HANDLED,
     "heartbeat": IGNORED,             # transport keepalive
     # streaming
     "stream_subscribed": HANDLED,

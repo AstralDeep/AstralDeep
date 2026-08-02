@@ -6,10 +6,12 @@
 decisions in [research.md](research.md), persistence design in [data-model.md](data-model.md),
 and interfaces in [contracts/](contracts/).
 
-**Planning boundary**: This workflow produces design artifacts only. It does not create
-`tasks.md`, modify application code, install dependencies, start media capture, or perform a
-release. The optional Spec Kit Git hooks were not run; plan artifacts remain uncommitted until
-the owner requests a commit.
+**Planning boundary and current status**: The planning and task-generation workflows themselves
+produced design artifacts only. Implementation and local verification are now in progress under
+[tasks.md](tasks.md), with evidence and explicit remaining release limits in
+[verification.md](verification.md). No local implementation result performs or authorizes a merge,
+distribution, or release. The optional Spec Kit Git hooks were not run; changes remain uncommitted
+until the owner explicitly requests a commit.
 
 ## Summary
 
@@ -35,6 +37,14 @@ when present; otherwise deterministic code derives an at-most-80-word recap only
 user-visible content. PHI or uncertain sensitivity yields only a generic notice until a fresh
 result-bound consent action.
 
+Request outcomes are also text-first on every client. Refusal and pre-dispatch rejection produce a
+persistent, visually prominent “did not start” notice; failure, cancellation, and abandonment
+produce “did not complete.” The notice carries only the bounded safe server explanation and an
+explicit recovery action, uses non-color and assertive accessibility cues, survives unrelated or
+same-turn stale lifecycle churn, and leaves typed chat usable. A newer non-older turn or explicit
+voice reset/end may clear it. Post-result TTS/playout failure is separate and says the committed
+text result remains available rather than claiming that execution failed.
+
 The official LiveKit server is used without a fork. Web, Android, iOS, macOS, and Windows use
 pinned official client SDKs. Because the official Swift SDK has no watchOS/WebRTC slice, watchOS
 uses a foreground-only authenticated PCM WebSocket bridge in the voice-worker service; that relay
@@ -53,18 +63,27 @@ YAML/JSON/OpenAPI for deployment and wire contracts.
 and async-task infrastructure, `astralprims`, ROTE, PHI/audit/permission gates, PySide6,
 Jetpack Compose, SwiftUI, and `aiohttp`. New exact pins, subject to the Constitution V approval
 record: `livekit/livekit-server:v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1`,
-`livekit-agents==1.6.7` (worker-resolved `livekit==1.1.13`), `livekit-api==1.2.0`,
-`livekit-plugins-silero==1.6.7`, web `livekit-client` 2.21.0, Windows `livekit==1.1.14`,
-Android `io.livekit:livekit-android:2.27.0`, and Apple LiveKit 2.15.3. Every transitive package,
-native artifact, model artifact, hash, license, and notice is locked rather than floated.
+worker `livekit==1.1.14`, `numpy==2.4.6`, `onnxruntime==1.28.0`, and
+`websockets==17.0.1`; orchestrator-only
+`livekit-api==1.2.0`; the vendored Silero VAD v6.0 ONNX payload at upstream commit
+`fba061dc5559f696e62171e9a0741782b0fdc23c` with SHA-256
+`597d30b3ec076608d059477bb14cfeffdf951bf5cae370d38f65d33bbfe82004`; web
+`livekit-client` 2.21.0; Windows `livekit==1.1.14`; Android
+`io.livekit:livekit-android:2.27.0`; and Apple LiveKit 2.15.3. The worker uses direct RTC and
+AstralDeep-owned endpointing rather than LiveKit Agents. The zero-transitive WebSocket pin is used
+only for the bounded authenticated worker-control channel; speech HTTP remains first-party stdlib
+code. Every transitive package, native artifact, model artifact, hash, license, and notice is locked
+rather than floated.
 
 **Storage**: PostgreSQL through guarded, idempotent `_init_db()` migration only. Add
 `voice_session` and `voice_turn`; add immutable execution-base commit/revision anchors plus
 component/layout digests and
 versioned `workspace_layout` metadata to the existing `conversation_commit` coordination contract;
 and add the no-queue `voice_interactive` admission
-class; provisionally bump `SCHEMA_REVISION` from `063.005` to `065.001` after rebasing over feature
-064's eventual schema work. Audio, transcript copies/digests/proofs, speech text, bearer grants, and
+class. The authorized feature-064 handoff is integrated: `064.001` is the asserted sole predecessor
+and `065.001` is the target `SCHEMA_REVISION`. The migration fails closed for any other source
+revision rather than guessing or overwriting predecessor work.
+Audio, transcript copies/digests/proofs, speech text, bearer grants, and
 credentials are never stored in these tables.
 
 Voice chat identifiers are retained owner-validated correlation/tombstone values, not foreign keys
@@ -74,11 +93,14 @@ their private result stages, and then permits hard deletion while preserving bou
 fencing metadata.
 
 **Testing**: pytest + fake clocks/media/egress and real PostgreSQL; Ruff; locked ESLint and
-Playwright web tests; hash-locked isolated JSON Schema/OpenAPI validation; PySide pytest and a
-Windows-frozen smoke; Android ktlint, lint, JVM tests,
-Kover, assemble, connected tests; recursive strict swift-format, Swift tests, XCTest/UI tests,
+Playwright web tests with Istanbul output; hash-locked isolated JSON Schema/OpenAPI validation;
+PySide pytest plus Windows coverage and a frozen smoke; Android ktlint, lint, JVM tests, Kover,
+assemble, connected tests; recursive strict swift-format, Swift tests, XCTest/UI tests, xccov, and
 unsigned Xcode builds; Compose/config validation; exact speech-service and LiveKit integration
-tests; candidate-bound live acoustic and multi-user staging evidence.
+tests; candidate-bound live acoustic and multi-user staging evidence. The existing protected
+`scripts/check_changed_coverage.py` gate combines backend/tooling/Windows Python, web Istanbul,
+Android app/core Kover, and iOS/macOS/watchOS xccov inputs and MUST fail below 90% changed-code
+coverage for the candidate.
 
 **Target Platform**: Linux containers for AstralDeep, LiveKit, and the voice worker; evergreen
 browser; Windows desktop; Android; iOS; macOS; watchOS. Production uses trusted HTTPS/WSS, exposed
@@ -88,17 +110,19 @@ PySide, Android emulator/device, and available Apple simulators/devices.
 **Project Type**: Clinical multi-agent web service with a separate media worker and six thin
 client surfaces consuming one server-owned composer/voice contract.
 
-**Performance Goals**: Warm activation reaches greeting/listening within 3 seconds for at least
-95%; acknowledgement begins within 1.5 seconds of durable acceptance for at least 95%; the
-coordinator targets the next utterance at 14 seconds so at least 99% of active intervals remain
-at or below the hard 20.0-second gap; authenticated client playout events provide operational
-observations and an ephemeral in-memory acoustic probe provides audible proof, immediately
-discarding waveforms and retaining only non-content timing measurements. One output stream uses
+**Performance Goals**: Under the spec's `voice-warm-standard` profile and at least 100 measured
+trials per client, warm activation reaches greeting/listening within 3 seconds for at least 95%,
+acknowledgement begins within 1.5 seconds of durable acceptance for at least 95%, and recap begins
+within 2 seconds of result availability for at least 95%. The coordinator targets the next
+utterance at 14 seconds so 100% of deterministic and staged active intervals remain at or below the
+hard 20.0-second gap. Authenticated client playout events provide operational observations and an
+ephemeral in-memory acoustic probe provides audible proof, immediately discarding waveforms and
+retaining only non-content timing measurements. One output stream uses
 deadline-aware preemptible speech quanta (at most a 1.5-second attributed recap opening and four-
 second other chunks) across at most two active turns per user, reserving a positive 250 ms measured
 stream-handoff budget; the second of two coincident terminal
-openings targets a start by 1.75 seconds. Recap starts within 2 seconds for at least 95%; default
-recap is at most 80 words/30 seconds in aggregate across resumed chunks. Worker commands and client
+openings targets a start by 1.75 seconds. Default recap is at most 80 words/30 seconds in aggregate
+across resumed chunks. Worker commands and client
 manifests mechanically cap each 24 kHz quantum at 96,000 samples and a result opening at 36,000;
 no schema-valid track can consume the aggregate 30-second allowance at once. Five simultaneous users remain isolated
 for 30 minutes; a second accepted same-chat turn holds a running lease without waiting for the first.
@@ -125,21 +149,22 @@ every client.
 |---|---|---|
 | I. Primary Language | PASS | Backend and media service remain Python 3.11. Client code stays in each already-maintained native language. |
 | II. UI Delivery | PASS | `composer_model.py` owns ordered semantic controls and states; clients adapt native chrome. No new primitive or React/Vite source of truth is introduced. |
-| III. Testing | PASS WITH ENFORCEMENT WORK | Every changed branch carries golden, denial, race, failure, and cleanup tests and must reach at least 90% changed-line coverage. Feature 065 must make the existing diff-coverage result blocking for its candidate rather than rely on the current soft job. |
+| III. Testing | PASS WITH ENFORCEMENT WORK | Every changed branch carries golden, denial, race, failure, and cleanup tests. Feature 065 must produce backend/tooling/Windows Python, web Istanbul, Android app/core Kover, and iOS/macOS/watchOS xccov reports and make the existing protected combined `scripts/check_changed_coverage.py --fail-under 90` result blocking for all candidate-changed code rather than rely on the current Python-only soft job. |
 | IV. Code Quality | PASS | Python: root `ruff.toml` + `ruff check .`; web JS: locked `tooling/web-ci/eslint.config.mjs`; Kotlin: `ktlintCheck` + Android lint; Swift: `apple-clients/.swift-format` strict recursive lint. Generated/vendored SDK files are hash/license checked and excluded only through narrow tracked configuration. |
-| V. Dependencies | CONDITIONAL PASS | The request approves using LiveKit conceptually, but the implementation PR must record lead-developer approval of every exact server/Agents/client/VAD pin and transitive/native artifact, licenses, CVEs, locks, image impact, and isolated test-validator lock before merge. No unrelated runtime dependency is planned. |
+| V. Dependencies | PASS WITH RECORDED ARCHITECTURE APPROVAL | On 2026-07-31 the repository owner/lead developer explicitly approved the RTC-only replacement and session decisions. The final exact worker/orchestrator closures, base-image digests, native/model artifacts, licenses, CVEs, locks, image impact, and isolated test-validator lock remain mechanically audited and must receive matching PR review before merge or distribution. LiveKit Agents and its restricted/native-heavy closure are prohibited. |
 | VI. Documentation | PASS | Research, data model, OpenAPI, JSON Schemas, media topology, quickstart, operator topology, permissions, privacy boundary, rollback, and evidence requirements are explicit. |
 | VII. Security | PASS BY DESIGN | Keycloak remains the user authority. Final text re-enters the normal dispatch path with user claims/token in memory and a short-lived worker HMAC over its immutable binding/digest; no worker impersonation API exists. Every REST mutation is bound to the registered UUID4 device and current UI connection by a redacted short-lived control binding. Media grants are short-lived and scoped; takeover is generation-fenced; speech egress is fixed and bounded; secrets/content are redacted; PHI classification fails closed. |
-| VIII. User Experience | PASS | One accessible conversation control/state model, truthful fixed progress vocabulary, barge-in, mute/stop/takeover/recovery, visible transcripts, typed fallback, and sensitive-detail consent apply across all clients. |
-| IX. Database Migrations | PASS | Two additive tables plus guarded additive `conversation_commit` rebase metadata/admission config via repeat-safe `_init_db()`, a revision bump after rebasing 064, representative-data upgrade/idempotency/concurrent-rebase tests, and documented disable/drain/recovery/retirement procedure. |
+| VIII. User Experience | PASS | One accessible conversation control/state model, truthful fixed progress vocabulary, barge-in, mute/stop/takeover/recovery, visible transcripts, typed fallback, and sensitive-detail consent apply across all clients. Every request refusal/failure/cancellation/abandonment also has a persistent, prominent, non-color, assertively announced text notice that distinguishes “did not start” from “did not complete,” preserves only the bounded safe explanation and recovery action, survives unrelated/stale lifecycle churn, and never disables typed chat; post-result speech failure instead points to the available text result. |
+| IX. Database Migrations | PASS | T024 integrated the authorized 064 handoff and binds `064.001` as the sole predecessor of `065.001`. Two additive tables plus guarded additive `conversation_commit` rebase metadata/admission config use repeat-safe `_init_db()`; representative-data upgrade, wrong-predecessor refusal, idempotency, and concurrent-rebase tests cover the migration. Disable/drain/recovery/retirement live evidence remains a production-readiness gate rather than an ownership ambiguity. |
 | X. Production Readiness | CONDITIONAL PRE-MERGE GATE | No stub path is accepted. Before merge, qualifying evidence must run the immutable candidate against persistent staging with real Keycloak, PostgreSQL, LiveKit, voice workers, exact speech inventory, public WSS/ICE/TURN, representative migrated data, and all client flows. The repository's external staging host is currently inactive, so merge is blocked until it is provisioned; local Compose does not substitute. |
-| XI. Continuous Integration | PASS WITH EXTENSIONS | Extend clean image build, boot/readiness, prod exit-78, full backend module suites, client gates, secret/image scans, candidate staging, and release evidence. Voice-agent and LiveKit digests/config identities become candidate-bound inputs. |
+| XI. Continuous Integration | PASS WITH EXTENSIONS | Before feature-code pushes, extend the deterministic collector/protected schemas for voice-worker, LiveKit config/model, client, and all-language coverage inputs. Then extend clean image build, boot/readiness, prod exit-78, full backend module suites, client gates, secret/image scans, candidate staging, and release evidence. Voice-worker closure/image and LiveKit digests/config identities become candidate-bound inputs. |
 | XII. Cross-Client Consistency | PASS | `ui_protocol.json`, concrete protocol validators, and web/Windows/Android/Apple dispositions classify every required voice frame/action as handled. iOS/macOS use the official SDK; watchOS's explicit media adapter preserves the same server-owned behavior and exact models. No platform is silently omitted. |
 | XIII. Research Integrity | PASS | Pinned versions and watchOS support were checked against official release/source material on 2026-07-31. Code-shaped, simulator-proven, physical-device-proven, Windows-native-proven, staged, and released states remain distinct. |
 
-**Gate result**: design may proceed. Implementation cannot merge until both the exact dependency
-approval record and a qualifying external same-candidate staging topology exist and all
-non-waivable trust/staging checks pass.
+**Gate result**: design and local implementation may proceed under the recorded RTC-only owner
+approval. Distribution cannot resume until the replacement closure fingerprint and image audit are
+complete, and implementation cannot merge until a qualifying external same-candidate staging
+topology exists and all non-waivable trust/staging checks pass.
 
 The only platform-evidence exceptions eligible under the existing Constitution X machinery are
 the already-defined bounded client-runner/device checks. They remain at most seven days, require
@@ -148,7 +173,15 @@ require a durable next-release resolution receipt. Candidate staging, trust/poli
 security, schema migration, exact speech readiness, and PHI/isolation checks are non-waivable.
 Candidate workflows cannot approve their own exception or mutate protected debt state.
 
-Before any requested push, run the deterministic diagnostic collector against the intended base:
+For Feature 065, “all non-waivable trust/staging checks” explicitly includes Spec 060 T120:
+a publisher reviewer distinct from the requester with self-review disabled; trusted-only creation of
+signer-eligible refs or an approved deployed-verifier migration; rollback-safe protected
+disposable/failure tags; and uniquely labeled protected publisher hosts with independent orphan
+recovery across cancellation, runner loss, host restart, and stale-lease expiry. T180 cannot
+complete while any of those four trust gaps remains open.
+
+After Setup task T003 and before any requested push containing feature code or release-evidence
+changes, run the deterministic diagnostic collector against the intended base:
 
 ```bash
 BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence
@@ -292,6 +325,8 @@ specs/065-conversational-voice/
 ├── research.md
 ├── data-model.md
 ├── quickstart.md
+├── dependency-approval.md             # implementation gate; PR review remains authoritative
+├── verification.md                    # candidate-bound command/result/evidence index
 ├── contracts/
 │   ├── voice-rest.openapi.yaml
 │   ├── voice-control.schema.json
@@ -299,16 +334,16 @@ specs/065-conversational-voice/
 │   └── media-plane.md
 ├── checklists/
 │   └── requirements.md
-└── tasks.md                         # /speckit-tasks output; not created here
+└── tasks.md                           # generated and analyzed after planning
 ```
 
 ### Source Code (repository root)
 
 ```text
 backend/
-├── voice_agent/                     # NEW: isolated LiveKit Agents worker; no LLM/tools
+├── voice_agent/                     # NEW: isolated direct-RTC media worker; no Agents/LLM/tools
 │   ├── main.py
-│   ├── session.py                   # AgentSession + Silero VAD + turn lifecycle
+│   ├── session.py                   # RTC room/audio + Silero VAD + owned turn lifecycle
 │   ├── speech_adapters.py           # bounded Speaches realtime STT + fixed Kokoro TTS
 │   ├── watch_bridge.py              # authenticated foreground PCM relay
 │   ├── requirements.in
@@ -323,7 +358,7 @@ backend/
 │   ├── voice_sessions.py            # NEW: leases, ownership, takeover, generation fences
 │   ├── voice_coordinator.py         # NEW: foreground turns, cadence, serialized speech
 │   ├── voice_recap.py               # NEW: committed summary/fallback + sensitive consent
-│   ├── livekit_service.py           # NEW: readiness, rooms, grants, dispatch/disconnect
+│   ├── livekit_service.py           # NEW: readiness, rooms, scoped RTC grants/disconnect
 │   └── tests/                       # NEW/EDIT: state, auth, race, cadence, recap tests
 ├── shared/
 │   ├── database.py                  # EDIT: two tables, commit metadata/admission + revision
@@ -348,7 +383,7 @@ deploy/livekit/                      # NEW: pinned single-node local/staging/pro
 ├── livekit.production.yaml          # secret-free network/TURN policy; secrets injected
 └── README.md
 
-Dockerfile.voice                     # NEW: locked runtime plus voice-agent-test target
+Dockerfile.voice                     # NEW: locked runtime plus voice-worker-test target
 docker-compose.yml                   # EDIT: LiveKit + worker + test-profile service + env mapping
 docker-compose.staging.yml           # EDIT: candidate-bound media topology/readiness
 .env.example                         # EDIT: operator-only LiveKit/voice aliases; no user UI
@@ -409,14 +444,18 @@ needed.
 
 ## Implementation Sequencing
 
-1. Record exact dependency approval; repair the authenticated durable user-turn seam and correlated
+1. Record exact dependency approval and, before feature-code pushes, extend the deterministic local
+   evidence collector, protected evidence schemas, and combined all-language changed-code gate for
+   the new worker/LiveKit/model/config/client inputs. Then repair the authenticated durable user-turn seam and correlated
    acceptance/rejection acknowledgement plus idempotent correlated `new_chat`; split the whole-task
    chat lock into short admission/publication locks with component-and-layout no-rerun three-way rebase; add
    schema, same-chat concurrency, state-machine, recap, egress, and authorization tests before
    enabling media.
-2. Add digest-pinned LiveKit/config and the isolated worker with strict exact-model readiness,
+2. Add digest-pinned LiveKit/config and the isolated direct-RTC worker with strict exact-model
+   readiness, vendored Silero inference, AstralDeep-owned endpointing/reconnect/playout state,
    custom bounded speech adapters, transcript proofs, announcement manifests, idempotent grant
-   rotation/worker acknowledgement, one-time worker grants, and no LLM/tool imports.
+   rotation/worker acknowledgement, service-authenticated pool assignment plus room-scoped worker
+   RTC grants, and no Agents/LLM/tool imports.
 3. Retire the unauthenticated legacy `/api/voice/stream`/caller-selected synthesis paths; expose
    device/UI-connection-bound REST and shared composer/control contracts behind a default-on operational
    kill switch whose readiness still fails closed.
@@ -444,11 +483,12 @@ clarification marker remains.
 [quickstart.md](quickstart.md) is the implementation and live-validation runbook.
 
 **Post-design constitution re-check**: conditional PASS as recorded above. The plan adds no
-unresolved technical ambiguity. The two external gates are explicit rather than papered over:
-formal exact-dependency approval and a qualifying external staging topology are both required
+unresolved technical ambiguity. The RTC-only dependency direction has explicit owner approval; the
+remaining exact closure-fingerprint/distribution gate and qualifying external staging topology are
+both required
 before merge.
 
-## Phase 2 — Next Workflow
+## Phase 2 — Tasks and Analysis
 
-Run `$speckit-tasks` against exactly `specs/065-conversational-voice` after the owner accepts this
-plan. That workflow, not this one, creates dependency-ordered implementation tasks.
+`$speckit-tasks` has generated dependency-ordered work in [tasks.md](tasks.md). The artifact must
+pass `$speckit-analyze` after every cross-artifact remediation and before `$speckit-implement`.

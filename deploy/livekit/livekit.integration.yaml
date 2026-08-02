@@ -1,0 +1,38 @@
+# Test-only, container-internal LiveKit profile for the Feature 065 locked
+# direct-RTC integration lane. Credentials are injected into the server process
+# by the runner and are never stored in this file.
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50009
+  use_external_ip: false
+  advertise_internal_ip: true
+  enable_loopback_candidate: false
+  allow_tcp_fallback: true
+  data_channel_max_buffered_amount: 1048576
+
+room:
+  # The isolated integration lane has no room-administration package in the
+  # locked worker image. Auto-create is limited to this disposable network;
+  # both participants still join with room-scoped, short-lived grants whose
+  # room_create claims are false.
+  auto_create: true
+  empty_timeout: 30
+  departure_timeout: 10
+  max_participants: 2
+  enabled_codecs:
+    - mime: audio/opus
+
+turn:
+  enabled: false
+
+logging:
+  level: warn
+  pion_level: error
+  json: true
+
+enable_data_tracks: true

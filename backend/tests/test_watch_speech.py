@@ -159,7 +159,7 @@ def test_speech_field_present_for_watch_payloads():
 
 def test_manifest_lists_expected_vocabulary():
     assert len(MANIFEST["component_types"]) == 35
-    assert len(MANIFEST["push_types"]) == 58
+    assert len(MANIFEST["push_types"]) == 65
 
 
 def test_every_component_type_survives_watch_adaptation():

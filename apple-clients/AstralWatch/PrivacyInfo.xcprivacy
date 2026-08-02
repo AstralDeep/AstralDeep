@@ -2,11 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Feature 053 — privacy manifest for the embedded watchOS app. The watch
+	<!-- Feature 065 — privacy manifest for the embedded watchOS app. The watch
 	     app is its own .app bundle, so the iOS manifest does not cover it.
-	     Dictation uses the system TextFieldLink sheet (out-of-process): the app
-	     never accesses the microphone or the Speech framework. Audio is TTS
-	     playback only (AVAudioSession .ambient). No tracking, no third-party SDKs. -->
+	     Explicit conversational voice captures memory-only PCM and sends it to
+	     the authenticated first-party watch relay. No audio is retained, tracked,
+	     or shared with a third-party SDK. -->
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>
@@ -29,6 +29,18 @@
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
 			<string>NSPrivacyCollectedDataTypeUserID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeAudioData</string>
 			<key>NSPrivacyCollectedDataTypeLinked</key>
 			<true/>
 			<key>NSPrivacyCollectedDataTypeTracking</key>

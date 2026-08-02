@@ -129,6 +129,42 @@ def test_success_returns_ok_true(client, fake_recorder):
     assert "sk-realkey1234567890abcd" not in serialised
 
 
+def test_probe_is_transient_and_cannot_replace_saved_runtime_config(
+    client,
+    app,
+    store,
+    fake_db,
+):
+    """Testing edited fields never mutates the authoritative saved row/cache."""
+
+    store.set_sync(
+        "test_user",
+        provider="custom",
+        base_url="https://saved.example/v1",
+        model="saved-model",
+        api_key="saved-test-key",
+    )
+    app.state.orchestrator._llm_store = store
+    fake = MagicMock()
+    fake.chat.completions.create = MagicMock(return_value=_success_response())
+
+    with patch("llm_config.api.OpenAI", return_value=fake):
+        response = client.post(
+            "/api/llm/test",
+            json={
+                "api_key": "prospective-test-key",
+                "base_url": "https://prospective.example/v1",
+                "model": "prospective-model",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["model"] == "prospective-model"
+    assert store.get_sync("test_user").model == "saved-model"
+    assert fake_db.users["test_user"]["model"] == "saved-model"
+
+
 # ============================================================================
 # Failure classification taxonomy
 # ============================================================================

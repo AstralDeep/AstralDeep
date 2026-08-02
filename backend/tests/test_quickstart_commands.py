@@ -122,5 +122,17 @@ def test_quickstart_uses_only_the_isolated_lock_and_digest_pinned_browser() -> N
     assert 'docker pull "$PLAYWRIGHT_IMAGE"' in quickstart
     assert '"$PLAYWRIGHT_IMAGE" sh -lc \'test "$(corepack npm --version)"' in quickstart
     assert "corepack npm run test:coverage-conversion:browser" in quickstart
-    assert "--javascript build/060/coverage/node-v8/tooling-javascript.json" in quickstart
+    assert "--javascript build/060/coverage/web-istanbul.json" in quickstart
+    assert "--javascript build/060/coverage/node-v8/tooling-javascript.json" not in quickstart
     assert quickstart.count("--javascript build/060/coverage/") >= 2
+
+
+def test_quickstart_exports_bounded_per_file_xccov_observations() -> None:
+    quickstart = _read(QUICKSTART_PATH)
+
+    assert quickstart.count("python3 scripts/export_xccov_line_coverage.py") == 3
+    assert "xcrun xccov view --archive --json" not in quickstart
+    for platform in ("ios", "macos", "watchos"):
+        assert f"--platform {platform}" in quickstart
+        assert f"apple-{platform}-xccov.json" in quickstart
+    assert "owner-pinned protected-policy" in quickstart

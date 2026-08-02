@@ -540,10 +540,8 @@ private struct InputBar: View {
                     }
                 }
             }
+            VoiceComposerControls()
             HStack(spacing: 6) {
-                // The mic glyph is gone on iOS/macOS: it only focused the field,
-                // and dictation is the system keyboard's job. Web + watch keep
-                // their own speech affordances.
                 TextField("Message AstralDeep…", text: $input, axis: .vertical)
                     .textFieldStyle(.plain)
                     .accessibilityIdentifier("chat-composer-input")
@@ -610,6 +608,130 @@ private struct InputBar: View {
         focused = false  // resign native keyboard focus before model-driven re-rendering
         input = ""
         model.sendChat(submittedInput)
+    }
+}
+
+/// The order, visibility, labels, pressed state, and enabled state all come
+/// from the server-owned composer model. This view contributes presentation
+/// only; it cannot invent a local voice mutation or bypass REST authorization.
+private struct VoiceComposerControls: View {
+    @Environment(AppModel.self) var model
+    @Environment(ThemeStore.self) var theme
+    private var p: AstralPalette { theme.palette }
+
+    var body: some View {
+        let controls = model.voice.composer?.controls.filter(\.visible) ?? []
+        if !controls.isEmpty || model.voice.active || model.voice.terminalNotice != nil {
+            VStack(alignment: .leading, spacing: 5) {
+                if let notice = model.voice.terminalNotice {
+                    VoiceTerminalNoticeView(notice: notice)
+                }
+                if !controls.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(controls) { control in
+                                Button {
+                                    Task { await model.performVoiceControl(control.action) }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        if control.busy {
+                                            ProgressView().controlSize(.small)
+                                        } else {
+                                            Image(systemName: symbol(control.icon))
+                                        }
+                                        Text(control.label).lineLimit(1)
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .foregroundStyle(control.pressed ? p.surface : p.primary)
+                                    .background(
+                                        control.pressed ? p.primary : p.surface2,
+                                        in: Capsule()
+                                    )
+                                    .overlay(Capsule().stroke(p.border))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!control.enabled || control.busy)
+                                .accessibilityIdentifier("voice-control-\(control.key)")
+                                .accessibilityLabel(control.label)
+                                .accessibilityValue(
+                                    control.busy ? "In progress" : (control.pressed ? "On" : "Off"))
+                            }
+                        }
+                    }
+                }
+                if model.voice.active, let message = model.voice.message, !message.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: model.voice.mediaConnected ? "waveform" : "waveform.slash")
+                        Text(message).lineLimit(2)
+                        if model.voice.awaitingAcceptance > 0 {
+                            ProgressView().controlSize(.mini)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(p.muted)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("voice-conversation-status")
+                }
+            }
+        }
+    }
+
+    private func symbol(_ serverIcon: String) -> String {
+        switch serverIcon {
+        case "microphone": "mic.fill"
+        case "device-transfer": "arrow.triangle.2.circlepath"
+        case "stop": "stop.fill"
+        case "speaker-stop": "speaker.slash.fill"
+        case "speaker-muted": "speaker.slash"
+        case "speaker-consent": "speaker.wave.2.bubble"
+        case "chat": "bubble.left.and.bubble.right"
+        default: "waveform"
+        }
+    }
+}
+
+/// A visible and VoiceOver-readable alert anchored to the chat composer. Its
+/// icon and explicit title preserve meaning independently of theme color, and
+/// all server text is rendered by `Text` as inert plain content.
+private struct VoiceTerminalNoticeView: View {
+    @Environment(ThemeStore.self) var theme
+    let notice: VoiceTerminalNotice
+    private var p: AstralPalette { theme.palette }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(p.error)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notice.title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(p.text)
+                Text(notice.serverMessage)
+                    .font(.caption)
+                    .foregroundStyle(p.text)
+                if let guidance = notice.guidance {
+                    Text(guidance)
+                        .font(.caption)
+                        .foregroundStyle(p.text)
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.error.opacity(0.14), in: RoundedRectangle(cornerRadius: AstralRadius.md))
+        .overlay(
+            RoundedRectangle(cornerRadius: AstralRadius.md)
+                .stroke(p.error.opacity(0.75), lineWidth: 1)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("voice-request-terminal-notice")
+        .accessibilityLabel("Voice request alert")
+        .accessibilityValue(notice.accessibilityLabel)
+        .accessibilityAddTraits(.isStaticText)
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }
 

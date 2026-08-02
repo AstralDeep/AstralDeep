@@ -58,6 +58,9 @@ final class OperationReconciliationTests: XCTestCase {
             tokenProvider: { "token" },
             transport: { request in
                 XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Pragma"), "no-cache")
+                XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
                 if request.url?.path == "/api/operations/\(operationId)" {
                     return (200, try operation.encoded())
                 }

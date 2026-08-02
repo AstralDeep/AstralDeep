@@ -1,19 +1,23 @@
-# AstralDeep — native Apple clients (features 051 + 053)
+# AstralDeep — native Apple clients (features 051 + 053 + 065)
 
-Three SDUI targets on one shared, zero-dependency Swift package:
+Three SDUI targets on one shared Swift package, with a pinned LiveKit RTC
+dependency for conversational media on iOS and macOS:
 
 ```text
 AstralCore/    # SPM package: protocol, dispositions + drift guard, WS client,
                # PKCE, device-login client, token stores, REST (swift test-able)
 AstralApp/     # iOS (twin of android-client) + macOS (twin of windows-client)
                # — ONE multiplatform target; also embeds the watch app
-AstralWatch/   # watchOS: QR sign-in (RFC 8628 via backend broker), voice in,
-               # server-supplied spoken rendition out (on-device TTS)
+AstralWatch/   # watchOS: QR sign-in (RFC 8628 via backend broker), bounded
+               # PCM voice bridge in/out, and server-synthesized speech
 ```
 
-Specs: `specs/051-apple-native-clients/` (051 — the clients themselves) and
+Specs: `specs/051-apple-native-clients/` (051 — the clients themselves),
 `specs/053-apple-app-store/` (053 — packaging, signing, and the release
-pipeline). **No third-party Swift dependencies** (Constitution V).
+pipeline), and `specs/065-conversational-voice/` (065 — included voice across
+all clients). Feature 065 pins `client-sdk-swift` 2.15.3 and every resolved
+transitive revision in the committed `Package.resolved`; watchOS uses the
+owned bounded PCM-over-WSS bridge rather than the LiveKit package.
 
 ## Shipped identities
 
@@ -151,6 +155,27 @@ xcodebuild -project apple-clients/AstralApp/AstralApp.xcodeproj \
 `DEVELOPMENT_TEAM = $(ASTRAL_DEVELOPMENT_TEAM)` is empty by default, so
 unsigned CI builds and clean clones build without a signing identity.
 
+### One-time macOS network-cache migration
+
+Feature 065 routes authenticated HTTP and WebSocket traffic through an ephemeral,
+no-store session. At every iOS, macOS, and watchOS launch, the app also fails closed
+unless it can remove the bundle-scoped `Cache.db`, journal/WAL/SHM files, and
+`fsCachedData` directory from its current sandbox.
+
+A sandboxed macOS build cannot reach the global cache directory created by an older
+unsandboxed development build. Before validating an upgrade from such a build, quit
+the old app and use Finder to move only these legacy artifacts from
+`~/Library/Caches/com.personalailabs.astraldeep/` to Trash:
+
+- `Cache.db`, `Cache.db-shm`, `Cache.db-wal`, and `Cache.db-journal`
+- `fsCachedData`
+
+Then launch the signed, sandboxed build and verify both the global and container
+cache locations are clear. Moving the artifacts is recoverable and does not erase
+Trash; an operator must treat Trash as retained sensitive data until they explicitly
+empty it. Do not add a temporary sandbox exception or re-enable persistent URL
+caching to automate this development-only migration.
+
 ## Running against the dev backend
 
 1. Backend up (`docker compose up -d`) with `.env`:
@@ -176,8 +201,9 @@ unsigned CI builds and clean clones build without a signing identity.
   and never permits an insecure load to a public host — so Release
   (HTTPS to `sandbox.ai.uky.edu`) is fully ATS-compliant.
 - **Sandbox / entitlements**: the only entitlements file is
-  `AstralApp/AstralApp-macOS.entitlements` (`app-sandbox` +
-  `network.client`), wired via `CODE_SIGN_ENTITLEMENTS[sdk=macosx*]` on the
+  `AstralApp/AstralApp-macOS.entitlements` (`app-sandbox`, `network.client`,
+  the `network.server` socket-bind capability required by LiveKit/WebRTC ICE,
+  and audio input), wired via `CODE_SIGN_ENTITLEMENTS[sdk=macosx*]` on the
   **Release** config alongside `ENABLE_APP_SANDBOX[sdk=macosx*] = YES` and
   `ENABLE_HARDENED_RUNTIME[sdk=macosx*] = YES`. There is no iOS or watch
   entitlements file and no `keychain-access-groups` — tokens live under the
@@ -187,10 +213,11 @@ unsigned CI builds and clean clones build without a signing identity.
   file-system-synchronized folders to be bundled) declare
   `NSPrivacyTracking = false` and the `UserDefaults` required-reason `CA92.1`.
 - **Encryption**: `ITSAppUsesNonExemptEncryption = false` in both Info.plists.
-- **No microphone/speech usage strings** are declared, and none are needed:
-  the watch dictates via SwiftUI `TextFieldLink` (the system dictation sheet,
-  out-of-process) and only plays audio — it never touches the microphone or
-  the Speech framework.
+- **Microphone disclosure**: both app Info.plists declare a narrowly worded
+  `NSMicrophoneUsageDescription`. Capture starts only after the user activates
+  conversation mode and stops on end/background/ownership loss. ASR and TTS
+  run on the server; the apps do not use Apple's Speech framework or retain
+  microphone/generated audio.
 - **BYO client-side agents (features 057/058) are AUTHOR-ONLY on these builds.**
   The App Sandbox forbids spawning arbitrary child processes / executing the
   packaged interpreter, so a Mac App Store build cannot *host* a user-authored

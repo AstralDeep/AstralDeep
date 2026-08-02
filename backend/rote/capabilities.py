@@ -21,18 +21,23 @@ from typing import Any, Dict, FrozenSet, Optional
 
 logger = logging.getLogger("rote.capabilities")
 
+_VOICE_PERMISSION_STATES = frozenset(
+    {"not_determined", "authorized", "denied", "restricted"}
+)
+_VOICE_TRANSPORTS = frozenset({"livekit", "watch_pcm_websocket"})
+
 
 class DeviceType(str, Enum):
     BROWSER = "browser"  # Full desktop browser
     WINDOWS = "windows"  # Native Windows desktop app (renders structured components natively)
     ANDROID = "android"  # Native Android app (phone/tablet/foldable; renders structured components natively)
-    IOS     = "ios"      # Native iOS/iPadOS app (renders structured components natively; 051)
-    MACOS   = "macos"    # Native macOS desktop app (renders structured components natively; 051)
-    TABLET  = "tablet"   # iPad / Android tablet (~768-1024px)
-    MOBILE  = "mobile"   # Phone (<=480px viewport)
-    WATCH   = "watch"    # Smartwatch (<=200px viewport, or explicit)
-    TV      = "tv"       # Smart TV (large screen, read-only)
-    VOICE   = "voice"    # Audio-only, no screen
+    IOS = "ios"  # Native iOS/iPadOS app (renders structured components natively; 051)
+    MACOS = "macos"  # Native macOS desktop app (renders structured components natively; 051)
+    TABLET = "tablet"  # iPad / Android tablet (~768-1024px)
+    MOBILE = "mobile"  # Phone (<=480px viewport)
+    WATCH = "watch"  # Smartwatch (<=200px viewport, or explicit)
+    TV = "tv"  # Smart TV (large screen, read-only)
+    VOICE = "voice"  # Audio-only, no screen
 
 
 # Declarative host-config. Keys mirror the DeviceProfile rendering fields;
@@ -142,6 +147,10 @@ class DeviceCapabilities:
     has_touch: bool = False
     has_geolocation: bool = False
     has_microphone: bool = False
+    has_audio_output: bool = False
+    microphone_permission: str = "not_determined"
+    full_duplex: bool = False
+    voice_transport: str = ""
     has_camera: bool = False
     has_file_system: bool = True
     connection_type: str = "unknown"  # wifi, 4g, 3g, 2g, slow-2g
@@ -178,7 +187,41 @@ class DeviceProfile:
         An optional ``supported_types`` list (the client's capability-negotiated
         renderable set) is carried onto the profile."""
         valid_keys = DeviceCapabilities.__dataclass_fields__.keys()
-        caps = DeviceCapabilities(**{k: v for k, v in data.items() if k in valid_keys})
+        normalized = {k: v for k, v in data.items() if k in valid_keys}
+        voice = data.get("voice")
+        voice = voice if isinstance(voice, dict) else {}
+        for name in (
+            "has_microphone",
+            "has_audio_output",
+            "microphone_permission",
+            "full_duplex",
+        ):
+            if name not in normalized and name in voice:
+                normalized[name] = voice[name]
+
+        # Web and older Windows registration payloads used ``transport`` while
+        # native protocol descriptors use the unambiguous ``voice_transport``.
+        # Normalize the alias from declared capability data only; client type or
+        # user-agent identity never participates in the decision.
+        transport = normalized.get(
+            "voice_transport",
+            data.get(
+                "transport",
+                voice.get("voice_transport", voice.get("transport")),
+            ),
+        )
+        normalized["voice_transport"] = (
+            transport if transport in _VOICE_TRANSPORTS else ""
+        )
+        permission = normalized.get("microphone_permission")
+        normalized["microphone_permission"] = (
+            permission if permission in _VOICE_PERMISSION_STATES else "not_determined"
+        )
+        for name in ("has_microphone", "has_audio_output", "full_duplex"):
+            value = normalized.get(name)
+            normalized[name] = value if isinstance(value, bool) else False
+
+        caps = DeviceCapabilities(**normalized)
         profile = DeviceProfile._derive(caps)
         st = data.get("supported_types")
         if isinstance(st, (list, tuple, set, frozenset)):

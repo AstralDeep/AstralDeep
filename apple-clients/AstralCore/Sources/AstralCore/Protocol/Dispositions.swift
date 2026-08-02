@@ -24,6 +24,7 @@ public struct ClientDispositions: Sendable {
     public let client: String
     public let frames: [String: FrameDisposition]
     public let components: [String: ComponentDisposition]
+    public let voiceActions: Set<String>
 
     public var nativeComponentTypes: [String] {
         components.compactMap { key, value in
@@ -42,10 +43,12 @@ public struct ClientDispositions: Sendable {
     private static let commonHandled: [String] = [
         "agent_lifecycle",
         "auth_required", "chat_created", "chat_deleted", "chat_loaded", "chat_status",
-        "chat_step", "conversation_commit_ready", "conversation_snapshot", "error",
+        "chat_step", "composer_state", "conversation_commit_ready", "conversation_snapshot", "error",
         "operation_status", "stream_error", "ui_append", "ui_render",
         "ui_stream_data", "ui_update", "ui_upsert",
         "user_message_acked",
+        "voice_announcement_media", "voice_control_binding", "voice_session_state",
+        "voice_submission_rejected", "voice_transcript", "voice_turn_state",
     ]
 
     /// Deliberately ignored on every Apple client (044 channel decisions —
@@ -109,7 +112,8 @@ public struct ClientDispositions: Sendable {
         components: fullComponentSet(fallbacks: [
             "audio": "web-only media, server degrade ladder (044 channel decision)",
             "generative": "web-only media (044 channel decision)",
-        ]))
+        ]),
+        voiceActions: Set(allVoiceControlActions))
 
     // MARK: macOS (twin of Windows — 044 dispositions)
 
@@ -119,7 +123,8 @@ public struct ClientDispositions: Sendable {
         components: fullComponentSet(fallbacks: [
             "audio": "web-only media, server degrade ladder (044 channel decision)",
             "generative": "web-only media (044 channel decision)",
-        ]))
+        ]),
+        voiceActions: Set(allVoiceControlActions))
 
     // MARK: watch (server pre-degrades via the `watch` ROTE profile)
 
@@ -151,7 +156,8 @@ public struct ClientDispositions: Sendable {
                 "user_preferences": "the wrist is system-styled (no live theming)",
                 "workspace_timeline_mode": "timeline is a larger-screen surface",
             ]),
-        components: watchComponentSet())
+        components: watchComponentSet(),
+        voiceActions: Set(allVoiceControlActions))
 
     // MARK: component tables
 
@@ -208,7 +214,7 @@ public struct ClientDispositions: Sendable {
         "chat_status", "chat_step", "chrome_menu", "chrome_render",
         "chrome_surface", "combine_error", "combine_status",
         "component_deleted", "component_save_error", "component_saved",
-        "components_combined", "components_condensed", "conversation_commit_ready",
+        "components_combined", "components_condensed", "composer_state", "conversation_commit_ready",
         "conversation_snapshot",
         "error", "heartbeat", "history_list", "llm_config_ack",
         "llm_usage_report", "notification", "operation_status",
@@ -216,6 +222,17 @@ public struct ClientDispositions: Sendable {
         "stream_list", "stream_subscribed", "stream_unsubscribed",
         "system_config", "task_completed", "task_started", "tool_progress",
         "ui_append", "ui_render", "ui_stream_data", "ui_update", "ui_upsert",
-        "user_message_acked", "user_preferences", "workspace_timeline_mode",
+        "user_message_acked", "user_preferences", "voice_announcement_media",
+        "voice_control_binding", "voice_session_state", "voice_submission_rejected",
+        "voice_transcript", "voice_turn_state", "workspace_timeline_mode",
+    ]
+
+    /// Feature 065 server-owned composer actions. Each Apple surface handles
+    /// this exact vocabulary; controls that are not currently applicable are
+    /// omitted or disabled by `composer_state`, never renamed by the client.
+    public static let allVoiceControlActions: [String] = [
+        "voice_microphone_set", "voice_sensitive_recap_request", "voice_session_end",
+        "voice_session_start", "voice_session_takeover", "voice_speech_mute_set",
+        "voice_speech_stop", "voice_visible_chat_update",
     ]
 }

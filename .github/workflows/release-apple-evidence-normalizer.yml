@@ -1,0 +1,228 @@
+# Protected fresh-job normalizer for Apple release evidence. The caller passes
+# only immutable raw-artifact metadata and the historical checkout root.
+# Candidate code is checked out as source data but is never executed here.
+name: release-apple-evidence-normalizer
+
+on:
+  workflow_call:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+      raw_artifact_id:
+        required: true
+        type: string
+      raw_artifact_name:
+        required: true
+        type: string
+      archive_repo_root:
+        required: true
+        type: string
+      platform:
+        required: true
+        type: string
+      app_archive:
+        required: true
+        type: string
+      producer_job_id:
+        required: true
+        type: string
+      final_artifact_name:
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  normalize:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      RELEASE_TRUSTED_BUILDER_SHA: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
+      RAW_ARTIFACT_ID: ${{ inputs.raw_artifact_id }}
+      RAW_ARTIFACT_NAME: ${{ inputs.raw_artifact_name }}
+      ARCHIVE_REPO_ROOT: ${{ inputs.archive_repo_root }}
+      PRODUCER_PLATFORM: ${{ inputs.platform }}
+      PRODUCER_JOB_ID: ${{ inputs.producer_job_id }}
+      APP_ARCHIVE: ${{ inputs.app_archive }}
+      FINAL_ARTIFACT_NAME: ${{ inputs.final_artifact_name }}
+      XCODE_VERSION: "26.6"
+      XCODE_BUILD: "17F113"
+      PYTHONNOUSERSITE: "1"
+    steps:
+      - name: Check out the exact candidate as normalization data
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+      - name: Select the protected policy Python runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Reject candidate-controlled normalization paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PRODUCER_PLATFORM" =~ ^(macos|ios|watchos)$ ]]
+          test "$PRODUCER_JOB_ID" = "${PRODUCER_PLATFORM}-producer"
+          case "$PRODUCER_PLATFORM:$APP_ARCHIVE" in
+            macos:AstralApp.app.zip|ios:AstralApp.app.zip|watchos:AstralWatch.app.zip) ;;
+            *) echo "Apple platform/app archive binding is invalid" >&2; exit 1 ;;
+          esac
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test ! -e protected-policy && test ! -L protected-policy
+          test ! -e build && test ! -L build
+      - name: Check out the owner-reviewed Apple normalization policy
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
+          path: protected-policy
+          persist-credentials: false
+      - name: Bind Apple normalization to the protected checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TRUSTED_BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test ! -L protected-policy
+          test "$(git -C protected-policy rev-parse HEAD)" = "$RELEASE_TRUSTED_BUILDER_SHA"
+          for policy in protected-policy/scripts/extract_release_artifact.py protected-policy/scripts/export_xccov_line_coverage.py protected-policy/scripts/validate_release_evidence.py protected-policy/specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json; do
+            test -f "$policy"
+            test ! -L "$policy"
+          done
+      - name: Select and verify exact Xcode for xccov
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=""
+          for candidate in /Applications/Xcode_26.6.app /Applications/Xcode_26.6*.app /Applications/Xcode.app; do
+            [[ -d "$candidate" ]] || continue
+            if [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]] && [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]; then
+              selected="$candidate"
+              break
+            fi
+          done
+          [[ -n "$selected" ]] || { echo "Xcode ${XCODE_VERSION} (${XCODE_BUILD}) is required" >&2; exit 1; }
+          sudo xcode-select --switch "$selected/Contents/Developer"
+          test "$(xcodebuild -version | sed -n '1p')" = "Xcode ${XCODE_VERSION}"
+          test "$(xcodebuild -version | sed -n '2p')" = "Build version ${XCODE_BUILD}"
+      - name: Fetch the exact current-run raw evidence artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RAW_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          mkdir -p build/060/api
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --paginate --jq '.artifacts[]' > build/060/api/raw-artifacts.ndjson
+          python3 -I - <<'PY'
+          import json, os, pathlib, subprocess
+
+          artifact_id = os.environ["RAW_ARTIFACT_ID"]
+          expected_name = os.environ["RAW_ARTIFACT_NAME"]
+          records = [
+              json.loads(line)
+              for line in pathlib.Path("build/060/api/raw-artifacts.ndjson")
+              .read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+          matches = [item for item in records if str(item.get("id", "")) == artifact_id]
+          if len(matches) != 1:
+              raise SystemExit("raw Apple artifact id is not unique in the current run")
+          artifact = matches[0]
+          size = artifact.get("size_in_bytes")
+          if (
+              artifact.get("name") != expected_name
+              or artifact.get("expired") is not False
+              or isinstance(size, bool)
+              or not isinstance(size, int)
+              or not 0 < size <= 512 * 1024 * 1024
+          ):
+              raise SystemExit("raw Apple artifact metadata is not exact and bounded")
+          workflow_run = artifact.get("workflow_run")
+          if (
+              isinstance(workflow_run, dict)
+              and str(workflow_run.get("id", "")) != os.environ["GITHUB_RUN_ID"]
+          ):
+              raise SystemExit("raw Apple artifact belongs to a different run")
+          archive = pathlib.Path("build/060/api/raw-apple-evidence.zip")
+          with archive.open("xb") as stream:
+              subprocess.run(
+                  [
+                      "gh",
+                      "api",
+                      f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{artifact_id}/zip",
+                  ],
+                  check=True,
+                  stdout=stream,
+              )
+          if not 0 < archive.stat().st_size <= 512 * 1024 * 1024:
+              raise SystemExit("downloaded raw Apple artifact is empty or oversized")
+          PY
+          test ! -e build/060/raw-evidence && test ! -L build/060/raw-evidence
+          python3 -I protected-policy/scripts/extract_release_artifact.py --archive build/060/api/raw-apple-evidence.zip --target build/060/raw-evidence
+      - name: Normalize raw Apple evidence under protected policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="build/060/raw-evidence"
+          final="build/060/final-evidence"
+          result="$raw/coverage/raw/apple-${PRODUCER_PLATFORM}.xcresult"
+          report="$final/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"
+          test ! -e "$raw/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"
+          test ! -L "$raw/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"
+          test -f "$raw/${PRODUCER_PLATFORM}.json"
+          test ! -L "$raw/${PRODUCER_PLATFORM}.json"
+          test -f "$raw/${PRODUCER_PLATFORM}/${APP_ARCHIVE}"
+          test ! -L "$raw/${PRODUCER_PLATFORM}/${APP_ARCHIVE}"
+          test -d "$raw/${PRODUCER_PLATFORM}-raw"
+          test ! -L "$raw/${PRODUCER_PLATFORM}-raw"
+          test -d "$result" && test ! -L "$result"
+          test ! -e "$final" && test ! -L "$final"
+          mkdir -p "$final/${PRODUCER_PLATFORM}" "$final/${PRODUCER_PLATFORM}-raw" "$final/coverage"
+          /bin/cp "$raw/${PRODUCER_PLATFORM}/${APP_ARCHIVE}" "$final/${PRODUCER_PLATFORM}/${APP_ARCHIVE}"
+          /bin/cp -R "$raw/${PRODUCER_PLATFORM}-raw/." "$final/${PRODUCER_PLATFORM}-raw/"
+          python3 -I - <<'PY'
+          import importlib.util, os, pathlib, sys
+
+          validator_path = pathlib.Path(
+              "protected-policy/scripts/validate_release_evidence.py"
+          )
+          spec = importlib.util.spec_from_file_location(
+              "protected_apple_evidence_validator", validator_path
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit("protected evidence validator cannot be loaded")
+          validator = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = validator
+          spec.loader.exec_module(validator)
+          schema = validator.load_json_document(
+              "protected-policy/specs/060-runtime-reliability-hardening/contracts/"
+              "release-evidence.schema.json"
+          )
+          source = pathlib.Path(
+              f"build/060/raw-evidence/{os.environ['PRODUCER_PLATFORM']}.json"
+          )
+          document = validator.load_json_document(source)
+          validator.validate_document(document, schema)
+          if document.get("platform") != os.environ["PRODUCER_PLATFORM"]:
+              raise SystemExit("raw Apple report has the wrong platform")
+          destination = pathlib.Path(
+              f"build/060/final-evidence/{os.environ['PRODUCER_PLATFORM']}.json"
+          )
+          with destination.open("xb") as stream:
+              stream.write(source.read_bytes())
+          PY
+          test ! -e "$report" && test ! -L "$report"
+          git diff --exit-code -- . ':(exclude)build'
+          python3 -I protected-policy/scripts/export_xccov_line_coverage.py --repo "$PWD" --archive-repo-root "$ARCHIVE_REPO_ROOT" --xcresult "$result" --platform "$PRODUCER_PLATFORM" --output "$report"
+      - name: Upload final protected Apple evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.final_artifact_name }}
+          path: build/060/final-evidence/
+          if-no-files-found: error
+          retention-days: 14

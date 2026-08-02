@@ -47,8 +47,29 @@ private let stagingProjectionKeys = [
     "representative_dataset_sha256",
     "source_schema_revision",
     "topology",
+    "voice_runtime",
     "worker_paths",
 ]
+
+private let voiceRuntimeProjectionKeys: Set<String> = [
+    "voice_worker_image_reference",
+    "voice_worker_image_sha256",
+    "livekit_image_reference",
+    "livekit_image_sha256",
+    "livekit_config_sha256",
+    "livekit_public_url",
+    "livekit_turn_domain",
+    "speech_profile",
+]
+
+private let speechProfileProjectionKeys: Set<String> = [
+    "asr_model", "tts_model", "voice", "sample_rate_hz", "inventory_sha256", "profile_sha256",
+]
+
+private let voiceASRModel = "Systran/faster-whisper-large-v3"
+private let voiceTTSModel = "speaches-ai/Kokoro-82M-v1.0-ONNX"
+private let voiceName = "af_heart"
+private let voiceSampleRateHz = 24000
 
 private struct EvidenceFailure: Error, CustomStringConvertible {
     let code: String
@@ -81,6 +102,56 @@ private func requiredEnvironment(_ name: String) throws -> String {
 
 private func sha256Hex(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+private func isSHA256(_ value: Any?) -> Bool {
+    guard let digest = value as? String, digest.utf8.count == 64 else { return false }
+    return digest.utf8.allSatisfy {
+        (48...57).contains($0) || (97...102).contains($0)
+    }
+}
+
+/// Validate the secret-free stage identity without rebuilding or overriding it.
+private func validateVoiceRuntime(_ value: Any) throws {
+    guard let runtime = value as? [String: Any], Set(runtime.keys) == voiceRuntimeProjectionKeys,
+        let profile = runtime["speech_profile"] as? [String: Any],
+        Set(profile.keys) == speechProfileProjectionKeys
+    else {
+        throw EvidenceFailure(
+            code: "voice_runtime_invalid",
+            message: "trusted voice_runtime has a missing, extra, or non-object field")
+    }
+    guard profile["asr_model"] as? String == voiceASRModel,
+        profile["tts_model"] as? String == voiceTTSModel,
+        profile["voice"] as? String == voiceName,
+        (profile["sample_rate_hz"] as? NSNumber)?.intValue == voiceSampleRateHz
+    else {
+        throw EvidenceFailure(
+            code: "speech_profile_mismatch",
+            message: "trusted speech_profile differs from the exact voice profile")
+    }
+    for field in [
+        "voice_worker_image_sha256", "livekit_image_sha256", "livekit_config_sha256",
+    ] where !isSHA256(runtime[field]) {
+        throw EvidenceFailure(
+            code: "voice_runtime_digest_invalid",
+            message: "trusted voice_runtime \(field) is not a SHA-256 digest")
+    }
+    for field in ["inventory_sha256", "profile_sha256"] where !isSHA256(profile[field]) {
+        throw EvidenceFailure(
+            code: "speech_profile_digest_invalid",
+            message: "trusted speech_profile \(field) is not a SHA-256 digest")
+    }
+    for field in [
+        "voice_worker_image_reference", "livekit_image_reference",
+        "livekit_public_url", "livekit_turn_domain",
+    ] {
+        guard let reference = runtime[field] as? String, !reference.isEmpty else {
+            throw EvidenceFailure(
+                code: "voice_runtime_reference_invalid",
+                message: "trusted voice_runtime \(field) is empty")
+        }
+    }
 }
 
 /// Pretty sorted-key JSON with a trailing newline, written atomically
@@ -204,6 +275,14 @@ private final class WatchEvidenceRecorder {
                 code: "staging_endpoint_mismatch",
                 message: "ASTRAL_STAGING_URL differs from the staged endpoint")
         }
+        guard let workerPaths = projected["worker_paths"] as? [String],
+            workerPaths.contains("voice")
+        else {
+            throw EvidenceFailure(
+                code: "voice_worker_missing",
+                message: "trusted staging output does not include the voice worker path")
+        }
+        try validateVoiceRuntime(projected["voice_runtime"] as Any)
         staging = projected
 
         artifact = [

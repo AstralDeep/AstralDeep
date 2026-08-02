@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<!-- Feature 053 — Mac App Store requires the App Sandbox. Least privilege:
-	     nothing here grants ambient filesystem or network-server access.
+	     nothing here grants ambient filesystem access.
 
 	     Keychain access uses the default per-app access group, so no
 	     keychain-access-groups entitlement (and therefore no Keychain Sharing
@@ -11,8 +11,17 @@
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
 
-	<!-- Outbound HTTPS + WebSocket to the orchestrator. No network.server. -->
+	<!-- Outbound HTTPS + WebSocket to the orchestrator. -->
 	<key>com.apple.security.network.client</key>
+	<true/>
+
+	<!-- LiveKit/WebRTC binds ephemeral local UDP sockets for ICE. This does not
+	     expose an application-level listening service. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+
+	<!-- Explicit conversational-voice capture; no audio is written to disk. -->
+	<key>com.apple.security.device.audio-input</key>
 	<true/>
 
 	<!-- A sandboxed app can only touch files the user explicitly picks, and only

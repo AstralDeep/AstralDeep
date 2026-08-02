@@ -1125,7 +1125,8 @@ separately schema-validated `document_type='windows_draft_verification_provenanc
 attestation-verified `trusted_release_decision` reference: decision/evidence-set IDs, canonical
 manifest artifact ID/member/digest, required-check name, protected builder/policy identity, and
 verification time. It also binds readiness/publication workflow identities; the installed full
-controller/publisher commits and certificate identity; exact-workflow-SHA token-broker policy;
+controller/publisher commits and certificate identity; the legacy schema field carrying the exact
+native publisher-policy digest (not a token broker);
 protected deployment/reviewer/requester/API/payload approval; legacy bridge blob hash; generated
 timestamp; the matrix-tested executable plus post-upload re-downloaded `AstralDeep.exe`,
 `SHA256SUMS`, and `cosign.bundle`; and official repository/tag/release ID, three distinct asset IDs,
@@ -1136,7 +1137,7 @@ published API-shaped `/releases/latest` response consumed by v0.3.0 to identify 
 
 To remain accepted by the shipped v0.3.0 updater, detached signing runs only in the byte-pinned
 `release-windows.yml` compatibility bridge on the protected publisher-created `v0.4.0` tag. The
-bridge has contents/actions-read/OIDC-only authority and no release mutation; it may retrieve only
+bridge has contents/actions/attestations-read plus OIDC authority and no release mutation; it may retrieve only
 the exact originating run/attempt/artifact identity and re-hashes those bytes. Its exact legacy SAN,
 template hash, and actual v0.3.0 verifier pass are recorded. Detached Sigstore MUST NOT alter executable bytes,
 so tested and draft EXE digests are equal. The signing object fixes its legacy identity, GitHub OIDC

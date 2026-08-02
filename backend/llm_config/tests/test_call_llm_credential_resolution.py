@@ -21,11 +21,16 @@ import types
 
 import pytest
 
-from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
+from orchestrator.async_tasks import (
+    BackgroundTask,
+    DurableUserTurnWebSocket,
+    VirtualWebSocket,
+)
 from orchestrator.orchestrator import Orchestrator
 
 from llm_config import CredentialSource, LLMUnavailable, build_llm_client
 from llm_config.audit_events import record_llm_call
+from llm_config.ws_handlers import handle_llm_config_set
 
 ALICE = "alice-sub"
 ALICE_KEY = "sk-alice-1234567890abcdefgh"
@@ -134,6 +139,133 @@ class TestUserSocketResolution:
         _register(stub, ws_bob, "bob-sub")
         with pytest.raises(LLMUnavailable):
             await stub._resolve_llm_client_for(ws_bob)
+
+    async def test_successful_save_immediately_governs_typed_and_voice_calls(
+        self,
+        monkeypatch,
+        store,
+        fake_recorder,
+        safe_send,
+    ):
+        """The tested USER model wins over stale cache and operator tiers."""
+
+        store.set_sync(
+            ALICE,
+            provider="custom",
+            base_url="https://old.example/v1",
+            model="old-model",
+            api_key=ALICE_KEY,
+        )
+
+        async def probe(**_kwargs):
+            return True, None, None
+
+        monkeypatch.setattr(
+            "llm_config.ws_handlers.probe_chat_completion",
+            probe,
+        )
+        saved = await handle_llm_config_set(
+            safe_send=safe_send,
+            websocket=object(),
+            config={
+                "provider": "custom",
+                "base_url": "https://new.example/v1",
+                "model": "new-model",
+                "api_key": ALICE_KEY,
+            },
+            actor_user_id=ALICE,
+            auth_principal=ALICE,
+            store=store,
+            recorder=fake_recorder,
+        )
+        assert saved is True
+        assert (await store.get(ALICE)).model == "new-model"
+        _seed_system(store)
+
+        typed = _FakeWS()
+        voice = DurableUserTurnWebSocket(typed, user_id=ALICE)
+        runtime = _make_stub(store, fake_recorder)
+        _register(runtime, typed, ALICE)
+        _register(runtime, voice, ALICE)
+        runtime._LLMUnavailable = LLMUnavailable
+        runtime._llm_audit_principals = types.MethodType(
+            Orchestrator._llm_audit_principals,
+            runtime,
+        )
+        runtime._llm_unsupported_params = {}
+        runtime.llm_reasoning_effort = None
+        runtime._valid_reasoning_effort = lambda _value: None
+        runtime.MAX_RETRIES = 1
+        runtime.rote = types.SimpleNamespace(
+            get_profile=lambda _socket: types.SimpleNamespace(
+                device_type=types.SimpleNamespace(value="browser"),
+                capabilities={},
+            )
+        )
+
+        requested_models: list[str] = []
+        built_models: list[str] = []
+
+        class Completions:
+            def create(self, **kwargs):
+                requested_models.append(kwargs["model"])
+                return types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        message=types.SimpleNamespace(content="done")
+                    )],
+                    usage=types.SimpleNamespace(total_tokens=1),
+                )
+
+        def build(config, source):
+            built_models.append(config.model)
+            return (
+                types.SimpleNamespace(
+                    chat=types.SimpleNamespace(completions=Completions())
+                ),
+                source,
+                config,
+            )
+
+        async def record(*_args, **_kwargs):
+            return None
+
+        async def usage(*_args, **_kwargs):
+            return None
+
+        runtime._build_llm_client = build
+        runtime._record_llm_call = record
+        runtime._emit_llm_usage_report = usage
+        monkeypatch.setenv("FF_LLM_STREAMING", "false")
+        monkeypatch.setenv("FF_MODEL_ROUTER", "true")
+        monkeypatch.setenv(
+            "MODEL_TIERS",
+            '{"small":"operator-small","medium":"old-model",'
+            '"large":"operator-large"}',
+        )
+
+        results = [
+            await Orchestrator._call_llm(
+                runtime,
+                socket,
+                [{"role": "user", "content": "hello"}],
+                feature="tool_dispatch",
+            )
+            for socket in (typed, voice)
+        ]
+        system_result = await Orchestrator._call_llm(
+            runtime,
+            None,
+            [{"role": "user", "content": "background work"}],
+            feature="tool_dispatch",
+        )
+
+        assert [message.content for message, _usage in results] == [
+            "done",
+            "done",
+        ]
+        assert system_result[0].content == "done"
+        assert built_models == ["new-model", "new-model", "gpt-4o"]
+        assert requested_models == ["new-model", "new-model", "old-model"]
 
 
 class TestSystemContextResolution:

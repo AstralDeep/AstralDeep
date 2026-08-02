@@ -16,6 +16,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from personalization import retrieval_scoring as rs  # noqa: E402
+from personalization import project_scope as ps  # noqa: E402
 from personalization.memory_tools import MemoryTools  # noqa: E402
 
 
@@ -76,8 +77,11 @@ class _Repo:
     def __init__(self, items):
         self._items = items
 
-    def list_memory(self, _user_id):
-        return [dict(i) for i in self._items]
+    def list_memory(self, _user_id, *, project_id=None, include_global=True):
+        rows = [dict(item) for item in self._items]
+        if project_id is None:
+            return rows
+        return ps.filter_to_project(rows, project_id, include_global=include_global)
 
 
 # recency DESC (created_at): A is newest. A is a recent, lower-overlap promoted

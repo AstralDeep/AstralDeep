@@ -17,6 +17,30 @@ services:
       retries: 5
     restart: unless-stopped
 
+  livekit:
+    image: livekit/livekit-server:v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1
+    container_name: astraldeep-livekit
+    command:
+      - --config
+      - /etc/livekit.yaml
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set the LiveKit API key}: ${LIVEKIT_API_SECRET:?set the LiveKit API secret}"
+      NODE_IP: ${LIVEKIT_NODE_IP:?set the Mac host LAN address advertised for WebRTC media}
+    ports:
+      - "${LIVEKIT_BIND_IP:-0.0.0.0}:7880:7880/tcp"
+      - "${LIVEKIT_BIND_IP:-0.0.0.0}:7881:7881/tcp"
+      - "${LIVEKIT_BIND_IP:-0.0.0.0}:50000-50099:50000-50099/udp"
+    volumes:
+      - ./deploy/livekit/livekit.local.yaml:/etc/livekit.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
   astraldeep:
     build:
       context: .
@@ -32,6 +56,16 @@ services:
       DB_PORT: 5432
       HOST_PROC: /host/proc
       HOST_SYS: /host/sys
+      OPENAI_BASE_URL: ""
+      OPENAI_API_KEY: ""
+      LIVEKIT_INTERNAL_URL: http://livekit:7880
+      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set the LiveKit API key}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set the LiveKit API secret}
+      VOICE_CONTROL_SECRET: ${VOICE_CONTROL_SECRET:?set the voice-control secret}
+      VOICE_WATCH_BRIDGE_PUBLIC_URL: ${VOICE_WATCH_BRIDGE_PUBLIC_URL:-wss://localhost:7890/api/voice/watch-bridge}
+      # Independent UI-binding HMAC; never copied into the media worker.
+      VOICE_UI_BINDING_SECRET: ${VOICE_UI_BINDING_SECRET:-}
     volumes:
       - ./backend/data:/app/backend/data
       - ./backend/tmp:/app/backend/tmp
@@ -43,6 +77,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      livekit:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; r = urllib.request.urlopen('http://localhost:8001/readyz', timeout=5); exit(0 if r.status == 200 else 1)"]
       interval: 30s
@@ -50,6 +86,76 @@ services:
       retries: 3
       start_period: 90s
     restart: unless-stopped
+
+  voice-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.voice
+      target: runtime
+    image: astraldeep-voice-worker:latest
+    container_name: astraldeep-voice-worker
+    ports:
+      - "127.0.0.1:${VOICE_WATCH_BRIDGE_PORT:-7890}:7890"
+    environment:
+      # Local Compose uses plaintext only on its private bridge; make that
+      # development posture explicit so production remains fail-closed.
+      ASTRAL_ENV: development
+      VOICE_WORKER_IDENTITY: ${VOICE_WORKER_IDENTITY:-voice-worker-local-1}
+      VOICE_WORKER_MAX_SESSIONS: ${VOICE_WORKER_MAX_SESSIONS:-4}
+      VOICE_WATCH_BRIDGE_LISTEN_HOST: 0.0.0.0
+      VOICE_WATCH_BRIDGE_LISTEN_PORT: 7890
+      # An honest local-only marker until the login-gated T004 closure exists.
+      # Protected staging/release validation rejects this zero digest.
+      VOICE_WORKER_CLOSURE_SHA256: ${VOICE_WORKER_CLOSURE_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}
+      VOICE_SPEECH_BASE_URL: ${OPENAI_BASE_URL:?set the operator speech base URL}
+      VOICE_SPEECH_API_KEY: ${OPENAI_API_KEY:?set the operator speech API key}
+      OPENAI_BASE_URL: ""
+      OPENAI_API_KEY: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: livekit,astraldeep,localhost,127.0.0.1
+      ASTRAL_VOICE_CONTROL_URL: ws://astraldeep:8001/api/voice/worker-control
+      VOICE_CONTROL_SECRET: ${VOICE_CONTROL_SECRET:?set the voice-control secret}
+    depends_on:
+      livekit:
+        condition: service_started
+      astraldeep:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  # One-shot, hash-locked worker verification image. The profile is inert in
+  # normal runtime startup and has no network, credentials, or product data.
+  voice-worker-test:
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: Dockerfile.voice
+      target: test
+    image: astraldeep-voice-worker-test:latest
+    entrypoint: []
+    command:
+      - python
+      - -m
+      - pytest
+      - -q
+      - /app/backend/voice_agent/tests
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
 
 volumes:
   pgdata:

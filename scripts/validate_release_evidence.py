@@ -34,6 +34,42 @@ MAX_NESTING = 128
 MAX_COLLECTION_ITEMS = 100_000
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+IMAGE_REFERENCE_RE = re.compile(
+    r"^[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._/-]+"
+    r"(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?"
+    r"@sha256:(?P<digest>[0-9a-f]{64})$"
+)
+PINNED_LIVEKIT_IMAGE = (
+    "livekit/livekit-server:v1.13.5@sha256:"
+    "3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1"
+)
+PINNED_LIVEKIT_IMAGE_SHA256 = PINNED_LIVEKIT_IMAGE.rsplit("@sha256:", 1)[1]
+STAGING_SERVICE_IMAGE_NAMES = frozenset(
+    {
+        "postgres",
+        "keycloak-postgres",
+        "keycloak",
+        "livekit",
+        "schema-baseline",
+        "astraldeep",
+        "voice-worker",
+    }
+)
+SPEECH_PROFILE = {
+    "asr_model": "Systran/faster-whisper-large-v3",
+    "tts_model": "speaches-ai/Kokoro-82M-v1.0-ONNX",
+    "voice": "af_heart",
+    "sample_rate_hz": 24000,
+}
+SPEECH_PROFILE_SHA256 = hashlib.sha256(
+    json.dumps(
+        SPEECH_PROFILE,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+).hexdigest()
 LEDGER_PATH_RE = re.compile(
     r"^(?:debts|resolutions)/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.json$"
@@ -724,10 +760,119 @@ def _canonical_staging(staging: Mapping[str, Any]) -> bytes:
     ):
         raise PolicyError("staging endpoint must be credential-free non-loopback HTTPS")
     worker_paths = staging.get("worker_paths")
-    if not isinstance(worker_paths, list) or not {"background", "scheduler"} <= set(
-        worker_paths
+    if not isinstance(worker_paths, list) or not {
+        "background",
+        "scheduler",
+        "voice",
+    } <= set(worker_paths):
+        raise PolicyError(
+            "staging must contain real background, scheduler, and voice worker paths"
+        )
+
+    voice_runtime = staging.get("voice_runtime")
+    if not isinstance(voice_runtime, dict):
+        raise PolicyError("staging lacks a bounded voice runtime identity")
+    for prefix, label in (
+        ("voice_worker", "voice worker image"),
+        ("livekit", "LiveKit image"),
     ):
-        raise PolicyError("staging must contain real background and scheduler worker paths")
+        reference = voice_runtime.get(f"{prefix}_image_reference")
+        digest = voice_runtime.get(f"{prefix}_image_sha256")
+        match = (
+            IMAGE_REFERENCE_RE.fullmatch(reference)
+            if isinstance(reference, str)
+            else None
+        )
+        if (
+            match is None
+            or not isinstance(digest, str)
+            or match.group("digest") != digest
+        ):
+            raise PolicyError(f"staging {label} reference and SHA-256 differ")
+    if (
+        voice_runtime["livekit_image_reference"] != PINNED_LIVEKIT_IMAGE
+        or voice_runtime["livekit_image_sha256"] != PINNED_LIVEKIT_IMAGE_SHA256
+    ):
+        raise PolicyError("staging LiveKit image is not the approved exact server image")
+    if not isinstance(voice_runtime.get("livekit_config_sha256"), str) or not SHA256_RE.fullmatch(
+        voice_runtime["livekit_config_sha256"]
+    ):
+        raise PolicyError("staging LiveKit config SHA-256 is malformed")
+    public_url = voice_runtime.get("livekit_public_url")
+    public = urlsplit(public_url) if isinstance(public_url, str) else None
+    if (
+        public is None
+        or public.scheme != "wss"
+        or not public.hostname
+        or public.username is not None
+        or public.password is not None
+        or public.query
+        or public.fragment
+        or public.hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+    ):
+        raise PolicyError("staging LiveKit public URL is not credential-free non-loopback WSS")
+    turn_domain = voice_runtime.get("livekit_turn_domain")
+    if not isinstance(turn_domain, str) or not re.fullmatch(
+        r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+        r"[A-Za-z]{2,63}",
+        turn_domain,
+    ):
+        raise PolicyError("staging LiveKit TURN domain is not a public DNS hostname")
+
+    service_images = staging.get("service_image_references")
+    turn_tls = staging.get("livekit_turn_tls")
+    if service_images is not None or turn_tls is not None:
+        if (
+            not isinstance(service_images, dict)
+            or set(service_images) != STAGING_SERVICE_IMAGE_NAMES
+            or any(
+                not isinstance(reference, str)
+                or IMAGE_REFERENCE_RE.fullmatch(reference) is None
+                for reference in service_images.values()
+            )
+        ):
+            raise PolicyError(
+                "trusted staging support-service image identity is incomplete or mutable"
+            )
+        expected_bound_images = {
+            "astraldeep": staging.get("candidate_image_reference"),
+            "voice-worker": voice_runtime.get("voice_worker_image_reference"),
+            "livekit": voice_runtime.get("livekit_image_reference"),
+        }
+        if any(
+            service_images.get(service) != reference
+            for service, reference in expected_bound_images.items()
+        ):
+            raise PolicyError(
+                "trusted staging service images differ from candidate/voice identities"
+            )
+        if service_images["postgres"] != service_images["keycloak-postgres"]:
+            raise PolicyError("trusted staging PostgreSQL service images differ")
+
+        expected_turn_tls = {
+            "advertised_uri": f"turns:{turn_domain}:443?transport=tcp",
+            "public_port": 443,
+            "external_tls": True,
+            "terminator_upstream_host": "127.0.0.1",
+            "terminator_upstream_port": 15349,
+            "livekit_listener_port": 5349,
+        }
+        if turn_tls != expected_turn_tls:
+            raise PolicyError(
+                "trusted staging TURN/TLS identity differs from the v1.13.5 public-443 route"
+            )
+
+    profile = voice_runtime.get("speech_profile")
+    required_profile_keys = {*SPEECH_PROFILE, "inventory_sha256", "profile_sha256"}
+    if (
+        not isinstance(profile, dict)
+        or set(profile) != required_profile_keys
+        or any(profile.get(key) != value for key, value in SPEECH_PROFILE.items())
+        or not isinstance(profile.get("inventory_sha256"), str)
+        or not SHA256_RE.fullmatch(profile["inventory_sha256"])
+        or profile.get("profile_sha256") != SPEECH_PROFILE_SHA256
+    ):
+        raise PolicyError("staging speech profile identity is not the exact launch profile")
     return canonical_json_bytes(staging)
 
 
@@ -1099,6 +1244,412 @@ def _manifest_artifact_identities(
     return identities
 
 
+APPLE_NORMALIZED_PLATFORMS = frozenset({"macos", "ios", "watchos"})
+STAGE_PRODUCT_PLATFORMS = frozenset({"backend", "web"})
+
+
+def _artifact_member_index(
+    artifacts: Any,
+    *,
+    repository: str,
+    workflow: Mapping[str, Any],
+    label: str,
+) -> tuple[dict[str, str], str, str]:
+    """Validate one exact GitHub artifact's member claims and index their hashes."""
+
+    if not isinstance(artifacts, list) or not artifacts:
+        raise ProvenanceError(f"{label} artifact members are missing")
+    if len(artifacts) > 4096:
+        raise ProvenanceError(f"{label} exceeds its artifact member bound")
+    members: dict[str, str] = {}
+    references: set[str] = set()
+    artifact_ids: set[str] = set()
+    artifact_names: set[str] = set()
+    run_id = workflow.get("run_id")
+    run_attempt = workflow.get("run_attempt")
+    for artifact in artifacts:
+        if not isinstance(artifact, Mapping) or artifact.get("kind") != "github_actions_artifact_member":
+            raise ProvenanceError(f"{label} contains a non-GitHub artifact member")
+        member = artifact.get("member")
+        digest = artifact.get("sha256")
+        artifact_id = artifact.get("artifact_id")
+        artifact_name = artifact.get("artifact_name")
+        reference = artifact.get("immutable_reference")
+        if (
+            not isinstance(member, str)
+            or not member
+            or not isinstance(digest, str)
+            or SHA256_RE.fullmatch(digest) is None
+            or not isinstance(artifact_id, str)
+            or not re.fullmatch(r"[1-9][0-9]*", artifact_id)
+            or not isinstance(artifact_name, str)
+            or not artifact_name
+            or artifact.get("repository") != repository
+            or artifact.get("run_id") != run_id
+            or artifact.get("run_attempt") != run_attempt
+        ):
+            raise ProvenanceError(f"{label} member identity is malformed or cross-run")
+        expected_reference = (
+            f"gh://{repository}/runs/{run_id}/attempts/{run_attempt}/"
+            f"artifacts/{artifact_id}/members/{member}"
+        )
+        if reference != expected_reference:
+            raise ProvenanceError(f"{label} member has a noncanonical immutable reference")
+        ArtifactResolver._validate_prefetched_reference(expected_reference)
+        if member in members or reference in references:
+            raise ProvenanceError(f"{label} has a duplicate member or immutable reference")
+        members[member] = digest
+        references.add(reference)
+        artifact_ids.add(artifact_id)
+        artifact_names.add(artifact_name)
+    if len(artifact_ids) != 1 or len(artifact_names) != 1:
+        raise ProvenanceError(f"{label} crosses immutable artifact identities")
+    return members, artifact_ids.pop(), artifact_names.pop()
+
+
+def _bundle_claims(document: Mapping[str, Any]) -> dict[str, str]:
+    """Collect every bundle member/digest claim from one schema-valid report."""
+
+    claims: dict[str, str] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            reference = value.get("immutable_reference")
+            if isinstance(reference, str) and reference.startswith("bundle://"):
+                digest = value.get("sha256")
+                if not isinstance(digest, str) or SHA256_RE.fullmatch(digest) is None:
+                    raise ProvenanceError("Apple report has a malformed bundle digest")
+                member = ArtifactResolver._safe_relative(reference).as_posix()
+                prior = claims.get(member)
+                if prior is not None and prior != digest:
+                    raise ProvenanceError("Apple report reuses a bundle member with another digest")
+                claims[member] = digest
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(document)
+    return claims
+
+
+def _artifact_matches_report(
+    report: Mapping[str, Any], artifacts: Sequence[Mapping[str, Any]]
+) -> bool:
+    artifact = report.get("artifact")
+    if not isinstance(artifact, Mapping):
+        return False
+    reference = artifact.get("immutable_reference")
+    digest = artifact.get("sha256")
+    if not isinstance(reference, str) or not isinstance(digest, str):
+        return False
+    if reference.startswith("bundle://"):
+        member = ArtifactResolver._safe_relative(reference).as_posix()
+        return any(
+            item.get("kind") == "github_actions_artifact_member"
+            and item.get("member") == member
+            and item.get("sha256") == digest
+            for item in artifacts
+            if isinstance(item, Mapping)
+        )
+    return (reference, digest) in _manifest_artifact_identities(
+        {"artifacts": list(artifacts)}
+    )
+
+
+def _hash_regular_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_source_artifact_tree(
+    root: Path, source_members: Mapping[str, str], *, platform: str
+) -> None:
+    """Re-hash one separately prefetched source artifact against its claims."""
+
+    try:
+        absolute = root.resolve(strict=True)
+    except OSError as exc:
+        raise ProvenanceError(f"{platform} source artifact was not prefetched") from exc
+    if root.is_symlink() or not absolute.is_dir():
+        raise ProvenanceError(f"{platform} source artifact root is unsafe")
+    files: dict[str, Path] = {}
+    for path in absolute.rglob("*"):
+        if path.is_symlink():
+            raise ProvenanceError(f"{platform} source artifact contains a symlink")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise ProvenanceError(f"{platform} source artifact contains a special file")
+        member = path.relative_to(absolute).as_posix()
+        if member in files:
+            raise ProvenanceError(f"{platform} source artifact repeats a member")
+        files[member] = path
+        if len(files) > 4096:
+            raise ProvenanceError(f"{platform} source artifact exceeds its member bound")
+    if set(files) != set(source_members):
+        raise ProvenanceError(f"{platform} prefetched source members differ from provenance")
+    for member, expected_digest in source_members.items():
+        if _hash_regular_file(files[member]) != expected_digest:
+            raise ProvenanceError(f"{platform} prefetched source member digest differs")
+
+
+def _report_artifact_matches_manifest(
+    report: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    repository: str,
+    report_sha256: str | None,
+) -> bool:
+    """Bind protected-decision report bytes to one final evidence artifact."""
+
+    if report_sha256 is None:
+        return True
+    if SHA256_RE.fullmatch(report_sha256) is None:
+        return False
+    platform = str(report.get("platform"))
+    workflow = manifest.get("workflow")
+    if not isinstance(workflow, Mapping):
+        return False
+    run_id = workflow.get("run_id")
+    run_attempt = workflow.get("run_attempt")
+    expected_member = f"{platform}.json"
+    matches = []
+    for artifact in manifest.get("artifacts", []):
+        if not isinstance(artifact, Mapping):
+            continue
+        artifact_name = artifact.get("artifact_name")
+        artifact_suffix = (
+            artifact_name.removeprefix(f"evidence-{platform}-")
+            if isinstance(artifact_name, str)
+            else ""
+        )
+        if (
+            artifact.get("kind") == "github_actions_artifact_member"
+            and artifact.get("repository") == repository
+            and artifact.get("run_id") == run_id
+            and artifact.get("run_attempt") == run_attempt
+            and artifact.get("member") == expected_member
+            and artifact.get("sha256") == report_sha256
+            and isinstance(artifact_name, str)
+            and artifact_name.startswith(f"evidence-{platform}-")
+            and re.fullmatch(
+                rf"[A-Za-z0-9][A-Za-z0-9._-]{{0,127}}-{run_attempt}",
+                artifact_suffix,
+            )
+        ):
+            matches.append(artifact)
+    return len(matches) == 1
+
+
+def _stage_product_matches_report(
+    report: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    candidate_sha: str,
+    trusted_stage_deploy: Mapping[str, Any] | None,
+) -> bool:
+    """Bind backend/web OCI identity to the separately attested deployment."""
+
+    platform = str(report.get("platform"))
+    expected_kind = {"backend": "container", "web": "web_deployment"}.get(platform)
+    artifact = report.get("artifact")
+    deployment = (
+        trusted_stage_deploy.get("deployment")
+        if isinstance(trusted_stage_deploy, Mapping)
+        else None
+    )
+    if (
+        expected_kind is None
+        or not isinstance(artifact, Mapping)
+        or not isinstance(deployment, Mapping)
+    ):
+        return False
+    candidate_image = deployment.get("candidate_image_reference")
+    candidate_digest = deployment.get("candidate_image_sha256")
+    image_match = re.fullmatch(
+        r"(?P<registry>[A-Za-z0-9.-]+(?::[0-9]{1,5})?)/"
+        r"(?P<repository>[A-Za-z0-9._/-]+)@"
+        r"(?P<digest>sha256:[0-9a-f]{64})",
+        candidate_image if isinstance(candidate_image, str) else "",
+    )
+    if (
+        image_match is None
+        or not isinstance(candidate_digest, str)
+        or image_match.group("digest").removeprefix("sha256:") != candidate_digest
+        or artifact.get("kind") != expected_kind
+        or artifact.get("immutable_reference") != f"oci://{candidate_image}"
+        or artifact.get("sha256") != candidate_digest
+        or artifact.get("build_identity") != f"candidate-container:{candidate_sha}"
+    ):
+        return False
+    expected_claim = {
+        "kind": "oci_manifest",
+        "registry": image_match.group("registry"),
+        "repository_path": image_match.group("repository"),
+        "digest": image_match.group("digest"),
+        "immutable_reference": f"oci://{candidate_image}",
+        "sha256": candidate_digest,
+    }
+    return sum(
+        1
+        for claim in manifest.get("artifacts", [])
+        if isinstance(claim, Mapping) and dict(claim) == expected_claim
+    ) == 1
+
+
+def _windows_manifest_matches_report(
+    report: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    repository: str,
+    candidate_sha: str,
+    source_root: Path | None,
+) -> bool:
+    """Bind Windows evidence to the exact build-once unsigned artifact."""
+
+    workflow = manifest.get("workflow")
+    source = manifest.get("source_provenance")
+    if (
+        not isinstance(workflow, Mapping)
+        or workflow != report.get("workflow")
+        or manifest.get("runner") != report.get("runner")
+        or workflow.get("job_id") != "windows-producer"
+        or not isinstance(source, Mapping)
+    ):
+        return False
+    source_workflow = source.get("workflow")
+    if (
+        not isinstance(source_workflow, Mapping)
+        or source_workflow.get("name") != workflow.get("name")
+        or source_workflow.get("run_id") != workflow.get("run_id")
+        or source_workflow.get("run_attempt") != workflow.get("run_attempt")
+        or source_workflow.get("job_id") != "windows-candidate"
+        or not isinstance(source.get("runner"), Mapping)
+        or source["runner"].get("os") != "windows"
+    ):
+        raise ProvenanceError("Windows producer/source workflow provenance differs")
+    source_members, _, source_name = _artifact_member_index(
+        source.get("artifacts"),
+        repository=repository,
+        workflow=source_workflow,
+        label="Windows unsigned product",
+    )
+    expected_name = (
+        f"windows-unsigned-{candidate_sha}-{workflow.get('run_id')}-"
+        f"{workflow.get('run_attempt')}"
+    )
+    artifact = report.get("artifact")
+    if (
+        source_name != expected_name
+        or not isinstance(artifact, Mapping)
+        or artifact.get("name") != "AstralDeep.exe"
+        or artifact.get("kind") != "windows_exe"
+        or source_members.get("AstralDeep.exe") != artifact.get("sha256")
+        or not _artifact_matches_report(
+            report,
+            [
+                item
+                for item in source.get("artifacts", [])
+                if isinstance(item, Mapping)
+            ],
+        )
+    ):
+        raise ProvenanceError("Windows report does not bind the unsigned product")
+    if source_root is not None:
+        _verify_source_artifact_tree(
+            source_root, source_members, platform="Windows product"
+        )
+    return True
+
+
+def _apple_manifest_matches_report(
+    report: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    repository: str,
+    source_root: Path | None,
+) -> bool:
+    platform = str(report.get("platform"))
+    workflow = manifest.get("workflow")
+    source = manifest.get("source_provenance")
+    if not isinstance(workflow, Mapping):
+        return False
+    if workflow.get("job_id") != f"{platform}-producer":
+        return False
+    if not isinstance(source, Mapping):
+        raise ProvenanceError(f"{platform} protected normalizer lacks source provenance")
+    source_workflow = source.get("workflow")
+    if not isinstance(source_workflow, Mapping):
+        raise ProvenanceError(f"{platform} source workflow provenance is missing")
+    expected_source_workflow = dict(report.get("workflow", {}))
+    if (
+        source_workflow != expected_source_workflow
+        or source_workflow.get("job_id") != f"{platform}-raw-producer"
+        or source.get("runner") != report.get("runner")
+        or workflow.get("name") != source_workflow.get("name")
+        or workflow.get("run_id") != source_workflow.get("run_id")
+        or workflow.get("run_attempt") != source_workflow.get("run_attempt")
+    ):
+        raise ProvenanceError(f"{platform} raw and normalized workflow provenance differ")
+
+    final_members, final_id, final_name = _artifact_member_index(
+        manifest.get("artifacts"),
+        repository=repository,
+        workflow=workflow,
+        label=f"{platform} normalized evidence",
+    )
+    source_members, source_id, source_name = _artifact_member_index(
+        source.get("artifacts"),
+        repository=repository,
+        workflow=source_workflow,
+        label=f"{platform} raw evidence",
+    )
+    attempt = workflow.get("run_attempt")
+    final_prefix = f"evidence-{platform}-"
+    source_prefix = f"raw-apple-evidence-{platform}-"
+    final_suffix = final_name.removeprefix(final_prefix)
+    source_suffix = source_name.removeprefix(source_prefix)
+    if (
+        not final_name.startswith(final_prefix)
+        or not source_name.startswith(source_prefix)
+        or final_suffix != source_suffix
+        or not isinstance(attempt, int)
+        or re.fullmatch(
+            rf"[A-Za-z0-9][A-Za-z0-9._-]{{0,127}}-{attempt}", final_suffix
+        )
+        is None
+        or final_id == source_id
+    ):
+        raise ProvenanceError(f"{platform} raw/final artifact identities are not attempt-scoped")
+
+    normalized_member = f"coverage/apple-{platform}-xccov.json"
+    raw_result_prefix = f"coverage/raw/apple-{platform}.xcresult/"
+    report_member = f"{platform}.json"
+    if (
+        normalized_member in source_members
+        or normalized_member not in final_members
+        or not any(member.startswith(raw_result_prefix) for member in source_members)
+        or any(member.startswith("coverage/raw/") for member in final_members)
+        or source_members.get(report_member) != final_members.get(report_member)
+        or report_member not in source_members
+    ):
+        raise ProvenanceError(f"{platform} raw/final member boundary is invalid")
+    claims = _bundle_claims(report)
+    if not claims:
+        raise ProvenanceError(f"{platform} report has no bundle-bound evidence")
+    for member, digest in claims.items():
+        if source_members.get(member) != digest or final_members.get(member) != digest:
+            raise ProvenanceError(f"{platform} copied evidence bytes differ across normalization")
+    if source_root is not None:
+        _verify_source_artifact_tree(source_root, source_members, platform=platform)
+    return True
+
+
 def bind_report_to_producer(
     report: Mapping[str, Any],
     manifests: Sequence[Mapping[str, Any]],
@@ -1107,13 +1658,17 @@ def bind_report_to_producer(
     candidate_sha: str,
     protected_builder_sha: str,
     protected_builder_identity: str,
+    raw_apple_source_root: Path | None = None,
+    windows_product_source_root: Path | None = None,
+    trusted_stage_deploy: Mapping[str, Any] | None = None,
+    report_artifact_sha256: str | None = None,
 ) -> Mapping[str, Any]:
     """Bind one platform report to exactly one externally pinned producer job."""
 
     artifact = report.get("artifact")
     if not isinstance(artifact, dict):
         raise ProvenanceError("report lacks an artifact")
-    identity = (artifact.get("immutable_reference"), artifact.get("sha256"))
+    platform = report.get("platform")
     matches: list[Mapping[str, Any]] = []
     for manifest in manifests:
         builder = manifest.get("trusted_builder")
@@ -1123,13 +1678,65 @@ def bind_report_to_producer(
             manifest.get("document_type") == "trusted_workflow_provenance"
             and manifest.get("repository") == repository
             and manifest.get("candidate_sha") == candidate_sha
-            and manifest.get("workflow") == report.get("workflow")
-            and manifest.get("runner") == report.get("runner")
             and builder.get("signer_digest") == protected_builder_sha
             and builder.get("certificate_identity") == protected_builder_identity
-            and identity in _manifest_artifact_identities(manifest)
         ):
-            matches.append(manifest)
+            workflow = manifest.get("workflow")
+            if (
+                not isinstance(workflow, Mapping)
+                or workflow.get("job_id") != f"{platform}-producer"
+                or not _report_artifact_matches_manifest(
+                    report,
+                    manifest,
+                    repository=repository,
+                    report_sha256=report_artifact_sha256,
+                )
+            ):
+                continue
+            if platform in APPLE_NORMALIZED_PLATFORMS:
+                if _apple_manifest_matches_report(
+                    report,
+                    manifest,
+                    repository=repository,
+                    source_root=raw_apple_source_root,
+                ):
+                    matches.append(manifest)
+            elif platform == "windows":
+                if _windows_manifest_matches_report(
+                    report,
+                    manifest,
+                    repository=repository,
+                    candidate_sha=candidate_sha,
+                    source_root=windows_product_source_root,
+                ):
+                    matches.append(manifest)
+            elif platform in STAGE_PRODUCT_PLATFORMS:
+                if (
+                    manifest.get("source_provenance") is None
+                    and workflow == report.get("workflow")
+                    and manifest.get("runner") == report.get("runner")
+                    and _stage_product_matches_report(
+                        report,
+                        manifest,
+                        candidate_sha=candidate_sha,
+                        trusted_stage_deploy=trusted_stage_deploy,
+                    )
+                ):
+                    matches.append(manifest)
+            elif (
+                manifest.get("source_provenance") is None
+                and manifest.get("workflow") == report.get("workflow")
+                and manifest.get("runner") == report.get("runner")
+                and _artifact_matches_report(
+                    report,
+                    [
+                        item
+                        for item in manifest.get("artifacts", [])
+                        if isinstance(item, Mapping)
+                    ],
+                )
+            ):
+                matches.append(manifest)
     if len(matches) != 1:
         raise ProvenanceError(
             f"report did not bind to exactly one protected producer: {report.get('platform')}"
@@ -1488,6 +2095,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--trust-schema", required=True)
     parser.add_argument("--deployment-profile-schema", required=True)
     parser.add_argument("--evidence-dir", required=True)
+    parser.add_argument("--raw-apple-evidence-dir")
+    parser.add_argument("--windows-product-evidence-dir")
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
@@ -1538,6 +2147,38 @@ def _load_evidence_documents(
     if len(sets) != 1:
         raise PolicyError("evidence directory must contain exactly one release_evidence_set")
     return sets[0], documents
+
+
+def _protected_report_artifact_digests(
+    root: Path, reports: Sequence[Mapping[str, Any]]
+) -> dict[str, str]:
+    """Re-hash the exact root report files assembled by protected decision."""
+
+    digests: dict[str, str] = {}
+    for report in reports:
+        platform = str(report.get("platform"))
+        if platform not in REQUIRED_TARGETS:
+            raise ProvenanceError(f"unexpected protected report platform: {platform}")
+        path = root / f"{platform}.json"
+        try:
+            stat = path.lstat()
+        except OSError as exc:
+            raise ProvenanceError(
+                f"protected report artifact is missing: {platform}.json"
+            ) from exc
+        if path.is_symlink() or not path.is_file() or stat.st_size > MAX_DOCUMENT_BYTES:
+            raise ProvenanceError(
+                f"protected report artifact is unsafe: {platform}.json"
+            )
+        parsed = load_json_document(path)
+        if canonical_json_bytes(parsed) != canonical_json_bytes(report):
+            raise ProvenanceError(
+                f"protected report artifact differs from evidence set: {platform}"
+            )
+        digests[platform] = _hash_regular_file(path)
+    if set(digests) != set(REQUIRED_TARGETS):
+        raise ProvenanceError("protected report artifact set is incomplete")
+    return digests
 
 
 def _verify_attestation_receipts(
@@ -1594,12 +2235,15 @@ def _decision_manifest(
         raise ProvenanceError(
             "decision output is allowed only in the protected-decision GitHub job"
         )
-    if not args.protected_workflow_ref or not re.fullmatch(
+    protected_workflow = re.fullmatch(
         r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/"
-        r"release-trusted-builder\.yml@[0-9a-f]{40}",
-        args.protected_workflow_ref,
-    ):
+        r"release-readiness\.yml@(?P<digest>[0-9a-f]{40})",
+        args.protected_workflow_ref or "",
+    )
+    if protected_workflow is None:
         raise ProvenanceError("protected workflow ref is missing or not commit-pinned")
+    if protected_workflow.group("digest") != args.protected_builder_sha:
+        raise ProvenanceError("protected workflow ref differs from the installed builder pin")
     if (
         not isinstance(args.coverage_percent, (int, float))
         or isinstance(args.coverage_percent, bool)
@@ -1737,7 +2381,57 @@ def main(argv: Sequence[str] | None = None) -> int:
             builder_sha=args.protected_builder_sha,
             builder_identity=args.protected_builder_identity,
         )
+        raw_apple_root = (
+            Path(args.raw_apple_evidence_dir)
+            if args.raw_apple_evidence_dir
+            else None
+        )
+        windows_product_root = (
+            Path(args.windows_product_evidence_dir)
+            if args.windows_product_evidence_dir
+            else None
+        )
+        if raw_apple_root is not None:
+            try:
+                raw_children = list(raw_apple_root.iterdir())
+            except OSError as exc:
+                raise ProvenanceError(
+                    "prefetched raw Apple evidence directory is unavailable"
+                ) from exc
+            if (
+                raw_apple_root.is_symlink()
+                or not raw_apple_root.is_dir()
+                or {child.name for child in raw_children}
+                != APPLE_NORMALIZED_PLATFORMS
+                or any(child.is_symlink() or not child.is_dir() for child in raw_children)
+            ):
+                raise ProvenanceError(
+                    "prefetched raw Apple evidence directory has missing or extra platforms"
+                )
+        if args.decision_output and windows_product_root is None:
+            raise ProvenanceError(
+                "protected Windows provenance requires the prefetched product artifact"
+            )
+        if stage.get("deployment") is None:
+            raise ProvenanceError("trusted stage deploy lacks deployment identity")
+        normalized_stage = _canonical_staging(stage["deployment"])
+        report_digests = (
+            _protected_report_artifact_digests(
+                Path(args.evidence_dir), evidence_set["evidence"]
+            )
+            if args.decision_output
+            else {}
+        )
         for report in evidence_set["evidence"]:
+            platform = report.get("platform")
+            if (
+                args.decision_output
+                and platform in APPLE_NORMALIZED_PLATFORMS
+                and raw_apple_root is None
+            ):
+                raise ProvenanceError(
+                    "protected Apple provenance requires prefetched raw artifacts"
+                )
             bind_report_to_producer(
                 report,
                 provenance,
@@ -1745,18 +2439,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 candidate_sha=args.candidate_sha,
                 protected_builder_sha=args.protected_builder_sha,
                 protected_builder_identity=args.protected_builder_identity,
+                raw_apple_source_root=(
+                    raw_apple_root / str(platform)
+                    if platform in APPLE_NORMALIZED_PLATFORMS
+                    and raw_apple_root is not None
+                    else None
+                ),
+                windows_product_source_root=(
+                    windows_product_root if platform == "windows" else None
+                ),
+                trusted_stage_deploy=stage,
+                report_artifact_sha256=report_digests.get(str(platform)),
             )
-        if stage.get("deployment") is None:
-            raise ProvenanceError("trusted stage deploy lacks deployment identity")
-        normalized_stage = canonical_json_bytes(stage["deployment"])
         for report in evidence_set["evidence"]:
             if report["platform"] == "docs":
                 continue
-            # The trust manifest has two additional deployment-only fields.
+            # The trust manifest also carries protected deployment-only identity.
             projected = dict(stage["deployment"])
             projected.pop("request_namespace", None)
             projected.pop("capability_manifest_sha256", None)
             projected.pop("service_identity_sha256", None)
+            projected.pop("service_image_references", None)
+            projected.pop("livekit_turn_tls", None)
             projected["deployed_at"] = report["staging_environment"]["deployed_at"]
             projected["macos_personal_agent_host"] = report["staging_environment"][
                 "macos_personal_agent_host"

@@ -59,11 +59,18 @@ def _tool_chunk(index=0, call_id=None, name=None, arguments=None):
 class _FakeCompletions:
     """Records create() kwargs; streams ``chunks`` when stream=True is asked."""
 
-    def __init__(self, chunks=None, content="plain", raise_after=None):
+    def __init__(
+        self,
+        chunks=None,
+        content="plain",
+        raise_after=None,
+        error_message="provider dropped the stream",
+    ):
         self.calls = []
         self._chunks = chunks or []
         self._content = content
         self._raise_after = raise_after
+        self._error_message = error_message
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -73,10 +80,10 @@ class _FakeCompletions:
         def _gen():
             for i, chunk in enumerate(self._chunks):
                 if self._raise_after is not None and i >= self._raise_after:
-                    raise RuntimeError("provider dropped the stream")
+                    raise RuntimeError(self._error_message)
                 yield chunk
             if self._raise_after is not None:
-                raise RuntimeError("provider dropped the stream")
+                raise RuntimeError(self._error_message)
         return _gen()
 
 
@@ -175,10 +182,15 @@ async def test_json_shaped_content_stays_silent():
     assert msg.content == '{"type": "card", "title": "x"}'
 
 
-async def test_mid_stream_error_falls_back_to_non_streaming():
+async def test_mid_stream_error_falls_back_to_non_streaming(caplog):
     """A provider error mid-stream retries the call non-streaming, silently."""
+    sentinel = "SENTINEL_STREAM_BODY_MUST_NOT_ESCAPE"
     comp = _FakeCompletions(
-        chunks=[_content_chunk("partial ")], raise_after=1, content="recovered")
+        chunks=[_content_chunk("partial ")],
+        raise_after=1,
+        content="recovered",
+        error_message=sentinel,
+    )
     orch = _bare_orch(comp)
     msg, _usage = await orch._call_llm(
         object(), [{"role": "user", "content": "hi"}],
@@ -189,6 +201,7 @@ async def test_mid_stream_error_falls_back_to_non_streaming():
     frames = _stream_frames(orch)
     if frames:
         assert frames[-1]["terminal"] is True, "partial text must be cleared"
+    assert sentinel not in caplog.text
 
 
 async def test_flag_off_never_attempts_streaming(monkeypatch):

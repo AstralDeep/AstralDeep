@@ -1,8 +1,11 @@
-# AstralDeep Windows 0.4.0 complete release lock.
+# AstralDeep Windows 0.4.0 / Feature 065 complete release lock.
 # Target: CPython 3.11, win_amd64, binary wheels only.
 # Regenerate only from requirements.in and verify two clean resolutions.
+# Contains 66 Windows distributions plus one macOS-only resolution helper.
 --only-binary=:all:
 
+aiofiles==25.1.0 \
+    --hash=sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695
 aiohappyeyeballs==2.7.1 \
     --hash=sha256:9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472
 aiohttp==3.14.1 \
@@ -45,6 +48,8 @@ id==1.6.1 \
     --hash=sha256:f5ec41ed2629a508f5d0988eda142e190c9c6da971100612c4de9ad9f9b237ca
 idna==3.18 \
     --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+livekit==1.1.14 \
+    --hash=sha256:b8f8d38f131956297923e520bc4375bc9ebfa255cab7f125cb7755bfca71df24
 markdown-it-py==4.2.0 \
     --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
 # Cross-platform lock verification on the macOS development host evaluates
@@ -56,6 +61,8 @@ mdurl==0.1.2 \
     --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
 multidict==6.7.1 \
     --hash=sha256:bdbf9f3b332abd0cdb306e7c2113818ab1e922dc84b8f8fd06ec89ed2a19ab8b
+numpy==2.4.6 \
+    --hash=sha256:1e254a00cdf42b1e4d5b3d68d33af63268d41340d8885df2ab6470f2e1500147
 packaging==26.2 \
     --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
 pefile==2024.8.26 \
@@ -64,6 +71,8 @@ platformdirs==4.10.0 \
     --hash=sha256:fb516cdb12eb0d857d0cd85a7c57cea4d060bee4578d6cf5a14dfdf8cbf8784a
 propcache==0.5.2 \
     --hash=sha256:44e488ef40dbb452700b2b1f8188934121f6648f52c295055662d2191959ff82
+protobuf==7.35.1 \
+    --hash=sha256:230a75ddfc2de4806e56696ce9640c1cdfdb6543b7cfce98d42a4c0a0e7bdb87
 psutil==7.2.2 \
     --hash=sha256:eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988
 pyasn1==0.6.4 \
@@ -120,6 +129,8 @@ six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
 tuf==6.0.0 \
     --hash=sha256:458f663a233d95cc76dde0e1a3d01796516a05ce2781fefafebe037f7729601a
+types-protobuf==7.34.1.20260518 \
+    --hash=sha256:a0a5337413347166439c0e07cbc26c6164d091401c6f01b1dfd8cdb966c4dd8f
 typing-extensions==4.16.0 \
     --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
 typing-inspection==0.4.2 \

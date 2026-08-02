@@ -333,17 +333,20 @@ cross-language ≥90% result, and main image publication depends on that status.
 
 Windows publication remains a protected owner-approved GitHub Actions dispatch. Candidate and
 evidence jobs retain read-only permissions. The protected publisher job uses the built-in short-lived
-`GITHUB_TOKEN` with job-scoped write/OIDC only after its environment approval and reviewed workflow
-identity are established; no repository-scoped App or broker participates. It consumes the T068 EXE
-by exact originating run/attempt/artifact ID and never rebuilds. To preserve the actual v0.3.0
-updater's pinned Sigstore SAN, an exact-byte-pinned signer step receives only `contents: read`,
-`actions: read`, and `id-token: write`, re-hashes and signs those exact bytes, and has no release
-mutation authority. The publisher refuses any existing tag/release/asset, creates the exact SemVer
-tag at the validated SHA, verifies the bundle with the shipped v0.3.0 policy, creates `SHA256SUMS`,
-uploads exactly the three create-only assets to a draft, re-downloads numeric asset IDs, verifies
-hashes, name/tag/latest disposition and target SHA, and only then makes the release public as latest.
-Failure removes only the just-created tag/draft before publication. Disposable test mode runs only
-in an isolated repository/draft and never creates an official tag.
+`GITHUB_TOKEN` with job-scoped `contents: write`, `actions: write`, `attestations: read`, and
+`deployments: read` only after its environment approval and reviewed workflow identity are
+established; it has no OIDC permission, repository-scoped App, or broker. It consumes the T068 EXE by
+exact originating run/attempt/artifact ID and never rebuilds. To preserve the actual v0.3.0 updater's
+pinned Sigstore SAN, an exact-byte-pinned compatibility bridge receives only `contents: read`,
+`actions: read`, `attestations: read`, and `id-token: write`, re-hashes and signs those exact bytes,
+and has no release mutation authority. The publisher refuses any existing tag/release/asset, creates
+the exact SemVer tag at the validated SHA, verifies the bundle with the shipped v0.3.0 policy,
+creates `SHA256SUMS`, uploads exactly the three create-only assets to a draft, re-downloads numeric
+asset IDs, verifies hashes, name/tag/latest disposition and target SHA, and only then makes the
+release public as latest. Failure is designed to remove only the just-created tag/draft before
+publication, and disposable mode uses a same-repository temporary tag/draft that must be force-cleaned.
+Neither path may activate until T120 supplies distinct review, rollback-compatible tag policy,
+durable orphan recovery, and trusted-only signer-tag creation (or a verifier migration).
 
 ## Feature 059 Integration Rule
 

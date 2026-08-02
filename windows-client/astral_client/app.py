@@ -74,6 +74,7 @@ from .protocol import (
     WindowsProtocolError,
     decode_semantic_transcript,
     device_caps,
+    load_or_create_voice_device_id,
 )
 from .protocol_manifest import CLIENT_LOCAL_ACTIONS, is_classified, is_handled
 from .renderer import (
@@ -85,6 +86,7 @@ from .renderer import (
 )
 from .streaming import stream_error_ops, stream_frame_to_ops, subscribe_ack_ops
 from .chrome import chrome_render_notice
+from .voice import QtAudioBackend, VoiceComposerWidget, VoiceController
 from . import rest
 from win_agent.byo_host import (
     HOST_FRAME_TYPES,
@@ -1763,14 +1765,19 @@ class MainWindow(QMainWindow):
         # Feature 055: tap-to-open target for a background-completion banner —
         # a click loads this chat instead of just dismissing (None = dismiss).
         self._banner_chat: Optional[str] = None
+        self._pending_voice_chat: Optional[dict[str, str]] = None
 
         ctx = RenderContext(emit=self._emit, download=self._download,
                             apply_theme=self._apply_theme_pref)
         self._byo_host_id = load_or_create_host_id()
+        self._voice_audio = QtAudioBackend(self)
         self.client = OrchestratorClient(
             url,
             token,
-            device_caps(supported_types=native_types()),
+            device_caps(
+                supported_types=native_types(),
+                voice_capability=self._voice_audio.capability(),
+            ),
         )
         configure_host = getattr(self.client, "configure_agent_host", None)
         if callable(configure_host):
@@ -1913,8 +1920,46 @@ class MainWindow(QMainWindow):
         bottom.setContentsMargins(12, 8, 12, 12)
         bottom.setSpacing(8)
         bottom.addWidget(self._attach_btn)
+        self._voice_widget = VoiceComposerWidget()
+        bottom.addWidget(self._voice_widget)
         bottom.addWidget(self._input, 1)
         bottom.addWidget(self._send_btn)
+
+        self._voice_controller = VoiceController(
+            device_id=getattr(
+                self.client,
+                "device_id",
+                load_or_create_voice_device_id(),
+            ),
+            token_provider=self._current_token,
+            http_base=_http_base(url),
+            connection_provider=lambda: getattr(
+                self.client, "connection_generation", None
+            ),
+            chat_provider=lambda: self.active_chat,
+            transport=self.client,
+            audio=self._voice_audio,
+            parent=self,
+        )
+        self._voice_widget.action_requested.connect(
+            self._voice_controller.handle_action
+        )
+        self._voice_controller.status_changed.connect(
+            self._voice_widget.set_voice_status
+        )
+        self._voice_controller.transcript_changed.connect(
+            self._voice_widget.set_transcript
+        )
+        self._voice_controller.chat_required.connect(self._voice_chat_required)
+        voice_connection_signal = getattr(
+            self.client, "connection_generation_changed", None
+        )
+        if voice_connection_signal is not None and hasattr(
+            voice_connection_signal, "connect"
+        ):
+            voice_connection_signal.connect(self._voice_connection_changed)
+        if app is not None:
+            app.aboutToQuit.connect(self._voice_controller.close)
 
         # Feature 044 (FR-002/FR-003): a dismissible banner strip under the top
         # bar for connection state + server errors + queue-drop notices. Hidden
@@ -1988,6 +2033,10 @@ class MainWindow(QMainWindow):
             self._byo.stop_all()
         except Exception:  # noqa: BLE001 — never block the close
             logger.debug("byo stop_all failed on close", exc_info=True)
+        try:
+            self._voice_controller.close()
+        except Exception:  # noqa: BLE001 — never block the close
+            logger.debug("voice stop failed on close", exc_info=True)
         super().closeEvent(event)
 
     def _wrap(self, inner: QWidget, title: str) -> QWidget:
@@ -2080,6 +2129,7 @@ class MainWindow(QMainWindow):
         read-only enforcement while viewing workspace history)."""
         self._input.setEnabled(enabled)
         self._send_btn.setEnabled(enabled)
+        self._voice_widget.set_composer_enabled(enabled)
         self._input.setPlaceholderText(
             "Message AstralDeep…  (type / for commands)" if enabled
             else "Viewing workspace history — return to live to send messages"
@@ -2104,6 +2154,113 @@ class MainWindow(QMainWindow):
             self._continuity.activate_chat(chat_id)
         else:
             self._continuity.activate_chat(None)
+        voice = getattr(self, "_voice_controller", None)
+        if voice is not None:
+            voice.visible_chat_changed(chat_id)
+
+    def _voice_chat_required(self, action: str, activation_id: str) -> None:
+        """Create and hydrate a chat before permitting no-chat voice activation."""
+
+        if _canonical_uuid4(self.active_chat):
+            self._voice_controller.continue_activation(
+                action, activation_id, self.active_chat
+            )
+            return
+        connection = getattr(self.client, "connection_generation", None)
+        if not _canonical_uuid4(connection):
+            self._voice_controller.cancel_pending_activation()
+            return
+        pending = {
+            "action": action,
+            "activation_id": activation_id,
+            "connection_generation": connection,
+            "submission_id": str(uuid.uuid4()),
+            "request_generation": str(uuid.uuid4()),
+        }
+        self._pending_voice_chat = pending
+        if not self.client.send_correlated_new_chat(
+            pending["submission_id"], pending["request_generation"]
+        ):
+            self._pending_voice_chat = None
+            self._voice_controller.cancel_pending_activation()
+
+    def _voice_connection_changed(self, connection: str) -> None:
+        pending = self._pending_voice_chat
+        if pending is not None and pending.get("connection_generation") != connection:
+            self._pending_voice_chat = None
+            self._voice_controller.cancel_pending_activation()
+        self._voice_controller.on_connection_rotated(connection)
+
+    def _accept_voice_chat_created(self, frame: dict[str, Any]) -> bool:
+        pending = self._pending_voice_chat
+        if pending is None:
+            return False
+        payload = frame.get("payload")
+        required = {
+            "type",
+            "schema_version",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+            "payload",
+        }
+        payload_required = {
+            "schema_version",
+            "chat_id",
+            "from_message",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+        }
+        correlations = (
+            "schema_version",
+            "connection_generation",
+            "submission_id",
+            "request_generation",
+        )
+        if (
+            set(frame) != required
+            or not isinstance(payload, dict)
+            or set(payload) != payload_required
+            or frame.get("schema_version") != "1"
+            or payload.get("from_message") is not False
+            or not _canonical_uuid4(payload.get("chat_id"))
+            or any(frame.get(name) != payload.get(name) for name in correlations)
+            or frame.get("connection_generation")
+            != pending["connection_generation"]
+            or frame.get("connection_generation")
+            != getattr(self.client, "connection_generation", None)
+            or frame.get("submission_id") != pending["submission_id"]
+            or frame.get("request_generation") != pending["request_generation"]
+        ):
+            return True
+        chat_id = payload["chat_id"]
+        self._load_chat(chat_id)
+        pending["chat_id"] = chat_id
+        pending["hydration_generation"] = str(
+            getattr(self.client, "request_generation", "")
+        )
+        return True
+
+    def _complete_voice_chat_hydration(self, frame: dict[str, Any]) -> None:
+        pending = self._pending_voice_chat
+        if pending is None:
+            return
+        if (
+            frame.get("chat_id") != pending.get("chat_id")
+            or frame.get("connection_generation")
+            != pending.get("connection_generation")
+            or frame.get("request_generation")
+            != pending.get("hydration_generation")
+            or frame.get("snapshot_purpose") != "hydration"
+        ):
+            return
+        self._pending_voice_chat = None
+        self._voice_controller.continue_activation(
+            pending["action"],
+            pending["activation_id"],
+            pending["chat_id"],
+        )
 
     def _clear_transient_conversation(self) -> None:
         self._continuity.clear_transient()
@@ -2569,6 +2726,10 @@ class MainWindow(QMainWindow):
             self.client.stop()
         except Exception:
             pass
+        try:
+            self._voice_controller.close()
+        except Exception:
+            pass
         # 058: the user's agents die with the session. Explicit (not just via the
         # aboutToQuit hook) because quit() outside a running event loop is a
         # no-op, and an orphaned child process would outlive the sign-out.
@@ -2823,6 +2984,8 @@ class MainWindow(QMainWindow):
         if s.startswith("closed"):
             nice = "Disconnected"
             self._clear_local_submissions()
+            self._pending_voice_chat = None
+            self._voice_controller.on_connection_rotated(None)
             # C-3: a dropped connection (e.g. orchestrator restart) must re-send
             # register_external_agent on the next 'connected', or the win_agent
             # stays unreachable to the orchestrator until the app is relaunched.
@@ -2839,6 +3002,8 @@ class MainWindow(QMainWindow):
                 self._show_banner("Reconnecting…", "warning")
         elif s.startswith("auth_required"):
             nice = "Re-authenticating…"
+            self._pending_voice_chat = None
+            self._voice_controller.on_connection_rotated(None)
         self.topbar.set_status(nice, color)
         if s == "connected":
             self._sync_transport_scope()
@@ -3363,6 +3528,47 @@ class MainWindow(QMainWindow):
 
     def _on_message(self, msg: dict) -> None:
         t = msg.get("type")
+        if t == "composer_state":
+            connection = getattr(self.client, "connection_generation", None)
+            if isinstance(connection, str):
+                self._voice_widget.apply_composer_state(msg, connection)
+            self._voice_controller.accept_frame(msg)
+            return
+        if t == "voice_control_binding":
+            self._voice_controller.accept_frame(msg)
+            return
+        if t == "voice_session_state":
+            accepted = self._voice_controller.accept_frame(msg)
+            if accepted and msg.get("reason") == "speech_error":
+                self._voice_widget.set_speech_error(
+                    str(msg.get("message") or "Speech playback is unavailable.")
+                )
+            elif accepted and msg.get("reason") == "ended_by_user":
+                self._voice_widget.clear_request_notice()
+            return
+        if t == "voice_turn_state":
+            if not self._voice_controller.accept_frame(msg):
+                return
+            state = msg.get("state")
+            if isinstance(state, str):
+                self._voice_widget.set_voice_turn_status(
+                    state,
+                    str(msg.get("message") or state),
+                    turn_id=msg.get("turn_id"),
+                    occurred_at=msg.get("occurred_at"),
+                )
+            return
+        if t == "voice_submission_rejected":
+            self._finish_local_submission_by_id(str(msg.get("submission_id") or ""))
+            message = str(msg.get("message") or "Voice transcript was not accepted.")
+            self._voice_widget.set_voice_submission_rejected(
+                message,
+                retry_policy=str(msg.get("retry_policy") or "none"),
+                turn_id=msg.get("turn_id"),
+                occurred_at=msg.get("occurred_at"),
+            )
+            self._show_banner(message, "error")
+            return
         if t == "conversation_commit_ready":
             disposition = self._continuity.reduce_commit_ready(msg)
             if disposition == "commit_ready":
@@ -3375,6 +3581,7 @@ class MainWindow(QMainWindow):
             disposition = self._continuity.reduce_snapshot(msg)
             if disposition == "snapshot_applied":
                 self._apply_conversation_snapshot()
+                self._complete_voice_chat_hydration(msg)
             logger.info("conversation continuity: %s", disposition)
         elif t in {"ui_render", "ui_update", "ui_upsert", "ui_append"} and (
             _canonical_uuid4(self.active_chat)
@@ -3437,8 +3644,9 @@ class MainWindow(QMainWindow):
         elif t == "saved_components_list":
             self._refresh_saved_components(msg.get("components") or [])
         elif t == "chat_created":
-            created_chat = (msg.get("payload") or {}).get("chat_id") or self.active_chat
-            self._set_active_chat(created_chat)
+            if not self._accept_voice_chat_created(msg):
+                created_chat = (msg.get("payload") or {}).get("chat_id") or self.active_chat
+                self._set_active_chat(created_chat)
         elif t == "chat_loaded":
             chat = msg.get("chat") or {}
             loaded_chat = chat.get("id") or self.active_chat
@@ -3550,6 +3758,7 @@ class MainWindow(QMainWindow):
                 # Another (or no) chat: the banner carries a tap-to-open link.
                 self._show_banner(text, kind, chat_id=chat)
         elif t == "user_message_acked":
+            self._finish_local_submission_by_id(str(msg.get("submission_id") or ""))
             if self._scoped_status_matches(msg):
                 self._set_turn_active(True)
                 self.topbar.set_status("Working…", T.VARIANT_COLORS["accent"][0])

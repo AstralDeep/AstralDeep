@@ -2,7 +2,7 @@
 
 **Feature**: 065-conversational-voice
 **Database**: PostgreSQL through `backend/shared/database.py::_init_db()` only
-**Provisional revision**: `063.005` → `065.001` after rebasing feature 064
+**Schema revision**: integrated final predecessor `064.001` → target `065.001`
 
 ## Design Rules
 
@@ -14,8 +14,9 @@
 5. All timestamps used for persistence are UTC. In-process cadence scheduling uses monotonic time;
    persisted UTC times support reconstruction only and are never compared as cross-host monotonic
    clocks.
-6. Additive DDL is guarded and repeat-safe. The implementation must rebase over feature 064 and
-   select the next compatible revision rather than overwrite its migration or tests.
+6. Additive DDL is guarded and repeat-safe. T024 integrated the authorized feature-064 handoff and
+   recorded `064.001` as the sole predecessor. The 065 migration advances only that predecessor to
+   `065.001` without overwriting 064's DDL or tests and refuses every other source revision.
 7. Client timestamps are never lease or cadence authority. Authenticated server receipt time is
    stored for interaction/playout observations; client wall clocks remain diagnostic only.
 
@@ -65,9 +66,10 @@ ended rows provide bounded operational/audit correlation without media content.
 | `media_grant_consumed_at` | TIMESTAMPTZ | One-time watch-ticket consumption; nullable for direct LiveKit grants. |
 | `last_media_refresh_id` | UUID | Stable UUID4 idempotency key for the current refresh revision. |
 | `media_grant_issued_at` | TIMESTAMPTZ | Fixed claim time used to deterministically remint the same current short-lived grant after a lost response. |
-| `worker_grant_nonce_hash` | BYTEA | Current one-time worker-control nonce hash; never the bearer value. |
-| `worker_grant_expires_at` | TIMESTAMPTZ | Expiry of the current worker-control grant. |
-| `worker_grant_consumed_at` | TIMESTAMPTZ | Replay detection for the worker-control connection. |
+| `worker_assignment_id` | UUID | Coordinator-generated idempotency key for the current worker-pool `session_bind`; rotates with generation/worker reassignment, not an authorization bearer. |
+| `worker_rtc_grant_revision` | BIGINT | Starts at 1 and advances only when the orchestrator remints the direct-RTC worker room grant for a fenced reconnect. |
+| `worker_rtc_grant_issued_at` | TIMESTAMPTZ | Fixed claim time for deterministic current-grant remint; the bearer itself is never stored. |
+| `worker_rtc_grant_expires_at` | TIMESTAMPTZ | Expiry fence for the worker's current room-scoped join grant. |
 
 ### Constraints and indexes
 
@@ -276,6 +278,10 @@ accepted | processing | waiting_on_user -> abandoned
   exists; they are never durable content.
 - `submitting` retries reuse `client_turn_id` and `submission_id` only while no terminal accepted or
   rejected disposition exists.
+- Session end, lease expiry, or takeover atomically changes any `recognizing`/`submitting` row for
+  that generation to `abandoned` with `stale_session`/`explicit_user_retry`; accepted and later
+  execution states are not cancelled. A bounded maintenance reconciliation applies the same
+  transition to legacy or crash-window rows already attached to an ended session.
 - Normal chat acceptance occurs only after a no-queue `voice_interactive` execution lease is active;
   it atomically establishes `message_id`/operation/task correlations and then enables exactly one
   acknowledgement. Capacity exhaustion is an explicit-user-retry refusal before normal acceptance;
@@ -411,6 +417,20 @@ expiry/consumption/idempotency markers may be stored. A retry of the same `refre
 same current short-lived claims rather than storing a bearer. Token/ticket values are excluded from logs, traces,
 metrics, crash reports, UI snapshots, and audit metadata.
 
+### Worker RTC grant
+
+The worker first establishes one service-level pool WebSocket using bounded HMAC challenge-response
+with `VOICE_CONTROL_SECRET`; no per-session bearer or polling endpoint exists. After that channel is
+authenticated and a coordinator has claimed the session's control lease, the orchestrator uses its private
+`livekit-api` dependency and API secret to mint a separate short-lived worker room grant. The grant
+is carried only inside `session_bind`, permits the designated worker identity to join the assigned
+room, subscribe to the designated client microphone, and publish assistant audio/data, and grants no
+room administration, recording, egress, SIP, or API-secret access. It is held only in worker memory.
+A direct-RTC reconnect receives a higher `worker_rtc_grant_revision` bind; stale revisions and
+cross-session/room/identity claims are rejected. Only revision/issued/expiry metadata is persisted,
+never the JWT, pool secret, API secret, or speech credential. Frames remain independently fenced by
+session/generation/sequence when multiple assignments share one worker-pool connection.
+
 ## Ephemeral Entity: UI Control Binding
 
 After authenticated `register_ui`, the server mints a short-lived signed bearer containing the
@@ -440,8 +460,10 @@ update `voice_turn`; content/audio is not a chat message and is never persisted.
 
 ## Migration Plan
 
-1. Rebase against the branch that lands feature 064; inspect its final `SCHEMA_REVISION` and DDL.
-2. Set the next 065 revision (provisionally `065.001`) and update the existing schema guard.
+1. Preserve the integrated feature-064 handoff and its final `SCHEMA_REVISION = '064.001'` as the
+   sole predecessor without editing its branch/spec or discarding local owner changes.
+2. Retain target `SCHEMA_REVISION = '065.001'` and the existing schema guard; fail rather than
+   guessing if the checked-out predecessor differs from `064.001`.
 3. Add `CREATE TABLE IF NOT EXISTS`, the exact additive `conversation_commit`/`workspace_layout`
    columns and versioned-layout indexes above, check constraints, and repeat-safe constraint/index
    guards inside `_init_db()` following current patterns.

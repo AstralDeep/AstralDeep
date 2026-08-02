@@ -6,10 +6,12 @@
 
 ## Decision 1 — Use LiveKit as the media substrate, not as a second agentic runtime
 
-**Decision**: Run the official self-hosted LiveKit server and a separate first-party LiveKit
-Agents worker. The worker performs VAD, turn segmentation, ASR, TTS, playback interruption, and
-media cleanup only. It has no AstralDeep LLM resolver, agent registry, tools, user delegation
-authority, or durable conversation store.
+**Decision**: Run the official self-hosted LiveKit server and a separate first-party direct-RTC
+worker. The worker uses the supported `livekit` Python RTC package for room/audio transport and a
+separately pinned Silero ONNX model for VAD. AstralDeep code owns turn segmentation, endpointing,
+ASR/TTS streaming, playback interruption, reconnect fencing, and media cleanup. The worker has no
+LiveKit Agents runtime, AstralDeep LLM resolver, agent registry, tools, user delegation authority,
+or durable conversation store.
 
 The final transcript is delivered over reliable ordered LiveKit room data to the originating
 client (or over the watch bridge to watchOS). The client submits it once over its already
@@ -17,7 +19,8 @@ authenticated AstralDeep WebSocket using the ordinary `chat_message` action and 
 session/turn/submission IDs. A domain-separated, short-lived worker HMAC covers the complete
 immutable binding and normalized final-text digest for at most two minutes; the client copies it, and ingress rejects any
 altered, expired, or transplanted final before stripping proof material. The worker cannot act as a user. Assistant speech commands travel
-over a separately authenticated, session/generation-scoped worker-control channel.
+over session/generation-scoped frames multiplexed on a separately service-authenticated worker-pool
+control channel.
 
 Before transcription publication, VAD start initiates a coordinator handshake: the worker echoes
 the last worker-applied visible-chat revision, PostgreSQL snapshots that owner-validated destination
@@ -57,8 +60,11 @@ typed text—not audio or a worker-side conversation—the authoritative record.
 - A worker-to-backend “act as user” endpoint would introduce a broad impersonation capability.
 - Sending binary audio over AstralDeep's JSON UI socket would mix media with the authority plane,
   defeat transport bounds, and burden every control connection.
-- Forking the LiveKit server has no demonstrated need; supported server, Agents, SDK, data, and
-  custom STT/TTS interfaces cover the design.
+- Forking the LiveKit server has no demonstrated need; the supported server, direct RTC SDK, room
+  data/audio primitives, and AstralDeep speech adapters cover the design.
+- LiveKit Agents was rejected after complete closure inspection found unconditional restricted
+  local-inference content, PyAV/FFmpeg licensing uncertainty, incomplete BlingFire provenance, and
+  an unnecessarily broad runtime surface for a media-only worker.
 
 ## Decision 2 — Pin the verified upstream release set and multi-architecture server digest
 
@@ -68,9 +74,11 @@ transitive/native artifact by the repository's normal mechanism:
 | Component | Pin | Evidence / note |
 |---|---|---|
 | LiveKit server | `v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1` | OCI index contains linux/amd64 and linux/arm64 manifests. |
-| LiveKit Agents | `livekit-agents==1.6.7` | Its source pins worker RTC `livekit==1.1.13`. |
-| LiveKit API | `livekit-api==1.2.0` | Used by the orchestrator for tokens, rooms, dispatch, data, and disconnect. |
-| Silero VAD | `livekit-plugins-silero==1.6.7` | Server-side VAD/endpointing; model artifact is downloaded at image build and hashed. |
+| Worker RTC | `livekit==1.1.14` | Direct room/audio transport only; exact amd64/arm64 wheels are hash locked. |
+| Worker control WSS | `websockets==17.0.1` | Asyncio RFC 6455 client only; no transitives, proxies disabled, pinned-IP/original Host+SNI connection, strict frame/queue/time bounds, BSD-3-Clause license. Owning a security-sensitive WebSocket implementation is rejected. |
+| LiveKit API | `livekit-api==1.2.0` | Orchestrator-only tokens, rooms, data, and disconnect; never installed in the worker. |
+| Worker numeric runtime | `numpy==2.4.6`, `onnxruntime==1.28.0` | Exact multi-architecture wheels for bounded Silero inference. |
+| Silero VAD | v6.0 ONNX at commit `fba061dc5559f696e62171e9a0741782b0fdc23c` | Vendored exact 2,327,524-byte model, SHA-256 `597d30b3ec076608d059477bb14cfeffdf951bf5cae370d38f65d33bbfe82004`, with upstream MIT license/provenance. |
 | Web | `livekit-client` 2.21.0 | Vendor official UMD locally with license and hash; no CDN/build-system fork. |
 | Windows | `livekit==1.1.14` | Independent client SDK pin; Python >=3.9 and Windows wheel exist. |
 | Android | `io.livekit:livekit-android:2.27.0` | Project minSdk 26 exceeds SDK minimum; lock transitives and content-filter JitPack to AudioSwitch only. |
@@ -80,10 +88,12 @@ transitive/native artifact by the repository's normal mechanism:
 server prevents tag drift, while platform lockfiles and hashes make candidate evidence
 reconstructable.
 
-**Approval gate**: The user's requirement establishes the LiveKit-family direction but does not
-replace Constitution V. The implementation PR must record lead approval of exact pins,
-transitives, native binaries, Apache-2.0/third-party notices, CVE review, image/package-size
-impact, and the Silero model artifact. No installation occurs during planning.
+**Approval gate**: On 2026-07-31 the repository owner/lead developer explicitly approved the
+RTC-only replacement and authorized the implementation decisions needed in this session. The
+implementation PR must still retain the exact locks and matching review of transitives, native
+binaries, Apache-2.0/third-party notices, CVEs, image/package-size impact, and the Silero artifact.
+Image export remains disabled until protected policy binds approval to the audited closure
+fingerprint.
 
 **Alternatives rejected**: floating `latest`, CDN delivery, unpinned Maven/SPM/PyPI dependencies,
 and source forks cannot produce candidate-bound evidence.
@@ -146,27 +156,60 @@ calling “queued” an immediate start contradicts the clarified behavior; opti
 whole-task rerun could duplicate tools; and last-writer-wins canvas replacement could erase a
 concurrent result.
 
-## Decision 4 — Use supported LiveKit interfaces with AstralDeep-bounded Speaches adapters
+## Decision 4 — Own the direct-RTC media state machine and bounded Speaches adapters
 
-**Decision**: Keep LiveKit `AgentSession` and Silero VAD, but implement narrow
-`SpeachesRealtimeSTT` and `SpeachesTTS` adapters against LiveKit's supported STT/TTS interfaces.
-The adapters fix these launch values in code/config:
+**Decision**: Use `Room`, subscribed `AudioStream`, and published `AudioSource`/local audio tracks
+from the direct LiveKit RTC SDK. Run the exact Silero ONNX model in a bounded per-participant state
+machine and implement narrow `SpeachesBatchSTT` and `SpeachesTTS` adapters over the approved
+streaming-egress boundary. The adapters fix these launch values in code/config:
 
 - ASR: `Systran/faster-whisper-large-v3`
 - TTS: `speaches-ai/Kokoro-82M-v1.0-ONNX`
 - voice: `af_heart`
 - synthesis: WAV validated as 24 kHz, mono, bounded duration/bytes
 
-Realtime ASR uses Speaches' transcription intent and emits provisional/final LiveKit speech
-events. TTS accepts only coordinator-issued bounded text and streams decoded frames to the room.
-The worker suppresses ASR ingestion while its own output is active, combines that with platform
-AEC and VAD, and reopens capture immediately for barge-in after stopping stale speech.
+The worker finalizes one bounded in-memory utterance with its own Silero endpointing, then calls
+Speaches `/v1/audio/transcriptions` and emits one final AstralDeep event. It never invents a partial
+transcript. TTS accepts only coordinator-issued bounded text and publishes decoded PCM frames through
+an ephemeral LiveKit audio track. The worker owns explicit `idle/listening/recognizing/speaking/
+reconnecting/stopping` transitions, suppresses ASR ingestion while its own output is active,
+combines that with platform AEC and VAD, clears queued/source frames on interruption, fences stale
+callbacks by session/generation, and reopens capture promptly after stopping stale speech.
 
-**Rationale**: The pinned generic OpenAI plugin supports custom endpoints and realtime STT, but
-its realtime implementation obtains a shared `aiohttp` session rather than exposing the complete
-destination-controlled streaming connector required by AstralDeep's egress policy. A small
-supported adapter provides exact redirect, DNS, peer, buffer, timeout, proxy, and redaction
-semantics without modifying upstream LiveKit.
+**Rationale**: Direct RTC keeps only the media primitive AstralDeep needs and eliminates the
+restricted/native-heavy Agents closure. The generic OpenAI plugin also obtains a shared `aiohttp`
+session rather than exposing the complete destination-controlled streaming connector required by
+AstralDeep's egress policy. Small owned adapters provide exact redirect, DNS, peer, buffer,
+timeout, proxy, cancellation, and redaction semantics without modifying upstream LiveKit. The
+configured 2026-07-31 speech endpoint passed exact-model batch transcription and Kokoro WAV
+synthesis but returned HTTP 404 for `/v1/realtime`; selecting the verified batch route is therefore
+a deployment contract, not a silent degradation. A later streaming route requires a new live
+capability probe and contract update.
+
+**Pinned RTC behavior**: Exact `livekit==1.1.14` source at tag `rtc-v1.1.14`, commit
+`23cbb0f33f91be9360f970980b445bb692b19b52`, establishes these implementation rules:
+
+- Connect with `RoomOptions(auto_subscribe=False, connect_timeout=...)`; successful return from
+  `Room.connect()` is the initial connected signal because this release does not emit the declared
+  `connected` event. Reconcile `remote_participants` and their existing publications immediately,
+  then subscribe only after participant identity, audio kind, microphone source, session, and
+  generation validation.
+- Room callbacks are synchronous; they perform no blocking/async work and enqueue typed events into
+  one serialized session-owner task. `AudioStream` uses explicit 16-kHz mono 32-ms frames and finite
+  capacity. Because a full SDK queue drops the oldest frame silently, lag/overrun aborts the current
+  utterance rather than producing a damaged transcript.
+- Assistant output uses a small, measured `AudioSource` queue and a worker-owned `speech_epoch`.
+  Interruption advances the epoch before any new frame, clears the source, waits boundedly for the
+  producer to quiesce, clears again, and replaces/unpublishes the source on timeout. Local
+  `wait_for_playout()` is never evidence that a client heard audio; the authenticated client playout
+  event remains authoritative for operational timing.
+- SDK reconnect is native and has no public `Room.reconnect()`. Capture/output remain fenced through
+  `reconnecting` until context/grant/generation and participant publications are reconciled after
+  `reconnected`; `local_track_republished` rekeys the changed SID. A terminal disconnect obtains a
+  higher-revision worker room grant and constructs a fresh `Room` rather than reusing stale state.
+- Reliable data is explicitly destination-targeted, application-sequenced/deduplicated, kept below
+  15 KiB, and never treated as buffered delivery. Participant metadata/attributes carry no grants,
+  transcripts, PHI, or authoritative rapid state.
 
 **Streaming egress contract**: `backend/shared/streaming_egress.py` validates one fixed
 operator-configured origin, resolves and pins allowed addresses for the connection pool, preserves
@@ -179,8 +222,8 @@ URLs never enter this path.
 **Alternatives rejected**:
 
 - The legacy raw `aiohttp` proxy is unauthenticated/unbounded and exposes caller-selected values.
-- Buffered batch STT is a viable failure fallback for testing but does not provide the intended
-  provisional realtime experience and is not the launch path.
+- Assuming that the documented realtime route exists after its live 404 would advertise a false
+  capability. The launch path uses the verified bounded batch route after local endpointing.
 - Browser/platform ASR or TTS would violate the exact-model and included-service requirements.
 
 ## Decision 5 — Isolate deployment speech inputs from all LLM configuration
@@ -197,10 +240,16 @@ overrides/unsets the legacy names inside the orchestrator container while interp
 the worker aliases. The worker passes those values
 explicitly to the bounded adapters and disables ambient proxy/provider credential discovery. The
 orchestrator, user agents, System jobs, and clients do not receive them and continue to resolve
-LLMs only from encrypted in-product configuration. LiveKit API/secret and the worker-control
-challenge key are separate operator-only deployment secrets. LiveKit job metadata carries only
-opaque session/generation correlation; it never carries the worker-control credential or a client
-grant.
+LLMs only from encrypted in-product configuration. The `livekit-api` package plus LiveKit API
+key/secret remain orchestrator-only; the worker-control challenge key is a separate operator-only
+deployment secret. Each worker opens one bounded challenge-authenticated pool WebSocket, advertises
+only identity/capacity/profile readiness, and receives coordinator-selected `session_bind`
+assignments; there is no Agents dispatch or worker polling endpoint. After the coordinator claims
+the current database control lease, each bind carries a distinct short-lived room-scoped worker
+join grant (never the API secret) with session/generation/room/worker/revision/expiry binding. It is
+memory-only, redacted, replaceable by a higher-revision bind for reconnect, and never reused as a
+client grant. Per-session sequences and generation fences permit bounded multiplexing without
+making the worker connection an authority plane.
 
 **Rationale**: This honors the requested existing `.env` inputs while preserving feature 054's
 behavioral guarantee. The existing environment-inert LLM test remains unchanged; new sentinel
@@ -462,18 +511,15 @@ security, schema, speech readiness, PHI, or isolation gates.
 All version-sensitive sources were retrieved on 2026-07-31:
 
 - [LiveKit server v1.13.5 release](https://github.com/livekit/livekit/releases/tag/v1.13.5)
-- [LiveKit Agents 1.6.7 release](https://github.com/livekit/agents/releases/tag/livekit-agents%401.6.7)
-- [LiveKit Agents 1.6.7 dependency source](https://github.com/livekit/agents/blob/livekit-agents%401.6.7/livekit-agents/pyproject.toml)
+- [LiveKit Python SDK source](https://github.com/livekit/python-sdks)
 - [LiveKit web client v2.21.0](https://github.com/livekit/client-sdk-js/releases/tag/v2.21.0)
 - [LiveKit Android client v2.27.0](https://github.com/livekit/client-sdk-android/releases/tag/v2.27.0)
 - [LiveKit Swift client 2.15.3](https://github.com/livekit/client-sdk-swift/releases/tag/2.15.3)
 - [LiveKit Swift 2.15.3 platform declaration](https://github.com/livekit/client-sdk-swift/blob/2.15.3/Package.swift)
 - [LiveKit Python RTC 1.1.14 package](https://pypi.org/project/livekit/1.1.14/)
+- [LiveKit Python RTC 1.1.14 exact source](https://github.com/livekit/python-sdks/tree/rtc-v1.1.14)
 - [LiveKit API 1.2.0 release](https://github.com/livekit/python-sdks/releases/tag/api-v1.2.0)
-- [LiveKit Silero plugin 1.6.7 package](https://pypi.org/project/livekit-plugins-silero/1.6.7/)
-- [LiveKit OpenAI-compatible STT guide](https://docs.livekit.io/agents/models/stt/openai/)
-- [LiveKit Kokoro TTS guide](https://docs.livekit.io/agents/models/tts/kokoro/)
-- [LiveKit pipeline-node extension guide](https://docs.livekit.io/agents/logic/nodes/)
+- [Silero VAD v6.0 source](https://github.com/snakers4/silero-vad/tree/v6.0)
 - [LiveKit self-hosting deployment](https://docs.livekit.io/home/self-hosting/deployment/)
 - [LiveKit ports and firewall](https://docs.livekit.io/home/self-hosting/ports-firewall/)
 - [LiveKit token authentication](https://docs.livekit.io/home/get-started/authentication/)

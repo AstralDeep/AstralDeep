@@ -19,6 +19,233 @@ data class DeviceCapabilities(
     val hasTouch: Boolean = true,
     val supportedTypes: List<String> = emptyList(),
     val deviceType: String = "android",
+    /** Stable, non-secret installation UUID. Authority still requires the live UI binding. */
+    val deviceId: String? = null,
+    /** Runtime media facts reported for server-owned voice capability adaptation. */
+    val hasMicrophone: Boolean = false,
+    val hasAudioOutput: Boolean = false,
+    val microphonePermission: String = "not_determined",
+    val fullDuplex: Boolean = false,
+    val voiceTransport: String = "livekit",
+)
+
+/** One ordered server-owned composer control. Android renders this model, never a local menu copy. */
+data class VoiceControl(
+    val key: String,
+    val action: String,
+    val label: String,
+    val icon: String,
+    val visible: Boolean,
+    val enabled: Boolean,
+    val pressed: Boolean,
+    val busy: Boolean,
+)
+
+data class VoiceOwnerDevice(
+    val deviceId: String,
+    val deviceKind: String,
+    val deviceLabel: String?,
+    val generation: Int,
+)
+
+/** Server-owned conversational state carried by `composer_state`. */
+data class VoiceComposerModel(
+    val available: Boolean,
+    val state: String,
+    val speechMuted: Boolean,
+    val microphoneEnabled: Boolean,
+    val foregroundActive: Boolean,
+    val reason: String,
+    val outputLocale: String,
+    val message: String?,
+    val chatContextRevision: Int?,
+    val appliedChatContextRevision: Int?,
+    val chatContextSynced: Boolean,
+    val sessionId: String?,
+    val generation: Int?,
+    val mediaGrantRevision: Int?,
+    val visibleChatId: String?,
+    val foregroundTurnId: String?,
+    val ownerDevice: VoiceOwnerDevice?,
+    val idleExpiresAt: String?,
+    val controls: List<VoiceControl>,
+)
+
+/** Ephemeral UI-connection bearer. Its value must never be logged or persisted. */
+data class VoiceControlBinding(
+    val deviceId: String,
+    val connectionGeneration: String,
+    val bindingId: String,
+    val binding: String,
+    val expiresAt: String,
+) {
+    override fun toString(): String =
+        "VoiceControlBinding(deviceId=$deviceId, connectionGeneration=$connectionGeneration, " +
+            "bindingId=$bindingId, binding=[REDACTED], expiresAt=$expiresAt)"
+}
+
+/** Proof-bearing immutable origin copied onto the ordinary `chat_message`. */
+data class VoiceOrigin(
+    val schemaVersion: String,
+    val sessionId: String,
+    val generation: Int,
+    val mediaGrantRevision: Int,
+    val turnId: String,
+    val clientTurnId: String,
+    val chatContextRevision: Int,
+    val sourceParticipantIdentity: String,
+    val detectedLanguage: String,
+    val textDigestSha256: String,
+    val transcriptProof: String,
+    val proofExpiresAt: String,
+) {
+    override fun toString(): String =
+        "VoiceOrigin(sessionId=$sessionId, generation=$generation, mediaGrantRevision=$mediaGrantRevision, " +
+            "turnId=$turnId, clientTurnId=$clientTurnId, chatContextRevision=$chatContextRevision, " +
+            "sourceParticipantIdentity=$sourceParticipantIdentity, detectedLanguage=$detectedLanguage, " +
+            "textDigestSha256=[REDACTED], transcriptProof=[REDACTED], proofExpiresAt=$proofExpiresAt)"
+}
+
+/** Reliable LiveKit transcript envelope. Partials are presentation-only. */
+data class VoiceTranscript(
+    val sessionId: String,
+    val generation: Int,
+    val turnId: String,
+    val clientTurnId: String,
+    val submissionId: String,
+    val requestGeneration: String,
+    val chatId: String,
+    val chatContextRevision: Int,
+    val mediaGrantRevision: Int,
+    val sequence: Int,
+    val final: Boolean,
+    val text: String,
+    val detectedLanguage: String?,
+    val textDigestSha256: String?,
+    val transcriptProof: String?,
+    val proofExpiresAt: String?,
+    val sourceParticipantIdentity: String,
+) {
+    fun originOrNull(): VoiceOrigin? {
+        if (!final) return null
+        return VoiceOrigin(
+            schemaVersion = "1",
+            sessionId = sessionId,
+            generation = generation,
+            mediaGrantRevision = mediaGrantRevision,
+            turnId = turnId,
+            clientTurnId = clientTurnId,
+            chatContextRevision = chatContextRevision,
+            sourceParticipantIdentity = sourceParticipantIdentity,
+            detectedLanguage = detectedLanguage ?: return null,
+            textDigestSha256 = textDigestSha256 ?: return null,
+            transcriptProof = transcriptProof ?: return null,
+            proofExpiresAt = proofExpiresAt ?: return null,
+        )
+    }
+
+    override fun toString(): String =
+        "VoiceTranscript(sessionId=$sessionId, generation=$generation, turnId=$turnId, " +
+            "clientTurnId=$clientTurnId, submissionId=$submissionId, requestGeneration=$requestGeneration, " +
+            "chatId=$chatId, chatContextRevision=$chatContextRevision, mediaGrantRevision=$mediaGrantRevision, " +
+            "sequence=$sequence, final=$final, text=[REDACTED], detectedLanguage=$detectedLanguage, " +
+            "proof=[REDACTED], sourceParticipantIdentity=$sourceParticipantIdentity)"
+}
+
+data class VoiceSessionState(
+    val sessionId: String,
+    val connectionGeneration: String,
+    val generation: Int,
+    val mediaGrantRevision: Int,
+    val visibleChatId: String,
+    val chatContextRevision: Int,
+    val appliedChatContextRevision: Int?,
+    val chatContextSynced: Boolean,
+    val state: String,
+    val speechMuted: Boolean,
+    val microphoneEnabled: Boolean,
+    val foregroundActive: Boolean,
+    val reason: String,
+    val message: String?,
+    val occurredAt: String,
+)
+
+data class VoiceTurnState(
+    val sessionId: String,
+    val connectionGeneration: String,
+    val generation: Int,
+    val mediaGrantRevision: Int,
+    val turnId: String,
+    val clientTurnId: String,
+    val submissionId: String,
+    val requestGeneration: String,
+    val chatId: String,
+    val chatContextRevision: Int,
+    val detectedLanguage: String?,
+    val spokenOutputPolicy: String,
+    val outputReason: String,
+    val state: String,
+    val foreground: Boolean,
+    val sensitiveResultPending: Boolean,
+    val sequence: Int,
+    val resultId: String?,
+    val message: String?,
+    val occurredAt: String,
+)
+
+data class VoiceSubmissionRejected(
+    val sessionId: String,
+    val connectionGeneration: String,
+    val generation: Int,
+    val mediaGrantRevision: Int,
+    val turnId: String,
+    val clientTurnId: String,
+    val submissionId: String,
+    val requestGeneration: String,
+    val chatId: String,
+    val reason: String,
+    val retryPolicy: String,
+    val message: String?,
+    val occurredAt: String,
+)
+
+/** Content-free manifest that must precede a worker audio track. */
+data class VoiceAnnouncementMedia(
+    val sessionId: String,
+    val generation: Int,
+    val mediaGrantRevision: Int,
+    val announcementId: String,
+    val announcementSequence: Int,
+    val turnId: String?,
+    val kind: String,
+    val quantumRole: String,
+    val quantumIndex: Int,
+    val transport: String,
+    val workerIdentity: String,
+    val sampleRateHz: Int,
+    val durationSamples: Int,
+    val resultReservedSamplesAfter: Int?,
+    val trackSid: String?,
+    val trackName: String?,
+)
+
+/** Content-free local render observation sent on the authenticated UI socket. */
+data class VoicePlayoutEvent(
+    val deviceId: String,
+    val connectionGeneration: String,
+    val sessionId: String,
+    val generation: Int,
+    val mediaGrantRevision: Int,
+    val announcementId: String,
+    val announcementSequence: Int,
+    val turnId: String?,
+    val kind: String,
+    val quantumRole: String,
+    val quantumIndex: Int,
+    val resultReservedSamplesAfter: Int?,
+    val phase: String,
+    val clientSequence: Int,
+    val observedAt: String,
 )
 
 /**
@@ -174,10 +401,41 @@ sealed interface Inbound {
 
     data class StreamUnsubscribed(val toolName: String?) : Inbound
 
-    data class ChatCreated(val chatId: String?) : Inbound
+    data class ChatCreated(
+        val chatId: String?,
+        val connectionGeneration: String? = null,
+        val submissionId: String? = null,
+        val requestGeneration: String? = null,
+        val fromMessage: Boolean? = null,
+    ) : Inbound
 
     /** Authoritative "a new user turn has started" (emitted once per chat turn). */
-    data class UserMessageAcked(val chatId: String?, val messageId: String?) : Inbound
+    data class UserMessageAcked(
+        val chatId: String?,
+        val messageId: String?,
+        val submissionId: String? = null,
+        val requestGeneration: String? = null,
+        val connectionGeneration: String? = null,
+        val voiceTurnId: String? = null,
+    ) : Inbound
+
+    data class ComposerState(
+        val revision: Int,
+        val connectionGeneration: String,
+        val voice: VoiceComposerModel,
+    ) : Inbound
+
+    data class VoiceControlBindingFrame(val value: VoiceControlBinding) : Inbound
+
+    data class VoiceSessionStateFrame(val value: VoiceSessionState) : Inbound
+
+    data class VoiceTurnStateFrame(val value: VoiceTurnState) : Inbound
+
+    data class VoiceSubmissionRejectedFrame(val value: VoiceSubmissionRejected) : Inbound
+
+    data class VoiceTranscriptFrame(val value: VoiceTranscript) : Inbound
+
+    data class VoiceAnnouncementMediaFrame(val value: VoiceAnnouncementMedia) : Inbound
 
     data class ChatLoaded(val chat: ChatTranscript) : Inbound
 

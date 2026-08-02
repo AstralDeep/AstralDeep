@@ -22,6 +22,65 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "voice_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "voice_worker_image_reference",
+        "voice_worker_image_sha256",
+        "livekit_image_reference",
+        "livekit_image_sha256",
+        "livekit_config_sha256",
+        "livekit_public_url",
+        "livekit_turn_domain",
+        "speech_profile"
+      ],
+      "properties": {
+        "voice_worker_image_reference": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._/-]+(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?@sha256:[0-9a-f]{64}$"
+        },
+        "voice_worker_image_sha256": { "$ref": "#/$defs/sha256" },
+        "livekit_image_reference": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._/-]+(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?@sha256:[0-9a-f]{64}$"
+        },
+        "livekit_image_sha256": { "$ref": "#/$defs/sha256" },
+        "livekit_config_sha256": { "$ref": "#/$defs/sha256" },
+        "livekit_public_url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "livekit_turn_domain": {
+          "type": "string",
+          "pattern": "^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}$"
+        },
+        "speech_profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "asr_model",
+            "tts_model",
+            "voice",
+            "sample_rate_hz",
+            "inventory_sha256",
+            "profile_sha256"
+          ],
+          "properties": {
+            "asr_model": { "const": "Systran/faster-whisper-large-v3" },
+            "tts_model": { "const": "speaches-ai/Kokoro-82M-v1.0-ONNX" },
+            "voice": { "const": "af_heart" },
+            "sample_rate_hz": { "const": 24000 },
+            "inventory_sha256": { "$ref": "#/$defs/sha256" },
+            "profile_sha256": {
+              "const": "9b857a3d788a5d6c4ff67278eca4a169028fb2e185ccaf0b01961283f629445b"
+            }
+          }
+        }
+      },
+      "$comment": "The image SHA fields are the digest suffixes of their references. profile_sha256 hashes compact sorted-key UTF-8 JSON containing only asr_model, tts_model, voice, and sample_rate_hz. Policy validates both bindings independently of schema shape."
+    },
     "timestamp": {
       "type": "string",
       "format": "date-time"
@@ -204,7 +263,7 @@
         },
         "approved_at": { "$ref": "#/$defs/timestamp" }
       },
-      "$comment": "These fields are cross-checks only. Before any tag/release mutation, policy requires equality with independently installed full controller/publisher commits, bridge blob hash, and token-broker policy; re-queries the same-repository protected deployment/payload; requires an allowlisted reviewer different from the requester; and proves the broker granted the scoped publication token only to the exact pinned publisher workflow SHA. Moved-main/modified-publisher or self-declared approval fails before authority is issued. The legacy bridge has no mutation permission and can receive OIDC only after the protected publisher creates its exact tag and proves byte equality with bridge_workflow_sha256."
+      "$comment": "These fields are cross-checks only. token_broker_policy_sha256 is a retained legacy field name carrying the native publisher-policy digest; no token broker exists. Before any tag/release mutation, policy requires equality with independently installed full controller/publisher commits, bridge blob hash, and that publisher-policy digest; re-queries the same-repository protected deployment/payload; requires an allowlisted reviewer different from the requester; and verifies the exact pinned publisher workflow before its job-scoped built-in token is used. Moved-main/modified-publisher or self-declared approval fails. The legacy bridge has no mutation permission and can receive OIDC only after the protected publisher creates its exact tag and proves byte equality with bridge_workflow_sha256. T120 must additionally enforce trusted-only tag creation before activation."
     },
     "trusted_decision_reference": {
       "type": "object",
@@ -369,6 +428,7 @@
         "authentication_posture",
         "database_posture",
         "worker_paths",
+        "voice_runtime",
         "macos_personal_agent_host",
         "endpoint"
       ],
@@ -403,17 +463,19 @@
         "database_posture": { "const": "representative_postgresql" },
         "worker_paths": {
           "type": "array",
-          "minItems": 2,
+          "minItems": 3,
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "enum": ["background", "scheduler", "maintenance"]
+            "enum": ["background", "scheduler", "maintenance", "voice"]
           },
           "allOf": [
             { "contains": { "const": "background" } },
-            { "contains": { "const": "scheduler" } }
+            { "contains": { "const": "scheduler" } },
+            { "contains": { "const": "voice" } }
           ]
         },
+        "voice_runtime": { "$ref": "#/$defs/voice_runtime" },
         "macos_personal_agent_host": {
           "type": "object",
           "additionalProperties": false,
@@ -1336,7 +1398,7 @@
           }
         }
       },
-      "$comment": "Before authority or publication, policy independently verifies trusted_decision.manifest_artifact against release-trust trusted_release_decision and the required protected check, and re-queries protected publisher workflow SHA, token-broker policy, deployment payload/reviewer state, and bridge blob hash; embedded values are cross-checks only. The protected publisher refuses any existing official tag/release/assets, creates exactly v plus strict release_version at the decision SHA, sets release_name equal to that tag and latest_disposition=make_latest_on_publish for shipped-v0.3.0 updater compatibility, obtains a detached bundle only from the byte-pinned legacy bridge, and uploads exactly AstralDeep.exe, SHA256SUMS, and cosign.bundle create-only to a new draft. It re-queries draft_state=true, prerelease=false, asset_count=3, three distinct IDs and constant names; resolves/re-downloads canonical same-repository assets; requires release_name=tag=v plus release_version, the draft EXE digest to equal matrix-tested bytes, and the eventual public transition to make this release the /releases/latest result; parses SHA256SUMS; verifies the bundle with the actual v0.3.0 identity/issuer policy; requires equal build identities and target SHA; rejects any build/PyInstaller step, moved publisher, self-approved deployment, collision, substitution, or candidate verdict; and fully validates this record before public transition. Failure removes only the just-created tag/draft before publication."
+      "$comment": "Before authority or publication, policy independently verifies trusted_decision.manifest_artifact against release-trust trusted_release_decision and the required protected check, and re-queries protected publisher workflow SHA, the native publisher-policy digest stored under the legacy token_broker_policy_sha256 field, deployment payload/reviewer state, and bridge blob hash; embedded values are cross-checks only. The protected publisher refuses any existing official tag/release/assets, creates exactly v plus strict release_version at the decision SHA, sets release_name equal to that tag and latest_disposition=make_latest_on_publish for shipped-v0.3.0 updater compatibility, obtains a detached bundle only from the byte-pinned legacy bridge, and uploads exactly AstralDeep.exe, SHA256SUMS, and cosign.bundle create-only to a new draft. It re-queries draft_state=true, prerelease=false, asset_count=3, three distinct IDs and constant names; resolves/re-downloads canonical same-repository assets; requires release_name=tag=v plus release_version, the draft EXE digest to equal matrix-tested bytes, and the eventual public transition to make this release the /releases/latest result; parses SHA256SUMS; verifies the bundle with the actual v0.3.0 identity/issuer policy; requires equal build identities and target SHA; rejects any build/PyInstaller step, moved publisher, self-approved deployment, collision, substitution, or candidate verdict; and fully validates this record before public transition. Cleanup must delete only the just-created state-owned tag/draft and verify absence; activation remains blocked until the tag rules allow that rollback and durable recovery exists."
     }
   }
 }

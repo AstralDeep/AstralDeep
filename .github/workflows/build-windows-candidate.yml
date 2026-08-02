@@ -164,19 +164,16 @@ jobs:
             --junitxml=build\windows-candidate\packaged-release.junit.xml
 
       - name: Run full Windows source suite with coverage
-        working-directory: windows-client
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          & .\.venv-release-a\Scripts\python -m pytest tests -q `
-            --cov=astral_client `
-            --cov=win_agent `
-            --cov=main `
-            --cov-report=xml:..\build\windows-candidate\windows-coverage.xml `
-            --junitxml=..\build\windows-candidate\windows-source.junit.xml
+          & windows-client\.venv-release-a\Scripts\python -m pytest windows-client\tests -q `
+            --cov=windows-client `
+            --cov-report=xml:build\windows-candidate\windows-coverage.xml `
+            --junitxml=build\windows-candidate\windows-source.junit.xml
 
       - name: Bind executable to source, profile, runtime, and lock
         id: identity

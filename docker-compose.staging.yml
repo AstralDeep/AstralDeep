@@ -1,8 +1,16 @@
 name: ${STAGING_PROJECT_NAME:?set a request-scoped staging project name}
 
+x-staging-ownership: &staging-ownership
+  com.astraldeep.staging.managed: "true"
+  com.astraldeep.staging.project: ${STAGING_PROJECT_NAME:?set a request-scoped staging project name}
+  com.astraldeep.staging.environment-id: ${STAGING_ENVIRONMENT_ID:?set the exact protected environment id}
+  com.astraldeep.staging.run-id: ${STAGING_RUN_ID:?set the exact protected workflow run id}
+  com.astraldeep.staging.run-attempt: ${STAGING_RUN_ATTEMPT:?set the exact protected workflow run attempt}
+
 services:
   postgres:
     image: ${STAGING_POSTGRES_IMAGE:?set a digest-qualified PostgreSQL image}
+    labels: *staging-ownership
     environment:
       POSTGRES_USER: ${STAGING_DB_USER:?set the staging database user}
       POSTGRES_PASSWORD: ${STAGING_DB_PASSWORD:?set the staging database password}
@@ -20,6 +28,7 @@ services:
 
   keycloak-postgres:
     image: ${STAGING_POSTGRES_IMAGE:?set a digest-qualified PostgreSQL image}
+    labels: *staging-ownership
     environment:
       POSTGRES_USER: ${STAGING_KEYCLOAK_DB_USER:?set the Keycloak database user}
       POSTGRES_PASSWORD: ${STAGING_KEYCLOAK_DB_PASSWORD:?set the Keycloak database password}
@@ -37,6 +46,7 @@ services:
 
   keycloak:
     image: ${STAGING_KEYCLOAK_IMAGE:?set a digest-qualified Keycloak image}
+    labels: *staging-ownership
     command:
       - start
       - --http-enabled=true
@@ -59,11 +69,43 @@ services:
         condition: service_healthy
     restart: "no"
 
+  livekit:
+    image: livekit/livekit-server:v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1
+    labels: *staging-ownership
+    command:
+      - --config
+      - /etc/livekit.yaml
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set the protected LiveKit API key}: ${LIVEKIT_API_SECRET:?set the protected LiveKit API secret}"
+      LIVEKIT_TURN_DOMAIN: ${LIVEKIT_TURN_DOMAIN:?set the public TURN certificate domain}
+    ports:
+      # Signaling is reachable only by the host's trusted HTTPS/WSS terminator.
+      - "127.0.0.1:7880:7880/tcp"
+      - "7881:7881/tcp"
+      - "3478:3478/udp"
+      # LiveKit v1.13.5 advertises turns:<domain>:443. The same-host L4
+      # terminator owns that public port and forwards plaintext to loopback
+      # 15349, which maps to the container's external_tls listener on 5349.
+      - "127.0.0.1:15349:5349/tcp"
+      - "50000-50099:50000-50099/udp"
+      - "51000-51099:51000-51099/udp"
+    volumes:
+      - ./deploy/livekit/livekit.staging.yaml:/etc/livekit.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
   # The protected staging configuration supplies the exact pre-060 image.
   # The driver runs this one-shot service first, restores representative 057
   # rows second, and starts the candidate only after that restore succeeds.
   schema-baseline:
     image: ${STAGING_SCHEMA_BASELINE_IMAGE:?set the digest-qualified 057 baseline image}
+    labels: *staging-ownership
     profiles: [bootstrap]
     working_dir: /app/backend
     command:
@@ -83,6 +125,7 @@ services:
 
   astraldeep:
     image: ${ASTRAL_CANDIDATE_IMAGE:?set the digest-qualified candidate image}
+    labels: *staging-ownership
     env_file:
       - ${STAGING_RUNTIME_ENV_FILE:?set the protected runtime environment file}
     environment:
@@ -94,12 +137,23 @@ services:
       KEYCLOAK_INTERNAL_URL: http://keycloak:8080
       FF_BG_CONTINUITY: "true"
       FF_SCHEDULER_EXECUTION: "true"
+      OPENAI_BASE_URL: ""
+      OPENAI_API_KEY: ""
+      LIVEKIT_INTERNAL_URL: http://livekit:7880
+      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:?set the public staging WSS URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set the protected LiveKit API key}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set the protected LiveKit API secret}
+      VOICE_CONTROL_SECRET: ${VOICE_CONTROL_SECRET:?set the protected voice-control secret}
+      VOICE_WATCH_BRIDGE_PUBLIC_URL: ${VOICE_WATCH_BRIDGE_PUBLIC_URL:?set the public staging Watch bridge WSS URL}
+      VOICE_UI_BINDING_SECRET: ${VOICE_UI_BINDING_SECRET:?set the protected UI voice-binding secret}
     ports:
       - 127.0.0.1:${STAGING_BIND_PORT:?set the request-scoped host port}:8001
     depends_on:
       postgres:
         condition: service_healthy
       keycloak:
+        condition: service_started
+      livekit:
         condition: service_started
     healthcheck:
       test:
@@ -113,6 +167,50 @@ services:
       start_period: 60s
     restart: "no"
 
+  voice-worker:
+    image: ${ASTRAL_VOICE_WORKER_IMAGE:?set the digest-qualified candidate voice-worker image}
+    labels: *staging-ownership
+    environment:
+      ASTRAL_ENV: staging
+      VOICE_WORKER_IDENTITY: ${VOICE_WORKER_IDENTITY:?set the protected worker identity}
+      VOICE_WORKER_MAX_SESSIONS: ${VOICE_WORKER_MAX_SESSIONS:?set the bounded worker capacity}
+      VOICE_WATCH_BRIDGE_LISTEN_HOST: 0.0.0.0
+      VOICE_WATCH_BRIDGE_LISTEN_PORT: 7890
+      VOICE_WORKER_CLOSURE_SHA256: ${VOICE_WORKER_CLOSURE_SHA256:?set the verified CLOSURE.json digest}
+      VOICE_SPEECH_BASE_URL: ${OPENAI_BASE_URL:?set the protected operator speech base URL}
+      VOICE_SPEECH_API_KEY: ${OPENAI_API_KEY:?set the protected operator speech API key}
+      OPENAI_BASE_URL: ""
+      OPENAI_API_KEY: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: livekit,astraldeep,localhost,127.0.0.1
+      ASTRAL_VOICE_CONTROL_URL: ${ASTRAL_VOICE_CONTROL_URL:?set the protected worker-control WSS URL}
+      VOICE_CONTROL_SECRET: ${VOICE_CONTROL_SECRET:?set the protected voice-control secret}
+    ports:
+      # Plaintext is loopback-only; the protected host ingress terminates TLS
+      # and advertises VOICE_WATCH_BRIDGE_PUBLIC_URL as wss://.
+      - 127.0.0.1:${STAGING_WATCH_BRIDGE_BIND_PORT:?set the request-scoped Watch bridge port}:7890
+    depends_on:
+      livekit:
+        condition: service_started
+      astraldeep:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
 volumes:
   product-postgres:
+    labels: *staging-ownership
   keycloak-postgres:
+    labels: *staging-ownership
+
+networks:
+  default:
+    labels: *staging-ownership

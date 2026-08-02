@@ -57,6 +57,11 @@ a2a-sdk[sqlite]>=1.0.2,<2.0
 a2a-sdk[http-server]>=1.0.2,<2.0
 httpx>=0.28.1
 
+# Conversational voice control plane (feature 065; lead-developer approved 2026-07-31).
+# Orchestrator-only room/token administration. Never install this package or the
+# LiveKit API key/secret in the direct-RTC media worker.
+livekit-api==1.2.0
+
 # Remote compute agents (feature 063-remote-compute-agents, lead-developer approved D1 2026-07-23).
 # SSH transport for cluster (Slurm) + host operations. Pulls bcrypt, pynacl, cffi transitively.
 paramiko>=3.4.0

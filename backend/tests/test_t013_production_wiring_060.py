@@ -213,6 +213,14 @@ def test_all_effective_rows_and_operator_retention_are_loaded_read_only() -> Non
             "config_revision": "operator-2026-07",
         },
         {
+            "class_name": "voice_interactive",
+            "parent_class_name": "interactive",
+            "active_limit": 10,
+            "queue_limit": 0,
+            "max_wait_ms": 0,
+            "config_revision": "operator-2026-07",
+        },
+        {
             "class_name": "mcp",
             "parent_class_name": "global",
             "active_limit": 8,
@@ -263,6 +271,11 @@ def test_all_effective_rows_and_operator_retention_are_loaded_read_only() -> Non
     assert effective[AdmissionClass.BACKGROUND].active_limit == 7
     assert effective[AdmissionClass.BACKGROUND].queue_limit == 19
     assert effective[AdmissionClass.BACKGROUND].max_wait_ms == 12_345
+    assert effective[AdmissionClass.VOICE_INTERACTIVE].parent_class_name is (
+        AdmissionClass.INTERACTIVE
+    )
+    assert effective[AdmissionClass.VOICE_INTERACTIVE].queue_limit == 0
+    assert effective[AdmissionClass.VOICE_INTERACTIVE].max_wait_ms is None
     assert {config.config_revision for config in configs} == {"operator-2026-07"}
     assert len(database.queries) == 1
     assert "operation_admission_class" in database.queries[0]
@@ -329,10 +342,28 @@ def test_from_database_binds_operator_snapshot_without_upsert() -> None:
     rows = [
         {
             "class_name": member.value,
-            "parent_class_name": None if member is AdmissionClass.GLOBAL else "global",
+            "parent_class_name": (
+                None
+                if member is AdmissionClass.GLOBAL
+                else (
+                    "interactive"
+                    if member is AdmissionClass.VOICE_INTERACTIVE
+                    else "global"
+                )
+            ),
             "active_limit": 47 if member is AdmissionClass.GLOBAL else 8,
-            "queue_limit": 0 if member is AdmissionClass.GLOBAL else 23,
-            "max_wait_ms": 0 if member is AdmissionClass.GLOBAL else 9_876,
+            "queue_limit": (
+                0
+                if member
+                in {AdmissionClass.GLOBAL, AdmissionClass.VOICE_INTERACTIVE}
+                else 23
+            ),
+            "max_wait_ms": (
+                0
+                if member
+                in {AdmissionClass.GLOBAL, AdmissionClass.VOICE_INTERACTIVE}
+                else 9_876
+            ),
             "config_revision": "operator-live",
         }
         for member in AdmissionClass
@@ -348,6 +379,16 @@ def test_from_database_binds_operator_snapshot_without_upsert() -> None:
     assert coordinator.operation_retention == timedelta(hours=27)
     assert coordinator._repository._configs[AdmissionClass.GLOBAL].active_limit == 47
     assert coordinator._repository._configs[AdmissionClass.BACKGROUND].queue_limit == 23
+    assert (
+        coordinator._repository._configs[
+            AdmissionClass.VOICE_INTERACTIVE
+        ].parent_class_name
+        is AdmissionClass.INTERACTIVE
+    )
+    assert (
+        coordinator._repository._configs[AdmissionClass.VOICE_INTERACTIVE].queue_limit
+        == 0
+    )
     assert database.connections == 1
     assert database.connection.commits == 1
     assert database.connection.rollbacks == 0

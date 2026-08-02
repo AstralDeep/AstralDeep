@@ -32,7 +32,10 @@ logger = logging.getLogger('Database')
 # 063.005: + _cleanup_retire_063 (US7 retirement purge helper — dormant, never
 #          invoked at boot; bump satisfies the guarded-source hash discipline)
 # 064.001: + bounded MCP child admission class and slots (8 active / 32 queued)
-SCHEMA_REVISION = '064.001'
+# 065.001: + conversational-voice session/turn fencing, commit/layout versioning,
+#          and the no-queue voice-interactive admission class.
+SCHEMA_PREDECESSOR_REVISION = '064.001'
+SCHEMA_REVISION = '065.001'
 
 _SCHEMA_ADVISORY_LOCK = (1095980114, 60001)
 _USER_AGENT_POLICY_ADVISORY_LOCK = (1095980114, 60002)
@@ -41,6 +44,10 @@ _LEGACY_AGENT_REVISION_NAMESPACE = uuid.UUID('f5f7b28d-9a9c-4c51-a3be-47e8326270
 _POOLS: Dict[str, dict] = {}
 _POOLS_LOCK = threading.Lock()
 _POOL_ACQUIRE_TIMEOUT_S = 30.0
+
+
+class SchemaRevisionError(RuntimeError):
+    """Raised when startup cannot prove the one supported schema predecessor."""
 
 
 def _close_all_pools() -> None:
@@ -296,7 +303,17 @@ class Database:
                 )
                 cursor.execute("SELECT value FROM schema_meta WHERE key = 'revision'")
                 row = cursor.fetchone()
-                if row is None or row['value'] != SCHEMA_REVISION:
+                source_revision = None if row is None else str(row['value'])
+                if source_revision != SCHEMA_REVISION:
+                    if source_revision not in {
+                        None,
+                        SCHEMA_PREDECESSOR_REVISION,
+                    }:
+                        raise SchemaRevisionError(
+                            "database schema revision is not an approved upgrade "
+                            f"source: expected {SCHEMA_PREDECESSOR_REVISION!r}, "
+                            f"found {source_revision!r}"
+                        )
                     self._apply_full_schema(conn, cursor)
                     cursor.execute(
                         "INSERT INTO schema_meta (key, value) VALUES ('revision', %s) "
@@ -1567,6 +1584,9 @@ class Database:
         # ── Feature 064: bounded MCP request admission class ───────────────
         self._migrate_mcp_admission_064(cursor)
 
+        # Feature 065: conversational voice coordination schema.
+        self._migrate_conversational_voice_065(cursor)
+
     def _migrate_mcp_admission_064(self, cursor):
         """Add the repeat-safe MCP child class to existing 060 graphs.
 
@@ -1598,8 +1618,8 @@ class Database:
             ALTER TABLE operation_admission_class
             ADD CONSTRAINT operation_admission_class_name_check CHECK (
                 class_name IN (
-                    'global', 'interactive', 'mcp', 'background', 'scheduled',
-                    'maintenance', 'system'
+                    'global', 'interactive', 'voice_interactive', 'mcp',
+                    'background', 'scheduled', 'maintenance', 'system'
                 )
             )
         ''')
@@ -1615,6 +1635,824 @@ class Database:
             SELECT 'mcp', generate_series(1, 8)
             ON CONFLICT (class_name, slot_number) DO NOTHING
         ''')
+
+    def _migrate_conversational_voice_065(self, cursor):
+        """Install the repeat-safe feature-065 voice coordination schema.
+
+        The 065 delta is called only after the complete 064 migration chain.
+        Rollback is operational: disable voice, drain media, and leave these
+        additive tables and columns in place for older application code to
+        ignore. A failed transaction is retried from the unchanged revision
+        marker; destructive retirement requires a later reviewed revision.
+        """
+        cursor.execute("""
+            SELECT
+                to_regclass('operation_admission_class') AS admission_class,
+                to_regclass('operation_admission_slot') AS admission_slot,
+                to_regclass('operation_record') AS operation_record,
+                to_regclass('background_task') AS background_task,
+                to_regclass('conversation_commit') AS conversation_commit,
+                to_regclass('workspace_layout') AS workspace_layout,
+                to_regclass('messages') AS messages
+        """)
+        prerequisites = cursor.fetchone()
+        values = (
+            tuple(prerequisites.values())
+            if hasattr(prerequisites, "values")
+            else tuple(prerequisites)
+        )
+        if any(value is None for value in values):
+            raise SchemaRevisionError(
+                "database schema is missing a required 064.001 relation; "
+                "refusing to stamp conversational voice schema 065.001"
+            )
+
+        cursor.execute("""
+            ALTER TABLE operation_admission_class
+            DROP CONSTRAINT IF EXISTS operation_admission_class_name_check
+        """)
+        cursor.execute("""
+            ALTER TABLE operation_admission_class
+            ADD CONSTRAINT operation_admission_class_name_check CHECK (
+                class_name IN (
+                    'global', 'interactive', 'voice_interactive', 'mcp',
+                    'background', 'scheduled', 'maintenance', 'system'
+                )
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO operation_admission_class (
+                class_name, parent_class_name, active_limit, queue_limit,
+                max_wait_ms, config_revision
+            ) VALUES (
+                'voice_interactive', 'interactive', 10, 0, 0, '065-defaults'
+            )
+            ON CONFLICT (class_name) DO NOTHING
+        """)
+        cursor.execute("""
+            DO $migration$
+            DECLARE
+                voice_config operation_admission_class%ROWTYPE;
+            BEGIN
+                SELECT * INTO STRICT voice_config
+                FROM operation_admission_class
+                WHERE class_name = 'voice_interactive'
+                FOR UPDATE;
+
+                IF voice_config.parent_class_name IS DISTINCT FROM 'interactive'
+                   OR voice_config.active_limit NOT BETWEEN 1 AND 10
+                   OR voice_config.queue_limit <> 0
+                   OR voice_config.max_wait_ms <> 0
+                   OR (
+                       voice_config.config_revision = '065-defaults'
+                       AND voice_config.active_limit <> 10
+                   ) THEN
+                    RAISE EXCEPTION USING
+                        ERRCODE = 'check_violation',
+                        MESSAGE = 'voice_interactive admission policy is not '
+                                  'a bounded no-queue interactive child';
+                END IF;
+            END
+            $migration$;
+        """)
+        cursor.execute("""
+            INSERT INTO operation_admission_slot (class_name, slot_number)
+            SELECT config.class_name, series.slot_number
+            FROM operation_admission_class AS config
+            CROSS JOIN LATERAL generate_series(
+                1, config.active_limit
+            ) AS series(slot_number)
+            WHERE config.class_name = 'voice_interactive'
+            ON CONFLICT (class_name, slot_number) DO NOTHING
+        """)
+
+        for column, ddl in (
+            ("publication_role", "TEXT NOT NULL DEFAULT 'atomic'"),
+            ("parent_commit_id", "UUID"),
+            ("execution_base_commit_id", "UUID"),
+            ("execution_base_render_revision", "BIGINT"),
+            ("execution_base_components_sha256", "CHAR(64)"),
+            ("execution_base_layouts_sha256", "CHAR(64)"),
+            ("publication_rebase_count", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            cursor.execute(
+                f"ALTER TABLE conversation_commit ADD COLUMN IF NOT EXISTS "
+                f"{column} {ddl}"
+            )
+        cursor.execute("""
+            DO $migration$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'conversation_commit_parent_065_fk'
+                      AND conrelid = 'conversation_commit'::regclass
+                ) THEN
+                    ALTER TABLE conversation_commit
+                    ADD CONSTRAINT conversation_commit_parent_065_fk
+                    FOREIGN KEY (parent_commit_id)
+                    REFERENCES conversation_commit(commit_id) ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'conversation_commit_execution_base_065_fk'
+                      AND conrelid = 'conversation_commit'::regclass
+                ) THEN
+                    ALTER TABLE conversation_commit
+                    ADD CONSTRAINT conversation_commit_execution_base_065_fk
+                    FOREIGN KEY (execution_base_commit_id)
+                    REFERENCES conversation_commit(commit_id) ON DELETE RESTRICT;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'conversation_commit_voice_metadata_065_check'
+                      AND conrelid = 'conversation_commit'::regclass
+                ) THEN
+                    ALTER TABLE conversation_commit
+                    ADD CONSTRAINT conversation_commit_voice_metadata_065_check
+                    CHECK (
+                        (
+                            publication_role = 'atomic'
+                            AND parent_commit_id IS NULL
+                            AND execution_base_commit_id IS NULL
+                            AND execution_base_render_revision IS NULL
+                            AND execution_base_components_sha256 IS NULL
+                            AND execution_base_layouts_sha256 IS NULL
+                        )
+                        OR (
+                            publication_role IN (
+                                'user_acceptance', 'assistant_result'
+                            )
+                            AND execution_base_render_revision IS NOT NULL
+                            AND execution_base_render_revision >= 0
+                            AND execution_base_components_sha256 IS NOT NULL
+                            AND execution_base_components_sha256
+                                ~ '^[0-9a-f]{64}$'
+                            AND execution_base_layouts_sha256 IS NOT NULL
+                            AND execution_base_layouts_sha256
+                                ~ '^[0-9a-f]{64}$'
+                            AND (
+                                (
+                                    state = 'staged'
+                                    AND (
+                                        (
+                                            execution_base_render_revision = 0
+                                            AND execution_base_commit_id IS NULL
+                                        )
+                                        OR (
+                                            execution_base_render_revision > 0
+                                            AND execution_base_commit_id IS NOT NULL
+                                        )
+                                    )
+                                )
+                                OR (
+                                    state IN ('committed', 'aborted')
+                                    AND execution_base_commit_id IS NULL
+                                )
+                            )
+                        )
+                    );
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'conversation_commit_voice_role_065_check'
+                      AND conrelid = 'conversation_commit'::regclass
+                ) THEN
+                    ALTER TABLE conversation_commit
+                    ADD CONSTRAINT conversation_commit_voice_role_065_check CHECK (
+                        publication_role IN (
+                            'atomic', 'user_acceptance', 'assistant_result'
+                        )
+                        AND publication_rebase_count >= 0
+                        AND (parent_commit_id IS NULL OR parent_commit_id <> commit_id)
+                        AND (
+                            execution_base_commit_id IS NULL
+                            OR execution_base_commit_id <> commit_id
+                        )
+                        AND (
+                            publication_role <> 'user_acceptance'
+                            OR parent_commit_id IS NULL
+                        )
+                        AND (
+                            publication_role <> 'assistant_result'
+                            OR state <> 'staged'
+                            OR (
+                                parent_commit_id IS NOT NULL
+                                AND execution_base_render_revision > 0
+                            )
+                        )
+                    );
+                END IF;
+            END
+            $migration$;
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_conversation_commit_parent_065
+            ON conversation_commit (parent_commit_id)
+            WHERE parent_commit_id IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_conversation_commit_execution_base_065
+            ON conversation_commit (execution_base_commit_id)
+            WHERE execution_base_commit_id IS NOT NULL
+        """)
+
+        cursor.execute("""
+            ALTER TABLE workspace_layout
+            ADD COLUMN IF NOT EXISTS conversation_commit_id UUID
+        """)
+        cursor.execute("""
+            ALTER TABLE workspace_layout
+            ADD COLUMN IF NOT EXISTS committed_render_revision BIGINT
+        """)
+        cursor.execute("DROP INDEX IF EXISTS ux_workspace_layout_chat_key")
+        cursor.execute("""
+            CREATE UNIQUE INDEX ux_workspace_layout_chat_key
+            ON workspace_layout (
+                chat_id,
+                layout_key,
+                COALESCE(
+                    conversation_commit_id,
+                    '00000000-0000-0000-0000-000000000000'::uuid
+                )
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workspace_layout_commit_revision_065
+            ON workspace_layout (
+                chat_id, conversation_commit_id,
+                committed_render_revision, position
+            )
+        """)
+        cursor.execute("""
+            DO $migration$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'workspace_layout_conversation_commit_065_fk'
+                      AND conrelid = 'workspace_layout'::regclass
+                ) THEN
+                    ALTER TABLE workspace_layout
+                    ADD CONSTRAINT workspace_layout_conversation_commit_065_fk
+                    FOREIGN KEY (conversation_commit_id)
+                    REFERENCES conversation_commit(commit_id) ON DELETE CASCADE;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'workspace_layout_commit_metadata_065_check'
+                      AND conrelid = 'workspace_layout'::regclass
+                ) THEN
+                    ALTER TABLE workspace_layout
+                    ADD CONSTRAINT workspace_layout_commit_metadata_065_check CHECK (
+                        (
+                            conversation_commit_id IS NULL
+                            AND committed_render_revision IS NULL
+                        )
+                        OR (
+                            conversation_commit_id IS NOT NULL
+                            AND committed_render_revision IS NOT NULL
+                            AND committed_render_revision > 0
+                        )
+                    );
+                END IF;
+            END
+            $migration$;
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS voice_session (
+                session_id UUID PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                activation_id UUID NOT NULL,
+                device_id UUID NOT NULL,
+                device_kind TEXT NOT NULL CHECK (
+                    device_kind IN (
+                        'web', 'windows', 'android', 'ios', 'macos', 'watchos'
+                    )
+                ),
+                transport TEXT NOT NULL CHECK (
+                    transport IN ('livekit', 'watch_pcm_websocket')
+                ),
+                room_name TEXT NOT NULL,
+                participant_identity TEXT NOT NULL,
+                worker_identity TEXT,
+                visible_chat_id TEXT NOT NULL,
+                chat_context_revision BIGINT NOT NULL DEFAULT 1,
+                applied_visible_chat_id TEXT,
+                applied_chat_context_revision BIGINT,
+                state TEXT NOT NULL DEFAULT 'starting' CHECK (
+                    state IN (
+                        'starting', 'active', 'suspended', 'reconnecting',
+                        'ending', 'ended', 'error'
+                    )
+                ),
+                speech_muted BOOLEAN NOT NULL DEFAULT FALSE,
+                microphone_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                foreground_active BOOLEAN NOT NULL DEFAULT TRUE,
+                foreground_reason TEXT NOT NULL DEFAULT 'foreground' CHECK (
+                    foreground_reason IN (
+                        'foreground', 'backgrounded', 'locked',
+                        'audio_interrupted', 'route_unavailable',
+                        'connection_lost'
+                    )
+                ),
+                generation BIGINT NOT NULL DEFAULT 1,
+                media_grant_revision BIGINT NOT NULL DEFAULT 1,
+                owner_connection_generation UUID NOT NULL,
+                control_binding_id UUID NOT NULL,
+                control_binding_expires_at TIMESTAMPTZ NOT NULL,
+                lease_expires_at TIMESTAMPTZ NOT NULL,
+                control_owner_id TEXT,
+                control_lease_expires_at TIMESTAMPTZ,
+                last_interaction_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                idle_started_at TIMESTAMPTZ,
+                started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                ended_at TIMESTAMPTZ,
+                end_reason TEXT CHECK (
+                    end_reason IS NULL OR end_reason IN (
+                        'user', 'idle', 'takeover', 'logout', 'auth_expired',
+                        'chat_deleted', 'chat_unauthorized', 'lease_expired',
+                        'media_error', 'shutdown'
+                    )
+                ),
+                chat_unavailable_at TIMESTAMPTZ,
+                takeover_of_session_id UUID REFERENCES voice_session(session_id)
+                    ON DELETE SET NULL,
+                media_grant_nonce_hash BYTEA NOT NULL,
+                media_grant_expires_at TIMESTAMPTZ NOT NULL,
+                media_grant_consumed_at TIMESTAMPTZ,
+                last_media_refresh_id UUID,
+                media_grant_issued_at TIMESTAMPTZ NOT NULL,
+                worker_assignment_id UUID,
+                worker_rtc_grant_revision BIGINT NOT NULL DEFAULT 1,
+                worker_rtc_grant_issued_at TIMESTAMPTZ,
+                worker_rtc_grant_expires_at TIMESTAMPTZ,
+                UNIQUE (session_id, user_id),
+                CONSTRAINT voice_session_identity_065_check CHECK (
+                    length(btrim(user_id)) BETWEEN 1 AND 512
+                    AND length(room_name) BETWEEN 1 AND 255
+                    AND length(participant_identity) BETWEEN 1 AND 255
+                    AND (
+                        worker_identity IS NULL
+                        OR length(worker_identity) BETWEEN 1 AND 255
+                    )
+                    AND length(visible_chat_id) BETWEEN 1 AND 255
+                    AND (
+                        control_owner_id IS NULL
+                        OR length(control_owner_id) BETWEEN 1 AND 128
+                    )
+                ),
+                CONSTRAINT voice_session_uuid4_065_check CHECK (
+                    activation_id::text ~
+                        '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    AND device_id::text ~
+                        '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    AND owner_connection_generation::text ~
+                        '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    AND control_binding_id::text ~
+                        '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    AND (
+                        last_media_refresh_id IS NULL
+                        OR last_media_refresh_id::text ~
+                            '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    )
+                    AND (
+                        takeover_of_session_id IS NULL
+                        OR takeover_of_session_id <> session_id
+                    )
+                ),
+                CONSTRAINT voice_session_revisions_065_check CHECK (
+                    generation >= 1
+                    AND media_grant_revision >= 1
+                    AND worker_rtc_grant_revision >= 1
+                    AND chat_context_revision >= 1
+                    AND (
+                        (
+                            applied_visible_chat_id IS NULL
+                            AND applied_chat_context_revision IS NULL
+                        )
+                        OR (
+                            applied_visible_chat_id IS NOT NULL
+                            AND length(applied_visible_chat_id) BETWEEN 1 AND 255
+                            AND applied_chat_context_revision IS NOT NULL
+                            AND applied_chat_context_revision BETWEEN 1
+                                AND chat_context_revision
+                        )
+                    )
+                ),
+                CONSTRAINT voice_session_foreground_065_check CHECK (
+                    (
+                        foreground_active
+                        AND foreground_reason = 'foreground'
+                    )
+                    OR (
+                        NOT foreground_active
+                        AND foreground_reason <> 'foreground'
+                        AND NOT microphone_enabled
+                    )
+                ),
+                CONSTRAINT voice_session_leases_065_check CHECK (
+                    lease_expires_at > started_at
+                    AND control_binding_expires_at > started_at
+                    AND (
+                        (
+                            control_owner_id IS NULL
+                            AND control_lease_expires_at IS NULL
+                        )
+                        OR (
+                            control_owner_id IS NOT NULL
+                            AND control_lease_expires_at IS NOT NULL
+                        )
+                    )
+                ),
+                CONSTRAINT voice_session_terminal_065_check CHECK (
+                    (
+                        ended_at IS NULL
+                        AND end_reason IS NULL
+                        AND state <> 'ended'
+                    )
+                    OR (
+                        ended_at IS NOT NULL
+                        AND end_reason IS NOT NULL
+                        AND state = 'ended'
+                        AND ended_at >= started_at
+                    )
+                ),
+                CONSTRAINT voice_session_chat_unavailable_065_check CHECK (
+                    (
+                        chat_unavailable_at IS NULL
+                        AND (
+                            end_reason IS NULL
+                            OR end_reason NOT IN (
+                                'chat_deleted', 'chat_unauthorized'
+                            )
+                        )
+                    )
+                    OR (
+                        chat_unavailable_at IS NOT NULL
+                        AND ended_at IS NOT NULL
+                        AND end_reason IN (
+                            'chat_deleted', 'chat_unauthorized'
+                        )
+                    )
+                ),
+                CONSTRAINT voice_session_media_grant_065_check CHECK (
+                    octet_length(media_grant_nonce_hash) = 32
+                    AND media_grant_expires_at > media_grant_issued_at
+                    AND (
+                        media_grant_consumed_at IS NULL
+                        OR media_grant_consumed_at >= media_grant_issued_at
+                    )
+                ),
+                CONSTRAINT voice_session_worker_grant_065_check CHECK (
+                    (
+                        worker_assignment_id IS NULL
+                        AND worker_rtc_grant_issued_at IS NULL
+                        AND worker_rtc_grant_expires_at IS NULL
+                    )
+                    OR (
+                        worker_assignment_id IS NOT NULL
+                        AND worker_rtc_grant_issued_at IS NOT NULL
+                        AND worker_rtc_grant_expires_at IS NOT NULL
+                        AND worker_rtc_grant_expires_at
+                            > worker_rtc_grant_issued_at
+                    )
+                )
+            )
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_session_live_owner_065
+            ON voice_session (user_id) WHERE ended_at IS NULL
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_session_activation_065
+            ON voice_session (user_id, activation_id)
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_session_live_room_065
+            ON voice_session (room_name) WHERE ended_at IS NULL
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_session_live_participant_065
+            ON voice_session (participant_identity) WHERE ended_at IS NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_session_user_started_065
+            ON voice_session (user_id, started_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_session_visible_chat_065
+            ON voice_session (visible_chat_id, user_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_session_live_lease_065
+            ON voice_session (lease_expires_at) WHERE ended_at IS NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_session_control_lease_065
+            ON voice_session (control_lease_expires_at)
+            WHERE control_lease_expires_at IS NOT NULL
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS voice_turn (
+                turn_id UUID PRIMARY KEY,
+                client_turn_id UUID NOT NULL,
+                session_id UUID NOT NULL,
+                session_generation BIGINT NOT NULL,
+                media_grant_revision BIGINT NOT NULL,
+                user_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                chat_context_revision BIGINT NOT NULL,
+                detected_language TEXT,
+                spoken_output_policy TEXT NOT NULL DEFAULT 'pending' CHECK (
+                    spoken_output_policy IN (
+                        'pending', 'full_recap', 'english_lifecycle_only'
+                    )
+                ),
+                output_reason TEXT NOT NULL DEFAULT 'language_pending' CHECK (
+                    output_reason IN (
+                        'language_pending', 'ready',
+                        'output_language_unsupported'
+                    )
+                ),
+                execution_base_render_revision BIGINT NOT NULL,
+                submission_id UUID NOT NULL,
+                request_generation UUID NOT NULL,
+                result_request_generation UUID,
+                accepted_connection_generation UUID,
+                message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+                acceptance_commit_id UUID REFERENCES conversation_commit(commit_id)
+                    ON DELETE SET NULL,
+                result_commit_id UUID REFERENCES conversation_commit(commit_id)
+                    ON DELETE SET NULL,
+                operation_id UUID REFERENCES operation_record(operation_id)
+                    ON DELETE SET NULL,
+                background_task_id TEXT REFERENCES background_task(task_id)
+                    ON DELETE SET NULL,
+                state TEXT NOT NULL DEFAULT 'recognizing' CHECK (
+                    state IN (
+                        'recognizing', 'submitting', 'accepted', 'processing',
+                        'waiting_on_user', 'succeeded', 'failed', 'refused',
+                        'cancelled', 'abandoned'
+                    )
+                ),
+                is_foreground BOOLEAN NOT NULL DEFAULT FALSE,
+                terminal_kind TEXT CHECK (
+                    terminal_kind IS NULL OR terminal_kind IN (
+                        'succeeded', 'failed', 'refused', 'cancelled', 'abandoned'
+                    )
+                ),
+                rejection_reason TEXT CHECK (
+                    rejection_reason IS NULL OR rejection_reason IN (
+                        'capacity_exhausted', 'chat_unavailable',
+                        'invalid_binding', 'invalid_proof', 'proof_expired',
+                        'permission_denied', 'stale_session', 'malformed_final'
+                    )
+                ),
+                rejection_retry_policy TEXT CHECK (
+                    rejection_retry_policy IS NULL OR rejection_retry_policy IN (
+                        'explicit_user_retry', 'none'
+                    )
+                ),
+                origin_chat_unavailable_at TIMESTAMPTZ,
+                origin_chat_unavailable_reason TEXT CHECK (
+                    origin_chat_unavailable_reason IS NULL
+                    OR origin_chat_unavailable_reason IN (
+                        'deleted', 'access_revoked'
+                    )
+                ),
+                result_id TEXT,
+                recap_source TEXT NOT NULL DEFAULT 'none' CHECK (
+                    recap_source IN (
+                        'none', 'authoritative_summary',
+                        'committed_visible_fallback', 'sensitive_notice',
+                        'terminal_status'
+                    )
+                ),
+                sensitivity TEXT NOT NULL DEFAULT 'unknown' CHECK (
+                    sensitivity IN ('unknown', 'sensitive', 'non_sensitive')
+                ),
+                sensitive_consent_at TIMESTAMPTZ,
+                sensitive_consent_method TEXT CHECK (
+                    sensitive_consent_method IS NULL
+                    OR sensitive_consent_method IN ('tap', 'strict_spoken_control')
+                ),
+                sensitive_consent_consumed_at TIMESTAMPTZ,
+                announcement_sequence BIGINT NOT NULL DEFAULT 0,
+                result_reserved_samples BIGINT NOT NULL DEFAULT 0,
+                result_quantum_count INTEGER NOT NULL DEFAULT 0,
+                last_announcement_kind TEXT CHECK (
+                    last_announcement_kind IS NULL
+                    OR last_announcement_kind IN (
+                        'greeting', 'acknowledgement', 'progress', 'waiting',
+                        'result', 'sensitive_notice', 'failure', 'refusal',
+                        'cancellation'
+                    )
+                ),
+                last_phrase_key TEXT,
+                next_announcement_due_at TIMESTAMPTZ,
+                announcement_claim_id UUID,
+                announcement_claim_expires_at TIMESTAMPTZ,
+                last_announcement_started_at TIMESTAMPTZ,
+                last_speech_finished_at TIMESTAMPTZ,
+                last_client_playout_started_at TIMESTAMPTZ,
+                last_client_playout_finished_at TIMESTAMPTZ,
+                last_client_playout_sequence BIGINT NOT NULL DEFAULT 0,
+                accepted_at TIMESTAMPTZ,
+                processing_started_at TIMESTAMPTZ,
+                waiting_started_at TIMESTAMPTZ,
+                terminal_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT voice_turn_session_owner_065_fk
+                    FOREIGN KEY (session_id, user_id)
+                    REFERENCES voice_session(session_id, user_id)
+                    ON DELETE RESTRICT,
+                CONSTRAINT voice_turn_identity_065_check CHECK (
+                    length(btrim(user_id)) BETWEEN 1 AND 512
+                    AND length(chat_id) BETWEEN 1 AND 255
+                    AND client_turn_id::text ~
+                        '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    AND submission_id::text ~
+                        '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    AND request_generation::text ~
+                        '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    AND (
+                        result_request_generation IS NULL
+                        OR result_request_generation::text ~
+                            '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    )
+                    AND (
+                        accepted_connection_generation IS NULL
+                        OR accepted_connection_generation::text ~
+                            '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    )
+                ),
+                CONSTRAINT voice_turn_binding_065_check CHECK (
+                    session_generation >= 1
+                    AND media_grant_revision >= 1
+                    AND chat_context_revision >= 1
+                    AND execution_base_render_revision >= 0
+                ),
+                CONSTRAINT voice_turn_language_065_check CHECK (
+                    (
+                        detected_language IS NULL
+                        AND spoken_output_policy = 'pending'
+                        AND output_reason = 'language_pending'
+                    )
+                    OR (
+                        detected_language IS NOT NULL
+                        AND detected_language ~
+                            '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+                        AND (
+                            (
+                                spoken_output_policy = 'full_recap'
+                                AND output_reason = 'ready'
+                            )
+                            OR (
+                                spoken_output_policy = 'english_lifecycle_only'
+                                AND output_reason = 'output_language_unsupported'
+                            )
+                        )
+                    )
+                ),
+                CONSTRAINT voice_turn_terminal_065_check CHECK (
+                    (
+                        state IN (
+                            'succeeded', 'failed', 'refused',
+                            'cancelled', 'abandoned'
+                        )
+                        AND terminal_kind IS NOT NULL
+                        AND terminal_kind = state
+                        AND terminal_at IS NOT NULL
+                    )
+                    OR (
+                        state NOT IN (
+                            'succeeded', 'failed', 'refused',
+                            'cancelled', 'abandoned'
+                        )
+                        AND terminal_kind IS NULL
+                        AND terminal_at IS NULL
+                    )
+                ),
+                CONSTRAINT voice_turn_rejection_065_check CHECK (
+                    (
+                        rejection_reason IS NULL
+                        AND rejection_retry_policy IS NULL
+                    )
+                    OR (
+                        rejection_reason IS NOT NULL
+                        AND rejection_retry_policy IS NOT NULL
+                        AND state = 'abandoned'
+                        AND accepted_at IS NULL
+                        AND origin_chat_unavailable_at IS NULL
+                        AND origin_chat_unavailable_reason IS NULL
+                    )
+                ),
+                CONSTRAINT voice_turn_origin_unavailable_065_check CHECK (
+                    (
+                        origin_chat_unavailable_at IS NULL
+                        AND origin_chat_unavailable_reason IS NULL
+                    )
+                    OR (
+                        origin_chat_unavailable_at IS NOT NULL
+                        AND origin_chat_unavailable_reason IS NOT NULL
+                        AND state = 'abandoned'
+                        AND rejection_reason IS NULL
+                        AND rejection_retry_policy IS NULL
+                    )
+                ),
+                CONSTRAINT voice_turn_consent_065_check CHECK (
+                    (
+                        sensitive_consent_at IS NULL
+                        AND sensitive_consent_method IS NULL
+                        AND sensitive_consent_consumed_at IS NULL
+                    )
+                    OR (
+                        sensitive_consent_at IS NOT NULL
+                        AND sensitive_consent_method IS NOT NULL
+                        AND (
+                            sensitive_consent_consumed_at IS NULL
+                            OR sensitive_consent_consumed_at
+                                >= sensitive_consent_at
+                        )
+                    )
+                ),
+                CONSTRAINT voice_turn_announcement_065_check CHECK (
+                    announcement_sequence >= 0
+                    AND result_reserved_samples BETWEEN 0 AND 720000
+                    AND result_quantum_count BETWEEN 0 AND 32
+                    AND last_client_playout_sequence >= 0
+                    AND (
+                        last_phrase_key IS NULL
+                        OR last_phrase_key ~ '^[a-z][a-z0-9_]{0,127}$'
+                    )
+                    AND (
+                        (
+                            announcement_claim_id IS NULL
+                            AND announcement_claim_expires_at IS NULL
+                        )
+                        OR (
+                            announcement_claim_id IS NOT NULL
+                            AND announcement_claim_expires_at IS NOT NULL
+                        )
+                    )
+                )
+            )
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_turn_client_065
+            ON voice_turn (user_id, client_turn_id)
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_turn_submission_065
+            ON voice_turn (user_id, submission_id)
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_turn_result_request_065
+            ON voice_turn (user_id, result_request_generation)
+            WHERE result_request_generation IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_turn_acceptance_commit_065
+            ON voice_turn (acceptance_commit_id)
+            WHERE acceptance_commit_id IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_turn_result_commit_065
+            ON voice_turn (result_commit_id)
+            WHERE result_commit_id IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_turn_result_065
+            ON voice_turn (result_id) WHERE result_id IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_turn_foreground_065
+            ON voice_turn (session_id)
+            WHERE is_foreground
+              AND state NOT IN (
+                  'succeeded', 'failed', 'refused', 'cancelled', 'abandoned'
+              )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_turn_session_updated_065
+            ON voice_turn (session_id, updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_turn_chat_user_065
+            ON voice_turn (chat_id, user_id, created_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_turn_operation_065
+            ON voice_turn (operation_id) WHERE operation_id IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_turn_announcement_due_065
+            ON voice_turn (next_announcement_due_at)
+            WHERE next_announcement_due_at IS NOT NULL
+        """)
 
     def _migrate_runtime_reliability_060(self, cursor):
         """Install the additive, repeat-safe feature-060 coordination schema."""

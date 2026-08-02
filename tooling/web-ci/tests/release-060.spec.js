@@ -12,6 +12,28 @@ const REQUIRED_LIFECYCLE_STATES = new Set(["starting", "online", "updating", "fa
 // Quickstart §5 / SC-006: a reload must restore the committed conversation
 // within five seconds; the reconnect_resume rate below is measured against it.
 const RESUME_CONTRACT_MS = 5_000;
+const VOICE_RUNTIME_FIELDS = new Set([
+  "voice_worker_image_reference",
+  "voice_worker_image_sha256",
+  "livekit_image_reference",
+  "livekit_image_sha256",
+  "livekit_config_sha256",
+  "livekit_public_url",
+  "livekit_turn_domain",
+  "speech_profile",
+]);
+const SPEECH_PROFILE_FIELDS = new Set([
+  "asr_model",
+  "tts_model",
+  "voice",
+  "sample_rate_hz",
+  "inventory_sha256",
+  "profile_sha256",
+]);
+const ASR_MODEL = "Systran/faster-whisper-large-v3";
+const TTS_MODEL = "speaches-ai/Kokoro-82M-v1.0-ONNX";
+const TTS_VOICE = "af_heart";
+const TTS_SAMPLE_RATE_HZ = 24000;
 
 
 function requiredEnvironment(name) {
@@ -73,6 +95,55 @@ function normalizeBaseUrl(raw) {
 }
 
 
+function hasExactKeys(value, expected) {
+  return value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.keys(value).length === expected.size
+    && Object.keys(value).every((field) => expected.has(field));
+}
+
+
+function validateVoiceRuntime(value) {
+  if (!hasExactKeys(value, VOICE_RUNTIME_FIELDS)) {
+    throw new Error("trusted voice_runtime has a missing, extra, or non-object field");
+  }
+  const profile = value.speech_profile;
+  if (!hasExactKeys(profile, SPEECH_PROFILE_FIELDS)) {
+    throw new Error("trusted speech_profile has a missing, extra, or non-object field");
+  }
+  if (profile.asr_model !== ASR_MODEL || profile.tts_model !== TTS_MODEL
+      || profile.voice !== TTS_VOICE || profile.sample_rate_hz !== TTS_SAMPLE_RATE_HZ) {
+    throw new Error("trusted speech_profile differs from the exact voice profile");
+  }
+  const digest = /^[0-9a-f]{64}$/u;
+  for (const field of [
+    "voice_worker_image_sha256",
+    "livekit_image_sha256",
+    "livekit_config_sha256",
+  ]) {
+    if (typeof value[field] !== "string" || !digest.test(value[field])) {
+      throw new Error(`trusted voice_runtime ${field} is not a SHA-256 digest`);
+    }
+  }
+  for (const field of ["inventory_sha256", "profile_sha256"]) {
+    if (typeof profile[field] !== "string" || !digest.test(profile[field])) {
+      throw new Error(`trusted speech_profile ${field} is not a SHA-256 digest`);
+    }
+  }
+  for (const field of [
+    "voice_worker_image_reference",
+    "livekit_image_reference",
+    "livekit_public_url",
+    "livekit_turn_domain",
+  ]) {
+    if (typeof value[field] !== "string" || value[field].trim() === "") {
+      throw new Error(`trusted voice_runtime ${field} is empty`);
+    }
+  }
+}
+
+
 function stagingEnvironment(stage, baseUrl) {
   const required = [
     "authentication_posture",
@@ -90,6 +161,7 @@ function stagingEnvironment(stage, baseUrl) {
     "representative_dataset_sha256",
     "source_schema_revision",
     "topology",
+    "voice_runtime",
     "worker_paths",
   ];
   for (const field of required) {
@@ -100,6 +172,10 @@ function stagingEnvironment(stage, baseUrl) {
   if (stage.endpoint.replace(/\/+$/u, "") !== baseUrl) {
     throw new Error("browser base URL differs from the staged endpoint");
   }
+  if (!Array.isArray(stage.worker_paths) || !stage.worker_paths.includes("voice")) {
+    throw new Error("trusted staging output does not include the voice worker path");
+  }
+  validateVoiceRuntime(stage.voice_runtime);
   return Object.fromEntries(required.map((field) => [field, stage[field]]));
 }
 

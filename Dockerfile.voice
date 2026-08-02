@@ -1,0 +1,272 @@
+# syntax=docker/dockerfile:1.7
+
+# The public Python 3.11 base remains the local-development fallback while the
+# preferred zero-high/critical Docker Hardened Image requires registry login.
+# It is immutable and multi-architecture; distribution remains fail-closed.
+ARG PYTHON_SLIM_IMAGE=python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
+
+FROM ${PYTHON_SLIM_IMAGE} AS python-base
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONNOUSERSITE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PATH=/opt/voice-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/tmp \
+    XDG_CACHE_HOME=/tmp/voice-cache
+RUN mkdir -p /app/backend/voice_agent /usr/share/licenses \
+    && chown -R 10001:10001 /app
+
+FROM python-base AS runtime-dependencies
+RUN python -m venv /opt/voice-venv
+COPY backend/voice_agent/requirements.lock.txt /tmp/voice-requirements.lock.txt
+COPY backend/voice_agent/models/silero_vad.onnx /tmp/silero_vad.onnx
+COPY backend/voice_agent/licenses/SILERO_VAD_LICENSE /tmp/SILERO_VAD_LICENSE
+COPY backend/voice_agent/licenses/SILERO_VAD_PROVENANCE.json \
+    /tmp/SILERO_VAD_PROVENANCE.json
+RUN /opt/voice-venv/bin/python -m pip install \
+        --require-hashes \
+        --only-binary=:all: \
+        --no-deps \
+        --no-cache-dir \
+        --requirement /tmp/voice-requirements.lock.txt \
+    && /opt/voice-venv/bin/python -m pip check \
+    && rm /tmp/voice-requirements.lock.txt
+
+# Verify the independently vendored Silero bytes and execute real inference
+# before they can cross into either runtime target. The model is never fetched
+# during an image build or at worker runtime.
+RUN /opt/voice-venv/bin/python - <<'PY'
+import hashlib
+import json
+import shutil
+from pathlib import Path
+
+import numpy as np
+import onnxruntime as ort
+
+
+def verify(path: Path, expected: str, expected_size: int) -> None:
+    if not path.is_file() or path.stat().st_size != expected_size:
+        raise SystemExit(f"unexpected worker artifact size: {path}")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise SystemExit(f"unexpected SHA-256 for {path.name}: {actual}")
+
+
+model = Path("/tmp/silero_vad.onnx")
+license_file = Path("/tmp/SILERO_VAD_LICENSE")
+provenance_file = Path("/tmp/SILERO_VAD_PROVENANCE.json")
+model_sha = "597d30b3ec076608d059477bb14cfeffdf951bf5cae370d38f65d33bbfe82004"
+license_sha = "51c19c8be941a3fb00ccf58f0bf9053de9f7237a0b37327896eabad32dffe873"
+provenance_sha = "144e92f17546c15e8c71956947cb0d53acf98f08ba4bfe156a721b30685ebe0c"
+verify(model, model_sha, 2_327_524)
+verify(license_file, license_sha, 1_076)
+verify(provenance_file, provenance_sha, 529)
+provenance = json.loads(provenance_file.read_text(encoding="utf-8"))
+if provenance["model_sha256"] != model_sha or provenance["model_size_bytes"] != 2_327_524:
+    raise SystemExit("Silero provenance does not bind the vendored model")
+
+session = ort.InferenceSession(str(model), providers=["CPUExecutionProvider"])
+output, state = session.run(
+    None,
+    {
+        "input": np.zeros((1, 512), dtype=np.float32),
+        "state": np.zeros((2, 1, 128), dtype=np.float32),
+        "sr": np.array(16_000, dtype=np.int64),
+    },
+)
+if output.shape != (1, 1) or state.shape != (2, 1, 128):
+    raise SystemExit("Silero produced an unexpected recurrent-state shape")
+if not np.isfinite(output).all() or not np.isfinite(state).all():
+    raise SystemExit("Silero produced a non-finite value")
+
+assets = Path("/opt/voice-assets")
+notices = Path("/opt/voice-notices/silero-vad")
+assets.mkdir(parents=True, mode=0o755)
+notices.mkdir(parents=True, mode=0o755)
+shutil.copyfile(model, assets / "silero_vad.onnx")
+shutil.copyfile(license_file, notices / "LICENSE")
+shutil.copyfile(provenance_file, notices / "PROVENANCE.json")
+(notices / "ARTIFACTS.sha256").write_text(
+    f"{model_sha}  silero_vad.onnx\n"
+    f"{license_sha}  LICENSE\n"
+    f"{provenance_sha}  PROVENANCE.json\n",
+    encoding="utf-8",
+)
+for artifact in (*assets.rglob("*"), *notices.rglob("*")):
+    if artifact.is_file():
+        artifact.chmod(0o444)
+PY
+
+# Remove the official base's package installation tooling from the runtime
+# filesystem. Runtime dependencies live in the separate copied venv.
+FROM python-base AS runtime-pruned-system
+RUN /usr/local/bin/python -m pip uninstall --yes setuptools wheel packaging pip \
+    && /usr/local/bin/python - <<'PY'
+import importlib.metadata
+import importlib.util
+from pathlib import Path
+
+for distribution in ("packaging", "pip", "setuptools", "wheel"):
+    try:
+        importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    else:
+        raise SystemExit(f"system distribution leaked: {distribution}")
+for module in ("packaging", "pip", "setuptools", "wheel"):
+    if importlib.util.find_spec(module) is not None:
+        raise SystemExit(f"system module leaked: {module}")
+for pattern in ("easy_install*", "pip*", "wheel*"):
+    leaked = list(Path("/usr/local/bin").glob(pattern))
+    if leaked:
+        raise SystemExit(f"system installation executable leaked: {leaked}")
+PY
+
+# Remove installers before the worker venv crosses into a runtime layer.
+FROM runtime-dependencies AS runtime-pruned-dependencies
+RUN /opt/voice-venv/bin/python -m pip uninstall --yes pip setuptools wheel \
+    && /opt/voice-venv/bin/python - <<'PY'
+import importlib.metadata
+import importlib.util
+
+for distribution in ("pip", "setuptools", "wheel"):
+    try:
+        importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    else:
+        raise SystemExit(f"runtime distribution leaked: {distribution}")
+for module in ("pip", "setuptools", "wheel"):
+    if importlib.util.find_spec(module) is not None:
+        raise SystemExit(f"runtime module leaked: {module}")
+PY
+
+# Build a complete hash-only test venv independently. It never enters runtime.
+FROM python-base AS test-dependencies
+RUN python -m venv /opt/voice-test-venv
+COPY backend/voice_agent/requirements.lock.txt /tmp/voice-requirements.lock.txt
+COPY tooling/python-ci/requirements.lock.txt /tmp/test-requirements.lock.txt
+COPY backend/voice_agent/requirements-test.lock.txt \
+    /tmp/voice-test-requirements.lock.txt
+RUN /opt/voice-test-venv/bin/python -m pip install \
+        --require-hashes \
+        --only-binary=:all: \
+        --no-deps \
+        --no-cache-dir \
+        --requirement /tmp/voice-requirements.lock.txt \
+        --requirement /tmp/test-requirements.lock.txt \
+        --requirement /tmp/voice-test-requirements.lock.txt \
+    && /opt/voice-test-venv/bin/python -m pip check \
+    && rm \
+        /tmp/voice-requirements.lock.txt \
+        /tmp/test-requirements.lock.txt \
+        /tmp/voice-test-requirements.lock.txt \
+    && /opt/voice-test-venv/bin/python -m pip uninstall --yes pip setuptools wheel
+
+# Only top-level worker modules plus the single audited fixed-origin transport
+# source are eligible for production. The latter is renamed into the isolated
+# package, so the worker receives no import path into the product backend.
+FROM scratch AS voice-source
+COPY backend/voice_agent/*.py /voice-source/
+COPY backend/shared/streaming_egress.py /voice-source/streaming_egress.py
+COPY backend/shared/voice_transcript.py /voice-source/voice_transcript.py
+COPY backend/shared/watch_ticket.py /voice-source/watch_ticket.py
+
+FROM runtime-pruned-system AS runtime
+LABEL org.opencontainers.image.title="AstralDeep conversational voice worker" \
+      org.opencontainers.image.base.digest="sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba" \
+      org.astraldeep.voice.distribution-approved="false" \
+      org.astraldeep.voice.media-only="true" \
+      org.astraldeep.voice.rtc-sdk="livekit==1.1.14" \
+      org.astraldeep.voice.vad-model.sha256="597d30b3ec076608d059477bb14cfeffdf951bf5cae370d38f65d33bbfe82004"
+COPY --from=runtime-pruned-dependencies /opt/voice-venv /opt/voice-venv
+COPY --from=runtime-dependencies /opt/voice-assets/ /opt/voice-assets/
+COPY --from=runtime-dependencies /opt/voice-notices/ /usr/share/licenses/
+COPY --from=voice-source --chown=10001:10001 /voice-source/ /app/backend/voice_agent/
+WORKDIR /app/backend
+RUN /opt/voice-venv/bin/python - <<'PY'
+import importlib.metadata
+import importlib.util
+import re
+
+import numpy as np
+import onnxruntime as ort
+from livekit import rtc
+
+expected = {
+    "aiofiles": "25.1.0",
+    "flatbuffers": "25.12.19",
+    "livekit": "1.1.14",
+    "numpy": "2.4.6",
+    "onnxruntime": "1.28.0",
+    "packaging": "26.2",
+    "protobuf": "7.35.1",
+    "types-protobuf": "7.34.1.20260518",
+    "websockets": "17.0.1",
+}
+actual = {
+    re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower(): distribution.version
+    for distribution in importlib.metadata.distributions()
+}
+if actual != expected:
+    raise SystemExit(f"unexpected runtime closure: {actual}")
+
+for distribution in (
+    "av",
+    "blingfire",
+    "livekit-agents",
+    "livekit-api",
+    "livekit-local-inference",
+    "livekit-plugins-silero",
+    "openai",
+    "pip",
+    "setuptools",
+    "torch",
+    "wheel",
+):
+    try:
+        importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        continue
+    raise SystemExit(f"prohibited runtime distribution: {distribution}")
+
+frame = rtc.AudioFrame.create(16_000, 1, 512)
+if frame.data.nbytes != 1_024:
+    raise SystemExit("LiveKit AudioFrame PCM contract drifted")
+session = ort.InferenceSession(
+    "/opt/voice-assets/silero_vad.onnx",
+    providers=["CPUExecutionProvider"],
+)
+output, state = session.run(
+    None,
+    {
+        "input": np.zeros((1, 512), dtype=np.float32),
+        "state": np.zeros((2, 1, 128), dtype=np.float32),
+        "sr": np.array(16_000, dtype=np.int64),
+    },
+)
+if output.shape != (1, 1) or state.shape != (2, 1, 128):
+    raise SystemExit("Silero runtime contract drifted")
+PY
+RUN --mount=type=bind,source=tooling/voice-worker/verify_no_libgomp.py,target=/tmp/verify_no_libgomp.py,ro \
+    /opt/voice-venv/bin/python /tmp/verify_no_libgomp.py \
+        --root /opt/voice-venv --root /usr
+USER 10001:10001
+ENTRYPOINT ["/opt/voice-venv/bin/python", "-m", "voice_agent.main"]
+
+FROM runtime AS test
+USER root
+COPY --from=test-dependencies /opt/voice-test-venv /opt/voice-test-venv
+COPY --chown=10001:10001 backend/pytest.ini /app/backend/pytest.ini
+COPY --chown=10001:10001 backend/voice_agent/requirements.lock.txt \
+    /app/backend/voice_agent/requirements.lock.txt
+COPY --chown=10001:10001 backend/voice_agent/tests/ \
+    /app/backend/voice_agent/tests/
+COPY --chown=10001:10001 tooling/voice-worker/verify_no_libgomp.py \
+    /opt/voice-audit/verify_no_libgomp.py
+ENV PATH=/opt/voice-test-venv/bin:/opt/voice-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+USER 10001:10001

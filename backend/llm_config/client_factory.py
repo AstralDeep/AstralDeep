@@ -30,6 +30,14 @@ from openai import OpenAI
 from .types import CredentialSource, LLMUnavailable, ResolvedConfig
 
 
+# Keep one provider attempt bounded even when the caller does not supply an
+# override.  Retries are owned by ``Orchestrator._call_llm`` so the SDK must
+# not multiply that budget underneath the orchestrator (the OpenAI SDK
+# otherwise performs two additional attempts and uses a 600-second read
+# timeout by default).
+DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 60.0
+
+
 class LLMConfigLike(Protocol):
     """Duck-type of a resolved credential record: the decrypted
     ``PersistedLLMConfig`` (or any test double with the same fields)."""
@@ -53,7 +61,8 @@ def build_llm_client(
             no configuration.
         source: Which context the record belongs to; recorded as
             ``credential_source`` on the ``llm_call`` audit event.
-        timeout: Optional per-request timeout in seconds.
+        timeout: Optional per-request timeout in seconds. ``None`` selects the
+            bounded 60-second product default.
 
     Returns:
         ``(client, source, resolved)`` — ``resolved`` carries the
@@ -80,12 +89,18 @@ def build_llm_client(
                 else "no system credential has been configured by an admin."
             )
         )
-    kwargs = {"base_url": config.base_url}
+    kwargs = {
+        "base_url": config.base_url,
+        "max_retries": 0,
+        "timeout": (
+            DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
+            if timeout is None
+            else timeout
+        ),
+    }
     # Keyless local-runtime presets store an empty key; the OpenAI SDK
     # requires SOME api_key value, so send a harmless placeholder.
     kwargs["api_key"] = config.api_key or "not-needed"
-    if timeout is not None:
-        kwargs["timeout"] = timeout
     client = OpenAI(**kwargs)
     return (
         client,

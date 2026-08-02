@@ -78,6 +78,21 @@ final class StatusLifecycleTests: XCTestCase {
         XCTAssertEqual(model.errorBanner, "ua-dice: Agent offline")
     }
 
+    func testGenericErrorPrefersSafeProviderErrorClassOverOuterEnvelopeCode() {
+        let model = AppModel()
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"error","code":"llm_config_invalid",
+                 "error_class":"provider_unavailable",
+                 "message":"The provider is temporarily unavailable."}
+                """))
+
+        XCTAssertEqual(
+            model.errorBanner,
+            "The provider is temporarily unavailable. (provider_unavailable)")
+    }
+
     func testSurfaceSendBeforeActiveChatCorrelatesThroughTerminalStatus() {
         let model = AppModel()
         XCTAssertTrue(model.beginConversationConnection(connection))

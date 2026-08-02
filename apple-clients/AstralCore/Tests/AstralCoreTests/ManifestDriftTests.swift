@@ -29,9 +29,20 @@ final class ManifestDriftTests: XCTestCase {
         }
         struct FrameContracts: Decodable {
             let admissionRefusal: AdmissionRefusalContract
+            let voice065: Voice065Contract
 
             enum CodingKeys: String, CodingKey {
                 case admissionRefusal = "admission_refusal"
+                case voice065 = "voice_065"
+            }
+        }
+        struct Voice065Contract: Decodable {
+            let composerActions: [String: String]
+            let clientFrames: [String: [String]]
+
+            enum CodingKeys: String, CodingKey {
+                case composerActions = "composer_actions"
+                case clientFrames = "client_frames"
             }
         }
         struct AdditiveField: Decodable {
@@ -88,12 +99,14 @@ final class ManifestDriftTests: XCTestCase {
             Set(manifest.componentTypes),
             Set(ClientDispositions.allComponentTypes),
             "component_types drift — update Dispositions.swift + parity matrix")
-        // 58 = 51 + the seven feature-060 reliability frames
+        // 65 = 58 + the seven feature-065 server-to-client voice frames.
+        // The client-to-server voice_playout_event remains directional and is
+        // pinned separately in frame_contracts.voice_065.client_frames.
         // (conversation_snapshot, operation_status, agent_lifecycle,
         // conversation_commit_ready, and three agent_host_* control frames).
         // Host-only frames remain explicitly ignored by author-only clients;
         // macOS hosting is enabled only by feature 059.
-        XCTAssertEqual(manifest.pushTypes.count, 58)
+        XCTAssertEqual(manifest.pushTypes.count, 65)
         XCTAssertEqual(manifest.componentTypes.count, 35)
         // 73 = 67 + the four feature-054 chrome_llm_sys_* admin actions
         //        + the two feature-055 component_refine/component_restore actions.
@@ -106,7 +119,43 @@ final class ManifestDriftTests: XCTestCase {
         // 94 = 91 + the T026 machine-credential/re-trust actions
         //        (chrome_machine_credential_set/delete + chrome_machine_retrust),
         //        same generic path.
-        XCTAssertEqual(manifest.acceptActions.count, 94)
+        // 102 = 94 + the eight feature-065 server-owned composer actions.
+        XCTAssertEqual(manifest.acceptActions.count, 102)
+    }
+
+    func testConversationalVoiceFramesAndActionsAreClassifiedExactly() throws {
+        let manifest = try loadManifest()
+        let requiredFrames = Set([
+            "composer_state", "voice_announcement_media", "voice_control_binding",
+            "voice_session_state", "voice_submission_rejected", "voice_transcript",
+            "voice_turn_state",
+        ])
+        let manifestFrames = Set(manifest.pushTypes.map(\.name))
+        XCTAssertTrue(requiredFrames.isSubset(of: manifestFrames))
+
+        let manifestActions = Set(manifest.frameContracts.voice065.composerActions.keys)
+        let expectedActions = Set(ClientDispositions.allVoiceControlActions)
+        XCTAssertEqual(manifestActions, expectedActions)
+        XCTAssertTrue(manifestActions.isSubset(of: Set(manifest.acceptActions)))
+        XCTAssertEqual(
+            Set(manifest.frameContracts.voice065.clientFrames.keys),
+            ["voice_playout_event"],
+            "voice_playout_event is the sole content-free client media acknowledgement")
+
+        for client in [ClientDispositions.ios, ClientDispositions.macos, ClientDispositions.watch] {
+            XCTAssertEqual(client.voiceActions, expectedActions, "\(client.client): voice action drift")
+            for frame in requiredFrames {
+                XCTAssertEqual(
+                    client.frames[frame], .handled,
+                    "\(client.client): required voice frame must be handled: \(frame)")
+            }
+        }
+
+        for action in expectedActions {
+            XCTAssertNotNil(
+                VoiceControlAction(rawValue: action),
+                "AstralCore must provide a typed reducer action for \(action)")
+        }
     }
 
     func testRuntimeReliabilityFramesAndRegistrationDisposition() throws {

@@ -419,8 +419,8 @@ aggregate or same-name job cannot substitute. Manifest-
 declared workflow/builder values are cross-checks, and a candidate-controlled workflow ref, filename,
 embedded hash, policy result, or verdict is not trusted.
 Before qualifying execution, a first reviewed landing installs this verifier, its policy/all three
-schemas, the bridge-signer template, protected registrar/debt ref, protected publisher/controller,
-and exact-workflow-SHA token broker on the protected default branch; configures reviewer/tag/ref
+schemas, the bridge-signer template, protected registrar/debt ref, and protected publisher/controller
+using only the built-in job token on the protected default branch; it configures reviewer/tag/ref
 gates; and records immutable
 identities without enabling the automatic candidate caller or required check. The candidate rebases
 onto and verifies that root, and only a second checkpoint enables the caller/required check. The
@@ -433,13 +433,14 @@ attestation-verified producer manifest, and compares staging identity and endpoi
 verified `stage-deploy` manifest before any probe. Windows candidate build emits one unsigned EXE and
 provenance manifest; the matrix exercises those bytes, and protected publication re-hashes them
 without rebuilding.
-The passing readiness set remains a pre-sign decision. Publication authority belongs to an owner-
-approved protected publisher whose exact workflow SHA is checked before its scoped GitHub App token
-is issued; moved-main or candidate workflows have no mutation token. Because shipped v0.3.0 accepts
+The passing readiness set remains a pre-sign decision. Intended publication authority belongs to an
+owner-approved protected publisher whose exact workflow SHA is checked before its job-scoped built-in
+`GITHUB_TOKEN` is used; no GitHub App or installation token exists. T120 must still enforce trusted-only
+signer-tag creation before moved-main or candidate workflows can be excluded repository-wide. Because shipped v0.3.0 accepts
 only the Sigstore SAN for `release-windows.yml@refs/tags/<tag>`, the publisher preserves that trust
 root through an exact-byte-pinned compatibility bridge. It refuses collisions, creates exactly
 `v0.4.0` at the protected-decision SHA, proves the candidate bridge blob equals the installed
-template, and lets that contents/actions-read/OIDC-only bridge retrieve T068 by exact originating
+template, and lets that contents/actions/attestations-read plus OIDC bridge retrieve T068 by exact originating
 run/attempt/artifact ID, re-hash it, and sign those exact EXE bytes under the legacy SAN.
 The bridge cannot publish. Before mutation and transition, the protected publisher re-opens the
 decision/approval/ledger inputs and rejects current time at or after decision `valid_until` or any

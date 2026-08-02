@@ -41,6 +41,12 @@ class _Resp:
         self.usage = types.SimpleNamespace(total_tokens=10)
 
 
+class _StatusError(Exception):
+    def __init__(self, status_code, body="provider response body"):
+        super().__init__(body)
+        self.status_code = status_code
+
+
 class _FakeCompletions:
     """Records every create() kwargs; behavior driven by ``fail_on``.
 
@@ -55,9 +61,11 @@ class _FakeCompletions:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        msg = self._fail_on(kwargs)
-        if msg:
-            raise Exception(msg)
+        failure = self._fail_on(kwargs)
+        if isinstance(failure, BaseException):
+            raise failure
+        if failure:
+            raise Exception(failure)
         return _Resp(self._content)
 
 
@@ -88,10 +96,15 @@ def _bare_orch(completions, *, default_effort=None):
     async def _noop(*a, **k):
         return None
 
-    orch._record_llm_call = _noop
+    audits = []
+
+    async def _record(*_args, **kwargs):
+        audits.append(kwargs)
+
+    orch._record_llm_call = _record
     orch._record_llm_unconfigured = _noop
     orch._emit_llm_usage_report = _noop
-    orch._classify_llm_upstream_error = lambda e: "x"
+    orch._audits = audits
     return orch
 
 
@@ -172,7 +185,7 @@ async def test_remembered_param_not_resent_on_next_call():
     assert len(comp.calls) == n_after_first + 1
 
 
-async def test_strip_retry_does_not_consume_real_retry_budget():
+async def test_strip_retry_does_not_consume_real_retry_budget(monkeypatch):
     # The enhancement param is rejected once, then a transient error happens
     # on every clean attempt — we should still get the full MAX_RETRIES (3)
     # clean attempts, i.e. 1 rejected + 3 transient = 4 total calls.
@@ -182,10 +195,18 @@ async def test_strip_retry_does_not_consume_real_retry_budget():
         if "reasoning_effort" in kw:
             return "400 unknown parameter reasoning_effort"
         state["n"] += 1
-        return "503 Service Unavailable"
+        return _StatusError(503)
 
     comp = _FakeCompletions(fail_on=fail_on)
     orch = _bare_orch(comp)
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(
+        "orchestrator.orchestrator.asyncio.sleep",
+        no_sleep,
+    )
     msg, _ = await orch._call_llm(None, [{"role": "user", "content": "hi"}],
                                   reasoning_effort="high")
     assert msg is None
@@ -263,3 +284,180 @@ async def test_call_llm_json_falls_back_when_format_unsupported():
     assert out == {"y": 9}
     assert len(comp.calls) == 2
     assert "response_format" not in comp.calls[1]
+
+
+# --------------------------------------------------------------------------
+# Provider failure disposition, bounded retry, and redaction
+# --------------------------------------------------------------------------
+
+
+def _disable_retry_sleep(monkeypatch):
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(
+        "orchestrator.orchestrator.asyncio.sleep",
+        no_sleep,
+    )
+
+
+async def test_http_400_fails_once_and_never_logs_or_audits_body(
+    monkeypatch,
+    caplog,
+):
+    sentinel = "SENTINEL_PROVIDER_BODY_MUST_NOT_ESCAPE"
+    comp = _FakeCompletions(
+        fail_on=lambda _kwargs: _StatusError(400, sentinel),
+    )
+    orch = _bare_orch(comp)
+    _disable_retry_sleep(monkeypatch)
+
+    msg, usage = await orch._call_llm(
+        None,
+        [{"role": "user", "content": "hi"}],
+    )
+
+    assert (msg, usage) == (None, None)
+    assert len(comp.calls) == 1
+    assert [audit["outcome"] for audit in orch._audits] == ["failure"]
+    assert orch._audits[0]["upstream_error_class"] == "other"
+    assert sentinel not in caplog.text
+    assert sentinel not in repr(orch._audits)
+
+
+async def test_unknown_nontransient_exception_fails_once(monkeypatch):
+    comp = _FakeCompletions(
+        fail_on=lambda _kwargs: RuntimeError("unknown provider failure"),
+    )
+    orch = _bare_orch(comp)
+    _disable_retry_sleep(monkeypatch)
+
+    msg, usage = await orch._call_llm(
+        None,
+        [{"role": "user", "content": "hi"}],
+    )
+
+    assert (msg, usage) == (None, None)
+    assert len(comp.calls) == 1
+    assert orch._audits[0]["upstream_error_class"] == "other"
+
+
+async def test_failure_metadata_does_not_stringify_provider_body(monkeypatch):
+    class BodyStringForbidden(RuntimeError):
+        def __str__(self):
+            raise AssertionError("provider body was stringified")
+
+    comp = _FakeCompletions(
+        fail_on=lambda _kwargs: BodyStringForbidden(),
+    )
+    orch = _bare_orch(comp)
+    _disable_retry_sleep(monkeypatch)
+
+    msg, usage = await orch._call_llm(
+        None,
+        [{"role": "user", "content": "hi"}],
+    )
+
+    assert (msg, usage) == (None, None)
+    assert len(comp.calls) == 1
+    assert orch._audits[0]["upstream_error_class"] == "other"
+
+
+async def test_malformed_choices_fail_once_before_success_audit(monkeypatch):
+    class MalformedCompletions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return types.SimpleNamespace(choices=[], usage=None)
+
+    comp = MalformedCompletions()
+    orch = _bare_orch(comp)
+    _disable_retry_sleep(monkeypatch)
+
+    msg, usage = await orch._call_llm(
+        None,
+        [{"role": "user", "content": "hi"}],
+    )
+
+    assert (msg, usage) == (None, None)
+    assert len(comp.calls) == 1
+    assert [audit["outcome"] for audit in orch._audits] == ["failure"]
+    assert orch._audits[0]["upstream_error_class"] == "other"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "audit_class"),
+    [
+        (408, "other"),
+        (409, "other"),
+        (425, "other"),
+        (429, "rate_limit"),
+        (500, "other"),
+        (503, "other"),
+        (599, "other"),
+    ],
+)
+async def test_proven_transient_http_statuses_use_bounded_retry_budget(
+    monkeypatch,
+    status_code,
+    audit_class,
+):
+    comp = _FakeCompletions(
+        fail_on=lambda _kwargs: _StatusError(status_code),
+    )
+    orch = _bare_orch(comp)
+    _disable_retry_sleep(monkeypatch)
+
+    msg, usage = await orch._call_llm(
+        None,
+        [{"role": "user", "content": "hi"}],
+    )
+
+    assert (msg, usage) == (None, None)
+    assert len(comp.calls) == orch.MAX_RETRIES == 3
+    assert len(orch._audits) == 1
+    assert orch._audits[0]["upstream_error_class"] == audit_class
+
+
+@pytest.mark.parametrize("error_type", [TimeoutError, ConnectionError])
+async def test_transport_exception_uses_bounded_retry_budget(
+    monkeypatch,
+    error_type,
+):
+    comp = _FakeCompletions(
+        fail_on=lambda _kwargs: error_type("provider transport failure"),
+    )
+    orch = _bare_orch(comp)
+    _disable_retry_sleep(monkeypatch)
+
+    msg, usage = await orch._call_llm(
+        None,
+        [{"role": "user", "content": "hi"}],
+    )
+
+    assert (msg, usage) == (None, None)
+    assert len(comp.calls) == orch.MAX_RETRIES == 3
+    assert orch._audits[0]["upstream_error_class"] == "transport_error"
+
+
+async def test_internal_html_maintenance_marker_is_transient_and_redacted(
+    monkeypatch,
+    caplog,
+):
+    sentinel = "SENTINEL_MAINTENANCE_BODY_MUST_NOT_ESCAPE"
+    comp = _FakeCompletions(content=f"<html>{sentinel}</html>")
+    orch = _bare_orch(comp)
+    _disable_retry_sleep(monkeypatch)
+
+    msg, usage = await orch._call_llm(
+        None,
+        [{"role": "user", "content": "hi"}],
+    )
+
+    assert (msg, usage) == (None, None)
+    assert len(comp.calls) == orch.MAX_RETRIES == 3
+    assert orch._audits[0]["upstream_error_class"] == "other"
+    assert sentinel not in caplog.text
+    assert sentinel not in repr(orch._audits)

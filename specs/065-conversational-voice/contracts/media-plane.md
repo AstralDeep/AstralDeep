@@ -11,8 +11,8 @@ web / Windows / Android / iOS / macOS
   microphone publish + assistant audio/data subscribe
           │
           ▼
-  self-hosted LiveKit room  ◄──── voice worker participant
-                                   │ VAD + exact ASR/TTS
+  self-hosted LiveKit room  ◄──── direct-RTC voice worker participant
+                                   │ exact Silero ONNX VAD + exact ASR/TTS
                                    └ scoped control WSS to VoiceCoordinator
 
 watchOS foreground PCM WSS ───── watch relay in voice worker
@@ -56,17 +56,28 @@ audit metadata, and generic protocol-frame capture.
 
 ## 3. LiveKit Audio
 
-- Client microphone capture follows the platform SDK's WebRTC format and AEC/noise controls; the
-  worker normalizes frames for Silero VAD and exact ASR.
+- Client microphone capture follows the platform SDK's WebRTC format and AEC/noise controls. The
+  direct-RTC worker connects with auto-subscribe disabled, validates the assigned participant/audio/
+  microphone source, then subscribes through a finite-capacity 16-kHz mono `AudioStream` using
+  32-ms frames. It feeds exact Silero ONNX Runtime VAD and forwards only bounded utterance audio to
+  exact ASR. Queue overrun aborts the utterance; it never silently accepts the SDK's drop-oldest
+  behavior as a complete recording.
 - Worker TTS requests fix model `speaches-ai/Kokoro-82M-v1.0-ONNX`, voice `af_heart`, and WAV.
   Responses must parse as mono 24 kHz audio before publication; mismatch fails the utterance and
   degrades voice rather than silently resampling an unknown model/voice response.
 - Raw mic and generated audio live only in bounded active ring/decoder buffers. There is no room
   recording, LiveKit egress recording, file upload, disk spill, crash attachment, or content
   telemetry.
+- Room callbacks only enqueue typed events into one serialized session owner. Initial participants/
+  publications are reconciled after `Room.connect()` returns; the nonexistent initial `connected`
+  callback is not awaited. Reconnect fences capture/playout until context/grant/generation and
+  publications are revalidated, handles changed local track SIDs, and creates a fresh Room plus
+  higher-revision worker grant after terminal disconnect.
 - Assistant output is serialized per user/session. Starting capture during barge-in first stops and
-  fences current assistant frames. ASR ingestion is gated while assistant output is active, then
-  promptly resumes so playback cannot become a user turn.
+  fences current assistant frames. The worker advances a speech epoch, clears its small
+  `AudioSource` queue, boundedly quiesces the producer, clears again, and replaces the track on
+  timeout; local queue completion is not client playout proof. ASR ingestion is gated while
+  assistant output is active, then promptly resumes so playback cannot become a user turn.
 - Foreground loss, OS interruption, logout, auth expiry, takeover, and session end follow the exact
   cleanup table below. Accepted AstralDeep tasks are unaffected.
 
@@ -80,9 +91,9 @@ automatic `foreground_active` state is distinct from the user's persistent `spee
 | App hidden/inactive or device locked | Stop mic publication and assistant playout, discard queued audio, then best-effort PATCH `foreground_active: false`, bounded foreground reason, and `microphone_enabled: false`. | Enter `suspended`, issue `set_capture: false`/`stop_speech`, retain accepted tasks and the short reconnect lease. | Foreground + capability check + fresh control binding if the UI socket changed + idempotent grant refresh; no old audio is replayed. Mic resumes only after applied chat context is synced. |
 | OS audio interruption or route loss | Stop capture/playout synchronously; PATCH foreground false with reason `audio_interrupted`. | Suspend capture/speech; continue accepted tasks and publish text results normally. | Restore route, recheck permission/output, refresh grant, then PATCH foreground true with reason `foreground`. |
 | Brief network loss or process crash | Close/drop the local track; never persist a grant, transcript proof, or audio. | Enter `reconnecting`; lease expiry ends media and bounded in-memory finals expire visibly. | Re-register UI, obtain a new control binding, read non-secret current state, and refresh with stable `refresh_id`; no stale publisher/audio is accepted. |
-| Logout or auth expiry | Stop media synchronously; best-effort DELETE. | End/revoke the session, fence generation, and clear worker buffers; ordinary accepted work retains normal auth/audit behavior. | No automatic resume; a new authenticated explicit start is required. |
-| Explicit end | Stop media synchronously; DELETE with bound device/connection headers. | End media and speech only. | Accepted tasks/results continue as ordinary text; later start creates a new session. |
-| Takeover | Old client stops on the fenced state frame; new client never reuses old media. | Advance generation, end old worker media, and mint a new owner-bound grant. | New owner completes capability/context synchronization before capture. |
+| Logout or auth expiry | Stop media synchronously; best-effort DELETE. | End/revoke the session, fence generation, abandon any recognizing/submitting turn as a retryable stale session, and clear worker buffers; ordinary accepted work retains normal auth/audit behavior. | No automatic resume; a new authenticated explicit start is required. |
+| Explicit end | Stop media synchronously; DELETE with bound device/connection headers. | End media and speech, and abandon any recognizing/submitting turn without touching accepted work. | Accepted tasks/results continue as ordinary text; later start creates a new session. |
+| Takeover | Old client stops on the fenced state frame; new client never reuses old media. | Advance generation, abandon unaccepted old-generation turns, end old worker media, and mint a new owner-bound grant. | New owner completes capability/context synchronization before capture. |
 | Current visible chat deleted or no longer authorized | Stop capture/playout and tear down local media immediately; best-effort end with `chat_deleted` or `chat_unauthorized`. | End/fence media and reject unaccepted turns. Accepted execution/audit follows ordinary deletion policy, but result publication to that chat and every later voice announcement stay suppressed. | No automatic resume. Select/create an authorized chat and explicitly start a new voice session. |
 | Older turn's bound chat deleted or revoked after navigation | Keep the current session/chat active; clear a rejected unaccepted final and cancel queued/playing announcements for any already accepted turn from that chat. | Reject an unaccepted final without creating a chat/message/task. Already accepted work follows ordinary deleted/unauthorized-chat policy, but all later voice progress/recap for it is suppressed. | Current-chat voice continues. An unaccepted old request requires a fresh explicit retry in an authorized chat; no deleted-chat result is spoken. |
 
@@ -129,6 +140,11 @@ through the normal AstralDeep acknowledgement/snapshot path after server accepta
    validates and snapshots that chat, inserts
    the recognition row, and mints `turn_id`, `submission_id`, and `request_generation` UUID4 values.
    `turn_bound` returns the immutable binding before the worker publishes any transcript.
+   If ASR fails or returns an empty/invalid final, the worker instead sends the strictly bounded
+   `recognition_failed` frame with only that exact `client_turn_id` and an allowlisted safe reason.
+   The authenticated coordinator resolves the existing turn binding and atomically abandons the
+   still-`recognizing` row as `malformed_final`/`explicit_user_retry`; replayed, unbound, stale-
+   generation, and cross-assignment failures have no side effect.
 4. The worker canonicalizes the final (`CRLF` to `LF`, Unicode NFC, outer whitespace removed;
    NUL/other controls except tab/newline rejected), computes lowercase SHA-256 over its UTF-8 bytes,
    and attaches an HMAC proof expiring no more than two minutes after the final. The proof input is the fixed newline-delimited ASCII
@@ -301,20 +317,48 @@ action. No voice mutation travels over the UI WebSocket.
 
 ## 7. Worker Control Channel
 
-The worker opens a TLS WebSocket to an internal orchestrator route and performs a bounded
+Each worker opens one TLS pool WebSocket to an internal orchestrator route and performs a bounded
 challenge-response using the dedicated operator-managed `VOICE_CONTROL_SECRET`; the raw secret is
-never sent. LiveKit job metadata contains only opaque session/generation correlation—not a bearer
-credential. After checking the active database lease and expected LiveKit worker participant, the
-orchestrator issues and atomically consumes a one-time session-binding nonce that is audience-,
-session-, room-, worker-, generation-, and expiry-bound. Nonces, headers, and job metadata are
-redacted.
+never sent. The authenticated worker advertises only its opaque identity, bounded capacity, and
+fixed-profile readiness. The coordinator selects a worker, claims the session's database control
+lease, and sends an idempotent `session_bind`; workers never poll an assignment endpoint and no
+LiveKit Agents dispatch exists. The bind delivers a separate short-lived, room-scoped direct-RTC
+worker join grant minted by orchestrator-only `livekit-api`. That grant
+permits the designated worker identity to subscribe to the designated microphone and publish
+assistant audio/data in that room; it grants no room administration, recording/egress, SIP, or API
+secret. The bearer is memory-only, is replaced only by a higher worker-grant revision on reconnect,
+and is redacted together with challenge material and headers. Every multiplexed frame remains
+independently session/generation/sequence fenced; a connection loss does not authorize another
+replica until the database lease expires or is explicitly transferred.
+
+The challenge occurs during the HTTP upgrade rather than as an untyped WebSocket frame: an initial
+request receives a short-lived single-use server nonce, and the retry supplies worker identity,
+nonce, timestamp, and a domain-separated HMAC in bounded headers. The first schema-valid worker
+frame is `worker_register`; the coordinator replies `worker_registered` with the accepted capacity,
+connection ID, and heartbeat interval. Neither frame carries a credential. Pool-frame sequences are
+separate from each bound session's per-direction sequence. After registration, the worker sends one
+`pool_heartbeat` at every accepted interval even when it owns zero sessions. Its sequence starts at
+one (the registration used pool sequence zero), and its worker identity and connection ID must match
+the current authenticated socket. Only a valid, ordered pool heartbeat or a valid ordered session
+frame refreshes the in-memory connection lease; malformed, replayed, cross-connection, and
+cross-identity heartbeats fail closed. Session `heartbeat` frames remain independently sequenced and
+carry only per-session media state.
+
+For every `session_bind`, `assignment_id` must match the session's current database assignment; the
+nested worker grant's room and worker identity must exactly equal the outer `room_name` and
+`worker_identity`; its revision must exactly equal both the outer
+`worker_rtc_grant_revision` and the persisted value; `issued_at`
+must not predate the assignment; and `expires_at` must be later than server receipt but no more than
+five minutes after `issued_at`. Any mismatch closes only that assignment, clears its media state,
+and emits a content-free failure; it never falls back to an API credential or another room.
 
 Frames validate against [worker-control.schema.json](worker-control.schema.json). The channel:
 
 - carries coordinator-approved bounded speech text with a mechanical quantum role/index/sample
   ceiling and matching media/speech lifecycle metadata;
 - never accepts a transcript as authorization and never invokes chat dispatch;
-- never carries raw audio, tool data, hidden reasoning, provider bodies, or credentials;
+- never carries raw audio, tool data, hidden reasoning, provider bodies, or credentials other than
+  the purpose-bound worker room grant inside `session_bind`;
 - is frame/rate/queue bounded and closes on malformed, replayed, stale, cross-session, or oversized
   input;
 - applies generation/sequence checks before side effects;
@@ -332,7 +376,7 @@ Direction is part of authorization, not merely documentation:
 
 | Coordinator to worker only | Worker to coordinator only |
 |---|---|
-| `session_bind`, `media_grant_rotated`, `session_context_update`, `turn_bound`, `transcript_accepted`, `transcript_rejected`, `speak`, `stop_speech`, `set_capture`, `end_session` | `media_grant_applied`, `session_context_applied`, `recognition_started`, `worker_ready`, `heartbeat`, `speech_started`/`speech_finished`/`speech_interrupted`/`speech_failed`, `media_state`, `transcript_emitted` |
+| `worker_registered`, `session_bind` (initial or higher worker-RTC-grant revision), `media_grant_rotated`, `session_context_update`, `turn_bound`, `transcript_accepted`, `transcript_rejected`, `speak`, `stop_speech`, `set_capture`, `end_session` | `worker_register`, `pool_heartbeat`, `media_grant_applied`, `session_context_applied`, `recognition_started`, `recognition_failed`, `worker_ready` (echoes assignment and applied worker-RTC-grant revision), `heartbeat`, `speech_started`/`speech_finished`/`speech_interrupted`/`speech_failed`, `media_state`, `transcript_emitted` |
 
 A frame valid in shape but received in the wrong direction closes the session channel without a
 side effect. Message IDs, per-direction sequences, generation, and service-authenticated channel
@@ -420,9 +464,9 @@ Bounded JSON messages carry only:
 - speech lifecycle IDs/timing, ping/pong, and explicit client interruption;
 - no grants, secrets, raw provider error/body, tool data, or hidden reasoning.
 
-The relay feeds mic PCM into the same LiveKit-worker VAD/ASR session and sends exact Kokoro frames
-back. This is a last-mile transport adapter, not platform speech, a second voice profile, or a
-second agentic path.
+The relay feeds mic PCM into the same direct-RTC worker's Silero/ASR state machine and sends exact
+Kokoro frames back. This is a last-mile transport adapter, not platform speech, a second voice
+profile, or a second agentic path.
 
 ## 9. Endpointing and Turn Identity
 
@@ -449,7 +493,7 @@ second agentic path.
 Capability is `ready` only when bounded probes confirm:
 
 1. LiveKit signaling/room operation and a ready worker;
-2. exact ASR model inventory plus realtime authenticated transcription;
+2. exact ASR model inventory plus authenticated bounded batch transcription after worker VAD;
 3. exact TTS model, `af_heart`, WAV, and parsed 24 kHz output;
 4. transport-specific client support (direct LiveKit or watch bridge);
 5. capacity for the authenticated user/deployment.

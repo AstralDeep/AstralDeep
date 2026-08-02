@@ -19,6 +19,9 @@ import com.personalailabs.astraldeep.app.transport.OrchestratorClient
 import com.personalailabs.astraldeep.app.transport.QueuedSubmissionFailure
 import com.personalailabs.astraldeep.app.ui.theme.ThemePalette
 import com.personalailabs.astraldeep.app.ui.theme.themePaletteForSpec
+import com.personalailabs.astraldeep.app.voice.VoiceMediaCapability
+import com.personalailabs.astraldeep.app.voice.VoiceSessionController
+import com.personalailabs.astraldeep.app.voice.VoiceUiState
 import com.personalailabs.astraldeep.core.chrome.ChromeMenuModel
 import com.personalailabs.astraldeep.core.chrome.MenuItem
 import com.personalailabs.astraldeep.core.protocol.Agent
@@ -27,6 +30,7 @@ import com.personalailabs.astraldeep.core.protocol.ChatSummary
 import com.personalailabs.astraldeep.core.protocol.DeviceCapabilities
 import com.personalailabs.astraldeep.core.protocol.Inbound
 import com.personalailabs.astraldeep.core.protocol.ProtocolManifest
+import com.personalailabs.astraldeep.core.protocol.VoiceControl
 import com.personalailabs.astraldeep.core.sdui.Canvas
 import com.personalailabs.astraldeep.core.sdui.CanvasOp
 import com.personalailabs.astraldeep.core.sdui.Component
@@ -231,6 +235,23 @@ data class UiState(
  */
 internal fun isTimelineMutation(action: String): Boolean = action in TIMELINE_MUTATIONS
 
+/** A delayed or foreign no-chat voice response must never switch the visible conversation. */
+internal fun isExpectedVoiceChatCreation(
+    state: UiState,
+    pending: LocalSubmission,
+    message: Inbound.ChatCreated,
+): Boolean =
+    state.activeChatId == null &&
+        message.chatId != null &&
+        message.fromMessage == false &&
+        message.connectionGeneration == state.connectionGeneration &&
+        message.submissionId == pending.submissionId &&
+        message.requestGeneration == pending.requestGeneration
+
+/** Only session acquisition needs a chat-binding preflight before its REST action. */
+internal fun voiceControlNeedsChatPreflight(action: String): Boolean =
+    action == "voice_session_start" || action == "voice_session_takeover"
+
 private val TIMELINE_MUTATIONS =
     setOf("chat_message", "component_action", "component_refine", "component_restore", "table_paginate", "save_theme")
 
@@ -247,16 +268,49 @@ class AppViewModel(
     private val client: OrchestratorClient,
     private val rest: AstralRest,
     private val resumeStore: ConversationResumeStore? = null,
+    private val voiceController: VoiceSessionController? = null,
 ) : ViewModel() {
+    private data class PendingVoiceActivation(
+        val action: String,
+        val capability: VoiceMediaCapability,
+        val submission: LocalSubmission,
+    )
+
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+    private val unavailableVoice = MutableStateFlow(VoiceUiState.Unavailable)
+    val voiceState: StateFlow<VoiceUiState> = voiceController?.state ?: unavailableVoice.asStateFlow()
 
     private var session: Job? = null
     private var snapshotTimeout: Job? = null
     private var token: String? = null
+    private var device: DeviceCapabilities? = null
     private var account: AccountIdentity? = null
     private var attachSeq: Long = 0
     private val seqState = mutableMapOf<String, Int>()
+    private var pendingVoiceActivation: PendingVoiceActivation? = null
+
+    init {
+        voiceController?.setTranscriptSubmitter { transcript, connectionGeneration ->
+            client.sendVoiceTranscript(transcript, connectionGeneration) { submission ->
+                _state.update { current ->
+                    if (current.pendingSubmissions.containsKey(submission.requestGeneration)) {
+                        projectLocalSubmission(current, submission)
+                    } else {
+                        val armed = armTurn(current)
+                        projectLocalSubmission(
+                            armed.copy(
+                                pendingTurns = armed.pendingTurns + ChatTurn("user", transcript.text),
+                                pendingLabel = transcript.text.take(80),
+                            ),
+                            submission,
+                        )
+                    }
+                }
+            }
+        }
+        voiceController?.setPlayoutReporter(client::sendVoicePlayoutEvent)
+    }
 
     /** Begin (or restart) the session with a bearer token + device caps. */
     fun start(
@@ -264,6 +318,7 @@ class AppViewModel(
         device: DeviceCapabilities,
     ) {
         this.token = token
+        this.device = device
         val nextAccount = ConversationResumeStore.accountFromAccessToken(token)
         val previousAccount = account
         if (previousAccount != null && nextAccount != null && previousAccount != nextAccount) {
@@ -295,10 +350,12 @@ class AppViewModel(
                             onGeneration = ::installConversationGeneration,
                             onQueuedSubmission = ::installQueuedSubmission,
                         ).collect { msg ->
+                            voiceController?.handleInbound(msg)
                             val before = _state.value
                             val retryChat = snapshotRetryTarget(before, msg)
                             val after = reduceWithPersistence(before, msg)
                             _state.value = after
+                            handleVoiceAfterReduction(before, after, msg)
                             when {
                                 retryChat != null -> {
                                     snapshotTimeout?.cancel()
@@ -334,7 +391,10 @@ class AppViewModel(
                 launch {
                     client.state.collect { c ->
                         _state.update { current -> reduceConnectionState(current, c) }
-                        if (c == ConnectionState.Disconnected) snapshotTimeout?.cancel()
+                        if (c == ConnectionState.Disconnected) {
+                            snapshotTimeout?.cancel()
+                            voiceController?.connectionLost()
+                        }
                     }
                 }
                 launch {
@@ -382,6 +442,91 @@ class AppViewModel(
         val attachments = ready.map { ChatAttachment(it.attachmentId!!, it.filename, it.category) }
         client.sendChat(text, _state.value.activeChatId, attachments) { submission ->
             _state.update { current -> projectLocalSubmission(current, submission) }
+        }
+    }
+
+    /** Execute only a visible, enabled server-owned voice composer control. */
+    fun invokeVoiceControl(
+        control: VoiceControl,
+        capability: VoiceMediaCapability,
+    ) {
+        val controller = voiceController ?: return
+        if (!control.visible || !control.enabled || _state.value.timelineReadOnly) return
+        if (control.action in setOf("voice_session_start", "voice_session_takeover") && _state.value.activeChatId == null) {
+            controller.awaitingChat()
+            val submission = client.createChatForVoice()
+            if (submission == null) {
+                controller.activationFailed("network_interrupted", "Voice needs a live connection. You can keep typing.")
+            } else {
+                pendingVoiceActivation = PendingVoiceActivation(control.action, capability, submission)
+            }
+            return
+        }
+        if (voiceControlNeedsChatPreflight(control.action)) {
+            _state.value.activeChatId?.let(controller::updateVisibleChatLocally)
+        }
+        viewModelScope.launch {
+            when (control.action) {
+                "voice_session_start" -> controller.activate(capability)
+                "voice_session_takeover" -> controller.takeOver(capability)
+                "voice_session_end" -> controller.end()
+                "voice_microphone_set" -> controller.setMicrophoneEnabled(!control.pressed)
+                "voice_speech_stop" -> controller.stopSpeech()
+                "voice_speech_mute_set" -> controller.setSpeechMuted(!control.pressed)
+                "voice_visible_chat_update" -> _state.value.activeChatId?.let(controller::updateVisibleChatLocally)
+                "voice_sensitive_recap_request" ->
+                    _state.update {
+                        it.copy(
+                            banner = "Sensitive spoken recap consent is not available on this build.",
+                            bannerKind = "info",
+                        )
+                    }
+            }
+        }
+    }
+
+    /** Permission/no-device failures still use the same controller feedback surface. */
+    fun reportVoiceCapability(capability: VoiceMediaCapability) {
+        val controller = voiceController ?: return
+        viewModelScope.launch { controller.activate(capability) }
+    }
+
+    private fun handleVoiceAfterReduction(
+        before: UiState,
+        after: UiState,
+        message: Inbound,
+    ) {
+        val controller = voiceController ?: return
+        if (before.activeChatId != after.activeChatId) controller.updateVisibleChatLocally(after.activeChatId)
+        val pending = pendingVoiceActivation ?: return
+        if (
+            message is Inbound.ChatCreated &&
+            before.activeChatId != null &&
+            message.connectionGeneration == before.connectionGeneration &&
+            message.submissionId == pending.submission.submissionId &&
+            message.requestGeneration == pending.submission.requestGeneration
+        ) {
+            pendingVoiceActivation = null
+            controller.activationFailed(
+                "chat_context_unavailable",
+                "Voice start was cancelled because you changed conversations.",
+            )
+            return
+        }
+        if (
+            message !is Inbound.ChatCreated || message.chatId == null || message.chatId != after.activeChatId ||
+            message.fromMessage != false || message.connectionGeneration != after.connectionGeneration ||
+            message.submissionId != pending.submission.submissionId ||
+            message.requestGeneration != pending.submission.requestGeneration
+        ) {
+            return
+        }
+        pendingVoiceActivation = null
+        viewModelScope.launch {
+            when (pending.action) {
+                "voice_session_start" -> controller.activate(pending.capability)
+                "voice_session_takeover" -> controller.takeOver(pending.capability)
+            }
         }
     }
 
@@ -524,6 +669,7 @@ class AppViewModel(
                 acceptedSnapshotId = null,
                 acceptedSnapshot = null,
             )
+        voiceController?.updateVisibleChatLocally(null)
         sendEvent("new_chat")
     }
 
@@ -701,6 +847,7 @@ class AppViewModel(
                 transientCanvas = null,
                 pendingTurns = emptyList(),
             )
+        voiceController?.updateVisibleChatLocally(chatId)
         requestChatRefresh(chatId, locatorAlreadyPersisted = true)
     }
 
@@ -832,7 +979,14 @@ class AppViewModel(
         when (msg) {
             is Inbound.UiRender -> reduceUiRender(s, msg)
             is Inbound.UiUpsert -> reduceUiUpsert(s, msg)
-            is Inbound.ChatCreated -> bindAcknowledgedChat(s, msg.chatId)
+            is Inbound.ChatCreated -> {
+                val pendingVoice = pendingVoiceActivation?.submission
+                if (pendingVoice != null && !isExpectedVoiceChatCreation(s, pendingVoice, msg)) {
+                    s
+                } else {
+                    bindAcknowledgedChat(s, msg.chatId)
+                }
+            }
             is Inbound.UserMessageAcked ->
                 // The origin's optimistic arm normally ran already (sendChat / the
                 // chat_message ui_event); arming here too covers an acked turn that
@@ -1043,6 +1197,17 @@ class AppViewModel(
     /** Install a fence and arm the bounded hydration wait before bytes are sent. */
     private fun installConversationGeneration(binding: ConversationGenerationBinding) {
         _state.update { current -> bindConversationGeneration(current, binding) }
+        val currentToken = token
+        val currentDevice = device
+        val deviceId = currentDevice?.deviceId
+        if (currentToken != null && deviceId != null) {
+            voiceController?.installUiConnection(
+                token = currentToken,
+                deviceId = deviceId,
+                connectionGeneration = binding.connectionGeneration,
+                visibleChatId = binding.chatId ?: _state.value.activeChatId,
+            )
+        }
         snapshotTimeout?.cancel()
         if (binding.purpose == ConversationRequestPurpose.HYDRATION) {
             scheduleSnapshotTimeout(binding)
@@ -1160,7 +1325,10 @@ class AppViewModel(
     }
 
     /** Synchronous explicit-sign-out hook used before credentials are removed. */
-    fun clearConversationForSignOut(): Boolean = clearResumeLocator(ClearReason.DEFINITIVE_SIGN_OUT)
+    fun clearConversationForSignOut(): Boolean {
+        voiceController?.logout()
+        return clearResumeLocator(ClearReason.DEFINITIVE_SIGN_OUT)
+    }
 
     private fun isDefinitiveCurrentChatMiss(
         s: UiState,
@@ -1926,8 +2094,14 @@ class AppViewModel(
             client: OrchestratorClient,
             rest: AstralRest,
             resumeStore: ConversationResumeStore? = null,
+            voiceController: VoiceSessionController? = null,
         ) = viewModelFactory {
-            initializer { AppViewModel(client, rest, resumeStore) }
+            initializer { AppViewModel(client, rest, resumeStore, voiceController) }
         }
+    }
+
+    override fun onCleared() {
+        voiceController?.close()
+        super.onCleared()
     }
 }

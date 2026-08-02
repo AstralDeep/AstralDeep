@@ -131,15 +131,10 @@ public enum RefreshStrategy: Sendable {
     public func refresh(refreshToken: String) async throws -> TokenSet {
         switch self {
         case .direct(let config):
-            var request = URLRequest(url: config.tokenEndpoint)
-            request.httpMethod = "POST"
-            request.setValue(
-                "application/x-www-form-urlencoded",
-                forHTTPHeaderField: "Content-Type")
-            request.httpBody = Data(config.refreshRequestBody(refreshToken: refreshToken).utf8)
+            let request = Self.directRequest(config: config, refreshToken: refreshToken)
             let (data, response): (Data, URLResponse)
             do {
-                (data, response) = try await URLSession.shared.data(for: request)
+                (data, response) = try await NoStoreHTTP.session.data(for: request)
             } catch {
                 throw DeviceLoginError.transport(error.localizedDescription)
             }
@@ -156,6 +151,14 @@ public enum RefreshStrategy: Sendable {
         case .broker(let client):
             return try await client.refresh(refreshToken: refreshToken)
         }
+    }
+
+    static func directRequest(config: OIDCConfig, refreshToken: String) -> URLRequest {
+        NoStoreHTTP.request(
+            url: config.tokenEndpoint,
+            method: "POST",
+            body: Data(config.refreshRequestBody(refreshToken: refreshToken).utf8),
+            contentType: "application/x-www-form-urlencoded")
     }
 
     /// `refresh` with the failure mode classified (never throws). If the IdP

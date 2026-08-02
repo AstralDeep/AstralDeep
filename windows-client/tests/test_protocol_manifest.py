@@ -14,6 +14,7 @@ from astral_client.protocol_manifest import (
     CLIENT_LOCAL_ACTIONS,
     HANDLED,
     IGNORED,
+    is_classified,
     is_handled,
 )
 
@@ -72,6 +73,21 @@ def test_core_loop_frames_are_handled():
         "agent_host_registered", "agent_host_registration_refused",
     ):
         assert is_handled(frame), f"{frame} must be handled per the parity matrix"
+
+
+def test_voice_frames_are_explicitly_handled_and_unknowns_remain_unclassified():
+    voice_frames = {
+        "composer_state",
+        "voice_announcement_media",
+        "voice_control_binding",
+        "voice_session_state",
+        "voice_submission_rejected",
+        "voice_transcript",
+        "voice_turn_state",
+    }
+
+    assert all(is_handled(frame) for frame in voice_frames)
+    assert not is_classified("voice_unknown")
 
 
 def test_manifest_declares_structured_host_registration():

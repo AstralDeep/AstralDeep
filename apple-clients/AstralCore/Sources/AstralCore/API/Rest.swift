@@ -128,7 +128,7 @@ public struct RestClient: Sendable {
         self.tokenProvider = tokenProvider
         self.transport =
             transport ?? { request in
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await NoStoreHTTP.session.data(for: request)
                 return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
             }
     }
@@ -142,14 +142,13 @@ public struct RestClient: Sendable {
     }
 
     func request(_ method: String, _ path: String, body: JSONValue? = nil) async throws -> (Int, JSONValue) {
-        var request = URLRequest(url: serverBase.appendingPathComponent(path))
-        request.httpMethod = method
+        var request = NoStoreHTTP.request(
+            url: serverBase.appendingPathComponent(path),
+            method: method,
+            body: try body?.encoded(),
+            contentType: body == nil ? nil : "application/json")
         if let token = await tokenProvider() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try body.encoded()
         }
         let (status, data) = try await transport(request)
         return (status, (try? JSONValue.parse(data)) ?? .object([:]))
@@ -203,11 +202,11 @@ public struct RestClient: Sendable {
 
     /// The per-user, hash-chained audit log (`GET /api/audit`).
     public func audit() async -> [AuditEvent] {
-        var req = URLRequest(url: serverBase.appendingPathComponent("api/audit"))
+        var req = NoStoreHTTP.request(url: serverBase.appendingPathComponent("api/audit"))
         if let token = await tokenProvider() {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
+        guard let (data, response) = try? await NoStoreHTTP.session.data(for: req),
             (response as? HTTPURLResponse)?.statusCode == 200
         else { return [] }
         return AuditEvent.parse(data)
@@ -220,12 +219,13 @@ public struct RestClient: Sendable {
         data fileData: Data
     ) async -> AttachmentUpload? {
         let boundary = "Boundary-\(UUID().uuidString)"
-        var req = URLRequest(url: serverBase.appendingPathComponent("api/upload"))
-        req.httpMethod = "POST"
+        var req = NoStoreHTTP.request(
+            url: serverBase.appendingPathComponent("api/upload"),
+            method: "POST",
+            contentType: "multipart/form-data; boundary=\(boundary)")
         if let token = await tokenProvider() {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         var body = Data()
         let mime = mimeType ?? "application/octet-stream"
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -234,7 +234,7 @@ public struct RestClient: Sendable {
         body.append(fileData)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         req.httpBody = body
-        guard let (respData, response) = try? await URLSession.shared.data(for: req),
+        guard let (respData, response) = try? await NoStoreHTTP.session.data(for: req),
             (200...299).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
             let json = try? JSONValue.parse(respData),
             let id = json["attachment_id"]?.stringValue
@@ -260,11 +260,11 @@ public struct RestClient: Sendable {
         guard let url = URL(string: urlString, relativeTo: serverBase)?.absoluteURL else {
             throw URLError(.badURL)
         }
-        var req = URLRequest(url: url)
+        var req = NoStoreHTTP.request(url: url)
         if url.host == serverBase.host, let token = await tokenProvider() {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await NoStoreHTTP.session.data(for: req)
         guard let http = response as? HTTPURLResponse,
             (200...299).contains(http.statusCode)
         else {

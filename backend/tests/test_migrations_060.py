@@ -360,6 +360,7 @@ OPERATION_RETENTION_TABLES = {
     "maintenance_unit",
     "maintenance_unit_input",
     "conversation_commit",
+    "voice_turn",
 }
 
 
@@ -462,6 +463,8 @@ def _seed_representative_057(sandbox: _IsolatedDatabase) -> None:
     # the still-supported full startup schema path.
     if hasattr(Database, "_migrate_runtime_reliability_060"):
         db._migrate_runtime_reliability_060 = lambda *args, **kwargs: None
+    if hasattr(Database, "_migrate_conversational_voice_065"):
+        db._migrate_conversational_voice_065 = lambda *args, **kwargs: None
 
     with sandbox.connect() as connection:
         with connection.cursor() as cursor:
@@ -480,6 +483,14 @@ def _seed_representative_057(sandbox: _IsolatedDatabase) -> None:
             cursor.execute(REPRESENTATIVE_057_SQL.read_text(encoding="utf-8"))
     finally:
         connection.close()
+
+    # Feature 065 deliberately accepts only its exact 064 predecessor or an
+    # absent marker. Clearing this synthetic legacy marker exercises the
+    # supported forced-full-schema recovery path without mislabelling the
+    # representative 057 data as a 064 database.
+    with sandbox.connect() as connection, connection.cursor() as cursor:
+        cursor.execute("DELETE FROM schema_meta WHERE key = 'revision'")
+        connection.commit()
 
 
 def _prepare_legacy_root(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -538,8 +549,8 @@ def _run_in_threads(count: int, target: Callable[[], Any]) -> list[BaseException
     return errors
 
 
-def test_schema_revision_declares_063_004() -> None:
-    assert database_module.SCHEMA_REVISION == "064.001"
+def test_schema_revision_declares_current_revision() -> None:
+    assert database_module.SCHEMA_REVISION == "065.001"
 
 
 def test_startup_source_declares_both_fixed_advisory_transactions() -> None:
@@ -559,7 +570,7 @@ def test_empty_database_has_complete_additive_schema(
     marker = _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
     )
-    assert marker["value"] == "064.001"
+    assert marker["value"] == "065.001"
     for table, expected_columns in NEW_TABLE_COLUMNS.items():
         assert expected_columns <= _column_names(sandbox, table), table
     for table, expected_columns in ADDED_COLUMNS.items():
@@ -720,7 +731,7 @@ def test_representative_057_migration_preserves_legacy_truth(
 
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "064.001"
+    )["value"] == "065.001"
     assert _fetch_all(
         sandbox, "SELECT id, chat_id, role, content FROM messages ORDER BY id"
     ) == before_messages
@@ -1084,7 +1095,7 @@ def test_two_starters_apply_schema_once_after_lock_recheck(
     assert calls == 1
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "064.001"
+    )["value"] == "065.001"
 
 
 def test_killed_schema_owner_rolls_back_and_waiter_reapplies(
@@ -1142,7 +1153,7 @@ def test_killed_schema_owner_rolls_back_and_waiter_reapplies(
     assert calls == 2
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "064.001"
+    )["value"] == "065.001"
 
 
 def test_fifty_two_starter_schema_and_policy_trials_converge_once(
@@ -1187,10 +1198,7 @@ def test_fifty_two_starter_schema_and_policy_trials_converge_once(
     for trial in range(trial_count):
         old_policy = f"old-policy-{trial}"
         with sandbox.connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "UPDATE schema_meta SET value = '057.001' "
-                "WHERE key = 'revision'"
-            )
+            cursor.execute("DELETE FROM schema_meta WHERE key = 'revision'")
             cursor.execute(
                 "INSERT INTO schema_meta (key, value) VALUES ("
                 "'user_agent_policy_revision', %s) "
@@ -1227,7 +1235,7 @@ def test_fifty_two_starter_schema_and_policy_trials_converge_once(
         assert _fetch_one(
             sandbox,
             "SELECT value FROM schema_meta WHERE key = 'revision'",
-        )["value"] == "064.001"
+        )["value"] == "065.001"
         assert _fetch_one(
             sandbox,
             "SELECT value FROM schema_meta "
@@ -1370,9 +1378,9 @@ def test_failed_migration_rolls_back_before_marker_and_repeats_cleanly(
     monkeypatch.setattr(Database, "_migrate_runtime_reliability_060", fail_after_ddl)
     with pytest.raises(RuntimeError, match="injected pre-commit"):
         Database(sandbox.dsn)
-    assert _fetch_one(
+    assert _fetch_all(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "057.001"
+    ) == []
     assert _fetch_one(
         sandbox, "SELECT to_regclass('public.operation_record') AS table_name"
     )["table_name"] is None
@@ -1381,7 +1389,7 @@ def test_failed_migration_rolls_back_before_marker_and_repeats_cleanly(
     Database(sandbox.dsn)
     assert _fetch_one(
         sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'"
-    )["value"] == "064.001"
+    )["value"] == "065.001"
 
 
 def test_current_and_forced_repeat_runs_are_idempotent(
@@ -1417,9 +1425,7 @@ def test_current_and_forced_repeat_runs_are_idempotent(
 
     with sandbox.connect() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                "UPDATE schema_meta SET value = '057.001' WHERE key = 'revision'"
-            )
+            cursor.execute("DELETE FROM schema_meta WHERE key = 'revision'")
         connection.commit()
     Database(sandbox.dsn)
     assert snapshot() == expected

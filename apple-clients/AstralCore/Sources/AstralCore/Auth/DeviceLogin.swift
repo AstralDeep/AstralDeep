@@ -79,13 +79,18 @@ public struct DeviceLoginClient: Sendable {
     }
 
     public static let urlSessionTransport: Transport = { url, body in
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = body
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let request = brokerRequest(url: url, body: body)
+        let (data, response) = try await NoStoreHTTP.session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         return (status, data)
+    }
+
+    static func brokerRequest(url: URL, body: Data) -> URLRequest {
+        NoStoreHTTP.request(
+            url: url,
+            method: "POST",
+            body: body,
+            contentType: "application/json")
     }
 
     func post(_ path: String, _ payload: JSONValue) async throws -> (Int, JSONValue) {

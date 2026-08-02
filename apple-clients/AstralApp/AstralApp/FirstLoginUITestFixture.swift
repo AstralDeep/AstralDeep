@@ -14,6 +14,8 @@
             case providerUnavailable = "provider-unavailable"
             case clientWatchdog = "client-watchdog"
             case chatComposer = "chat-composer"
+            case voiceComposer = "voice-composer"
+            case voiceTerminal = "voice-terminal"
             case continuitySeed = "continuity-seed"
             case continuityResume = "continuity-resume"
         }
@@ -41,6 +43,10 @@
             switch scenario {
             case .continuitySeed, .continuityResume:
                 installContinuity(scenario, on: model)
+                return
+            case .voiceComposer, .voiceTerminal:
+                installVoiceComposer(on: model)
+                if scenario == .voiceTerminal { installVoiceTerminalNotice(on: model) }
                 return
             default:
                 break
@@ -158,9 +164,70 @@
                 break
             case .chatComposer:
                 break
+            case .voiceComposer:
+                break
+            case .voiceTerminal:
+                break
             case .continuitySeed, .continuityResume:
                 break
             }
+        }
+
+        /// Drives the production strict voice reducer so UI automation can
+        /// inspect the server-owned composer affordance without microphone,
+        /// network, credential, or synthetic audio access.
+        @MainActor
+        private static func installVoiceComposer(on model: AppModel) {
+            model.screen = .chat
+            let registration = model.registrationFrame(token: "ui-test-token", resumed: false)
+            guard let payload = try? JSONValue.parse(Data(registration.utf8)),
+                let connection = payload["connection_generation"]?.stringValue
+            else { return }
+            let composer =
+                """
+                {"type":"composer_state","schema_version":"1","revision":7,
+                 "connection_generation":"\(connection)","voice":{
+                   "available":true,"state":"off","speech_muted":false,
+                   "microphone_enabled":false,"foreground_active":false,"reason":"ready",
+                   "output_locale":"en-US","chat_context_revision":null,
+                   "applied_chat_context_revision":null,"chat_context_synced":false,
+                   "session_id":null,"generation":null,"media_grant_revision":null,
+                   "visible_chat_id":null,"foreground_turn_id":null,"owner_device":null,
+                   "idle_expires_at":null,"controls":[
+                     {"key":"voice-start","action":"voice_session_start",
+                      "label":"Start voice conversation","icon":"microphone",
+                      "visible":true,"enabled":true,"pressed":false,"busy":false}
+                   ]}}
+                """
+            if let frame = InboundFrame.parse(composer) { model.handleFrame(frame) }
+        }
+
+        /// Feeds a canonical terminal turn through the shared production
+        /// notice reducer. Session correlation is covered by controller tests;
+        /// this DEBUG-only seam exists solely for visual/accessibility UI QA.
+        @MainActor
+        private static func installVoiceTerminalNotice(on model: AppModel) {
+            let terminalTurn =
+                """
+                {"type":"voice_turn_state","schema_version":"1",
+                 "session_id":"00000000-0000-4000-8000-000000000003",
+                 "connection_generation":"00000000-0000-4000-8000-000000000002",
+                 "generation":1,"media_grant_revision":2,
+                 "turn_id":"00000000-0000-4000-8000-000000000005",
+                 "client_turn_id":"00000000-0000-4000-8000-000000000006",
+                 "submission_id":"00000000-0000-4000-8000-000000000007",
+                 "request_generation":"00000000-0000-4000-8000-000000000008",
+                 "chat_id":"00000000-0000-4000-8000-000000000004",
+                 "chat_context_revision":3,"detected_language":"en-US",
+                 "spoken_output_policy":"full_recap","output_reason":"ready",
+                 "state":"failed","foreground":true,"sensitive_result_pending":false,
+                 "sequence":1,"message":"The provider could not complete this request.",
+                 "occurred_at":"2099-07-31T12:00:00Z"}
+                """
+            guard let frame = InboundFrame.parse(terminalTurn),
+                let turn = VoiceTurnState(frame: frame)
+            else { return }
+            model.voice.installTerminalNoticeForUITesting(turn)
         }
 
         /// Recreates an authenticated native process around the production

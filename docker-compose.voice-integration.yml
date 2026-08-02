@@ -1,0 +1,68 @@
+services:
+  livekit-integration:
+    image: livekit/livekit-server:v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1
+    command:
+      - --config
+      - /etc/livekit.yaml
+    environment:
+      LIVEKIT_KEYS: "${VOICE_INTEGRATION_LIVEKIT_API_KEY:?ephemeral integration key required}: ${VOICE_INTEGRATION_LIVEKIT_API_SECRET:?ephemeral integration secret required}"
+    volumes:
+      - ./deploy/livekit/livekit.integration.yaml:/etc/livekit.yaml:ro
+    expose:
+      - "7880"
+      - "7881"
+      - "50000-50009/udp"
+    networks:
+      - voice-integration
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
+  voice-worker-livekit-integration:
+    build:
+      context: .
+      dockerfile: Dockerfile.voice
+      target: test
+    image: astraldeep-voice-worker-test:latest
+    entrypoint: []
+    command:
+      - python
+      - -m
+      - pytest
+      - -p
+      - no:cacheprovider
+      - -q
+      - --tb=no
+      - -m
+      - integration
+      - /app/backend/voice_agent/tests/test_livekit_integration_065.py
+    environment:
+      ASTRAL_VOICE_LIVEKIT_INTEGRATION: "1"
+      VOICE_INTEGRATION_LIVEKIT_URL: ws://livekit-integration:7880
+      VOICE_INTEGRATION_LIVEKIT_HOST: livekit-integration
+      VOICE_INTEGRATION_ROOM_NAME: ${VOICE_INTEGRATION_ROOM_NAME:?ephemeral integration room required}
+      VOICE_INTEGRATION_WORKER_TOKEN: ${VOICE_INTEGRATION_WORKER_TOKEN:?ephemeral worker grant required}
+      VOICE_INTEGRATION_CLIENT_TOKEN: ${VOICE_INTEGRATION_CLIENT_TOKEN:?ephemeral client grant required}
+      PYTHONDONTWRITEBYTECODE: "1"
+    depends_on:
+      livekit-integration:
+        condition: service_started
+    networks:
+      - voice-integration
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
+networks:
+  voice-integration:
+    internal: true
