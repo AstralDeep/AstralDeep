@@ -335,11 +335,16 @@ docker exec -e PERF_CONCURRENT_FLOOR_MS=5000 astraldeep bash -c \
   tests/perf/voice_concurrent_turns.py -q"
 ```
 
-Produce backend/tooling/Windows Python, web Istanbul, Android app/core Kover, and
+Produce backend/voice-worker/tooling/Windows Python, web Istanbul, Android app/core Kover, and
 iOS/macOS/watchOS xccov reports, then run the existing protected-policy implementation of
 `scripts/check_changed_coverage.py --fail-under 90`. The combined changed-code result must cover
 all maintained languages changed by the candidate and must be blocking; the candidate cannot rely
 on the current Python-only soft diff-coverage job.
+
+For the voice-worker producer, run the exact `voice-worker-test` workflow's “Build the voice-worker
+runtime and test images” and “Run the isolated voice-worker suite with Cobertura coverage” steps
+from `.github/workflows/ci.yml`. They write `build/065/coverage/voice-worker.xml`, validate the XML,
+and fail below 90%; the bootstrap verifier rejects a missing or stale replacement.
 
 `backend/tests/perf/voice_concurrent_turns.py` and the corresponding explicit CI invocation must
 include two voice turns admitted to the same chat while the first is
@@ -601,18 +606,94 @@ follow-up. Do not mark local Compose, mocks, simulator audio, Mac PySide, or a d
 as staged/Windows-native/physical proof.
 
 Task T189 records the completed collector and schema plumbing for all new voice identity and
-coverage inputs. T003 requires all ten native reports to be regenerated and the following
-diagnostic collector to run against one clean committed candidate before the next requested
-implementation push; every later requested implementation push requires an equivalent fresh run:
+coverage inputs. T003 normally requires all ten native reports plus canonical evidence to be
+regenerated against one clean committed candidate before a requested implementation push:
 
 ```bash
 BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence
 ```
 
-Protected CI independently validates canonical evidence and trust identities. If a client runner
-or physical device is temporarily unavailable, use only the existing protected seven-day
-exception workflow; candidate staging, trust/security, schema, exact speech, PHI, and isolation
-checks cannot be waived.
+That ordinary output is diagnostic only; protected CI independently validates canonical evidence
+and trust identities.
+
+### 8.1 Bounded draft-only diagnostic bootstrap for PR 151
+
+Constitution 2.9 permits a narrower path only because the provider cannot produce exact-SHA
+evidence until the SHA exists remotely. First make the PR draft, refresh the exact provider default
+branch, and prove that the clean candidate contains it and fast-forwards the prior PR head:
+
+```bash
+gh pr ready 151 --undo
+git fetch --no-tags origin main 065-conversational-voice
+SHA="$(git rev-parse HEAD)"
+test -z "$(git status --porcelain)"
+git merge-base --is-ancestor origin/main "$SHA"
+git merge-base --is-ancestor origin/065-conversational-voice "$SHA"
+```
+
+Generate and pass the nine fresh Darwin-local producer inputs: `backend_python`,
+`voice_worker_python`, `tooling_python`, `javascript`, `android_app`, `android_core`, `ios`,
+`macos`, and `watchos`. The Windows Python report and the eight platform evidence documents must
+remain absent; they are provider-bound, not locally fabricated. Use the verifier only from a
+separate clean checkout at the exact current provider default SHA. Put all records outside the
+candidate repository in distinct, initially nonexistent files:
+
+```bash
+POLICY_ROOT=/tmp/astraldeep-bootstrap-policy
+test -z "$(git -C "$POLICY_ROOT" status --porcelain)"
+test "$(git -C "$POLICY_ROOT" rev-parse HEAD)" = "$(git rev-parse origin/main)"
+BOOTSTRAP_DIR="$(mktemp -d)"
+
+python3 "$POLICY_ROOT/scripts/verify_release_evidence_bootstrap.py" inventory \
+  --repo "$PWD" \
+  --github-repository AstralDeep/AstralDeep \
+  --pr-number 151 \
+  --candidate-sha "$SHA" \
+  --feature 065-conversational-voice \
+  --output "$BOOTSTRAP_DIR/inventory.json"
+```
+
+The inventory must record the local parser's handled exit `2` and exactly these provider-bound
+missing inputs: `android_evidence`, `backend_evidence`, `docs_evidence`, `ios_evidence`,
+`macos_evidence`, `watchos_evidence`, `web_evidence`, `windows_evidence`, and `windows_python`.
+Post one provider-native, unedited comment by an allowlisted lead using the exact marker and v1
+field set below; values must come from the live inventory and provider state, never hand-waved:
+
+```text
+<!-- astraldeep-release-evidence-bootstrap-v1
+{"schema_version":1,"document_type":"release_evidence_bootstrap_approval","repository":"AstralDeep/AstralDeep","pr_number":151,"feature":"065-conversational-voice","branch":"065-conversational-voice","base_branch":"main","base_sha":"<exact-main-sha>","previous_head":"<exact-pr-head>","candidate_sha":"<exact-candidate-sha>","approved_paths":["<every exact changed path>"],"provider_bound_missing_inputs":["<exact sorted provider-bound inputs>"],"inventory_sha256":"<sha256>","policy_commit":"<exact-main-sha>","local_gate_attestation":{"status":"passed","candidate_sha":"<exact-candidate-sha>","commands":["<every exact passed local command>"],"evidence_input_sha256":{"<local producer>":"<report sha256>"}},"structural_blocker":"Provider evidence requires the remote exact SHA.","purpose":"Run diagnostic CI without merge or release authority.","expires_at":"<RFC3339, no more than 168 hours after comment creation>"}
+-->
+```
+
+A mistaken approval comment must not be edited; post a new correct approval. Then verify and push
+through the lease-bound verifier. Never run `git push` directly during this window:
+
+```bash
+python3 "$POLICY_ROOT/scripts/verify_release_evidence_bootstrap.py" verify \
+  --repo "$PWD" \
+  --github-repository AstralDeep/AstralDeep \
+  --pr-number 151 \
+  --candidate-sha "$SHA" \
+  --inventory "$BOOTSTRAP_DIR/inventory.json" \
+  --output "$BOOTSTRAP_DIR/verification.json"
+
+python3 "$POLICY_ROOT/scripts/verify_release_evidence_bootstrap.py" push \
+  --repo "$PWD" \
+  --github-repository AstralDeep/AstralDeep \
+  --pr-number 151 \
+  --candidate-sha "$SHA" \
+  --inventory "$BOOTSTRAP_DIR/inventory.json" \
+  --preflight-output "$BOOTSTRAP_DIR/push-preflight.json" \
+  --receipt-output "$BOOTSTRAP_DIR/push-receipt.json"
+```
+
+Every repair SHA requires a fresh inventory, unedited approval, verification, and lease-bound
+push. Repairs may address only the approved CI/evidence execution without weakening product
+behavior or gates. A skipped privileged `release-readiness` job is expected while the PR is draft.
+Before `gh pr ready 151`, the final exact SHA must regenerate all ten reports and canonical
+provider evidence, pass the full local parser and protected changed-code coverage, and receive the
+protected release decision. T179, T180, T004, candidate staging, trust/security, schema, exact
+speech, PHI, and isolation checks remain non-waivable.
 
 ## 9. Exit Criteria
 

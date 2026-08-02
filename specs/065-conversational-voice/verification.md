@@ -1,10 +1,13 @@
 # Spec 065 Verification Record
 
 **Recorded**: 2026-08-02 (America/New_York)
-**Status**: local implementation diagnostic; not an immutable release candidate
-**Local base**: `2332234` plus uncommitted work
-**Remote state at current verification start**: local `065-conversational-voice` matched
-`origin/065-conversational-voice`; the current repair remains uncommitted and no new push is claimed.
+**Status**: local implementation diagnostic and draft-PR candidate preparation; not an immutable
+release candidate
+**Local base**: Constitution 2.9 merge `bfb49c800be27546b527a6dc844f9f21a333d7fe`
+**Remote state at current verification start**: PR 151 remains at
+`a5daf99068ec82e93f86f6a9acdc4d5c0fc3aa2e` and is now draft. Local commits `cf30319`, `dcc84ff`,
+and merge `8404de4` remain unpushed; this artifact refresh is also uncommitted, so no bootstrap
+candidate SHA or new push is claimed.
 
 This record deliberately separates source/build/test evidence, local live evidence, login-bound
 evidence, and unavailable release evidence. It contains no transcript, recap, audio, credential,
@@ -17,6 +20,12 @@ LiveKit server, `Systran/faster-whisper-large-v3`,
 `speaches-ai/Kokoro-82M-v1.0-ONNX`, and fixed voice `af_heart`. Final transcripts enter the ordinary
 authenticated chat dispatcher. Spoken lifecycle output is produced by the separate media worker and
 is tied to committed lifecycle/result metadata rather than being inserted into model context.
+
+Constitution 2.9 and its fail-closed exact-SHA evidence bootstrap merged through PR 152 at
+`bfb49c800be27546b527a6dc844f9f21a333d7fe` after every required CI check passed. PR 151 was then
+converted to draft before that exact main commit was integrated. The bootstrap is planned but has
+not yet run: no inventory, lead approval, verification, preflight, push receipt, or remote candidate
+exists for the pending local tree.
 
 The real local direct-RTC probe has exercised LiveKit media, Silero VAD, Whisper transcription,
 transcript proof validation, and ordinary dispatch. The synthetic local user was rejected by the
@@ -153,7 +162,7 @@ The following completed results were observed from the current local tree:
 | Focused privacy/topology/reconnect hardening | Backend client/deployment/retention aggregate; worker session; Windows, Android, web, and Apple voice paths | Prior backend/worker privacy and topology aggregates remain green. Current terminal-alert additions pass web 32/32, full Windows 685 with 6 skips, Android app 236/236 plus core 100/100 and connected 27 with 1 skip, AstralCore 166/166, and focused iOS/macOS/watchOS 39/45/23. |
 | Worker distribution closure | strict fake/exact-profile suite, real isolated LiveKit lane, closure/packaging guards, current image audit, and LiveKit scan | The locked default worker suite passed 261 with one integration deselection; the opt-in real-LiveKit lane passed 1/1; the current repository dependency/closure/topology aggregate passed 56 with one expected host skip. The local test-image digest is `sha256:aebe3588b4fd3d3c720cde29cf1aa2f505386901d9e5d8c957a6464a5cc6c4a8`; LiveKit is pinned to `sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1`; integration Compose/config SHA-256 values are `d83c7c17fb936354bc8bafb9f4c9215da28cdbcbb09196abf72653b54d475cd2` / `b935d38ad1f39cbb57cdfdf883e02c5a474783f325924f78fad39b1d7f052d85`; `CLOSURE.json`, worker lock, and Silero VAD SHA-256 values are `9ef9e195cd73ba3ff536b7c4d3ec4c15f8ab13472c7fcfe8dc10e4749da6b074`, `fb86c9318d01ce59afaccba57842ddde1d098444e527c70b272b81af4ebc61b3`, and `597d30b3ec076608d059477bb14cfeffdf951bf5cae370d38f65d33bbfe82004`. Exact speech inventory/profile digests remain `1f143aafa0647ecfbf491e81bd7019545aefeaed41b8604a2d5ff2b8f94dc8b4` / `fd663421899c76f54cff4d8a425d24860a0e2f4e8297a9600a9603ce5eb0cc3b`. T190 records these local closure inputs as complete, but the inventory is not a final approval fingerprint. DHI-backed signature/SBOM/VEX, same-candidate dual-architecture evidence, clean worker scans, owner approval, and candidate-bound repetition are absent; the fallback worker scan found 18 HIGH and 6 CRITICAL findings. T004 and T168 remain open. |
 | Contract validator | isolated hash-locked validator plus `git diff --check` | Passed C0–C6: 5 aggregate cases, 23 voice positives, 25 worker positives, 40 negatives, 6 proof vectors, 2 OpenAPI positives; diff check clean |
-| Spec Kit Analyze | Exact `SPECIFY_FEATURE_DIRECTORY=specs/065-conversational-voice` ownership/preflight and final read-only cross-artifact analysis after the recap, self-speech, barge-in, evidence-task split, and measurement corrections | 58 functional requirements plus 13 success criteria have 100% semantic task coverage; 190 task IDs are contiguous and unique, with 175 complete and 15 open; no placeholders remain. The prior recap modality, self-speech outcome, T004 split/dependency, and SC-004 denominator findings are resolved. T003 is the sole remaining execution blocker because the clean exact candidate still lacks its fresh ten-report/canonical-evidence pre-push run |
+| Spec Kit Analyze | Exact `SPECIFY_FEATURE_DIRECTORY=specs/065-conversational-voice` ownership/preflight and final read-only cross-artifact analysis after Constitution 2.9 ordinary/bootstrap evidence alignment | Zero findings: all 58 functional requirements plus 13 buildable success criteria have semantic task coverage; T001–T190 are contiguous and unique, with 175 complete and 15 open; no placeholders, ambiguities, duplications, unmapped tasks, or Constitution conflicts remain. T003 correctly keeps the per-SHA draft bootstrap diagnostic-only, while T179, T180's final ten-report/canonical/protected decisions, and T004 remain non-waivable. The PR is draft, but fresh local reports and external inventory/approval/verifier/push receipts remain pending |
 | Six-surface C0–C6 reducer checkpoint | Canonical fixture through backend/web renderer and shipped web client, Windows reducer, Android wire/controller, shared Apple and iOS/macOS controllers, and watchOS reducer | Current failure-notice/order additions pass web 32, full Windows 685 with 6 skips, Android core 100/app 236/connected 27 with 1 skip, AstralCore 166, and focused iOS/macOS/watchOS 39/45/23; no required frame/action is ignored. Mac simulator/offscreen limits retained. |
 
 ## Live-login boundary
@@ -308,15 +317,18 @@ physical barge-in/echo-tail evidence remains open.
 
 ## Explicitly unverified or failing release claims
 
-- No immutable candidate SHA or candidate-bound evidence bundle exists for these uncommitted changes.
+- No final immutable release candidate or candidate-bound release-evidence bundle exists for these
+  pending local changes. The bounded bootstrap can authorize only one exact draft diagnostic push;
+  it cannot establish merge, distribution, or release readiness.
 - The Feature-065 pre-push diagnostic gate was not complete before implementation checkpoints
-  `dfea619`, `43fba94`, and `2332234` were pushed. The corrected T003 records that historical
-  violation without retroactively treating a later run as compliance. The next implementation push
-  is blocked until one clean committed candidate regenerates all ten native coverage inputs plus the
-  canonical evidence set and passes strict `BASE_SHA="$(git rev-parse origin/main)" make
-  prepare-release-evidence`. At this checkpoint the canonical evidence set and nine report paths
-  are absent, while the remaining tooling report predates the candidate; none of the ten required
-  inputs is fresh, and qualifying external staging remains unavailable. T003 is open.
+  `dfea619`, `43fba94`, `2332234`, and `a5daf99` were pushed. T003 records that historical violation
+  without retroactively treating later evidence as compliance. The ordinary path still requires all
+  ten fresh native coverage inputs plus canonical evidence and strict
+  `BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence`. For the bounded Darwin
+  bootstrap, the next clean candidate instead requires nine fresh local coverage inputs and an
+  external handled-exit-2 inventory that classifies only the Windows report plus eight platform
+  evidence documents as provider-bound. The exact lead approval and verifier receipts do not yet
+  exist, qualifying external staging remains unavailable, and T003 remains open.
 - The worker is deliberately marked `distribution-approved=false`: `backend/voice_agent/CLOSURE.json`
   is an inventory schema rather than a final approval fingerprint, the development marker is all
   zeroes, and the required DHI login-backed signature/SBOM/VEX plus same-candidate dual-architecture
@@ -564,11 +576,12 @@ ESLint, changed-workflow `actionlint`, XML validation, diff validation, and Gitl
 the branch range. No Android device was attached for the final instrumented launch; the original
 instrumented job had failed during dependency verification before reaching an emulator test.
 
-T003 remains open. With `cf30319` checked out as a clean committed candidate, exact command
-`BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence` exited 2 and failed closed
-with `evidence directory does not exist: build/060/release-evidence`. Zero of the ten strict
-producer inputs is fresh for that candidate: only an older tooling report exists at a canonical
-path, the other nine paths are absent, and all eight platform evidence documents are absent.
-Qualifying external staging is inactive; the Windows packaged producer and protected Apple
-normalization are not locally substitutable. Candidate `cf30319` therefore remains local and was
-not pushed into PR 151.
+T003 remains open. Before Constitution 2.9 existed, clean candidate `cf30319` ran exact command
+`BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence`; it exited 2 and failed
+closed with `evidence directory does not exist: build/060/release-evidence`. That diagnostic was
+correct for the policy then in force and does not become a bootstrap approval retroactively.
+`cf30319`, documentation commit `dcc84ff`, and Constitution-integration merge `8404de4` remain
+local and unpushed. PR 151 is now draft and contains no new remote SHA. The next candidate must
+generate the nine required Darwin-local reports, pass every named local gate, then obtain a fresh
+external inventory, unedited allowlisted-lead approval, verification, and lease-bound push receipt
+from the exact default-branch verifier. No such external record is claimed yet.

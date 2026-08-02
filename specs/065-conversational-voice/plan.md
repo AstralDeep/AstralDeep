@@ -98,7 +98,7 @@ PySide pytest plus Windows coverage and a frozen smoke; Android ktlint, lint, JV
 assemble, connected tests; recursive strict swift-format, Swift tests, XCTest/UI tests, xccov, and
 unsigned Xcode builds; Compose/config validation; exact speech-service and LiveKit integration
 tests; candidate-bound live acoustic and multi-user staging evidence. The existing protected
-`scripts/check_changed_coverage.py` gate combines backend/tooling/Windows Python, web Istanbul,
+`scripts/check_changed_coverage.py` gate combines backend/voice-worker/tooling/Windows Python, web Istanbul,
 Android app/core Kover, and iOS/macOS/watchOS xccov inputs and MUST fail below 90% changed-code
 coverage for the candidate.
 
@@ -154,21 +154,21 @@ every client.
 
 ## Constitution Check
 
-*GATE: evaluated before Phase 0 and re-checked after Phase 1 against Constitution v2.8.0.*
+*GATE: evaluated before Phase 0 and re-checked after Phase 1 against Constitution v2.9.0.*
 
 | Principle | Status | Design evidence / required gate |
 |---|---|---|
 | I. Primary Language | PASS | Backend and media service remain Python 3.11. Client code stays in each already-maintained native language. |
 | II. UI Delivery | PASS | `composer_model.py` owns ordered semantic controls and states; clients adapt native chrome. No new primitive or React/Vite source of truth is introduced. |
-| III. Testing | PASS WITH ENFORCEMENT WORK | Every changed branch carries golden, denial, race, failure, and cleanup tests. Feature 065 must produce backend/tooling/Windows Python, web Istanbul, Android app/core Kover, and iOS/macOS/watchOS xccov reports and make the existing protected combined `scripts/check_changed_coverage.py --fail-under 90` result blocking for all candidate-changed code rather than rely on the current Python-only soft job. |
+| III. Testing | PASS WITH ENFORCEMENT WORK | Every changed branch carries golden, denial, race, failure, and cleanup tests. Feature 065 must produce backend/voice-worker/tooling/Windows Python, web Istanbul, Android app/core Kover, and iOS/macOS/watchOS xccov reports and make the existing protected combined `scripts/check_changed_coverage.py --fail-under 90` result blocking for all candidate-changed code rather than rely on the current Python-only soft job. |
 | IV. Code Quality | PASS | Python: root `ruff.toml` + `ruff check .`; web JS: locked `tooling/web-ci/eslint.config.mjs`; Kotlin: `ktlintCheck` + Android lint; Swift: `apple-clients/.swift-format` strict recursive lint. Generated/vendored SDK files are hash/license checked and excluded only through narrow tracked configuration. |
 | V. Dependencies | PASS WITH RECORDED ARCHITECTURE APPROVAL | On 2026-07-31 the repository owner/lead developer explicitly approved the RTC-only replacement and session decisions. The final exact worker/orchestrator closures, base-image digests, native/model artifacts, licenses, CVEs, locks, image impact, and isolated test-validator lock remain mechanically audited and must receive matching PR review before merge or distribution. LiveKit Agents and its restricted/native-heavy closure are prohibited. |
 | VI. Documentation | PASS | Research, data model, OpenAPI, JSON Schemas, media topology, quickstart, operator topology, permissions, privacy boundary, rollback, and evidence requirements are explicit. |
 | VII. Security | PASS BY DESIGN | Keycloak remains the user authority. Final text re-enters the normal dispatch path with user claims/token in memory and a short-lived worker HMAC over its immutable binding/digest; no worker impersonation API exists. Every REST mutation is bound to the registered UUID4 device and current UI connection by a redacted short-lived control binding. Media grants are short-lived and scoped; takeover is generation-fenced; speech egress is fixed and bounded; secrets/content are redacted; PHI classification fails closed. |
 | VIII. User Experience | PASS | One accessible conversation control/state model, truthful fixed progress vocabulary, barge-in, mute/stop/takeover/recovery, visible transcripts, typed fallback, and sensitive-detail consent apply across all clients. Every request refusal/failure/cancellation/abandonment also has a persistent, prominent, non-color, assertively announced text notice that distinguishes “did not start” from “did not complete,” preserves only the bounded safe explanation and recovery action, survives unrelated/stale lifecycle churn, and never disables typed chat; post-result speech failure instead points to the available text result. |
 | IX. Database Migrations | PASS | T024 integrated the authorized 064 handoff and binds `064.001` as the sole predecessor of `065.001`. Two additive tables plus guarded additive `conversation_commit` rebase metadata/admission config use repeat-safe `_init_db()`; representative-data upgrade, wrong-predecessor refusal, idempotency, and concurrent-rebase tests cover the migration. Disable/drain/recovery/retirement live evidence remains a production-readiness gate rather than an ownership ambiguity. |
-| X. Production Readiness | CONDITIONAL PRE-MERGE GATE | No stub path is accepted. Before merge, qualifying evidence must run the immutable candidate against persistent staging with real Keycloak, PostgreSQL, LiveKit, voice workers, exact speech inventory, public WSS/ICE/TURN, representative migrated data, and all client flows. The repository's external staging host is currently inactive, so merge is blocked until it is provisioned; local Compose does not substitute. |
-| XI. Continuous Integration | PASS WITH EXTENSIONS | Before feature-code pushes, extend the deterministic collector/protected schemas for voice-worker, LiveKit config/model, client, and all-language coverage inputs. Then extend clean image build, boot/readiness, prod exit-78, full backend module suites, client gates, secret/image scans, candidate staging, and release evidence. Voice-worker closure/image and LiveKit digests/config identities become candidate-bound inputs. |
+| X. Production Readiness | CONDITIONAL PRE-MERGE GATE | No stub path is accepted. Before merge, qualifying evidence must run the immutable candidate against persistent staging with real Keycloak, PostgreSQL, LiveKit, voice workers, exact speech inventory, public WSS/ICE/TURN, representative migrated data, and all client flows. The repository's external staging host is currently inactive, so merge is blocked until it is provisioned; local Compose does not substitute. Constitution 2.9's bounded bootstrap may expose one exact draft SHA to provider CI for diagnostic evidence only; it cannot satisfy staging, merge, distribution, or release readiness. |
+| XI. Continuous Integration | PASS WITH EXTENSIONS | The ordinary path requires the complete local evidence parser and all ten native coverage reports before a feature-code push. Constitution 2.9 permits a bounded draft-only diagnostic push when exact provider evidence is structurally impossible before the SHA exists remotely, but only after all nine Darwin-local producers pass, the provider-bound absences are inventoried, and an allowlisted lead binds an unedited approval to the exact SHA, base, prior head, paths, report digests, and expiry. Privileged readiness stays skipped for drafts; protected CI remains the independent merge/release authority. Voice-worker closure/image and LiveKit digests/config identities become candidate-bound inputs. |
 | XII. Cross-Client Consistency | PASS | `ui_protocol.json`, concrete protocol validators, and web/Windows/Android/Apple dispositions classify every required voice frame/action as handled. iOS/macOS use the official SDK; watchOS's explicit media adapter preserves the same server-owned behavior and exact models. No platform is silently omitted. |
 | XIII. Research Integrity | PASS | Pinned versions and watchOS support were checked against official release/source material on 2026-07-31. Code-shaped, simulator-proven, physical-device-proven, Windows-native-proven, staged, and released states remain distinct. |
 
@@ -191,21 +191,34 @@ disposable/failure tags; and uniquely labeled protected publisher hosts with ind
 recovery across cancellation, runner loss, host restart, and stale-lease expiry. T180 cannot
 complete while any of those four trust gaps remains open.
 
-Task T189 establishes the deterministic diagnostic collector. Setup task T003 binds a fresh set of
-all ten native reports and the next run to one clean committed candidate before a requested push
-containing feature code or release-evidence changes; every later requested implementation push
-requires an equivalent fresh run against the intended base:
+Task T189 establishes the deterministic diagnostic collector. The ordinary T003 path binds all ten
+fresh native reports plus canonical local evidence to one clean committed candidate before a
+requested feature-code or release-evidence push:
 
 ```bash
 BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence
 ```
 
-Its output is diagnostic only. Protected CI must independently reconstruct canonical inputs and
-bind the backend image digest, voice-worker image digest, LiveKit image digest/config hash, client
-artifacts, staging identity, policy identity, and tests to the candidate SHA. Publication remains
-in the separately pinned protected publishers using the native short-lived job token,
-environment approval, create-only collision policy, and no repository-scoped GitHub App,
-installation token, or custom token broker.
+For PR 151 on Darwin, the Constitution 2.9 bootstrap path instead requires fresh
+`backend_python`, `voice_worker_python`, `tooling_python`, `javascript`, `android_app`,
+`android_core`, `ios`, `macos`, and `watchos` inputs. The verifier loaded from a separate clean
+checkout of the exact provider default SHA must fail closed with only `android_evidence`,
+`backend_evidence`, `docs_evidence`, `ios_evidence`, `macos_evidence`, `watchos_evidence`,
+`web_evidence`, `windows_evidence`, and `windows_python` classified as provider-bound missing.
+The PR must already be draft and non-mergeable. One unedited provider-native comment from an
+allowlisted lead must approve the exact repository, PR, feature, branch, base branch/SHA, prior
+remote head, candidate SHA, changed paths, inventory digest, policy commit, passed local commands,
+local report digests, blocker, purpose, and expiry of at most 168 hours. The default-branch
+verifier then performs the lease-bound push and writes distinct external preflight and receipt
+documents. Every repair SHA repeats the entire inventory/approval/verify/push cycle.
+
+Both paths remain diagnostic. The final exact SHA must still supply the complete ten-report set,
+canonical provider evidence, full local parser result, protected changed-code coverage decision,
+and protected release decision before the PR may leave draft or merge. T179, T180, and T004 are
+not waived, and evidence from an earlier bootstrap SHA cannot be reused. Publication remains in
+the separately pinned protected publishers using the native short-lived job token, environment
+approval, create-only collision policy, and no repository-scoped GitHub App, installation token,
+or custom token broker.
 
 ## Architecture and Data Flow
 
@@ -365,7 +378,7 @@ backend/
 ├── voice_agent/                     # NEW: isolated direct-RTC media worker; no Agents/LLM/tools
 │   ├── main.py
 │   ├── session.py                   # RTC room/audio + Silero VAD + owned turn lifecycle
-│   ├── speech_adapters.py           # bounded Speaches realtime STT + fixed Kokoro TTS
+│   ├── speech_adapters.py           # bounded Speaches batch STT + fixed Kokoro TTS
 │   ├── watch_bridge.py              # authenticated foreground PCM relay
 │   ├── requirements.in
 │   ├── requirements.lock.txt
@@ -465,8 +478,9 @@ needed.
 
 ## Implementation Sequencing
 
-1. Record exact dependency approval and, before feature-code pushes, extend the deterministic local
-   evidence collector, protected evidence schemas, and combined all-language changed-code gate for
+1. Record exact dependency approval and, before ordinary feature-code pushes or each bounded
+   diagnostic bootstrap push, extend the deterministic local evidence collector, protected
+   evidence schemas, and combined all-language changed-code gate for
    the new worker/LiveKit/model/config/client inputs. Then repair the authenticated durable user-turn seam and correlated
    acceptance/rejection acknowledgement plus idempotent correlated `new_chat`; split the whole-task
    chat lock into short admission/publication locks with component-and-layout no-rerun three-way rebase; add
