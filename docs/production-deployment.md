@@ -220,8 +220,8 @@ review (see below).
    new build uploads on merge.
 2. **Push a tag `apple-v*`** that equals `apple-v$MARKETING_VERSION` exactly
    (a mismatched tag fails the guard) — a versioned release of record.
-3. **`workflow_dispatch`** — manual release from any ref (e.g. to re-upload a
-   build for an already-merged version).
+3. **`workflow_dispatch`** — manual release from the `main`/default ref only
+   (e.g. to re-upload a build for an already-merged version).
 
 The `apple-v*` namespace is deliberately disjoint from the Windows release's
 `v*` trigger — a `v-apple-*` tag would double-fire that workflow — so do not

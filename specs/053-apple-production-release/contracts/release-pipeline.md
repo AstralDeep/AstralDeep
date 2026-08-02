@@ -33,8 +33,8 @@ on:
   tag-vs-`__version__` guard then fails the run). Only a namespace that does not
   begin with `v` — `apple-v*` — is provably disjoint from `v*`. Do not "fix" this
   back to a `v`-prefixed Apple tag. (D14)
-- `workflow_dispatch` allows a manual run from a branch ref; like the Windows
-  precedent, the tag-vs-version guard runs **only** on `startsWith(github.ref,
+- `workflow_dispatch` allows a manual run from the `main`/default ref only;
+  like the Windows precedent, the tag-vs-version guard runs **only** on `startsWith(github.ref,
   'refs/tags/')` and is **skipped** on `workflow_dispatch` (it has no tag ref).
 
 ## Runner & job shape

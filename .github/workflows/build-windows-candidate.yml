@@ -42,6 +42,7 @@ concurrency:
 jobs:
   windows-candidate:
     name: Windows 0.4.0 build-once candidate
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: windows-latest
     timeout-minutes: 90
     outputs:

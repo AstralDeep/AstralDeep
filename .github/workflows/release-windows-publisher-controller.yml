@@ -36,6 +36,7 @@ permissions:
 
 jobs:
   verify-decision:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -127,6 +128,7 @@ jobs:
           fi
 
   publish:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: verify-decision
     # Reusable-workflow grants are capped by this caller job; the publisher's
     # own job re-declares exactly the same job-scoped grant.

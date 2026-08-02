@@ -1,0 +1,12 @@
+dfea6192066e3d886c2e54151db4a2946cc4986e:AGENTS.md:generic-api-key:170
+16e401bf8f47579ee4ee8138d419414112da5765:AGENTS.md:generic-api-key:170
+dfea6192066e3d886c2e54151db4a2946cc4986e:scripts/prepare_release_evidence.py:generic-api-key:238
+906af832d30e2b69c441ecc5114df6c23944fc9b:AGENTS.md:generic-api-key:170
+b7d66e7621cfd4aa1af84d8e97293e1b4fba18f4:frontend/src/__tests__/llm_config_hook.test.tsx:generic-api-key:39
+404f9374d0a675d8d54017743922dc7d55fbf7a3:frontend/src/__tests__/llm_config_hook.test.tsx:generic-api-key:39
+964db99fb13aa29b74696c4987bc42a518e7bc5b:backend/agents/grants/nsf_techaccess_knowledge.py:generic-api-key:818
+962e55d3157cd6b350c395d69e474a2f01f68cc1:backend/agents/grants/nsf_techaccess_knowledge.py:generic-api-key:818
+05c9d0db36dd7422a507b620aba27798cb08b0b8:docs/keycloak_agent_delegation_setup.md:generic-api-key:171
+05c9d0db36dd7422a507b620aba27798cb08b0b8:docs/keycloak_agent_delegation_setup.md:generic-api-key:243
+84507067550473aec89953531bcac7d8c3c7f60f:docs/keycloak_agent_delegation_setup.md:generic-api-key:171
+84507067550473aec89953531bcac7d8c3c7f60f:docs/keycloak_agent_delegation_setup.md:generic-api-key:243

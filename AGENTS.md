@@ -145,11 +145,31 @@ Client gates:
 
 Tests are necessary, not sufficient. Exercise changed UI behavior against the live backend on every affected client/form factor. Verify authorization and security changes through the real dispatch path, including denial/failure cases. If an unrelated baseline failure exists, demonstrate and document the baseline rather than hiding it or weakening a gate.
 
-Release-evidence collection, normalization, and parsing run locally before push and remain diagnostic; protected CI independently validates canonical evidence, identities, digests, policy, and any bounded exception/debt transition before authorizing release. Release publication and protected exception/debt mutation stay in environment-approved GitHub Actions with the built-in short-lived job token and narrowly gated job permissions. Do not introduce repository-scoped GitHub Apps, installation tokens, or a custom token broker for release verification or publication.
+Release-evidence collection, normalization, and parsing normally run locally before push and
+remain diagnostic. If a canonical input structurally requires a provider identity or native
+artifact that cannot exist until the exact SHA is remote, use only Constitution X's provider-native
+lead approval bound to the exact initial SHA, path scope, and RFC 3339 expiry within 168 hours. Keep
+the PR draft/non-mergeable; run every locally executable gate; retain the external candidate-bound
+fail-closed missing-input inventory; re-query provider approval, draft state, scope, expiry, and
+changed paths before every push; bind the lead-attested passed command list and every parseable
+locally required coverage-report digest; record every SHA outside the candidate tree; and keep candidate
+jobs isolated, secret-free, and read-only. Load
+`scripts/verify_release_evidence_bootstrap.py` and `.github/release-evidence-leads.json` from the
+current default branch rather than candidate-controlled bytes, and retain their exact identities
+with the result. Candidate refs must be blocked from every privileged manual-dispatch job; only an
+exact default-branch-ref guard can preserve those dispatch surfaces during bootstrap. Bootstrap
+never permits gate/product weakening, never waives staging, coverage,
+trust, integrity, security, privacy, or feature-designated checks, and never authorizes merge or
+release. Protected CI independently
+validates canonical evidence, identities, digests, policy, and any bounded exception/debt transition
+before authorizing release. Release publication and protected exception/debt mutation stay in
+environment-approved GitHub Actions with the built-in short-lived job token and narrowly gated job
+permissions. Do not introduce repository-scoped GitHub Apps, installation tokens, or a custom token
+broker for release verification or publication.
 
 ## Knowledge vault and handoffs
 
-When available, the local knowledge vault is at `../../../Karpathy-my-g`. Use `index.md` to route, then read the relevant concept/entity pages, the tail of `log.md`, and any active `sessions/resume-*.md`. The vault is project memory, not current-state authority; verify its claims against the live repositories.
+When available, the local knowledge vault is the sibling repository at `../kos-wiki`. Use `index.md` to route, then read the relevant concept/entity pages, the tail of `log.md`, and any active `sessions/resume-*.md`. The vault is project memory, not current-state authority; verify its claims against the live repositories.
 
 The user has established an always-on checkpoint rule: whenever a major checkpoint occurs — a
 branch is pushed for handoff, a spec/plan/tasks phase finishes, a PR opens or merges, a feature or
