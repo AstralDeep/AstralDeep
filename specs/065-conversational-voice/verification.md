@@ -536,3 +536,39 @@ An additional broad macOS scheme run that included the UI-test target was interr
 repeatedly failed to materialize its UI runner with `DebuggerVersionStore` / `no debugger version`;
 the current application build, focused macOS and iOS lifecycle tests, complete macOS app-unit
 suite, and complete Watch-unit suite all passed independently.
+
+## PR 151 CI repair checkpoint
+
+The first PR run for candidate `a5daf99068ec82e93f86f6a9acdc4d5c0fc3aa2e` completed with
+four CI failures, two Android failures, and one Apple failure. The Windows and iOS jobs completed
+successfully. Local repair candidate `cf30319` addresses every observed failure without weakening
+the affected gates:
+
+- web hydration now retires only its matching `load_chat` submission after the authoritative
+  snapshot, suppresses late restore progress, and preserves newer work;
+- the backend image jobs mount the exact recap evaluator read-only instead of assuming repository
+  tooling is baked into the product image;
+- strict Android dependency verification contains the five Maven Central checksums reached by a
+  clean graph;
+- macOS debug UI tests explicitly disable signing while release signing remains unchanged;
+- the exact two benign generic-key findings are narrowly allowlisted by complete detected value;
+  and
+- the Apple required aggregate now requires current-run success markers from every iOS/macOS child
+  of both matrix jobs, because the initial run demonstrated that a successful sibling could make
+  `needs.<matrix-job>.result` appear successful after another child failed.
+
+The repaired tree passed 90 focused backend/workflow tests, 67 browser continuity/voice tests,
+712 Windows offscreen tests with 6 expected host/package skips, fresh-cache Android ktlint and lint,
+the full Android instrumented build through device launch, all 6 focused macOS UI tests, Ruff,
+ESLint, changed-workflow `actionlint`, XML validation, diff validation, and Gitleaks 8.24.3 across
+the branch range. No Android device was attached for the final instrumented launch; the original
+instrumented job had failed during dependency verification before reaching an emulator test.
+
+T003 remains open. With `cf30319` checked out as a clean committed candidate, exact command
+`BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence` exited 2 and failed closed
+with `evidence directory does not exist: build/060/release-evidence`. Zero of the ten strict
+producer inputs is fresh for that candidate: only an older tooling report exists at a canonical
+path, the other nine paths are absent, and all eight platform evidence documents are absent.
+Qualifying external staging is inactive; the Windows packaged producer and protected Apple
+normalization are not locally substitutable. Candidate `cf30319` therefore remains local and was
+not pushed into PR 151.
