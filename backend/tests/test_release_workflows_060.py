@@ -246,12 +246,12 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
 
     builder = _workflow_job(workflow, "trusted-builder")
     assert "uses: ./.github/workflows/release-trusted-builder.yml" in builder
-    assert "if: always()" in builder
+    assert "always()" in builder
     for producer in ("stage-deploy", *EVIDENCE_PRODUCER_JOBS):
         assert producer in builder, f"trusted-builder must wait on {producer}"
 
     cleanup = _workflow_job(workflow, "stage-cleanup")
-    assert "if: always()" in cleanup
+    assert "always()" in cleanup
     assert "ubuntu-latest" in cleanup
     assert "self-hosted" not in cleanup and "astral-staging" not in cleanup
     assert "cleanup" in cleanup
@@ -565,6 +565,7 @@ def test_ci_release_tooling_lane_covers_the_new_release_test_files() -> None:
     job = _workflow_job(workflow, "release-tooling-tests")
     for test_path in (
         "backend/tests/test_prepare_release_evidence_060.py",
+        "backend/tests/test_release_evidence_bootstrap.py",
         "backend/tests/test_release_workflows_060.py",
         "backend/tests/test_release_evidence_producers.py",
     ):
@@ -577,6 +578,8 @@ def test_ci_caller_job_is_release_readiness_guarded_by_activation_variable() -> 
     # "release-readiness / protected-decision".
     job = _workflow_job(workflow, "release-readiness")
     assert "vars.RELEASE_READINESS_ACTIVE == 'true'" in job
+    assert "github.event_name != 'pull_request'" in job
+    assert "github.event.pull_request.draft == false" in job
     assert "uses: ./.github/workflows/release-readiness.yml" in job
     assert "candidate_sha:" in job
     assert "github.event.pull_request.head.sha" in job
@@ -584,6 +587,28 @@ def test_ci_caller_job_is_release_readiness_guarded_by_activation_variable() -> 
     assert "github.event.before" in job
     assert "request_id: ci-${{ github.run_id }}" in job
     assert "secrets: inherit" in job
+
+
+def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
+    guard = (
+        "github.event_name != 'workflow_dispatch' || "
+        "github.ref == 'refs/heads/main'"
+    )
+    workflows = (
+        WORKFLOWS / "apple-release.yml",
+        WORKFLOWS / "build-windows-candidate.yml",
+        EXCEPTION,
+        READINESS,
+        CONTROLLER,
+        BRIDGE,
+    )
+    for path in workflows:
+        workflow = _workflow_text(path)
+        assert "workflow_dispatch:" in _workflow_head(workflow)
+        for job_id in _job_ids(workflow):
+            assert guard in _workflow_job(workflow, job_id), (
+                f"{path.name}:{job_id} can run from a candidate dispatch ref"
+            )
 
 
 # ---------------------------------------------------------------------------

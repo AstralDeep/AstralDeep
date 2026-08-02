@@ -63,6 +63,14 @@ version comments.
 | `reactivecircus/android-emulator-runner@v2` | 1 | `v2.38.0` | `a421e43855164a8197daf9d8d40fe71c6996bb0d` |
 | `softprops/action-gh-release@v2` | 1 | `v2.6.2` | `3bb12739c298aeb8a4eeaf626c5b8d85266b0e65` |
 
+On 2026-08-02 the organization-licensed `gitleaks-action` row above became
+historical: `ci.yml` replaced it with the official Gitleaks `v8.30.1` Linux x64
+release archive, pinned by SHA-256
+`551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`.
+CI verifies the archive before extraction and executes the CLI over `--all`
+history without exposing `GITLEAKS_LICENSE` or another repository secret to a
+candidate workflow.
+
 Added by the T107/T119 protected-trust implementation on 2026-07-16 (both
 resolved live against their official upstreams before pinning):
 

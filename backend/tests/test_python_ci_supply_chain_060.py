@@ -138,6 +138,23 @@ def test_ci_uses_one_hash_lock_for_every_python_test_tool_install() -> None:
     assert "python -m pip install -r " not in workflow
 
 
+def test_ci_secret_scan_uses_checksum_pinned_secret_free_cli() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    job = _workflow_job(workflow, "secret-scan")
+    assert "gitleaks/gitleaks-action" not in job
+    assert 'GITLEAKS_VERSION: "8.30.1"' in job
+    assert (
+        'GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"'
+        in job
+    )
+    assert "sha256sum --check --strict" in job
+    assert 'test "$("$install_root/gitleaks" version)" = "$GITLEAKS_VERSION"' in job
+    assert 'gitleaks git --redact --config "$GITHUB_WORKSPACE/.gitleaks.toml"' in job
+    assert '--log-opts="--all"' in job
+    assert "secrets." not in job
+    assert "GITLEAKS_LICENSE" not in job
+
+
 def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "release-tooling-tests")
@@ -153,6 +170,7 @@ def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> N
         "run_android_next_major_canary.py",
         "run_candidate_staging.py",
         "validate_release_evidence.py",
+        "verify_release_evidence_bootstrap.py",
         "windows_release_candidate.py",
     }
     assert {path.name for path in (REPO_ROOT / "scripts").glob("*.py")} == (

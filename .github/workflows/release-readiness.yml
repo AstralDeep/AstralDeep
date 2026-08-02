@@ -57,6 +57,7 @@ jobs:
   #    candidate tag must already exist from a prior ci.yml call. This job is
   #    the only packages-write authority in the pipeline. ──
   publish-candidate:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -110,6 +111,7 @@ jobs:
   #    diagnostic (scripts/prepare_release_evidence.py) needs none of this.
   #    Env gate mirrors scripts/run_candidate_staging.py::_required_environment.
   stage-deploy:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: publish-candidate
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -181,6 +183,7 @@ jobs:
   #    artifact id / executable digest feed the windows producer and, later,
   #    the bridge signer. ──
   windows-candidate:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     uses: ./.github/workflows/build-windows-candidate.yml
     with:
@@ -189,6 +192,7 @@ jobs:
       staging_access_token: ${{ secrets.ASTRAL_WINDOWS_SMOKE_TOKEN }}
 
   backend-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: [stage-deploy, publish-candidate]
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -264,6 +268,7 @@ jobs:
           retention-days: 14
 
   web-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -310,6 +315,7 @@ jobs:
           retention-days: 14
 
   windows-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: [stage-deploy, windows-candidate]
     runs-on: windows-latest
     timeout-minutes: 60
@@ -381,6 +387,7 @@ jobs:
           retention-days: 14
 
   android-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -486,6 +493,7 @@ jobs:
           retention-days: 14
 
   macos-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     runs-on: macos-26
     timeout-minutes: 90
@@ -593,6 +601,7 @@ jobs:
           retention-days: 14
 
   ios-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     runs-on: macos-26
     timeout-minutes: 90
@@ -696,6 +705,7 @@ jobs:
           retention-days: 14
 
   watchos-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     runs-on: macos-26
     timeout-minutes: 90
@@ -802,6 +812,7 @@ jobs:
           retention-days: 14
 
   docs-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -941,7 +952,7 @@ jobs:
       - ios-producer
       - watchos-producer
       - docs-producer
-    if: always()
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (always()) }}
     permissions:
       id-token: write
       attestations: write
@@ -956,6 +967,7 @@ jobs:
   #    validator refuses --decision-output from any other job, and the ruleset
   #    required check name is "release-readiness / protected-decision". ──
   protected-decision:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs:
       - trusted-builder
       - backend-producer
@@ -1293,7 +1305,7 @@ jobs:
           retention-days: 90
 
   stage-cleanup:
-    if: always()
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (always()) }}
     needs:
       - stage-deploy
       - windows-candidate

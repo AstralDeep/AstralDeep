@@ -24,7 +24,7 @@ name: Release Apple clients
 #   * push to main            — auto-release ONLY when apple-clients/** changed (the
 #                               `gate` job below decides); build number = run number,
 #                               version = the project's MARKETING_VERSION
-#   * workflow_dispatch       — manual release from any ref
+#   * workflow_dispatch       — manual release from the main/default ref only
 # A `paths:` filter is deliberately NOT used: on GitHub it interacts unreliably with
 # tag pushes (they can be silently skipped), so the apple-clients change check lives
 # in the `gate` job instead — the tag/dispatch paths are never path-filtered.
@@ -42,11 +42,12 @@ env:
   SCHEME: AstralApp
 
 jobs:
-  # Cheap Linux gate: a tag push or manual dispatch always releases; a push to
+  # Cheap Linux gate: a tag push or main-ref manual dispatch always releases; a push to
   # main releases only when apple-clients/** changed on that push (so ordinary
   # backend merges don't upload a redundant TestFlight build).
   gate:
     name: Decide whether to release
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     outputs:
       release: ${{ steps.decide.outputs.release }}
@@ -71,7 +72,7 @@ jobs:
   release:
     name: Archive, sign, upload and submit
     needs: gate
-    if: needs.gate.outputs.release == 'true'
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.gate.outputs.release == 'true') }}
     runs-on: macos-15
     timeout-minutes: 90
     steps:

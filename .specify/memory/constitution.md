@@ -1,6 +1,90 @@
 <!--
   Sync Impact Report
   ==================
+  Version change: 2.8.0 → 2.9.0 (MINOR — Principle X materially adds a
+    fail-closed bootstrap path for evidence inputs that cannot exist until an
+    exact candidate SHA is remotely addressable, without weakening merge or
+    release authorization)
+
+  Amendment (2026-08-02, v2.9.0) — candidate evidence bootstrap:
+    X. Production Readiness (EXPANDED) — release evidence still runs locally
+        before ordinary pushes. A lead-approved, time-bounded bootstrap window
+        may now admit an exact clean candidate to diagnostic remote CI and
+        protected evidence producers only when required provider-issued
+        identities or native artifacts cannot exist before that SHA is remotely
+        addressable. The PR remains draft and non-mergeable; locally executable
+        gates and a missing-input inventory run first; every bootstrap SHA and
+        repair is recorded; and the final exact SHA must complete the full local
+        parser plus protected CI before promotion, merge, production deployment,
+        distribution, or release. Bootstrap may not waive staging, coverage,
+        trust, evidence integrity, security, or any feature-designated
+        non-waivable check.
+    Technology Stack — Continuous Integration now distinguishes diagnostic
+        evidence-bootstrap CI from merge/release authority.
+    Development Workflow — release-affecting PRs must either complete the
+        ordinary local-before-push gate or satisfy every bounded bootstrap
+        condition and remain draft until the exact-candidate gate closes.
+    Principles added: None
+    Principles removed: None
+    Sections added: None
+    Sections removed: None
+    Templates and guidance requiring updates:
+      ✅ .specify/templates/plan-template.md — Constitution Check now requires
+         bootstrap eligibility, scope, expiry, preflight, and closure design
+      ✅ .specify/templates/spec-template.md — generic and compatible
+      ✅ .specify/templates/tasks-template.md — polish examples now include
+         bounded bootstrap setup and exact-candidate closure
+      ✅ AGENTS.md — release-evidence guidance now records the bootstrap limits
+      ✅ .github/release-evidence-leads.json — default-branch lead allowlist for
+         provider-native approval verification
+      ✅ scripts/verify_release_evidence_bootstrap.py — default-branch verifier
+         and external missing-input inventory producer
+      ✅ scripts/prepare_release_evidence.py — optional machine-readable
+         fail-closed receipt distinguishes structural missing-provider inputs
+         from other evidence rejection
+      ✅ backend/tests/test_release_evidence_bootstrap.py — golden and denial
+         coverage for approval, scope, expiry, draft, dispatch, and inventory
+         checks
+      ✅ backend/tests/test_prepare_release_evidence_060.py — verifies the
+         structural-failure receipt and generic rejection boundary
+      ✅ .github/workflows/ci.yml — lock-pinned host tooling lane executes and
+         measures the default-branch bootstrap verifier; draft candidates
+         cannot invoke privileged readiness, and full-history secret scanning
+         uses a checksum-pinned CLI without a repository license secret
+      ✅ .github/workflows/apple-release.yml,
+         .github/workflows/build-windows-candidate.yml,
+         .github/workflows/release-evidence-exception.yml,
+         .github/workflows/release-readiness.yml,
+         .github/workflows/release-windows-publisher-controller.yml, and
+         .github/workflows/release-windows.yml — privileged manual-dispatch
+         jobs refuse candidate refs and run only from the default-branch ref
+      ✅ backend/tests/test_release_workflows_060.py — static workflow guard
+         requires the bootstrap verifier tests in the measured host lane and
+         the privileged-readiness draft and candidate-ref dispatch exclusions
+      ✅ backend/tests/test_python_ci_supply_chain_060.py — pins and verifies
+         the secret-free Gitleaks CLI supply chain
+      ✅ specs/060-runtime-reliability-hardening/verification/dependencies.md —
+         records the Gitleaks action-to-checksum-pinned-CLI transition
+      ✅ specs/029-agents-adaptive-ui-ci/contracts/ci-pipeline.md — authoritative
+         secret-scan contract now names the checksum-pinned, secret-free CLI
+      ✅ docs/production-deployment.md and
+         specs/053-apple-production-release/contracts/release-pipeline.md and
+         apple-clients/README.md — Apple manual release is documented as
+         default-ref-only
+      ✅ specs/060-runtime-reliability-hardening/quickstart.md — manual
+         readiness reruns dispatch protected default-branch workflow bytes and
+         bind candidate SHA separately
+      ✅ .specify/templates/commands/ — directory absent; no command templates
+         require changes
+    Transition: this amendment PR is a governance proposal only. It authorizes
+        no product bootstrap until reviewed and merged; existing feature work
+        remains governed by v2.8.0 meanwhile.
+    Follow-up TODOs:
+      ⚠ Feature 065 must update its stricter T003/quickstart/verification text
+        and create the external approval plus missing-input inventory before
+        invoking this bootstrap path.
+
+  -- Prior amendment (2026-07-16, v2.8.0) --------------------------------
   Version change: 2.7.0 → 2.8.0 (MINOR — Principle X materially adds a
     local-before-push release-evidence boundary and standardizes protected
     publication on native CI identity without repository-scoped GitHub Apps)
@@ -674,7 +758,8 @@ and the happy path works."
   candidate- and release-bound evidence exception that names the
   missing platform/checks, explains the unavailability, expires
   within seven calendar days, and is recorded in an append-only
-  protected ledger outside any candidate tree whose SHA it names. Approval MUST be independently machine-verifiable through
+  protected ledger outside any candidate tree whose SHA it names. Approval
+  MUST be independently machine-verifiable through
   a protected release-owner environment, ruleset, or signed approval
   attestation bound to that exception and candidate; a self-declared
   approver field is insufficient. The unavailable report MUST still bind the
@@ -702,14 +787,84 @@ and the happy path works."
   decision MUST have a bounded validity window, and any consuming publisher
   MUST reject it after expiry.
 - Release evidence collection, normalization, and human-readable parsing MUST
-  be completed locally before push for every feature that uses release
-  evidence. The local command MUST be deterministic, fail closed, preserve the
-  canonical machine evidence and its digests, and emit no authorization claim.
-  Local output is a developer/reviewer diagnostic only. Protected CI MUST
-  independently schema-validate and re-hash the submitted canonical evidence,
-  reconstruct trusted provider/workflow identities, and execute its pinned
-  policy before producing any merge or release decision; CI MUST NOT trust a
-  committed local verdict merely because its parser passed.
+  normally be completed locally before any candidate push for every feature
+  that uses release evidence. The local command MUST be deterministic, fail
+  closed, preserve the canonical machine evidence and its digests, and emit no
+  authorization claim. Local output is a developer/reviewer diagnostic only.
+- A release-evidence **bootstrap window** MAY replace that ordinary pre-push
+  ordering only when every following condition is satisfied:
+  1. At least one required canonical input structurally depends on a
+     provider-issued workflow identity or native artifact that cannot exist
+     until the exact clean candidate SHA is remotely addressable. Missing
+     infrastructure, skipped locally executable work, convenience, elapsed
+     runtime, or an ordinary test failure is not sufficient.
+  2. Before the first bootstrap push, a lead developer explicitly approves a
+     named feature, branch, and pull request; the structural blocker; the exact
+     initial candidate SHA; a path-bounded candidate and CI/evidence-repair
+     scope; a passed-local-gate attestation naming the exact commands and
+     binding the digests of every locally required, parseable coverage input;
+     and an absolute RFC 3339 UTC expiry no more than 168 hours after approval.
+     The attestation records lead review and MUST NOT substitute for actually
+     running those commands. Authority MUST be an immutable or edit-detectable
+     provider-native PR review/comment or protected receipt outside the candidate tree, with the
+     actor verified against the repository's lead-developer allowlist. An
+     in-tree verification record MAY mirror that authority but cannot create it.
+     The allowlist and verifier MUST be loaded from the current default branch,
+     never from candidate-controlled bytes, and their exact identities MUST be
+     retained with the verification result.
+  3. The clean committed candidate MUST first pass every required check that is
+     locally executable. Its deterministic evidence command MUST run as far as
+     possible and fail closed with a retained machine-readable inventory of
+     the exact missing provider-bound inputs. Locally required coverage inputs
+     MUST be present, non-empty, structurally parseable, and digest-bound into
+     the approval. The inventory MUST be bound to the
+     clean candidate SHA and retained outside the candidate tree so recording it
+     cannot change that SHA; fabricated reports, relabeled older artifacts, or
+     invented provider identities are prohibited.
+  4. The branch MUST be non-protected and the PR MUST remain draft and
+     non-mergeable throughout the window. Candidate-controlled bootstrap jobs
+     MUST use isolated provider-hosted runners and receive no repository or
+     environment secrets, protected environment, OIDC/cloud identity, privileged
+     self-hosted runner, signing, deployment, package, tag, release, or
+     protected-ledger mutation authority. Their job token MUST be explicitly
+     least-privilege and read-only except for provider-native check reporting
+     and artifact upload. A separately protected evidence producer MAY create
+     an immutable non-release candidate artifact and isolated qualifying staging
+     namespace only when required to generate evidence; neither may be promoted,
+     distributed, or mistaken for a published release.
+     A candidate ref MUST NOT be eligible for manual dispatch of a workflow
+     with secrets, protected environments, write/OIDC authority, privileged
+     runners, signing, deployment, or publication capabilities; each such
+     dispatch-capable job MUST enforce an exact default-branch-ref guard.
+  5. Before each bootstrap push, the candidate-independent default-branch
+     verifier MUST re-query the provider-native approval, current draft state,
+     exact prior/new head, expiry, and changed paths. Changes after the first
+     push MUST stay within the approved path scope and be limited to repairs
+     required to make the approved candidate's CI/evidence producers execute
+     correctly. They MUST NOT
+     weaken assertions, thresholds, evidence semantics, security/privacy
+     controls, dependency locks, or product behavior. Any other change requires
+     a new lead-approved scope and expiry. Each new SHA invalidates all prior
+     candidate-bound evidence and MUST receive a new provider-native SHA record.
+     Expiry freezes further bootstrap pushes and promotion until a newly reviewed
+     window is established; repeated approval is never automatic.
+  6. Before the PR leaves draft, before any non-bootstrap implementation push,
+     and before merge, production deployment, distribution, signing, or release,
+     the final exact SHA MUST complete the full deterministic local parser over
+     canonical inputs and pass the independently protected decision required
+     below.
+- A bootstrap window does not waive qualifying staging, real configured
+  dependencies, representative migrated data, affected-client evidence,
+  changed-code coverage, candidate/artifact identity, trust reconstruction,
+  evidence-policy integrity, security/privacy checks, or any check the owning
+  feature designates non-waivable. It authorizes remote diagnostic evidence
+  production only and makes no merge or release claim. If unavailable
+  infrastructure prevents final closure, the PR MUST remain draft and blocked;
+  bootstrap eligibility does not imply that closure is currently possible.
+- Protected CI MUST independently schema-validate and re-hash submitted
+  canonical evidence, reconstruct trusted provider/workflow identities, and
+  execute its pinned policy before producing any merge or release decision;
+  CI MUST NOT trust a committed local verdict merely because its parser passed.
 - Candidate-controlled code or workflows MUST NOT possess signing credentials,
   OIDC publication authority, or public-release mutation permission. Release
   signing, tag/release creation, asset upload, verification, and public
@@ -938,10 +1093,12 @@ an ungoverned back channel for unverified claims.
   migrations (`shared/database.py::_init_db`) executed
   automatically at application boot
 - **Continuous Integration**: GitHub Actions running the
-  Principle XI gate set; deterministic release evidence prepared locally
-  before push and independently validated by protected CI; container images
-  published to GitHub Container Registry; protected publication uses native
-  short-lived GitHub Actions identity rather than repository-scoped Apps
+  Principle XI gate set; deterministic release evidence normally prepared
+  locally before push, with a bounded draft-only bootstrap for structurally
+  provider-bound inputs, then independently validated by protected CI;
+  container images published to GitHub Container Registry; protected
+  publication uses native short-lived GitHub Actions identity rather than
+  repository-scoped Apps
 - **Eval/Benchmark Harnesses**: eval-only dependency manifests
   (e.g., `requirements-eval.txt`) kept out of the product
   runtime and enforced by an automated isolation guard
@@ -989,10 +1146,16 @@ an ungoverned back channel for unverified claims.
   reject changes that contain stubs, debug-only code, missing
   observability for new features, or untested error paths.
 - PRs that affect release evidence or publication MUST run the deterministic
-  local evidence preparation/parser before push, retain its canonical inputs
-  and digests, and keep independent protected-CI validation authoritative.
-  Publication remains in protected CI with the built-in short-lived token;
-  repository-scoped GitHub Apps or custom token brokers MUST NOT be introduced.
+  local evidence preparation/parser before ordinary pushes, retain its
+  canonical inputs and digests, and keep independent protected-CI validation
+  authoritative. If provider-bound evidence cannot structurally exist before
+  an exact SHA is remote, the PR MAY use only Principle X's lead-approved,
+  seven-day, draft-only bootstrap window; all locally executable checks and the
+  fail-closed missing-input inventory run first, each SHA is recorded, and the
+  full exact-candidate local/protected gates MUST close before the PR leaves
+  draft or any merge/release action occurs. Publication remains in protected CI
+  with the built-in short-lived token; repository-scoped GitHub Apps or custom
+  token brokers MUST NOT be introduced.
 - Constitution compliance MUST be verified during code review.
 - Each PR MUST reference relevant spec/task IDs when
   applicable.
@@ -1014,4 +1177,4 @@ guidance when conflicts arise.
   adherence to these principles. Violations MUST be resolved
   before merge.
 
-**Version**: 2.8.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-07-16
+**Version**: 2.9.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-08-02
