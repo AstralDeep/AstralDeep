@@ -3216,6 +3216,16 @@ final class AppleVoiceSessionController {
         case "media_error": "Voice media ended. Start a new voice conversation or keep typing."
         case "ended_by_user": "Voice conversation ended. Accepted requests keep running."
         case "backgrounded": "Voice is paused while this app is in the background."
+        // 066/P5: these unavailability reasons used to fall through to the
+        // default "Voice is available." — an actively misleading line for a
+        // disabled mic. Every reason the server can refuse with names itself.
+        case "feature_disabled": "Voice is not enabled on this server. You can keep typing."
+        case "worker_unavailable", "media_unavailable", "voice_unavailable",
+            "asr_unavailable", "tts_unavailable":
+            "Voice is temporarily unavailable. You can keep typing."
+        case "capacity_exhausted": "Voice is at capacity right now. Try again shortly."
+        case "authentication_required", "auth_expired":
+            "Sign in again to use voice. Typed chat is still available."
         default:
             switch phase {
             case "connecting": "Connecting voice…"
@@ -3230,6 +3240,7 @@ final class AppleVoiceSessionController {
             case "speaking_result": "Speaking the completed result…"
             case "muted": "Assistant speech is muted."
             case "ended": "Voice conversation ended."
+            case "unavailable": "Voice conversation unavailable. You can keep typing."
             default: "Voice is available."
             }
         }

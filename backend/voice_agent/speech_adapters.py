@@ -13,6 +13,7 @@ import json
 import re
 import secrets
 import wave
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
@@ -274,6 +275,131 @@ class SpeachesTTS:
         }:
             raise SpeechAdapterError("unexpected_content_type")
         return _parse_kokoro_wav(response.body, max_duration_samples)
+
+
+# Feature 066 latency: the coordinator's greeting/acknowledgement/progress/
+# waiting/terminal announcements repeat constantly and each previously cost a
+# full TTS round trip. Spec 065 FR-045 keeps synthesized audio out of "caches
+# beyond active processing"; that clause protects user content, but it is
+# written broadly, so caching is restricted to this closed SERVER-OWNED phrase
+# vocabulary by exact text match - operator-authored strings that carry no
+# user text, transcript content, or PHI. Result recaps and every other
+# coordinator-composed text never match and are synthesized fresh then
+# discarded, exactly as before. The worker's RuntimeImportGuard forbids
+# importing orchestrator code, so the vocabulary is mirrored verbatim from
+# ``orchestrator.voice_coordinator.APPROVED_PHRASE_TEXT`` (the
+# PREACCEPTANCE_REJECTION_PHRASES projections reuse those same keys) and
+# drift-pinned by ``tests/test_tts_phrase_cache_066.py``.
+SERVER_OWNED_PHRASE_TEXTS = frozenset(
+    {
+        "Hi! I'm ready when you are.",
+        "On it!",
+        "I'm on it.",
+        "Let me take care of that.",
+        "I'm still working on that.",
+        "I'm continuing with your request.",
+        "I'm keeping at it.",
+        "I need something from you before I can continue.",
+        "Please sign in so I can continue.",
+        "Please grant the requested permission so I can continue.",
+        "Please review the approval request so I can continue.",
+        "Please set up your AI provider in Settings so I can continue.",
+        "Your sensitive result is ready.",
+        "I couldn't complete that request.",
+        "I can't help with that request.",
+        "I can't accept that request right now. Please try again.",
+        "That conversation is no longer available. Please choose one and try again.",
+        "I couldn't accept that request. Please try again.",
+        "I didn't understand that. Please try again.",
+        "That request was cancelled.",
+    }
+)
+# Bound: every cached entry is a validated SynthesizedAudio of at most
+# MAX_QUANTUM_SAMPLES (96,000) samples at 2 bytes/sample, so the cache holds
+# at most 32 * 192,000 = 6,144,000 bytes (~5.9 MiB) worst case; the real
+# phrases above are all under 4 s of speech. The character cap additionally
+# keeps any future vocabulary growth in the short-phrase regime so
+# user-content-sized result quanta stay structurally outside the cache.
+TTS_CACHE_MAX_ENTRIES = 32
+TTS_CACHE_MAX_TEXT_CHARS = 200
+
+
+class FixedPhraseTTSCache:
+    """Serve repeated server-owned phrases from bounded worker memory.
+
+    Wraps a TTS adapter with an LRU keyed by (text, model, voice, sample
+    rate) so a launch-profile change can never replay stale audio. Only a
+    successful, fully validated synthesis of a closed-vocabulary phrase is
+    stored; a hit returns the same immutable ``SynthesizedAudio`` a fresh
+    call would, so the downstream announcement/track flow is identical.
+    """
+
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        cacheable_texts: frozenset[str] = SERVER_OWNED_PHRASE_TEXTS,
+        max_entries: int = TTS_CACHE_MAX_ENTRIES,
+    ) -> None:
+        if (
+            isinstance(max_entries, bool)
+            or not isinstance(max_entries, int)
+            or not 1 <= max_entries <= TTS_CACHE_MAX_ENTRIES
+        ):
+            raise ValueError("invalid_tts_cache_size")
+        self._inner = inner
+        self._cacheable_texts = frozenset(cacheable_texts)
+        self._max_entries = max_entries
+        self._entries: OrderedDict[tuple[str, str, str, int], SynthesizedAudio] = (
+            OrderedDict()
+        )
+
+    def _cache_key(self, text: Any) -> tuple[str, str, str, int] | None:
+        if (
+            not isinstance(text, str)
+            or len(text) > TTS_CACHE_MAX_TEXT_CHARS
+            or text not in self._cacheable_texts
+        ):
+            return None
+        return (text, KOKORO_MODEL, KOKORO_VOICE, KOKORO_SAMPLE_RATE)
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        max_duration_samples: int,
+    ) -> SynthesizedAudio:
+        """Return cached validated PCM for a known phrase, else synthesize."""
+
+        key = self._cache_key(text)
+        if key is not None:
+            cached = self._entries.get(key)
+            if cached is not None:
+                # Mirror the fresh-path input validation and command-budget
+                # outcome exactly so a hit stays behaviorally identical.
+                if (
+                    isinstance(max_duration_samples, bool)
+                    or not isinstance(max_duration_samples, int)
+                    or not 1 <= max_duration_samples <= MAX_QUANTUM_SAMPLES
+                ):
+                    raise SpeechAdapterError("invalid_sample_ceiling")
+                if cached.samples > max_duration_samples:
+                    raise SpeechAdapterError("audio_budget_exceeded")
+                self._entries.move_to_end(key)
+                return cached
+        audio = await self._inner.synthesize(
+            text, max_duration_samples=max_duration_samples
+        )
+        if (
+            key is not None
+            and isinstance(audio, SynthesizedAudio)
+            and audio.samples <= MAX_QUANTUM_SAMPLES
+        ):
+            self._entries[key] = audio
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+        return audio
 
 
 class SpeachesBatchSTT:

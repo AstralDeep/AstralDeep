@@ -176,6 +176,28 @@ struct WatchChatView: View {
 
     @ViewBuilder
     private var voiceConversationControls: some View {
+        if model.primaryVoiceControl == nil, model.voiceTerminalNotice == nil {
+            // 066/P5: before the first composer_state of a connection (and
+            // after a reset clears it) the server model is absent — show a
+            // disabled default mic instead of nothing, matching web's
+            // pre-rendered voice-start control. The first real frame
+            // replaces it.
+            Button {
+            } label: {
+                Label("Start voice conversation", systemImage: "mic.fill")
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(WatchBrand.primary)
+            .disabled(true)
+            .accessibilityIdentifier("voice.conversation.primary")
+            .accessibilityLabel("Start voice conversation")
+            .accessibilityValue("Checking voice availability")
+            Text("Checking voice availability…")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
         if let primary = model.primaryVoiceControl {
             Button {
                 model.performPrimaryVoiceAction()
@@ -241,13 +263,17 @@ struct WatchChatView: View {
         }
     }
 
+    // P11: one SF Symbol per server icon semantic, identical to the
+    // iOS/macOS map in ChatView.swift (and the same glyph semantics as
+    // Windows' _CONTROL_GLYPHS and web's VOICE_ICONS).
     private func voiceIcon(_ serverIcon: String) -> String {
         switch serverIcon {
         case "microphone": return "mic.fill"
         case "device-transfer": return "arrow.triangle.2.circlepath"
-        case "stop", "speaker-stop": return "stop.fill"
-        case "speaker-muted": return "speaker.slash.fill"
-        case "speaker-consent": return "speaker.wave.2.badge.exclamationmark"
+        case "stop": return "stop.fill"
+        case "speaker-stop": return "speaker.slash.fill"
+        case "speaker-muted": return "speaker.slash"
+        case "speaker-consent": return "speaker.wave.2.bubble"
         case "chat": return "bubble.left.and.bubble.right"
         default: return "waveform"
         }

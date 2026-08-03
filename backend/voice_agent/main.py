@@ -21,6 +21,7 @@ from .session import (
     SileroVad,
 )
 from .speech_adapters import (
+    FixedPhraseTTSCache,
     SpeechPreflight,
     SpeechPreflightError,
     SpeechPreflightResult,
@@ -93,7 +94,12 @@ def build_pool_client(
     resolved_rtc = rtc_factory or LiveKitRtcFactory()
     resolved_vad_factory = vad_factory or SileroVad
     asr = SpeachesBatchSTT(transport=transport, api_key=config.speech_api_key)
-    tts = SpeachesTTS(transport=transport, api_key=config.speech_api_key)
+    # Feature 066: repeated server-owned announcements are served from bounded
+    # worker memory instead of a fresh TTS round trip; user-content text never
+    # matches the closed vocabulary and passes straight through.
+    tts = FixedPhraseTTSCache(
+        SpeachesTTS(transport=transport, api_key=config.speech_api_key)
+    )
     client_holder: dict[str, PoolClient] = {}
 
     def create_session(binding: SessionBinding) -> DirectRtcSession:

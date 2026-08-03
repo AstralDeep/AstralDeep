@@ -708,6 +708,13 @@ final class AppModel: NSObject {
         descriptor.microphonePermission = AppleVoicePermission.status
         descriptor.fullDuplex = true
         descriptor.voiceTransport = "livekit"
+        // 066 capability envelope: additive fields, ignored by older servers.
+        #if os(macOS)
+            descriptor.reducedMotion =
+                NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        #else
+            descriptor.reducedMotion = UIAccessibility.isReduceMotionEnabled
+        #endif
         return descriptor
     }
 
