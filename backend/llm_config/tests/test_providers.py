@@ -32,9 +32,13 @@ class TestCatalogShape:
     def test_custom_is_last(self):
         assert all_presets()[-1].key == CUSTOM_PROVIDER_KEY
 
-    def test_key_required_false_only_for_local_runtimes(self):
+    def test_key_optional_for_local_runtimes_and_custom(self):
+        # Hosted providers require a key at save; local runtimes and custom
+        # OpenAI-compatible endpoints (commonly keyless vLLM/sglang) may save
+        # with an empty key — the probe-gated save still refuses a keyless
+        # config the endpoint actually rejects.
         keyless = {p.key for p in all_presets() if not p.key_required}
-        assert keyless == {"ollama", "lmstudio"}
+        assert keyless == {"ollama", "lmstudio", "custom"}
 
     def test_every_preset_has_label(self):
         assert all(p.label for p in all_presets())

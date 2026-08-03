@@ -55,7 +55,11 @@ _PRESETS: Tuple[ProviderPreset, ...] = (
     ProviderPreset("mistral", "Mistral", "https://api.mistral.ai/v1", True, ""),
     ProviderPreset("ollama", "Ollama (local)", "http://localhost:11434/v1", False, ""),
     ProviderPreset("lmstudio", "LM Studio (local)", "http://localhost:1234/v1", False, ""),
-    ProviderPreset(CUSTOM_PROVIDER_KEY, "Custom OpenAI-compatible endpoint", None, True, ""),
+    # Custom is key-OPTIONAL: self-hosted OpenAI-compatible endpoints
+    # (vLLM/sglang, gateways, the UK LLM factory) are commonly keyless, and
+    # the probe-gated save still refuses a keyless config the endpoint
+    # actually rejects — so honesty is enforced by the probe, not the form.
+    ProviderPreset(CUSTOM_PROVIDER_KEY, "Custom OpenAI-compatible endpoint", None, False, ""),
 )
 
 _BY_KEY = {p.key: p for p in _PRESETS}

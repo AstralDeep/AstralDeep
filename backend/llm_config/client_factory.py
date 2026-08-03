@@ -37,6 +37,50 @@ from .types import CredentialSource, LLMUnavailable, ResolvedConfig
 # timeout by default).
 DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 60.0
 
+# The in-repo sentinel for "no API key" — the OpenAI SDK refuses to build a
+# client without SOME api_key value.
+KEYLESS_API_KEY_SENTINEL = "not-needed"
+
+
+_KEYLESS_HTTP_CLIENT = None
+
+
+def _keyless_http_client():
+    """Shared httpx client whose request hook strips the Authorization
+    header — the OpenAI SDK insists on materializing ``Bearer <api_key>``
+    for every request, and neither an empty key (illegal trailing-space
+    header) nor a client-level ``Omit`` (only honored per-request by the
+    SDK's header validation) can suppress it."""
+    global _KEYLESS_HTTP_CLIENT
+    if _KEYLESS_HTTP_CLIENT is None:
+        import httpx
+
+        def _strip_authorization(request):
+            request.headers.pop("Authorization", None)
+
+        _KEYLESS_HTTP_CLIENT = httpx.Client(
+            event_hooks={"request": [_strip_authorization]}
+        )
+    return _KEYLESS_HTTP_CLIENT
+
+
+def openai_auth_kwargs(api_key: str) -> dict:
+    """Auth kwargs for an OpenAI-compatible client construction.
+
+    A real key is passed through. An empty key (or the ``not-needed``
+    sentinel) selects the keyless transport: the sentinel satisfies the
+    SDK's constructor while the shared http client removes the
+    ``Authorization`` header from the wire — keyless OpenAI-compatible
+    servers (vLLM/sglang, local runtimes, the UK LLM factory) accept a
+    missing bearer while rejecting an arbitrary wrong one with 401/403.
+    """
+    if api_key and api_key != KEYLESS_API_KEY_SENTINEL:
+        return {"api_key": api_key}
+    return {
+        "api_key": KEYLESS_API_KEY_SENTINEL,
+        "http_client": _keyless_http_client(),
+    }
+
 
 class LLMConfigLike(Protocol):
     """Duck-type of a resolved credential record: the decrypted
@@ -98,9 +142,7 @@ def build_llm_client(
             else timeout
         ),
     }
-    # Keyless local-runtime presets store an empty key; the OpenAI SDK
-    # requires SOME api_key value, so send a harmless placeholder.
-    kwargs["api_key"] = config.api_key or "not-needed"
+    kwargs.update(openai_auth_kwargs(config.api_key))
     client = OpenAI(**kwargs)
     return (
         client,

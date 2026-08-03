@@ -61,11 +61,13 @@ async def probe_chat_completion(
     ``upstream_message`` are ``None`` on success. Never raises.
     """
     def _run():
+        from .client_factory import openai_auth_kwargs
+
         client = OpenAI(
-            api_key=api_key or "not-needed",
             base_url=base_url,
             timeout=timeout,
             max_retries=0,
+            **openai_auth_kwargs(api_key),
         )
         response = client.chat.completions.create(
             model=model,

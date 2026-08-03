@@ -7914,6 +7914,7 @@ class Orchestrator:
                     # brand-new chats reach the originating tab's siblings too.
                     if voice_origin is None:
                         self._ws_active_chat[id(websocket)] = chat_id
+                    await self._adopt_operation_chat(chat_id)
 
                     display_message = msg.payload.get("display_message")
                     async_mode = (
@@ -9425,6 +9426,34 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     # =========================================================================
     # LLM-POWERED TOOL ROUTING
     # =========================================================================
+
+    async def _adopt_operation_chat(self, chat_id) -> None:
+        """Bind a pre-conversation operation to the chat its turn created.
+
+        The first message of a new chat is admitted before the conversation
+        exists, so its durable operation row carries ``chat_id=None``. Once
+        the turn has created (or resolved) the real chat, bind it durably
+        AND refresh the in-context record so every downstream publication
+        fence keeps strict identity semantics. A no-op for operations that
+        were admitted with their conversation already bound.
+        """
+        if not chat_id:
+            return
+        operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+        if not isinstance(operation_context, dict):
+            return
+        operation = operation_context.get("operation")
+        fence = operation_context.get("execution_fence")
+        if (
+            not isinstance(operation, OperationRecord)
+            or fence is None
+            or operation.chat_id is not None
+        ):
+            return
+        updated = await self._call_work_admission(
+            self.work_admission.bind_chat, fence, str(chat_id)
+        )
+        operation_context["operation"] = updated
 
     @staticmethod
     def _conversation_authority(operation_context, websocket):

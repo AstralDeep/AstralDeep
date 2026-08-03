@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field, field_validator
 from orchestrator.auth import get_current_user_payload, require_user_id
 
 from .audit_events import record_llm_config_change
+from .client_factory import openai_auth_kwargs
 from .probe import PROBE_TIMEOUT_SECONDS, classify_probe_error as _classify_probe_error
 
 logger = logging.getLogger("LLMConfig.API")
@@ -177,10 +178,10 @@ async def test_connection(
     ok = False
     try:
         client = OpenAI(
-            api_key=body.api_key,
             base_url=body.base_url,
             timeout=PROBE_TIMEOUT_SECONDS,
             max_retries=0,
+            **openai_auth_kwargs(body.api_key),
         )
         response = await asyncio.to_thread(
             client.chat.completions.create,
@@ -269,10 +270,10 @@ async def list_models(
     ok = False
     try:
         client = OpenAI(
-            api_key=body.api_key,
             base_url=body.base_url,
             timeout=PROBE_TIMEOUT_SECONDS,
             max_retries=0,
+            **openai_auth_kwargs(body.api_key),
         )
         page = await asyncio.to_thread(client.models.list)
         data = getattr(page, "data", None)
