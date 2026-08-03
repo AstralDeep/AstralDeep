@@ -42,26 +42,29 @@ DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 60.0
 KEYLESS_API_KEY_SENTINEL = "not-needed"
 
 
-_KEYLESS_HTTP_CLIENT = None
+def _strip_authorization(request) -> None:
+    """Remove the SDK's synthesized bearer before the request goes out."""
+    request.headers.pop("Authorization", None)
 
 
 def _keyless_http_client():
-    """Shared httpx client whose request hook strips the Authorization
-    header — the OpenAI SDK insists on materializing ``Bearer <api_key>``
-    for every request, and neither an empty key (illegal trailing-space
-    header) nor a client-level ``Omit`` (only honored per-request by the
-    SDK's header validation) can suppress it."""
-    global _KEYLESS_HTTP_CLIENT
-    if _KEYLESS_HTTP_CLIENT is None:
-        import httpx
+    """A FRESH httpx client whose request hook strips the Authorization
+    header.
 
-        def _strip_authorization(request):
-            request.headers.pop("Authorization", None)
+    The OpenAI SDK insists on materializing ``Bearer <api_key>`` for every
+    request, and neither an empty key (an illegal trailing-space header) nor
+    a client-level ``Omit`` (the SDK only honors omission per-request) can
+    suppress it — so the header is removed at the transport hook.
 
-        _KEYLESS_HTTP_CLIENT = httpx.Client(
-            event_hooks={"request": [_strip_authorization]}
-        )
-    return _KEYLESS_HTTP_CLIENT
+    A new client per call is deliberate: the SDK CLOSES an injected
+    ``http_client`` when its short-lived ``OpenAI`` instance is finalized, so
+    a module-level shared client gets closed by the first completed call and
+    every later keyless call fails instantly with ``APIConnectionError``.
+    Timeouts stay with the SDK's per-request settings.
+    """
+    import httpx
+
+    return httpx.Client(event_hooks={"request": [_strip_authorization]})
 
 
 def openai_auth_kwargs(api_key: str) -> dict:

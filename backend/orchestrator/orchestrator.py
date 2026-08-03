@@ -187,7 +187,6 @@ _LLM_CREDENTIAL_SAVE_ACTIONS = frozenset(
 
 _READ_ONLY_UI_ACTIONS = frozenset(
     {
-        "capability_update",
         "discover_agents",
         "get_agent_permissions",
         "get_dashboard",
@@ -7895,6 +7894,13 @@ class Orchestrator:
                     elif not chat_id:
                         chat_id = await asyncio.to_thread(
                             self.history.create_chat, user_id=user_id)
+                        # 066: the durable operation was admitted BEFORE this
+                        # conversation existed (no chat id at ingress) — bind
+                        # the chat it just created so the publication fences
+                        # keep strict identity semantics. Scoped to the only
+                        # branch that creates a chat; voice is permanently
+                        # bound to its origin and never reaches here.
+                        await self._adopt_operation_chat(chat_id)
                         # Inform UI about new chat ID
                         await self._safe_send(websocket, json.dumps({
                             "type": "chat_created",
@@ -7905,6 +7911,9 @@ class Orchestrator:
                                 self.history.get_chat, chat_id, user_id=user_id):
                             await asyncio.to_thread(
                                 self.history.create_chat, chat_id, user_id=user_id)
+                            # Same 066 adoption: a client-supplied id whose
+                            # conversation did not exist yet.
+                            await self._adopt_operation_chat(chat_id)
                             await self._safe_send(websocket, json.dumps({
                                 "type": "chat_created",
                                 "payload": {"chat_id": chat_id, "from_message": True}
@@ -7915,7 +7924,6 @@ class Orchestrator:
                     # brand-new chats reach the originating tab's siblings too.
                     if voice_origin is None:
                         self._ws_active_chat[id(websocket)] = chat_id
-                    await self._adopt_operation_chat(chat_id)
 
                     display_message = msg.payload.get("display_message")
                     async_mode = (
@@ -8324,22 +8332,6 @@ class Orchestrator:
                                 "from_message": False,
                             },
                         }))
-                elif msg.action == "capability_update":
-                    # 066 (FR-008): live client-capability envelope — refresh
-                    # this socket's ROTE profile so server-side adaptation
-                    # never goes stale, and echo the fresh verdict so the
-                    # shell can stamp it.
-                    _device_info = (msg.payload or {}).get("device")
-                    if isinstance(_device_info, dict) and _device_info:
-                        rote_profile = self.rote.register_device(
-                            websocket, _device_info)
-                        await self._safe_send(websocket, json.dumps({
-                            "type": "rote_config",
-                            "device_profile": rote_profile.to_dict(),
-                            "speech_server_available": bool(
-                                os.getenv("SPEACHES_URL", "").strip()),
-                        }))
-
                 # Feature 054 (FR-014): LLM-dependent workspace/component
                 # verbs are refused server-side while the acting user has no
                 # LLM configuration, regardless of client behavior. (The

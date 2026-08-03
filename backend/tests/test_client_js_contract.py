@@ -383,9 +383,17 @@ def test_generic_actions_create_local_operation_identity_before_send(client_js):
     assert "request_generation: submission.requestGeneration" in action
     assert "payload: submission.payload" in action
 
+    # 066 split sendChat into a connection-state gate (sendChat) and the
+    # dispatch itself (doSendChat); the correlated-submission contract now
+    # lives in the dispatch half, and the gate must never drop a send.
     chat = _norm(_js_function(client_js, "sendChat"))
-    assert 'beginOperationSubmission("chat_message", payload, requestState.generation)' in chat
-    assert "submission_id: submission.submissionId" in chat
+    assert "if (!isSocketReady())" in chat
+    assert "queueChatSend(message, ready)" in chat
+    assert "doSendChat(message, ready)" in chat
+
+    dispatch = _norm(_js_function(client_js, "doSendChat"))
+    assert 'beginOperationSubmission("chat_message", payload, requestState.generation)' in dispatch
+    assert "submission_id: submission.submissionId" in dispatch
 
     connect = _norm(_js_function(client_js, "connect"))
     assert 'action("get_history", {}, false)' in connect

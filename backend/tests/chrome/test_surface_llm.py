@@ -511,14 +511,34 @@ def test_models_invalid_base_url_skips_probe(monkeypatch):
     assert "astral-chrome-notice" in notice and "base_url" in notice
 
 
-def test_models_requires_key_when_none_saved():
+def test_models_requires_key_for_key_required_providers():
+    """A hosted provider still refuses an empty key up front.
+
+    Feature 066 made ``custom`` key-OPTIONAL (self-hosted OpenAI-compatible
+    endpoints are commonly keyless), so the refusal is now scoped to the
+    presets that genuinely require a key; a keyless custom config is allowed
+    to probe and the endpoint's own answer is the honesty gate.
+    """
     orch = make_orch()
     ws = FakeWS()
     register(orch, ws)
     _surface, _params, notice = run(llm_surface.HANDLERS["chrome_llm_models"](
-        orch, ws, "u1", ["user"], _payload(base_url="https://x.test/v1", api_key=""),
+        orch, ws, "u1", ["user"],
+        _payload(provider="openai", base_url="", api_key=""),
     ))
     assert "required" in notice
+
+
+def test_models_allows_keyless_custom_endpoint():
+    """066 FR-025: custom + empty key reaches the probe instead of refusing."""
+    orch = make_orch()
+    ws = FakeWS()
+    register(orch, ws)
+    _surface, _params, notice = run(llm_surface.HANDLERS["chrome_llm_models"](
+        orch, ws, "u1", ["user"],
+        _payload(provider="custom", base_url="https://x.test/v1", api_key=""),
+    ))
+    assert "An API key is required" not in notice
 
 
 def test_models_blank_key_uses_saved_persisted_key(monkeypatch):

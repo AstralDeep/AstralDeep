@@ -33,10 +33,21 @@ def test_sentinel_key_is_treated_as_keyless() -> None:
     assert "http_client" in kwargs
 
 
-def test_keyless_http_client_is_shared() -> None:
+def test_keyless_http_client_is_per_call() -> None:
+    """Never share the transport across calls.
+
+    The OpenAI SDK closes an injected ``http_client`` when its (short-lived)
+    client instance is finalized; a shared client would therefore be closed
+    by the first completed call, and every later keyless call would fail
+    instantly with ``APIConnectionError``. Regression pin for that defect,
+    observed live on 2026-08-03.
+    """
     a = openai_auth_kwargs("")["http_client"]
     b = openai_auth_kwargs("")["http_client"]
-    assert a is b
+    assert a is not b
+    assert not a.is_closed
+    a.close()
+    assert not b.is_closed  # closing one must never disable another call
 
 
 def test_keyless_hook_strips_the_authorization_header() -> None:

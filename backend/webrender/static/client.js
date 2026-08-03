@@ -396,7 +396,9 @@
 
   // 066: live capability envelope — re-report on material change (resize
   // settle wired into the layout debounce; permission and connection changes
-  // below) so server-side adaptation never goes stale. Debounced + de-duped.
+  // below) so server-side adaptation never goes stale. Rides the existing
+  // `update_device` action (the server's live-viewport path: it diffs the
+  // profile and re-adapts the persisted canvas). Debounced + de-duped.
   var lastCapabilitySignature = "";
   function maybeReportCapabilities(force) {
     if (!isSocketReady()) return;
@@ -406,7 +408,7 @@
       caps.reduced_motion, caps.pointer_type].join("|");
     if (!force && sig === lastCapabilitySignature) return;
     lastCapabilitySignature = sig;
-    action("capability_update", { device: caps }, false);
+    action("update_device", { device: caps }, false);
   }
   if (navigator.connection && navigator.connection.addEventListener) {
     navigator.connection.addEventListener("change", function () {
@@ -3228,12 +3230,24 @@
   function surfaceFailedTurn(frame, localSubmission) {
     if (frame.action !== "chat_message") return;
     try {
-      var overlayChat = transientOverlay && transientOverlay.chat;
-      if (overlayChat) {
-        while (overlayChat.firstChild) chat.appendChild(overlayChat.firstChild);
-      }
       var retryText = localSubmission && localSubmission.message
         ? localSubmission.message : null;
+      // Move whatever the turn had staged in the overlay into the canonical
+      // rail (it is about to be cleared)...
+      var overlayChat = transientOverlay && transientOverlay.chat;
+      var moved = false;
+      if (overlayChat) {
+        while (overlayChat.firstChild) {
+          chat.appendChild(overlayChat.firstChild);
+          moved = true;
+        }
+      }
+      // ...and if the overlay was already gone, rebuild the user's message
+      // from the retained submission so their words NEVER disappear on a
+      // failure (066 FR-017). Deterministic, not overlay-dependent.
+      if (!moved && retryText) {
+        appendChatBubble("user", "<div>" + escapeText(retryText) + "</div>");
+      }
       appendFailedTurnNotice(
         (frame.error && frame.error.message) || "The turn could not be completed.",
         retryText);
