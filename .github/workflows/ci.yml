@@ -719,9 +719,18 @@ jobs:
   # ── FR-038: publish the EXACT verified image to GHCR on main pushes only.
   #    Needs every verification gate, so a publish failure is distinguishable
   #    from a verification failure (the gates stay green/visible). ──
-  publish:
+  # ── Aggregation of every verification gate. voice-worker-test legitimately
+  #    SKIPS when VOICE_WORKER_CLOSURE_APPROVED is unset, and a skipped
+  #    dependency silently skips its dependents — so publish, which needed the
+  #    gates directly, was itself skipped and main merges published NO image
+  #    (observed on the 066 merge). This unprivileged always() job converts
+  #    "every gate succeeded (voice-worker-test may be its sanctioned skip)"
+  #    into one plain success publish can depend on, keeping publish's own
+  #    guard inside the draft-bootstrap push-only grammar. ──
+  gates:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
+    if: always()
     needs:
       - lint
       - javascript-lint
@@ -736,30 +745,32 @@ jobs:
       - coverage-gate
       - smoke
       - secret-scan
+    steps:
+      - name: Enforce every verification gate
+        run: |
+          [[ '${{ needs.lint.result }}' == 'success' ]]
+          [[ '${{ needs.javascript-lint.result }}' == 'success' ]]
+          [[ '${{ needs.voice-contract-validator.result }}' == 'success' ]]
+          [[ '${{ needs.voice-web-conformance.result }}' == 'success' ]]
+          [[ '${{ needs.release-tooling-tests.result }}' == 'success' ]]
+          [[ '${{ needs.windows-client.result }}' == 'success' ]]
+          [[ '${{ needs.build.result }}' == 'success' ]]
+          [[ '${{ needs.voice-worker-test.result }}' == 'success' || '${{ needs.voice-worker-test.result }}' == 'skipped' ]]
+          [[ '${{ needs.test.result }}' == 'success' ]]
+          [[ '${{ needs.test-flags-off.result }}' == 'success' ]]
+          [[ '${{ needs.coverage-gate.result }}' == 'success' ]]
+          [[ '${{ needs.smoke.result }}' == 'success' ]]
+          [[ '${{ needs.secret-scan.result }}' == 'success' ]]
+
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - gates
+      - build
       # T120 activation (second checkpoint) adds `- release-readiness` here so
       # main image publication depends on the protected decision check.
-      #
-      # `always()` + explicit result checks: voice-worker-test legitimately
-      # SKIPS when VOICE_WORKER_CLOSURE_APPROVED is unset, and a skipped
-      # dependency silently skips its dependents — main merges published NO
-      # image (observed on the 066 merge: publish=skipped). Every other gate
-      # must be a genuine success; voice-worker-test may be success or that
-      # sanctioned skip.
-    if: >-
-      always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-      && needs.lint.result == 'success'
-      && needs.javascript-lint.result == 'success'
-      && needs.voice-contract-validator.result == 'success'
-      && needs.voice-web-conformance.result == 'success'
-      && needs.release-tooling-tests.result == 'success'
-      && needs.windows-client.result == 'success'
-      && needs.build.result == 'success'
-      && (needs.voice-worker-test.result == 'success' || needs.voice-worker-test.result == 'skipped')
-      && needs.test.result == 'success'
-      && needs.test-flags-off.result == 'success'
-      && needs.coverage-gate.result == 'success'
-      && needs.smoke.result == 'success'
-      && needs.secret-scan.result == 'success'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write

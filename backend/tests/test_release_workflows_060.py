@@ -1278,8 +1278,20 @@ def test_ci_voice_worker_is_distribution_disabled_but_keeps_test_lane() -> None:
     assert "name: voice-worker-coverage" in job
     assert "continue-on-error" not in job
 
+    # Publication depends on the worker gate TRANSITIVELY through the
+    # unprivileged `gates` aggregation: publish's own guard must stay inside
+    # the draft-bootstrap push-only grammar (no always()), while gates
+    # converts "every verification succeeded — voice-worker-test may be its
+    # sanctioned VOICE_WORKER_CLOSURE_APPROVED skip" into one dependable
+    # success (a skipped need would otherwise skip publish silently).
     publish = _workflow_job(workflow, "publish")
-    assert "voice-worker-test" in publish
+    assert "- gates" in publish
+    gates = _workflow_job(workflow, "gates")
+    assert "- voice-worker-test" in gates
+    assert "- coverage-gate" in gates
+    assert "needs.voice-worker-test.result }}' == 'success'" in gates
+    assert "needs.voice-worker-test.result }}' == 'skipped'" in gates
+    assert "needs.coverage-gate.result }}' == 'success'" in gates
 
 
 def test_ci_draft_151_coverage_diagnostic_cannot_waive_merge_gate() -> None:
@@ -1315,8 +1327,14 @@ def test_ci_draft_151_coverage_diagnostic_cannot_waive_merge_gate() -> None:
     assert '>> "$GITHUB_STEP_SUMMARY"' in warning_step
     assert "canonical multi-lane coverage" in warning_step
 
+    # Same transitive-gate rationale as the voice-worker pin above: publish
+    # depends on coverage-gate THROUGH the `gates` aggregation so its own
+    # guard stays inside the draft-bootstrap push-only grammar.
     publish = _workflow_job(workflow, "publish")
-    assert "coverage-gate" in publish
+    assert "- gates" in publish
+    gates = _workflow_job(workflow, "gates")
+    assert "- coverage-gate" in gates
+    assert "needs.coverage-gate.result }}' == 'success'" in gates
 
 
 def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
