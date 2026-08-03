@@ -436,10 +436,10 @@
   // DeviceProfile (rote_config, after register_ui) is stamped on
   // body[data-rote-device], provisionally seeded from local detection so
   // phones never flash the desktop arrangement. The SHELL owns the
-  // ARRANGEMENT via body[data-astral-layout]: "stacked" below 600 CSS px
-  // (Android's COMPACT window-width class → StackedShell), "split"
-  // otherwise — recomputed live on resize, like Compose recomputes its
-  // windowSizeClass on every configuration change.
+  // ARRANGEMENT via body[data-astral-layout]: "stacked" below 700 CSS px,
+  // "collapsed" 700–1023 (or by preference), "split" at ≥1024 — see
+  // applyLayoutClass — recomputed live on resize, like Compose recomputes
+  // its windowSizeClass on every configuration change.
   function applyDeviceProfile(dt) {
     if (dt) document.body.setAttribute("data-rote-device", String(dt));
   }

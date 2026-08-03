@@ -37,10 +37,13 @@ struct ChatShell: View {
     // FR-002: the collapse/expand choice persists per device across launches
     // ("" = automatic, "open" pins the split rail, "closed" collapses it).
     @AppStorage("astralChatPref") private var chatPref = ""
-    // The composer draft lives HERE, above the mode switch: a resize across a
-    // breakpoint swaps the shell (new structural identity), and view-local
-    // state would silently discard typed-but-unsent text.
+    // The composer draft and the canvas sheets live HERE, above the mode
+    // switch: a resize across a breakpoint swaps the shell (new structural
+    // identity), and view-local state would silently discard typed-but-unsent
+    // text or dismiss an open timeline/refine sheet mid-edit.
     @State private var draft = ""
+    @State private var showTimeline = false
+    @State private var refineTarget: RefineTarget?
     var body: some View {
         // The outer GeometryReader is itself a layout firewall (063 class): it
         // answers the parent's proposal in O(1) and hands every shell a
@@ -49,6 +52,15 @@ struct ChatShell: View {
         GeometryReader { geo in
             shell(size: geo.size)
                 .frame(width: geo.size.width, height: geo.size.height)
+        }
+        .sheet(isPresented: $showTimeline) {
+            CanvasTimelineOverlay(history: model.canvasHistory) { idx in
+                model.viewCanvasSnapshot(idx)
+                showTimeline = false
+            }
+        }
+        .sheet(item: $refineTarget) { target in
+            RefineSheet(target: target)
         }
         #if os(macOS)
             // T033/FR-017: Finder drag-and-drop stages chips exactly like the
@@ -67,14 +79,18 @@ struct ChatShell: View {
     private func shell(size: CGSize) -> some View {
         switch ShellLayoutMode.forWidth(size.width, pref: chatPref) {
         case .stacked:
-            StackedShell(draft: $draft)
+            StackedShell(
+                draft: $draft, showTimeline: $showTimeline,
+                refineTarget: $refineTarget)
         case .collapsed:
             CollapsedShell(
                 containerSize: size, draft: $draft,
+                showTimeline: $showTimeline, refineTarget: $refineTarget,
                 onPinRail: { chatPref = "open" })
         case .split:
             SplitShell(
                 containerSize: size, draft: $draft,
+                showTimeline: $showTimeline, refineTarget: $refineTarget,
                 onCollapseRail: { chatPref = "closed" })
         }
     }
@@ -85,9 +101,12 @@ struct ChatShell: View {
 private struct StackedShell: View {
     @Environment(AppModel.self) var model
     @Binding var draft: String
+    @Binding var showTimeline: Bool
+    @Binding var refineTarget: RefineTarget?
     var body: some View {
         VStack(spacing: 0) {
-            CanvasArea().frame(maxWidth: .infinity, maxHeight: .infinity)
+            CanvasArea(showTimeline: $showTimeline, refineTarget: $refineTarget)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             if model.turnActive { StepTrailView(lines: model.stepTrail) }
             MessagesPanel()
             InputBar(input: $draft)
@@ -107,6 +126,8 @@ private struct CollapsedShell: View {
     @Environment(ThemeStore.self) var theme
     let containerSize: CGSize
     @Binding var draft: String
+    @Binding var showTimeline: Bool
+    @Binding var refineTarget: RefineTarget?
     let onPinRail: () -> Void
     @State private var drawerOpen = false
     @State private var unread = 0
@@ -122,7 +143,7 @@ private struct CollapsedShell: View {
     }
 
     var body: some View {
-        CanvasArea()
+        CanvasArea(showTimeline: $showTimeline, refineTarget: $refineTarget)
             .safeAreaInset(edge: .bottom) {
                 floatingBar
                     .frame(maxWidth: 760)
@@ -135,9 +156,14 @@ private struct CollapsedShell: View {
                 // FR-003: new assistant activity while the conversation is
                 // hidden surfaces as a badge, never an auto-reveal. Status
                 // updates ride setStatus paths, not turns, so they can't trip
-                // this counter. Live turns land one assistant entry at a
-                // time; a multi-entry jump is transcript hydration (chat
-                // restore/switch) whose history is not "unread".
+                // this counter. HEURISTIC: +1 deltas are treated as live
+                // turns, larger jumps as hydration (chat restore/switch).
+                // Known miscounts (recorded in the 066 follow-ups register):
+                // a multi-doc-card ui_upsert lands >1 in one transaction
+                // (under-counts), and a reasoning row + narrative in one
+                // reply can badge twice (over-counts). A structural fix needs
+                // reducer-level live-vs-hydration provenance, not a view-side
+                // delta guess.
                 if !drawerOpen, newCount == oldCount + 1 {
                     unread = min(unread + 1, 10)
                 }
@@ -151,14 +177,19 @@ private struct CollapsedShell: View {
                     Text("CONVERSATION")
                         .font(.caption2.bold()).foregroundStyle(p.muted)
                     Spacer()
-                    Button(action: onPinRail) {
-                        Image(systemName: "sidebar.trailing")
-                            .font(.caption.weight(.semibold)).foregroundStyle(p.muted)
-                            .frame(width: 28, height: 28)
+                    // The pin can only take effect where split is reachable
+                    // (≥1024pt — width bound beats preference); below that it
+                    // would be an inert affordance, so it is not offered.
+                    if containerSize.width >= 1024 {
+                        Button(action: onPinRail) {
+                            Image(systemName: "sidebar.trailing")
+                                .font(.caption.weight(.semibold)).foregroundStyle(p.muted)
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Pin conversation rail")
+                        .help("Pin conversation rail")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Pin conversation rail")
-                    .help("Pin conversation rail")
                 }
                 .padding(.horizontal, 14).padding(.top, 8)
                 ChatList().frame(height: drawerHeight)
@@ -186,6 +217,8 @@ private struct SplitShell: View {
     @Environment(ThemeStore.self) var theme
     let containerSize: CGSize
     @Binding var draft: String
+    @Binding var showTimeline: Bool
+    @Binding var refineTarget: RefineTarget?
     let onCollapseRail: () -> Void
 
     // Web reference: clamp(320px, 28vw, 420px).
@@ -195,7 +228,8 @@ private struct SplitShell: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            CanvasArea().frame(maxWidth: .infinity, maxHeight: .infinity)
+            CanvasArea(showTimeline: $showTimeline, refineTarget: $refineTarget)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider().overlay(theme.palette.border)
             VStack(spacing: 0) {
                 RailHeader(onCollapse: onCollapseRail)
@@ -274,8 +308,10 @@ private struct ChatDrawerToggle: View {
 private struct CanvasArea: View {
     @Environment(AppModel.self) var model
     @Environment(ThemeStore.self) var theme
-    @State private var showTimeline = false
-    @State private var refineTarget: RefineTarget?
+    // Owned by ChatShell (the sheets are attached there too) so a layout-mode
+    // switch cannot dismiss an open timeline or refine sheet mid-edit.
+    @Binding var showTimeline: Bool
+    @Binding var refineTarget: RefineTarget?
     private var p: AstralPalette { theme.palette }
 
     private var canvasItems: [(key: String, comp: AstralComponent)] {
@@ -357,15 +393,6 @@ private struct CanvasArea: View {
             }
         }
         .background(p.bg)
-        .sheet(isPresented: $showTimeline) {
-            CanvasTimelineOverlay(history: model.canvasHistory) { idx in
-                model.viewCanvasSnapshot(idx)
-                showTimeline = false
-            }
-        }
-        .sheet(item: $refineTarget) { target in
-            RefineSheet(target: target)
-        }
     }
 }
 

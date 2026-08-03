@@ -176,12 +176,15 @@ struct WatchChatView: View {
 
     @ViewBuilder
     private var voiceConversationControls: some View {
-        if model.primaryVoiceControl == nil, model.voiceTerminalNotice == nil {
+        if model.voiceComposer == nil, model.voiceTerminalNotice == nil {
             // 066/P5: before the first composer_state of a connection (and
             // after a reset clears it) the server model is absent — show a
             // disabled default mic instead of nothing, matching web's
             // pre-rendered voice-start control. The first real frame
-            // replaces it.
+            // replaces it. Gate on FRAME PRESENCE (composer), not on a
+            // visible primary control: an owning-but-suspended session has a
+            // real composer with zero visible session controls, and it must
+            // read "suspended", never "checking availability".
             Button {
             } label: {
                 Label("Start voice conversation", systemImage: "mic.fill")
@@ -197,6 +200,16 @@ struct WatchChatView: View {
             Text("Checking voice availability…")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        } else if model.primaryVoiceControl == nil, model.voiceComposer != nil {
+            // Composer present but no visible primary (e.g. this watch owns a
+            // suspended session): surface the honest state label instead of
+            // nothing.
+            Text(model.voiceStatusLabel)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("voice.conversation.state")
+                .accessibilityLabel("Voice conversation")
+                .accessibilityValue(model.voiceStatusLabel)
         }
         if let primary = model.primaryVoiceControl {
             Button {

@@ -1019,8 +1019,8 @@ details > summary::-webkit-details-marker { display: none; }
    stamped on body[data-rote-device] by client.js), while the SHELL owns
    the arrangement via body[data-astral-layout], computed from the window
    width class exactly like Compose's windowSizeClass — "stacked" below
-   600 CSS px (Android COMPACT → StackedShell), "split" otherwise,
-   recomputed live on resize. The stacked rules are the web twin of
+   700 CSS px, "collapsed" 700–1023 (or by user preference), "split" at
+   ≥1024, recomputed live on resize. The stacked rules are the web twin of
    AdaptiveShell.kt StackedShell: canvas-first column, collapsible
    "Messages (N)" transcript above a docked input, recent chats full-screen
    behind the topbar speech-bubble button, icon-only brand.

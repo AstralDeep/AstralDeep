@@ -123,15 +123,29 @@ The native captures were taken in a second pass and are the ones to match:
 See `screenshots/README.md` for the content states verified interactively but
 not written to disk.
 
-## Open items for the Apple pass
+## Open items for the Apple pass — RESOLVED 2026-08-03 (Mac agent)
 
-1. Verify P1–P9 in [parity-checklist.md](parity-checklist.md) on iOS
-   (iPhone + iPad), macOS, and watchOS; record divergences with reasons.
-2. Decide the iPad multitasking mapping (compact width → stacked vs collapsed).
-3. Confirm the disabled-with-reason voice state renders on every Apple client
-   when `available=false` (watch included).
-4. If voice is exercised, run the runbook first — a 503 there is the
-   deployment issue above, not an Apple-client bug.
-5. Not audited anywhere yet (flagged in the checklist, not claimed): native
-   send-queue behavior while disconnected (P6) and native failed-turn retry
-   (P7). These are web-only implementations today.
+1. ~~Verify P1–P9~~ **Done** — every row resolved in
+   [parity-checklist.md](parity-checklist.md) (pass or accepted divergence),
+   with a live macOS click-through record and a signed-in iPhone-sim check.
+2. ~~iPad multitasking mapping~~ **Decided: width-driven, the web breakpoints
+   verbatim** — Split View/compact (<700pt) → stacked; iPad portrait
+   (700–1023pt) → collapsed; iPad landscape and 13" portrait (≥1024pt) →
+   split. One rule for all Apple devices; no size-class special cases.
+3. ~~Disabled-with-reason voice state~~ **Done, plus a real fix**: the local
+   fallback fabricated "Voice is available." for
+   `unavailable`/`worker_unavailable` (and every other unavailability
+   reason not in its switch) — fixed in `messageFor`; a disabled default mic
+   now renders pre-hydration on iOS, macOS, AND watch (web-parity).
+   Live-verified: dimmed mic + "Voice is temporarily unavailable. You can
+   keep typing." against a no-worker stack.
+4. Voice runbook note still stands — additionally, as of 2026-08-03 from this
+   Mac the speech models are ABSENT from api-llm-factory (Kokoro
+   `model_not_found`, ASR route 503, single-model inventory), so the worker
+   preflight cannot pass anywhere until they return; the FR-036 retry loop
+   (verified live: `voice_worker_preflight:asr_unavailable attempt=N`)
+   self-heals when they do. Live end-to-end voice audio remains unverified
+   for that reason — not an Apple-client issue.
+5. P6/P7 remain **pending on Apple like Windows/Android** (flagged, not
+   claimed). Observed live: a failed turn banners and never blanks the
+   canvas, but there is no inline exact-text retry card.
