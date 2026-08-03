@@ -5,6 +5,13 @@ Everything below is either verified live on this machine or explicitly marked
 unverified. Read [spec.md](spec.md) for the requirements and
 [parity-checklist.md](parity-checklist.md) for the row-by-row status.
 
+> **Read [mac-agent-notes.md](mac-agent-notes.md) before you merge anything.** It
+> covers the two operational tasks this document does not: syncing `.env` with
+> the production variables while staying in development posture, and what the
+> merge does to each of the three client releases. The single item worth reading
+> first: **merging a branch that touches `apple-clients/**` auto-triggers an App
+> Store upload** — so a version bump has to land *in* that merge, not after it.
+
 ## What changed, in one paragraph
 
 The web client became canvas-first: three layout modes replace the old
@@ -41,10 +48,19 @@ Registration and every material change now carry:
 added by this feature: **`reduced_motion` (bool)** and
 **`pointer_type` ("fine" | "coarse")**.
 
-Web re-reports via a `ui_event` with `action: "capability_update"` and
+Web re-reports via a `ui_event` with **`action: "update_device"`** and
 `payload.device` = the same dict as `register_ui.device`; the server refreshes
-the socket's ROTE profile and re-pushes `rote_config`. **No new frame type**
-(`ui_protocol.json` untouched — Constitution XII).
+the socket's ROTE profile and re-pushes `rote_config`. **No new frame type AND
+no new action** — `update_device` is already in the sanctioned action list
+([ui_protocol.json:181](../../backend/shared/ui_protocol.json#L181)), so
+Constitution XII is untouched in both directions.
+
+> An earlier draft of this document named a `capability_update` action. That
+> action was drafted and then **removed**: the existing `update_device` already
+> did the same job and did it better, so shipping a second one would have been
+> pure divergence. `update_device` is what the client sends
+> ([client.js:411](../../backend/webrender/static/client.js#L411)). Do not
+> implement `capability_update` on any Apple client — it does not exist.
 
 Apple clients own their own reflow (like Android), so re-reporting is
 optional there; if the Apple canvas ever depends on server-side density
@@ -93,10 +109,19 @@ log with an EMPTY worker log.
 Each is the DEFAULT mode for that width, so the set doubles as breakpoint
 evidence. Their canvases are empty because headless exits before the
 authenticated WebSocket hydration lands — the layout is real, the emptiness is
-a capture artifact. See `screenshots/README.md` for the content states that
-were verified interactively but not written to disk, and for why the Windows
-and Android captures are outstanding (both code changes are green on their
-suites: Windows 701 passed / 7 skipped, Android 248 tests).
+a capture artifact.
+
+The native captures were taken in a second pass and are the ones to match:
+
+- `windows-split-final.png` — the final Windows layout from a live signed-in
+  run, mid-turn: icon-only top bar, canvas leading with a rendered component,
+  conversation trailing with markdown-bold text, quiet composer
+- `android-tablet-01.png`, `android-tablet-02.png` — canvas leading /
+  conversation trailing on a 2560×1600 emulator; `android-tablet-signin.png`
+  is the sign-in screen
+
+See `screenshots/README.md` for the content states verified interactively but
+not written to disk.
 
 ## Open items for the Apple pass
 
