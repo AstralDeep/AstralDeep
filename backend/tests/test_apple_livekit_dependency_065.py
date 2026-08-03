@@ -26,6 +26,7 @@ RESOLUTION = (
     / "xcshareddata/swiftpm/Package.resolved"
 )
 CORE_PACKAGE = REPO_ROOT / "apple-clients/AstralCore/Package.swift"
+BASE_CONFIG = REPO_ROOT / "apple-clients/Config/Base.xcconfig"
 MACOS_ENTITLEMENTS = (
     REPO_ROOT / "apple-clients/AstralApp/AstralApp-macOS.entitlements"
 )
@@ -60,6 +61,14 @@ def test_livekit_is_exact_and_attached_only_to_astral_app() -> None:
     assert LIVEKIT_PRODUCT_ID in _native_target(project, APP_TARGET_ID)
     assert LIVEKIT_PRODUCT_ID not in _native_target(project, WATCH_TARGET_ID)
     assert "LiveKit" not in CORE_PACKAGE.read_text(encoding="utf-8")
+
+
+def test_project_does_not_override_injected_apple_development_team() -> None:
+    project = PROJECT.read_text(encoding="utf-8")
+    base_config = BASE_CONFIG.read_text(encoding="utf-8")
+
+    assert "DEVELOPMENT_TEAM =" not in project
+    assert "DEVELOPMENT_TEAM = $(ASTRAL_DEVELOPMENT_TEAM)" in base_config
 
 
 def test_resolved_livekit_graph_is_exact_and_complete() -> None:
