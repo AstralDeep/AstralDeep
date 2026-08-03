@@ -3905,7 +3905,13 @@ class MainWindow(QMainWindow):
                 self._set_turn_active(True)
                 self.topbar.set_status("Working…", T.VARIANT_COLORS["accent"][0])
         elif t == "chat_step":
-            if self._scoped_status_matches(msg):
+            # 066: chat_step carries {type, chat_id, step} ONLY — it has no
+            # connection/request generation, so the continuity fence rejected
+            # EVERY step frame and the step trail never appeared. Scope it by
+            # chat id, matching the web client and the Android/Apple clients
+            # (which reduce it ungated).
+            step_chat = msg.get("chat_id")
+            if not step_chat or not self.active_chat or step_chat == self.active_chat:
                 step = msg.get("step") or {}
                 name = step.get("name") or step.get("kind") or "step"
                 icon = {"completed": "✓", "errored": "✗"}.get(step.get("status"), "•")

@@ -3942,6 +3942,19 @@
     restoreActiveStatusOrClear(owners);
   }
 
+  // 066 (FR-016): one second into EVERY accepted connection operation the
+  // server publishes a generic progress phase (`operation_status` with
+  // label "Working…"). setStatus is last-writer-wins, so that generic label
+  // used to overwrite the turn's OWN richer phase text — and for a tool-less
+  // turn nothing re-asserted it, leaving the user staring at "Working…" for
+  // the whole model call. A chat turn publishes its own phases, so the
+  // generic one must not take the line from them. Terminal/error frames are
+  // untouched: they are the failure surface.
+  function genericPhaseWouldClobber(frame) {
+    return frame.action === "chat_message" && frame.phase === "running"
+      && turnPhaseActive;
+  }
+
   /** Retain/render one canonical operation projection. */
   function reduceOperationStatus(frame) {
     var flags = {
@@ -3989,11 +4002,14 @@
     var submissionOwner = "operation-submission:" + frame.request_generation;
     var localSubmission = operationSubmissionByGeneration[frame.request_generation];
     if (frame.terminal) finishOperationSubmission(frame.request_generation);
+    if (frame.terminal) turnPhaseActive = false; // the turn's phases are over
     if (frame.state === "completed") {
       // Completion is reconciliation state, not user-facing progress. Clear it
       // only if this operation (or its local submission) still owns the line.
       // A concurrent operation or unrelated notice must remain visible.
       retractFailedTurnNotice(frame.request_generation);
+      // The turn's own chat_status "done" clears any phase text it owns, so
+      // this stays byte-identical to the 060 contract.
       restoreActiveStatusOrClear([operationOwner, submissionOwner]);
     } else if (frame.terminal) {
       // Failure/cancellation/retry guidance persists, but is settled and must
@@ -4001,7 +4017,8 @@
       setStatus(visible, false, "operation-error:" + frame.operation_id);
     } else if (operationStatusShowsActivity(frame)
         && (!localSubmission || localSubmission.shows_status !== false)
-        && !(statusOwner && statusOwner.indexOf("operation-error:") === 0)) {
+        && !(statusOwner && statusOwner.indexOf("operation-error:") === 0)
+        && !genericPhaseWouldClobber(frame)) {
       setStatus(visible, true, operationOwner);
     }
     if (frame.terminal && ["failed", "cancelled", "retryable"].indexOf(frame.state) !== -1) {
@@ -4275,17 +4292,43 @@
           );
           break;
         }
-        var chatStatusLabel = { idle: "", thinking: "Thinking…", executing: "Working…", done: "" }[data.status] || "";
-        if (chatStatusLabel) {
+        if (data.status === "info") {
+          // 066: informational server notices (e.g. attachment auto-parse)
+          // used to vanish on web — surface them like the native banner and
+          // never latch the busy line.
+          if (data.message) showToast(String(data.message), "info");
+          restoreActiveStatusOrClear([chatStatusOwner]);
+          break;
+        }
+        // 066 (FR-016): prefer the server's OWN phase text — it names what is
+        // happening — and fall back to the generic label per status.
+        lastChatStatusText = (data.message && String(data.message).trim())
+          || { idle: "", thinking: "Thinking…", executing: "Working…",
+               fixing: "Working…", retrying: "Retrying…", combining: "Combining…",
+               condensing: "Condensing…", done: "" }[data.status] || "";
+        if (lastChatStatusText) {
+          // The turn now owns the line with its own phase — the server's
+          // generic one-second "Working…" must not take it back.
+          turnPhaseActive = true;
           setStatus(
-            chatStatusLabel,
+            lastChatStatusText,
             true,
             chatStatusOwner
           );
-        } else restoreActiveStatusOrClear([chatStatusOwner]);
+        } else {
+          turnPhaseActive = false;
+          lastChatStatusText = "";
+          restoreActiveStatusOrClear([chatStatusOwner]);
+        }
         break;
       case "chat_step":
-        if (scopedStatusMatches(data)) renderStep(data.step);
+        // 066: chat_step carries {type, chat_id, step} ONLY — it has no
+        // connection/request generation, so the 060 continuity fence
+        // (scopedStatusMatches) rejected EVERY step frame and the web client
+        // silently dropped the whole step trail. Scope it by chat id, the
+        // way tool_progress already is.
+        if (data.chat_id && activeChatId && data.chat_id !== activeChatId) break;
+        renderStep(data.step);
         break;
       case "chat_created":
         if (correlatedVoiceChatCreated(data)) break;
@@ -4364,10 +4407,16 @@
         if (!scopedStatusMatches(data)) break;
         var tpChat = data.session_id || data.chat_id;
         if (tpChat && activeChatId && tpChat !== activeChatId) break;
-        if (data.terminal) { setStatus(""); break; } // outcome lands as a persisted upsert
+        if (data.terminal) { turnPhaseActive = false; setStatus(""); break; } // outcome lands as a persisted upsert
+        // 066: the frame already carries agent_id — name the agent behind the
+        // job instead of discarding it (derived from the catalog, never guessed).
         var tpText = data.message || ((data.tool_name || "job") + " running…");
+        if (!data.message && data.agent_id && agentNameById[data.agent_id]) {
+          tpText = (data.tool_name || "job") + " — " + agentNameById[data.agent_id] + " running…";
+        }
         if (typeof data.percentage === "number") tpText += " (" + Math.round(data.percentage) + "%)";
-        setStatus(tpText);
+        turnPhaseActive = true;
+        setStatus(tpText, true, "chat-status");
         break;
       }
       case "operation_status":
@@ -4386,9 +4435,14 @@
           flushPendingActions();
         }
         break;
+      case "agent_list":
+        // 066: index the catalog the server already sends so step labels can
+        // name the agent behind a tool (derived, never guessed).
+        indexAgentList(data);
+        break;
       case "agent_host_inventory_reconciled": case "agent_host_registration_refused":
       case "agent_host_registered": // host-only; the browser is author-only
-      case "system_config": case "agent_list": case "agent_registered":
+      case "system_config": case "agent_registered":
       case "history_list": case "heartbeat": case "llm_config_ack": case "saved_components_list":
         break; // not needed for the core flow
       default: break;
@@ -4445,6 +4499,42 @@
   }
 
   var stepEls = {};
+  // 066: agent identity for step labels, DERIVED from the agent_list the
+  // server already sends — never guessed. A tool name that maps to exactly
+  // one agent gets the agent's name appended; an ambiguous or unknown name
+  // renders bare.
+  var toolToAgentName = Object.create(null);
+  var agentNameById = Object.create(null);
+  function indexAgentList(payload) {
+    var agents = (payload && payload.agents) || [];
+    for (var i = 0; i < agents.length; i++) {
+      var a = agents[i];
+      if (!a || typeof a !== "object") continue;
+      if (a.id && a.name) agentNameById[a.id] = a.name;
+      var tools = a.tools || [];
+      for (var j = 0; j < tools.length; j++) {
+        var name = tools[j] && tools[j].name;
+        if (!name || !a.name) continue;
+        // Record collisions as null so an ambiguous tool never claims one agent.
+        toolToAgentName[name] = Object.prototype.hasOwnProperty.call(toolToAgentName, name)
+          && toolToAgentName[name] !== a.name ? null : a.name;
+      }
+    }
+  }
+  function stepLabel(step) {
+    var raw = step.name || step.kind || "step";
+    var qualified = String(raw).split("__");
+    if (qualified.length === 2 && agentNameById[qualified[0]]) {
+      return qualified[1] + " — " + agentNameById[qualified[0]];
+    }
+    var agent = toolToAgentName[raw];
+    return agent ? raw + " — " + agent : raw;
+  }
+
+  // The turn's own phase text (from chat_status.message / a live step) and
+  // whether it currently owns the status line — see genericPhaseWouldClobber.
+  var lastChatStatusText = "";
+  var turnPhaseActive = false;
   function renderStep(step) {
     if (!step) return;
     var el = stepEls[step.id];
@@ -4457,7 +4547,17 @@
     var icon = step.status === "completed" ? "✓" : step.status === "errored" ? "✗" : "•";
     // Chat shows only the tool/step name; result summaries stay in the
     // persisted step record (chat-steps API / audit), not the transcript.
-    el.textContent = icon + " " + (step.name || step.kind || "step");
+    var label = stepLabel(step);
+    el.textContent = icon + " " + label;
+    // 066 (FR-016): the live step also drives the status line beside the
+    // composer, so the phase reads "web_search — Web Research" instead of a
+    // bare "Working…". A terminal step falls back to the last phase text.
+    if (step.status === "in_progress" || step.status === "started") {
+      turnPhaseActive = true;
+      setStatus(label, true, "chat-status");
+    } else if (lastChatStatusText) {
+      setStatus(lastChatStatusText, true, "chat-status");
+    }
     chat.scrollTop = chat.scrollHeight;
   }
 
@@ -5591,6 +5691,10 @@
       // Startup/reconnect metadata is retained and reconciled like every other
       // operation, but it is not user work and must not flash a global spinner.
       action("get_history", {}, false);
+      // 066: ask for the agent catalog once per connection (Windows and
+      // Android already do; the web client never did) so step labels can
+      // name the agent behind a tool.
+      action("discover_agents", {}, false);
       // Re-attach to still-running background tasks: watch_task re-registers
       // this socket as a watcher and answers task_completed immediately when
       // the task finished while the socket was down.
