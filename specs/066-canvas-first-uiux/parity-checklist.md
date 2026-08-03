@@ -6,7 +6,7 @@ or `pending`).
 
 | # | Behavior (web reference) | Web | Windows | Android | Apple (pending Mac) |
 |---|---|---|---|---|---|
-| P1 | **Canvas leads, conversation trails.** Canvas is the primary surface and takes the leading edge; the conversation rail sits on the trailing edge | pass — split mode: canvas left, rail right | pass — QSplitter reordered to `[canvas, rail]`, sizes 900/380, canvas stretch=1 and non-collapsible (066) | pass — `SplitShell` reordered to canvas-then-rail (066) | verify |
+| P1 | **Canvas leads, conversation trails.** Canvas is the primary surface and takes the leading edge; the conversation rail sits on the trailing edge | pass — split mode: canvas left, rail right (screenshot) | pass — QSplitter reordered to `[canvas, rail]`, sizes 900/380, canvas stretch=1 and non-collapsible (066); **suite green with the change: 701 passed / 7 skipped** | pass — `SplitShell` reordered to canvas-then-rail (066); **248 unit tests green with the change** | verify |
 | P2 | **Canvas dominance at rest** ≥70% of width when the conversation is collapsed/closed | pass — collapsed mode = full width, floating composer | pass — rail collapsible to the edge, canvas absorbs it | pass — StackedShell canvas is `weight(1f)` above the Messages panel | verify |
 | P3 | **Conversation on demand.** Hidden/collapsed by default at medium widths; reachable in one action; unread indicator when new assistant text arrives while hidden | pass — collapsed drawer + unread badge + peek | divergence (accepted): the desktop rail is persistent-but-collapsible; no unread badge, because a collapsed rail is a deliberate user action on a large screen and the transcript is one drag away | pass — `MessagesPanel` collapsible with count (the original model this feature generalized) | verify |
 | P4 | **Composer never crushed** — input ≥20 visible characters at every width | pass — verified 320→2560 | pass — QSplitter min widths + native line edit | pass — InputBar is full-width in both shells | verify |
@@ -18,6 +18,10 @@ or `pending`).
 | P10 | **Live capability envelope** re-reported on material change | pass — `capability_update` on resize/permission/connection/reduced-motion | n/a — a desktop window reports at registration; resize re-reporting is a follow-up if the native canvas ever needs re-adaptation | n/a — Compose owns its own reflow; ROTE substitution is content-only on natives (documented in `rote/capabilities.py`) | verify |
 
 ## Status summary (2026-08-03)
+
+Both native changes were made and then re-verified by re-running each client's
+suite with the change in place — not merely edited.
+
 
 - **Web**: 8 of 8 applicable rows pass.
 - **Windows**: P1 fixed in this feature; P3/P5/P9 are accepted divergences with
