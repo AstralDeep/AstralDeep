@@ -3202,10 +3202,11 @@
   // 066: inline failed-turn notice — the user's message stays visible, the
   // failure is explained beside the conversation, and retry re-sends the
   // exact content. Never blanks the canvas.
-  function appendFailedTurnNotice(message, retryText) {
+  function appendFailedTurnNotice(message, retryText, generation) {
     var err = document.createElement("div");
     err.className = "astral-chat-error";
     err.setAttribute("role", "alert");
+    if (generation) err.setAttribute("data-turn-generation", generation);
     var line = document.createElement("div");
     line.textContent = message || "The turn could not be completed.";
     err.appendChild(line);
@@ -3250,8 +3251,21 @@
       }
       appendFailedTurnNotice(
         (frame.error && frame.error.message) || "The turn could not be completed.",
-        retryText);
+        retryText, frame.request_generation);
     } catch (e) {}
+  }
+
+  // 066: a turn whose operation reported a non-final failure (e.g. an
+  // execution lease expiring during a slow model call) can still go on to
+  // succeed. When any later content or completion arrives for the same
+  // request generation, retract the failure notice and its status so the
+  // user is never told a turn failed while its answer is on screen.
+  function retractFailedTurnNotice(generation) {
+    if (!generation) return;
+    var nodes = chat.querySelectorAll(
+      '.astral-chat-error[data-turn-generation="' + generation + '"]');
+    for (var i = 0; i < nodes.length; i++) nodes[i].remove();
+    if (statusOwner && statusOwner.indexOf("operation-error:") === 0) setStatus("");
   }
 
   // ---- query-start loading skeleton ----
@@ -3957,6 +3971,7 @@
       // Completion is reconciliation state, not user-facing progress. Clear it
       // only if this operation (or its local submission) still owns the line.
       // A concurrent operation or unrelated notice must remain visible.
+      retractFailedTurnNotice(frame.request_generation);
       restoreActiveStatusOrClear([operationOwner, submissionOwner]);
     } else if (frame.terminal) {
       // Failure/cancellation/retry guidance persists, but is settled and must
