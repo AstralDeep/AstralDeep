@@ -325,7 +325,7 @@ def augment_conversation_snapshot_for_target(
     candidate = _strip_reserved_presentation(snapshot)
     if target != "web":
         return candidate
-    from webrender import render_component_fragment, render_workspace
+    from webrender import render_component_fragment, render_one, render_workspace
 
     workspace_html = render_workspace([], profile)
     workspace = {
@@ -345,14 +345,38 @@ def augment_conversation_snapshot_for_target(
             output.append(component)
         return output
 
+    def augment_text(part: dict[str, Any]) -> None:
+        """Feature 066: give an assistant rail text part its web rendition.
+
+        The words-only rail (062) keeps only the raw markdown SOURCE of a
+        text primitive, so the transcript rendered it inert and the user saw
+        literal ``**asterisks**`` the moment a turn committed. The rendition
+        rides the same transport-only ``_presentation`` envelope the
+        components path uses and goes through the IDENTICAL escape-first
+        pipeline (``render_text`` markdown branch -> ``block_md``), so the
+        semantic value stays authoritative and nothing new is trusted.
+        """
+        rendered = render_one(
+            {"type": "text", "variant": "markdown", "content": part["text"]}
+        )
+        if rendered:
+            part["_presentation"] = {"target": "web", "html": rendered}
+
     transcript = candidate.get("transcript")
     if isinstance(transcript, list):
         for message in transcript:
             if not isinstance(message, dict):
                 continue
+            # Only the assistant's own prose is markdown; a user's typed
+            # asterisks stay inert.
+            is_assistant = message.get("role") == "assistant"
             for part in message.get("parts") or []:
-                if isinstance(part, dict) and part.get("type") == "components":
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "components":
                     part["components"] = augment(part.get("components") or [])
+                elif is_assistant and part.get("type") == "text":
+                    augment_text(part)
     canvas = candidate.get("canvas")
     if isinstance(canvas, dict):
         canvas["components"] = augment(canvas.get("components") or [])
@@ -2785,6 +2809,13 @@ class HistoryManager:
                     preview = _component_preview_text([content_obj])
                 else:
                     preview = str(content_obj)
+                # 066: a preview is an excerpt of PROSE — strip the markdown
+                # so the list never shows literal "**asterisks**". The single
+                # choke point for every consumer (web surface, history_list
+                # frame, REST /api/chats, voice extraction).
+                from webrender.sanitize import plain_md
+
+                preview = plain_md(preview)
                 if len(preview) > PREVIEW_MAX_CHARS:
                     preview = preview[:PREVIEW_MAX_CHARS] + "..."
 

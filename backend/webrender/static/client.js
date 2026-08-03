@@ -3544,7 +3544,21 @@
     message.parts.forEach(function (part) {
       if (part.type === "text") {
         var textPart = document.createElement("div");
-        textPart.textContent = part.text;
+        // 066: render the server's markdown rendition when present (same
+        // escape-first pipeline as the live path); plain text otherwise.
+        var textEnvelope = part._presentation;
+        if (textEnvelope) {
+          textPart.className = "astral-bubble-md";
+          var textTemplate = document.createElement("template");
+          textTemplate.innerHTML = textEnvelope.html;
+          if (textTemplate.content.querySelector("script,iframe,object,embed")) {
+            throw new Error("presentation_unsafe_element");
+          }
+          textPart.appendChild(textTemplate.content);
+          presentations.push({ target: textEnvelope.target, html: textEnvelope.html });
+        } else {
+          textPart.textContent = part.text;
+        }
         built.bubble.appendChild(textPart);
         if (part.text) hasVisibleContent = true;
       } else if (part.type === "components") {
@@ -3609,7 +3623,15 @@
       message.parts.forEach(function (part) {
         if (!part || typeof part !== "object" || Array.isArray(part)) throw new Error("snapshot_part");
         if (part.type === "text") {
-          if (!exactKeys(part, ["text", "type"]) || typeof part.text !== "string") throw new Error("snapshot_text_part");
+          // 066: an assistant text part may carry the transport-only web
+          // rendition envelope (2 keys — never the components' workspace key).
+          if ((!exactKeys(part, ["text", "type"]) && !exactKeys(part, ["_presentation", "text", "type"]))
+              || typeof part.text !== "string") throw new Error("snapshot_text_part");
+          if (part._presentation && (!exactKeys(part._presentation, ["html", "target"])
+              || part._presentation.target !== "web"
+              || typeof part._presentation.html !== "string" || !part._presentation.html)) {
+            throw new Error("snapshot_text_presentation");
+          }
         } else if (part.type === "components") {
           if (!exactKeys(part, ["components", "type"]) || !Array.isArray(part.components)) throw new Error("snapshot_components_part");
         } else if (part.type === "structured") {
