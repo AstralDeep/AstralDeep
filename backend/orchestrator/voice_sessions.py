@@ -1161,6 +1161,23 @@ class VoiceSessionRepository:
                     expected_generation,
                     expected_media_grant_revision,
                 )
+                if reason == "user":
+                    # A user-intent end of an already-ended generation is
+                    # satisfied, not stale: the lease reaper (or another
+                    # server-side end) may have fenced this exact session
+                    # moments earlier, and refusing the owner's DELETE only
+                    # wedges the client on a session that no longer exists.
+                    # The same-device authorization mirrors
+                    # _apply_control_binding: bindings rotate, so only the
+                    # authenticated owner device (already verified by the
+                    # control-binding gate upstream) must match.
+                    if str(row["device_id"]) != control.device_id:
+                        raise VoiceSessionRepositoryError(
+                            "binding_scope_mismatch"
+                        )
+                    if control.binding_expires_at <= now:
+                        raise VoiceSessionRepositoryError("binding_expired")
+                    return _session(row)
                 self._assert_control_replay(row, control, now)
                 if row.get("end_reason") != reason:
                     raise StaleSessionFence("session_already_ended")

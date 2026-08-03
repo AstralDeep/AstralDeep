@@ -133,6 +133,9 @@ class VoiceSessionRuntime:
         self._session_end_handler: (
             Callable[[VoiceSessionRecord, str], Awaitable[None]] | None
         ) = None
+        self._session_state_publisher: (
+            Callable[[VoiceSessionRecord], Awaitable[None]] | None
+        ) = None
         self._active_worker_assignments: dict[str, _ActiveWorkerAssignment] = {}
 
     def bind_speech_mute_handler(
@@ -182,6 +185,40 @@ class VoiceSessionRuntime:
         if self._session_end_handler is not None:
             raise RuntimeError("session_end_handler_already_bound")
         self._session_end_handler = handler
+
+    def bind_session_state_publisher(
+        self,
+        handler: Callable[[VoiceSessionRecord], Awaitable[None]],
+    ) -> None:
+        """Bind the owner-socket ``voice_session_state`` projection push.
+
+        Every client shipped a ``voice_session_state`` reducer in feature 065
+        (context resync, microphone restore, ended teardown) but the server
+        never emitted the frame; a chat-context switch therefore had no
+        asynchronous confirmation and a reaper-ended session left clients
+        believing a session still existed.
+        """
+
+        if not callable(handler):
+            raise TypeError("session state publisher must be callable")
+        if self._session_state_publisher is not None:
+            raise RuntimeError("session_state_publisher_already_bound")
+        self._session_state_publisher = handler
+
+    async def publish_session_state(self, session: VoiceSessionRecord) -> None:
+        """Best-effort durable-state push; REST results stay authoritative."""
+
+        handler = self._session_state_publisher
+        if handler is None:
+            return
+        try:
+            await handler(session)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "voice_session_state_publish_unavailable",
+            )
 
     def release_worker_assignment_fence(
         self,
@@ -509,6 +546,7 @@ class VoiceSessionRuntime:
                 )
             elif session.speech_muted:
                 await self._media.stop_speech(session)
+        await self.publish_session_state(session)
         return _session_projection(session)
 
     async def end_session(
@@ -533,6 +571,7 @@ class VoiceSessionRuntime:
         # the assignment, or LiveKit may have already removed the room; those
         # stale cleanup outcomes must not turn a successful DELETE into 503.
         await self._cleanup_ended_session(ended, "user", fail_open=True)
+        await self.publish_session_state(ended)
         self._record_session_event(
             ended,
             "session",
@@ -1371,6 +1410,50 @@ def _validate_activation(request: Mapping[str, Any]) -> None:
         raise VoiceApiError(reason, status_code=400)
 
 
+def session_state_frame(
+    session: VoiceSessionRecord,
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    """Build the manifest ``voice_session_state`` frame for the owner device.
+
+    The field set matches ``shared/ui_protocol.json`` exactly; state/reason
+    reuse the same derivation the composer projection applies for the owning
+    device, so REST responses, composer frames, and this push cannot disagree.
+    """
+
+    if session.ended_at is not None:
+        state = "ended"
+        if session.end_reason == "idle":
+            reason = "idle_expired"
+        elif session.end_reason == "lease_expired":
+            reason = "network_interrupted"
+        else:
+            reason = "ended_by_user"
+    else:
+        state, reason = _composer_session_state(session, owns_session=True)
+    return {
+        "type": "voice_session_state",
+        "schema_version": "1",
+        "connection_generation": session.owner_connection_generation,
+        "session_id": session.session_id,
+        "generation": session.generation,
+        "media_grant_revision": session.media_grant_revision,
+        "state": state,
+        "reason": reason,
+        "visible_chat_id": session.visible_chat_id,
+        "chat_context_revision": session.chat_context_revision,
+        "applied_chat_context_revision": session.applied_chat_context_revision,
+        "chat_context_synced": session.chat_context_synced,
+        "speech_muted": session.speech_muted,
+        "microphone_enabled": (
+            session.microphone_enabled if session.foreground_active else False
+        ),
+        "foreground_active": session.foreground_active,
+        "occurred_at": _iso(now),
+    }
+
+
 def _session_projection(session: VoiceSessionRecord) -> dict[str, Any]:
     """Return only the non-secret client session vocabulary."""
 
@@ -1545,4 +1628,5 @@ __all__ = [
     "ActivatedVoiceMedia",
     "VoiceMediaActivator",
     "VoiceSessionRuntime",
+    "session_state_frame",
 ]

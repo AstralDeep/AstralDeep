@@ -634,8 +634,14 @@ def _status_for_code(code: object) -> int:
         "voice_takeover_required",
         "stale_generation",
         "stale_media_grant_revision",
+        "stale_chat_context_revision",
         "idempotency_conflict",
         "context_sync_pending",
+        # The repository raises ContextSyncPending("chat_context_sync_pending")
+        # and StaleSessionFence("session_already_ended"); both are ordinary
+        # generation-fence conflicts, not service unavailability (503).
+        "chat_context_sync_pending",
+        "session_already_ended",
         "sensitive_consent_scope_mismatch",
         "sensitive_consent_unavailable",
     }:
