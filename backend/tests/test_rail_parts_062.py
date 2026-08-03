@@ -1,11 +1,14 @@
 """Feature 063 — the chat rail is TEXT ONLY; UI components live on the canvas.
 
-`_rail_parts` post-processes a transcript message's parts: a `components` part is
-reduced to the plain text of any top-level `text` primitives (lifted to `text`
-parts, so no assistant words are lost) and every other component (cards, tables,
-lists, alerts, metrics) is dropped to the canvas; other part kinds pass through,
-and a message whose parts all drop is omitted by the caller. Supersedes the
-feature-062 rule that kept text-like components in the rail. Pure functions.
+`_rail_parts` post-processes a transcript message's parts: a `components` part
+is reduced to the plain text of `text` primitives — top-level ones, plus those
+nested inside TEXT-ONLY wrapper chrome (card/container/collapsible with only
+words inside, the shape `_chat_narrative` persists for multi-paragraph
+answers) — so no assistant words are lost. Every rich component (tables,
+metrics, charts) and every wrapper carrying one is dropped to the canvas;
+other part kinds pass through, and a message whose parts all drop is omitted
+by the caller. Supersedes the feature-062 rule that kept text-like components
+whole in the rail. Pure functions.
 """
 
 from orchestrator.history import _is_rail_text_only, _rail_parts
@@ -76,11 +79,73 @@ class TestRailParts:
         parts = [{"type": "components", "components": [_metric(), _text("the answer")]}]
         assert _rail_parts(parts) == [{"type": "text", "text": "the answer"}]
 
-    def test_text_only_card_is_dropped_to_canvas(self):
-        # feature 063: a card is a UI component — canvas only, never in the chat rail.
+    def test_text_only_card_lifts_its_words(self):
+        # Regression (bug A, 2026-08-03): ``_chat_narrative`` persists a
+        # multi-paragraph answer as Card(title="Response", content=[Text]).
+        # That card is chat-rail narrative — it NEVER enters the workspace —
+        # so the pre-fix rule (drop every card) erased the assistant's answer
+        # from the committed snapshot and every client rendered the turn
+        # answer-less. A text-only wrapper now has its words lifted.
         doc = {"type": "card", "title": "Response", "content": [_text("summary")]}
         parts = [{"type": "components", "components": [doc]}]
+        assert _rail_parts(parts) == [{"type": "text", "text": "summary"}]
+
+    def test_text_only_card_words_keep_paragraph_order(self):
+        doc = {
+            "type": "card",
+            "title": "Response",
+            "content": [_text("first paragraph"), _text("second paragraph")],
+        }
+        parts = [{"type": "components", "components": [doc]}]
+        assert _rail_parts(parts) == [
+            {"type": "text", "text": "first paragraph"},
+            {"type": "text", "text": "second paragraph"},
+        ]
+
+    def test_nested_text_only_wrappers_lift_depth_first(self):
+        inner = {"type": "collapsible", "title": "More", "content": [_text("inner")]}
+        outer = {"type": "container", "children": [_text("outer"), inner]}
+        parts = [{"type": "components", "components": [outer]}]
+        assert _rail_parts(parts) == [
+            {"type": "text", "text": "outer"},
+            {"type": "text", "text": "inner"},
+        ]
+
+    def test_card_with_rich_child_still_drops_whole_to_canvas(self):
+        # A wrapper carrying any rich component is canvas state (the
+        # workspace re-hydrates it) — lifting its text would duplicate the
+        # canvas card's words in the rail (the feature-062 regression).
+        doc = {"type": "card", "title": "Stats", "content": [_text("lead"), _metric()]}
+        parts = [{"type": "components", "components": [doc]}]
         assert _rail_parts(parts) == []
+
+    def test_workspace_anchored_doc_card_still_drops_to_canvas(self):
+        # ``_narrative_doc_card`` persists Card(id="doc_…", content=[Text])
+        # in the transcript AND upserts it into the workspace; its rail twin
+        # is the concise lead. Lifting its words would duplicate the whole
+        # write-up beside the canvas doc, so an author-identified wrapper
+        # keeps the canvas-only rule.
+        doc = {
+            "type": "card",
+            "component_id": "doc_2b7c9d5e1a44",
+            "title": "Specific Aims",
+            "content": [_text("Aim 1: …\n\nAim 2: …")],
+        }
+        parts = [{"type": "components", "components": [doc]}]
+        assert _rail_parts(parts) == []
+
+    def test_synthesized_cc_identity_still_lifts(self):
+        # ``_canonical_component`` stamps identity-less components with a
+        # ``cc_`` fingerprint before the rail reduction runs — that
+        # synthesized identity must not be mistaken for a workspace anchor.
+        doc = {
+            "type": "card",
+            "component_id": "cc_0123456789abcdef01234567",
+            "title": "Response",
+            "content": [_text("the answer")],
+        }
+        parts = [{"type": "components", "components": [doc]}]
+        assert _rail_parts(parts) == [{"type": "text", "text": "the answer"}]
 
     def test_non_mapping_component_entries_are_skipped(self):
         # A malformed transcript row (a stray string beside real components) must
