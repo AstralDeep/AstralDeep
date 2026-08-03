@@ -218,7 +218,9 @@ def test_disconnect_hook_receives_credential_free_cleanup_fence() -> None:
         socket.send_text(json.dumps(_registration()))
         assert socket.receive_json()["type"] == "worker_registered"
 
-    assert cleaned.wait(timeout=1)
+    # Generous bound: the contract is "the hook fires after disconnect", not
+    # "within one second" — a 1s wait flaked on loaded hosted runners.
+    assert cleaned.wait(timeout=10)
     assert cleanups == [("voice-worker-a", ())]
 
 

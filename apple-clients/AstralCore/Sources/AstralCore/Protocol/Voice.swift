@@ -55,8 +55,14 @@ private func voiceTimestampDate(_ value: String) -> Date? {
     return fractional.date(from: value)
 }
 
+/// 2^53 − 1, the largest exactly-representable JSON/JS integer — clamped to
+/// this platform's `Int` so the arm64_32 watch (32-bit `Int`) compiles. A wire
+/// value above `Int.max` cannot be represented there anyway, so the tighter
+/// bound refuses exactly the values integer extraction would refuse.
+private let maximumSafeWireInteger = Int(clamping: 9_007_199_254_740_991 as Int64)
+
 private func voiceInteger(
-    _ value: JSONValue?, minimum: Int = 0, maximum: Int = 9_007_199_254_740_991
+    _ value: JSONValue?, minimum: Int = 0, maximum: Int = maximumSafeWireInteger
 ) -> Int? {
     guard let number = value?.numberValue, number.isFinite, number.rounded() == number,
         number >= Double(minimum), number <= Double(maximum)
@@ -1104,7 +1110,7 @@ public struct VoiceAnnouncementMedia: Sendable, Equatable {
 
 private enum OptionalBoundedInteger {
     static func optionalParse(
-        _ object: [String: JSONValue], _ key: String, minimum: Int, maximum: Int = 9_007_199_254_740_991
+        _ object: [String: JSONValue], _ key: String, minimum: Int, maximum: Int = maximumSafeWireInteger
     ) -> Int?? {
         guard object[key] != nil else { return .some(nil) }
         guard let value = voiceInteger(object[key], minimum: minimum, maximum: maximum) else { return nil }
