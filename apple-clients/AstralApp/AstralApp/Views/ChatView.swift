@@ -37,6 +37,10 @@ struct ChatShell: View {
     // FR-002: the collapse/expand choice persists per device across launches
     // ("" = automatic, "open" pins the split rail, "closed" collapses it).
     @AppStorage("astralChatPref") private var chatPref = ""
+    // The composer draft lives HERE, above the mode switch: a resize across a
+    // breakpoint swaps the shell (new structural identity), and view-local
+    // state would silently discard typed-but-unsent text.
+    @State private var draft = ""
     var body: some View {
         // The outer GeometryReader is itself a layout firewall (063 class): it
         // answers the parent's proposal in O(1) and hands every shell a
@@ -63,11 +67,15 @@ struct ChatShell: View {
     private func shell(size: CGSize) -> some View {
         switch ShellLayoutMode.forWidth(size.width, pref: chatPref) {
         case .stacked:
-            StackedShell()
+            StackedShell(draft: $draft)
         case .collapsed:
-            CollapsedShell(containerSize: size, onPinRail: { chatPref = "open" })
+            CollapsedShell(
+                containerSize: size, draft: $draft,
+                onPinRail: { chatPref = "open" })
         case .split:
-            SplitShell(containerSize: size, onCollapseRail: { chatPref = "closed" })
+            SplitShell(
+                containerSize: size, draft: $draft,
+                onCollapseRail: { chatPref = "closed" })
         }
     }
 }
@@ -76,12 +84,13 @@ struct ChatShell: View {
 
 private struct StackedShell: View {
     @Environment(AppModel.self) var model
+    @Binding var draft: String
     var body: some View {
         VStack(spacing: 0) {
             CanvasArea().frame(maxWidth: .infinity, maxHeight: .infinity)
             if model.turnActive { StepTrailView(lines: model.stepTrail) }
             MessagesPanel()
-            InputBar()
+            InputBar(input: $draft)
         }
     }
 }
@@ -97,6 +106,7 @@ private struct CollapsedShell: View {
     @Environment(AppModel.self) var model
     @Environment(ThemeStore.self) var theme
     let containerSize: CGSize
+    @Binding var draft: String
     let onPinRail: () -> Void
     @State private var drawerOpen = false
     @State private var unread = 0
@@ -161,7 +171,7 @@ private struct CollapsedShell: View {
                     if drawerOpen { unread = 0 }
                 }
                 .padding(.leading, 8).padding(.bottom, 12)
-                InputBar()
+                InputBar(input: $draft)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 18))
@@ -175,6 +185,7 @@ private struct SplitShell: View {
     @Environment(AppModel.self) var model
     @Environment(ThemeStore.self) var theme
     let containerSize: CGSize
+    @Binding var draft: String
     let onCollapseRail: () -> Void
 
     // Web reference: clamp(320px, 28vw, 420px).
@@ -195,7 +206,7 @@ private struct SplitShell: View {
                     ChatList().frame(width: geo.size.width, height: geo.size.height)
                 }
                 if model.turnActive { StepTrailView(lines: model.stepTrail) }
-                InputBar()
+                InputBar(input: $draft)
             }
             .frame(width: railWidth)
         }
@@ -719,7 +730,9 @@ private struct ReasoningSnippet: View {
 private struct InputBar: View {
     @Environment(AppModel.self) var model
     @Environment(ThemeStore.self) var theme
-    @State private var input = ""
+    // Owned by ChatShell so the draft survives layout-mode switches
+    // (stacked/collapsed/split give this view a new structural identity).
+    @Binding var input: String
     @State private var showImporter = false
     #if os(iOS)
         @State private var showPhotoPicker = false
