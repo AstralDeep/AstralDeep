@@ -84,18 +84,19 @@ log with an EMPTY worker log.
 
 ## Screenshots
 
-`screenshots/` in this directory (captured on this Windows box):
+`screenshots/` in this directory (headless Chrome against the local stack):
 
-- `web-split-1264.png` — split mode, welcome canvas, rail with header/collapse
-- `web-collapsed-1264.png` — collapsed mode, full-width canvas, floating composer
-- `web-collapsed-open-1264.png` — the transcript drawer open over the canvas
-- `web-stacked-504.png` — stacked mode (phone width), Messages bar
-- `web-turn-dice.png` — a completed turn: canvas component + rail narrative
-- `web-failed-turn.png` — the failure state (message kept, error near composer)
+- `web-split-1440.png` — split mode: canvas leads, rail trails with header + `»` collapse
+- `web-collapsed-900.png` — collapsed mode: full-width canvas, centered floating composer with the transcript toggle
+- `web-stacked-500.png` — stacked mode (phone width): canvas column + docked composer
 
-Windows and Android screenshots: see the notes in `screenshots/README.md` —
-the Windows client needs a signed-in run, and the Android emulator was not
-launched in this pass.
+Each is the DEFAULT mode for that width, so the set doubles as breakpoint
+evidence. Their canvases are empty because headless exits before the
+authenticated WebSocket hydration lands — the layout is real, the emptiness is
+a capture artifact. See `screenshots/README.md` for the content states that
+were verified interactively but not written to disk, and for why the Windows
+and Android captures are outstanding (both code changes are green on their
+suites: Windows 701 passed / 7 skipped, Android 248 tests).
 
 ## Open items for the Apple pass
 
