@@ -1339,21 +1339,13 @@ body[data-astral-layout="collapsed"] .astral-chat-toggle.astral-peek { animation
   .astral-component .astral-provenance { transition: none; }
 }
 
-/* ---- canvas page toolbar: a real surface, never see-through ---- */
-#astral-canvas-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 6;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin: -16px -16px 4px;
-  padding: 8px 16px;
-  background: rgb(var(--astral-bg) / 0.82);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border-bottom: 1px solid rgb(255 255 255 / 0.05);
-}
+/* ---- canvas page actions, in the top bar ----
+   Export page / Share page were a sticky bar above the canvas content; they
+   now sit in the top bar beside Recent chats and are unhidden by client.js
+   only while the canvas carries the matching workspace flag. `hidden` must
+   beat the flex display, hence the explicit rule. */
+.astral-page-action { display: inline-flex; }
+.astral-page-action[hidden] { display: none; }
 
 /* ---- readable canvas on very wide windows ---- */
 #astral-canvas > .astral-component,

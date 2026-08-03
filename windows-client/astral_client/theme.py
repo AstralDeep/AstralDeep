@@ -164,6 +164,28 @@ QPushButton {{ background: {SURFACE_2}; border: 1px solid {BORDER}; border-radiu
 QPushButton:hover {{ border-color: {PRIMARY}; }}
 QPushButton#primary {{ background: {GRAD}; border: none; color: white; font-weight: 600; }}
 QPushButton#primary:hover {{ background: {SECONDARY}; }}
+/* 066 cross-client style parity: the square, quiet icon button the web client
+   uses for its top-bar and voice controls (.astral-voice-control — 38px, 8px
+   radius, faint border, muted glyph that takes the accent on hover). Windows
+   drew these as full-width text buttons, which is what made its top bar and
+   composer read as a different application beside web/Android. */
+QPushButton#iconGhost, QPushButton#voiceComposerControl[iconOnly="true"] {{
+           min-width: 38px; max-width: 38px; min-height: 34px;
+           padding: 0; font-size: 15px;
+           background: {_rgba(TEXT, 0.05)}; border: 1px solid {_rgba(TEXT, 0.12)};
+           border-radius: 8px; color: {MUTED}; }}
+/* Settings and the paperclip open menus; Qt's dropdown arrow would eat the
+   glyph inside a fixed 38px square (and neither web nor Android draws one). */
+QPushButton#iconGhost::menu-indicator {{ image: none; width: 0; height: 0; }}
+QPushButton#iconGhost:hover, QPushButton#voiceComposerControl[iconOnly="true"]:hover {{
+           color: {TEXT}; border-color: {_rgba(PRIMARY, 0.65)};
+           background: {_rgba(PRIMARY, 0.12)}; }}
+QPushButton#iconGhost:disabled, QPushButton#voiceComposerControl[iconOnly="true"]:disabled {{
+           color: {_rgba(MUTED, 0.5)}; border-color: {_rgba(TEXT, 0.08)}; }}
+/* A pressed toggle (mic on, speech muted) reads as filled, matching the web
+   control's aria-pressed styling — the state is not carried by color alone. */
+QPushButton#voiceComposerControl[iconOnly="true"][pressed="true"] {{
+           background: {_rgba(PRIMARY, 0.22)}; border-color: {PRIMARY}; color: {TEXT}; }}
 QPushButton#danger {{ background: {_SEMANTIC["error"][0]}; border: none; color: white; font-weight: 600; }}
 QPushButton#danger:hover {{ background: #DC2626; }}
 QTableWidget {{ background: {SURFACE}; gridline-color: {BORDER}; border: 1px solid {BORDER};

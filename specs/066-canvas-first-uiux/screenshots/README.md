@@ -23,15 +23,15 @@ the transcript drawer open over the canvas) were verified interactively in the
 same session; re-capture them on the Mac from a signed-in browser if the
 handoff needs them as files.
 
-## Not captured in this pass
+## Native captures (added 2026-08-03, second pass)
 
-- **Windows client**: needs an interactive signed-in run (the offscreen test
-  harness renders no window). The 066 change is structural — `QSplitter`
-  reordered to `[canvas, rail]` with the canvas stretching and
-  non-collapsible, in `windows-client/astral_client/app.py`. Suite is green
-  WITH the change: **701 passed / 7 skipped**.
-- **Android client**: no emulator was launched on this box. The 066 change is
-  the `SplitShell` row reorder in `AdaptiveShell.kt` (canvas then rail).
-  Unit suite green WITH the change: **248 tests**.
+| File | Client | What it shows |
+|---|---|---|
+| `windows-split-final.png` | Windows | The final Windows layout after the style-parity fix: icon-only top bar (＋ New · 💬 · ✨ · 🕓 · ⚙), canvas LEADING with a rendered dice component, conversation rail trailing with markdown-bold text, and a quiet composer (📎 · 🎙 · input · Send) with no permanent voice-state chip. Captured from a live signed-in run against the local orchestrator, mid-turn. |
+| `android-tablet-signin.png` | Android | Sign-in on a 2560×1600 tablet emulator |
+| `android-tablet-01.png`, `android-tablet-02.png` | Android | Canvas LEADING with welcome examples, CONVERSATION rail trailing — the `SplitShell` reorder on a live device |
 
-Both gaps are recorded as open items in ../apple-handoff.md.
+These are the two natives the Mac pass should match the Apple clients against.
+The one visible Windows blemish is the "Accepted" status band above the canvas,
+which is the open phase-trail gap recorded in ../parity-checklist.md — not a
+layout or style defect.

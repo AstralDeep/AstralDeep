@@ -1110,13 +1110,24 @@ class TopBar(QFrame):
         self.new_btn = QPushButton("＋ New")
         self.new_btn.setObjectName("primary")
         self.new_btn.clicked.connect(on_new_chat)
+        # 066 cross-client style parity: web and Android render every top-bar
+        # control EXCEPT "＋ New" as an icon-only button with the name in the
+        # tooltip. Windows carried full text labels ("💬 Recent chats",
+        # "⚙ Settings"), which read as a different application beside them.
+        # Same order, same affordances — icon-only presentation.
         # Recent chats — reopen a past conversation. Speech-bubble glyph, NOT a
         # clock: the clock belongs to the server-model "Workspace timeline"
         # control that sits right beside it (same call as android RootScaffold).
-        self.recent_btn = QPushButton("💬 Recent chats")
+        self.recent_btn = QPushButton("💬")
+        self.recent_btn.setToolTip("Recent chats")
+        self.recent_btn.setAccessibleName("Recent chats")
+        self.recent_btn.setObjectName("iconGhost")
         self.recent_btn.clicked.connect(on_recent)
         # Settings gear → dropdown built from the server-owned menu model.
-        self.settings_btn = QPushButton("⚙ Settings")
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setToolTip("Settings")
+        self.settings_btn.setAccessibleName("Settings")
+        self.settings_btn.setObjectName("iconGhost")
         self._menu = QMenu(self)
         self._menu.setStyleSheet(
             f"QMenu {{ background:{T.SURFACE}; color:{T.TEXT}; border:1px solid {T.BORDER}; padding:4px; }}"
@@ -1153,8 +1164,21 @@ class TopBar(QFrame):
         # Until the server model arrives, offer just Sign out (always safe).
         self._rebuild_menu({"sections": [], "signout": {"label": "Sign out", "action": "logout"}})
 
-    #: Known top-bar action icon names → a leading glyph (falls back to label).
-    _ACTION_ICONS = {"history": "🕓", "pulse": "⚡", "activity": "⚡", "clock": "🕓"}
+    #: Server top-bar action icon names → a glyph (falls back to the label).
+    #: The names are the model's own (`webrender/chrome/menu_model.py`), and the
+    #: glyph choices mirror web's `_ICON_SVG` vocabulary in `chrome/topbar.py`.
+    #: `sparkle` (Pulse digest) was MISSING, so Pulse was the one control still
+    #: rendering as a text label beside its icon-only neighbours; `pulse`,
+    #: `activity` and `clock` are names the server never sends and are kept only
+    #: as tolerant aliases.
+    _ACTION_ICONS = {
+        "sparkle": "✨",
+        "history": "🕓",
+        "gear": "⚙",
+        "pulse": "✨",
+        "activity": "✨",
+        "clock": "🕓",
+    }
 
     def set_menu_model(self, model: dict) -> None:
         """(Re)build the Settings dropdown AND the top-bar action buttons from the
@@ -1183,9 +1207,15 @@ class TopBar(QFrame):
                 continue
             label = a.get("label") or surface
             glyph = self._ACTION_ICONS.get(a.get("icon", ""), "")
-            btn = QPushButton(f"{glyph} {label}".strip() if glyph else str(label))
+            # 066: icon-only with the label in the tooltip, matching web and
+            # Android. A model entry with no known glyph keeps its text so an
+            # unrecognized action is never an unlabelled mystery button.
+            btn = QPushButton(glyph if glyph else str(label))
+            if glyph:
+                btn.setObjectName("iconGhost")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setToolTip(str(label))
+            btn.setAccessibleName(str(label))
             btn.clicked.connect(
                 lambda _checked=False, s=surface, ln=label: self._emit_open(s, ln)
             )
@@ -1765,6 +1795,10 @@ class MainWindow(QMainWindow):
         self._surface_dialog: Optional[SurfaceDialog] = None  # feature 043 (SDUI settings)
         # Feature 044 turn/UI state.
         self._turn_active = False
+        # 066: True while the turn's OWN phase text (chat_status.message or a
+        # live chat_step) owns the status line, so the server's generic
+        # one-second "Working…" operation phase cannot overwrite it.
+        self._turn_phase_active = False
         self._timeline_mode = False
         self._user_prefs: dict = {}
         # Feature 044 (US4): staged chat attachments (chip records) for the turn.
@@ -1919,6 +1953,10 @@ class MainWindow(QMainWindow):
         # and a chips strip (above the input) for staged attachments.
         self._attach_btn = QPushButton("📎")
         self._attach_btn.setToolTip("Attach files")
+        self._attach_btn.setAccessibleName("Attach files")
+        # Same square icon-button treatment as the voice controls beside it and
+        # as web's `.astral-attach-btn` (066 style parity).
+        self._attach_btn.setObjectName("iconGhost")
         self._attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         attach_menu = QMenu(self._attach_btn)
         attach_menu.setStyleSheet(
@@ -3093,6 +3131,10 @@ class MainWindow(QMainWindow):
         empty-state hint (feature 055 US1)."""
         self._turn_active = active
         self.canvas.turn_active = active
+        if not active:
+            # The turn's phases are over — the generic operation label may own
+            # the line again (066).
+            self._turn_phase_active = False
 
     def _begin_silent_refresh(self) -> None:
         """FR-004: silently refresh the session token OFF the GUI thread — the
@@ -3591,9 +3633,26 @@ class MainWindow(QMainWindow):
         elif (
             self._operation_status_shows_activity(status)
             and self._banner_kind != "error"
+            and not self._generic_phase_would_clobber(status)
         ):
             self._show_operation_progress(status)
         return True
+
+    def _generic_phase_would_clobber(self, status: Any) -> bool:
+        """066 (FR-016): keep a chat turn's own phase on the status line.
+
+        One second into EVERY accepted operation the server publishes a
+        generic progress phase labelled "Working…". The status line is
+        last-writer-wins, so that generic label used to overwrite the turn's
+        richer phase (``chat_status.message`` / a live ``chat_step``) — and
+        for a tool-less turn nothing re-asserted it, leaving the user on
+        "Working…" for the whole model call. Terminal/error projections are
+        untouched: they are the failure surface.
+        """
+        return (
+            getattr(status, "action", None) == "chat_message"
+            and self._turn_phase_active
+        )
 
     def _reduce_admission_refusal(self, msg: dict[str, Any]) -> bool:
         """Settle only the client submission named by a pre-admission refusal."""
@@ -3848,19 +3907,34 @@ class MainWindow(QMainWindow):
         elif t == "agent_lifecycle":
             self._reduce_agent_lifecycle(msg)
         elif t == "chat_status":
-            if self._scoped_status_matches(msg):
-                st = msg.get("status")
-                if st in ("thinking", "executing", "fixing", "processing_async",
-                          "combining", "condensing"):
-                    self._set_turn_active(True)
-                    self.topbar.set_status(
-                        msg.get("message") or st, T.VARIANT_COLORS["accent"][0]
-                    )
-                elif st == "done":
-                    self._set_turn_active(False)
-                    # A success snapshot remains the authoritative overlay clear.
-                    self.canvas.resolve_loading()
-                    self._reset_status_line()
+            # 066: the server emits chat_status as {type, status, message} with
+            # NO chat_id and NO generations (orchestrator._send_chat_status), so
+            # the bounded-legacy branch of _scoped_status_matches refused every
+            # frame once a canonical chat had an in-flight request — Windows
+            # showed no phase text at all. A frame that carries scope is still
+            # fenced; an unscoped one is accepted, exactly as the web client
+            # does for the same reason.
+            st = msg.get("status")
+            scoped_ok = self._scoped_status_matches(msg) if any(
+                key in msg
+                for key in ("chat_id", "connection_generation", "request_generation")
+            ) else True
+            if not scoped_ok:
+                pass
+            elif st in ("thinking", "executing", "fixing", "processing_async",
+                        "combining", "condensing"):
+                self._set_turn_active(True)
+                # 066: the turn now owns the status line with its own phase
+                # text; the generic one-second "Working…" must not take it.
+                self._turn_phase_active = True
+                self.topbar.set_status(
+                    msg.get("message") or st, T.VARIANT_COLORS["accent"][0]
+                )
+            elif st == "done":
+                self._set_turn_active(False)
+                # A success snapshot remains the authoritative overlay clear.
+                self.canvas.resolve_loading()
+                self._reset_status_line()
         elif t == "error":
             # A strict refusal precedes any durable operation and therefore has
             # no conversation scope. Any other shape stays on the legacy error
@@ -3915,6 +3989,7 @@ class MainWindow(QMainWindow):
                 step = msg.get("step") or {}
                 name = step.get("name") or step.get("kind") or "step"
                 icon = {"completed": "✓", "errored": "✗"}.get(step.get("status"), "•")
+                self._turn_phase_active = True
                 self.topbar.set_status(f"{icon} {name}", T.VARIANT_COLORS["accent"][0])
         elif t == "tool_progress":
             if self._scoped_status_matches(msg):

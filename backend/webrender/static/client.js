@@ -5012,10 +5012,15 @@
       .catch(function () { showToast("Couldn't create the share link.", "error"); });
   }
 
-  // Canvas toolbar (export page / share page). The server stamps the flag
+  // Canvas page actions (export page / share page). The server stamps the flag
   // state as data-astral-export / data-astral-share on the .dynamic-renderer
-  // root of every full canvas render (renderer.py _workspace_flag_attrs);
-  // the toolbar exists only while a flagged renderer is on the canvas.
+  // root of every full canvas render (renderer.py _workspace_flag_attrs).
+  //
+  // These controls used to be a sticky bar pinned above the canvas content.
+  // They now live in the TOP BAR (chrome/topbar.py renders them `hidden`) and
+  // this function only decides whether each one is shown — so the canvas, the
+  // primary surface, keeps its full height and no strip of chrome sits over
+  // the first component. Same buttons, same classes, same delegated handlers.
   var canvasFlags = { exp: false, share: false };
   function readCanvasFlags() {
     var r = canvas.querySelector(".dynamic-renderer");
@@ -5023,30 +5028,13 @@
     canvasFlags.share = !!(r && r.getAttribute("data-astral-share"));
   }
   function syncCanvasToolbar() {
-    var bar = document.getElementById("astral-canvas-toolbar");
-    var want = (canvasFlags.exp || canvasFlags.share) && !timelineMode
-      && !!canvas.querySelector(".dynamic-renderer");
-    if (!want) {
-      if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
-      return;
-    }
-    if (bar) return; // already up
-    bar = document.createElement("div");
-    bar.id = "astral-canvas-toolbar"; // 066: astral.css owns the surface (solid
-    // backdrop) so the sticky row never see-throughs over component content.
-    if (canvasFlags.exp) bar.appendChild(chromeToolbarButton("⬇ Export page", "astral-export-canvas", null));
-    if (canvasFlags.share) bar.appendChild(chromeToolbarButton("↗ Share page", "astral-share-btn", "canvas"));
-    canvas.insertBefore(bar, canvas.firstChild);
-  }
-  function chromeToolbarButton(text, cls, shareScope) {
-    var b = document.createElement("button");
-    b.type = "button";
-    b.className = cls;
-    b.textContent = text;
-    if (shareScope) b.setAttribute("data-share-scope", shareScope);
-    b.style.cssText = "font-size:11px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);"
-      + "border-radius:8px;padding:3px 10px;color:inherit;cursor:pointer;";
-    return b;
+    // A historical (timeline) view is read-only, and an empty canvas has
+    // nothing to export or share — in both cases neither control appears.
+    var live = !timelineMode && !!canvas.querySelector(".dynamic-renderer");
+    var exportBtn = document.getElementById("astral-export-page-btn");
+    var shareBtn = document.getElementById("astral-share-page-btn");
+    if (exportBtn) exportBtn.hidden = !(live && canvasFlags.exp);
+    if (shareBtn) shareBtn.hidden = !(live && canvasFlags.share);
   }
 
   document.addEventListener("click", function (e) {
