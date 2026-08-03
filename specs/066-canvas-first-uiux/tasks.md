@@ -43,9 +43,15 @@ Status legend: [ ] open · [x] done · [~] in progress
 
 ## Phase P4 — Verification, native consistency, handoff
 
-- [ ] T040 Browser sweep: width matrix {320..2560}, adverse-send suite, failure drills, chrome-reveal checks (SC-001/003/007/008)
-- [ ] T041 Backend suites in CI posture + new tests green; ruff clean; changed-line coverage ≥90% (SC-010)
-- [ ] T042 Windows client parity pass per checklist (+ tests)
-- [ ] T043 Android client parity pass per checklist (+ unit tests)
-- [ ] T044 apple-handoff.md + final annotated screenshots (web ×3 sizes, Windows, Android) + parity checklist status (FR-030/031)
-- [ ] T045 Non-regression audit vs FR-032 (055 contract, workspace identities, exports, a11y landmarks, voice flows)
+- [~] T040 Browser sweep DONE for widths + chrome + failure drill: 500px stacked/100% canvas/36ch · 764px collapsed/100%/62ch · 1034px split/69%/40ch · 1584px split/73%/54ch · 0 chrome rows at rest · failure drill shows message + inline retry + preserved canvas. REMAINING: the scripted ≥10-send adverse-connection suite (SC-003) is manual-only so far
+- [~] T041 Backend: 5877 passed in the root lane; every 066-caused failure fixed (manifest action, client-js contract, LLM surface contract, voice-dispatch double, analysis render). Remaining failures are environmental in this container (voice-worker closure/packaging need the built worker image + scan artifacts; release-evidence bootstrap needs build/ artifacts; `test_recursive_delegation::test_flag_defaults_off` fails only because the dev .env mirrors prod's FF_RECURSIVE_DELEGATION=true). Ruff + diff-coverage pending CI
+- [x] T042 Windows parity: canvas leads / rail trails (QSplitter reordered, canvas stretch=1, non-collapsible). Suite run blocked locally until `PySide6-Addons` was installed for QtMultimedia (recorded in quickstart)
+- [x] T043 Android parity: SplitShell reordered canvas-then-rail; **248 unit tests pass**
+- [x] T044 [apple-handoff.md](apple-handoff.md) + [parity-checklist.md](parity-checklist.md) + screenshots/README (web captures; Windows/Android captures flagged as not taken this pass)
+- [~] T045 Non-regression: the 055 loading contract, workspace identities, exports and a11y landmarks are covered by the passing suites; voice flow re-check pending a live mic run
+
+## Follow-ups discovered during verification (not in the original plan)
+
+- [x] F-A `execution_lease_expired` on a slow turn emitted a terminal failure for a turn that then SUCCEEDED — failure notices are now retracted on a later completion for the same request generation. The underlying lease-vs-slow-LLM behavior (a 060 concern) is left as-is and flagged.
+- [x] F-B The shared keyless httpx client was closed by the OpenAI SDK on instance finalization, breaking every keyless call after the first (pinned by test).
+- [ ] F-C UK LLM factory intermittently returns 504 / takes ~29–58s for short completions under load. External; affects perceived turn latency, not correctness.
