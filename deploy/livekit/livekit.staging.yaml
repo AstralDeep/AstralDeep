@@ -1,0 +1,44 @@
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50099
+  use_external_ip: true
+  advertise_internal_ip: false
+  enable_loopback_candidate: false
+  allow_tcp_fallback: true
+  data_channel_max_buffered_amount: 1048576
+
+room:
+  auto_create: false
+  empty_timeout: 300
+  departure_timeout: 20
+  max_participants: 16
+  enabled_codecs:
+    - mime: audio/opus
+
+turn:
+  enabled: true
+  udp_port: 3478
+  # LiveKit v1.13.5 advertises turns:<domain>:443 from RoomManager even though
+  # external_tls accepts plaintext on this configured listener port. Keep 5349
+  # as the post-termination listener: public 443 -> host 127.0.0.1:15349 -> 5349.
+  tls_port: 5349
+  relay_range_start: 51000
+  relay_range_end: 51099
+  external_tls: true
+  ttl_seconds: 300
+
+logging:
+  # LiveKit v1.13.5 info records include participant-init SDP and ephemeral
+  # ICE credentials. Keep vendor logs above that boundary; AstralDeep owns
+  # content-free session/readiness metrics separately.
+  level: warn
+  pion_level: error
+  json: true
+  sample: false
+
+enable_data_tracks: true

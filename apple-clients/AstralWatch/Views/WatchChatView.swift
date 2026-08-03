@@ -24,7 +24,9 @@ struct WatchChatView: View {
                     if let status = model.statusText {
                         let accessibility = WatchAccessibility060.operationStatus(status)
                         HStack(spacing: 4) {
-                            ProgressView().controlSize(.mini)
+                            if model.statusShowsActivity {
+                                ProgressView().controlSize(.mini)
+                            }
                             Text(InlineMarkdown.attributed(status))
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
@@ -66,6 +68,7 @@ struct WatchChatView: View {
                 .accessibilityIdentifier(WatchAccessibility060.replay.identifier)
                 .accessibilityLabel(WatchAccessibility060.replay.name)
                 .accessibilityValue(WatchAccessibility060.replay.state)
+                .disabled(model.voiceSession != nil)
                 Spacer()
                 let stopAccessibility = WatchAccessibility060.stop(
                     isSpeaking: model.speaker.isSpeaking)
@@ -81,6 +84,7 @@ struct WatchChatView: View {
                 .accessibilityIdentifier(stopAccessibility.identifier)
                 .accessibilityLabel(stopAccessibility.name)
                 .accessibilityValue(stopAccessibility.state)
+                .disabled(model.voiceSession != nil)
             }
         }
         .onDisappear { model.speaker.stop() }  // navigation stops playback
@@ -131,36 +135,158 @@ struct WatchChatView: View {
     /// Send/Discard — garbled dictation never auto-sends (FR-029).
     @ViewBuilder
     private var inputArea: some View {
-        if model.pendingDictation.isEmpty {
-            TextFieldLink(prompt: Text("Ask by voice")) {
-                Label("Ask", systemImage: "mic.fill")
-                    .frame(maxWidth: .infinity)
-            } onSubmit: { text in
-                model.pendingDictation = text
+        VStack(alignment: .leading, spacing: 6) {
+            if let notice = model.voiceTerminalNotice {
+                WatchVoiceTerminalNoticeView(notice: notice)
             }
-            .accessibilityIdentifier(WatchAccessibility060.dictate.identifier)
-            .accessibilityLabel(WatchAccessibility060.dictate.name)
-            .accessibilityValue(WatchAccessibility060.dictate.state)
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("“\(model.pendingDictation)”")
-                    .font(.footnote)
-                    .italic()
-                HStack {
-                    Button("Send") { model.sendPending() }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier(WatchAccessibility060.send.identifier)
-                        .accessibilityLabel(WatchAccessibility060.send.name)
-                        .accessibilityValue(WatchAccessibility060.send.state)
-                    Button("Discard", role: .destructive) {
-                        model.pendingDictation = ""
-                    }
-                    .accessibilityIdentifier(WatchAccessibility060.discard.identifier)
-                    .accessibilityLabel(WatchAccessibility060.discard.name)
-                    .accessibilityValue(WatchAccessibility060.discard.state)
+            voiceConversationControls
+            if model.pendingDictation.isEmpty {
+                TextFieldLink(prompt: Text("Dictate one message")) {
+                    Label("Dictate", systemImage: "text.bubble")
+                        .frame(maxWidth: .infinity)
+                } onSubmit: { text in
+                    model.pendingDictation = text
                 }
-                .font(.footnote)
+                .accessibilityIdentifier(WatchAccessibility060.dictate.identifier)
+                .accessibilityLabel(WatchAccessibility060.dictate.name)
+                .accessibilityValue(WatchAccessibility060.dictate.state)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("“\(model.pendingDictation)”")
+                        .font(.footnote)
+                        .italic()
+                    HStack {
+                        Button("Send") { model.sendPending() }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier(WatchAccessibility060.send.identifier)
+                            .accessibilityLabel(WatchAccessibility060.send.name)
+                            .accessibilityValue(WatchAccessibility060.send.state)
+                        Button("Discard", role: .destructive) {
+                            model.pendingDictation = ""
+                        }
+                        .accessibilityIdentifier(WatchAccessibility060.discard.identifier)
+                        .accessibilityLabel(WatchAccessibility060.discard.name)
+                        .accessibilityValue(WatchAccessibility060.discard.state)
+                    }
+                    .font(.footnote)
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private var voiceConversationControls: some View {
+        if let primary = model.primaryVoiceControl {
+            Button {
+                model.performPrimaryVoiceAction()
+            } label: {
+                Label(primary.label, systemImage: voiceIcon(primary.icon))
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(model.voiceState.active ? WatchBrand.warning : WatchBrand.primary)
+            .disabled(!primary.enabled || primary.busy || model.voiceActivationBusy)
+            .accessibilityIdentifier("voice.conversation.primary")
+            .accessibilityLabel(primary.label)
+            .accessibilityValue(model.voiceStatusLabel)
+
+            if model.voiceState.active || model.voiceState == .suspended {
+                HStack(spacing: 4) {
+                    ForEach(
+                        model.visibleVoiceControls.filter {
+                            [
+                                "voice_microphone_set", "voice_speech_stop",
+                                "voice_speech_mute_set", "voice_visible_chat_update",
+                                "voice_sensitive_recap_request",
+                            ].contains($0.action)
+                        },
+                        id: \.key
+                    ) { control in
+                        Button {
+                            model.performVoiceAction(control.action)
+                        } label: {
+                            Image(systemName: voiceIcon(control.icon))
+                        }
+                        .disabled(!control.enabled || control.busy)
+                        .accessibilityIdentifier("voice.conversation.\(control.key)")
+                        .accessibilityLabel(control.label)
+                        .accessibilityValue(control.pressed ? "On" : "Off")
+                    }
+                }
+            }
+
+            HStack(spacing: 4) {
+                if [.connecting, .speechDetected, .transcribing, .processing, .reconnecting]
+                    .contains(model.voiceState)
+                {
+                    ProgressView().controlSize(.mini)
+                }
+                Text(model.voiceStatusLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("voice.conversation.state")
+            .accessibilityLabel("Voice conversation")
+            .accessibilityValue(model.voiceStatusLabel)
+
+            if let partial = model.voicePartialTranscript, !partial.isEmpty {
+                Text(partial)
+                    .font(.caption2)
+                    .italic()
+                    .lineLimit(3)
+                    .accessibilityLabel("Voice transcript: \(partial)")
+            }
+        }
+    }
+
+    private func voiceIcon(_ serverIcon: String) -> String {
+        switch serverIcon {
+        case "microphone": return "mic.fill"
+        case "device-transfer": return "arrow.triangle.2.circlepath"
+        case "stop", "speaker-stop": return "stop.fill"
+        case "speaker-muted": return "speaker.slash.fill"
+        case "speaker-consent": return "speaker.wave.2.badge.exclamationmark"
+        case "chat": return "bubble.left.and.bubble.right"
+        default: return "waveform"
+        }
+    }
+}
+
+/// Compact wrist presentation for the shared terminal voice notice. The
+/// triangle and explicit title are non-color cues; validated server text stays
+/// inert in `Text`, and dictation controls remain independent below it.
+private struct WatchVoiceTerminalNoticeView: View {
+    let notice: VoiceTerminalNotice
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label(notice.title, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.bold())
+                .foregroundStyle(WatchBrand.error)
+            Text(notice.serverMessage)
+                .font(.caption2)
+            if let guidance = notice.guidance {
+                Text(guidance)
+                    .font(.caption2)
+            }
+        }
+        .padding(7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            WatchBrand.error.opacity(0.14),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(WatchBrand.error.opacity(0.8), lineWidth: 1)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("voice.request.terminal.notice")
+        .accessibilityLabel("Voice request alert")
+        .accessibilityValue(notice.accessibilityLabel)
+        .accessibilityAddTraits(.isStaticText)
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }

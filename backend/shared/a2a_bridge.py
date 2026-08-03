@@ -32,6 +32,7 @@ from a2a.types import (
 from shared.protocol import (
     AgentCard as CustomAgentCard,
     AgentSkill as CustomAgentSkill,
+    MCP_PROTOCOL_VERSION,
     MCPRequest,
     MCPResponse,
 )
@@ -265,12 +266,18 @@ def a2a_message_to_mcp_request(msg: A2AMessage, request_id: Optional[str] = None
                     "name": data["name"],
                     "arguments": data.get("arguments", {}),
                 },
+                protocol_version=MCP_PROTOCOL_VERSION,
+                caller_capabilities={},
+                caller_info={"name": "AstralDeep A2A Bridge", "version": "1.0.0"},
             )
         if data.get("method") == "tools/list":
             return MCPRequest(
                 request_id=request_id or f"a2a_{uuid.uuid4().hex[:12]}",
                 method="tools/list",
                 params={},
+                protocol_version=MCP_PROTOCOL_VERSION,
+                caller_capabilities={},
+                caller_info={"name": "AstralDeep A2A Bridge", "version": "1.0.0"},
             )
     return None
 
@@ -310,7 +317,7 @@ def a2a_response_to_mcp_response(
                         break
             return MCPResponse(
                 request_id=request_id,
-                error={"code": -32000, "message": error_msg, "retryable": False},
+                error={"code": -32603, "message": error_msg, "retryable": False},
             )
 
         result = None
@@ -343,7 +350,7 @@ def a2a_response_to_mcp_response(
 
     return MCPResponse(
         request_id=request_id,
-        error={"code": -32000, "message": f"Unexpected response type: {type(task_or_message)}", "retryable": False},
+        error={"code": -32603, "message": f"Unexpected response type: {type(task_or_message)}", "retryable": False},
     )
 
 

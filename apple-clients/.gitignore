@@ -4,6 +4,8 @@
 .build/
 .swiftpm/
 Package.resolved
+# Feature 065 pins the shipping AstralApp's exact LiveKit transitive graph.
+!AstralApp/AstralApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 
 # Xcode build output
 build/

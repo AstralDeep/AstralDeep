@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Debug-only manifest overlay: the cleartext (non-TLS) allowance for the local
-  dev orchestrator lives here so RELEASE builds carry no networkSecurityConfig
-  at all (platform default: cleartext blocked). The paired resource is
-  src/debug/res/xml/network_security_config.xml.
+  Debug-only manifest overlay: the cleartext (non-TLS) allowance for local
+  orchestrator and LiveKit services lives here so RELEASE builds carry no
+  networkSecurityConfig at all (platform default: cleartext blocked). The
+  paired resource is src/debug/res/xml/network_security_config.xml.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application android:networkSecurityConfig="@xml/network_security_config" />

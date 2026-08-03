@@ -1,0 +1,28 @@
+# The voice-worker build is an explicit allowlist. Keeping the deny-all rule
+# first ensures credentials, user data, generated evidence, caches, other
+# product source, and VCS metadata cannot enter the build context.
+**
+
+!backend/
+!backend/pytest.ini
+!backend/shared/
+!backend/shared/streaming_egress.py
+!backend/shared/voice_transcript.py
+!backend/shared/watch_ticket.py
+!backend/voice_agent/
+!backend/voice_agent/*.py
+!backend/voice_agent/licenses/
+!backend/voice_agent/licenses/SILERO_VAD_LICENSE
+!backend/voice_agent/licenses/SILERO_VAD_PROVENANCE.json
+!backend/voice_agent/models/
+!backend/voice_agent/models/silero_vad.onnx
+!backend/voice_agent/requirements.lock.txt
+!backend/voice_agent/requirements-test.lock.txt
+!backend/voice_agent/tests/
+!backend/voice_agent/tests/*.py
+
+!tooling/
+!tooling/python-ci/
+!tooling/python-ci/requirements.lock.txt
+!tooling/voice-worker/
+!tooling/voice-worker/verify_no_libgomp.py

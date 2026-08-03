@@ -180,6 +180,8 @@ def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> N
     expected_scripts = {
         "check_changed_coverage.py",
         "check_doc_links.py",
+        "export_xccov_line_coverage.py",
+        "extract_release_artifact.py",
         "prepare_release_evidence.py",
         "run_android_next_major_canary.py",
         "run_candidate_staging.py",
@@ -201,6 +203,7 @@ def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> N
         "backend/tests/test_candidate_staging_060.py",
         "backend/tests/test_release_evidence_validator.py",
         "backend/tests/test_prepare_release_evidence_060.py",
+        "backend/tests/test_extract_release_artifact_060.py",
         "backend/tests/test_release_workflows_060.py",
         "backend/tests/test_release_evidence_producers.py",
         "windows-client/tests/test_release_lock_060.py",
@@ -226,7 +229,8 @@ def test_windows_release_bridge_signs_archived_bytes_without_rebuild() -> None:
 
     No rebuild toolchain, no requirements install, no ad-hoc tool install:
     sigstore comes only from its SHA-pinned official action, and the bridge
-    holds read/read/id-token permissions — never release-mutation authority.
+    holds read/read/attestation-read/id-token permissions — never
+    release-mutation authority.
     """
 
     workflow = WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
@@ -247,7 +251,12 @@ def test_windows_release_bridge_signs_archived_bytes_without_rebuild() -> None:
             r"(?m)^\s*([a-z-]+):\s*(read|write)\s*(?:#.*)?$", workflow
         )
     }
-    assert grants == {"contents: read", "actions: read", "id-token: write"}
+    assert grants == {
+        "contents: read",
+        "actions: read",
+        "attestations: read",
+        "id-token: write",
+    }
 
 
 def test_ci_only_python_manifest_cannot_enter_product_artifacts() -> None:

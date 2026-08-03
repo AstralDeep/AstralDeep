@@ -13,6 +13,12 @@ import sys
 # Ensure shared module is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from shared.database import Database
+from orchestrator.conversation_publication import (
+    canonical_components_sha256,
+    canonical_layouts_sha256,
+    current_conversation_publication,
+    merge_conversation_publication,
+)
 from orchestrator.scheduled_publication import current_scheduled_history_stage
 
 logger = logging.getLogger('HistoryManager')
@@ -420,9 +426,576 @@ class ConversationCommitRepository:
                 else int(row["committed_render_revision"])
             ),
             "state": str(row["state"]),
+            "publication_role": str(row.get("publication_role") or "atomic"),
+            "parent_commit_id": (
+                None
+                if row.get("parent_commit_id") is None
+                else str(row["parent_commit_id"])
+            ),
+            "execution_base_render_revision": (
+                None
+                if row.get("execution_base_render_revision") is None
+                else int(row["execution_base_render_revision"])
+            ),
+            "publication_rebase_count": int(
+                row.get("publication_rebase_count") or 0
+            ),
             "committed_at": (
                 None if row["committed_at"] is None else _rfc3339(row["committed_at"])
             ),
+        }
+
+    @staticmethod
+    def _assert_operation_authority(
+        operation: Any,
+        *,
+        owner_user_id: str,
+        chat_id: str,
+        request_generation: str,
+        connection_generation: str,
+        operation_owner: Any,
+    ) -> None:
+        expected_scope = getattr(operation_owner, "owner_scope", None)
+        if operation.owner_scope != expected_scope:
+            raise ConversationCommitConflict(
+                "conversation operation owner scope changed"
+            )
+        if str(getattr(operation.owner_scope, "value", "")) != "user":
+            raise ConversationCommitConflict(
+                "voice publication requires user operation ownership"
+            )
+        if (
+            operation.owner_user_id != owner_user_id
+            or getattr(operation_owner, "owner_user_id", None) != owner_user_id
+        ):
+            raise ConversationCommitConflict("conversation operation owner changed")
+        if operation.chat_id != chat_id:
+            raise ConversationCommitConflict("conversation operation chat changed")
+        if str(operation.request_generation or "") != request_generation:
+            raise ConversationCommitConflict(
+                "conversation operation request generation changed"
+            )
+        actual_connection = (
+            None
+            if operation.connection_generation is None
+            else str(operation.connection_generation)
+        )
+        if actual_connection != connection_generation:
+            raise ConversationCommitConflict(
+                "conversation operation connection generation changed"
+            )
+
+    @staticmethod
+    def _load_component_view(
+        cursor: Any,
+        *,
+        chat_id: str,
+        owner_user_id: str,
+        commit_id: str | None,
+        revision: int,
+    ) -> list[dict[str, Any]]:
+        if revision == 0:
+            cursor.execute(
+                "SELECT * FROM saved_components WHERE chat_id = %s "
+                "AND user_id = %s AND conversation_commit_id IS NULL "
+                "AND committed_render_revision IS NULL "
+                "ORDER BY COALESCE(position, 2147483647), created_at, id",
+                (chat_id, owner_user_id),
+            )
+        else:
+            if commit_id is None:
+                raise ConversationSnapshotInvalid(
+                    "conversation component anchor is unavailable"
+                )
+            cursor.execute(
+                "SELECT * FROM saved_components WHERE chat_id = %s "
+                "AND user_id = %s AND conversation_commit_id = %s "
+                "AND committed_render_revision = %s "
+                "ORDER BY COALESCE(position, 2147483647), created_at, id",
+                (chat_id, owner_user_id, commit_id, revision),
+            )
+        components: list[dict[str, Any]] = []
+        for position, row in enumerate(cursor.fetchall()):
+            try:
+                raw = json.loads(row["component_data"])
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ConversationSnapshotInvalid(
+                    "saved canvas component is malformed"
+                ) from exc
+            if isinstance(raw, dict) and row.get("component_id"):
+                raw["component_id"] = str(row["component_id"])
+            components.append(_canonical_component(raw, position))
+        return components
+
+    @staticmethod
+    def _load_layout_view(
+        cursor: Any,
+        *,
+        chat_id: str,
+        owner_user_id: str,
+        commit_id: str | None,
+        revision: int,
+    ) -> list[dict[str, Any]]:
+        if revision == 0:
+            cursor.execute(
+                "SELECT layout_key, position, layout FROM workspace_layout "
+                "WHERE chat_id = %s AND user_id = %s "
+                "AND conversation_commit_id IS NULL "
+                "AND committed_render_revision IS NULL "
+                "ORDER BY position, id",
+                (chat_id, owner_user_id),
+            )
+        else:
+            if commit_id is None:
+                raise ConversationSnapshotInvalid(
+                    "conversation layout anchor is unavailable"
+                )
+            cursor.execute(
+                "SELECT layout_key, position, layout FROM workspace_layout "
+                "WHERE chat_id = %s AND user_id = %s "
+                "AND conversation_commit_id = %s "
+                "AND committed_render_revision = %s "
+                "ORDER BY position, id",
+                (chat_id, owner_user_id, commit_id, revision),
+            )
+        layouts: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            try:
+                tree = json.loads(row["layout"])
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ConversationSnapshotInvalid(
+                    "saved canvas layout is malformed"
+                ) from exc
+            if not isinstance(tree, list):
+                raise ConversationSnapshotInvalid(
+                    "saved canvas layout is malformed"
+                )
+            layouts.append(
+                {
+                    "layout_key": str(row["layout_key"]),
+                    "position": int(row["position"]),
+                    "layout": tree,
+                }
+            )
+        return layouts
+
+    def _insert_component_view(
+        self,
+        cursor: Any,
+        *,
+        chat_id: str,
+        owner_user_id: str,
+        commit_id: str,
+        revision: int,
+        components: Sequence[Mapping[str, Any]],
+        current_ms: int,
+    ) -> None:
+        for position, component in enumerate(components):
+            cursor.execute(
+                """
+                INSERT INTO saved_components (
+                    id, chat_id, user_id, component_data, component_type,
+                    title, created_at, component_id, position, updated_at,
+                    conversation_commit_id, committed_render_revision
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    str(self.uuid_factory()),
+                    chat_id,
+                    owner_user_id,
+                    json.dumps(
+                        component,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ),
+                    component["type"],
+                    str(component.get("title") or component["type"])[:255],
+                    current_ms,
+                    component["component_id"],
+                    position,
+                    current_ms,
+                    commit_id,
+                    revision,
+                ),
+            )
+
+    def _insert_layout_view(
+        self,
+        cursor: Any,
+        *,
+        chat_id: str,
+        owner_user_id: str,
+        commit_id: str,
+        revision: int,
+        layouts: Sequence[Mapping[str, Any]],
+        current_ms: int,
+    ) -> None:
+        for layout in layouts:
+            cursor.execute(
+                """
+                INSERT INTO workspace_layout (
+                    chat_id, user_id, layout_key, position, layout,
+                    created_at, updated_at, conversation_commit_id,
+                    committed_render_revision
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    chat_id,
+                    owner_user_id,
+                    layout["layout_key"],
+                    layout["position"],
+                    json.dumps(
+                        layout["layout"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ),
+                    current_ms,
+                    current_ms,
+                    commit_id,
+                    revision,
+                ),
+            )
+
+    def accept_voice_turn(
+        self,
+        *,
+        chat_id: str,
+        owner_user_id: str,
+        request_generation: Any,
+        result_request_generation: Any,
+        connection_generation: Any,
+        user_content: Any,
+        operation_fence: Any,
+        operation_owner: Any,
+        accept_turn: Callable[..., Any],
+    ) -> dict[str, Any]:
+        """Commit one user bubble and allocate its private result atomically.
+
+        This is the short voice admission/snapshot critical section. The
+        caller already owns a running no-queue execution fence. The callback
+        joins this exact cursor to bind the content-free ``voice_turn`` row,
+        so acknowledgement is impossible before both conversation commits and
+        the voice correlation are durable.
+        """
+
+        chat_id = _uuid4_text(chat_id, "chat_id")
+        owner_user_id = _required_text(owner_user_id, "owner_user_id")
+        request_generation = _uuid4_text(
+            request_generation, "request_generation"
+        )
+        result_request_generation = _uuid4_text(
+            result_request_generation, "result_request_generation"
+        )
+        connection_generation = _uuid4_text(
+            connection_generation, "connection_generation"
+        )
+        if result_request_generation == request_generation:
+            raise ValueError("result request generation must be distinct")
+        if operation_fence is None or operation_owner is None:
+            raise ValueError("voice acceptance requires operation authority")
+        if not callable(accept_turn):
+            raise TypeError("accept_turn must be callable")
+        message = self._validate_messages(
+            [{"role": "user", "content": user_content}]
+        )[0]
+        acceptance_commit_id = _uuid4_text(
+            self.uuid_factory(), "acceptance_commit_id"
+        )
+        result_commit_id = _uuid4_text(self.uuid_factory(), "result_commit_id")
+
+        with self._transaction(operation_fence) as cursor:
+            operation = self.operation_coordinator.assert_current_execution(
+                operation_fence,
+                transaction=cursor,
+            )
+            self._assert_operation_authority(
+                operation,
+                owner_user_id=owner_user_id,
+                chat_id=chat_id,
+                request_generation=request_generation,
+                connection_generation=connection_generation,
+                operation_owner=operation_owner,
+            )
+            chat = self._chat_for_update(cursor, chat_id, owner_user_id)
+            cursor.execute(
+                "SELECT * FROM conversation_commit WHERE chat_id = %s "
+                "AND request_generation = %s",
+                (chat_id, request_generation),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                if (
+                    str(existing["owner_user_id"]) != owner_user_id
+                    or str(existing.get("publication_role") or "atomic")
+                    != "user_acceptance"
+                    or existing["state"] != "committed"
+                    or str(existing.get("operation_id") or "")
+                    != str(operation_fence.operation_id)
+                    or int(existing.get("operation_execution_generation") or 0)
+                    != int(operation_fence.execution_generation)
+                ):
+                    raise ConversationCommitConflict(
+                        "voice acceptance idempotency identity changed"
+                    )
+                cursor.execute(
+                    "SELECT * FROM conversation_commit WHERE chat_id = %s "
+                    "AND request_generation = %s AND parent_commit_id = %s",
+                    (
+                        chat_id,
+                        result_request_generation,
+                        existing["commit_id"],
+                    ),
+                )
+                result = cursor.fetchone()
+                if result is None or str(
+                    result.get("publication_role") or "atomic"
+                ) != "assistant_result":
+                    raise ConversationCommitConflict(
+                        "voice result idempotency identity changed"
+                    )
+                cursor.execute(
+                    "SELECT id FROM messages WHERE conversation_commit_id = %s "
+                    "AND role = 'user' ORDER BY commit_position LIMIT 1",
+                    (existing["commit_id"],),
+                )
+                accepted_message = cursor.fetchone()
+                if accepted_message is None:
+                    raise ConversationSnapshotInvalid(
+                        "voice acceptance message is unavailable"
+                    )
+                return {
+                    "acceptance": self._commit_record(existing),
+                    "result": self._commit_record(result),
+                    "message_id": int(accepted_message["id"]),
+                    "accepted_turn": None,
+                    "components": self._load_component_view(
+                        cursor,
+                        chat_id=chat_id,
+                        owner_user_id=owner_user_id,
+                        commit_id=str(existing["commit_id"]),
+                        revision=int(existing["committed_render_revision"]),
+                    ),
+                    "layouts": self._load_layout_view(
+                        cursor,
+                        chat_id=chat_id,
+                        owner_user_id=owner_user_id,
+                        commit_id=str(existing["commit_id"]),
+                        revision=int(existing["committed_render_revision"]),
+                    ),
+                }
+
+            base_revision = int(chat.get("render_revision") or 0)
+            base_commit_id = (
+                None
+                if base_revision == 0
+                else str(chat.get("conversation_commit_id") or "")
+            )
+            if base_revision > 0 and not base_commit_id:
+                raise ConversationSnapshotInvalid(
+                    "current conversation commit anchor is unavailable"
+                )
+            components = self._load_component_view(
+                cursor,
+                chat_id=chat_id,
+                owner_user_id=owner_user_id,
+                commit_id=base_commit_id,
+                revision=base_revision,
+            )
+            layouts = self._load_layout_view(
+                cursor,
+                chat_id=chat_id,
+                owner_user_id=owner_user_id,
+                commit_id=base_commit_id,
+                revision=base_revision,
+            )
+            component_digest = canonical_components_sha256(components)
+            layout_digest = canonical_layouts_sha256(layouts)
+            next_revision = base_revision + 1
+            operation_id = str(operation_fence.operation_id)
+            operation_generation = int(operation_fence.execution_generation)
+            cursor.execute("SELECT clock_timestamp() AS current_time")
+            current_time = cursor.fetchone()["current_time"]
+            current_ms = int(current_time.timestamp() * 1000)
+
+            cursor.execute(
+                """
+                INSERT INTO conversation_commit (
+                    commit_id, chat_id, owner_user_id, request_generation,
+                    operation_id, operation_execution_generation,
+                    base_render_revision, state, publication_role,
+                    execution_base_commit_id,
+                    execution_base_render_revision,
+                    execution_base_components_sha256,
+                    execution_base_layouts_sha256
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, 'staged',
+                    'user_acceptance', %s, %s, %s, %s
+                )
+                """,
+                (
+                    acceptance_commit_id,
+                    chat_id,
+                    owner_user_id,
+                    request_generation,
+                    operation_id,
+                    operation_generation,
+                    base_revision,
+                    base_commit_id,
+                    base_revision,
+                    component_digest,
+                    layout_digest,
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO messages (
+                    chat_id, user_id, role, content, timestamp,
+                    conversation_commit_id, commit_position,
+                    committed_render_revision
+                ) VALUES (%s, %s, 'user', %s, %s, %s, 0, %s)
+                RETURNING id
+                """,
+                (
+                    chat_id,
+                    owner_user_id,
+                    json.dumps(
+                        message["content"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ),
+                    current_ms,
+                    acceptance_commit_id,
+                    next_revision,
+                ),
+            )
+            message_id = int(cursor.fetchone()["id"])
+            self._insert_component_view(
+                cursor,
+                chat_id=chat_id,
+                owner_user_id=owner_user_id,
+                commit_id=acceptance_commit_id,
+                revision=next_revision,
+                components=components,
+                current_ms=current_ms,
+            )
+            self._insert_layout_view(
+                cursor,
+                chat_id=chat_id,
+                owner_user_id=owner_user_id,
+                commit_id=acceptance_commit_id,
+                revision=next_revision,
+                layouts=layouts,
+                current_ms=current_ms,
+            )
+            cursor.execute(
+                """
+                UPDATE conversation_commit
+                SET state = 'committed', committed_render_revision = %s,
+                    committed_at = %s, execution_base_commit_id = NULL
+                WHERE commit_id = %s AND state = 'staged'
+                RETURNING *
+                """,
+                (next_revision, current_time, acceptance_commit_id),
+            )
+            acceptance = cursor.fetchone()
+            if acceptance is None:
+                raise ConversationCommitConflict(
+                    "voice acceptance publication lost its CAS"
+                )
+            cursor.execute(
+                """
+                UPDATE chats
+                SET render_revision = %s, snapshot_committed_at = %s,
+                    conversation_commit_id = %s,
+                    has_saved_components = %s, updated_at = %s
+                WHERE id = %s AND user_id = %s AND render_revision = %s
+                """,
+                (
+                    next_revision,
+                    current_time,
+                    acceptance_commit_id,
+                    bool(components),
+                    current_ms,
+                    chat_id,
+                    owner_user_id,
+                    base_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ConversationCommitConflict(
+                    "voice acceptance revision CAS is stale"
+                )
+
+            cursor.execute(
+                """
+                INSERT INTO conversation_commit (
+                    commit_id, chat_id, owner_user_id, request_generation,
+                    operation_id, operation_execution_generation,
+                    base_render_revision, state, publication_role,
+                    parent_commit_id, execution_base_commit_id,
+                    execution_base_render_revision,
+                    execution_base_components_sha256,
+                    execution_base_layouts_sha256
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, 'staged',
+                    'assistant_result', %s, %s, %s, %s, %s
+                )
+                RETURNING *
+                """,
+                (
+                    result_commit_id,
+                    chat_id,
+                    owner_user_id,
+                    result_request_generation,
+                    operation_id,
+                    operation_generation,
+                    next_revision,
+                    acceptance_commit_id,
+                    acceptance_commit_id,
+                    next_revision,
+                    component_digest,
+                    layout_digest,
+                ),
+            )
+            result = cursor.fetchone()
+            result_revision = next_revision + 1
+            self._insert_component_view(
+                cursor,
+                chat_id=chat_id,
+                owner_user_id=owner_user_id,
+                commit_id=result_commit_id,
+                revision=result_revision,
+                components=components,
+                current_ms=current_ms,
+            )
+            self._insert_layout_view(
+                cursor,
+                chat_id=chat_id,
+                owner_user_id=owner_user_id,
+                commit_id=result_commit_id,
+                revision=result_revision,
+                layouts=layouts,
+                current_ms=current_ms,
+            )
+            accepted_turn = accept_turn(
+                cursor=cursor,
+                message_id=message_id,
+                acceptance_commit_id=acceptance_commit_id,
+                result_commit_id=result_commit_id,
+            )
+        return {
+            "acceptance": self._commit_record(acceptance),
+            "result": self._commit_record(result),
+            "message_id": message_id,
+            "accepted_turn": accepted_turn,
+            "components": components,
+            "layouts": layouts,
         }
 
     def stage_commit(
@@ -614,7 +1187,11 @@ class ConversationCommitRepository:
                 cursor, str(staged["chat_id"]), owner_user_id
             )
             base_revision = int(staged["base_render_revision"])
-            if int(chat.get("render_revision") or 0) != base_revision:
+            publication_role = str(staged.get("publication_role") or "atomic")
+            if (
+                publication_role != "assistant_result"
+                and int(chat.get("render_revision") or 0) != base_revision
+            ):
                 raise ConversationCommitConflict("conversation base revision changed")
             cursor.execute(
                 "SELECT COUNT(*) AS count FROM saved_components "
@@ -728,7 +1305,11 @@ class ConversationCommitRepository:
                 cursor, str(staged["chat_id"]), owner_user_id
             )
             base_revision = int(staged["base_render_revision"])
-            if int(chat.get("render_revision") or 0) != base_revision:
+            if (
+                str(staged.get("publication_role") or "atomic")
+                != "assistant_result"
+                and int(chat.get("render_revision") or 0) != base_revision
+            ):
                 raise ConversationCommitConflict("conversation base revision changed")
             cursor.execute(
                 "SELECT COALESCE(MAX(commit_position), -1) + 1 AS position "
@@ -800,13 +1381,18 @@ class ConversationCommitRepository:
                 (commit_id,),
             )
             cursor.execute(
+                "DELETE FROM workspace_layout WHERE conversation_commit_id = %s",
+                (commit_id,),
+            )
+            cursor.execute(
                 "DELETE FROM messages WHERE conversation_commit_id = %s",
                 (commit_id,),
             )
             cursor.execute(
                 """
                 UPDATE conversation_commit
-                SET state = 'aborted', aborted_at = clock_timestamp()
+                SET state = 'aborted', aborted_at = clock_timestamp(),
+                    execution_base_commit_id = NULL
                 WHERE commit_id = %s AND state = 'staged'
                 RETURNING *
                 """,
@@ -948,6 +1534,303 @@ class ConversationCommitRepository:
                 ),
             )
 
+    @staticmethod
+    def _append_publication_conflict_notice(
+        cursor: Any,
+        *,
+        commit_id: str,
+        next_revision: int,
+    ) -> None:
+        """Append one fixed safe notice to the result's final assistant bubble."""
+
+        cursor.execute(
+            "SELECT id, content FROM messages WHERE conversation_commit_id = %s "
+            "AND role = 'assistant' ORDER BY commit_position DESC LIMIT 1 "
+            "FOR UPDATE",
+            (commit_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise ConversationSnapshotInvalid(
+                "conflicted result has no assistant message"
+            )
+        try:
+            content = json.loads(row["content"])
+        except (json.JSONDecodeError, TypeError):
+            content = row["content"]
+        notice = {
+            "type": "alert",
+            "variant": "warning",
+            "message": (
+                "Some canvas changes from this result conflicted with newer "
+                "work. The newer canvas version was preserved."
+            ),
+        }
+        if isinstance(content, list):
+            updated = [*content, notice]
+        elif isinstance(content, Mapping):
+            updated = [dict(content), notice]
+        elif isinstance(content, str) and content:
+            updated = [{"type": "text", "content": content}, notice]
+        else:
+            updated = [notice]
+        cursor.execute(
+            "UPDATE messages SET content = %s, committed_render_revision = %s "
+            "WHERE id = %s AND conversation_commit_id = %s",
+            (
+                json.dumps(
+                    updated,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ),
+                next_revision,
+                row["id"],
+                commit_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ConversationCommitConflict(
+                "conversation conflict notice update was lost"
+            )
+
+    def publish_voice_result(
+        self,
+        *,
+        commit_id: Any,
+        owner_user_id: str,
+        canvas_components: Sequence[Mapping[str, Any]],
+        canvas_layouts: Optional[Sequence[Mapping[str, Any]]] = None,
+        operation_fence: Any,
+    ) -> dict[str, Any]:
+        """Three-way publish one private assistant result exactly once.
+
+        The execution base and candidate are immutable inputs to this method.
+        A short row-locked transaction rebases them over the latest committed
+        chat view, publishes only this commit's rows, and terminalizes the
+        operation fence. No LLM, agent, confirmation, tool, or side effect is
+        invoked by publication or by a conflict retry.
+        """
+
+        commit_id = _uuid4_text(commit_id, "commit_id")
+        owner_user_id = _required_text(owner_user_id, "owner_user_id")
+        if operation_fence is None:
+            raise ValueError("voice result publication requires an execution fence")
+        candidate_components = self._validate_canvas(canvas_components)
+        candidate_layouts = self._validate_layouts(canvas_layouts)
+
+        with self._transaction(operation_fence) as cursor:
+            staged = self._staged_for_update(cursor, commit_id, owner_user_id)
+            if staged["state"] == "committed":
+                return self._commit_record(staged)
+            if staged["state"] != "staged":
+                raise ConversationCommitConflict("conversation commit is terminal")
+            if str(staged.get("publication_role") or "atomic") != "assistant_result":
+                raise ConversationCommitConflict(
+                    "voice result publication role changed"
+                )
+            self._assert_matching_operation_fence(staged, operation_fence)
+            self.operation_coordinator.assert_current_execution(
+                operation_fence,
+                transaction=cursor,
+            )
+            chat = self._chat_for_update(
+                cursor, str(staged["chat_id"]), owner_user_id
+            )
+            execution_base_revision = int(
+                staged.get("execution_base_render_revision") or 0
+            )
+            execution_base_commit_id = (
+                None
+                if staged.get("execution_base_commit_id") is None
+                else str(staged["execution_base_commit_id"])
+            )
+            if execution_base_revision < 1 or execution_base_commit_id is None:
+                raise ConversationSnapshotInvalid(
+                    "voice result execution base is unavailable"
+                )
+            base_components = self._load_component_view(
+                cursor,
+                chat_id=str(staged["chat_id"]),
+                owner_user_id=owner_user_id,
+                commit_id=execution_base_commit_id,
+                revision=execution_base_revision,
+            )
+            base_layouts = self._load_layout_view(
+                cursor,
+                chat_id=str(staged["chat_id"]),
+                owner_user_id=owner_user_id,
+                commit_id=execution_base_commit_id,
+                revision=execution_base_revision,
+            )
+            if (
+                canonical_components_sha256(base_components)
+                != str(staged.get("execution_base_components_sha256") or "")
+                or canonical_layouts_sha256(base_layouts)
+                != str(staged.get("execution_base_layouts_sha256") or "")
+            ):
+                raise ConversationSnapshotInvalid(
+                    "voice result execution base digest changed"
+                )
+            staged_components = self._load_component_view(
+                cursor,
+                chat_id=str(staged["chat_id"]),
+                owner_user_id=owner_user_id,
+                commit_id=commit_id,
+                revision=int(staged["base_render_revision"]) + 1,
+            )
+            if canonical_components_sha256(staged_components) != (
+                canonical_components_sha256(candidate_components)
+            ):
+                raise ConversationSnapshotInvalid(
+                    "voice result candidate component stage changed"
+                )
+            latest_revision = int(chat.get("render_revision") or 0)
+            latest_commit_id = (
+                None
+                if latest_revision == 0
+                else str(chat.get("conversation_commit_id") or "")
+            )
+            if latest_revision > 0 and not latest_commit_id:
+                raise ConversationSnapshotInvalid(
+                    "latest conversation commit anchor is unavailable"
+                )
+            latest_components = self._load_component_view(
+                cursor,
+                chat_id=str(staged["chat_id"]),
+                owner_user_id=owner_user_id,
+                commit_id=latest_commit_id,
+                revision=latest_revision,
+            )
+            latest_layouts = self._load_layout_view(
+                cursor,
+                chat_id=str(staged["chat_id"]),
+                owner_user_id=owner_user_id,
+                commit_id=latest_commit_id,
+                revision=latest_revision,
+            )
+            merge = merge_conversation_publication(
+                base_components=base_components,
+                candidate_components=candidate_components,
+                latest_components=latest_components,
+                base_layouts=base_layouts,
+                candidate_layouts=candidate_layouts,
+                latest_layouts=latest_layouts,
+            )
+            next_revision = latest_revision + 1
+            cursor.execute("SELECT clock_timestamp() AS current_time")
+            current_time = cursor.fetchone()["current_time"]
+            current_ms = int(current_time.timestamp() * 1000)
+            cursor.execute(
+                "DELETE FROM saved_components WHERE conversation_commit_id = %s",
+                (commit_id,),
+            )
+            cursor.execute(
+                "DELETE FROM workspace_layout WHERE conversation_commit_id = %s",
+                (commit_id,),
+            )
+            self._insert_component_view(
+                cursor,
+                chat_id=str(staged["chat_id"]),
+                owner_user_id=owner_user_id,
+                commit_id=commit_id,
+                revision=next_revision,
+                components=merge.components,
+                current_ms=current_ms,
+            )
+            self._insert_layout_view(
+                cursor,
+                chat_id=str(staged["chat_id"]),
+                owner_user_id=owner_user_id,
+                commit_id=commit_id,
+                revision=next_revision,
+                layouts=merge.layouts,
+                current_ms=current_ms,
+            )
+            cursor.execute(
+                "SELECT commit_position FROM messages "
+                "WHERE conversation_commit_id = %s ORDER BY commit_position",
+                (commit_id,),
+            )
+            message_positions = [
+                int(row["commit_position"]) for row in cursor.fetchall()
+            ]
+            if message_positions != list(range(len(message_positions))):
+                raise ConversationSnapshotInvalid(
+                    "voice result messages are incomplete"
+                )
+            cursor.execute(
+                "UPDATE messages SET committed_render_revision = %s "
+                "WHERE conversation_commit_id = %s",
+                (next_revision, commit_id),
+            )
+            if merge.conflicted:
+                self._append_publication_conflict_notice(
+                    cursor,
+                    commit_id=commit_id,
+                    next_revision=next_revision,
+                )
+            cursor.execute(
+                """
+                UPDATE conversation_commit
+                SET state = 'committed', base_render_revision = %s,
+                    committed_render_revision = %s, committed_at = %s,
+                    execution_base_commit_id = NULL,
+                    publication_rebase_count = publication_rebase_count + %s
+                WHERE commit_id = %s AND state = 'staged'
+                RETURNING *
+                """,
+                (
+                    latest_revision,
+                    next_revision,
+                    current_time,
+                    int(latest_revision != execution_base_revision),
+                    commit_id,
+                ),
+            )
+            committed = cursor.fetchone()
+            if committed is None:
+                raise ConversationCommitConflict(
+                    "voice result publication lost its CAS"
+                )
+            cursor.execute(
+                """
+                UPDATE chats
+                SET render_revision = %s, snapshot_committed_at = %s,
+                    conversation_commit_id = %s,
+                    has_saved_components = %s, updated_at = %s
+                WHERE id = %s AND user_id = %s AND render_revision = %s
+                  AND conversation_commit_id IS NOT DISTINCT FROM %s
+                """,
+                (
+                    next_revision,
+                    current_time,
+                    commit_id,
+                    bool(merge.components),
+                    current_ms,
+                    staged["chat_id"],
+                    owner_user_id,
+                    latest_revision,
+                    latest_commit_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ConversationCommitConflict(
+                    "voice result revision CAS is stale"
+                )
+            from orchestrator.work_admission import OperationState
+
+            self.operation_coordinator.terminalize(
+                operation_fence,
+                state=OperationState.COMPLETED,
+                terminal_code=None,
+                safe_summary="Conversation committed",
+                retry_after_ms=None,
+                transaction=cursor,
+            )
+        return self._commit_record(committed)
+
     def publish_commit(
         self,
         *,
@@ -1077,22 +1960,9 @@ class ConversationCommitRepository:
                     raise ConversationSnapshotInvalid(
                         "staged conversation canvas is incomplete"
                     )
-                cursor.execute(
-                    "DELETE FROM saved_components "
-                    "WHERE chat_id = %s AND user_id = %s "
-                    "AND (conversation_commit_id IS NULL "
-                    "OR conversation_commit_id <> %s)",
-                    (staged["chat_id"], owner_user_id, commit_id),
-                )
-            else:
-                cursor.execute(
-                    "DELETE FROM saved_components "
-                    "WHERE chat_id = %s AND user_id = %s",
-                    (staged["chat_id"], owner_user_id),
-                )
             cursor.execute(
-                "DELETE FROM workspace_layout WHERE chat_id = %s AND user_id = %s",
-                (staged["chat_id"], owner_user_id),
+                "DELETE FROM workspace_layout WHERE conversation_commit_id = %s",
+                (commit_id,),
             )
             for position, component in enumerate(validated_canvas):
                 component_json = json.dumps(
@@ -1155,8 +2025,9 @@ class ConversationCommitRepository:
                     """
                     INSERT INTO workspace_layout (
                         chat_id, user_id, layout_key, position, layout,
-                        created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        created_at, updated_at, conversation_commit_id,
+                        committed_render_revision
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         staged["chat_id"],
@@ -1172,6 +2043,8 @@ class ConversationCommitRepository:
                         ),
                         current_ms,
                         current_ms,
+                        commit_id,
+                        next_revision,
                     ),
                 )
             if fault_hook is not None:
@@ -1397,15 +2270,35 @@ class ConversationCommitRepository:
                 if isinstance(raw, dict) and row.get("component_id"):
                     raw["component_id"] = str(row["component_id"])
                 components.append(_canonical_component(raw, position))
-            cursor.execute(
-                """
-                SELECT layout_key, position, layout
-                FROM workspace_layout
-                WHERE chat_id = %s AND user_id = %s
-                ORDER BY position, id
-                """,
-                (chat_id, owner_user_id),
-            )
+            if render_revision == 0:
+                cursor.execute(
+                    """
+                    SELECT layout_key, position, layout
+                    FROM workspace_layout
+                    WHERE chat_id = %s AND user_id = %s
+                      AND conversation_commit_id IS NULL
+                      AND committed_render_revision IS NULL
+                    ORDER BY position, id
+                    """,
+                    (chat_id, owner_user_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT layout_key, position, layout
+                    FROM workspace_layout
+                    WHERE chat_id = %s AND user_id = %s
+                      AND conversation_commit_id = %s
+                      AND committed_render_revision = %s
+                    ORDER BY position, id
+                    """,
+                    (
+                        chat_id,
+                        owner_user_id,
+                        chat["conversation_commit_id"],
+                        render_revision,
+                    ),
+                )
             layout_rows = list(cursor.fetchall())
             if layout_rows:
                 from orchestrator import ui_designer
@@ -1492,6 +2385,45 @@ class ConversationCommitRepository:
                 cursor.close()
             finally:
                 connection.close()
+
+    def committed_assistant_content(
+        self,
+        *,
+        commit_id: Any,
+        owner_user_id: str,
+    ) -> Any | None:
+        """Return the last assistant payload from one exact committed result."""
+
+        commit_id = _uuid4_text(commit_id, "commit_id")
+        owner_user_id = _required_text(owner_user_id, "owner_user_id")
+        with self._transaction() as cursor:
+            cursor.execute(
+                """
+                SELECT message.content
+                FROM conversation_commit AS publication
+                JOIN messages AS message
+                  ON message.conversation_commit_id = publication.commit_id
+                 AND message.chat_id = publication.chat_id
+                 AND message.user_id = publication.owner_user_id
+                 AND message.committed_render_revision =
+                     publication.committed_render_revision
+                WHERE publication.commit_id = %s
+                  AND publication.owner_user_id = %s
+                  AND publication.state = 'committed'
+                  AND publication.publication_role = 'assistant_result'
+                  AND message.role = 'assistant'
+                ORDER BY message.commit_position DESC, message.id DESC
+                LIMIT 1
+                """,
+                (commit_id, owner_user_id),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["content"])
+        except (json.JSONDecodeError, TypeError):
+            return row["content"]
 
 
 def _component_preview_text(components) -> str:
@@ -1698,6 +2630,7 @@ class HistoryManager:
     def get_chat(self, chat_id: str, user_id: str = 'legacy') -> Optional[Dict]:
         """Get full details of a specific chat."""
         stage = current_scheduled_history_stage()
+        publication_stage = current_conversation_publication()
         chat_row = self.db.fetch_one("SELECT * FROM chats WHERE id = ? AND user_id = ?", (chat_id, user_id))
         if not chat_row:
             if (
@@ -1719,6 +2652,14 @@ class HistoryManager:
                 "updated_at": first_timestamp,
             }
 
+        publication_revision = None
+        if (
+            publication_stage is not None
+            and publication_stage.matches(self, chat_id, user_id)
+        ):
+            publication_revision = int(
+                publication_stage.execution_base_render_revision
+            )
         messages_rows = self.db.fetch_all(
             "SELECT message.* FROM messages AS message "
             "LEFT JOIN conversation_commit AS publication "
@@ -1729,9 +2670,15 @@ class HistoryManager:
             "message.conversation_commit_id IS NULL OR ("
             "publication.state = 'committed' AND "
             "publication.committed_render_revision = "
-            "message.committed_render_revision)) "
+            "message.committed_render_revision AND "
+            "(? IS NULL OR message.committed_render_revision <= ?))) "
             "ORDER BY message.timestamp ASC, message.id ASC",
-            (chat_id, user_id),
+            (
+                chat_id,
+                user_id,
+                publication_revision,
+                publication_revision,
+            ),
         )
         messages = []
         for row in messages_rows:
@@ -1853,8 +2800,17 @@ class HistoryManager:
         return results
     
     def delete_chat(self, chat_id: str, user_id: str = 'legacy'):
-        """Delete a chat and its messages."""
-        self.db.execute("DELETE FROM chats WHERE id = ? AND user_id = ?", (chat_id, user_id))
+        """Fence voice state and delete one owner chat atomically."""
+
+        from orchestrator.voice_sessions import VoiceSessionRepository
+
+        mutation = VoiceSessionRepository(self.db).mark_chat_unavailable(
+            user_id=user_id,
+            chat_id=chat_id,
+            reason="deleted",
+            delete_chat=True,
+            now=datetime.now(UTC),
+        )
         # Feature 055 (US4): component_version has no chats FK (unlike
         # saved_components), so the chat's refine history is swept manually
         # once the chat row is gone. Chat row first — a failed sweep only
@@ -1865,6 +2821,29 @@ class HistoryManager:
             artifact_versions.delete_for_chat(self.db, chat_id, user_id)
         except Exception:
             logger.debug("version-history cascade failed on delete_chat", exc_info=True)
+        return mutation
+
+    def mark_chat_authorization_unavailable(
+        self,
+        chat_id: str,
+        user_id: str = "legacy",
+    ):
+        """Fence voice publication/speech before an external access revocation.
+
+        The caller remains responsible for the authorization-store mutation;
+        this hook deliberately leaves normal chat content in place so both
+        changes can be coordinated by the owning access-control workflow.
+        """
+
+        from orchestrator.voice_sessions import VoiceSessionRepository
+
+        return VoiceSessionRepository(self.db).mark_chat_unavailable(
+            user_id=user_id,
+            chat_id=chat_id,
+            reason="access_revoked",
+            delete_chat=False,
+            now=datetime.now(UTC),
+        )
 
     # =========================================================================
     # Saved UI Components Methods

@@ -1,0 +1,11 @@
+{
+  "commit": "fba061dc5559f696e62171e9a0741782b0fdc23c",
+  "license_path": "LICENSE",
+  "upstream_license_sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
+  "vendored_license_sha256": "51c19c8be941a3fb00ccf58f0bf9053de9f7237a0b37327896eabad32dffe873",
+  "model_path": "src/silero_vad/data/silero_vad.onnx",
+  "model_sha256": "597d30b3ec076608d059477bb14cfeffdf951bf5cae370d38f65d33bbfe82004",
+  "model_size_bytes": 2327524,
+  "repository": "https://github.com/snakers4/silero-vad",
+  "tag": "v6.0"
+}

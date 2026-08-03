@@ -1,7 +1,7 @@
 # Spec 060 (T119) — the read-only publication controller. It verifies the
 # attested trusted decision, the pinned bridge bytes, and the absence of any
 # tag/release collision BEFORE calling the environment-approved publisher
-# (the only write authority in the release path). The controller itself holds
+# (the intended tracked write authority in the release path). The controller itself holds
 # no write permission of its own; the reusable publisher's job-scoped grant is
 # capped by the `publish` caller job below.
 name: release-windows-publisher-controller
@@ -29,10 +29,15 @@ on:
         description: Run id whose protected-decision produced the trusted decision
         required: true
         type: string
+      decision_artifact_id:
+        description: Exact trusted decision artifact id from that protected run
+        required: true
+        type: string
 
 permissions:
   contents: read
   actions: read
+  attestations: read
 
 jobs:
   verify-decision:
@@ -42,6 +47,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      attestations: read
     outputs:
       decision_artifact_id: ${{ steps.locate.outputs.decision_artifact_id }}
     env:
@@ -49,7 +55,9 @@ jobs:
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
       RELEASE_VERSION: ${{ inputs.release_version }}
       READINESS_RUN_ID: ${{ inputs.readiness_run_id }}
+      DECISION_ARTIFACT_ID: ${{ inputs.decision_artifact_id }}
       RELEASE_BRIDGE_WORKFLOW_SHA256: ${{ vars.RELEASE_BRIDGE_WORKFLOW_SHA256 }}
+      RELEASE_TRUSTED_BUILDER_SHA: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -60,32 +68,133 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build/060/decision
-          DECISION_ARTIFACT_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$READINESS_RUN_ID/artifacts?per_page=100" \
-            --jq '[.artifacts[] | select(.name == "trusted-release-decision")][0].id // empty')"
-          test -n "$DECISION_ARTIFACT_ID" || {
-            echo "::error::run $READINESS_RUN_ID exposes no trusted-release-decision artifact" >&2
+          [[ "$RELEASE_TRUSTED_BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_WORKFLOW_SHA" = "$RELEASE_TRUSTED_BUILDER_SHA" || {
+            echo "::error::controller is not executing at the installed protected commit" >&2
             exit 1
           }
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$DECISION_ARTIFACT_ID/zip" > build/060/decision.zip
-          unzip -o -q build/060/decision.zip -d build/060/decision
-          gh attestation verify build/060/decision/trusted-release-decision.json \
+          [[ "$READINESS_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$DECISION_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          PREFIX="$RUNNER_TEMP/trusted-decision-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          RUN_RESPONSE="$PREFIX-run.json"
+          ARTIFACT_RESPONSE="$PREFIX-artifact.json"
+          DECISION_EXTRACTOR="$PREFIX-extractor.py"
+          DECISION_ARCHIVE="$PREFIX.zip"
+          DECISION_TARGET="$PREFIX-output"
+          for path in "$RUN_RESPONSE" "$ARTIFACT_RESPONSE" "$DECISION_EXTRACTOR" \
+              "$DECISION_ARCHIVE" "$DECISION_TARGET"; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              echo "::error::refusing pre-existing or symlinked decision path: $path" >&2
+              exit 1
+            fi
+          done
+          umask 077
+          set -o noclobber
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$READINESS_RUN_ID" > "$RUN_RESPONSE"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$DECISION_ARTIFACT_ID" \
+            > "$ARTIFACT_RESPONSE"
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/$GITHUB_REPOSITORY/contents/scripts/extract_release_artifact.py?ref=$RELEASE_TRUSTED_BUILDER_SHA" \
+            > "$DECISION_EXTRACTOR"
+          set +o noclobber
+          export RUN_RESPONSE ARTIFACT_RESPONSE DECISION_EXTRACTOR
+          READINESS_RUN_ATTEMPT="$(python3 -I - <<'PY'
+          import json, os, pathlib, re
+
+          def document(variable, limit):
+              path = pathlib.Path(os.environ[variable])
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit(f"{variable} is not a new regular file")
+              data = path.read_bytes()
+              if not 0 < len(data) <= limit:
+                  raise SystemExit(f"{variable} exceeds its API response bound")
+              return json.loads(data)
+
+          run = document("RUN_RESPONSE", 2 * 1024 * 1024)
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["READINESS_RUN_ID"]
+          if (
+              str(run.get("id")) != run_id
+              or run.get("name") != "release-readiness-protected"
+              or run.get("path") != ".github/workflows/release-readiness-protected.yml"
+              or run.get("event") != "workflow_run"
+              or run.get("status") != "completed"
+              or run.get("conclusion") != "success"
+              or run.get("head_sha") != os.environ["RELEASE_TRUSTED_BUILDER_SHA"]
+              or run.get("head_repository", {}).get("full_name") != repo
+          ):
+              raise SystemExit("readiness run is not the exact successful protected workflow")
+          attempt = run.get("run_attempt")
+          if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+              raise SystemExit("readiness run attempt is invalid")
+          artifact = document("ARTIFACT_RESPONSE", 2 * 1024 * 1024)
+          artifact_id = str(artifact.get("id", ""))
+          size = artifact.get("size_in_bytes")
+          if (
+              artifact_id != os.environ["DECISION_ARTIFACT_ID"]
+              or not re.fullmatch(r"[1-9][0-9]*", artifact_id)
+              or artifact.get("name") != "trusted-release-decision"
+              or artifact.get("expired") is not False
+              or isinstance(size, bool)
+              or not isinstance(size, int)
+              or not 0 < size <= 4 * 1024 * 1024
+              or str(artifact.get("workflow_run", {}).get("id")) != run_id
+          ):
+              raise SystemExit("trusted decision artifact metadata is not bound to the readiness run")
+          extractor = pathlib.Path(os.environ["DECISION_EXTRACTOR"])
+          if extractor.is_symlink() or not extractor.is_file():
+              raise SystemExit("protected extractor is not a regular file")
+          extractor_size = extractor.stat().st_size
+          if not 0 < extractor_size <= 256 * 1024:
+              raise SystemExit("protected extractor API response exceeds its byte bound")
+          print(attempt)
+          PY
+          )"
+          export READINESS_RUN_ATTEMPT
+          set -o noclobber
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$DECISION_ARTIFACT_ID/zip" \
+            > "$DECISION_ARCHIVE"
+          set +o noclobber
+          [[ ! -L "$DECISION_ARCHIVE" && -f "$DECISION_ARCHIVE" ]]
+          ARCHIVE_BYTES="$(wc -c < "$DECISION_ARCHIVE")"
+          (( ARCHIVE_BYTES > 0 && ARCHIVE_BYTES <= 4 * 1024 * 1024 ))
+          chmod 0500 "$DECISION_EXTRACTOR"
+          python3 -I "$DECISION_EXTRACTOR" \
+            --archive "$DECISION_ARCHIVE" \
+            --target "$DECISION_TARGET" \
+            --expected-member trusted-release-decision.json
+          DECISION_PATH="$DECISION_TARGET/trusted-release-decision.json"
+          [[ ! -L "$DECISION_PATH" && -f "$DECISION_PATH" ]]
+          gh attestation verify "$DECISION_PATH" \
             --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-trusted-builder.yml"
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-readiness.yml" \
+            --signer-digest "$RELEASE_TRUSTED_BUILDER_SHA"
+          printf 'DECISION_PATH=%s\nREADINESS_RUN_ATTEMPT=%s\n' \
+            "$DECISION_PATH" "$READINESS_RUN_ATTEMPT" >> "$GITHUB_ENV"
           echo "decision_artifact_id=$DECISION_ARTIFACT_ID" >> "$GITHUB_OUTPUT"
       - name: Re-check decision bindings, lifetime, and bridge bytes
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import json, os, pathlib, re
           from datetime import datetime, timezone
 
-          decision = json.loads(pathlib.Path(
-              "build/060/decision/trusted-release-decision.json"
-          ).read_text(encoding="utf-8"))
+          decision = json.loads(pathlib.Path(os.environ["DECISION_PATH"]).read_text(encoding="utf-8"))
           if decision["candidate_sha"] != os.environ["CANDIDATE_SHA"]:
               raise SystemExit("decision candidate SHA differs from the requested candidate")
+          workflow = decision.get("workflow", {})
+          expected_ref = (
+              f"{os.environ['GITHUB_REPOSITORY']}/.github/workflows/"
+              f"release-readiness.yml@{os.environ['RELEASE_TRUSTED_BUILDER_SHA']}"
+          )
+          if (
+              str(workflow.get("run_id")) != os.environ["READINESS_RUN_ID"]
+              or str(workflow.get("run_attempt")) != os.environ["READINESS_RUN_ATTEMPT"]
+              or workflow.get("job_id") != "protected-decision"
+              or decision.get("workflow_ref") != expected_ref
+          ):
+              raise SystemExit("decision workflow identity differs from the selected readiness run")
           if decision["decision"] != "passed":
               raise SystemExit("trusted decision did not pass")
           if decision["required_check_name"] != "release-readiness / protected-decision":
@@ -134,7 +243,9 @@ jobs:
     # own job re-declares exactly the same job-scoped grant.
     permissions:
       contents: write
-      actions: read
+      actions: write
+      attestations: read
+      deployments: read
     uses: ./.github/workflows/release-windows-publisher.yml
     with:
       candidate_sha: ${{ inputs.candidate_sha }}
@@ -143,4 +254,3 @@ jobs:
       readiness_run_id: ${{ inputs.readiness_run_id }}
       decision_artifact_id: ${{ needs.verify-decision.outputs.decision_artifact_id }}
       requester: ${{ github.actor }}
-    secrets: inherit

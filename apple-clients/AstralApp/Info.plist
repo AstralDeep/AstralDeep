@@ -45,6 +45,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AstralDeep uses the microphone only while you explicitly run a voice conversation.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

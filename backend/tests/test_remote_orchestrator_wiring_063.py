@@ -342,7 +342,9 @@ def test_trace_frame_records_an_unparsable_frame_as_unknown_type(monkeypatch):
 
     Orchestrator._trace_frame(None, _WS(), "not json at all", ok=False, error="boom")
     rec = json.loads(sink[1])
-    assert rec["type"] == "?" and rec["ok"] is False and rec["error"] == "boom"
+    assert rec["type"] == "?"
+    assert rec["ok"] is False
+    assert rec["error"] == "redacted_send_failure"
 
 
 def test_trace_frame_is_fail_open(monkeypatch):

@@ -60,6 +60,7 @@ final class StatusLifecycleTests: XCTestCase {
 
         XCTAssertEqual(model.operationStatuses[operation]?.state, "running")
         XCTAssertEqual(model.statusText, "Working…")
+        XCTAssertTrue(model.statusShowsActivity)
         XCTAssertEqual(model.screen, .chat)
     }
 
@@ -78,6 +79,21 @@ final class StatusLifecycleTests: XCTestCase {
         XCTAssertEqual(model.errorBanner, "ua-dice: Agent offline")
     }
 
+    func testGenericErrorPrefersSafeProviderErrorClassOverOuterEnvelopeCode() {
+        let model = AppModel()
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"error","code":"llm_config_invalid",
+                 "error_class":"provider_unavailable",
+                 "message":"The provider is temporarily unavailable."}
+                """))
+
+        XCTAssertEqual(
+            model.errorBanner,
+            "The provider is temporarily unavailable. (provider_unavailable)")
+    }
+
     func testSurfaceSendBeforeActiveChatCorrelatesThroughTerminalStatus() {
         let model = AppModel()
         XCTAssertTrue(model.beginConversationConnection(connection))
@@ -94,6 +110,7 @@ final class StatusLifecycleTests: XCTestCase {
             sent["payload"]?["request_generation"]?.stringValue,
             surfaceRequest)
         XCTAssertEqual(model.statusText, "Submitting…")
+        XCTAssertTrue(model.statusShowsActivity)
         XCTAssertEqual(model.localOperationSubmissions[submission]?.chatId, nil)
         XCTAssertTrue(model.pendingSurfaceRequestGenerations.contains(surfaceRequest))
 
@@ -110,6 +127,7 @@ final class StatusLifecycleTests: XCTestCase {
                 """))
         XCTAssertEqual(model.operationStatuses[operation]?.state, "accepted")
         XCTAssertNotNil(model.localOperationSubmissions[submission])
+        XCTAssertTrue(model.statusShowsActivity)
 
         model.handleFrame(
             inbound(
@@ -125,6 +143,8 @@ final class StatusLifecycleTests: XCTestCase {
         XCTAssertEqual(model.operationStatuses[operation]?.state, "completed")
         XCTAssertNil(model.localOperationSubmissions[submission])
         XCTAssertFalse(model.pendingSurfaceRequestGenerations.contains(surfaceRequest))
+        XCTAssertNil(model.statusText)
+        XCTAssertFalse(model.statusShowsActivity)
     }
 
     func testAdmissionRefusalClearsOnlyItsCorrelatedLocalSubmission() {
@@ -165,8 +185,10 @@ final class StatusLifecycleTests: XCTestCase {
 
         XCTAssertNil(model.localOperationSubmissions[firstSubmission])
         XCTAssertNotNil(model.localOperationSubmissions[secondSubmission])
-        XCTAssertEqual(model.statusText, "Try again shortly.")
+        XCTAssertEqual(model.statusText, "Submitting…")
         XCTAssertEqual(model.errorBanner, "Try again shortly.")
+        XCTAssertTrue(model.bannerIsError)
+        XCTAssertTrue(model.statusShowsActivity)
 
         model.handleFrame(
             inbound(
@@ -176,7 +198,8 @@ final class StatusLifecycleTests: XCTestCase {
                  "retryable":true,"retry_after_ms":250}
                 """))
         XCTAssertNil(model.localOperationSubmissions[secondSubmission])
-        XCTAssertEqual(model.statusText, "Second refusal.")
+        XCTAssertNil(model.statusText)
+        XCTAssertEqual(model.errorBanner, "Second refusal.")
     }
 
     func testDisconnectClearsPendingSurfaceGeneration() async {
@@ -240,7 +263,8 @@ final class StatusLifecycleTests: XCTestCase {
                  "retry_after_ms":null,"updated_at":"2026-07-16T12:00:01Z"}
                 """))
         XCTAssertNil(model.localOperationSubmissions[replay.identity.submissionId])
-        XCTAssertEqual(model.statusText, "Opened")
+        XCTAssertNil(model.statusText)
+        XCTAssertFalse(model.statusShowsActivity)
     }
 
     func testQueuedChatReconnectAcceptsCommitSnapshotAndLateTerminal() async throws {
@@ -304,7 +328,152 @@ final class StatusLifecycleTests: XCTestCase {
                  "retry_after_ms":null,"updated_at":"2026-07-16T12:00:02Z"}
                 """))
         XCTAssertNil(model.localOperationSubmissions[replay.identity.submissionId])
-        XCTAssertEqual(model.statusText, "Completed")
+        XCTAssertNil(model.statusText)
+        XCTAssertFalse(model.statusShowsActivity)
+    }
+
+    func testTerminalSuccessDoesNotClearAnotherAcceptedOperation() {
+        let model = AppModel()
+        XCTAssertTrue(model.beginConversationConnection(connection))
+        let first = capturedFrame(model) { model.sendEvent("discover_agents") }
+        let second = capturedFrame(model) { model.sendEvent("get_history") }
+        let firstRequest = first["request_generation"]!.stringValue!
+        let secondRequest = second["request_generation"]!.stringValue!
+        let secondOperation = "77777777-7777-4777-8777-777777777777"
+
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"operation_status","operation_id":"\(operation)",
+                 "action":"discover_agents","surface":"operation","chat_id":null,
+                 "connection_generation":"\(connection)","request_generation":"\(firstRequest)",
+                 "sequence":0,"state":"accepted","phase":"accepted","label":"Loading agents…",
+                 "terminal":false,"retryable":false,"error":null,"retry_after_ms":null,
+                 "updated_at":"2026-07-16T12:00:00Z"}
+                """))
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"operation_status","operation_id":"\(secondOperation)",
+                 "action":"get_history","surface":"operation","chat_id":null,
+                 "connection_generation":"\(connection)","request_generation":"\(secondRequest)",
+                 "sequence":0,"state":"running","phase":"running","label":"Loading history…",
+                 "terminal":false,"retryable":false,"error":null,"retry_after_ms":null,
+                 "updated_at":"2026-07-16T12:00:01Z"}
+                """))
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"operation_status","operation_id":"\(operation)",
+                 "action":"discover_agents","surface":"operation","chat_id":null,
+                 "connection_generation":"\(connection)","request_generation":"\(firstRequest)",
+                 "sequence":1,"state":"completed","phase":"completed","label":"Completed",
+                 "terminal":true,"retryable":false,"error":null,"retry_after_ms":null,
+                 "updated_at":"2026-07-16T12:00:02Z"}
+                """))
+
+        XCTAssertEqual(model.statusText, "Loading history…")
+        XCTAssertTrue(model.statusShowsActivity)
+        XCTAssertTrue(model.pendingSurfaceRequestGenerations.contains(secondRequest))
+    }
+
+    func testTerminalSuccessPreservesAnotherLocallySubmittingOperation() {
+        let model = AppModel()
+        XCTAssertTrue(model.beginConversationConnection(connection))
+        let first = capturedFrame(model) { model.sendEvent("discover_agents") }
+        let second = capturedFrame(model) { model.sendEvent("get_history") }
+        let firstRequest = first["request_generation"]!.stringValue!
+        let secondSubmission = second["submission_id"]!.stringValue!
+
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"operation_status","operation_id":"\(operation)",
+                 "action":"discover_agents","surface":"operation","chat_id":null,
+                 "connection_generation":"\(connection)","request_generation":"\(firstRequest)",
+                 "sequence":0,"state":"completed","phase":"completed","label":"Completed",
+                 "terminal":true,"retryable":false,"error":null,"retry_after_ms":null,
+                 "updated_at":"2026-07-16T12:00:00Z"}
+                """))
+
+        XCTAssertNotNil(model.localOperationSubmissions[secondSubmission])
+        XCTAssertEqual(model.statusText, "Submitting…")
+        XCTAssertTrue(model.statusShowsActivity)
+    }
+
+    func testTerminalFailureUsesBannerWithoutActivityStatus() {
+        let model = AppModel()
+        XCTAssertTrue(model.beginConversationConnection(connection))
+        let sent = capturedFrame(model) { model.sendEvent("discover_agents") }
+        let requestGeneration = sent["request_generation"]!.stringValue!
+
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"operation_status","operation_id":"\(operation)",
+                 "action":"discover_agents","surface":"operation","chat_id":null,
+                 "connection_generation":"\(connection)","request_generation":"\(requestGeneration)",
+                 "sequence":0,"state":"failed","phase":"failed","label":"Failed",
+                 "terminal":true,"retryable":false,
+                 "error":{"code":"network_unavailable","message":"Could not load agents."},
+                 "retry_after_ms":null,"updated_at":"2026-07-16T12:00:00Z"}
+                """))
+
+        XCTAssertNil(model.statusText)
+        XCTAssertFalse(model.statusShowsActivity)
+        XCTAssertEqual(model.errorBanner, "Could not load agents.")
+        XCTAssertTrue(model.bannerIsError)
+    }
+
+    func testTerminalChatFailureRemovesSkeletonAndProgressPresentation() {
+        let model = AppModel()
+        XCTAssertTrue(model.beginConversationConnection(connection))
+        let sent = capturedFrame(model) { model.sendChat("hello") }
+        let requestGeneration = sent["request_generation"]!.stringValue!
+        XCTAssertTrue(model.showSkeleton)
+        XCTAssertTrue(model.statusShowsActivity)
+
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"operation_status","operation_id":"\(operation)",
+                 "action":"chat_message","surface":"chat","chat_id":null,
+                 "connection_generation":"\(connection)","request_generation":"\(requestGeneration)",
+                 "sequence":0,"state":"failed","phase":"failed","label":"Failed",
+                 "terminal":true,"retryable":false,
+                 "error":{"code":"operation_failed","message":"The request failed."},
+                 "retry_after_ms":null,"updated_at":"2026-07-16T12:00:00Z"}
+                """))
+
+        XCTAssertNil(model.statusText)
+        XCTAssertFalse(model.statusShowsActivity)
+        XCTAssertFalse(model.showSkeleton)
+        XCTAssertEqual(model.errorBanner, "The request failed.")
+    }
+
+    func testTerminalChatSuccessBeforeSnapshotPreservesTransientTranscript() {
+        let model = preparedModel()
+        let sent = capturedFrame(model) { model.sendChat("hello") }
+        let requestGeneration = sent["request_generation"]!.stringValue!
+        model.transientTurns.append(
+            .init(id: "preview-1", role: "assistant", text: "Visible result"))
+
+        model.handleFrame(
+            inbound(
+                """
+                {"type":"operation_status","operation_id":"\(operation)",
+                 "action":"chat_message","surface":"chat","chat_id":"\(chat)",
+                 "connection_generation":"\(connection)","request_generation":"\(requestGeneration)",
+                 "sequence":0,"state":"completed","phase":"completed","label":"Completed",
+                 "terminal":true,"retryable":false,"error":null,
+                 "retry_after_ms":null,"updated_at":"2026-07-16T12:00:00Z"}
+                """))
+
+        XCTAssertEqual(model.visibleTurns.map(\.text), ["hello", "Visible result"])
+        XCTAssertNil(model.statusText)
+        XCTAssertFalse(model.statusShowsActivity)
+        XCTAssertFalse(model.turnActive)
+        XCTAssertFalse(model.showSkeleton)
     }
 
     func testChatTerminalAfterSnapshotUsesRetainedSubmissionFence() {

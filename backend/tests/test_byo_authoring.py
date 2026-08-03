@@ -371,9 +371,10 @@ TOOL_REGISTRY = {"risky": {"function": risky, "description": "r",
     ])
     by_id = {f.get("request_id"): f for f in frames if f["type"] == "mcp_response"}
     assert not by_id["ok"].get("error")
-    assert by_id["bad"]["error"]["code"] == -32000
+    assert by_id["bad"]["error"]["code"] == -32603
     assert "upstream said no" in by_id["bad"]["error"]["message"]
-    assert by_id["bad"]["ui_components"]                    # the Alert still renders
+    # 064: an error and renderable UI are mutually exclusive on the wire.
+    assert "ui_components" not in by_id["bad"]
 
 
 async def test_generate_code_refuses_the_backend_target_for_a_byo_draft(real_lifecycle):

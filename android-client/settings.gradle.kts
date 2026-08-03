@@ -23,6 +23,14 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven {
+            url = uri("https://jitpack.io")
+            content {
+                // LiveKit's exact AudioSwitch commit is its sole JitPack
+                // transitive. Never expose this repository to other groups.
+                includeModule("com.github.davidliu", "audioswitch")
+            }
+        }
     }
 }
 

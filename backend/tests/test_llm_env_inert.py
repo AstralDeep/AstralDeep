@@ -28,6 +28,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = BACKEND_DIR.parent
 
 LEGACY_VARS = {
     "OPENAI_API_KEY": "sk-shipped-operator-key-000000000000000",
@@ -132,3 +133,40 @@ def test_guard_scans_a_meaningful_tree():
     assert os.path.join("llm_config", "client_factory.py") in scanned
     assert os.path.join("llm_config", "user_store.py") in scanned
     assert len(scanned) > 100, "suspiciously small scan set"
+
+
+def test_voice_compose_does_not_restore_operator_llm_environment():
+    """Feature 065 may rename speech inputs only at the worker boundary.
+
+    The main service still loads ``.env`` for unrelated settings. Explicit
+    empty overrides therefore remain a security boundary: the operator speech
+    values cannot become a user or System LLM fallback inside AstralDeep.
+    """
+
+    for name in ("docker-compose.yml", "docker-compose.staging.yml"):
+        document = (REPO_ROOT / name).read_text(encoding="utf-8")
+        main_start = document.index("  astraldeep:\n")
+        worker_start = document.index("  voice-worker:\n", main_start)
+        main_service = document[main_start:worker_start]
+        next_service = re.search(
+            r"(?m)^  [A-Za-z0-9_-]+:\n",
+            document[worker_start + len("  voice-worker:\n") :],
+        )
+        worker_end = (
+            -1
+            if next_service is None
+            else worker_start + len("  voice-worker:\n") + next_service.start()
+        )
+        worker_service = document[
+            worker_start : None if worker_end == -1 else worker_end
+        ]
+
+        assert 'OPENAI_BASE_URL: ""' in main_service
+        assert 'OPENAI_API_KEY: ""' in main_service
+        assert "VOICE_SPEECH_BASE_URL" not in main_service
+        assert "VOICE_SPEECH_API_KEY" not in main_service
+
+        assert "VOICE_SPEECH_BASE_URL: ${OPENAI_BASE_URL:?" in worker_service
+        assert "VOICE_SPEECH_API_KEY: ${OPENAI_API_KEY:?" in worker_service
+        assert 'OPENAI_BASE_URL: ""' in worker_service
+        assert 'OPENAI_API_KEY: ""' in worker_service

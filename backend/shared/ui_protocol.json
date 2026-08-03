@@ -27,6 +27,58 @@
         "registration_queue_full",
         "operation_failed"
       ]
+    },
+    "voice_065": {
+      "schema_version": "1",
+      "required_server_pushes": {
+        "composer_state": ["type", "schema_version", "revision", "connection_generation", "voice"],
+        "voice_control_binding": ["type", "schema_version", "device_id", "connection_generation", "binding_id", "binding", "expires_at"],
+        "voice_session_state": ["type", "schema_version", "connection_generation", "session_id", "generation", "media_grant_revision", "state", "reason", "visible_chat_id", "chat_context_revision", "applied_chat_context_revision", "chat_context_synced", "speech_muted", "microphone_enabled", "foreground_active", "occurred_at"],
+        "voice_turn_state": ["type", "schema_version", "connection_generation", "session_id", "generation", "media_grant_revision", "turn_id", "client_turn_id", "submission_id", "request_generation", "chat_id", "chat_context_revision", "sequence", "state", "foreground", "detected_language", "spoken_output_policy", "output_reason", "sensitive_result_pending", "occurred_at"],
+        "voice_transcript": ["type", "schema_version", "session_id", "generation", "media_grant_revision", "turn_id", "client_turn_id", "submission_id", "request_generation", "chat_id", "chat_context_revision", "source_participant_identity", "sequence", "final", "detected_language", "text"],
+        "user_message_acked.voice": ["type", "schema_version", "connection_generation", "voice_turn_id", "submission_id", "request_generation", "chat_id", "message_id"],
+        "voice_submission_rejected": ["type", "schema_version", "connection_generation", "session_id", "generation", "media_grant_revision", "turn_id", "client_turn_id", "submission_id", "request_generation", "chat_id", "reason", "retry_policy", "occurred_at"],
+        "voice_announcement_media.livekit": ["type", "schema_version", "session_id", "generation", "media_grant_revision", "worker_identity", "announcement_id", "announcement_sequence", "turn_id", "kind", "quantum_role", "quantum_index", "duration_samples", "sample_rate_hz", "transport", "track_sid", "track_name"],
+        "voice_announcement_media.watch": ["type", "schema_version", "session_id", "generation", "media_grant_revision", "worker_identity", "announcement_id", "announcement_sequence", "turn_id", "kind", "quantum_role", "quantum_index", "duration_samples", "sample_rate_hz", "transport", "first_media_sequence", "last_media_sequence"]
+      },
+      "conditional_final_transcript_fields": ["text_digest_sha256", "transcript_proof", "proof_expires_at"],
+      "conditional_result_fields": ["result_reserved_samples_after"],
+      "optional_server_push_fields": {
+        "voice_turn_state": {
+          "speech_outcome": ["source_finished", "failed", "suppressed"]
+        }
+      },
+      "client_frames": {
+        "voice_playout_event": ["type", "schema_version", "device_id", "connection_generation", "session_id", "generation", "media_grant_revision", "announcement_id", "announcement_sequence", "turn_id", "kind", "quantum_role", "quantum_index", "phase", "client_sequence", "observed_at"]
+      },
+      "correlated_chat_creation": {
+        "client_new_chat": {
+          "type": "ui_event",
+          "action": "new_chat",
+          "exact_fields": ["type", "action", "schema_version", "connection_generation", "submission_id", "request_generation", "payload"],
+          "payload_fields": ["schema_version", "connection_generation", "submission_id", "request_generation"],
+          "correlated_fields": ["schema_version", "connection_generation", "submission_id", "request_generation"]
+        },
+        "server_chat_created": {
+          "type": "chat_created",
+          "exact_fields": ["type", "schema_version", "connection_generation", "submission_id", "request_generation", "payload"],
+          "payload_fields": ["schema_version", "chat_id", "from_message", "connection_generation", "submission_id", "request_generation"],
+          "correlated_fields": ["schema_version", "connection_generation", "submission_id", "request_generation"],
+          "from_message": false
+        }
+      },
+      "voice_origin_fields": ["schema_version", "session_id", "generation", "media_grant_revision", "turn_id", "client_turn_id", "chat_context_revision", "source_participant_identity", "detected_language", "text_digest_sha256", "transcript_proof", "proof_expires_at"],
+      "composer_actions": {
+        "voice_microphone_set": "updateVoiceSession",
+        "voice_sensitive_recap_request": "consentToSensitiveRecap",
+        "voice_session_end": "endVoiceSession",
+        "voice_session_start": "createVoiceSession",
+        "voice_session_takeover": "takeOverVoiceSession",
+        "voice_speech_mute_set": "updateVoiceSession",
+        "voice_speech_stop": "stopVoiceSpeech",
+        "voice_visible_chat_update": "updateVoiceSession"
+      },
+      "required_dispositions": ["accepted", "rejected", "partial", "final", "listening", "speaking", "interrupted", "failed", "ended", "takeover_required", "permission_denied", "typed_fallback"]
     }
   },
   "push_types": [
@@ -60,6 +112,7 @@
     {"name": "component_saved", "category": "component_verbs"},
     {"name": "components_combined", "category": "component_verbs"},
     {"name": "components_condensed", "category": "component_verbs"},
+    {"name": "composer_state", "category": "voice"},
     {"name": "conversation_commit_ready", "category": "chat"},
     {"name": "conversation_snapshot", "category": "chat"},
     {"name": "error", "category": "error", "shapes": ["code+message", "payload.message", "message"]},
@@ -87,6 +140,12 @@
     {"name": "ui_upsert", "category": "canvas"},
     {"name": "user_message_acked", "category": "chat"},
     {"name": "user_preferences", "category": "bootstrap"},
+    {"name": "voice_announcement_media", "category": "voice_media"},
+    {"name": "voice_control_binding", "category": "voice"},
+    {"name": "voice_session_state", "category": "voice"},
+    {"name": "voice_submission_rejected", "category": "voice"},
+    {"name": "voice_transcript", "category": "voice"},
+    {"name": "voice_turn_state", "category": "voice"},
     {"name": "workspace_timeline_mode", "category": "chat"}
   ],
   "accept_actions": [
@@ -119,10 +178,33 @@
     "revision_apply", "revision_discard",
     "save_component", "save_theme", "schedule_decision", "set_agent_permissions",
     "stream_list", "stream_subscribe", "stream_unsubscribe", "table_paginate",
-    "update_device", "watch_task"
+    "update_device", "voice_microphone_set", "voice_sensitive_recap_request",
+    "voice_session_end", "voice_session_start", "voice_session_takeover",
+    "voice_speech_mute_set", "voice_speech_stop", "voice_visible_chat_update", "watch_task"
   ],
   "client_local_actions": ["attach_existing"],
   "additive_fields": [
+    {
+      "field": "voice_origin",
+      "shape": {
+        "schema_version": 1,
+        "session_id": "uuid4",
+        "generation": "positive integer",
+        "media_grant_revision": "positive integer",
+        "turn_id": "uuid4",
+        "client_turn_id": "uuid4",
+        "chat_context_revision": "positive integer",
+        "source_participant_identity": "opaque worker identity",
+        "detected_language": "BCP-47 language tag",
+        "text_digest_sha256": "64 lowercase hex",
+        "transcript_proof": "64 lowercase hex",
+        "proof_expires_at": "RFC3339 UTC timestamp"
+      },
+      "carried_on": ["ui_event.chat_message"],
+      "scope": "proof-bound final transcript only; absent preserves ordinary typed chat semantics",
+      "introduced_by": "065-conversational-voice (FR-014, FR-015)",
+      "contract": "specs/065-conversational-voice/contracts/voice-control.schema.json"
+    },
     {
       "field": "speech",
       "shape": {"ssml": "string", "text": "string"},

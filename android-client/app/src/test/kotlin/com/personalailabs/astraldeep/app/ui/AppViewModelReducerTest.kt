@@ -82,6 +82,36 @@ class AppViewModelReducerTest {
     }
 
     @Test
+    fun idle_completed_and_unknown_chat_statuses_cannot_leave_first_load_working_chrome() {
+        val stale = UiState(statusText = "Completed")
+
+        val idle = vm.reduce(stale, Inbound.ChatStatus(status = "idle", message = "Completed"))
+        assertFalse(idle.turnActive)
+        assertNull(idle.statusText)
+        assertNull(idle.workingStatusText)
+
+        val completed = vm.reduce(stale, Inbound.ChatStatus(status = "completed", message = "Completed"))
+        assertFalse(completed.turnActive)
+        assertNull(completed.statusText)
+        assertNull(completed.workingStatusText)
+
+        val unknown = vm.reduce(stale, Inbound.ChatStatus(status = "mystery", message = "Completed"))
+        assertFalse(unknown.hasActiveWork)
+        assertNull(unknown.statusText)
+        assertNull(unknown.workingStatusText)
+    }
+
+    @Test
+    fun informational_chat_status_uses_a_banner_instead_of_the_working_row() {
+        val s = vm.reduce(UiState(), Inbound.ChatStatus(status = "info", message = "Attachment ready"))
+        assertFalse(s.turnActive)
+        assertNull(s.statusText)
+        assertNull(s.workingStatusText)
+        assertEquals("Attachment ready", s.banner)
+        assertEquals("info", s.bannerKind)
+    }
+
+    @Test
     fun notification_sets_banner_with_title_prefix_and_level_styling() {
         val info = vm.reduce(UiState(), Inbound.Notification(title = "Daily brief", body = "Ready", level = "info"))
         assertEquals("Daily brief: Ready", info.banner)

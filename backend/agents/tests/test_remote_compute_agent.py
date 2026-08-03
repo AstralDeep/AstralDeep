@@ -250,9 +250,9 @@ def test_error_variant_component_becomes_an_error_response():
     # No principal on the call → the verb's honest refusal alert, which the
     # dispatch contract must surface as an MCP error (not a success payload).
     resp = _call(_agent().mcp_server, "list_machines")
-    assert resp.error["code"] == -32000 and resp.error["retryable"] is False
+    assert resp.error["code"] == -32603 and resp.error["retryable"] is False
     assert "unattended_refused" in resp.error["message"]
-    assert resp.ui_components[0]["variant"] == "error"
+    assert resp.ui_components is None
 
 
 def test_arguments_are_filtered_to_the_functions_signature():

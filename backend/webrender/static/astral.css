@@ -658,6 +658,208 @@ details > summary::-webkit-details-marker { display: none; }
   outline: 2px solid rgb(var(--astral-primary));
   outline-offset: 2px;
 }
+
+/* Feature 065 conversational voice. The server supplies control order, labels,
+   enabled/pressed/busy state, and the canonical state/reason. These rules only
+   adapt that semantic model to the web composer. */
+.astral-voice-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 160px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.astral-voice-controls::-webkit-scrollbar { display: none; }
+.astral-voice-controls:empty { display: none; }
+.astral-voice-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 0.5rem;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  background: rgb(255 255 255 / 0.05);
+  color: rgb(var(--astral-muted));
+  font: inherit;
+  cursor: pointer;
+}
+.astral-voice-control::before {
+  content: "Voice";
+  font-size: 9px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.02em;
+}
+.astral-voice-control[data-icon="microphone"]::before { content: "Mic"; }
+.astral-voice-control[data-icon="device-transfer"]::before { content: "Take"; }
+.astral-voice-control[data-icon="stop"]::before,
+.astral-voice-control[data-icon="speaker-stop"]::before { content: "Stop"; }
+.astral-voice-control[data-icon="speaker-muted"]::before { content: "Mute"; }
+.astral-voice-control[data-icon="chat"]::before { content: "Chat"; }
+.astral-voice-control[data-icon="speaker-consent"]::before { content: "Read"; }
+.astral-voice-control:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: rgb(var(--astral-primary) / 0.65);
+  background: rgb(var(--astral-primary) / 0.12);
+}
+.astral-voice-control:focus-visible {
+  outline: 2px solid rgb(var(--astral-primary));
+  outline-offset: 2px;
+}
+.astral-voice-control:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+.astral-voice-control[aria-pressed="true"] {
+  color: #fff;
+  background: rgb(var(--astral-primary) / 0.78);
+  border-color: rgb(var(--astral-primary));
+  box-shadow: 0 0 0 2px rgb(var(--astral-primary) / 0.2);
+}
+.astral-voice-control[aria-busy="true"]::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgb(var(--color-warning));
+  box-shadow: 0 0 0 2px rgb(var(--astral-bg));
+}
+.astral-voice-feedback {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-height: 25px;
+  padding: 5px 8px;
+  border: 1px solid rgb(255 255 255 / 0.09);
+  border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 0.035);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.astral-voice-feedback[hidden] { display: none; }
+.astral-voice-state-line {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+.astral-voice-state-label::before {
+  content: "Voice:";
+  color: var(--text-muted);
+  font-weight: var(--weight-semibold);
+}
+.astral-voice-transcript {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+.astral-voice-transcript:empty { display: none; }
+.astral-voice-audio-resume {
+  flex: 0 0 auto;
+  border: 1px solid rgb(var(--astral-primary) / 0.65);
+  border-radius: var(--radius-sm);
+  background: rgb(var(--astral-primary) / 0.14);
+  color: var(--text-primary);
+  padding: 3px 8px;
+  font: inherit;
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+.astral-voice-audio-resume:focus-visible {
+  outline: 2px solid rgb(var(--astral-primary));
+  outline-offset: 2px;
+}
+.astral-voice-feedback[data-state="listening"] {
+  border-style: solid;
+  border-color: rgb(var(--color-success) / 0.65);
+}
+.astral-voice-feedback[data-state="listening"] .astral-voice-state-label::before {
+  content: "Voice listening:";
+}
+.astral-voice-feedback[data-state="muted"] {
+  border-style: dashed;
+  border-color: rgb(var(--color-warning) / 0.72);
+}
+.astral-voice-feedback[data-state="muted"] .astral-voice-state-label::before {
+  content: "Voice muted:";
+}
+.astral-voice-feedback[data-state="error"] {
+  border-width: 2px;
+  border-color: rgb(var(--color-error) / 0.8);
+}
+.astral-voice-feedback[data-state="error"] .astral-voice-state-label::before {
+  content: "Voice error:";
+}
+.astral-voice-feedback[data-reason="permission_denied"],
+.astral-voice-feedback[data-reason="permission_restricted"],
+.astral-voice-feedback[data-reason="no_microphone"],
+.astral-voice-feedback[data-reason="no_audio_output"] {
+  border-left: 4px solid rgb(var(--color-error));
+}
+.astral-voice-feedback[data-reason="permission_denied"] .astral-voice-state-label::before,
+.astral-voice-feedback[data-reason="permission_restricted"] .astral-voice-state-label::before {
+  content: "Microphone permission:";
+}
+.astral-voice-feedback[data-reason="no_microphone"] .astral-voice-state-label::before,
+.astral-voice-feedback[data-reason="no_audio_output"] .astral-voice-state-label::before {
+  content: "Audio device:";
+}
+.astral-voice-turn-notice {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 9px 10px;
+  border: 2px solid rgb(var(--color-error) / 0.88);
+  border-left-width: 6px;
+  border-radius: var(--radius-sm);
+  background: rgb(var(--color-error) / 0.10);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.06);
+}
+.astral-voice-turn-notice[hidden] { display: none; }
+.astral-voice-turn-notice-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: var(--weight-bold);
+  line-height: 1;
+}
+.astral-voice-turn-notice-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.astral-voice-turn-notice-title {
+  display: block;
+  font-weight: var(--weight-bold);
+}
+.astral-voice-turn-notice-message,
+.astral-voice-turn-notice-fallback {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.astral-voice-turn-notice-message[hidden] { display: none; }
+.astral-voice-turn-notice-fallback {
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+}
 .astral-attachments { margin: 0; }
 .astral-chip {
   display: inline-flex;

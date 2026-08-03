@@ -50,10 +50,10 @@ mkdir -p build/060/coverage build/060/release-evidence
 The clean-tree assertion is mandatory for candidate evidence (ordinary implementation testing may
 run before it). Record `git rev-parse HEAD` as `candidate_sha` in every evidence file. Ordinary
 implementation verification must not create a tag, sign, upload, or replace official release assets.
-The final T128 integration exercise may create/sign/upload only three assets in its isolated
-disposable repository/draft namespace, must create no official-repository tag, must keep the draft
-non-public, and must delete the repository/draft during cleanup; that narrow exercise is not an
-authorization to publish a release.
+The final T128 integration exercise may create/sign/upload only three assets under a temporary
+same-repository tag/draft, must keep the draft non-public, and must delete exactly its state-owned
+draft/tag during cleanup; that narrow exercise is not an authorization to publish a release. It
+remains inactive while ruleset `19078549` prevents the required tag deletion.
 
 ## 2. Backend boot, focused checks, and full CI-parity suite
 
@@ -215,9 +215,11 @@ injection, or checks dispatch count without checking the visible-effect ledger.
 
 ## 5. Real-browser continuity and progress
 
-The automated release lane launches a fresh real-browser profile, completes sign-in through the
-Keycloak UI using runner secrets, never injects a token or persists browser auth state, and writes a
-schema-valid report plus digested raw evidence:
+Once the protected staging credential issuer is implemented, activated, and live-verified, the
+automated release lane launches a fresh real-browser profile, completes sign-in through the
+Keycloak UI using a per-producer, request-scoped identity minted just in time by that issuer, never
+injects a token or persists browser auth state, and writes a schema-valid report plus digested raw
+evidence. Until then the protected readiness caller remains fail-closed:
 
 ```bash
 PLAYWRIGHT_IMAGE="$(tr -d '\n' < tooling/web-ci/playwright-image.txt)"
@@ -234,8 +236,9 @@ docker run --rm -v "$PWD:/work" -w /work/tooling/web-ci \
   "$PLAYWRIGHT_IMAGE" sh -lc 'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run browser:release -- --base-url "$STAGING_URL" --candidate-sha "$SHA" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/coverage/web-v8.json'
 ```
 
-The protected producer supplies those identities and the request-scoped staging-output path; the
-username/password remain runner secrets and are never written to the report. The release runner
+After that activation, the protected producer supplies those identities and the request-scoped
+staging-output path; the ephemeral username/password exist only for that producer lease and are
+never written to an output, artifact, log, or report. The release runner
 rejects host execution, an unpinned/different image, missing workflow/runner identity, or a staging
 endpoint that differs from the staged output. The synthetic continuity reducer suite is available
 separately as `npm run browser:contract` and is never release evidence.
@@ -373,6 +376,10 @@ immutable profile digest, a normal chat completes, and a benign personal-agent c
 offline/failed connection must retain that profile and offer retry; it must not fall back to local
 defaults.
 
+> **Inactive publication procedure:** The build and diagnostic checks below remain valid, but do not
+> execute the tag, bridge, draft, cleanup, or public-transition steps until T120's reviewer, tag-policy,
+> trusted-tag-creation, and durable-cleanup blockers are resolved and live-proven.
+
 Two fresh Windows/Python-3.11 release environments must resolve identical installed-package and lock
 digests. The client and file metadata must both report `0.4.0`; `v0.3.0` and its assets remain
 immutable. The order is build → clean-profile validation → frozen-worker round trip → no-dialog GUI
@@ -380,12 +387,19 @@ smoke → local evidence preparation → independent CI validation → protected
 exact tag → legacy-compatible detached sign → draft upload → re-download/verify → public transition.
 The reusable Windows candidate job archives that one unsigned EXE with its run/artifact ID, SHA-256,
 source SHA, profile/lock digests, and coverage. The readiness matrix downloads and tests those bytes.
-Candidate workflows have read-only permissions and cannot publish. A protected, environment-approved
-publisher job uses only the built-in short-lived `GITHUB_TOKEN` with job-scoped write/OIDC
-permissions; no repository-scoped GitHub App or custom broker is involved. It consumes the exact
+Tracked candidate/build/evidence workflows have read-only permissions. This is not yet an enforced
+repository-wide publication boundary because unrestricted fresh-`v*` creation can dispatch changed
+tag-ref bridge bytes under the legacy updater identity; T120 must close that route. The intended
+protected, environment-approved publisher uses only the built-in short-lived `GITHUB_TOKEN` with
+job-scoped contents/actions write plus attestations/deployments read; actions write is used only to dispatch the bridge after the
+create-only tag operation, because a `GITHUB_TOKEN`-authored tag does not recursively trigger a push
+workflow. No repository-scoped GitHub App or custom broker is involved. It consumes the exact
 independently validated candidate/artifact decision and refuses any existing tag/release/asset. To
 preserve the verifier shipped in v0.3.0, its exact-byte-pinned signer has only `contents: read`,
-`actions: read`, and `id-token: write`, retrieves T068's EXE by exact originating
+`actions: read`, `attestations: read`, and `id-token: write`. The publisher dispatches it at the exact
+new `refs/tags/<tag>` ref with the protected readiness run and decision artifact IDs; the bridge
+rejects any differing ref/run/artifact and rechecks a bounded decision lifetime before signing. It
+retrieves T068's EXE by exact originating
 run/attempt/artifact ID, re-hashes it, and emits a detached bundle with SAN exactly
 `https://github.com/AstralDeep/AstralDeep/.github/workflows/release-windows.yml@refs/tags/v0.4.0`.
 The signer cannot mutate releases. The publisher verifies the bundle with the actual v0.3.0 policy,
@@ -396,9 +410,10 @@ workflow identity, and environment approval. It validates `windows_draft_verific
 release is still a draft, including `release_name == tag == v0.4.0` and
 `latest_disposition == make_latest_on_publish`; only then may it make the draft public as latest.
 Official mode must re-query the API-shaped `/releases/latest` response and run the shipped v0.3.0
-updater parser before declaring success. Failure removes only the newly
-created tag/draft before publication. Isolated T128 test mode force-cleans its disposable repository/
-draft and never creates an official tag or public release.
+updater parser before declaring success. Failure is designed to remove only the newly created
+tag/draft before publication, but active ruleset `19078549` currently blocks that tag deletion.
+T128 disposable mode uses a temporary tag/draft in the same repository, must verify complete cleanup,
+and never creates an official tag or public release; it remains inactive until rollback is possible.
 
 ## 7. Android checks and process recreation
 
@@ -462,14 +477,20 @@ swift test --package-path apple-clients/AstralCore
 xcodebuild -project apple-clients/AstralApp/AstralApp.xcodeproj -scheme AstralApp -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' -configuration Debug CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES -resultBundlePath build/060/coverage/AstralApp-iOS.xcresult test
 xcodebuild -project apple-clients/AstralApp/AstralApp.xcodeproj -scheme AstralApp -destination 'platform=macOS' -configuration Debug CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES -resultBundlePath build/060/coverage/AstralApp-macOS.xcresult test
 xcodebuild -project apple-clients/AstralApp/AstralApp.xcodeproj -scheme AstralWatch -destination 'platform=watchOS Simulator,name=Apple Watch Series 11 (46mm),OS=26.5' -configuration Debug CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES -resultBundlePath build/060/coverage/AstralWatch.xcresult -only-testing:AstralWatchTests test
-xcrun xccov view --archive --json build/060/coverage/AstralApp-iOS.xcresult > build/060/coverage/apple-ios-xccov.json
-xcrun xccov view --archive --json build/060/coverage/AstralApp-macOS.xcresult > build/060/coverage/apple-macos-xccov.json
-xcrun xccov view --archive --json build/060/coverage/AstralWatch.xcresult > build/060/coverage/apple-watchos-xccov.json
+rm -f build/060/coverage/apple-ios-xccov.json build/060/coverage/apple-macos-xccov.json build/060/coverage/apple-watchos-xccov.json
+python3 scripts/export_xccov_line_coverage.py --repo "$PWD" --xcresult build/060/coverage/AstralApp-iOS.xcresult --platform ios --output build/060/coverage/apple-ios-xccov.json
+python3 scripts/export_xccov_line_coverage.py --repo "$PWD" --xcresult build/060/coverage/AstralApp-macOS.xcresult --platform macos --output build/060/coverage/apple-macos-xccov.json
+python3 scripts/export_xccov_line_coverage.py --repo "$PWD" --xcresult build/060/coverage/AstralWatch.xcresult --platform watchos --output build/060/coverage/apple-watchos-xccov.json
 ```
 
-The collector consumes `--archive --json` because that is the Xcode 26.6 form containing raw
-per-source-line `isExecutable` and `executionCount` observations. The aggregate
-`--report --json` form contains only file/function totals and is not valid changed-line evidence.
+The bounded exporter first lists the archive's files, then invokes
+`xcrun xccov view --archive --file <path> --json` separately for every tracked maintained Swift
+source owned by that platform. It validates and normalizes contiguous archive line observations,
+filters cross-built targets (iOS/macOS own AstralApp plus AstralCore; watchOS owns AstralWatch plus
+AstralCore), and refuses duplicate, malformed, oversized, symlinked, or pre-existing output. The
+aggregate `--report --json` form contains only file/function totals and is not valid changed-line
+evidence. Protected release jobs execute the exporter from the owner-pinned protected-policy
+checkout, never from candidate-controlled script bytes; this local command remains diagnostic.
 
 The selected developer directory must report Xcode 26.6; the destination OS remains the supported
 26.5 simulator runtime.
@@ -533,15 +554,18 @@ python3 scripts/run_candidate_staging.py validate-fixtures --manifest "$FIXTURE_
 
 The qualifying workflow reuses the exact image already built by `ci.yml`, pushes that artifact under
 an immutable digest-qualified reference without rebuilding, and invokes the following shape on the
-configured staging host (values are trusted workflow outputs/secrets, not evidence-controlled or
-hand-authored local substitutes):
+configured staging host. Once the activation blocker below is cleared, inputs are limited to
+protected non-credential configuration and per-run issuer leases; they are never evidence-controlled,
+hand-authored local substitutes, durable provider keys, or shared runtime secrets:
 
 ```bash
 python3 scripts/run_candidate_staging.py deploy --candidate-sha "$SHA" --candidate-image "$CANDIDATE_IMAGE" --fixture-manifest "$FIXTURE_MANIFEST" --environment-id "$STAGING_ENVIRONMENT_ID" --outputs build/060/staging-outputs.json --trusted-manifest build/060/trusted-stage-deploy.json --leave-running
 ```
 
-The driver creates unique Compose project/volumes, restores `representative-057.sql`, imports the
-non-secret PKCE realm while injecting runtime users only from secrets, boots normal `_init_db()` to
+The driver creates unique Compose project/volumes, restores `representative-057.sql`, and imports
+the non-secret PKCE realm. Once the separately protected request-scoped issuer is implemented and
+activated, runtime users are permitted only after exact workflow/run/attempt/producer
+authentication. The driver boots normal `_init_db()` to
 060.004, starts real Keycloak and product background/scheduler paths, and emits a non-loopback HTTPS
 endpoint plus request, deployment-run, image/service, dataset/realm/manifest, schema, worker, and
 candidate-capability identities. The optional `--trusted-manifest` flag additionally emits a
@@ -573,6 +597,14 @@ worker, localhost/non-HTTPS endpoint, unreachable cross-runner endpoint, or sour
 Missing staging host/registry/TLS secrets blocks the workflow. A local sequential Compose smoke is
 useful diagnostics but cannot emit qualifying release evidence.
 
+Activation is additionally blocked until the issuer's separate TLS route and protected runtime have
+passed live mint, expiry, per-job revoke, and cleanup-time `revoke-all` tests. Durable repository
+probe/access tokens and shared login credentials are forbidden. The default-branch caller inherits
+no repository secrets and requires both `RELEASE_READINESS_ACTIVE=true` and
+`RELEASE_EPHEMERAL_CREDENTIALS_READY=true`; the latter remains unset/false until this blocker is
+cleared. Real Keycloak Authorization Code + PKCE evidence remains mandatory for browser and Apple
+sign-in—a mock, injected bearer, plaintext artifact, or workflow-output credential cannot qualify.
+
 ## 10. Local pre-push evidence and protected CI validation
 
 Validate tracked documentation, including files explicitly unignored beneath `docs/`:
@@ -586,22 +618,62 @@ python3 -m pytest backend/tests/test_release_contract_schemas.py backend/tests/t
 The validator must schema-check the active tracked schemas, reject unsupported keywords/remote
 references, enforce UUID/date-time/URI formats plus `oneOf`/`contains`/conditionals, and reject
 missing/unavailable platform reports, under-threshold quantitative measurements, illegal N/A
-outcomes, and raw-evidence references whose trusted bundled/GitHub/OCI bytes cannot be resolved and
-re-hashed.
+outcomes, bundled/GitHub evidence whose exact bytes cannot be re-hashed, and backend/web OCI claims
+that do not exactly match the digest-qualified image in the separately attested stage deployment.
 
 The normative local pre-push wrapper is `make prepare-release-evidence` (T107):
 
 ```bash
 BASE_SHA="$(git rev-parse origin/main)" make prepare-release-evidence
 # equivalent direct invocation
-python3 scripts/prepare_release_evidence.py --base-sha "$(git rev-parse origin/main)" --candidate-sha "$(git rev-parse HEAD)"
+python3 scripts/prepare_release_evidence.py --base-sha "$(git rev-parse origin/main)" --candidate-sha "$(git rev-parse HEAD)" \
+  --backend-python build/060/coverage/backend.xml \
+  --voice-worker-python build/065/coverage/voice-worker.xml \
+  --tooling-python build/060/coverage/tooling-python.xml \
+  --windows-python build/060/coverage/windows.xml \
+  --javascript build/060/coverage/web-istanbul.json \
+  --android-app build/060/coverage/android-app.xml \
+  --android-core build/060/coverage/android-core.xml \
+  --ios build/060/coverage/apple-ios-xccov.json \
+  --macos build/060/coverage/apple-macos-xccov.json \
+  --watchos build/060/coverage/apple-watchos-xccov.json \
+  --coverage-mode strict
 ```
 
 The wrapper collects, normalizes, and parses canonical evidence and digests locally: it inventories
 `build/060/release-evidence`, canonicalizes and SHA-256-digests every recognized document, assembles
 one deterministic `release_evidence_set` (content-derived UUIDv5 identity) when the directory holds
 only platform reports, and delegates schema plus same-candidate policy validation to
-`scripts/validate_release_evidence.py`. It writes
+`scripts/validate_release_evidence.py`. Standard strict mode requires exactly one independently
+named report from backend, voice worker, tooling, Windows, JavaScript, Android app, Android core,
+iOS, macOS, and watchOS. `--coverage-mode partial` exists only for focused programmatic diagnostics;
+the Make wrapper pins strict mode after any report-path override, so an empty or incomplete override
+fails closed. Before invoking the changed-code collector, the wrapper binds each report's raw and
+canonical semantic identities, rejects path/inode/content aliases globally, and then requires the
+collector decision to name the exact same identities. This detects report replacement between the
+binding and policy phases. Semantic identity is derived only from the native parser's normalized
+files plus observed/executable/covered source-line sets, so whitespace, timestamps, generator labels,
+and other irrelevant XML/JSON metadata cannot disguise a copied report. A second target-independent
+native-observation identity closes copies that target path filtering would otherwise make look
+different. Strict mode parses all ten reports even when their evaluator target is unchanged, requires
+a nonempty executable contribution from a file that exists in the exact candidate tree, and enforces
+producer source scopes: non-voice backend; isolated voice worker; `client.js`; separate Android
+app/core; iOS App plus AstralCore with Watch rejected; macOS App with no Watch; and watchOS with a required tracked Watch
+witness, allowed AstralCore output, and no App output. The voice worker's
+runtime-renamed `streaming_egress.py`, `voice_transcript.py`, and `watch_ticket.py` observations are
+attributed back to their exact `backend/shared/` candidate sources before identity and changed-line
+policy. The distinct tracked `backend/voice_agent/voice_transcript.py` and `watch_ticket.py` host-test
+shims remain backend-producer owned and are excluded from worker ownership because the image replaces
+those runtime paths. Every applicable producer must map its own scoped changed files. A changed
+AstralCore file and all of its changed physical lines must map completely through at least one of iOS
+or macOS because a real iOS UI archive can omit Core; Watch archive Core observations do not substitute
+for that group. Every other applicable Apple report must observe every changed physical line, while
+overlapping Python producers must agree on executable changed lines. No producer is required to cover
+a line merely to prove its native contribution—a valid zero-hit macOS archive remains valid input to
+the ordinary threshold decision. The protected collector
+invocation independently pins the same strict mode and complete matrix. Local shape rules cannot prove
+that an iOS- versus macOS-shaped archive came from a particular job; producer origin comes from
+protected, attempt-scoped artifact and job identities rather than self-asserted xccov metadata. It writes
 `build/060/release-evidence/local-diagnostic.json`, exits `2` with
 `release evidence rejected: ...` on any rejection, and stays diagnostic. A green local
 result remains diagnostic and must state `protected_release_authorization: false`; the wrapper has
@@ -615,9 +687,12 @@ Release publication and protected exception/debt transitions remain environment-
 Actions jobs using the built-in short-lived `GITHUB_TOKEN` with job-scoped permissions. Do not
 create a repository-scoped GitHub App, installation token, publisher App, or custom token broker.
 
-The readiness matrix normally runs from `ci.yml` (caller job id `release-readiness`, guarded by the
-`RELEASE_READINESS_ACTIVE` repository variable set at the second T120 checkpoint; the required
-check is `release-readiness / protected-decision`). A candidate rerun is dispatched with an
+The readiness matrix is called only by the protected default-branch
+`release-readiness-protected.yml` workflow after both
+`RELEASE_READINESS_ACTIVE` and `RELEASE_EPHEMERAL_CREDENTIALS_READY` are true (the required check is
+`release-readiness / protected-decision`). The ephemeral-credentials variable is a separate
+fail-closed activation checkpoint and MUST remain false until the external issuer contract above is
+live-verified. A candidate rerun is dispatched with an
 explicit verified base, and the unique request id rides the run-name
 (`release-readiness <request_id>`):
 
@@ -626,9 +701,12 @@ DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.n
 gh workflow run release-readiness.yml --ref "$DEFAULT_BRANCH" -f candidate_sha="$SHA" -f base_sha="$BASE_SHA" -f request_id="$REQUEST_ID"
 ```
 
-The run's `protected-decision` job uploads the canonical `release-evidence` bundle and the attested
-`trusted-release-decision` artifact; a dispatch rerun still requires the shared-run backend and
-tooling coverage artifacts, so the coverage gate fails honestly when they are absent.
+The run's `protected-decision` job uploads the canonical `release-evidence` bundle and attests the
+exact `trusted-release-decision` bytes as the protected reusable `release-readiness.yml` workflow at
+the installed `RELEASE_TRUSTED_BUILDER_SHA`. The bridge, controller, and publisher each verify that
+exact signer workflow and signer digest before accepting the decision. A rerun still requires the
+shared-run backend and tooling coverage artifacts, so the coverage gate fails honestly when they are
+absent.
 
 <details>
 <summary>Superseded App/broker bootstrap (historical only — do not execute)</summary>
@@ -714,13 +792,15 @@ for manifest in "${manifests[@]}"; do
   verification="build/060/attestation-verification/${relative//\//_}.json"
   gh attestation verify "$manifest" --repo "$GITHUB_REPOSITORY" --source-digest "$SHA" --signer-digest "$TRUSTED_BUILDER_SHA" --cert-identity "$TRUSTED_BUILDER_CERT_IDENTITY" --format json > "$verification"
 done
-python3 "$PROTECTED_POLICY_ROOT/scripts/validate_release_evidence.py" --schema "$PROTECTED_POLICY_ROOT/specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json" --trust-schema "$PROTECTED_POLICY_ROOT/specs/060-runtime-reliability-hardening/contracts/release-trust.schema.json" --deployment-profile-schema "$PROTECTED_POLICY_ROOT/specs/060-runtime-reliability-hardening/contracts/windows-deployment-profile.schema.json" --evidence-dir build/060/release-evidence --base-sha "$BASE_SHA" --candidate-sha "$SHA" --trusted-provenance-dir build/060/trust/producers --trusted-stage-deploy "${stage_manifests[0]}" --trusted-approvals-dir build/060/trust/approvals --trusted-debt-resolutions-dir build/060/trust/resolutions --attestation-verification-dir build/060/attestation-verification --protected-builder-sha "$TRUSTED_BUILDER_SHA" --protected-builder-identity "$TRUSTED_BUILDER_CERT_IDENTITY" --protected-policy-sha "$PROTECTED_POLICY_SHA256" --exception-ledger-repository "$GITHUB_REPOSITORY" --exception-ledger-ref refs/heads/release-evidence-debt --exception-ledger-commit "$EXCEPTION_LEDGER_SHA" --decision-output build/060/protected-decision/trusted-release-decision.json
+python3 "$PROTECTED_POLICY_ROOT/scripts/validate_release_evidence.py" --schema "$PROTECTED_POLICY_ROOT/specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json" --trust-schema "$PROTECTED_POLICY_ROOT/specs/060-runtime-reliability-hardening/contracts/release-trust.schema.json" --deployment-profile-schema "$PROTECTED_POLICY_ROOT/specs/060-runtime-reliability-hardening/contracts/windows-deployment-profile.schema.json" --evidence-dir build/060/release-evidence --raw-apple-evidence-dir build/060/raw-apple-evidence --windows-product-evidence-dir build/060/coverage-inputs/windows --base-sha "$BASE_SHA" --candidate-sha "$SHA" --trusted-provenance-dir build/060/trust/producers --trusted-stage-deploy "${stage_manifests[0]}" --trusted-approvals-dir build/060/trust/approvals --trusted-debt-resolutions-dir build/060/trust/resolutions --attestation-verification-dir build/060/attestation-verification --protected-builder-sha "$TRUSTED_BUILDER_SHA" --protected-builder-identity "$TRUSTED_BUILDER_CERT_IDENTITY" --protected-policy-sha "$PROTECTED_POLICY_SHA256" --exception-ledger-repository "$GITHUB_REPOSITORY" --exception-ledger-ref refs/heads/release-evidence-debt --exception-ledger-commit "$EXCEPTION_LEDGER_SHA" --decision-output build/060/protected-decision/trusted-release-decision.json
 test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/release-evidence-debt" --jq .object.sha)" = "$EXCEPTION_LEDGER_SHA"
 ```
 
-The protected workflow attests `trusted-release-decision.json` and owns the repository-required
-`release-readiness / protected-decision` check. The caller aggregate may download and independently
-verify that exact decision artifact but cannot replace its verdict. Schema fields and embedded hashes
+The protected reusable `release-readiness.yml` workflow attests `trusted-release-decision.json` at
+the installed `RELEASE_TRUSTED_BUILDER_SHA` and owns the repository-required
+`release-readiness / protected-decision` check. Every consumer verifies that exact signer workflow
+and signer digest. The caller aggregate may download and independently verify that exact decision
+artifact but cannot replace its verdict. Schema fields and embedded hashes
 are never accepted as proof of trust; the protected verifier compares the
 same-repository protected ledger head both before and after evaluation and attests its exact commit,
 tree, immutable reference, and canonical `debts/` plus `resolutions/` path-to-byte-digest snapshot even when no current exception
@@ -770,7 +850,7 @@ The candidate-tree command below is diagnostic only; reproduce it locally with t
 base/candidate and downloaded artifacts:
 
 ```bash
-python3 scripts/check_changed_coverage.py --base-sha "$BASE_SHA" --candidate-sha "$SHA" --backend-python build/060/coverage/backend.xml --tooling-python build/060/coverage/tooling-python.xml --windows-python build/060/coverage/windows.xml --javascript build/060/coverage/node-v8/tooling-javascript.json --javascript build/060/coverage/web-istanbul.json --android-app build/060/coverage/android-app.xml --android-core build/060/coverage/android-core.xml --apple build/060/coverage/apple-ios-xccov.json --apple build/060/coverage/apple-macos-xccov.json --apple build/060/coverage/apple-watchos-xccov.json --fail-under 90 --output build/060/coverage/changed-code.json
+python3 scripts/check_changed_coverage.py --base-sha "$BASE_SHA" --candidate-sha "$SHA" --backend-python build/060/coverage/backend.xml --voice-worker-python build/065/coverage/voice-worker.xml --tooling-python build/060/coverage/tooling-python.xml --windows-python build/060/coverage/windows.xml --javascript build/060/coverage/web-istanbul.json --android-app build/060/coverage/android-app.xml --android-core build/060/coverage/android-core.xml --ios build/060/coverage/apple-ios-xccov.json --macos build/060/coverage/apple-macos-xccov.json --watchos build/060/coverage/apple-watchos-xccov.json --coverage-mode strict --fail-under 90 --output build/060/coverage/changed-code.json
 ```
 
 </details>

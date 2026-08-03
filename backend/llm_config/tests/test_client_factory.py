@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import pytest
 
-from llm_config.client_factory import build_llm_client
+from llm_config.client_factory import (
+    DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS,
+    build_llm_client,
+)
 from llm_config.types import CredentialSource, LLMUnavailable, ResolvedConfig
 from llm_config.user_store import PersistedLLMConfig
 
@@ -110,7 +113,13 @@ class TestFactoryIsPureAndUncached:
 
 
 class TestTimeoutPassthrough:
+    def test_default_timeout_is_bounded_and_sdk_retries_are_disabled(self):
+        client, _, _ = build_llm_client(_cfg(), CredentialSource.USER)
+        assert client.timeout == DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS == 60.0
+        assert client.max_retries == 0
+
     def test_timeout_kwarg_is_threaded_through(self):
         client, _, _ = build_llm_client(_cfg(), CredentialSource.USER,
                                         timeout=5.0)
-        assert client is not None
+        assert client.timeout == 5.0
+        assert client.max_retries == 0

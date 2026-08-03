@@ -24,6 +24,115 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "digest_image_reference": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._/-]+(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?@sha256:[0-9a-f]{64}$"
+    },
+    "staging_service_image_references": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "postgres",
+        "keycloak-postgres",
+        "keycloak",
+        "livekit",
+        "schema-baseline",
+        "astraldeep",
+        "voice-worker"
+      ],
+      "properties": {
+        "postgres": { "$ref": "#/$defs/digest_image_reference" },
+        "keycloak-postgres": { "$ref": "#/$defs/digest_image_reference" },
+        "keycloak": { "$ref": "#/$defs/digest_image_reference" },
+        "livekit": { "$ref": "#/$defs/digest_image_reference" },
+        "schema-baseline": { "$ref": "#/$defs/digest_image_reference" },
+        "astraldeep": { "$ref": "#/$defs/digest_image_reference" },
+        "voice-worker": { "$ref": "#/$defs/digest_image_reference" }
+      }
+    },
+    "livekit_turn_tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "advertised_uri",
+        "public_port",
+        "external_tls",
+        "terminator_upstream_host",
+        "terminator_upstream_port",
+        "livekit_listener_port"
+      ],
+      "properties": {
+        "advertised_uri": {
+          "type": "string",
+          "pattern": "^turns:(?=.{1,253}:443\\?transport=tcp$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}:443\\?transport=tcp$"
+        },
+        "public_port": { "const": 443 },
+        "external_tls": { "const": true },
+        "terminator_upstream_host": { "const": "127.0.0.1" },
+        "terminator_upstream_port": { "const": 15349 },
+        "livekit_listener_port": { "const": 5349 }
+      },
+      "$comment": "LiveKit v1.13.5 external_tls accepts plaintext on tls_port while the server advertises turns:<domain>:443. The trusted same-host L4 terminator owns public 443 and forwards to loopback 15349, which Compose maps to the container's plaintext 5349 listener."
+    },
+    "voice_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "voice_worker_image_reference",
+        "voice_worker_image_sha256",
+        "livekit_image_reference",
+        "livekit_image_sha256",
+        "livekit_config_sha256",
+        "livekit_public_url",
+        "livekit_turn_domain",
+        "speech_profile"
+      ],
+      "properties": {
+        "voice_worker_image_reference": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._/-]+(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?@sha256:[0-9a-f]{64}$"
+        },
+        "voice_worker_image_sha256": { "$ref": "#/$defs/sha256" },
+        "livekit_image_reference": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._/-]+(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?@sha256:[0-9a-f]{64}$"
+        },
+        "livekit_image_sha256": { "$ref": "#/$defs/sha256" },
+        "livekit_config_sha256": { "$ref": "#/$defs/sha256" },
+        "livekit_public_url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "livekit_turn_domain": {
+          "type": "string",
+          "pattern": "^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}$"
+        },
+        "speech_profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "asr_model",
+            "tts_model",
+            "voice",
+            "sample_rate_hz",
+            "inventory_sha256",
+            "profile_sha256"
+          ],
+          "properties": {
+            "asr_model": { "const": "Systran/faster-whisper-large-v3" },
+            "tts_model": { "const": "speaches-ai/Kokoro-82M-v1.0-ONNX" },
+            "voice": { "const": "af_heart" },
+            "sample_rate_hz": { "const": 24000 },
+            "inventory_sha256": { "$ref": "#/$defs/sha256" },
+            "profile_sha256": {
+              "const": "9b857a3d788a5d6c4ff67278eca4a169028fb2e185ccaf0b01961283f629445b"
+            }
+          }
+        }
+      },
+      "$comment": "The image SHA fields are the digest suffixes of their references. profile_sha256 hashes compact sorted-key UTF-8 JSON containing only asr_model, tts_model, voice, and sample_rate_hz. Protected policy validates both bindings independently of schema shape."
+    },
     "timestamp": {
       "type": "string",
       "format": "date-time"
@@ -171,7 +280,7 @@
         },
         "sha256": { "$ref": "#/$defs/sha256" }
       },
-      "$comment": "Policy derives immutable_reference, resolves the digest from the authenticated registry, and hashes the retrieved OCI manifest bytes; a tag is never accepted."
+      "$comment": "Policy derives immutable_reference, requires digest and sha256 to encode the same immutable OCI digest, and for backend/web requires the complete claim to equal the candidate image in the separately attested trusted-stage deployment that pulled and ran that digest-qualified image. Protected validation does not claim a second registry fetch; a tag-only reference is never accepted."
     },
     "trusted_artifact": {
       "oneOf": [
@@ -193,6 +302,22 @@
         "artifact": { "$ref": "#/$defs/github_actions_artifact_member" }
       },
       "$comment": "Policy resolves and re-hashes the exact canonical artifact member and requires its parsed manifest_id/type to equal this record. Duplicate manifest IDs, artifact identities, bytes, missing required roles, and extra current-run inputs are rejected."
+    },
+    "source_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "runner", "artifacts"],
+      "properties": {
+        "workflow": { "$ref": "#/$defs/workflow" },
+        "runner": { "$ref": "#/$defs/runner" },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "items": { "$ref": "#/$defs/github_actions_artifact_member" }
+        }
+      },
+      "$comment": "For a protected normalization job or a producer that consumes a separately built product, this records the independently reconstructed upstream job and every member of its exact immutable source artifact. The parent workflow/runner and artifacts remain the final producer and its evidence artifact; policy requires both halves of the chain and re-hashes protected-decision-prefetched source bytes."
     },
     "trusted_workflow_provenance": {
       "type": "object",
@@ -222,6 +347,7 @@
           "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\\.github/workflows/[A-Za-z0-9_.-]+@[0-9a-f]{40}$"
         },
         "runner": { "$ref": "#/$defs/runner" },
+        "source_provenance": { "$ref": "#/$defs/source_provenance" },
         "trusted_builder": { "$ref": "#/$defs/protected_builder" },
         "generated_at": { "$ref": "#/$defs/timestamp" },
         "artifacts": {
@@ -231,7 +357,7 @@
           "items": { "$ref": "#/$defs/trusted_artifact" }
         }
       },
-      "$comment": "One manifest represents exactly one producer job. Policy rejects duplicate immutable references or identities and requires repository/candidate/workflow/run/attempt/job/runner plus the externally verified attestation subject digest and protected builder identity to match independent current-workflow context. The subject digest is deliberately not embedded because a file cannot contain its own digest."
+      "$comment": "One manifest represents exactly one final producer job. Policy rejects duplicate immutable references or identities and requires repository/candidate/workflow/run/attempt/job/runner plus the externally verified attestation subject digest and protected builder identity to match independent current-workflow context. Protected normalization and Windows build-once consumption carry source_provenance for the exact upstream source job/artifact chain without relabeling observations or product bytes. Backend and web manifests also carry the candidate OCI claim cross-checked against the separately attested stage deployment. The subject digest is deliberately not embedded because a file cannot contain its own digest."
     },
     "trusted_stage_deploy": {
       "type": "object",
@@ -284,6 +410,9 @@
             "authentication_posture",
             "database_posture",
             "worker_paths",
+            "voice_runtime",
+            "service_image_references",
+            "livekit_turn_tls",
             "capability_manifest_sha256",
             "service_identity_sha256"
           ],
@@ -325,17 +454,23 @@
             "database_posture": { "const": "representative_postgresql" },
             "worker_paths": {
               "type": "array",
-              "minItems": 2,
+              "minItems": 3,
               "uniqueItems": true,
               "items": {
                 "type": "string",
-                "enum": ["background", "scheduler", "maintenance"]
+                "enum": ["background", "scheduler", "maintenance", "voice"]
               },
               "allOf": [
                 { "contains": { "const": "background" } },
-                { "contains": { "const": "scheduler" } }
+                { "contains": { "const": "scheduler" } },
+                { "contains": { "const": "voice" } }
               ]
             },
+            "voice_runtime": { "$ref": "#/$defs/voice_runtime" },
+            "service_image_references": {
+              "$ref": "#/$defs/staging_service_image_references"
+            },
+            "livekit_turn_tls": { "$ref": "#/$defs/livekit_turn_tls" },
             "capability_manifest_sha256": { "$ref": "#/$defs/sha256" },
             "service_identity_sha256": { "$ref": "#/$defs/sha256" }
           }
@@ -701,14 +836,14 @@
         "workflow": { "$ref": "#/$defs/workflow" },
         "workflow_ref": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\\.github/workflows/[A-Za-z0-9_.-]+@[0-9a-f]{40}$"
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\\.github/workflows/release-readiness\\.yml@[0-9a-f]{40}$"
         },
         "runner": { "$ref": "#/$defs/runner" },
         "trusted_builder": { "$ref": "#/$defs/protected_builder" },
         "valid_until": { "$ref": "#/$defs/timestamp" },
         "generated_at": { "$ref": "#/$defs/timestamp" }
       },
-      "$comment": "Only the protected reusable verifier may emit a qualifying passed decision. It reconstructs every producer/stage/approval input from bounded current-run IDs and GitHub API state, binds each input manifest ID to its canonical artifact member and re-hashed bytes, verifies attestations, and reads the current protected exception-ledger head/tree through the same-repository API. It rejects a stale or concurrently moved head, schema-validates debt and resolution records, re-hashes every normalized entry into exception_ledger_snapshot_sha256, proves current approvals' registered entries are present and all unresolved historical debt is either passed and registered as resolved now or remains blocking, and prevents an old resolution from satisfying a later distinct debt. It runs policy and coverage code from its independently pinned signer digest rather than the candidate checkout, sets valid_until no later than the earliest current approval expiry (and to a bounded protected-policy lifetime when there is no exception), hashes the exact evidence-set and coverage outputs, and attests this manifest. Repository rules require the installed protected workflow identity, not a name-only status. A caller aggregate, candidate validator, same-name job, UUID-only list, stale ledger snapshot, expired decision, or self-declared success cannot substitute for it."
+      "$comment": "Only the protected reusable release-readiness workflow at the installed protected commit may emit and attest a qualifying passed decision. Its trusted_builder field separately records the release-trusted-builder identity that attested the input manifests and anchored the protected policy. The verifier reconstructs every producer/stage/approval input from bounded current-run IDs and GitHub API state, binds each input manifest ID to its canonical artifact member and re-hashed bytes, verifies attestations, and reads the current protected exception-ledger head/tree through the same-repository API. It rejects a stale or concurrently moved head, schema-validates debt and resolution records, re-hashes every normalized entry into exception_ledger_snapshot_sha256, proves current approvals' registered entries are present and all unresolved historical debt is either passed and registered as resolved now or remains blocking, and prevents an old resolution from satisfying a later distinct debt. It runs policy and coverage code from its independently pinned signer digest rather than the candidate checkout, sets valid_until no later than the earliest current approval expiry (and to a bounded protected-policy lifetime when there is no exception), hashes the exact evidence-set and coverage outputs, and attests this manifest. Repository rules require the installed protected workflow identity and signer digest, not a name-only status. A caller aggregate, candidate validator, same-name job, UUID-only list, stale ledger snapshot, expired decision, or self-declared success cannot substitute for it."
     }
   }
 }

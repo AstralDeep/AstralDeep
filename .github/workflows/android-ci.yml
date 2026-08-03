@@ -7,12 +7,16 @@ on:
     branches: [main]
     paths:
       - 'android-client/**'
+      - 'backend/shared/ui_protocol.json'
+      - 'backend/tests/fixtures/voice_065/client_conformance.json'
       - 'scripts/run_android_next_major_canary.py'
       - 'backend/tests/test_android_next_major_canary.py'
       - '.github/workflows/android-ci.yml'
   pull_request:
     paths:
       - 'android-client/**'
+      - 'backend/shared/ui_protocol.json'
+      - 'backend/tests/fixtures/voice_065/client_conformance.json'
       - 'scripts/run_android_next_major_canary.py'
       - 'backend/tests/test_android_next_major_canary.py'
       - '.github/workflows/android-ci.yml'
@@ -74,6 +78,7 @@ jobs:
             android-client/app/build/reports/kover/report.xml
             android-client/core/build/reports/kover/report.xml
           if-no-files-found: error
+          retention-days: 14
 
       - name: Assemble debug APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
@@ -111,12 +116,13 @@ jobs:
           path: build/060/android-next-major-readiness.json
           if-no-files-found: error
 
-  # Instrumented Compose UI tests on an emulator. Heavier and flakier than the
-  # JVM unit tests, so it is NOT a per-PR gate — it runs nightly and on demand.
+  # Instrumented Compose UI tests are a required Feature 065 client-conformance
+  # gate. They run for the same path-filtered pull requests as the JVM suites,
+  # as well as the existing nightly and manual invocations.
   instrumented:
-    name: Instrumented UI tests (emulator)
+    name: Required · instrumented UI tests (emulator)
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -150,3 +156,18 @@ jobs:
           arch: x86_64
           working-directory: android-client
           script: gradle :app:connectedDebugAndroidTest --no-daemon --stacktrace
+
+  android-required:
+    name: Required · Android aggregate
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - build-test
+      - instrumented
+    steps:
+      - name: Enforce every Android conformance and coverage producer
+        working-directory: .
+        run: |
+          [[ '${{ needs.build-test.result }}' == 'success' ]]
+          [[ '${{ needs.instrumented.result }}' == 'success' ]]

@@ -1,0 +1,115 @@
+{
+  "schema_version": "1",
+  "description": "Fixed Feature 065 synthetic, non-PHI text recap matrix. Case identifiers and profiles contain no transcript or recap bodies.",
+  "correctness_threshold_percent": 95,
+  "rubric_dimensions": [
+    "terminal_state_accuracy",
+    "unsupported_claims",
+    "material_caveat_preservation",
+    "next_action_preservation",
+    "fabricated_progress",
+    "pre_consent_disclosure"
+  ],
+  "expected_distribution": {
+    "authoritative_summary_success": 20,
+    "committed_visible_fallback_success": 20,
+    "failure": 20,
+    "refusal": 15,
+    "cancellation": 10,
+    "sensitive_result": 15
+  },
+  "case_groups": [
+    {
+      "category": "authoritative_summary_success",
+      "profile": "plain",
+      "case_ids": ["AUTH-01", "AUTH-02", "AUTH-03", "AUTH-04"]
+    },
+    {
+      "category": "authoritative_summary_success",
+      "profile": "markup",
+      "case_ids": ["AUTH-05", "AUTH-06", "AUTH-07", "AUTH-08"]
+    },
+    {
+      "category": "authoritative_summary_success",
+      "profile": "long_primary",
+      "case_ids": ["AUTH-09", "AUTH-10", "AUTH-11", "AUTH-12"]
+    },
+    {
+      "category": "authoritative_summary_success",
+      "profile": "duplicate",
+      "case_ids": ["AUTH-13", "AUTH-14", "AUTH-15", "AUTH-16"]
+    },
+    {
+      "category": "authoritative_summary_success",
+      "profile": "unicode_whitespace",
+      "case_ids": ["AUTH-17", "AUTH-18", "AUTH-19", "AUTH-20"]
+    },
+    {
+      "category": "committed_visible_fallback_success",
+      "profile": "direct",
+      "case_ids": ["FALL-01", "FALL-02", "FALL-03", "FALL-04"]
+    },
+    {
+      "category": "committed_visible_fallback_success",
+      "profile": "nested",
+      "case_ids": ["FALL-05", "FALL-06", "FALL-07", "FALL-08"]
+    },
+    {
+      "category": "committed_visible_fallback_success",
+      "profile": "sequences",
+      "case_ids": ["FALL-09", "FALL-10", "FALL-11", "FALL-12"]
+    },
+    {
+      "category": "committed_visible_fallback_success",
+      "profile": "table",
+      "case_ids": ["FALL-13", "FALL-14", "FALL-15", "FALL-16"]
+    },
+    {
+      "category": "committed_visible_fallback_success",
+      "profile": "sanitized",
+      "case_ids": ["FALL-17", "FALL-18", "FALL-19", "FALL-20"]
+    },
+    {
+      "category": "failure",
+      "profile": "fixed_terminal",
+      "case_ids": [
+        "FAIL-01", "FAIL-02", "FAIL-03", "FAIL-04", "FAIL-05",
+        "FAIL-06", "FAIL-07", "FAIL-08", "FAIL-09", "FAIL-10",
+        "FAIL-11", "FAIL-12", "FAIL-13", "FAIL-14", "FAIL-15",
+        "FAIL-16", "FAIL-17", "FAIL-18", "FAIL-19", "FAIL-20"
+      ]
+    },
+    {
+      "category": "refusal",
+      "profile": "fixed_terminal",
+      "case_ids": [
+        "REF-01", "REF-02", "REF-03", "REF-04", "REF-05",
+        "REF-06", "REF-07", "REF-08", "REF-09", "REF-10",
+        "REF-11", "REF-12", "REF-13", "REF-14", "REF-15"
+      ]
+    },
+    {
+      "category": "cancellation",
+      "profile": "fixed_terminal",
+      "case_ids": [
+        "CANCEL-01", "CANCEL-02", "CANCEL-03", "CANCEL-04", "CANCEL-05",
+        "CANCEL-06", "CANCEL-07", "CANCEL-08", "CANCEL-09", "CANCEL-10"
+      ]
+    },
+    {
+      "category": "sensitive_result",
+      "profile": "classified_sensitive",
+      "case_ids": ["SENS-01", "SENS-02", "SENS-03", "SENS-04", "SENS-05"]
+    },
+    {
+      "category": "sensitive_result",
+      "profile": "classification_unknown",
+      "case_ids": ["SENS-06", "SENS-07", "SENS-08", "SENS-09", "SENS-10"]
+    },
+    {
+      "category": "sensitive_result",
+      "profile": "detector_failure",
+      "case_ids": ["SENS-11", "SENS-12", "SENS-13", "SENS-14", "SENS-15"]
+    }
+  ]
+}

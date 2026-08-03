@@ -1,0 +1,6 @@
+# Isolated Python 3.11 contract-validation tooling for Feature 065.
+#
+# This manifest and its hash lock are test-only. They are never installed into
+# the backend, voice-worker, or client runtime environments.
+jsonschema==4.25.1
+openapi-spec-validator==0.7.2

@@ -46,8 +46,62 @@
   var operationStatusById = Object.create(null);
   var operationSubmissionByGeneration = Object.create(null);
   var operationSubmissionById = Object.create(null);
+  var operationSubmissionOrdinal = 0;
   var agentLifecycleById = Object.create(null);
   var ACCOUNT_SESSION_KEY = "astraldeep.active_chat.account.v1";
+  var VOICE_DEVICE_KEY = "astraldeep.voice.device.v1";
+  var voiceDeviceId = loadVoiceDeviceId();
+  var voicePermissionState = "not_determined";
+  var voiceBinding = null;
+  var voiceComposer = null;
+  var voiceComposerRevision = -1;
+  var voiceSession = null;
+  var voiceLastSession = null;
+  var voiceGrant = null;
+  var voiceRoom = null;
+  var voiceMediaJoined = false;
+  var voiceMediaJoining = false;
+  var voiceStream = null;
+  var voiceActivation = null;
+  var voiceTakeover = null;
+  var voiceExpectedWorker = null;
+  var voiceIntentionalDisconnect = false;
+  var voiceSdkLoggingConfigured = false;
+  var voiceTranscriptSequence = Object.create(null);
+  // Final transcripts remain memory-only until the ordinary chat dispatcher
+  // returns a fully correlated acknowledgement or terminal rejection. The
+  // worker owns the other bounded replay copy; neither side uses storage.
+  var voicePendingSubmissions = Object.create(null);
+  var voicePendingSubmissionBytes = 0;
+  var voiceCurrentResultId = null;
+  var voicePendingTracks = Object.create(null);
+  var voicePublishedTracks = Object.create(null);
+  var voiceAnnouncementByTrack = Object.create(null);
+  var voiceActivePlayout = Object.create(null);
+  var voicePlayoutQueue = [];
+  var voiceSubscribingTrackSid = null;
+  var voiceAudioContext = null;
+  var voiceLastAnnouncementSequence = 0;
+  var voiceResultReservation = Object.create(null);
+  var voiceResultQuantumIndex = Object.create(null);
+  var voiceMediaTimers = [];
+  var voiceLeaseTimer = null;
+  var voiceBindingRenewTimer = null;
+  var voiceRecovery = null;
+  var voiceVisibleChatSync = null;
+  var voiceVisibleChatTarget = null;
+  var voicePendingEndFence = null;
+  var voiceLifecycleSuspended = false;
+  var voiceSuspensionPromise = null;
+  var voiceRecoverySuppressed = false;
+  var voiceStateEpoch = 0;
+  var voicePlayoutSequence = 0;
+  var voiceIgnoringTrackEnd = false;
+  var VOICE_MAX_PENDING_SUBMISSIONS = 4;
+  var VOICE_MAX_PENDING_BYTES = 48 * 1024;
+  var VOICE_SUBMISSION_RETRY_MS = 2500;
+  var VOICE_RECOVERY_DEADLINE_MS = 30000;
+  var VOICE_RECOVERY_MAX_ATTEMPTS = 4;
   var ALLOWED_LOCATOR_CLEAR_REASONS = Object.freeze({
     explicit_new_chat: true,
     definitive_sign_out: true,
@@ -72,6 +126,16 @@
   function isCanonicalUuid4(value) {
     return typeof value === "string"
       && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+  }
+
+  /** Load or create the non-secret installation identity used for voice fencing. */
+  function loadVoiceDeviceId() {
+    var current;
+    try { current = localStorage.getItem(VOICE_DEVICE_KEY); } catch (e) {}
+    if (isCanonicalUuid4(current)) return current;
+    current = randomUuid4();
+    try { localStorage.setItem(VOICE_DEVICE_KEY, current); } catch (e) {}
+    return current;
   }
 
   function isRfc3339Utc(value) {
@@ -232,6 +296,7 @@
     if (!isCanonicalUuid4(chatId)) return false;
     persistActiveChatLocator(chatId);
     activeChatId = chatId;
+    syncVoiceVisibleChat(chatId);
     if (purpose) openRequest(purpose, chatId);
     return true;
   }
@@ -273,8 +338,23 @@
     if (canvasEmpty && !canvasEmpty.parentNode) canvas.insertBefore(canvasEmpty, canvas.firstChild);
   }
   var statusEl = document.getElementById("astral-status");
+  // Identifies the operation/submission that currently owns the shared status
+  // line. A successful terminal frame may clear only its own progress; it
+  // must not erase a different operation or an unrelated persistent notice.
+  var statusOwner = null;
   var input = document.getElementById("astral-input");
   var form = document.getElementById("astral-form");
+  var voiceControlsEl = document.getElementById("astral-voice-controls");
+  var voiceFeedbackEl = document.getElementById("astral-voice-feedback");
+  var voiceStatusEl = document.getElementById("astral-voice-status");
+  var voiceTranscriptEl = document.getElementById("astral-voice-transcript");
+  var voiceAudioResumeEl = document.getElementById("astral-voice-audio-resume");
+  var voiceAudioHostEl = document.getElementById("astral-voice-audio");
+  var voiceTurnNoticeEl = document.getElementById("astral-voice-turn-notice");
+  var voiceTurnNoticeTitleEl = document.getElementById("astral-voice-turn-notice-title");
+  var voiceTurnNoticeMessageEl = document.getElementById("astral-voice-turn-notice-message");
+  var voiceTurnNoticeGuidanceEl = document.getElementById("astral-voice-turn-notice-guidance");
+  var voiceTurnNoticeState = null;
 
   // ---- device detection (verbatim from useWebSocket.ts) ----
   function detectDeviceType() {
@@ -296,7 +376,12 @@
       pixel_ratio: window.devicePixelRatio || 1,
       has_touch: (nav.maxTouchPoints || 0) > 0,
       has_geolocation: "geolocation" in navigator,
-      has_microphone: !!navigator.mediaDevices, has_camera: !!navigator.mediaDevices,
+      has_microphone: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+      has_audio_output: typeof Audio !== "undefined",
+      microphone_permission: voicePermissionState,
+      full_duplex: true,
+      transport: "livekit",
+      has_camera: !!navigator.mediaDevices,
       has_file_system: true,
       connection_type: (nav.connection && nav.connection.effectiveType) || "unknown",
       user_agent: navigator.userAgent,
@@ -343,19 +428,2339 @@
   }
   configureStatusElement(statusEl);
 
-  function setStatus(s, busy) {
+  function setStatus(s, busy, owner) {
     var current = document.getElementById("astral-status");
     if (current !== statusEl) statusEl = configureStatusElement(current);
     if (!statusEl) return;
+    statusOwner = owner || null;
     statusEl.textContent = s || "";
     statusEl.setAttribute("aria-busy", busy === true ? "true" : "false");
     statusEl.setAttribute("data-status-state", s ? (busy === true ? "busy" : "settled") : "idle");
   }
 
+  // ---- Feature 065: server-owned conversational voice + local media adapter ----
+  var VOICE_ACTIONS = Object.freeze({
+    voice_session_start: true,
+    voice_session_takeover: true,
+    voice_session_end: true,
+    voice_microphone_set: true,
+    voice_speech_stop: true,
+    voice_speech_mute_set: true,
+    voice_visible_chat_update: true,
+    voice_sensitive_recap_request: true,
+  });
+  var VOICE_CONTROL_ORDER = Object.freeze([
+    "voice_session_start",
+    "voice_session_takeover",
+    "voice_session_end",
+    "voice_microphone_set",
+    "voice_speech_stop",
+    "voice_speech_mute_set",
+    "voice_visible_chat_update",
+    "voice_sensitive_recap_request",
+  ]);
+  var VOICE_STATES = Object.freeze({
+    off: true, unavailable: true, connecting: true, greeting: true,
+    listening: true, speech_detected: true, transcribing: true,
+    acknowledging: true, processing: true, waiting_on_user: true,
+    speaking_progress: true, speaking_result: true, muted: true,
+    suspended: true, reconnecting: true, error: true, ended: true,
+  });
+  var VOICE_TURN_STATES = Object.freeze({
+    recognizing: true, submitting: true, accepted: true, processing: true,
+    waiting_on_user: true, succeeded: true, failed: true, refused: true,
+    cancelled: true, abandoned: true,
+  });
+  var VOICE_SPEECH_OUTCOMES = Object.freeze({
+    source_finished: true,
+    failed: true,
+    suppressed: true,
+  });
+  var VOICE_REQUEST_TERMINAL_TITLES = Object.freeze({
+    failed: "Voice request did not complete.",
+    refused: "Voice request did not start.",
+    cancelled: "Voice request did not complete because it was cancelled.",
+    abandoned: "Voice request did not complete.",
+    speech_error: "Speech playback failed.",
+  });
+  var VOICE_REQUEST_NOTICE_CLEAR_STATES = Object.freeze({
+    recognizing: true,
+    submitting: true,
+    accepted: true,
+    processing: true,
+    succeeded: true,
+  });
+  var VOICE_SUBMISSION_REJECTION_REASONS = Object.freeze({
+    capacity_exhausted: true,
+    chat_unavailable: true,
+    invalid_binding: true,
+    invalid_proof: true,
+    proof_expired: true,
+    permission_denied: true,
+    stale_session: true,
+    malformed_final: true,
+  });
+  var VOICE_STATE_TEXT = Object.freeze({
+    off: "Voice conversation is off.",
+    unavailable: "Voice is unavailable. You can keep typing messages.",
+    connecting: "Connecting voice conversation…",
+    greeting: "AstralDeep is greeting you.",
+    listening: "Listening…",
+    speech_detected: "I hear you.",
+    transcribing: "Turning your speech into text…",
+    acknowledging: "On it.",
+    processing: "Working on your request…",
+    waiting_on_user: "Waiting for your response.",
+    speaking_progress: "Speaking a progress update…",
+    speaking_result: "Speaking the completed result…",
+    muted: "Assistant speech is muted.",
+    suspended: "Voice is paused while this page is not active.",
+    reconnecting: "Voice connection was interrupted. Typed chat is still available.",
+    error: "Voice stopped because of an error. You can keep typing messages.",
+    ended: "Voice conversation ended. Accepted requests will keep running.",
+  });
+  var VOICE_REASON_TEXT = Object.freeze({
+    permission_denied: "Microphone permission was denied. Allow it in browser settings or keep typing.",
+    permission_restricted: "Microphone permission is restricted. You can keep typing messages.",
+    no_microphone: "No microphone is available. Connect one or keep typing messages.",
+    no_audio_output: "No audio output is available. You can keep typing messages.",
+    media_unavailable: "Browser audio is unavailable. You can keep typing messages.",
+    takeover_required: "Voice is active on another device. Choose Take over to continue here.",
+    idle_expired: "Voice ended after being idle. Accepted requests will keep running.",
+    auth_expired: "Voice ended because your session expired. Typed chat is still available.",
+    backgrounded: "Voice is paused while this page is hidden.",
+    audio_interrupted: "Voice paused because audio was interrupted.",
+    network_interrupted: "Voice connection was interrupted. Typed chat is still available.",
+    stale_generation: "This voice connection is no longer current.",
+    ended_by_user: "Voice conversation ended. Accepted requests will keep running.",
+    speech_error: "Assistant speech failed. The text result may still be available in chat. You can keep typing messages.",
+    media_error: "Voice media failed. You can retry or keep typing.",
+  });
+
+  function voiceCapability() {
+    return {
+      has_microphone: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+      has_audio_output: typeof Audio !== "undefined",
+      microphone_permission: voicePermissionState,
+      full_duplex: true,
+      transport: "livekit",
+    };
+  }
+
+  function voiceMessage(state, reason, message) {
+    if (typeof message === "string" && message.trim()) {
+      if (reason === "speech_error"
+          && !/text result may still be available/i.test(message)) {
+        return message.trim() + " The text result may still be available in chat.";
+      }
+      return message.trim();
+    }
+    return VOICE_REASON_TEXT[reason] || VOICE_STATE_TEXT[state] || VOICE_STATE_TEXT.error;
+  }
+
+  function setVoiceFeedback(state, reason, message, forceVisible) {
+    if (!VOICE_STATES[state]) state = "error";
+    reason = typeof reason === "string" && reason ? reason : "internal_error";
+    if (voiceFeedbackEl) {
+      voiceFeedbackEl.setAttribute("data-state", state);
+      voiceFeedbackEl.setAttribute("data-reason", reason);
+      voiceFeedbackEl.hidden = !forceVisible && state === "off" && !message;
+    }
+    if (voiceControlsEl) {
+      voiceControlsEl.setAttribute("data-state", state);
+      voiceControlsEl.setAttribute("data-reason", reason);
+    }
+    if (voiceStatusEl) voiceStatusEl.textContent = voiceMessage(state, reason, message);
+  }
+
+  function validVoiceTurnMessage(frame) {
+    if (!Object.prototype.hasOwnProperty.call(frame, "message")) return true;
+    return typeof frame.message === "string" && Array.from(frame.message).length <= 240;
+  }
+
+  function showVoiceRequestTerminal(frame, guidance) {
+    var title = VOICE_REQUEST_TERMINAL_TITLES[frame.state];
+    if (!title || !voiceTurnNoticeEl || !voiceTurnNoticeTitleEl
+        || !voiceTurnNoticeMessageEl) return;
+    if (voiceTurnNoticeState && isCanonicalUuid4(frame.turn_id)
+        && isCanonicalUuid4(voiceTurnNoticeState.turn_id)
+        && isRfc3339Utc(frame.occurred_at)
+        && isRfc3339Utc(voiceTurnNoticeState.occurred_at)
+        && Date.parse(frame.occurred_at) < Date.parse(voiceTurnNoticeState.occurred_at)) return;
+    voiceTurnNoticeEl.setAttribute("data-state", frame.state);
+    voiceTurnNoticeTitleEl.textContent = title;
+    if (Object.prototype.hasOwnProperty.call(frame, "message")) {
+      // The server-owned safe message is contract-bounded and rendered only
+      // as text. Keep its wording verbatim rather than paraphrasing it.
+      voiceTurnNoticeMessageEl.textContent = frame.message;
+      voiceTurnNoticeMessageEl.hidden = false;
+    } else {
+      voiceTurnNoticeMessageEl.textContent = "";
+      voiceTurnNoticeMessageEl.hidden = true;
+    }
+    voiceTurnNoticeState = {
+      turn_id: frame.turn_id,
+      occurred_at: frame.occurred_at,
+    };
+    if (voiceTurnNoticeGuidanceEl) {
+      voiceTurnNoticeGuidanceEl.textContent = guidance || "Typed chat remains available.";
+    }
+    voiceTurnNoticeEl.hidden = false;
+  }
+
+  function clearVoiceRequestTerminal(preserveFence) {
+    if (preserveFence !== true) voiceTurnNoticeState = null;
+    if (voiceTurnNoticeEl) {
+      voiceTurnNoticeEl.hidden = true;
+      voiceTurnNoticeEl.removeAttribute("data-state");
+    }
+    if (voiceTurnNoticeTitleEl) voiceTurnNoticeTitleEl.textContent = "";
+    if (voiceTurnNoticeMessageEl) {
+      voiceTurnNoticeMessageEl.textContent = "";
+      voiceTurnNoticeMessageEl.hidden = true;
+    }
+    if (voiceTurnNoticeGuidanceEl) {
+      voiceTurnNoticeGuidanceEl.textContent = "Typed chat remains available.";
+    }
+  }
+
+  function clearVoiceRequestTerminalForNewerTurn(frame) {
+    if (!VOICE_REQUEST_NOTICE_CLEAR_STATES[frame.state]
+        || !isCanonicalUuid4(frame.turn_id) || !isRfc3339Utc(frame.occurred_at)) return;
+    var previous = voiceTurnNoticeState;
+    if (previous && isCanonicalUuid4(previous.turn_id)
+        && isRfc3339Utc(previous.occurred_at)
+        && Date.parse(frame.occurred_at) < Date.parse(previous.occurred_at)) return;
+    voiceTurnNoticeState = {
+      turn_id: frame.turn_id,
+      occurred_at: frame.occurred_at,
+    };
+    if (!previous || frame.turn_id !== previous.turn_id) clearVoiceRequestTerminal(true);
+  }
+
+  function showVoiceResultSpeechFailure(manifest) {
+    if (!manifest || manifest.kind !== "result" || !isCanonicalUuid4(manifest.turn_id)) return false;
+    if (voiceTurnNoticeState && isCanonicalUuid4(voiceTurnNoticeState.turn_id)
+        && voiceTurnNoticeState.turn_id !== manifest.turn_id) return false;
+    var occurredAt = new Date().toISOString();
+    if (voiceTurnNoticeState && voiceTurnNoticeState.turn_id === manifest.turn_id
+        && isRfc3339Utc(voiceTurnNoticeState.occurred_at)) {
+      occurredAt = voiceTurnNoticeState.occurred_at;
+    }
+    showVoiceRequestTerminal({
+      state: "speech_error",
+      turn_id: manifest.turn_id,
+      occurred_at: occurredAt,
+      message: "The result audio could not be delivered.",
+    }, "The text result is still available in the conversation. Typed chat remains available.");
+    return true;
+  }
+
+  function showVoiceAudioResume(message) {
+    if (voiceAudioResumeEl) voiceAudioResumeEl.hidden = false;
+    var state = voiceFeedbackEl && voiceFeedbackEl.getAttribute("data-state") || "connecting";
+    var reason = voiceFeedbackEl && voiceFeedbackEl.getAttribute("data-reason") || "media_unavailable";
+    setVoiceFeedback(state, reason, message || "Voice audio needs permission to play. Choose Enable voice audio.", true);
+  }
+
+  function hideVoiceAudioResume() {
+    if (voiceAudioResumeEl) voiceAudioResumeEl.hidden = true;
+  }
+
+  function voiceControlHeaders(contentType) {
+    var headers = {
+      Authorization: "Bearer " + token,
+      "X-Astral-Device-Id": voiceDeviceId,
+      "X-Astral-Connection-Generation": connectionGeneration || "",
+      "X-Astral-Voice-Control-Binding": voiceBinding ? voiceBinding.binding : "",
+    };
+    if (contentType) headers["Content-Type"] = contentType;
+    return headers;
+  }
+
+  async function voiceRequest(path, method, body) {
+    var response;
+    var controller = typeof AbortController === "function" ? new AbortController() : null;
+    var timeout = controller ? setTimeout(function () { controller.abort(); }, 20000) : null;
+    try {
+      response = await fetch(API_URL + path, {
+        method: method,
+        headers: voiceControlHeaders(body === undefined ? null : "application/json"),
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller ? controller.signal : undefined,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (e) {
+      if (timeout) clearTimeout(timeout);
+      return { ok: false, status: 0, body: null, reason: "network_interrupted" };
+    }
+    if (timeout) clearTimeout(timeout);
+    var payload = null;
+    if (response.status !== 204) {
+      try { payload = await response.json(); } catch (e) {}
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      body: payload,
+      reason: response.status === 401 ? "auth_expired" : null,
+    };
+  }
+
+  function voiceBindingIsCurrent() {
+    return voiceBinding
+      && voiceBinding.device_id === voiceDeviceId
+      && voiceBinding.connection_generation === connectionGeneration
+      && Date.parse(voiceBinding.expires_at) > Date.now();
+  }
+
+  function clearVoiceBindingRenewal() {
+    if (voiceBindingRenewTimer != null) clearTimeout(voiceBindingRenewTimer);
+    voiceBindingRenewTimer = null;
+  }
+
+  function requestFreshVoiceBinding(bindingId) {
+    if (bindingId && (!voiceBinding || voiceBinding.binding_id !== bindingId)) return;
+    clearVoiceBindingRenewal();
+    voiceBinding = null;
+    if (ws && ws.readyState === 1) {
+      try { ws.close(); } catch (e) {}
+    }
+  }
+
+  function scheduleVoiceBindingRenewal(binding) {
+    clearVoiceBindingRenewal();
+    var lifetimeMs = Date.parse(binding.expires_at) - Date.now();
+    var leadMs = Math.min(30000, Math.max(1000, Math.floor(lifetimeMs / 10)));
+    var delayMs = Math.max(250, lifetimeMs - leadMs);
+    voiceBindingRenewTimer = setTimeout(function () {
+      requestFreshVoiceBinding(binding.binding_id);
+    }, delayMs);
+  }
+
+  function consumeVoiceControlBinding(frame) {
+    if (!frame || frame.type !== "voice_control_binding" || frame.schema_version !== "1"
+        || frame.device_id !== voiceDeviceId || frame.connection_generation !== connectionGeneration
+        || !isCanonicalUuid4(frame.binding_id) || typeof frame.binding !== "string"
+        || frame.binding.length < 32 || frame.binding.length > 512
+        || !/^[A-Za-z0-9._~-]+$/.test(frame.binding)
+        || !isRfc3339Utc(frame.expires_at) || Date.parse(frame.expires_at) <= Date.now()
+        || Date.parse(frame.expires_at) > Date.now() + 10 * 60 * 1000) return false;
+    voiceBinding = {
+      device_id: frame.device_id,
+      connection_generation: frame.connection_generation,
+      binding_id: frame.binding_id,
+      binding: frame.binding,
+      expires_at: frame.expires_at,
+    };
+    scheduleVoiceBindingRenewal(voiceBinding);
+    if (voicePendingEndFence) {
+      var pendingEnd = voicePendingEndFence;
+      voicePendingEndFence = null;
+      bestEffortEndVoice(pendingEnd).then(function () { voiceLastSession = null; });
+    } else {
+      maybeBeginVoiceRecovery("network_interrupted");
+    }
+    if (activeChatId && !voiceRecovery) syncVoiceVisibleChat(activeChatId);
+    resendPendingVoiceSubmissions();
+    return true;
+  }
+
+  function hasExactKeys(value, required, optional) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    var allowed = Object.create(null);
+    required.forEach(function (key) { allowed[key] = true; });
+    (optional || []).forEach(function (key) { allowed[key] = true; });
+    var keys = Object.keys(value);
+    return required.every(function (key) { return Object.prototype.hasOwnProperty.call(value, key); })
+      && keys.every(function (key) { return allowed[key] === true; });
+  }
+
+  function validComposerControl(control) {
+    return control && typeof control === "object" && !Array.isArray(control)
+      && typeof control.key === "string" && control.key
+      && VOICE_ACTIONS[control.action]
+      && typeof control.label === "string" && control.label
+      && typeof control.icon === "string" && control.icon
+      && typeof control.visible === "boolean" && typeof control.enabled === "boolean"
+      && typeof control.pressed === "boolean" && typeof control.busy === "boolean";
+  }
+
+  function validComposerFrame(frame) {
+    if (!hasExactKeys(frame, ["type", "schema_version", "revision", "connection_generation", "voice"])
+        || frame.type !== "composer_state" || frame.schema_version !== "1"
+        || frame.connection_generation !== connectionGeneration
+        || !Number.isSafeInteger(frame.revision) || frame.revision < 0
+        || !frame.voice || typeof frame.voice !== "object" || Array.isArray(frame.voice)
+        || !VOICE_STATES[frame.voice.state] || !Array.isArray(frame.voice.controls)
+        || typeof frame.voice.available !== "boolean"
+        || typeof frame.voice.reason !== "string" || frame.voice.output_locale !== "en-US") return false;
+    if (frame.voice.controls.length !== VOICE_CONTROL_ORDER.length) return false;
+    var seen = Object.create(null);
+    for (var index = 0; index < frame.voice.controls.length; index++) {
+      var control = frame.voice.controls[index];
+      if (!validComposerControl(control) || control.action !== VOICE_CONTROL_ORDER[index]
+          || seen[control.key]) return false;
+      seen[control.key] = true;
+    }
+    return true;
+  }
+
+  function renderVoiceControls(voice) {
+    if (!voiceControlsEl) return;
+    var fragment = document.createDocumentFragment();
+    voice.controls.forEach(function (control) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "astral-voice-control";
+      button.setAttribute("data-voice-key", control.key);
+      button.setAttribute("data-voice-action", control.action);
+      button.setAttribute("data-icon", control.icon);
+      button.setAttribute("aria-label", control.label);
+      button.setAttribute("title", control.label);
+      button.setAttribute("aria-pressed", control.pressed ? "true" : "false");
+      button.setAttribute("aria-busy", control.busy ? "true" : "false");
+      button.disabled = !control.enabled;
+      button.hidden = !control.visible;
+      var label = document.createElement("span");
+      label.className = "astral-sr-only";
+      label.textContent = control.label;
+      button.appendChild(label);
+      button.addEventListener("click", function () { onVoiceControlClick(control); });
+      fragment.appendChild(button);
+    });
+    voiceControlsEl.replaceChildren(fragment);
+  }
+
+  function consumeComposerState(frame) {
+    if (!validComposerFrame(frame) || frame.revision <= voiceComposerRevision) return false;
+    voiceComposerRevision = frame.revision;
+    voiceComposer = frame.voice;
+    renderVoiceControls(frame.voice);
+    setVoiceFeedback(frame.voice.state, frame.voice.reason, frame.voice.message, frame.voice.state !== "off");
+    if (frame.voice.reason === "takeover_required" && frame.voice.session_id) {
+      voiceTakeover = {
+        session_id: frame.voice.session_id,
+        generation: frame.voice.generation,
+        media_grant_revision: frame.voice.media_grant_revision,
+      };
+    }
+    if (frame.voice.state === "ended") {
+      voiceRecoverySuppressed = true;
+      teardownVoiceMedia(true);
+      voiceLastSession = null;
+      voicePendingEndFence = null;
+    } else if (frame.voice.state === "off" && !frame.voice.session_id) {
+      clearVoiceRecovery();
+      clearVoiceRequestTerminal();
+      voiceLastSession = null;
+      voicePendingEndFence = null;
+    } else {
+      maybeBeginVoiceRecovery(frame.voice.reason === "backgrounded"
+        ? "backgrounded" : "network_interrupted");
+    }
+    return true;
+  }
+
+  function roomEventName(name) {
+    return window.LivekitClient && window.LivekitClient.RoomEvent
+      ? window.LivekitClient.RoomEvent[name] : null;
+  }
+
+  /** Keep credentialed signaling/SDP out of browser diagnostics. */
+  function configureVoiceSdkLogging() {
+    if (voiceSdkLoggingConfigured) return true;
+    if (!window.LivekitClient || typeof window.LivekitClient.setLogLevel !== "function") return false;
+    try {
+      window.LivekitClient.setLogLevel("silent");
+      voiceSdkLoggingConfigured = true;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function ensureVoiceAudioContext() {
+    if (voiceAudioContext && voiceAudioContext.state !== "closed") return voiceAudioContext;
+    var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (typeof AudioContextClass !== "function") return null;
+    try {
+      voiceAudioContext = new AudioContextClass({ latencyHint: "interactive", sampleRate: 24000 });
+    } catch (e) {
+      try { voiceAudioContext = new AudioContextClass({ latencyHint: "interactive" }); }
+      catch (_error) { voiceAudioContext = null; }
+    }
+    return voiceAudioContext;
+  }
+
+  function wireVoiceRoom(room) {
+    var dataReceived = roomEventName("DataReceived");
+    var trackPublished = roomEventName("TrackPublished");
+    var trackSubscribed = roomEventName("TrackSubscribed");
+    var trackUnpublished = roomEventName("TrackUnpublished");
+    var trackUnsubscribed = roomEventName("TrackUnsubscribed");
+    var participantDisconnected = roomEventName("ParticipantDisconnected");
+    var disconnected = roomEventName("Disconnected");
+    if (dataReceived) room.on(dataReceived, function (payload, participant, _kind, topic) {
+      consumeVoiceRoomData(payload, participant, topic);
+    });
+    if (trackPublished) room.on(trackPublished, function (publication, participant) {
+      consumeVoicePublishedTrack(publication, participant);
+    });
+    if (trackSubscribed) room.on(trackSubscribed, function (track, publication, participant) {
+      consumeVoiceAudioTrack(track, publication, participant);
+    });
+    if (trackUnpublished) room.on(trackUnpublished, function (publication) {
+      removeVoicePublishedTrack(publication && publication.trackSid);
+    });
+    if (trackUnsubscribed) room.on(trackUnsubscribed, function (track, publication) {
+      interruptVoiceAudioTrack(track, publication);
+    });
+    if (participantDisconnected) room.on(participantDisconnected, function (participant) {
+      if (voiceRoom === room && !voiceIntentionalDisconnect
+          && participant && participant.identity === voiceExpectedWorker) {
+        beginVoiceRecovery("network_interrupted");
+      }
+    });
+    if (disconnected) room.on(disconnected, function () {
+      if (voiceRoom === room && !voiceIntentionalDisconnect) beginVoiceRecovery("network_interrupted");
+    });
+  }
+
+  function createVoiceRoom(startAudio) {
+    if (voiceRoom) return voiceRoom;
+    if (!window.LivekitClient || typeof window.LivekitClient.Room !== "function"
+        || !configureVoiceSdkLogging()) {
+      setVoiceFeedback("unavailable", "media_unavailable", "Voice media is unavailable in this browser. You can keep typing.", true);
+      return null;
+    }
+    try {
+      voiceRoom = new window.LivekitClient.Room({ adaptiveStream: false, dynacast: false });
+      voiceMediaJoined = false;
+      voiceMediaJoining = false;
+      wireVoiceRoom(voiceRoom);
+      if (startAudio) ensureVoiceAudioContext();
+      if (startAudio && typeof voiceRoom.startAudio === "function") {
+        Promise.resolve(voiceRoom.startAudio()).then(hideVoiceAudioResume).catch(function () {
+          showVoiceAudioResume();
+        });
+      }
+      return voiceRoom;
+    } catch (e) {
+      voiceRoom = null;
+      setVoiceFeedback("unavailable", "media_unavailable", null, true);
+      return null;
+    }
+  }
+
+  function createVoiceRoomFromGesture() {
+    return createVoiceRoom(true);
+  }
+
+  function stopVoiceCapture() {
+    if (!voiceStream) return;
+    voiceIgnoringTrackEnd = true;
+    try {
+      voiceStream.getTracks().forEach(function (track) {
+        track.enabled = false;
+        track.stop();
+      });
+    } catch (e) {}
+    voiceIgnoringTrackEnd = false;
+    voiceStream = null;
+  }
+
+  function clearVoiceMediaTimers() {
+    voiceMediaTimers.forEach(function (timer) { clearTimeout(timer); });
+    voiceMediaTimers = [];
+  }
+
+  function clearVoiceAudioElements() {
+    clearVoiceMediaTimers();
+    voicePlayoutQueue = [];
+    voiceSubscribingTrackSid = null;
+    Object.keys(voiceActivePlayout).forEach(function (announcementId) {
+      var active = voiceActivePlayout[announcementId];
+      if (active) finishVoiceTrack(active, active.started ? "interrupted" : null, true);
+    });
+    Object.keys(voicePublishedTracks).forEach(function (sid) {
+      var published = voicePublishedTracks[sid];
+      try { if (published && published.publication) published.publication.setSubscribed(false); } catch (e) {}
+    });
+    Object.keys(voicePendingTracks).forEach(function (sid) {
+      stopVoiceAudioTrack(voicePendingTracks[sid] && voicePendingTracks[sid].track);
+    });
+    if (voiceAudioHostEl) {
+      Array.prototype.forEach.call(voiceAudioHostEl.querySelectorAll("audio"), function (audio) {
+        try { audio.pause(); } catch (e) {}
+        audio.removeAttribute("src");
+        try { audio.load(); } catch (e) {}
+      });
+      voiceAudioHostEl.replaceChildren();
+    }
+    voicePendingTracks = Object.create(null);
+    voicePublishedTracks = Object.create(null);
+    voiceAnnouncementByTrack = Object.create(null);
+    voiceActivePlayout = Object.create(null);
+    voiceResultReservation = Object.create(null);
+    voiceResultQuantumIndex = Object.create(null);
+    if (voiceAudioContext) {
+      try { Promise.resolve(voiceAudioContext.close()).catch(function () {}); } catch (e) {}
+      voiceAudioContext = null;
+    }
+  }
+
+  function teardownVoiceMedia(clearSession) {
+    // Invalidate every in-flight media/control continuation, including joins
+    // that may resolve after a replacement room has already been installed.
+    voiceStateEpoch += 1;
+    voiceVisibleChatSync = null;
+    if (clearSession) clearVoiceRecovery();
+    stopVoiceLeaseHeartbeat();
+    stopVoiceCapture();
+    clearVoiceAudioElements();
+    if (voiceRoom) {
+      voiceIntentionalDisconnect = true;
+      try { voiceRoom.disconnect(); } catch (e) {}
+      voiceIntentionalDisconnect = false;
+    }
+    voiceRoom = null;
+    voiceMediaJoined = false;
+    voiceMediaJoining = false;
+    voiceGrant = null;
+    voiceExpectedWorker = null;
+    if (voiceActivation && voiceActivation.timeout) clearTimeout(voiceActivation.timeout);
+    voiceActivation = null;
+    hideVoiceAudioResume();
+    if (clearSession) {
+      if (voiceSession) voiceLastSession = voiceSession;
+      voiceSession = null;
+      voiceVisibleChatTarget = null;
+      voiceTranscriptSequence = Object.create(null);
+      voiceLastAnnouncementSequence = 0;
+      voiceResultReservation = Object.create(null);
+      voiceResultQuantumIndex = Object.create(null);
+      voiceCurrentResultId = null;
+    }
+  }
+
+  function stopVoiceLeaseHeartbeat() {
+    if (voiceLeaseTimer != null) clearInterval(voiceLeaseTimer);
+    voiceLeaseTimer = null;
+  }
+
+  function startVoiceLeaseHeartbeat() {
+    if (voiceLeaseTimer != null || !voiceSession || !voiceSession.foreground_active) return;
+    voiceLeaseTimer = setInterval(function () {
+      if (!voiceSession || !voiceSession.foreground_active || !voiceBindingIsCurrent()
+          || document.visibilityState === "hidden") {
+        stopVoiceLeaseHeartbeat();
+        return;
+      }
+      // A generation-fenced semantic no-op renews only the crash/reconnect
+      // lease. It is deliberately not an interaction and cannot postpone the
+      // server-owned five-minute true-idle deadline.
+      patchVoiceSession({
+        foreground_active: true,
+        foreground_reason: "foreground",
+      });
+    }, 20000);
+  }
+
+  function voicePermissionReason(error) {
+    if (!error) return "media_error";
+    if (error.name === "NotAllowedError" || error.name === "SecurityError") return "permission_denied";
+    if (error.name === "NotFoundError" || error.name === "DevicesNotFoundError") return "no_microphone";
+    return "media_error";
+  }
+
+  async function acquireVoiceMicrophone() {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+      voicePermissionState = "restricted";
+      throw Object.assign(new Error("microphone unavailable"), { name: "NotFoundError" });
+    }
+    var stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false,
+    });
+    var tracks = stream && stream.getAudioTracks ? stream.getAudioTracks() : [];
+    if (tracks.length !== 1 || tracks[0].readyState === "ended") {
+      try { stream.getTracks().forEach(function (track) { track.stop(); }); } catch (e) {}
+      throw Object.assign(new Error("microphone unavailable"), { name: "NotFoundError" });
+    }
+    voicePermissionState = "authorized";
+    voiceStream = stream;
+    tracks[0].enabled = false;
+    tracks[0].addEventListener("ended", function () {
+      if (!voiceIgnoringTrackEnd) handleVoiceMediaLoss("permission_denied");
+    }, { once: true });
+    return stream;
+  }
+
+  function sessionFence(source) {
+    if (!source || !isCanonicalUuid4(source.session_id)
+        || !Number.isSafeInteger(source.generation) || source.generation < 1
+        || !Number.isSafeInteger(source.media_grant_revision)
+        || source.media_grant_revision < 1) return null;
+    return {
+      session_id: source.session_id,
+      generation: source.generation,
+      media_grant_revision: source.media_grant_revision,
+    };
+  }
+
+  function currentVoiceFence() {
+    return sessionFence(voiceSession) || sessionFence(voiceComposer) || sessionFence(voiceLastSession);
+  }
+
+  function voiceComposerOwnsSession() {
+    return voiceComposer && sessionFence(voiceComposer)
+      && voiceComposer.owner_device
+      && voiceComposer.owner_device.device_id === voiceDeviceId
+      && voiceComposer.state !== "off" && voiceComposer.state !== "ended"
+      && voiceComposer.state !== "unavailable";
+  }
+
+  function voiceRecoverableFence() {
+    if (voicePendingEndFence || voiceRecoverySuppressed) return null;
+    if (voiceSession && voiceSession.state !== "ended" && voiceSession.state !== "ending"
+        && voiceSession.state !== "off" && voiceSession.state !== "unavailable") {
+      return sessionFence(voiceSession);
+    }
+    return voiceComposerOwnsSession() ? sessionFence(voiceComposer) : null;
+  }
+
+  function voiceEndPath(fence) {
+    return "/api/voice/sessions/" + encodeURIComponent(fence.session_id)
+      + "?expected_generation=" + encodeURIComponent(fence.generation)
+      + "&expected_media_grant_revision=" + encodeURIComponent(fence.media_grant_revision);
+  }
+
+  async function bestEffortEndVoice(fence, retryCurrentFence) {
+    if (!fence || !voiceBindingIsCurrent()) return false;
+    var result = await voiceRequest(voiceEndPath(fence), "DELETE");
+    if (result.ok || result.status === 404) return true;
+    if (result.status === 409 && retryCurrentFence !== false && voiceBindingIsCurrent()) {
+      var state = await voiceRequest("/api/voice/sessions/"
+        + encodeURIComponent(fence.session_id) + "/media-grants", "GET");
+      if (state.status === 404) return true;
+      if (state.ok && mediaGrantStateIsValid(state.body, fence.session_id)) {
+        if (state.body.session.state === "ended" || state.body.session.state === "ending") return true;
+        return bestEffortEndVoice(sessionFence(state.body.session), false);
+      }
+      result = state;
+    }
+    if ((result.status === 0 || result.status === 403) && fence) {
+      voicePendingEndFence = fence;
+      requestFreshVoiceBinding(voiceBinding && voiceBinding.binding_id);
+    }
+    return false;
+  }
+
+  function handleVoiceMediaLoss(reason) {
+    var fence = currentVoiceFence();
+    voiceRecoverySuppressed = true;
+    clearVoiceRecovery();
+    teardownVoiceMedia(true);
+    setVoiceFeedback("error", reason, null, true);
+    bestEffortEndVoice(fence).then(function () { voiceLastSession = null; });
+  }
+
+  function voiceSessionProjectionIsValid(session, sessionId, requireActiveChat) {
+    return session && typeof session === "object" && !Array.isArray(session)
+      && session.session_id === sessionId
+      && isCanonicalUuid4(session.session_id)
+      && session.device_id === voiceDeviceId
+      && session.owner_connection_generation === connectionGeneration
+      && (!requireActiveChat || session.visible_chat_id === activeChatId)
+      && isCanonicalUuid4(session.visible_chat_id)
+      && Number.isSafeInteger(session.generation) && session.generation > 0
+      && Number.isSafeInteger(session.media_grant_revision) && session.media_grant_revision > 0
+      && typeof session.chat_context_synced === "boolean"
+      && typeof session.foreground_active === "boolean"
+      && typeof session.microphone_enabled === "boolean"
+      && typeof session.speech_muted === "boolean";
+  }
+
+  function sessionGrantIsValid(payload, requireActiveChat) {
+    if (!payload || !payload.session || !payload.grant) return false;
+    var session = payload.session;
+    var grant = payload.grant;
+    return voiceSessionProjectionIsValid(
+      session, session.session_id, requireActiveChat !== false
+    )
+      && grant.transport === "livekit" && grant.session_id === session.session_id
+      && grant.generation === session.generation
+      && grant.media_grant_revision === session.media_grant_revision
+      && typeof grant.grant_id === "string" && grant.grant_id
+      && typeof grant.url === "string" && /^wss?:\/\//.test(grant.url)
+      && typeof grant.join_token === "string" && grant.join_token.length >= 32
+      && typeof grant.room_name === "string" && grant.room_name
+      && typeof grant.participant_identity === "string" && grant.participant_identity
+      && typeof grant.worker_identity === "string" && grant.worker_identity
+      && isRfc3339Utc(grant.expires_at) && Date.parse(grant.expires_at) > Date.now();
+  }
+
+  function mediaGrantStateIsValid(payload, sessionId) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)
+        || Object.keys(payload).sort().join(",") !== "grant_state,session") return false;
+    var state = payload.grant_state;
+    var session = payload.session;
+    if (!state || typeof state !== "object" || Array.isArray(state)
+        || Object.keys(state).sort().join(",") !== "expires_at,media_grant_revision,status,transport"
+        || state.transport !== "livekit"
+        || ["pending_worker", "active", "expired", "unavailable"].indexOf(state.status) === -1
+        || !Number.isSafeInteger(state.media_grant_revision)
+        || state.media_grant_revision < 1
+        || (state.expires_at !== null && !isRfc3339Utc(state.expires_at))) return false;
+    if (["grant", "join_token", "participant_identity", "room_name", "ticket", "url"].some(
+      function (key) { return Object.prototype.hasOwnProperty.call(session || {}, key); }
+    )) return false;
+    return voiceSessionProjectionIsValid(session, sessionId, false)
+      && session.media_grant_revision === state.media_grant_revision;
+  }
+
+  function clearVoiceRecovery() {
+    if (!voiceRecovery) return;
+    if (voiceRecovery.timer) clearTimeout(voiceRecovery.timer);
+    if (voiceRecovery.deadline_timer) clearTimeout(voiceRecovery.deadline_timer);
+    voiceRecovery = null;
+  }
+
+  function terminalVoiceRecoveryFailure(recovery, reason, message) {
+    if (!recovery || voiceRecovery !== recovery) return;
+    var fence = sessionFence(voiceSession) || {
+      session_id: recovery.session_id,
+      generation: recovery.expected_generation,
+      media_grant_revision: recovery.expected_media_grant_revision,
+    };
+    voiceRecoverySuppressed = true;
+    clearVoiceRecovery();
+    teardownVoiceMedia(true);
+    setVoiceFeedback("error", reason || "media_error", message
+      || "Voice media could not reconnect. Accepted requests will keep running, and typed chat is still available.", true);
+    if (voiceBindingIsCurrent()) {
+      bestEffortEndVoice(fence).then(function () { voiceLastSession = null; });
+    } else if (fence && reason !== "auth_expired") {
+      voicePendingEndFence = fence;
+    }
+  }
+
+  function scheduleVoiceRecovery(recovery, delayMs) {
+    if (!recovery || voiceRecovery !== recovery) return;
+    if (Date.now() >= recovery.deadline_at || recovery.attempts >= VOICE_RECOVERY_MAX_ATTEMPTS) {
+      terminalVoiceRecoveryFailure(recovery, "network_interrupted");
+      return;
+    }
+    if (recovery.timer) clearTimeout(recovery.timer);
+    recovery.timer = setTimeout(function () {
+      recovery.timer = null;
+      runVoiceRecovery(recovery);
+    }, delayMs || 0);
+  }
+
+  function retryVoiceRecovery(recovery) {
+    if (!recovery || voiceRecovery !== recovery) return;
+    recovery.attempts += 1;
+    var delays = [250, 750, 1500, 3000];
+    scheduleVoiceRecovery(recovery, delays[Math.min(recovery.attempts - 1, delays.length - 1)]);
+  }
+
+  function resetVoiceRecoveryForConnection(recovery) {
+    recovery.epoch = (recovery.epoch || 0) + 1;
+    recovery.connection_generation = connectionGeneration;
+    recovery.refresh_id = randomUuid4();
+    recovery.refresh_body = null;
+    recovery.state = null;
+    recovery.grant = null;
+    recovery.attempts = 0;
+    recovery.deadline_at = Date.now() + VOICE_RECOVERY_DEADLINE_MS;
+    if (recovery.deadline_timer) clearTimeout(recovery.deadline_timer);
+    recovery.deadline_timer = setTimeout(function () {
+      terminalVoiceRecoveryFailure(recovery, "network_interrupted");
+    }, VOICE_RECOVERY_DEADLINE_MS);
+  }
+
+  function beginVoiceRecovery(reason) {
+    var fence = voiceRecoverableFence();
+    if (!fence || voicePendingEndFence || voiceActivation
+        || document.visibilityState === "hidden" || navigator.onLine === false) return false;
+    if (voiceRecovery && voiceRecovery.session_id === fence.session_id) {
+      if (voiceRecovery.connection_generation !== connectionGeneration) {
+        resetVoiceRecoveryForConnection(voiceRecovery);
+      }
+      setVoiceFeedback("reconnecting", reason || "network_interrupted", null, true);
+      if (voiceBindingIsCurrent()) scheduleVoiceRecovery(voiceRecovery, 0);
+      return true;
+    }
+    clearVoiceRecovery();
+    teardownVoiceMedia(false);
+    voiceRecovery = {
+      session_id: fence.session_id,
+      expected_generation: fence.generation,
+      expected_media_grant_revision: fence.media_grant_revision,
+      reason: reason || "network_interrupted",
+      timer: null,
+      deadline_timer: null,
+      epoch: 0,
+      running: false,
+      rerun_requested: false,
+    };
+    resetVoiceRecoveryForConnection(voiceRecovery);
+    setVoiceFeedback("reconnecting", voiceRecovery.reason, null, true);
+    if (voiceBindingIsCurrent()) scheduleVoiceRecovery(voiceRecovery, 0);
+    return true;
+  }
+
+  function maybeBeginVoiceRecovery(reason) {
+    if (voiceLifecycleSuspended || voiceMediaJoined || voiceMediaJoining
+        || voiceGrant || voiceActivation || voicePendingEndFence
+        || document.visibilityState === "hidden" || navigator.onLine === false) return false;
+    return beginVoiceRecovery(reason || "network_interrupted");
+  }
+
+  function completeVoiceRecovery(recovery) {
+    if (!recovery || voiceRecovery !== recovery || !voiceMediaJoined) return false;
+    clearVoiceRecovery();
+    voiceLifecycleSuspended = false;
+    startVoiceLeaseHeartbeat();
+    resendPendingVoiceSubmissions();
+    return true;
+  }
+
+  async function runVoiceRecovery(recovery) {
+    if (!recovery || voiceRecovery !== recovery) return;
+    if (recovery.running) {
+      recovery.rerun_requested = true;
+      return;
+    }
+    recovery.running = true;
+    recovery.rerun_requested = false;
+    var epoch = recovery.epoch;
+    try {
+      await performVoiceRecovery(recovery, epoch);
+    } finally {
+      recovery.running = false;
+      if (voiceRecovery === recovery && recovery.rerun_requested) {
+        recovery.rerun_requested = false;
+        scheduleVoiceRecovery(recovery, 0);
+      }
+    }
+  }
+
+  async function performVoiceRecovery(recovery, epoch) {
+    if (!recovery || voiceRecovery !== recovery) return;
+    if (document.visibilityState === "hidden" || voiceLifecycleSuspended
+        || navigator.onLine === false) return;
+    if (!voiceBindingIsCurrent() || !ws || ws.readyState !== 1) {
+      setVoiceFeedback("reconnecting", "network_interrupted", null, true);
+      return;
+    }
+    if (recovery.connection_generation !== connectionGeneration) {
+      resetVoiceRecoveryForConnection(recovery);
+    }
+    if (!activeChatId || !isCanonicalUuid4(activeChatId)) {
+      terminalVoiceRecoveryFailure(recovery, "chat_context_unavailable",
+        "Voice ended because there is no authorized active chat. Typed chat is still available.");
+      return;
+    }
+
+    if (!recovery.state) {
+      var stateResult = await voiceRequest("/api/voice/sessions/"
+        + encodeURIComponent(recovery.session_id) + "/media-grants", "GET");
+      if (voiceRecovery !== recovery || recovery.epoch !== epoch) return;
+      if (stateResult.status === 403) {
+        requestFreshVoiceBinding(voiceBinding && voiceBinding.binding_id);
+        return;
+      }
+      if (stateResult.status === 401) {
+        terminalVoiceRecoveryFailure(recovery, "auth_expired");
+        return;
+      }
+      if (stateResult.status === 404) {
+        terminalVoiceRecoveryFailure(recovery, "ended_by_user",
+          "Voice session ended while reconnecting. Accepted requests will keep running.");
+        return;
+      }
+      if (!stateResult.ok || !mediaGrantStateIsValid(stateResult.body, recovery.session_id)) {
+        retryVoiceRecovery(recovery);
+        return;
+      }
+      if (stateResult.body.grant_state.status === "unavailable"
+          || stateResult.body.session.state === "ended"
+          || stateResult.body.session.state === "ending") {
+        terminalVoiceRecoveryFailure(recovery, "ended_by_user",
+          "Voice session ended while reconnecting. Accepted requests will keep running.");
+        return;
+      }
+      recovery.state = stateResult.body;
+      recovery.expected_generation = stateResult.body.session.generation;
+      recovery.expected_media_grant_revision = stateResult.body.session.media_grant_revision;
+      recovery.refresh_body = {
+        refresh_id: recovery.refresh_id,
+        expected_generation: recovery.expected_generation,
+        expected_media_grant_revision: recovery.expected_media_grant_revision,
+        device_id: voiceDeviceId,
+      };
+      voiceSession = stateResult.body.session;
+      voiceLastSession = voiceSession;
+    }
+
+    if (!voiceCapability().has_audio_output) {
+      terminalVoiceRecoveryFailure(recovery, "no_audio_output");
+      return;
+    }
+    if (!voiceStream) {
+      try {
+        await acquireVoiceMicrophone();
+      } catch (error) {
+        var permissionReason = voicePermissionReason(error);
+        voicePermissionState = permissionReason === "permission_denied" ? "denied" : "restricted";
+        terminalVoiceRecoveryFailure(recovery, permissionReason);
+        return;
+      }
+      if (voiceRecovery !== recovery || recovery.epoch !== epoch) return;
+    }
+
+    if (!recovery.grant) {
+      var refreshResult = await voiceRequest("/api/voice/sessions/"
+        + encodeURIComponent(recovery.session_id) + "/media-grants", "POST", recovery.refresh_body);
+      if (voiceRecovery !== recovery || recovery.epoch !== epoch) return;
+      if (refreshResult.status === 403) {
+        requestFreshVoiceBinding(voiceBinding && voiceBinding.binding_id);
+        return;
+      }
+      if (refreshResult.status === 401) {
+        terminalVoiceRecoveryFailure(recovery, "auth_expired");
+        return;
+      }
+      if (refreshResult.status === 404) {
+        terminalVoiceRecoveryFailure(recovery, "ended_by_user");
+        return;
+      }
+      if (refreshResult.status === 409) {
+        recovery.refresh_id = randomUuid4();
+        recovery.refresh_body = null;
+        recovery.state = null;
+        recovery.grant = null;
+        retryVoiceRecovery(recovery);
+        return;
+      }
+      if (!refreshResult.ok || !sessionGrantIsValid(refreshResult.body, false)
+          || refreshResult.body.refresh_id !== recovery.refresh_id
+          || typeof refreshResult.body.replayed !== "boolean"
+          || !isRfc3339Utc(refreshResult.body.replay_expires_at)
+          || Date.parse(refreshResult.body.replay_expires_at) <= Date.now()
+          || refreshResult.body.session.generation !== recovery.expected_generation
+          || refreshResult.body.session.media_grant_revision
+            !== recovery.expected_media_grant_revision + 1) {
+        retryVoiceRecovery(recovery);
+        return;
+      }
+      recovery.grant = refreshResult.body.grant;
+      recovery.state = { session: refreshResult.body.session };
+      recovery.expected_media_grant_revision = refreshResult.body.session.media_grant_revision;
+      voiceSession = refreshResult.body.session;
+      voiceLastSession = voiceSession;
+      voiceGrant = refreshResult.body.grant;
+      voiceExpectedWorker = refreshResult.body.grant.worker_identity;
+      voiceLastAnnouncementSequence = 0;
+      voiceResultReservation = Object.create(null);
+      voiceResultQuantumIndex = Object.create(null);
+    } else {
+      voiceGrant = recovery.grant;
+      voiceExpectedWorker = recovery.grant.worker_identity;
+    }
+
+    var updateBody = {
+      expected_generation: recovery.expected_generation,
+      expected_media_grant_revision: recovery.expected_media_grant_revision,
+      foreground_active: true,
+      foreground_reason: "foreground",
+      microphone_enabled: true,
+    };
+    if (voiceSession.visible_chat_id !== activeChatId) updateBody.visible_chat_id = activeChatId;
+    var updateResult = await voiceRequest("/api/voice/sessions/"
+      + encodeURIComponent(recovery.session_id), "PATCH", updateBody);
+    if (voiceRecovery !== recovery || recovery.epoch !== epoch) return;
+    if (updateResult.status === 403) {
+      requestFreshVoiceBinding(voiceBinding && voiceBinding.binding_id);
+      return;
+    }
+    if (updateResult.status === 401) {
+      terminalVoiceRecoveryFailure(recovery, "auth_expired");
+      return;
+    }
+    if (updateResult.status === 409) {
+      recovery.refresh_id = randomUuid4();
+      recovery.refresh_body = null;
+      recovery.state = null;
+      recovery.grant = null;
+      voiceGrant = null;
+      retryVoiceRecovery(recovery);
+      return;
+    }
+    if (!updateResult.ok || !voiceSessionProjectionIsValid(
+      updateResult.body, recovery.session_id, true
+    ) || !updateResult.body.foreground_active || !updateResult.body.microphone_enabled
+        || updateResult.body.generation !== recovery.expected_generation
+        || updateResult.body.media_grant_revision !== recovery.expected_media_grant_revision) {
+      retryVoiceRecovery(recovery);
+      return;
+    }
+    voiceSession = updateResult.body;
+    voiceLastSession = voiceSession;
+    if (!createVoiceRoom(false)) {
+      terminalVoiceRecoveryFailure(recovery, "media_unavailable");
+      return;
+    }
+    if (!voiceSession.chat_context_synced) {
+      setVoiceFeedback("connecting", "chat_context_unavailable", "Waiting for the voice chat context…", true);
+      return;
+    }
+    var joined = await joinVoiceMedia();
+    if (voiceRecovery !== recovery || recovery.epoch !== epoch) return;
+    if (joined) completeVoiceRecovery(recovery);
+    else retryVoiceRecovery(recovery);
+  }
+
+  async function joinVoiceMedia() {
+    if (!voiceRoom || !voiceStream || !voiceSession || !voiceGrant
+        || voiceMediaJoined || voiceMediaJoining) return false;
+    if (!voiceSession.chat_context_synced
+        || voiceSession.applied_visible_chat_id !== voiceSession.visible_chat_id
+        || voiceSession.visible_chat_id !== activeChatId
+        || voiceSession.owner_connection_generation !== connectionGeneration) {
+      setVoiceFeedback("connecting", "chat_context_unavailable", "Waiting for the voice chat context…", true);
+      return false;
+    }
+    var room = voiceRoom;
+    var stream = voiceStream;
+    var grant = voiceGrant;
+    var joinEpoch = voiceStateEpoch;
+    var activation = voiceActivation;
+    function joinIsCurrent() {
+      return voiceStateEpoch === joinEpoch && voiceRoom === room
+        && voiceStream === stream && voiceGrant === grant && voiceSession
+        && voiceSession.session_id === grant.session_id
+        && voiceSession.generation === grant.generation
+        && voiceSession.media_grant_revision === grant.media_grant_revision
+        && voiceSession.owner_connection_generation === connectionGeneration;
+    }
+    voiceMediaJoining = true;
+    try {
+      await room.connect(grant.url, grant.join_token, { autoSubscribe: false });
+      if (!joinIsCurrent()) {
+        try { room.disconnect(); } catch (e) {}
+        return false;
+      }
+      reconcileVoiceRemotePublications(room);
+      var track = stream.getAudioTracks()[0];
+      track.enabled = true;
+      var source = window.LivekitClient.Track && window.LivekitClient.Track.Source
+        ? window.LivekitClient.Track.Source.Microphone : "microphone";
+      await room.localParticipant.publishTrack(track, {
+        source: source,
+        name: "astraldeep-microphone",
+      });
+      if (!joinIsCurrent()) {
+        try { room.disconnect(); } catch (e) {}
+        return false;
+      }
+      voiceMediaJoined = true;
+      voiceMediaJoining = false;
+      if (voiceActivation === activation) {
+        if (activation && activation.timeout) clearTimeout(activation.timeout);
+        voiceActivation = null;
+      }
+      setVoiceFeedback("connecting", "ready", "Connected. Waiting for the greeting…", true);
+      return true;
+    } catch (e) {
+      if (!joinIsCurrent()) {
+        try { room.disconnect(); } catch (_error) {}
+        return false;
+      }
+      voiceMediaJoining = false;
+      teardownVoiceMedia(!voiceRecovery);
+      setVoiceFeedback(voiceRecovery ? "reconnecting" : "error",
+        voiceRecovery ? "network_interrupted" : "media_error", null, true);
+      return false;
+    }
+  }
+
+  function sendCorrelatedVoiceNewChat(activation) {
+    activation.chat_submission_id = randomUuid4();
+    activation.chat_request_generation = randomUuid4();
+    activation.awaiting_chat = true;
+    var payload = {
+      schema_version: "1",
+      connection_generation: connectionGeneration,
+      submission_id: activation.chat_submission_id,
+      request_generation: activation.chat_request_generation,
+    };
+    send({
+      type: "ui_event",
+      action: "new_chat",
+      schema_version: "1",
+      connection_generation: connectionGeneration,
+      submission_id: activation.chat_submission_id,
+      request_generation: activation.chat_request_generation,
+      payload: payload,
+    });
+  }
+
+  function correlatedVoiceChatCreated(frame) {
+    var pending = voiceActivation;
+    if (!pending || !pending.awaiting_chat) return false;
+    if (!frame || frame.type !== "chat_created" || frame.schema_version !== "1") return true;
+    var payload = frame.payload;
+    if (!payload || payload.schema_version !== "1" || payload.from_message !== false
+        || frame.connection_generation !== pending.connection_generation
+        || frame.connection_generation !== connectionGeneration
+        || frame.submission_id !== pending.chat_submission_id
+        || frame.request_generation !== pending.chat_request_generation
+        || payload.connection_generation !== frame.connection_generation
+        || payload.submission_id !== frame.submission_id
+        || payload.request_generation !== frame.request_generation
+        || !isCanonicalUuid4(payload.chat_id)
+        || activeChatId !== pending.initial_chat_id) return true;
+    pending.awaiting_chat = false;
+    pending.awaiting_hydration = true;
+    loadActiveChat(payload.chat_id);
+    pending.chat_id = payload.chat_id;
+    pending.hydration_generation = requestState && requestState.generation;
+    return true;
+  }
+
+  function continueVoiceAfterHydration(frame) {
+    var pending = voiceActivation;
+    if (!pending || !pending.awaiting_hydration || frame.chat_id !== pending.chat_id
+        || frame.request_generation !== pending.hydration_generation
+        || frame.connection_generation !== pending.connection_generation) return;
+    pending.awaiting_hydration = false;
+    continueVoiceActivation(pending);
+  }
+
+  function voiceActivationRequest(pending, capability) {
+    var body = {
+      device_id: voiceDeviceId,
+      device_kind: "web",
+      visible_chat_id: activeChatId,
+      activation_id: pending.activation_id,
+      capability: capability,
+      foreground_active: true,
+    };
+    if (pending.kind === "takeover") {
+      body.expected_generation = pending.takeover.generation;
+      body.expected_media_grant_revision = pending.takeover.media_grant_revision;
+      return {
+        path: "/api/voice/sessions/" + encodeURIComponent(pending.takeover.session_id) + "/takeover",
+        body: body,
+      };
+    }
+    return { path: "/api/voice/sessions", body: body };
+  }
+
+  async function continueVoiceActivation(pending) {
+    if (voiceActivation !== pending || pending.connection_generation !== connectionGeneration
+        || !activeChatId || (pending.chat_id && pending.chat_id !== activeChatId)) return;
+    if (!voiceBindingIsCurrent()) {
+      teardownVoiceMedia(false);
+      setVoiceFeedback("error", "auth_expired", "Voice controls are reconnecting. Try again in a moment.", true);
+      return;
+    }
+    try {
+      await acquireVoiceMicrophone();
+    } catch (error) {
+      var permissionReason = voicePermissionReason(error);
+      voicePermissionState = permissionReason === "permission_denied" ? "denied" : "restricted";
+      teardownVoiceMedia(false);
+      setVoiceFeedback("error", permissionReason, null, true);
+      return;
+    }
+    if (voiceActivation !== pending || pending.connection_generation !== connectionGeneration
+        || activeChatId !== (pending.chat_id || pending.initial_chat_id)) {
+      teardownVoiceMedia(false);
+      return;
+    }
+    var request = voiceActivationRequest(pending, voiceCapability());
+    var result = await voiceRequest(request.path, "POST", request.body);
+    if (result.status === 0 && voiceActivation === pending
+        && pending.connection_generation === connectionGeneration) {
+      result = await voiceRequest(request.path, "POST", request.body);
+    }
+    if (voiceActivation !== pending) return;
+    if (pending.connection_generation !== connectionGeneration
+        || activeChatId !== (pending.chat_id || pending.initial_chat_id)) {
+      if (result.ok && result.body && result.body.session
+          && result.body.session.device_id === voiceDeviceId
+          && result.body.session.owner_connection_generation === connectionGeneration) {
+        bestEffortEndVoice(sessionFence(result.body.session));
+      }
+      teardownVoiceMedia(false);
+      setVoiceFeedback("error", "chat_context_unavailable", "Voice did not start because the active chat changed.", true);
+      return;
+    }
+    if (result.status === 409 && result.body && result.body.code === "voice_takeover_required"
+        && result.body.owner && isCanonicalUuid4(result.body.owner.session_id)) {
+      voiceTakeover = {
+        session_id: result.body.owner.session_id,
+        generation: result.body.owner.generation,
+        media_grant_revision: result.body.owner.media_grant_revision,
+      };
+      teardownVoiceMedia(false);
+      setVoiceFeedback("off", "takeover_required", result.body.message, true);
+      return;
+    }
+    if (!result.ok || !sessionGrantIsValid(result.body)) {
+      var reason = result.reason || result.body && result.body.code || "voice_unavailable";
+      teardownVoiceMedia(false);
+      setVoiceFeedback("error", reason, result.body && result.body.message, true);
+      return;
+    }
+    voiceSession = result.body.session;
+    voiceLastSession = result.body.session;
+    voiceGrant = result.body.grant;
+    voiceExpectedWorker = result.body.grant.worker_identity;
+    voiceLastAnnouncementSequence = 0;
+    voiceResultReservation = Object.create(null);
+    voiceResultQuantumIndex = Object.create(null);
+    voiceTakeover = null;
+    voiceLifecycleSuspended = false;
+    startVoiceLeaseHeartbeat();
+    if (voiceSession.chat_context_synced) await joinVoiceMedia();
+    else setVoiceFeedback("connecting", "chat_context_unavailable", "Waiting for the voice chat context…", true);
+  }
+
+  function beginVoiceActivation(kind) {
+    if (voiceActivation) return;
+    if (!voiceBindingIsCurrent()) {
+      setVoiceFeedback("error", "auth_expired", "Voice controls are reconnecting. Try again in a moment.", true);
+      return;
+    }
+    voiceRecoverySuppressed = false;
+    var room = createVoiceRoomFromGesture();
+    if (!room) return;
+    var takeover = kind === "takeover"
+      ? voiceTakeover || sessionFence(voiceComposer) : null;
+    if (kind === "takeover" && (!takeover || !isCanonicalUuid4(takeover.session_id))) {
+      teardownVoiceMedia(false);
+      setVoiceFeedback("error", "stale_generation", "The other voice session is no longer available.", true);
+      return;
+    }
+    voiceActivation = {
+      kind: kind,
+      activation_id: randomUuid4(),
+      connection_generation: connectionGeneration,
+      initial_chat_id: activeChatId,
+      chat_id: activeChatId,
+      takeover: takeover,
+    };
+    var pending = voiceActivation;
+    pending.timeout = setTimeout(function () {
+      if (voiceActivation !== pending) return;
+      teardownVoiceMedia(false);
+      setVoiceFeedback("error", "network_interrupted", "Voice activation timed out. You can retry or keep typing.", true);
+    }, 30000);
+    setVoiceFeedback("connecting", "ready", null, true);
+    if (!activeChatId) sendCorrelatedVoiceNewChat(voiceActivation);
+    else continueVoiceActivation(voiceActivation);
+  }
+
+  function patchVoiceSession(fields, optimistic) {
+    var fence = currentVoiceFence();
+    var stateEpoch = voiceStateEpoch;
+    if (!fence || !voiceBindingIsCurrent()) {
+      setVoiceFeedback("error", "stale_generation", null, true);
+      return Promise.resolve(false);
+    }
+    if (optimistic) optimistic();
+    var body = Object.assign({
+      expected_generation: fence.generation,
+      expected_media_grant_revision: fence.media_grant_revision,
+    }, fields);
+    return voiceRequest("/api/voice/sessions/" + encodeURIComponent(fence.session_id), "PATCH", body)
+      .then(function (result) {
+        if (!result.ok) {
+          setVoiceFeedback("error", result.reason || result.body && result.body.code || "stale_generation",
+            result.body && result.body.message, true);
+          applyVoiceCaptureState();
+          return false;
+        }
+        if (stateEpoch === voiceStateEpoch && result.body
+            && result.body.session_id === fence.session_id) {
+          voiceSession = result.body;
+          voiceLastSession = result.body;
+          if (voiceSession.foreground_active) startVoiceLeaseHeartbeat();
+          else stopVoiceLeaseHeartbeat();
+          applyVoiceCaptureState();
+        }
+        return true;
+      });
+  }
+
+  function applyVoiceCaptureState() {
+    if (!voiceStream) return;
+    var enabled = !!(voiceMediaJoined && voiceSession && voiceSession.foreground_active
+      && voiceSession.microphone_enabled && voiceSession.chat_context_synced
+      && voiceSession.visible_chat_id === activeChatId
+      && ["off", "unavailable", "suspended", "reconnecting", "error", "ending", "ended"]
+        .indexOf(voiceSession.state) === -1);
+    try {
+      voiceStream.getAudioTracks().forEach(function (track) { track.enabled = enabled; });
+    } catch (e) {}
+  }
+
+  function pauseVoiceCaptureForChatTransition() {
+    if (!voiceStream) return;
+    try {
+      voiceStream.getAudioTracks().forEach(function (track) { track.enabled = false; });
+    } catch (e) {}
+  }
+
+  function syncVoiceVisibleChat(chatId) {
+    if (!isCanonicalUuid4(chatId) || !voiceSession
+        || voiceSession.state === "ending" || voiceSession.state === "ended") return;
+    voiceVisibleChatTarget = chatId;
+    if (voiceSession.visible_chat_id === chatId) {
+      if (voiceSession.chat_context_synced) voiceVisibleChatTarget = null;
+      applyVoiceCaptureState();
+      return;
+    }
+    pauseVoiceCaptureForChatTransition();
+    setVoiceFeedback("connecting", "chat_context_unavailable", "Updating the voice chat context…", true);
+    if (voiceVisibleChatSync || !voiceBindingIsCurrent()) return;
+    var sync = { target: chatId, succeeded: false };
+    voiceVisibleChatSync = sync;
+    patchVoiceSession({ visible_chat_id: chatId }).then(function (ok) {
+      sync.succeeded = ok;
+    }).finally(function () {
+      if (voiceVisibleChatSync !== sync) return;
+      voiceVisibleChatSync = null;
+      var latest = voiceVisibleChatTarget;
+      if (sync.succeeded && latest && voiceSession
+          && voiceSession.visible_chat_id !== latest) {
+        syncVoiceVisibleChat(latest);
+        return;
+      }
+      voiceVisibleChatTarget = null;
+      applyVoiceCaptureState();
+    });
+  }
+
+  function stopVoiceSessionExplicitly() {
+    var fence = currentVoiceFence();
+    voiceRecoverySuppressed = true;
+    clearVoiceRecovery();
+    clearVoiceRequestTerminal();
+    teardownVoiceMedia(true);
+    setVoiceFeedback("ended", "ended_by_user", null, true);
+    if (voiceBindingIsCurrent()) {
+      bestEffortEndVoice(fence).then(function () { voiceLastSession = null; });
+    } else if (fence) {
+      voicePendingEndFence = fence;
+    }
+  }
+
+  function stopVoiceSpeech() {
+    var fence = currentVoiceFence();
+    if (!fence || !voiceBindingIsCurrent()) return;
+    // Stop is a realtime local action first.  Purge the active/queued Web
+    // Audio graph synchronously before starting the generation-fenced server
+    // request so a slow or failed network path cannot leave stale speech
+    // audible.  The server request below still owns the authoritative speech
+    // epoch and existing error/state semantics.
+    clearVoiceAudioElements();
+    voiceRequest("/api/voice/sessions/" + encodeURIComponent(fence.session_id) + "/speech/stop", "POST", {
+      expected_generation: fence.generation,
+      expected_media_grant_revision: fence.media_grant_revision,
+    }).then(function (result) {
+      if (!result.ok) setVoiceFeedback("error", result.body && result.body.code || "speech_error",
+        result.body && result.body.message, true);
+    });
+  }
+
+  function consentSensitiveVoiceResult() {
+    var fence = currentVoiceFence();
+    if (!fence || !voiceCurrentResultId || !voiceBindingIsCurrent()) {
+      setVoiceFeedback("error", "stale_generation", "That spoken result is no longer available.", true);
+      return;
+    }
+    voiceRequest("/api/voice/sessions/" + encodeURIComponent(fence.session_id)
+      + "/results/" + encodeURIComponent(voiceCurrentResultId) + "/read-consent", "POST", {
+      expected_generation: fence.generation,
+      expected_media_grant_revision: fence.media_grant_revision,
+      turn_id: voiceComposer && voiceComposer.foreground_turn_id,
+      consent_method: "tap",
+    }).then(function (result) {
+      if (!result.ok) setVoiceFeedback("error", result.body && result.body.code || "speech_error",
+        result.body && result.body.message, true);
+    });
+  }
+
+  function onVoiceControlClick(control) {
+    if (!control || !control.enabled) return;
+    switch (control.action) {
+      case "voice_session_start": beginVoiceActivation("start"); break;
+      case "voice_session_takeover": beginVoiceActivation("takeover"); break;
+      case "voice_session_end": stopVoiceSessionExplicitly(); break;
+      case "voice_microphone_set": {
+        var enable = !control.pressed;
+        patchVoiceSession({ microphone_enabled: enable }, function () {
+          if (voiceStream) voiceStream.getAudioTracks().forEach(function (track) { track.enabled = enable; });
+        });
+        break;
+      }
+      case "voice_speech_stop": stopVoiceSpeech(); break;
+      case "voice_speech_mute_set": patchVoiceSession({ speech_muted: !control.pressed }); break;
+      case "voice_visible_chat_update":
+        if (activeChatId) syncVoiceVisibleChat(activeChatId);
+        break;
+      case "voice_sensitive_recap_request": consentSensitiveVoiceResult(); break;
+      default: break;
+    }
+  }
+
+  function consumeVoiceSessionState(frame) {
+    if (!frame || frame.type !== "voice_session_state" || frame.schema_version !== "1"
+        || frame.connection_generation !== connectionGeneration || !isCanonicalUuid4(frame.session_id)
+        || !VOICE_STATES[frame.state] || !Number.isSafeInteger(frame.generation)
+        || !Number.isSafeInteger(frame.media_grant_revision)
+        || typeof frame.foreground_active !== "boolean"
+        || typeof frame.microphone_enabled !== "boolean"
+        || (!frame.foreground_active && frame.microphone_enabled)
+        || (!frame.foreground_active
+          && ["suspended", "reconnecting", "error", "ended"].indexOf(frame.state) === -1)
+        || (frame.foreground_active
+          && ["off", "unavailable", "suspended", "ended"].indexOf(frame.state) !== -1)) return false;
+    var fence = currentVoiceFence();
+    if (fence && (frame.session_id !== fence.session_id || frame.generation !== fence.generation
+        || frame.media_grant_revision !== fence.media_grant_revision)) return false;
+    if (voiceSession) {
+      voiceSession = Object.assign({}, voiceSession, {
+        state: frame.state,
+        visible_chat_id: frame.visible_chat_id,
+        applied_visible_chat_id: frame.chat_context_synced
+          ? frame.visible_chat_id : voiceSession.applied_visible_chat_id,
+        chat_context_revision: frame.chat_context_revision,
+        applied_chat_context_revision: frame.applied_chat_context_revision,
+        chat_context_synced: frame.chat_context_synced,
+        speech_muted: frame.speech_muted,
+        microphone_enabled: frame.microphone_enabled,
+        foreground_active: frame.foreground_active,
+      });
+      voiceLastSession = voiceSession;
+    }
+    if (frame.state === "ended") {
+      voiceRecoverySuppressed = true;
+      teardownVoiceMedia(true);
+      voiceLastSession = null;
+      voicePendingEndFence = null;
+      voiceLifecycleSuspended = false;
+      if (frame.reason === "ended_by_user") clearVoiceRequestTerminal();
+      setVoiceFeedback("ended", frame.reason, frame.message, true);
+      return true;
+    }
+    if (frame.state === "suspended" || frame.state === "reconnecting") {
+      if (!voiceRecovery) teardownVoiceMedia(false);
+      setVoiceFeedback(frame.state, frame.reason, frame.message, true);
+      if (document.visibilityState !== "hidden" && !voiceLifecycleSuspended) {
+        maybeBeginVoiceRecovery(frame.reason || "network_interrupted");
+      }
+      return true;
+    }
+    setVoiceFeedback(frame.state, frame.reason, frame.message, true);
+    applyVoiceCaptureState();
+    if (frame.chat_context_synced && voiceSession && voiceGrant && voiceRoom && voiceStream
+        && !voiceMediaJoined && !voiceMediaJoining) {
+      var recovery = voiceRecovery;
+      joinVoiceMedia().then(function (joined) {
+        if (joined && recovery) completeVoiceRecovery(recovery);
+      });
+    }
+    return true;
+  }
+
+  function consumeVoiceTurnState(frame) {
+    var requiredKeys = [
+      "type", "schema_version", "session_id", "connection_generation", "generation",
+      "media_grant_revision", "turn_id", "client_turn_id", "submission_id",
+      "request_generation", "chat_id", "chat_context_revision", "detected_language",
+      "spoken_output_policy", "output_reason", "state", "foreground",
+      "sensitive_result_pending", "sequence", "occurred_at",
+    ];
+    var suppliedKeys = requiredKeys.slice();
+    ["result_id", "message", "speech_outcome"].forEach(function (key) {
+      if (frame && Object.prototype.hasOwnProperty.call(frame, key)) suppliedKeys.push(key);
+    });
+    if (!frame || frame.type !== "voice_turn_state" || frame.schema_version !== "1"
+        || !exactKeys(frame, suppliedKeys)
+        || frame.connection_generation !== connectionGeneration || !isCanonicalUuid4(frame.session_id)) return false;
+    var fence = currentVoiceFence();
+    if (!fence || frame.session_id !== fence.session_id || frame.generation !== fence.generation
+        || frame.media_grant_revision !== fence.media_grant_revision
+        || !Object.prototype.hasOwnProperty.call(VOICE_TURN_STATES, frame.state)
+        || (Object.prototype.hasOwnProperty.call(frame, "speech_outcome")
+          && (frame.state !== "succeeded"
+            || !Object.prototype.hasOwnProperty.call(
+              VOICE_SPEECH_OUTCOMES, frame.speech_outcome)))
+        || !validVoiceTurnMessage(frame)
+        || !isCanonicalUuid4(frame.turn_id)
+        || !isRfc3339Utc(frame.occurred_at)
+        || !Number.isSafeInteger(frame.sequence) || frame.sequence < 0) return false;
+    var language = frame.detected_language;
+    if (language === null) {
+      if (["recognizing", "abandoned"].indexOf(frame.state) === -1
+          || frame.spoken_output_policy !== "pending"
+          || frame.output_reason !== "language_pending") return false;
+    } else {
+      if (typeof language !== "string"
+          || !/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)
+          || frame.state === "recognizing") return false;
+      var english = /^en(?:-|$)/.test(language);
+      if (english ? (frame.spoken_output_policy !== "full_recap"
+          || frame.output_reason !== "ready")
+        : (frame.spoken_output_policy !== "english_lifecycle_only"
+          || frame.output_reason !== "output_language_unsupported")) return false;
+    }
+    if (typeof frame.result_id === "string" && frame.result_id) voiceCurrentResultId = frame.result_id;
+    if (frame.state === "succeeded" && frame.speech_outcome === "failed") {
+      showVoiceRequestTerminal({
+        state: "speech_error",
+        turn_id: frame.turn_id,
+        occurred_at: frame.occurred_at,
+        message: "The result audio could not be delivered.",
+      }, "The text result is still available in the conversation. Typed chat remains available.");
+    } else if (VOICE_REQUEST_TERMINAL_TITLES[frame.state]) {
+      showVoiceRequestTerminal(frame);
+    } else {
+      clearVoiceRequestTerminalForNewerTurn(frame);
+    }
+    return true;
+  }
+
+  function removePendingVoiceSubmission(submissionId) {
+    var pending = voicePendingSubmissions[submissionId];
+    if (!pending) return null;
+    if (pending.timer) clearTimeout(pending.timer);
+    delete voicePendingSubmissions[submissionId];
+    voicePendingSubmissionBytes = Math.max(
+      0, voicePendingSubmissionBytes - pending.byte_length
+    );
+    finishOperationSubmission(pending.request_generation);
+    return pending;
+  }
+
+  function clearPendingVoiceSubmissions() {
+    Object.keys(voicePendingSubmissions).forEach(removePendingVoiceSubmission);
+    voicePendingSubmissions = Object.create(null);
+    voicePendingSubmissionBytes = 0;
+  }
+
+  function expirePendingVoiceSubmission(pending) {
+    if (!pending || voicePendingSubmissions[pending.submission_id] !== pending) return;
+    removePendingVoiceSubmission(pending.submission_id);
+    if (voiceTranscriptEl) {
+      voiceTranscriptEl.textContent = "That spoken request expired before it was accepted. Please say it again.";
+      voiceTranscriptEl.setAttribute("data-final", "true");
+    }
+    setVoiceFeedback("error", "proof_expired", "That spoken request was not accepted. Please say it again.", true);
+  }
+
+  function voiceChatMessageFrame(pending) {
+    var origin = {
+      schema_version: "1",
+      session_id: pending.session_id,
+      generation: pending.generation,
+      media_grant_revision: pending.media_grant_revision,
+      turn_id: pending.turn_id,
+      client_turn_id: pending.client_turn_id,
+      chat_context_revision: pending.chat_context_revision,
+      source_participant_identity: pending.source_participant_identity,
+      detected_language: pending.detected_language,
+      text_digest_sha256: pending.text_digest_sha256,
+      transcript_proof: pending.transcript_proof,
+      proof_expires_at: pending.proof_expires_at,
+    };
+    return {
+      type: "ui_event",
+      action: "chat_message",
+      session_id: pending.chat_id,
+      connection_generation: connectionGeneration,
+      submission_id: pending.submission_id,
+      request_generation: pending.request_generation,
+      payload: {
+        message: pending.text,
+        chat_id: pending.chat_id,
+        connection_generation: connectionGeneration,
+        submission_id: pending.submission_id,
+        request_generation: pending.request_generation,
+        snapshot_purpose: "commit",
+        voice_origin: origin,
+      },
+    };
+  }
+
+  function sendPendingVoiceSubmission(pending) {
+    if (!pending || voicePendingSubmissions[pending.submission_id] !== pending) return;
+    if (Date.parse(pending.proof_expires_at) <= Date.now()) {
+      expirePendingVoiceSubmission(pending);
+      return;
+    }
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.timer = setTimeout(function () {
+      sendPendingVoiceSubmission(pending);
+    }, Math.min(
+      VOICE_SUBMISSION_RETRY_MS,
+      Math.max(1, Date.parse(pending.proof_expires_at) - Date.now())
+    ));
+    if (!voiceBindingIsCurrent() || !ws || ws.readyState !== 1) return;
+    if (!operationSubmissionByGeneration[pending.request_generation]) {
+      var local = {
+        submission_id: pending.submission_id,
+        request_generation: pending.request_generation,
+        action: "chat_message",
+        chat_id: pending.chat_id,
+        state: "submitting",
+        label: "Submitting spoken request…",
+        status_order: ++operationSubmissionOrdinal,
+      };
+      operationSubmissionByGeneration[pending.request_generation] = local;
+      operationSubmissionById[pending.submission_id] = local;
+      if (pending.chat_id === activeChatId) {
+        setStatus(local.label, true, "operation-submission:" + pending.request_generation);
+      }
+    }
+    send(voiceChatMessageFrame(pending));
+  }
+
+  function resendPendingVoiceSubmissions() {
+    Object.keys(voicePendingSubmissions).forEach(function (submissionId) {
+      sendPendingVoiceSubmission(voicePendingSubmissions[submissionId]);
+    });
+  }
+
+  function retainFinalVoiceSubmission(frame) {
+    if (voicePendingSubmissions[frame.submission_id]) {
+      sendPendingVoiceSubmission(voicePendingSubmissions[frame.submission_id]);
+      return true;
+    }
+    var copy = {
+      session_id: frame.session_id,
+      generation: frame.generation,
+      media_grant_revision: frame.media_grant_revision,
+      turn_id: frame.turn_id,
+      client_turn_id: frame.client_turn_id,
+      submission_id: frame.submission_id,
+      request_generation: frame.request_generation,
+      chat_id: frame.chat_id,
+      chat_context_revision: frame.chat_context_revision,
+      source_participant_identity: frame.source_participant_identity,
+      detected_language: frame.detected_language,
+      text_digest_sha256: frame.text_digest_sha256,
+      transcript_proof: frame.transcript_proof,
+      proof_expires_at: frame.proof_expires_at,
+      text: frame.text,
+      timer: null,
+    };
+    copy.byte_length = new TextEncoder().encode(JSON.stringify(copy)).length;
+    if (Object.keys(voicePendingSubmissions).length >= VOICE_MAX_PENDING_SUBMISSIONS
+        || copy.byte_length > VOICE_MAX_PENDING_BYTES
+        || voicePendingSubmissionBytes + copy.byte_length > VOICE_MAX_PENDING_BYTES) {
+      setVoiceFeedback("error", "capacity_exhausted", "Too many spoken requests are awaiting acceptance. Please retry this one.", true);
+      return false;
+    }
+    voicePendingSubmissions[copy.submission_id] = copy;
+    voicePendingSubmissionBytes += copy.byte_length;
+    sendPendingVoiceSubmission(copy);
+    return true;
+  }
+
+  function consumeVoiceMessageAcknowledged(frame) {
+    if (!frame || frame.type !== "user_message_acked" || frame.schema_version !== "1"
+        || frame.connection_generation !== connectionGeneration
+        || !isCanonicalUuid4(frame.voice_turn_id) || !isCanonicalUuid4(frame.chat_id)
+        || !isCanonicalUuid4(frame.submission_id) || !isCanonicalUuid4(frame.request_generation)
+        || !Number.isSafeInteger(frame.message_id) || frame.message_id < 1) return false;
+    var pending = voicePendingSubmissions[frame.submission_id];
+    if (!pending || pending.turn_id !== frame.voice_turn_id
+        || pending.chat_id !== frame.chat_id
+        || pending.request_generation !== frame.request_generation) return false;
+    removePendingVoiceSubmission(frame.submission_id);
+    if (voiceTranscriptEl) voiceTranscriptEl.setAttribute("data-accepted", "true");
+    return true;
+  }
+
+  function consumeVoiceSubmissionRejected(frame) {
+    if (!frame || frame.type !== "voice_submission_rejected" || frame.schema_version !== "1"
+        || frame.connection_generation !== connectionGeneration
+        || !isCanonicalUuid4(frame.session_id) || !isCanonicalUuid4(frame.turn_id)
+        || !isCanonicalUuid4(frame.client_turn_id) || !isCanonicalUuid4(frame.submission_id)
+        || !isCanonicalUuid4(frame.request_generation) || !isCanonicalUuid4(frame.chat_id)
+        || !Number.isSafeInteger(frame.generation) || frame.generation < 1
+        || !Number.isSafeInteger(frame.media_grant_revision) || frame.media_grant_revision < 1
+        || !VOICE_SUBMISSION_REJECTION_REASONS[frame.reason]
+        || ["explicit_user_retry", "none"].indexOf(frame.retry_policy) === -1
+        || (Object.prototype.hasOwnProperty.call(frame, "message")
+          && (typeof frame.message !== "string" || Array.from(frame.message).length > 240))
+        || !isRfc3339Utc(frame.occurred_at)) return false;
+    var pending = voicePendingSubmissions[frame.submission_id];
+    if (!pending || pending.session_id !== frame.session_id
+        || pending.generation !== frame.generation
+        || pending.media_grant_revision !== frame.media_grant_revision
+        || pending.turn_id !== frame.turn_id || pending.client_turn_id !== frame.client_turn_id
+        || pending.request_generation !== frame.request_generation
+        || pending.chat_id !== frame.chat_id) return false;
+    removePendingVoiceSubmission(frame.submission_id);
+    var serverMessage = typeof frame.message === "string" && frame.message
+      ? frame.message : "That spoken request was not accepted.";
+    var guidance = frame.retry_policy === "explicit_user_retry"
+      ? "Please say it again, or use typed chat."
+      : "This request will not retry automatically. Use typed chat to continue.";
+    var feedbackMessage = serverMessage + " " + guidance;
+    if (voiceTranscriptEl) {
+      voiceTranscriptEl.textContent = feedbackMessage;
+      voiceTranscriptEl.setAttribute("data-final", "true");
+      voiceTranscriptEl.setAttribute("data-rejected", frame.reason);
+    }
+    showVoiceRequestTerminal({
+      state: "refused",
+      message: serverMessage,
+      turn_id: frame.turn_id,
+      occurred_at: frame.occurred_at,
+    }, guidance);
+    setVoiceFeedback("error", frame.reason, feedbackMessage, true);
+    return true;
+  }
+
+  function consumeVoiceTranscript(frame, participantIdentity) {
+    if (!frame || frame.type !== "voice_transcript" || frame.schema_version !== "1"
+        || !voiceSession || frame.session_id !== voiceSession.session_id
+        || frame.generation !== voiceSession.generation
+        || !Number.isSafeInteger(frame.media_grant_revision)
+        || frame.media_grant_revision < 1
+        || frame.media_grant_revision > voiceSession.media_grant_revision
+        || frame.source_participant_identity !== voiceExpectedWorker
+        || participantIdentity && participantIdentity !== voiceExpectedWorker
+        || !isCanonicalUuid4(frame.turn_id) || !isCanonicalUuid4(frame.client_turn_id)
+        || !isCanonicalUuid4(frame.submission_id) || !isCanonicalUuid4(frame.request_generation)
+        || !isCanonicalUuid4(frame.chat_id)
+        || !Number.isSafeInteger(frame.chat_context_revision) || frame.chat_context_revision < 1
+        || !Number.isSafeInteger(frame.sequence)
+        || frame.sequence < 0 || typeof frame.final !== "boolean"
+        || typeof frame.text !== "string" || frame.text.length > 8000) return false;
+    if (frame.final && (!frame.text.trim()
+        || typeof frame.detected_language !== "string"
+        || !/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(frame.detected_language)
+        || typeof frame.text_digest_sha256 !== "string"
+        || !/^[0-9a-f]{64}$/.test(frame.text_digest_sha256)
+        || typeof frame.transcript_proof !== "string"
+        || !/^[0-9a-f]{64}$/.test(frame.transcript_proof)
+        || !isRfc3339Utc(frame.proof_expires_at)
+        || Date.parse(frame.proof_expires_at) <= Date.now())) return false;
+    var previous = voiceTranscriptSequence[frame.turn_id];
+    if (previous != null && frame.sequence <= previous) return false;
+    voiceTranscriptSequence[frame.turn_id] = frame.sequence;
+    if (voiceTranscriptEl) {
+      voiceTranscriptEl.textContent = (frame.final ? "Heard: " : "Hearing: ") + frame.text;
+      voiceTranscriptEl.setAttribute("data-final", frame.final ? "true" : "false");
+      voiceTranscriptEl.removeAttribute("data-accepted");
+      voiceTranscriptEl.removeAttribute("data-rejected");
+    }
+    if (voiceFeedbackEl) voiceFeedbackEl.hidden = false;
+    if (frame.final) return retainFinalVoiceSubmission(frame);
+    return true;
+  }
+
+  function validVoiceAnnouncement(frame, participantIdentity) {
+    var singleKinds = {
+      greeting: true, acknowledgement: true, progress: true, waiting: true,
+      sensitive_notice: true, failure: true, refusal: true, cancellation: true,
+    };
+    if (!frame || frame.type !== "voice_announcement_media" || frame.schema_version !== "1"
+        || !voiceSession || frame.session_id !== voiceSession.session_id
+        || frame.generation !== voiceSession.generation
+        || frame.media_grant_revision !== voiceSession.media_grant_revision
+        || frame.transport !== "livekit" || frame.worker_identity !== voiceExpectedWorker
+        || participantIdentity !== voiceExpectedWorker || !isCanonicalUuid4(frame.announcement_id)
+        || !Number.isSafeInteger(frame.announcement_sequence) || frame.announcement_sequence < 1
+        || frame.announcement_sequence <= voiceLastAnnouncementSequence
+        || typeof frame.track_sid !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(frame.track_sid)
+        || typeof frame.track_name !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(frame.track_name)
+        || !Number.isSafeInteger(frame.quantum_index) || frame.quantum_index < 0
+        || frame.quantum_index > 31
+        || !Number.isSafeInteger(frame.duration_samples) || frame.duration_samples < 1
+        || frame.duration_samples > 96000 || frame.sample_rate_hz !== 24000) return false;
+    if (frame.kind === "greeting" ? frame.turn_id !== null : !isCanonicalUuid4(frame.turn_id)) return false;
+    if (frame.quantum_role === "single") {
+      return singleKinds[frame.kind] === true && frame.quantum_index === 0
+        && frame.result_reserved_samples_after === undefined;
+    }
+    if (frame.kind !== "result" || !Number.isSafeInteger(frame.result_reserved_samples_after)
+        || frame.result_reserved_samples_after < 1 || frame.result_reserved_samples_after > 720000) return false;
+    if (frame.quantum_role === "result_opening") {
+      return frame.quantum_index === 0 && frame.duration_samples <= 36000
+        && frame.result_reserved_samples_after >= frame.duration_samples
+        && frame.result_reserved_samples_after <= 36000;
+    }
+    return frame.quantum_role === "result_continuation" && frame.quantum_index >= 1;
+  }
+
+  function consumeVoiceAnnouncement(frame, participantIdentity) {
+    if (!validVoiceAnnouncement(frame, participantIdentity)) return false;
+    if (voiceAnnouncementByTrack[frame.track_sid] || voiceActivePlayout[frame.announcement_id]) return false;
+    if (Object.keys(voiceAnnouncementByTrack).length >= 8) return false;
+    if (frame.kind === "result") {
+      var priorReservation = voiceResultReservation[frame.turn_id] || 0;
+      var priorQuantum = voiceResultQuantumIndex[frame.turn_id];
+      if (frame.quantum_role === "result_opening") {
+        if (priorReservation !== 0 || priorQuantum != null) return false;
+      } else if (priorReservation < 1 || priorQuantum == null
+          || frame.quantum_index !== priorQuantum + 1
+          || frame.result_reserved_samples_after < priorReservation + frame.duration_samples) return false;
+      voiceResultReservation[frame.turn_id] = frame.result_reserved_samples_after;
+      voiceResultQuantumIndex[frame.turn_id] = frame.quantum_index;
+    }
+    voiceLastAnnouncementSequence = frame.announcement_sequence;
+    voiceAnnouncementByTrack[frame.track_sid] = frame;
+    voiceMediaTimers.push(setTimeout(function () { expireVoiceAnnouncement(frame.track_sid); }, 1000));
+    queueVoiceTrack(frame.track_sid);
+    return true;
+  }
+
+  function decodeVoicePacket(payload, maximum) {
+    var text;
+    try {
+      if (typeof payload === "string") text = payload;
+      else if (payload instanceof Uint8Array) text = new TextDecoder().decode(payload);
+      else return null;
+      if (new TextEncoder().encode(text).length > maximum) return null;
+      var value = JSON.parse(text);
+      return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    } catch (e) { return null; }
+  }
+
+  function consumeVoiceRoomData(payload, participant, topic) {
+    if (!participant || participant.identity !== voiceExpectedWorker) return false;
+    if (topic === "astraldeep.voice.transcript.v1") {
+      var transcript = decodeVoicePacket(payload, 12 * 1024);
+      return consumeVoiceTranscript(transcript, participant.identity);
+    }
+    if (topic === "astraldeep.voice.announcement.v1") {
+      var announcement = decodeVoicePacket(payload, 4 * 1024);
+      return consumeVoiceAnnouncement(announcement, participant.identity);
+    }
+    return false;
+  }
+
+  function consumeVoiceAudioTrack(track, publication, participant) {
+    var kind = window.LivekitClient && window.LivekitClient.Track && window.LivekitClient.Track.Kind
+      ? window.LivekitClient.Track.Kind.Audio : "audio";
+    if (!track || track.kind !== kind || !participant || participant.identity !== voiceExpectedWorker) {
+      stopVoiceAudioTrack(track);
+      return false;
+    }
+    var sid = publication && publication.trackSid || track.sid;
+    var manifest = typeof sid === "string" ? voiceAnnouncementByTrack[sid] : null;
+    var published = typeof sid === "string" ? voicePublishedTracks[sid] : null;
+    if (typeof sid !== "string" || !sid || sid !== voiceSubscribingTrackSid
+        || !manifest || !published || published.publication !== publication
+        || (publication.trackName || publication.name) !== manifest.track_name) {
+      try { if (publication) publication.setSubscribed(false); } catch (e) {}
+      stopVoiceAudioTrack(track);
+      return false;
+    }
+    voiceSubscribingTrackSid = null;
+    voicePendingTracks[sid] = { track: track, publication: publication, participant: participant };
+    playVoiceTrack(sid);
+    return true;
+  }
+
+  function consumeVoicePublishedTrack(publication, participant) {
+    var kind = window.LivekitClient && window.LivekitClient.Track && window.LivekitClient.Track.Kind
+      ? window.LivekitClient.Track.Kind.Audio : "audio";
+    var sid = publication && publication.trackSid;
+    if (!publication || publication.kind !== kind || !participant
+        || participant.identity !== voiceExpectedWorker || typeof sid !== "string" || !sid) {
+      try { if (publication) publication.setSubscribed(false); } catch (e) {}
+      return false;
+    }
+    try { publication.setSubscribed(false); } catch (e) { return false; }
+    voicePublishedTracks[sid] = { publication: publication, participant: participant };
+    voiceMediaTimers.push(setTimeout(function () {
+      if (!voiceAnnouncementByTrack[sid] && voicePublishedTracks[sid]) removeVoicePublishedTrack(sid);
+    }, 1000));
+    queueVoiceTrack(sid);
+    return true;
+  }
+
+  function reconcileVoiceRemotePublications(room) {
+    var participants = room && room.remoteParticipants;
+    if (!participants || typeof participants.forEach !== "function") return;
+    participants.forEach(function (participant) {
+      if (!participant || participant.identity !== voiceExpectedWorker) return;
+      var publications = participant.trackPublications || participant.audioTrackPublications;
+      if (!publications || typeof publications.forEach !== "function") return;
+      publications.forEach(function (publication) {
+        consumeVoicePublishedTrack(publication, participant);
+      });
+    });
+  }
+
+  function removeVoicePublishedTrack(sid) {
+    if (typeof sid !== "string" || !sid) return;
+    var manifest = voiceAnnouncementByTrack[sid];
+    var pending = voicePendingTracks[sid];
+    if (pending) stopVoiceAudioTrack(pending.track);
+    delete voicePendingTracks[sid];
+    delete voicePublishedTracks[sid];
+    voicePlayoutQueue = voicePlayoutQueue.filter(function (value) { return value !== sid; });
+    if (voiceSubscribingTrackSid === sid) voiceSubscribingTrackSid = null;
+    var activeFound = false;
+    Object.keys(voiceActivePlayout).forEach(function (announcementId) {
+      var active = voiceActivePlayout[announcementId];
+      if (active && active.sid === sid) {
+        activeFound = true;
+        finishVoiceTrack(active, active.started ? "interrupted" : null);
+      }
+    });
+    if (!activeFound) showVoiceResultSpeechFailure(manifest);
+    delete voiceAnnouncementByTrack[sid];
+    startNextVoiceTrack();
+  }
+
+  function expireVoiceAnnouncement(sid) {
+    var manifest = voiceAnnouncementByTrack[sid];
+    if (!manifest || voicePublishedTracks[sid] || voicePendingTracks[sid]
+        || voicePlayoutQueue.indexOf(sid) !== -1 || voiceSubscribingTrackSid === sid) return;
+    showVoiceResultSpeechFailure(manifest);
+    delete voiceAnnouncementByTrack[sid];
+  }
+
+  function queueVoiceTrack(sid) {
+    var manifest = voiceAnnouncementByTrack[sid];
+    var published = voicePublishedTracks[sid];
+    if (!manifest || !published) return;
+    if ((published.publication.trackName || published.publication.name) !== manifest.track_name
+        || published.participant.identity !== manifest.worker_identity) {
+      try { published.publication.setSubscribed(false); } catch (e) {}
+      showVoiceResultSpeechFailure(manifest);
+      delete voiceAnnouncementByTrack[sid];
+      delete voicePublishedTracks[sid];
+      return;
+    }
+    if (voiceSubscribingTrackSid === sid || voicePlayoutQueue.indexOf(sid) !== -1
+        || Object.keys(voiceActivePlayout).some(function (announcementId) {
+          return voiceActivePlayout[announcementId].sid === sid;
+        })) return;
+    voicePlayoutQueue.push(sid);
+    voicePlayoutQueue.sort(function (left, right) {
+      return voiceAnnouncementByTrack[left].announcement_sequence
+        - voiceAnnouncementByTrack[right].announcement_sequence;
+    });
+    startNextVoiceTrack();
+  }
+
+  function startNextVoiceTrack() {
+    if (voiceSubscribingTrackSid || Object.keys(voiceActivePlayout).length) return;
+    while (voicePlayoutQueue.length) {
+      var sid = voicePlayoutQueue.shift();
+      var manifest = voiceAnnouncementByTrack[sid];
+      var published = voicePublishedTracks[sid];
+      if (!manifest || !published) {
+        showVoiceResultSpeechFailure(manifest);
+        delete voiceAnnouncementByTrack[sid];
+        delete voicePublishedTracks[sid];
+        continue;
+      }
+      voiceSubscribingTrackSid = sid;
+      try { published.publication.setSubscribed(true); }
+      catch (e) {
+        voiceSubscribingTrackSid = null;
+        showVoiceResultSpeechFailure(manifest);
+        delete voiceAnnouncementByTrack[sid];
+        delete voicePublishedTracks[sid];
+        continue;
+      }
+      voiceMediaTimers.push(setTimeout(function (expectedSid) {
+        if (voiceSubscribingTrackSid !== expectedSid) return;
+        var value = voicePublishedTracks[expectedSid];
+        var expectedManifest = voiceAnnouncementByTrack[expectedSid];
+        try { if (value) value.publication.setSubscribed(false); } catch (e) {}
+        voiceSubscribingTrackSid = null;
+        showVoiceResultSpeechFailure(expectedManifest);
+        delete voiceAnnouncementByTrack[expectedSid];
+        delete voicePublishedTracks[expectedSid];
+        startNextVoiceTrack();
+      }, 1000, sid));
+      return;
+    }
+  }
+
+  function stopVoiceAudioTrack(track) {
+    if (!track) return;
+    try { track.detach().forEach(function (element) { element.remove(); }); } catch (e) {}
+  }
+
+  function interruptVoiceAudioTrack(track, publication) {
+    var sid = publication && publication.trackSid || track && track.sid;
+    var activeFound = false;
+    Object.keys(voiceActivePlayout).forEach(function (announcementId) {
+      var active = voiceActivePlayout[announcementId];
+      if (active && active.sid === sid) {
+        activeFound = true;
+        finishVoiceTrack(active, active.started ? "interrupted" : null);
+      }
+    });
+    if (!activeFound) removeVoicePublishedTrack(sid);
+    else stopVoiceAudioTrack(track);
+  }
+
+  function voicePlayout(frame, phase) {
+    if (!ws || ws.readyState !== 1) return;
+    var event = {
+      type: "voice_playout_event",
+      schema_version: "1",
+      device_id: voiceDeviceId,
+      connection_generation: connectionGeneration,
+      session_id: frame.session_id,
+      generation: frame.generation,
+      media_grant_revision: frame.media_grant_revision,
+      announcement_id: frame.announcement_id,
+      announcement_sequence: frame.announcement_sequence,
+      turn_id: frame.turn_id,
+      kind: frame.kind,
+      quantum_role: frame.quantum_role,
+      quantum_index: frame.quantum_index,
+      phase: phase,
+      client_sequence: voicePlayoutSequence++,
+      observed_at: new Date().toISOString(),
+    };
+    if (frame.result_reserved_samples_after != null) {
+      event.result_reserved_samples_after = frame.result_reserved_samples_after;
+    }
+    send(event);
+  }
+
+  function playVoiceTrack(sid) {
+    var pending = voicePendingTracks[sid];
+    var manifest = voiceAnnouncementByTrack[sid];
+    var published = voicePublishedTracks[sid];
+    if (Object.keys(voiceActivePlayout).length) return;
+    if (!pending || !manifest || !published) {
+      showVoiceResultSpeechFailure(manifest);
+      delete voicePendingTracks[sid];
+      delete voiceAnnouncementByTrack[sid];
+      delete voicePublishedTracks[sid];
+      startNextVoiceTrack();
+      return;
+    }
+    delete voicePendingTracks[sid];
+    var context = ensureVoiceAudioContext();
+    var mediaTrack = pending.track.mediaStreamTrack;
+    if (!context || (context.sampleRate !== 24000 && context.sampleRate !== 48000)
+        || typeof context.createMediaStreamSource !== "function"
+        || typeof context.createScriptProcessor !== "function"
+        || typeof window.MediaStream !== "function" || !mediaTrack) {
+      try { published.publication.setSubscribed(false); } catch (e) {}
+      stopVoiceAudioTrack(pending.track);
+      showVoiceResultSpeechFailure(manifest);
+      delete voiceAnnouncementByTrack[sid];
+      delete voicePublishedTracks[sid];
+      setVoiceFeedback("unavailable", "media_unavailable", null, true);
+      startNextVoiceTrack();
+      return;
+    }
+    var source;
+    var processor;
+    try {
+      source = context.createMediaStreamSource(new window.MediaStream([mediaTrack]));
+      processor = context.createScriptProcessor(1024, 1, 1);
+    } catch (e) {
+      try { published.publication.setSubscribed(false); } catch (_error) {}
+      showVoiceResultSpeechFailure(manifest);
+      delete voiceAnnouncementByTrack[sid];
+      delete voicePublishedTracks[sid];
+      startNextVoiceTrack();
+      return;
+    }
+    var active = {
+      sid: sid, manifest: manifest, pending: pending, published: published,
+      source: source, processor: processor, finished: false, finishing: false,
+      started: false, remainingFrames: manifest.duration_samples * (context.sampleRate / 24000),
+      tailTimer: null, timeout: null,
+    };
+    voiceActivePlayout[manifest.announcement_id] = active;
+    processor.onaudioprocess = function (event) {
+      if (active.finished || active.finishing) return;
+      var input = event.inputBuffer;
+      var output = event.outputBuffer;
+      var available = output.length;
+      var accepted = Math.min(available, active.remainingFrames);
+      for (var channel = 0; channel < output.numberOfChannels; channel++) {
+        var outputData = output.getChannelData(channel);
+        outputData.fill(0);
+        if (accepted > 0 && input.numberOfChannels > 0) {
+          var inputData = input.getChannelData(Math.min(channel, input.numberOfChannels - 1));
+          outputData.set(inputData.subarray(0, accepted), 0);
+        }
+      }
+      if (accepted > 0 && !active.started) {
+        active.started = true;
+        if (manifest.kind === "greeting") setVoiceFeedback("greeting", "ready", null, true);
+        voicePlayout(manifest, "started");
+      }
+      active.remainingFrames -= accepted;
+      if (active.remainingFrames === 0) {
+        active.finishing = true;
+        active.tailTimer = setTimeout(function () { finishVoiceTrack(active, "finished"); },
+          Math.ceil(accepted * 1000 / context.sampleRate) + 20);
+        voiceMediaTimers.push(active.tailTimer);
+      }
+    };
+    try {
+      source.connect(processor);
+      processor.connect(context.destination);
+    } catch (e) {
+      finishVoiceTrack(active, null);
+      return;
+    }
+    active.timeout = setTimeout(function () {
+      finishVoiceTrack(active, active.started ? "interrupted" : null);
+    }, Math.ceil(manifest.duration_samples / 24) + 2000);
+    voiceMediaTimers.push(active.timeout);
+    if (context.state === "suspended") {
+      try { Promise.resolve(context.resume()).then(hideVoiceAudioResume).catch(showVoiceAudioResume); }
+      catch (e) { showVoiceAudioResume(); }
+    }
+  }
+
+  function finishVoiceTrack(active, phase, suppressNext) {
+    if (!active || active.finished) return;
+    active.finished = true;
+    if (!active.started && suppressNext !== true) {
+      showVoiceResultSpeechFailure(active.manifest);
+    }
+    if (active.timeout) clearTimeout(active.timeout);
+    if (active.tailTimer) clearTimeout(active.tailTimer);
+    try { active.processor.onaudioprocess = null; } catch (e) {}
+    try { active.source.disconnect(); } catch (e) {}
+    try { active.processor.disconnect(); } catch (e) {}
+    try { active.published.publication.setSubscribed(false); } catch (e) {}
+    stopVoiceAudioTrack(active.pending.track);
+    if (phase && active.started) voicePlayout(active.manifest, phase);
+    delete voiceActivePlayout[active.manifest.announcement_id];
+    delete voiceAnnouncementByTrack[active.sid];
+    delete voicePendingTracks[active.sid];
+    delete voicePublishedTracks[active.sid];
+    if (!suppressNext) startNextVoiceTrack();
+  }
+
+  function suspendVoiceForLifecycle(reason) {
+    var fence = voiceRecoverableFence();
+    if (!fence || voiceLifecycleSuspended) return;
+    voiceLifecycleSuspended = true;
+    clearVoiceRecovery();
+    teardownVoiceMedia(false);
+    setVoiceFeedback("suspended", reason, null, true);
+    if (voiceBindingIsCurrent()) {
+      voiceSuspensionPromise = patchVoiceSession({
+        foreground_active: false,
+        foreground_reason: reason === "audio_interrupted" ? "audio_interrupted" : "backgrounded",
+        microphone_enabled: false,
+      }).finally(function () { voiceSuspensionPromise = null; });
+    }
+  }
+
+  function suspendVoiceForNetworkLoss() {
+    var fence = voiceRecoverableFence();
+    if (!fence) return;
+    voiceLifecycleSuspended = false;
+    clearVoiceRecovery();
+    teardownVoiceMedia(false);
+    setVoiceFeedback("reconnecting", "network_interrupted", null, true);
+    if (voiceBindingIsCurrent()) {
+      voiceSuspensionPromise = patchVoiceSession({
+        foreground_active: false,
+        foreground_reason: "connection_lost",
+        microphone_enabled: false,
+      }).finally(function () { voiceSuspensionPromise = null; });
+    }
+  }
+
+  function resumeVoiceForLifecycle() {
+    if (document.visibilityState === "hidden") return;
+    if (navigator.onLine === false) return;
+    voiceLifecycleSuspended = false;
+    if (!voiceRecoverableFence()) return;
+    if (voiceSuspensionPromise) {
+      voiceSuspensionPromise.finally(function () {
+        if (document.visibilityState !== "hidden" && !voiceLifecycleSuspended) {
+          resumeVoiceForLifecycle();
+        }
+      });
+      return;
+    }
+    if (!voiceBindingIsCurrent()) {
+      requestFreshVoiceBinding(voiceBinding && voiceBinding.binding_id);
+      return;
+    }
+    beginVoiceRecovery("network_interrupted");
+  }
+
+  function installVoiceCapabilityWatchers() {
+    if (navigator.permissions && typeof navigator.permissions.query === "function") {
+      navigator.permissions.query({ name: "microphone" }).then(function (permission) {
+        var apply = function () {
+          voicePermissionState = permission.state === "granted" ? "authorized"
+            : permission.state === "denied" ? "denied" : "not_determined";
+          if (permission.state === "denied" && currentVoiceFence()) handleVoiceMediaLoss("permission_denied");
+        };
+        apply();
+        if (permission.addEventListener) permission.addEventListener("change", apply);
+      }).catch(function () {});
+    }
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", function () {
+        if (!currentVoiceFence() || !navigator.mediaDevices.enumerateDevices) return;
+        navigator.mediaDevices.enumerateDevices().then(function (devices) {
+          if (!devices.some(function (device) { return device.kind === "audioinput"; })) {
+            handleVoiceMediaLoss("no_microphone");
+          }
+        }).catch(function () {});
+      });
+    }
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") suspendVoiceForLifecycle("backgrounded");
+      else resumeVoiceForLifecycle();
+    });
+    window.addEventListener("pagehide", function () { suspendVoiceForLifecycle("backgrounded"); });
+    window.addEventListener("pageshow", function () { resumeVoiceForLifecycle(); });
+    window.addEventListener("offline", suspendVoiceForNetworkLoss);
+    window.addEventListener("online", resumeVoiceForLifecycle);
+  }
+
+  if (voiceAudioResumeEl) voiceAudioResumeEl.addEventListener("click", function () {
+    var resumptions = [];
+    if (voiceRoom && typeof voiceRoom.startAudio === "function") {
+      try { resumptions.push(Promise.resolve(voiceRoom.startAudio())); }
+      catch (e) { resumptions.push(Promise.reject(e)); }
+    }
+    var context = ensureVoiceAudioContext();
+    if (context && typeof context.resume === "function") {
+      try { resumptions.push(Promise.resolve(context.resume())); }
+      catch (e) { resumptions.push(Promise.reject(e)); }
+    }
+    if (!resumptions.length) return;
+    Promise.all(resumptions).then(hideVoiceAudioResume).catch(showVoiceAudioResume);
+  });
+  installVoiceCapabilityWatchers();
+
   function send(obj) { try { ws.send(JSON.stringify(obj)); } catch (e) {} }
 
   /** Create the client-owned retry/generation identity before any socket I/O. */
-  function beginOperationSubmission(name, payload, suppliedGeneration) {
+  function beginOperationSubmission(name, payload, suppliedGeneration, exposeStatus) {
     var body = Object.assign({}, payload || {});
     var submissionId = isCanonicalUuid4(body.submission_id) ? body.submission_id : randomUuid4();
     var requestGeneration = isCanonicalUuid4(suppliedGeneration)
@@ -370,10 +2775,14 @@
       chat_id: activeChatId || null,
       state: "submitting",
       label: "Submitting…",
+      shows_status: exposeStatus !== false,
+      status_order: ++operationSubmissionOrdinal,
     };
     operationSubmissionByGeneration[requestGeneration] = local;
     operationSubmissionById[submissionId] = local;
-    setStatus(local.label, true);
+    if (local.shows_status) {
+      setStatus(local.label, true, "operation-submission:" + requestGeneration);
+    }
     return { payload: body, submissionId: submissionId, requestGeneration: requestGeneration };
   }
 
@@ -385,11 +2794,11 @@
     return true;
   }
 
-  function action(name, payload) {
+  function action(name, payload, exposeStatus) {
     if (name === "chat_message") openRequest("commit", activeChatId);
     var suppliedGeneration = requestState && (name === "chat_message" || name === "load_chat")
       ? requestState.generation : null;
-    var submission = beginOperationSubmission(name, payload, suppliedGeneration);
+    var submission = beginOperationSubmission(name, payload, suppliedGeneration, exposeStatus);
     var frame = {
       type: "ui_event",
       action: name,
@@ -415,12 +2824,14 @@
         request_generation: requestState.generation,
       };
     }
+    var device = detectDeviceCapabilities();
     send({
       type: "register_ui",
       token: token,
-      capabilities: ["render", "stream"],
+      capabilities: ["render", "stream", "voice"],
       session_id: "ui-" + Date.now(),
-      device: detectDeviceCapabilities(),
+      device_id: voiceDeviceId,
+      device: device,
       resumed: resumed,
       connection_generation: connectionGeneration,
       resume: resume,
@@ -948,7 +3359,9 @@
     }
     hideSkeleton();
     timelineMode = false;
-    setStatus("");
+    // The committed snapshot is content, not an operation terminal. Keep the
+    // correlated progress owner until its canonical terminal frame arrives;
+    // otherwise a snapshot from one turn can also erase another active task.
     readCanvasFlags();
     syncCanvasToolbar();
     // Keep the named revision read in this atomic commit seam for audit/source
@@ -1024,6 +3437,13 @@
     requestState.acceptedPresentation = candidate.presentationCanonical;
     if (requestState.purpose === "hydration") requestState.hydrationApplied = true;
     requestState.snapshotApplied = true;
+    if (requestState.purpose === "hydration") {
+      // The atomic hydration snapshot is the authoritative completion of a
+      // load_chat request. Retire only that local submission/status owner;
+      // committed result snapshots still wait for their operation terminal.
+      settleHydrationStatus(frame.request_generation);
+    }
+    continueVoiceAfterHydration(frame);
     return continuityDisposition("snapshot_applied");
   }
 
@@ -1123,6 +3543,74 @@
     return frame.chat_id == null || !!(activeChatId && frame.chat_id === activeChatId);
   }
 
+  function operationStatusShowsActivity(frame) {
+    var local = operationSubmissionByGeneration[frame.request_generation];
+    if (local && local.shows_status === false) return false;
+    // load_chat can still emit compatibility work after its atomic snapshot.
+    // That late operation projection is reconciliation state, not visible
+    // activity, because the requested conversation is already restored.
+    return !(frame.action === "load_chat" && requestState
+      && requestState.purpose === "hydration" && requestState.snapshotApplied
+      && frame.request_generation === requestState.generation);
+  }
+
+  function newestActiveOperationStatus() {
+    var active = null;
+    Object.keys(operationStatusById).forEach(function (operationId) {
+      var candidate = operationStatusById[operationId];
+      if (candidate.terminal || !scopedStatusMatches(candidate)
+          || !operationStatusShowsActivity(candidate)) return;
+      if (!active || candidate.updated_at > active.updated_at
+          || (candidate.updated_at === active.updated_at && candidate.sequence > active.sequence)
+          || (candidate.updated_at === active.updated_at && candidate.sequence === active.sequence
+            && candidate.operation_id > active.operation_id)) active = candidate;
+    });
+    return active;
+  }
+
+  function newestVisibleLocalSubmission() {
+    var newest = null;
+    Object.keys(operationSubmissionByGeneration).forEach(function (requestGeneration) {
+      var candidate = operationSubmissionByGeneration[requestGeneration];
+      if (candidate.shows_status === false
+          || (candidate.chat_id != null && candidate.chat_id !== activeChatId)) return;
+      if (!newest || (candidate.status_order || 0) > (newest.status_order || 0)) newest = candidate;
+    });
+    return newest;
+  }
+
+  function restoreActiveStatusOrClear(owners) {
+    if (owners.indexOf(statusOwner) === -1) return;
+    var active = newestActiveOperationStatus();
+    if (active) {
+      setStatus(
+        (active.error && active.error.message) || active.label,
+        true,
+        "operation:" + active.operation_id
+      );
+    } else {
+      var local = newestVisibleLocalSubmission();
+      if (local) {
+        setStatus(
+          local.label,
+          true,
+          "operation-submission:" + local.request_generation
+        );
+      } else setStatus("");
+    }
+  }
+
+  function settleHydrationStatus(requestGeneration) {
+    var owners = ["operation-submission:" + requestGeneration];
+    Object.keys(operationStatusById).forEach(function (operationId) {
+      if (operationStatusById[operationId].request_generation === requestGeneration) {
+        owners.push("operation:" + operationId);
+      }
+    });
+    finishOperationSubmission(requestGeneration);
+    restoreActiveStatusOrClear(owners);
+  }
+
   /** Retain/render one canonical operation projection. */
   function reduceOperationStatus(frame) {
     var flags = {
@@ -1165,8 +3653,25 @@
     var current = operationStatusById[frame.operation_id];
     if (current && (current.terminal || frame.sequence <= current.sequence)) return false;
     operationStatusById[frame.operation_id] = frame;
-    setStatus((frame.error && frame.error.message) || frame.label, !frame.terminal);
+    var visible = (frame.error && frame.error.message) || frame.label;
+    var operationOwner = "operation:" + frame.operation_id;
+    var submissionOwner = "operation-submission:" + frame.request_generation;
+    var localSubmission = operationSubmissionByGeneration[frame.request_generation];
     if (frame.terminal) finishOperationSubmission(frame.request_generation);
+    if (frame.state === "completed") {
+      // Completion is reconciliation state, not user-facing progress. Clear it
+      // only if this operation (or its local submission) still owns the line.
+      // A concurrent operation or unrelated notice must remain visible.
+      restoreActiveStatusOrClear([operationOwner, submissionOwner]);
+    } else if (frame.terminal) {
+      // Failure/cancellation/retry guidance persists, but is settled and must
+      // never look like work is still in progress.
+      setStatus(visible, false, "operation-error:" + frame.operation_id);
+    } else if (operationStatusShowsActivity(frame)
+        && (!localSubmission || localSubmission.shows_status !== false)
+        && !(statusOwner && statusOwner.indexOf("operation-error:") === 0)) {
+      setStatus(visible, true, operationOwner);
+    }
     if (frame.terminal && ["failed", "cancelled", "retryable"].indexOf(frame.state) !== -1) {
       clearTransientOverlay();
     }
@@ -1199,7 +3704,7 @@
     var local = operationSubmissionById[frame.submission_id];
     if (!local) return false;
     finishOperationSubmission(local.request_generation);
-    setStatus(errorMessage(frame), false);
+    setStatus(errorMessage(frame), false, "operation-error:" + frame.submission_id);
     return true;
   }
 
@@ -1273,7 +3778,33 @@
   // ---- incoming messages ----
   function onMessage(ev) {
     var data; try { data = JSON.parse(ev.data); } catch (e) { return; }
+    if (data.type === "voice_transcript"
+        && new TextEncoder().encode(ev.data).length > 12 * 1024) return;
     switch (data.type) {
+      case "voice_control_binding":
+        consumeVoiceControlBinding(data);
+        break;
+      case "composer_state":
+        consumeComposerState(data);
+        break;
+      case "voice_session_state":
+        consumeVoiceSessionState(data);
+        break;
+      case "voice_turn_state":
+        consumeVoiceTurnState(data);
+        break;
+      case "voice_transcript":
+        consumeVoiceTranscript(data, null);
+        break;
+      case "user_message_acked":
+        if (!consumeVoiceMessageAcknowledged(data)
+            && isCanonicalUuid4(data.request_generation)) {
+          finishOperationSubmission(data.request_generation);
+        }
+        break;
+      case "voice_submission_rejected":
+        consumeVoiceSubmissionRejected(data);
+        break;
       case "conversation_commit_ready":
         acceptConversationCommitReady(data);
         break;
@@ -1316,6 +3847,11 @@
         break;
       case "chat_deleted": // chat removed (possibly from another tab)
         if (data.chat_id && data.chat_id === activeChatId) {
+          var deletedVoiceFence = currentVoiceFence();
+          voiceRecoverySuppressed = true;
+          teardownVoiceMedia(true);
+          bestEffortEndVoice(deletedVoiceFence);
+          setVoiceFeedback("ended", "chat_context_unavailable", "Voice ended because this chat is no longer available.", true);
           clearActiveChatLocator("confirmed_deletion", data.chat_id);
           activeChatId = null; timelineMode = false;
           setHTML(canvas, "");
@@ -1324,6 +3860,14 @@
         }
         break;
       case "auth_required": // recoverable WS auth failure
+        if (currentVoiceFence() || voiceActivation) {
+          voiceRecoverySuppressed = true;
+          teardownVoiceMedia(true);
+          clearPendingVoiceSubmissions();
+          clearVoiceBindingRenewal();
+          voiceBinding = null;
+          setVoiceFeedback("ended", "auth_expired", null, true);
+        }
         if (!authRetried) {
           authRetried = true;
           refreshToken(true, function (ok) {
@@ -1375,6 +3919,9 @@
         break;
       case "chat_status":
         if (!scopedStatusMatches(data)) break;
+        var chatStatusOwner = data.request_generation
+          ? "operation-submission:" + data.request_generation
+          : "chat-status";
         // A turn that ends with no canvas output (text-only answer, error,
         // cancellation) must still clear the query-start skeleton.
         if (data.status === "done" || data.status === "idle") {
@@ -1388,18 +3935,31 @@
           // Background dispatch ack (055): status text only — never the turn
           // lock (no skeleton), so the user can keep chatting or switch chats.
           hideSkeleton();
-          setStatus("Running in background…");
+          setStatus(
+            "Running in background…",
+            true,
+            chatStatusOwner
+          );
           break;
         }
-        setStatus({ idle: "", thinking: "Thinking…", executing: "Working…", done: "" }[data.status] || "");
+        var chatStatusLabel = { idle: "", thinking: "Thinking…", executing: "Working…", done: "" }[data.status] || "";
+        if (chatStatusLabel) {
+          setStatus(
+            chatStatusLabel,
+            true,
+            chatStatusOwner
+          );
+        } else restoreActiveStatusOrClear([chatStatusOwner]);
         break;
       case "chat_step":
         if (scopedStatusMatches(data)) renderStep(data.step);
         break;
       case "chat_created":
+        if (correlatedVoiceChatCreated(data)) break;
         if (data.payload && isCanonicalUuid4(data.payload.chat_id)) {
           persistActiveChatLocator(data.payload.chat_id);
           activeChatId = data.payload.chat_id;
+          syncVoiceVisibleChat(activeChatId);
           if (requestState && !requestState.chatId) requestState.chatId = activeChatId;
         }
         break;
@@ -1409,7 +3969,15 @@
         // chat_loaded + ui_render pair; the atomic snapshot must follow.
         if (data.chat && isCanonicalUuid4(data.chat.id)) {
           if (!activeChatId) selectActiveChat(data.chat.id, "hydration");
-          if (data.chat.id === activeChatId) setStatus("Restoring conversation…");
+          // A compatibility ack may race behind the authoritative snapshot.
+          // Never resurrect hydration progress once that snapshot committed.
+          if (data.chat.id === activeChatId && requestState && !requestState.snapshotApplied) {
+            setStatus(
+              "Restoring conversation…",
+              true,
+              "operation-submission:" + requestState.generation
+            );
+          }
         }
         break;
       case "user_preferences":
@@ -1613,6 +4181,13 @@
   // (it replies chat_created, which sets activeChatId).
   var newChatBtn = document.getElementById("astral-newchat-btn");
   if (newChatBtn) newChatBtn.addEventListener("click", function () {
+    if (voiceActivation) {
+      teardownVoiceMedia(false);
+      setVoiceFeedback("off", "ready", null, false);
+    } else if (currentVoiceFence()) {
+      pauseVoiceCaptureForChatTransition();
+      setVoiceFeedback("connecting", "chat_context_unavailable", "Creating the new voice chat context…", true);
+    }
     clearActiveChatLocator("explicit_new_chat", activeChatId);
     activeChatId = null;
     timelineMode = false;
@@ -1635,6 +4210,12 @@
   document.addEventListener("click", function (event) {
     var link = event.target.closest && event.target.closest('a[href^="/auth/logout"]');
     if (link) {
+      var voiceFence = currentVoiceFence();
+      voiceRecoverySuppressed = true;
+      clearVoiceBindingRenewal();
+      teardownVoiceMedia(true);
+      clearPendingVoiceSubmissions();
+      bestEffortEndVoice(voiceFence);
       // Clear credentials before navigation. A Keycloak end-session redirect
       // leaves this tab's sessionStorage alive, so retaining TOKEN_KEY could
       // register the next account's WebSocket as the previous principal.
@@ -2605,6 +5186,13 @@
 
   // ---- connection lifecycle ----
   function connect() {
+    var preserveVoiceControls = !!voiceRecoverableFence() || !!voicePendingEndFence;
+    voiceBinding = null;
+    voiceComposer = null;
+    voiceComposerRevision = -1;
+    voiceTakeover = null;
+    clearVoiceBindingRenewal();
+    if (voiceControlsEl && !preserveVoiceControls) voiceControlsEl.replaceChildren();
     connectionGeneration = randomUuid4();
     ws = new WebSocket(WS_URL);
     ws.onopen = function () {
@@ -2612,17 +5200,27 @@
       // resumed: firstConnect ? serverResumed : true
       sendRegistration(firstConnect ? serverResumed : true);
       firstConnect = false;
-      action("get_history", {});
+      // Startup/reconnect metadata is retained and reconciled like every other
+      // operation, but it is not user work and must not flash a global spinner.
+      action("get_history", {}, false);
       // Re-attach to still-running background tasks: watch_task re-registers
       // this socket as a watcher and answers task_completed immediately when
       // the task finished while the socket was down.
-      for (var tid in bgTaskChips) action("watch_task", { task_id: tid });
+      for (var tid in bgTaskChips) action("watch_task", { task_id: tid }, false);
     };
     ws.onmessage = onMessage;
     ws.onerror = function () { try { ws.close(); } catch (e) {} };
     ws.onclose = function () {
       operationSubmissionByGeneration = Object.create(null);
       operationSubmissionById = Object.create(null);
+      clearVoiceBindingRenewal();
+      voiceBinding = null;
+      if (voiceRecoverableFence() && document.visibilityState !== "hidden") {
+        if (!beginVoiceRecovery("network_interrupted")) suspendVoiceForNetworkLoss();
+      } else if (voiceActivation) {
+        teardownVoiceMedia(false);
+        setVoiceFeedback("reconnecting", "network_interrupted", null, true);
+      }
       setStatus("Disconnected"); attempts++;
       hideSkeleton(); // the in-flight turn died with the socket
       clearTransientOverlay(); // old connection/request previews are disposable

@@ -4,6 +4,7 @@ import com.personalailabs.astraldeep.app.rest.AstralRest
 import com.personalailabs.astraldeep.app.transport.ConnectionState
 import com.personalailabs.astraldeep.app.transport.LocalSubmission
 import com.personalailabs.astraldeep.app.transport.OrchestratorClient
+import com.personalailabs.astraldeep.app.transport.QueuedSubmissionFailure
 import com.personalailabs.astraldeep.app.ui.AppViewModel
 import com.personalailabs.astraldeep.app.ui.UiState
 import com.personalailabs.astraldeep.core.protocol.Inbound
@@ -14,6 +15,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -29,10 +31,12 @@ class StatusLifecycleTest {
     private fun operation(
         state: String,
         sequence: ULong,
+        operationId: String = OPERATION,
         connection: String = CONNECTION,
         request: String = REQUEST,
         chat: String? = CHAT,
         action: String = "curated_example",
+        updatedAt: String = "2026-07-16T12:00:00Z",
     ): Inbound.OperationStatus {
         val terminal = state in setOf("completed", "failed", "cancelled", "retryable")
         val error =
@@ -42,7 +46,7 @@ class StatusLifecycleTest {
                 null
             }
         return Inbound.OperationStatus(
-            operationId = OPERATION,
+            operationId = operationId,
             action = action,
             surface = "chat",
             chatId = chat,
@@ -56,7 +60,7 @@ class StatusLifecycleTest {
             retryable = state == "retryable",
             error = error,
             retryAfterMs = if (state == "retryable") 500UL else null,
-            updatedAt = "2026-07-16T12:00:00Z",
+            updatedAt = updatedAt,
         )
     }
 
@@ -105,7 +109,9 @@ class StatusLifecycleTest {
         assertEquals(1UL, ui.operationStatuses.getValue(OPERATION).sequence)
 
         val terminal = vm.reduce(ui, operation("failed", 2UL))
-        assertEquals("Safe terminal message", terminal.statusText)
+        assertNull(terminal.statusText)
+        assertNull(terminal.workingStatusText)
+        assertEquals("Safe terminal message (operation_failed)", terminal.banner)
         assertEquals("failed", terminal.operationStatuses.getValue(OPERATION).state)
 
         assertEquals(terminal, vm.reduce(terminal, operation("completed", 3UL)))
@@ -137,6 +143,8 @@ class StatusLifecycleTest {
         val local = submitting.pendingSubmissions.getValue(REQUEST)
         assertNull(submitting.activeChatId)
         assertEquals("Submitting…", submitting.statusText)
+        assertTrue(submitting.hasActiveWork)
+        assertEquals("Submitting…", submitting.workingStatusText)
         assertEquals(SUBMISSION, local.submissionId)
         val frame = Json.parseToJsonElement(client.pendingFrames().single()).jsonObject
         assertEquals(SUBMISSION, frame.getValue("submission_id").jsonPrimitive.content)
@@ -171,7 +179,7 @@ class StatusLifecycleTest {
     }
 
     @Test
-    fun completed_terminal_keeps_its_visible_canonical_label() {
+    fun completed_terminal_is_retained_without_idle_status_residue() {
         val base =
             UiState(
                 activeChatId = CHAT,
@@ -179,8 +187,133 @@ class StatusLifecycleTest {
                 requestGeneration = REQUEST,
             )
         val completed = vm.reduce(base, operation("completed", 1UL))
-        assertEquals("Completed", completed.statusText)
+        assertFalse(completed.hasActiveWork)
+        assertNull(completed.statusText)
+        assertNull(completed.workingStatusText)
         assertNull(completed.operationStatuses.getValue(OPERATION).error)
+    }
+
+    @Test
+    fun chat_operation_spinner_exists_only_until_the_terminal_frame() {
+        val base =
+            UiState(
+                activeChatId = CHAT,
+                connectionGeneration = CONNECTION,
+                requestGeneration = REQUEST,
+                turnActive = true,
+                pendingReplace = true,
+                statusText = "Submitting…",
+                stepTrail = listOf("• tool"),
+            )
+        val running = vm.reduce(base, operation("running", 1UL, action = "chat_message"))
+        assertTrue(running.turnActive)
+        assertEquals("Running", running.workingStatusText)
+
+        val completed = vm.reduce(running, operation("completed", 2UL, action = "chat_message"))
+        assertFalse(completed.turnActive)
+        assertFalse(completed.pendingReplace)
+        assertNull(completed.statusText)
+        assertNull(completed.workingStatusText)
+        assertTrue(completed.stepTrail.isEmpty())
+    }
+
+    @Test
+    fun failed_terminal_uses_a_prominent_banner_without_a_spinner() {
+        val base =
+            UiState(
+                activeChatId = CHAT,
+                connectionGeneration = CONNECTION,
+                requestGeneration = REQUEST,
+                turnActive = true,
+                pendingReplace = true,
+            )
+        val failed = vm.reduce(base, operation("failed", 1UL, action = "chat_message"))
+        assertFalse(failed.turnActive)
+        assertNull(failed.statusText)
+        assertNull(failed.workingStatusText)
+        assertEquals("Safe terminal message (operation_failed)", failed.banner)
+        assertEquals("error", failed.bannerKind)
+    }
+
+    @Test
+    fun one_terminal_success_does_not_clear_a_different_active_operation() {
+        val firstPending =
+            vm.projectLocalSubmission(
+                UiState(connectionGeneration = CONNECTION),
+                localSubmission(request = REQUEST, submission = SUBMISSION),
+            )
+        val pending =
+            vm.projectLocalSubmission(
+                firstPending,
+                localSubmission(request = OTHER, submission = OTHER),
+            )
+        val firstActive =
+            vm.reduce(
+                pending,
+                operation("accepted", 0UL, request = REQUEST, chat = null),
+            )
+        val bothActive =
+            vm.reduce(
+                firstActive,
+                operation(
+                    "running",
+                    0UL,
+                    operationId = FOREIGN,
+                    request = OTHER,
+                    chat = null,
+                    updatedAt = "2026-07-16T12:00:01Z",
+                ),
+            )
+        assertEquals("Running", bothActive.workingStatusText)
+        assertTrue(bothActive.hasActiveWork)
+
+        val oneCompleted =
+            vm.reduce(
+                bothActive,
+                operation(
+                    "completed",
+                    1UL,
+                    operationId = FOREIGN,
+                    request = OTHER,
+                    chat = null,
+                    updatedAt = "2026-07-16T12:00:02Z",
+                ),
+            )
+        assertTrue(oneCompleted.hasActiveWork)
+        assertEquals("Accepted", oneCompleted.workingStatusText)
+        assertEquals(setOf(REQUEST), oneCompleted.pendingSubmissions.keys)
+
+        val allCompleted =
+            vm.reduce(
+                oneCompleted,
+                operation("completed", 1UL, request = REQUEST, chat = null),
+            )
+        assertFalse(allCompleted.hasActiveWork)
+        assertNull(allCompleted.workingStatusText)
+    }
+
+    @Test
+    fun terminal_success_falls_back_to_a_different_local_submission() {
+        val firstPending =
+            vm.projectLocalSubmission(
+                UiState(connectionGeneration = CONNECTION),
+                localSubmission(request = REQUEST, submission = SUBMISSION),
+            )
+        val pending =
+            vm.projectLocalSubmission(
+                firstPending,
+                localSubmission(request = OTHER, submission = OTHER),
+            )
+
+        val firstCompleted =
+            vm.reduce(
+                pending,
+                operation("completed", 1UL, request = REQUEST, chat = null),
+            )
+
+        assertEquals(setOf(OTHER), firstCompleted.pendingSubmissions.keys)
+        assertTrue(firstCompleted.hasActiveWork)
+        assertEquals("Submitting…", firstCompleted.workingStatusText)
     }
 
     @Test
@@ -192,11 +325,33 @@ class StatusLifecycleTest {
             )
         val completed = vm.reduce(pending, operation("completed", 1UL, chat = null))
         assertTrue(completed.pendingSubmissions.isEmpty())
-        assertEquals("Completed", completed.statusText)
+        assertNull(completed.statusText)
+        assertNull(completed.workingStatusText)
 
         val disconnected = vm.reduceConnectionState(pending, ConnectionState.Disconnected)
         assertTrue(disconnected.pendingSubmissions.isEmpty())
         assertNull(disconnected.statusText)
+    }
+
+    @Test
+    fun exact_offline_chat_drop_stops_optimistic_work_and_keeps_the_error_prominent() {
+        val submission = localSubmission(action = "chat_message", chat = CHAT)
+        val active =
+            vm.projectLocalSubmission(
+                vm.armTurn(UiState(activeChatId = CHAT)),
+                submission,
+            )
+        val failed =
+            vm.reduceQueuedFailure(
+                active,
+                QueuedSubmissionFailure(submission, "offline queue full"),
+            )
+
+        assertFalse(failed.turnActive)
+        assertFalse(failed.hasActiveWork)
+        assertNull(failed.workingStatusText)
+        assertEquals("Not sent while offline: chat_message (offline queue full)", failed.banner)
+        assertEquals("error", failed.bannerKind)
     }
 
     @Test
@@ -218,10 +373,16 @@ class StatusLifecycleTest {
         val settled = vm.reduce(pending, refusal)
 
         assertEquals(setOf(OTHER), settled.pendingSubmissions.keys)
-        assertEquals("Try again shortly.", settled.statusText)
+        assertEquals("Submitting…", settled.statusText)
+        assertTrue(settled.hasActiveWork)
+        assertEquals("Submitting…", settled.workingStatusText)
         assertEquals("Try again shortly. (capacity_exceeded)", settled.banner)
         assertEquals(pending, vm.reduce(pending, refusal.copy(submissionId = FOREIGN)))
-        assertTrue(vm.reduce(settled, refusal.copy(submissionId = OTHER)).pendingSubmissions.isEmpty())
+        val allSettled = vm.reduce(settled, refusal.copy(submissionId = OTHER))
+        assertTrue(allSettled.pendingSubmissions.isEmpty())
+        assertFalse(allSettled.hasActiveWork)
+        assertNull(allSettled.workingStatusText)
+        assertEquals("Try again shortly. (capacity_exceeded)", allSettled.banner)
     }
 
     @Test

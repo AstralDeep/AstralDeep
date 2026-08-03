@@ -1,10 +1,9 @@
 package com.personalailabs.astraldeep.app.ui
 
+import android.Manifest
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -54,7 +53,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -67,7 +71,14 @@ import com.personalailabs.astraldeep.app.render.CanvasChrome
 import com.personalailabs.astraldeep.app.render.CanvasHost
 import com.personalailabs.astraldeep.app.render.MarkdownText
 import com.personalailabs.astraldeep.app.render.Renderer
+import com.personalailabs.astraldeep.app.transport.markMicrophonePermissionRequested
+import com.personalailabs.astraldeep.app.transport.RuntimeVoiceCapability
+import com.personalailabs.astraldeep.app.transport.runtimeVoiceCapability
 import com.personalailabs.astraldeep.app.ui.theme.AstralColors
+import com.personalailabs.astraldeep.app.voice.VoiceMediaCapability
+import com.personalailabs.astraldeep.app.voice.VoiceTerminalNotice
+import com.personalailabs.astraldeep.app.voice.VoiceUiState
+import com.personalailabs.astraldeep.core.protocol.VoiceControl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -91,10 +102,11 @@ fun AdaptiveShell(
     renderer: Renderer,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val voice by vm.voiceState.collectAsStateWithLifecycle()
     val width = currentWindowAdaptiveInfo().windowSizeClass.windowWidthSizeClass
     when (layoutModeFor(width)) {
-        LayoutMode.Stacked -> StackedShell(state, renderer, vm)
-        LayoutMode.Split -> SplitShell(state, renderer, vm)
+        LayoutMode.Stacked -> StackedShell(state, voice, renderer, vm)
+        LayoutMode.Split -> SplitShell(state, voice, renderer, vm)
     }
 }
 
@@ -107,6 +119,7 @@ fun AdaptiveShell(
 @Composable
 private fun StackedShell(
     state: UiState,
+    voice: VoiceUiState,
     renderer: Renderer,
     vm: AppViewModel,
 ) {
@@ -119,10 +132,12 @@ private fun StackedShell(
             modifier = Modifier.fillMaxWidth().weight(1f),
         )
         if (state.turnActive) StepTrail(state.stepTrail)
-        MessagesPanel(turns = state.visibleTurns, statusText = state.statusText, renderer = renderer)
+        MessagesPanel(turns = state.visibleTurns, statusText = state.workingStatusText, renderer = renderer)
         InputBar(
             staged = state.staged,
             readOnly = state.mutationsLocked,
+            voice = voice,
+            onVoiceControl = vm::invokeVoiceControl,
             onSend = vm::sendChat,
             onStageFile = vm::stageAttachment,
             onRemoveAttachment = vm::removeAttachment,
@@ -138,6 +153,7 @@ private fun StackedShell(
 @Composable
 private fun SplitShell(
     state: UiState,
+    voice: VoiceUiState,
     renderer: Renderer,
     vm: AppViewModel,
 ) {
@@ -149,6 +165,8 @@ private fun SplitShell(
             InputBar(
                 staged = state.staged,
                 readOnly = state.mutationsLocked,
+                voice = voice,
+                onVoiceControl = vm::invokeVoiceControl,
                 onSend = vm::sendChat,
                 onStageFile = vm::stageAttachment,
                 onRemoveAttachment = vm::removeAttachment,
@@ -189,7 +207,7 @@ private fun CanvasArea(
                 label = state.canvasHistory.getOrNull(state.viewingIndex ?: -1)?.label,
                 onBackToLive = onBackToLive,
             )
-        } else if (state.turnActive && !state.showSkeleton) {
+        } else if (state.hasActiveWork && !state.showSkeleton) {
             WorkingBar()
         }
 
@@ -596,7 +614,7 @@ private fun ChatBubble(
 }
 
 // ---------------------------------------------------------------------------
-// Input bar: mic (STT) + attachment chips + text field + paperclip + send
+// Input bar: server-owned conversation controls + typed fallback + attachments
 // ---------------------------------------------------------------------------
 
 /** Model reasoning shown in the chat window as a collapsed, expandable snippet. */
@@ -631,9 +649,11 @@ private fun ReasoningSnippet(text: String) {
 }
 
 @Composable
-private fun InputBar(
+internal fun InputBar(
     staged: List<StagedAttachment>,
     readOnly: Boolean,
+    voice: VoiceUiState,
+    onVoiceControl: (VoiceControl, VoiceMediaCapability) -> Unit,
     onSend: (String) -> Unit,
     onStageFile: (String, String?, ByteArray) -> Unit,
     onRemoveAttachment: (Long) -> Unit,
@@ -643,12 +663,14 @@ private fun InputBar(
     var attachMenuOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var permissionControl by remember { mutableStateOf<VoiceControl?>(null) }
 
-    val micLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
-            if (!spoken.isNullOrBlank()) {
-                input = if (input.isBlank()) spoken else "$input $spoken"
+    val microphonePermission =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            val control = permissionControl
+            permissionControl = null
+            if (control != null) {
+                onVoiceControl(control, runtimeVoiceCapability(context).toVoiceMediaCapability())
             }
         }
     val filePicker =
@@ -662,13 +684,16 @@ private fun InputBar(
             }
         }
 
-    fun launchMic() {
-        val intent =
-            Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your message")
-            }
-        runCatching { micLauncher.launch(intent) }
+    fun invokeVoice(control: VoiceControl) {
+        val capability = runtimeVoiceCapability(context)
+        val startsSession = control.action in setOf("voice_session_start", "voice_session_takeover")
+        if (startsSession && capability.hasMicrophone && capability.microphonePermission == "not_determined") {
+            permissionControl = control
+            markMicrophonePermissionRequested(context)
+            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            onVoiceControl(control, capability.toVoiceMediaCapability())
+        }
     }
 
     fun doSend() {
@@ -692,16 +717,27 @@ private fun InputBar(
                 AttachmentChips(staged, onRemoveAttachment)
                 Spacer(Modifier.height(6.dp))
             }
+            if (voice.phase != "off" || voice.message != null || voice.transcriptPreview != null) {
+                VoiceFeedback(voice)
+                Spacer(Modifier.height(4.dp))
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                GlyphButton(iconRes = R.drawable.ic_mic, contentDescription = "Voice input", enabled = !readOnly, onClick = ::launchMic)
+                voice.composer?.controls.orEmpty().filter { it.visible }.forEach { control ->
+                    VoiceControlButton(
+                        control = control,
+                        phase = voice.phase,
+                        enabled = !readOnly && control.enabled,
+                        onClick = { invokeVoice(control) },
+                    )
+                }
                 OutlinedTextField(
                     value = input,
                     onValueChange = { input = it },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).testTag("chat-input"),
                     enabled = !readOnly,
                     placeholder = { Text("Message AstralDeep…") },
                     maxLines = 4,
@@ -734,6 +770,151 @@ private fun InputBar(
                 SendButton(enabled = !readOnly && (input.isNotBlank() || staged.any { it.state == "ready" }), onClick = ::doSend)
             }
         }
+    }
+}
+
+private fun RuntimeVoiceCapability.toVoiceMediaCapability(): VoiceMediaCapability =
+    VoiceMediaCapability(
+        hasMicrophone = hasMicrophone,
+        hasAudioOutput = hasAudioOutput,
+        microphonePermission = microphonePermission,
+        fullDuplex = fullDuplex,
+    )
+
+@Composable
+internal fun VoiceFeedback(voice: VoiceUiState) {
+    voice.terminalNotice?.let {
+        VoiceTerminalNoticeCard(it)
+        return
+    }
+    val text = voice.transcriptPreview ?: voice.message ?: return
+    val error = voice.phase == "error" || voice.reason in setOf("permission_denied", "permission_restricted")
+    Text(
+        text = text,
+        color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 12.sp,
+        maxLines = 2,
+        modifier = Modifier.padding(horizontal = 8.dp).testTag("voice-feedback"),
+    )
+}
+
+@Composable
+private fun VoiceTerminalNoticeCard(notice: VoiceTerminalNotice) {
+    val prominentWarning = notice.isRequestFailure || notice.speechUnavailable
+    val containerColor =
+        if (prominentWarning) {
+            MaterialTheme.colorScheme.errorContainer
+        } else {
+            MaterialTheme.colorScheme.tertiaryContainer
+        }
+    val contentColor =
+        if (prominentWarning) {
+            MaterialTheme.colorScheme.onErrorContainer
+        } else {
+            MaterialTheme.colorScheme.onTertiaryContainer
+        }
+    val marker = if (prominentWarning) "!" else "i"
+    Surface(
+        color = containerColor,
+        contentColor = contentColor,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(2.dp, contentColor),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp)
+                .testTag("voice-terminal-notice")
+                .semantics(mergeDescendants = true) {
+                    liveRegion = LiveRegionMode.Assertive
+                    stateDescription = notice.accessibilityText
+                },
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Surface(
+                color = Color.Transparent,
+                contentColor = contentColor,
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(2.dp, contentColor),
+                modifier = Modifier.size(30.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = marker,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(
+                    text = notice.title,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                notice.serverMessage?.takeIf { it.isNotBlank() }?.let { safeMessage ->
+                    Text(
+                        text = safeMessage,
+                        fontSize = 13.sp,
+                    )
+                }
+                Text(
+                    text = notice.guidance,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun VoiceControlButton(
+    control: VoiceControl,
+    phase: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val icon =
+        when (control.action) {
+            "voice_session_end", "voice_speech_stop" -> R.drawable.ic_stop
+            "voice_speech_mute_set" -> R.drawable.ic_volume
+            "voice_visible_chat_update" -> R.drawable.ic_chat
+            "voice_sensitive_recap_request" -> R.drawable.ic_sparkle
+            else -> R.drawable.ic_mic
+        }
+    val description =
+        buildString {
+            append(control.label)
+            if (control.busy) append(", busy")
+            else if (control.pressed) append(", on")
+            append(", $phase")
+        }
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier =
+            Modifier
+                .testTag("voice-control-${control.action}")
+                .semantics { stateDescription = description },
+    ) {
+        Icon(
+            painter = painterResource(icon),
+            contentDescription = control.label,
+            tint =
+                when {
+                    !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    control.pressed -> AstralColors.Indigo
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            modifier = Modifier.size(22.dp),
+        )
     }
 }
 

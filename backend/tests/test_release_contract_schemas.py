@@ -44,6 +44,12 @@ SHA256 = "c" * 64
 OTHER_SHA256 = "d" * 64
 THIRD_SHA256 = "e" * 64
 NOW = "2026-07-15T16:00:00Z"
+SPEECH_PROFILE_SHA256 = (
+    "9b857a3d788a5d6c4ff67278eca4a169028fb2e185ccaf0b01961283f629445b"
+)
+PINNED_LIVEKIT_IMAGE_SHA256 = (
+    "3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1"
+)
 
 ANNOTATION_KEYWORDS = {
     "$schema",
@@ -429,7 +435,29 @@ def _staging_environment() -> dict[str, Any]:
         "migrated_schema_revision": "060.004",
         "authentication_posture": "real_keycloak_oidc",
         "database_posture": "representative_postgresql",
-        "worker_paths": ["background", "scheduler"],
+        "worker_paths": ["background", "scheduler", "voice"],
+        "voice_runtime": {
+            "voice_worker_image_reference": (
+                f"ghcr.io/astraldeep/voice-worker@sha256:{OTHER_SHA256}"
+            ),
+            "voice_worker_image_sha256": OTHER_SHA256,
+            "livekit_image_reference": (
+                "livekit/livekit-server:v1.13.5@sha256:"
+                f"{PINNED_LIVEKIT_IMAGE_SHA256}"
+            ),
+            "livekit_image_sha256": PINNED_LIVEKIT_IMAGE_SHA256,
+            "livekit_config_sha256": "f" * 64,
+            "livekit_public_url": "wss://voice.stage-060.astraldeep.invalid",
+            "livekit_turn_domain": "turn.stage-060.astraldeep.invalid",
+            "speech_profile": {
+                "asr_model": "Systran/faster-whisper-large-v3",
+                "tts_model": "speaches-ai/Kokoro-82M-v1.0-ONNX",
+                "voice": "af_heart",
+                "sample_rate_hz": 24000,
+                "inventory_sha256": "2" * 64,
+                "profile_sha256": SPEECH_PROFILE_SHA256,
+            },
+        },
         "macos_personal_agent_host": {
             "supported": False,
             "runtime_contract_versions": [],
@@ -861,6 +889,7 @@ def test_immutable_reference_grammar_rejects_mutable_or_noncanonical_forms(
     [
         ("worker_paths", ["background"]),
         ("worker_paths", ["scheduler"]),
+        ("worker_paths", ["background", "scheduler"]),
         (
             "candidate_image_reference",
             "ghcr.io/astraldeep/astraldeep:latest",
@@ -878,6 +907,38 @@ def test_staging_shape_requires_real_workers_digest_and_nonlocal_clean_endpoint(
     schema = EVIDENCE_SCHEMA["$defs"]["staging_environment"]
     _assert_valid(staging, schema, root=EVIDENCE_SCHEMA)
     staging[field] = value
+    _assert_invalid(staging, schema, root=EVIDENCE_SCHEMA)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("voice_worker_image_reference",), "ghcr.io/astraldeep/voice-worker:latest"),
+        (("livekit_image_reference",), "docker.io/livekit/livekit-server:latest"),
+        (("speech_profile", "asr_model"), "other/asr"),
+        (("speech_profile", "tts_model"), "other/tts"),
+        (("speech_profile", "voice"), "af_alloy"),
+        (("speech_profile", "sample_rate_hz"), 16000),
+        (("speech_profile", "profile_sha256"), "not-a-sha256"),
+    ],
+)
+def test_voice_runtime_shape_is_digest_pinned_and_exact_profile(
+    path: tuple[str, ...], value: Any
+) -> None:
+    staging = _staging_environment()
+    schema = EVIDENCE_SCHEMA["$defs"]["staging_environment"]
+    target = staging["voice_runtime"]
+    for segment in path[:-1]:
+        target = target[segment]
+    target[path[-1]] = value
+    _assert_invalid(staging, schema, root=EVIDENCE_SCHEMA)
+
+
+def test_non_docs_staging_requires_complete_voice_runtime_identity() -> None:
+    schema = EVIDENCE_SCHEMA["$defs"]["staging_environment"]
+    staging = _staging_environment()
+    _assert_valid(staging, schema, root=EVIDENCE_SCHEMA)
+    del staging["voice_runtime"]
     _assert_invalid(staging, schema, root=EVIDENCE_SCHEMA)
 
 
@@ -926,6 +987,20 @@ def test_release_trust_accepts_one_exact_producer_manifest() -> None:
         "gh://AstralDeep/AstralDeep/runs/12345/artifacts/67890"
     )
     _assert_invalid(mutable_artifact, TRUST_SCHEMA)
+
+    normalized = copy.deepcopy(provenance)
+    normalized["source_provenance"] = {
+        "workflow": _workflow("ios-raw-producer"),
+        "runner": _runner("macos"),
+        "artifacts": [_trusted_member()],
+    }
+    _assert_valid(normalized, TRUST_SCHEMA)
+
+    unbounded_source = copy.deepcopy(normalized)
+    unbounded_source["source_provenance"]["artifacts"] = [
+        _trusted_member()
+    ] * 4097
+    _assert_invalid(unbounded_source, TRUST_SCHEMA)
 
 
 @pytest.mark.parametrize(

@@ -299,7 +299,8 @@ async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, mo
     assert isinstance(out, GateRefusal)
     assert "confirmation_required" in _msg(out)
     assert out.render_target == "chat"
-    assert out.response.ui_components == [card] and out.render_components == [card]
+    assert out.response.ui_components is None
+    assert out.render_components == [card]
     ev.assert_called_once()
 
 

@@ -1,3 +1,4 @@
+import AVFoundation
 import AstralCore
 import AuthenticationServices
 // Feature 051 — the iOS/macOS app model: a faithful port of the Android
@@ -145,6 +146,8 @@ final class AppModel: NSObject {
         let clientId = AstralConfig.iosClientId
     #endif
     let redirectURI = AstralConfig.redirectURI
+    let voiceDeviceId: String
+    @ObservationIgnored let voice = AppleVoiceSessionController()
 
     // MARK: observable state (mirrors Android UiState)
 
@@ -230,6 +233,24 @@ final class AppModel: NSObject {
     var isViewingHistory: Bool { viewingIndex != nil }
     var showSkeleton: Bool { pendingReplace && !liveOpsThisTurn && viewingIndex == nil }
     var mutationsLocked: Bool { timelineReadOnly }
+    /// `statusText` also carries occasional non-progress notices.  Views must
+    /// only pair it with an indeterminate indicator while a locally correlated
+    /// operation or chat turn is genuinely still active.
+    var statusShowsActivity: Bool {
+        guard statusText != nil else { return false }
+        if localOperationSubmissions.values.contains(where: localSubmissionShowsActivity) {
+            return true
+        }
+        var pendingGenerations = pendingChatRequestGenerations.union(
+            pendingSurfaceRequestGenerations)
+        if let currentRequest = continuity.requestGeneration {
+            pendingGenerations.insert(currentRequest)
+        }
+        let acceptedOperationIsActive = operationStatuses.values.contains {
+            !$0.terminal && pendingGenerations.contains($0.requestGeneration)
+        }
+        return acceptedOperationIsActive || turnActive || asyncDetached
+    }
 
     // MARK: session plumbing (never read by views — not observation-tracked)
 
@@ -282,6 +303,10 @@ final class AppModel: NSObject {
     /// Test seam: observes every outbound WS frame text (nil in production).
     @ObservationIgnored var outboundTap: ((String) -> Void)?
 
+    /// Test-only override for the dedicated, current-connection voice path.
+    /// Production always falls through to `WSClient.sendCurrentConnectionVoice`.
+    @ObservationIgnored var currentConnectionVoiceSendOverride: ((String) -> Void)?
+
     var serverBase: URL {
         URL(string: serverBaseText) ?? URL(string: AstralConfig.serverBaseURL)!
     }
@@ -306,6 +331,18 @@ final class AppModel: NSObject {
     init(conversationResumeStore: ConversationResumeStore) {
         self.conversationResumeStore = conversationResumeStore
         let defaults = UserDefaults.standard
+        let voiceDeviceKey = "astraldeep.voice.device-id.v1"
+        if let stored = defaults.string(forKey: voiceDeviceKey),
+            let parsed = UUID(uuidString: stored), parsed.uuidString.lowercased() == stored,
+            stored[stored.index(stored.startIndex, offsetBy: 14)] == "4",
+            "89ab".contains(stored[stored.index(stored.startIndex, offsetBy: 19)])
+        {
+            voiceDeviceId = stored
+        } else {
+            let fresh = UUID().uuidString.lowercased()
+            defaults.set(fresh, forKey: voiceDeviceKey)
+            voiceDeviceId = fresh
+        }
         var storedBase = defaults.string(forKey: "serverBase") ?? ""
         var storedAuthority = defaults.string(forKey: "authority") ?? ""
         // The override keys hold USER edits only. Earlier builds seeded the
@@ -325,6 +362,12 @@ final class AppModel: NSObject {
         serverBaseText = storedBase.isEmpty ? AstralConfig.serverBaseURL : storedBase
         authorityText = storedAuthority.isEmpty ? AstralConfig.keycloakAuthority : storedAuthority
         super.init()
+        voice.setFrameSender { [weak self] text in
+            self?.sendVoiceWire(text) ?? false
+        }
+        voice.setChatAdopter { [weak self] chatId in
+            self?.adoptChat(chatId)
+        }
         #if os(iOS)
             WatchOverrideSync.shared.activate()
             if !storedBase.isEmpty { WatchOverrideSync.shared.push(serverBaseText) }
@@ -368,6 +411,15 @@ final class AppModel: NSObject {
                     requestGeneration: request)
             }
         }
+        #if os(macOS)
+            let voiceDeviceKind = "macos"
+        #else
+            let voiceDeviceKind = "ios"
+        #endif
+        voice.installUIConnection(
+            token: token, serverBase: serverBase, deviceId: voiceDeviceId,
+            deviceKind: voiceDeviceKind, connectionGeneration: connection,
+            visibleChatId: activeChatId)
         return Outbound.registerUI(
             token: token,
             sessionId: activeChatId,
@@ -465,12 +517,13 @@ final class AppModel: NSObject {
     }
 
     private func exchange(code: String, verifier: String, oidc: OIDCConfig) async {
-        var request = URLRequest(url: oidc.tokenEndpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data(oidc.tokenRequestBody(code: code, verifier: verifier).utf8)
+        let request = NoStoreHTTP.request(
+            url: oidc.tokenEndpoint,
+            method: "POST",
+            body: Data(oidc.tokenRequestBody(code: code, verifier: verifier).utf8),
+            contentType: "application/x-www-form-urlencoded")
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await NoStoreHTTP.session.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard status == 200, let json = try? JSONValue.parse(data),
                 let set = TokenSet(json: json)
@@ -592,6 +645,7 @@ final class AppModel: NSObject {
         tokens = nil
         conversationAccount = nil
         signedIn = false
+        voice.close()
         continuity.clear()
         resetChatState()
         clearPendingOperationSubmissions()
@@ -625,6 +679,7 @@ final class AppModel: NSObject {
         statusLifecycle.clear()
         operationStatuses = [:]
         agentLifecycles = [:]
+        voice.close()
     }
 
     // MARK: WS
@@ -634,12 +689,26 @@ final class AppModel: NSObject {
     private var device: DeviceDescriptor {
         #if os(macOS)
             let (w, h) = lastReportedViewport ?? (1280, 800)
-            return .macos(viewportWidth: w, viewportHeight: h)
+            var descriptor = DeviceDescriptor.macos(viewportWidth: w, viewportHeight: h)
         #else
             let size = UIScreen.main.bounds.size
             let (w, h) = lastReportedViewport ?? (Int(size.width), Int(size.height))
-            return .ios(viewportWidth: w, viewportHeight: h)
+            var descriptor = DeviceDescriptor.ios(viewportWidth: w, viewportHeight: h)
         #endif
+        descriptor.deviceId = voiceDeviceId
+        #if os(macOS)
+            let audioAvailability = AppleVoicePermission.macOSHardwareAvailability(
+                AppleVoicePermission.currentAudioRouteSnapshot())
+            descriptor.hasMicrophone = audioAvailability.hasMicrophone
+            descriptor.hasAudioOutput = audioAvailability.hasAudioOutput
+        #else
+            descriptor.hasMicrophone = AVCaptureDevice.default(for: .audio) != nil
+            descriptor.hasAudioOutput = true
+        #endif
+        descriptor.microphonePermission = AppleVoicePermission.status
+        descriptor.fullDuplex = true
+        descriptor.voiceTransport = "livekit"
+        return descriptor
     }
 
     /// FR-002/T030: report viewport changes (rotation, iPad Split View /
@@ -715,6 +784,7 @@ final class AppModel: NSObject {
             }
         case .disconnected:
             connected = false
+            voice.controlTransportDisconnected()
             clearPendingOperationSubmissions()
             turnActive = false
             pendingReplace = false
@@ -724,13 +794,16 @@ final class AppModel: NSObject {
             agentsLoading = false
             historyLoading = false
             auditLoading = false
+            statusText = nil
         case .sendDropped(let total):
             bannerIsError = true
             errorBanner = "Not sent while offline (queue full: \(total) dropped)"
         case .queuedOperationDropped(let replay, let reason):
             localOperationSubmissions.removeValue(forKey: replay.identity.submissionId)
-            if localOperationSubmissions.isEmpty && statusText == "Submitting…" {
-                statusText = nil
+            if statusText == "Submitting…" {
+                statusText =
+                    localOperationSubmissions.values.contains(
+                        where: localSubmissionShowsActivity) ? "Submitting…" : nil
             }
             bannerIsError = true
             errorBanner = "Not sent while offline: \(replay.action) (\(reason))"
@@ -750,6 +823,7 @@ final class AppModel: NSObject {
 
     /// Internal (not private) so XCTests can drive frames through the reducer.
     func handleFrame(_ frame: InboundFrame) {
+        voice.consume(frame)
         if continuity.connectionGeneration != nil,
             ["ui_render", "ui_update", "ui_upsert", "ui_append", "ui_stream_data"]
                 .contains(frame.name)
@@ -989,14 +1063,47 @@ final class AppModel: NSObject {
                 pendingSurfaceRequestGenerations: pendingSurfaceRequestGenerations)
         else { return }
         operationStatuses = statusLifecycle.operations
-        statusText = status.error.objectValue?["message"]?.stringValue ?? status.label
         if status.terminal {
+            let ownsActiveChatTurn = operationOwnsActiveChatTurn(
+                action: status.action,
+                requestGeneration: status.requestGeneration)
             clearLocalOperationSubmission(requestGeneration: status.requestGeneration)
+            if ownsActiveChatTurn {
+                settleActiveChatTurn(
+                    requestGeneration: status.requestGeneration,
+                    discardUncommitted: status.state != "completed")
+            }
+            if let message = status.error.objectValue?["message"]?.stringValue {
+                bannerIsError = true
+                errorBanner = message
+                transientTurns = []
+                transientCanvas = nil
+            }
+            // A terminal success is historical evidence, not live progress.
+            // If another correlated operation is still active, project that
+            // operation; otherwise remove the status row altogether.
+            statusText = latestActiveOperationStatusText()
+        } else {
+            statusText = status.label
         }
-        if status.terminal && ["failed", "cancelled", "retryable"].contains(status.state) {
-            transientTurns = []
-            transientCanvas = nil
+    }
+
+    private func latestActiveOperationStatusText() -> String? {
+        var pendingGenerations = pendingChatRequestGenerations.union(
+            pendingSurfaceRequestGenerations)
+        if let currentRequest = continuity.requestGeneration {
+            pendingGenerations.insert(currentRequest)
         }
+        let active = operationStatuses.values.filter {
+            !$0.terminal && pendingGenerations.contains($0.requestGeneration)
+        }.max {
+            ($0.updatedAt, $0.sequence) < ($1.updatedAt, $1.sequence)
+        }
+        if let active {
+            return active.label
+        }
+        return localOperationSubmissions.values.contains(where: localSubmissionShowsActivity)
+            ? "Submitting…" : nil
     }
 
     private func reduceAgentLifecycle(_ frame: InboundFrame) {
@@ -1011,10 +1118,18 @@ final class AppModel: NSObject {
     @discardableResult
     private func reduceAdmissionRefusal(_ frame: InboundFrame) -> Bool {
         guard let refusal = AdmissionRefusal(frame: frame),
-            localOperationSubmissions.removeValue(forKey: refusal.submissionId) != nil
+            let submission = localOperationSubmissions.removeValue(forKey: refusal.submissionId)
         else { return false }
-        statusText = refusal.message
-        bannerIsError = !refusal.retryable
+        if operationOwnsActiveChatTurn(
+            action: submission.action,
+            requestGeneration: submission.requestGeneration)
+        {
+            settleActiveChatTurn(
+                requestGeneration: submission.requestGeneration,
+                discardUncommitted: true)
+        }
+        statusText = latestActiveOperationStatusText()
+        bannerIsError = true
         errorBanner = refusal.message
         return true
     }
@@ -1361,6 +1476,7 @@ final class AppModel: NSObject {
             _ = conversationResumeStore.save(chatId: chatId, for: account)
         }
         activeChatId = chatId
+        voice.updateVisibleChatLocally(chatId)
         guard let request = pendingCommitRequestGeneration else { return }
         if openConversationRequest(
             chatId: chatId,
@@ -1533,10 +1649,20 @@ final class AppModel: NSObject {
 
     private func reduceError(_ frame: InboundFrame) {
         let code = frame.payload["code"]?.stringValue
+        let safeErrorClasses: Set<String> = [
+            "auth_failed", "model_not_found", "transport_error",
+            "contract_violation", "provider_unavailable", "other",
+        ]
+        let specificCode = frame.payload["error_class"]?.stringValue.flatMap {
+            safeErrorClasses.contains($0) ? $0 : nil
+        }
+        let displayedCode = specificCode ?? code
         let message =
             frame.payload["message"]?.stringValue
             ?? frame.payload["payload"]?["message"]?.stringValue ?? "Something went wrong."
-        errorBanner = (code != nil && code != "internal") ? "\(message) (\(code!))" : message
+        errorBanner =
+            (displayedCode != nil && displayedCode != "internal")
+            ? "\(message) (\(displayedCode!))" : message
         bannerIsError = true
         turnActive = false
         pendingReplace = false
@@ -1581,6 +1707,11 @@ final class AppModel: NSObject {
                 pendingReplace = false
                 liveOpsThisTurn = false
             }
+        case "idle":
+            turnActive = false
+            statusText = nil
+            stepTrail = []
+            asyncDetached = false
         case "thinking", "executing", "fixing", "processing_async":
             turnActive = true
             statusText = label
@@ -1739,6 +1870,7 @@ final class AppModel: NSObject {
 
     private func resetChatState() {
         activeChatId = nil
+        voice.updateVisibleChatLocally(nil)
         turns = []
         canvas = []
         transientTurns = []
@@ -1777,6 +1909,10 @@ final class AppModel: NSObject {
         if exposeStatus { statusText = submission.label }
     }
 
+    private func localSubmissionShowsActivity(_ submission: LocalOperationSubmission) -> Bool {
+        submission.action != "update_device" && submission.action != "chrome_llm_save"
+    }
+
     /// Rebind one exact retained UI event to this connection before its bytes
     /// leave the offline queue.
     @discardableResult
@@ -1805,13 +1941,45 @@ final class AppModel: NSObject {
                 connectionGeneration: connectionGeneration)
         else { return false }
         localOperationSubmissions[submission.submissionId] = submission
-        statusText = submission.label
+        if localSubmissionShowsActivity(submission) { statusText = submission.label }
         return true
     }
 
     private func clearLocalOperationSubmission(requestGeneration: String) {
         localOperationSubmissions = localOperationSubmissions.filter {
             $0.value.requestGeneration != requestGeneration
+        }
+    }
+
+    private func operationOwnsActiveChatTurn(
+        action: String,
+        requestGeneration: String
+    ) -> Bool {
+        action == "chat_message"
+            && (continuity.requestGeneration == requestGeneration
+                || pendingCommitRequestGeneration == requestGeneration)
+    }
+
+    private func settleActiveChatTurn(
+        requestGeneration: String,
+        discardUncommitted: Bool
+    ) {
+        turnActive = false
+        pendingReplace = false
+        liveOpsThisTurn = false
+        stepTrail = []
+        asyncDetached = false
+        // A successful operation status is only lifecycle evidence. The
+        // authoritative conversation_snapshot may follow it, so keep the
+        // visible transient result until that atomic commit replaces it.
+        // Only a definitive failure/refusal is allowed to discard the overlay.
+        if discardUncommitted {
+            pendingCanvas = []
+            transientTurns = []
+            transientCanvas = nil
+            if pendingCommitRequestGeneration == requestGeneration {
+                pendingCommitRequestGeneration = nil
+            }
         }
     }
 
@@ -2103,6 +2271,80 @@ final class AppModel: NSObject {
         Task { await ws?.send(text) }
     }
 
+    /// Voice final transcripts pass through the same conversation fence and
+    /// local operation bookkeeping as typed chat, while retries reuse the
+    /// exact serialized frame and never duplicate the optimistic bubble.
+    @discardableResult
+    func sendVoiceWire(_ text: String) -> Bool {
+        guard signedIn, connected,
+            currentConnectionVoiceSendOverride != nil || ws != nil,
+            VoiceCurrentConnectionFrame(frameText: text) != nil,
+            let frame = InboundFrame.parse(text)
+        else { return false }
+        if frame.name == "ui_event", frame.payload["action"]?.stringValue == "chat_message",
+            let submission = frame.payload["submission_id"]?.stringValue,
+            let request = frame.payload["request_generation"]?.stringValue,
+            let identity = ClientOperationIdentity(
+                submissionId: submission, requestGeneration: request),
+            let chatId = frame.payload["session_id"]?.stringValue
+        {
+            if localOperationSubmissions[submission] == nil {
+                guard
+                    continuity.connectionGeneration == nil
+                        || openConversationRequest(
+                            chatId: chatId, requestGeneration: request, purpose: .commit)
+                else { return false }
+                beginLocalOperationSubmission(
+                    identity: identity, action: "chat_message", surface: "chat",
+                    chatId: chatId)
+                let message = frame.payload["payload"]?["message"]?.stringValue ?? ""
+                if continuity.connectionGeneration == nil {
+                    appendTurn(role: "user", text: message)
+                } else {
+                    transientTurns.append(
+                        ChatTurn(
+                            id: "pending-voice-\(submission)", role: "user",
+                            text: message))
+                }
+                turnActive = true
+                pendingReplace = true
+                pendingCanvas = []
+                liveOpsThisTurn = false
+            }
+        }
+        outboundTap?(text)
+        if let override = currentConnectionVoiceSendOverride {
+            override(text)
+        } else if let ws {
+            Task { _ = await ws.sendCurrentConnectionVoice(text) }
+        }
+        return true
+    }
+
+    func activateVoice() async { await voice.activate() }
+
+    func performVoiceControl(_ action: VoiceControlAction) async {
+        await voice.perform(action)
+    }
+
+    func voiceSceneBecameActive() { voice.sceneBecameActive() }
+
+    func voiceSceneBecameInactive() { voice.sceneBecameInactive() }
+
+    func voiceAudioSessionInterrupted() { voice.audioSessionInterrupted() }
+
+    func voiceAudioSessionInterruptionEnded() { voice.audioSessionInterruptionEnded() }
+
+    func voiceAudioRouteChanged() { voice.audioRouteChanged() }
+
+    func voiceAudioEngineConfigurationChanged() { voice.audioEngineConfigurationChanged() }
+
+    func voiceSessionLocked() { voice.sessionLocked() }
+
+    func voiceSessionUnlocked() { voice.sessionUnlocked() }
+
+    func voiceApplicationWillTerminate() { voice.close() }
+
     // MARK: refine + export (055 US4/US5)
 
     /// 055 US4: component-scoped refine (wire-contract §3). The instruction
@@ -2151,6 +2393,7 @@ final class AppModel: NSObject {
             guard conversationResumeStore.save(chatId: chatId, for: account) else { return }
         }
         activeChatId = chatId
+        voice.updateVisibleChatLocally(chatId)
         let identity = ClientOperationIdentity.fresh()
         let request = identity.requestGeneration
         if continuity.connectionGeneration != nil {

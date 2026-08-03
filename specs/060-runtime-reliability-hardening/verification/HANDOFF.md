@@ -2,10 +2,13 @@
 
 **Recorded**: 2026-07-16/17 (America/New_York). Branch `060-runtime-reliability-hardening`, PR #143.
 
-All **code** deliverables for US8 + Phase-12 authoring are committed and the
-release-tooling CI lane is green. What remains is **live verification** that
-needs a Mac, a staging host, or one-time interactive sign-ins. This file is the
-punch list.
+At the 2026-07-17 merge checkpoint, all **code** deliverables for US8 + Phase-12
+authoring were committed and the release-tooling CI lane was green. The current
+2026-08-01 feature-065 checkout adds uncommitted release-trust hardening and
+reopens T120; the sections explicitly dated 2026-08-01 supersede the older
+activation claims. What remains is **live verification** that needs protected
+configuration, a staging host, native hardware, or interactive sign-ins. This
+file is the punch list.
 
 ---
 
@@ -32,7 +35,7 @@ readiness workflow is active.
 
 ---
 
-## A. Staging matrix — DEFERRED ("won't set up" the staging host, 2026-07-17)
+## A. Staging matrix — DEFERRED (updated 2026-08-01)
 
 **Decision:** the dedicated persistent staging host will not be provisioned
 (cert provider down + team opted out). The `release-readiness` matrix therefore
@@ -41,15 +44,43 @@ T128** are deferred until an external staging host exists. A GitHub-hosted
 runner alone can't host the shared endpoint across the matrix — its runners are
 ephemeral and torn down between jobs, so the Windows/Android/Apple/web producer
 jobs (each on a fresh runner) couldn't reach a stack deployed in `stage-deploy`.
-The `stage-deploy` / `stage-cleanup` jobs now run on `ubuntu-latest` (no
-self-hosted runner) and target an external host at `ASTRAL_STAGING_ENDPOINT`.
+The `stage-deploy` / `stage-cleanup` jobs run on the dedicated
+`[self-hosted, astral-staging]` host and expose the resulting shared namespace
+through the external `ASTRAL_STAGING_ENDPOINT` for the hosted producer runners.
 The local pre-push diagnostic (`scripts/prepare_release_evidence.py`) needs none
 of this and works today.
 
+**Publisher activation is also blocked (2026-08-01).** T120 is open: the live
+`release-publisher` environment has only the requester account as reviewer and
+permits self-review, while the protected publisher requires a distinct reviewer.
+In addition, active ruleset `19078549` forbids deletion of every `refs/tags/v*`
+tag and has no bypass actor, so the required disposable/failure rollback cannot
+remove the strict SemVer tag it creates. The workflow now serializes publisher
+runs, binds the exact current-run approval/deployment, and refuses hidden cleanup
+failure, but it MUST remain inactive until a distinct reviewer plus
+`prevent_self_review` and a safe disposable-tag/immutable-official-tag policy are
+configured and live-proven. The same ruleset currently leaves new `v*` tag
+creation unrestricted; because the deployed v0.3.0 verifier pins only the
+tag-ref workflow identity and not its workflow digest, a repository writer could
+otherwise dispatch changed signer bytes directly at a fresh tag outside the
+publisher. Trusted-only release-signing tag creation (or a verifier/trust
+migration) is therefore a separate required proof. Do not grant a broad GitHub
+Actions ruleset bypass.
+
+**Security correction (2026-08-01):** the historical setup instructions below
+that used durable repository probe, bearer, or shared login secrets are
+superseded and MUST NOT be followed. The protected caller now inherits no
+repository secrets and fails closed unless both `RELEASE_READINESS_ACTIVE=true`
+and `RELEASE_EPHEMERAL_CREDENTIALS_READY=true`. The latter MUST remain unset or
+false until the external credential issuer described below is implemented and
+live-verified. The tracked workflow also contains a literal unconditional
+failure as the first `stage-deploy` step, before runner binding, registry
+access, checkout, or candidate execution. Removing that stop is forbidden
+until every activation item below is complete.
+
 To revisit later: stand up a persistent external Linux host with a public HTTPS
-name (a Cloudflare quick tunnel on that host gives a valid cert with no cert
-provider), set `ASTRAL_STAGING_ENDPOINT`, add the secrets below, and flip
-`RELEASE_READINESS_ACTIVE=true`. Retained setup detail for that day:
+name, configure only non-credential deployment inputs, implement the protected
+request-scoped credential issuer, and complete the activation proof below:
 
 1. **A Linux host** (Docker + Docker Compose v2, ≥4 CPU / 8 GB, outbound HTTPS to
    github.com + ghcr.io). Root or docker-group access.
@@ -60,40 +91,56 @@ provider), set `ASTRAL_STAGING_ENDPOINT`, add the secrets below, and flip
      a service). I can generate the registration token via
      `gh api -X POST repos/AstralDeep/AstralDeep/actions/runners/registration-token`
      and hand it to you if you want.
+   - Add a second, unique host label and change both `stage-deploy` and
+     `stage-cleanup` to require it. Prove that no other runner can satisfy the
+     full label set; the shared `astral-staging` label alone can schedule
+     cleanup on the wrong host.
 3. **A public TLS hostname** that resolves to the runner and terminates HTTPS in
    front of port `${STAGING_BIND_PORT}` (the staging stack binds
    `127.0.0.1:${STAGING_BIND_PORT}`). Any of: a UKY-issued cert + reverse proxy,
    a `*.ai.uky.edu` name, or a Cloudflare Tunnel / Tailscale Funnel. The endpoint
    must contain **no** userinfo/query/fragment and must not be loopback.
    → Give me: that hostname (e.g. `https://astral-staging.ai.uky.edu`).
-4. **Repository secrets** I will set once you provide the values (via `gh secret
-   set`, or you set them in Settings → Secrets → Actions):
+4. **Protected deployment configuration** supplied outside candidate-controlled
+   code and logs:
    - `ASTRAL_STAGING_ENDPOINT` = the public HTTPS URL from step 3
-   - `ASTRAL_STAGING_PROBE_TOKEN` = a bearer token the probe uses for
-     `GET /api/dashboard` on the staged instance
    - `STAGING_POSTGRES_IMAGE`, `STAGING_KEYCLOAK_IMAGE`,
      `STAGING_SCHEMA_BASELINE_IMAGE` = **digest-pinned** images
      (`host/repo@sha256:…`); the schema-baseline is a 057.001 image
-   - `STAGING_RUNTIME_ENV_FILE` = absolute path on the runner to a `chmod 600`
-     env file with the staged app's runtime config (LLM/system creds, Keycloak
-     internal URL, etc.)
-   - `STAGING_DB_USER/PASSWORD/NAME`, `STAGING_KEYCLOAK_DB_USER/PASSWORD/NAME`,
-     `STAGING_KEYCLOAK_ADMIN_USER/PASSWORD`, `STAGING_BIND_PORT`
-   - `ASTRAL_WINDOWS_SMOKE_TOKEN`, `ASTRAL_RELEASE_USERNAME`,
-     `ASTRAL_RELEASE_PASSWORD` (a staging user pre-provisioned with an LLM
-     config so the 054 first-run gate doesn't block the workspace),
-     `ASTRAL_STAGING_ACCESS_TOKEN` (Android short-lived login token)
-5. **Keycloak**: the staging realm import fixture is committed
+   - non-secret endpoint, port, realm, and candidate metadata required to bind
+     the exact run and staging namespace
+   - no durable probe token, access token, password, runtime credential file,
+     or shared producer identity in repository secrets
+5. **External request-scoped issuer** on a separately protected TLS route. It
+   must authenticate GitHub OIDC claims for the exact repository, workflow,
+   run, attempt, job, candidate SHA, and environment; mint a one-use-JTI,
+   narrow-scope, short-TTL, non-refreshable lease; create a distinct just-in-time
+   Keycloak identity or equivalent short bearer for each producer; and support
+   both per-job revoke and cleanup-time `revoke-all`. Candidate-controlled code
+   must not receive the issuer's own authority or any durable staging/provider
+   credential.
+6. **Keycloak**: the staging realm import fixture is committed
    (`backend/tests/fixtures/runtime_reliability_060/staging/keycloak-realm.json`,
-   PKCE, no secrets); only the runtime users/passwords come from the secrets
-   above. If UKY IAM is the realm instead of the bundled Keycloak, give me the
-   realm/issuer URL and I'll wire the staging compose to point at it.
+   PKCE, no secrets). Browser and Apple producers must still exercise real
+   Authorization Code + PKCE with their just-in-time identities.
+7. **Host-side orphan reaper**: install a protected boot-time and periodic
+   service outside the Actions DAG. It must remove only canonical Astral
+   staging namespaces whose run/attempt lease is expired or revoked, call the
+   issuer's idempotent `revoke-all`, destroy namespace data, and emit
+   content-free audit evidence. `if: always()` is not sufficient after manual
+   cancellation, runner loss, or host restart.
+8. **Activation proof**: live-test mint, exact-claim rejection, expiry,
+   one-use replay rejection, per-job revoke, cleanup-time `revoke-all`, manual
+   workflow cancellation, runner-process loss, host restart, stale-lease
+   recovery, and idempotent reaping.
+   Only after that proof may `RELEASE_EPHEMERAL_CREDENTIALS_READY=true` be set;
+   enable `RELEASE_READINESS_ACTIVE=true` separately when the staging topology
+   and protected evidence path are ready.
 
-**Minimum to get started:** the runner host + the public HTTPS hostname. I can
-generate the runner registration token and set every secret from values you
-paste. Once the runner is up and `ASTRAL_STAGING_ENDPOINT` is set, I flip
-`RELEASE_READINESS_ACTIVE=true` (checkpoint 2) and dispatch the first readiness
-run.
+**Minimum to get started:** the external host, public HTTPS hostname, a unique
+runner label, and designated owners for the separately protected OIDC-bound
+issuer and host-side reaper. Do not enable either readiness variable merely
+because the host or endpoint exists.
 
 ---
 

@@ -29,6 +29,144 @@ _ALLOWED_LABELS = frozenset(
         "operation_kind",
         "phase",
         "result_code",
+        "client_kind",
+        "transport",
+        "voice_state",
+        "voice_reason",
+        "cleanup_outcome",
+    }
+)
+
+_VOICE_STATES = frozenset(
+    {
+        "off",
+        "starting",
+        "greeting",
+        "listening",
+        "recognizing",
+        "thinking",
+        "waiting",
+        "speaking",
+        "muted",
+        "suspended",
+        "degraded",
+        "ending",
+        "ended",
+    }
+)
+_VOICE_REASONS = frozenset(
+    {
+        "none",
+        "user_request",
+        "takeover",
+        "idle_expired",
+        "lease_expired",
+        "auth_lost",
+        "chat_unavailable",
+        "capacity",
+        "permission_denied",
+        "device_unavailable",
+        "livekit_unavailable",
+        "worker_unavailable",
+        "speech_unavailable",
+        "upstream_overloaded",
+        "protocol_violation",
+        "media_overrun",
+        "reconnecting",
+        "internal_error",
+    }
+)
+_VOICE_CLIENT_KINDS = frozenset({"web", "windows", "android", "ios", "macos", "watchos"})
+_VOICE_TRANSPORTS = frozenset({"livekit", "watch_bridge"})
+_VOICE_CLEANUP_OUTCOMES = frozenset({"complete", "partial", "timed_out", "not_required"})
+_VOICE_EVENTS = frozenset(
+    {
+        "deduplication",
+        "interruption",
+        "readiness",
+        "reconnect",
+        "session",
+        "takeover",
+        "tts",
+        "turn",
+    }
+)
+_VOICE_EVENT_OUTCOMES = frozenset(
+    {
+        "accepted",
+        "cancelled",
+        "degraded",
+        "ended",
+        "expired",
+        "failed",
+        "interrupted",
+        "ready",
+        "recognizing",
+        "recovered",
+        "refused",
+        "rejected",
+        "replayed",
+        "requested",
+        "started",
+        "submitted",
+        "succeeded",
+        "unavailable",
+    }
+)
+_VOICE_EVENT_REASONS = frozenset(
+    {
+        "activation_replay",
+        "asr_unavailable",
+        "authentication_required",
+        "capacity_exhausted",
+        "chat_unavailable",
+        "feature_disabled",
+        "idle_expired",
+        "internal_error",
+        "lease_expired",
+        "media_grant_replay",
+        "media_grant_rotated",
+        "media_unconfigured",
+        "media_unreachable",
+        "none",
+        "no_audio_output",
+        "no_microphone",
+        "output_language_unsupported",
+        "permission_denied",
+        "permission_restricted",
+        "protocol_violation",
+        "ready",
+        "reconnecting",
+        "self_speech_suppressed",
+        "speech_unavailable",
+        "takeover",
+        "transcript_replay",
+        "tts_unavailable",
+        "unsupported_transport",
+        "user_request",
+        "voice_unavailable",
+        "worker_unavailable",
+    }
+)
+_VOICE_TIMINGS = frozenset(
+    {
+        "activation",
+        "recognition",
+        "acknowledgement",
+        "cadence_gap",
+        "speech_start",
+        "interruption",
+        "cleanup",
+    }
+)
+_VOICE_COUNTS = frozenset(
+    {
+        "sessions",
+        "turns",
+        "reconnects",
+        "deduplications",
+        "takeovers",
+        "queue_depth",
     }
 )
 
@@ -200,6 +338,24 @@ class RuntimeObservability:
             labels["phase"] = phase
         self.record(f"operation_{event}_total", labels=labels)
 
+    def observe_operation_duration(
+        self,
+        duration_seconds: float,
+        *,
+        operation_kind: str,
+        phase: str,
+        result_code: str,
+    ) -> None:
+        """Record the latest bounded operation duration without identity labels."""
+
+        labels = self._base_labels()
+        labels.update(
+            operation_kind=operation_kind,
+            phase=phase,
+            result_code=result_code,
+        )
+        self._set("operation_duration_seconds", duration_seconds, labels)
+
     def record_scheduler(
         self,
         event: str,
@@ -269,6 +425,146 @@ class RuntimeObservability:
             remainder,
             labels,
         )
+
+    @staticmethod
+    def _voice_value(value: str, allowed: frozenset[str], label: str) -> str:
+        if value not in allowed:
+            raise ValueError(f"{label} is outside the reviewed voice vocabulary")
+        return value
+
+    def _voice_labels(
+        self,
+        *,
+        client_kind: str,
+        transport: str,
+    ) -> dict[str, str]:
+        labels = self._base_labels()
+        labels["client_kind"] = self._voice_value(
+            client_kind,
+            _VOICE_CLIENT_KINDS,
+            "client_kind",
+        )
+        labels["transport"] = self._voice_value(
+            transport,
+            _VOICE_TRANSPORTS,
+            "transport",
+        )
+        return labels
+
+    def record_voice_state(
+        self,
+        *,
+        state: str,
+        reason: str,
+        client_kind: str,
+        transport: str,
+    ) -> None:
+        """Count a content-free voice lifecycle transition."""
+
+        labels = self._voice_labels(
+            client_kind=client_kind,
+            transport=transport,
+        )
+        labels["voice_state"] = self._voice_value(state, _VOICE_STATES, "voice_state")
+        labels["voice_reason"] = self._voice_value(
+            reason,
+            _VOICE_REASONS,
+            "voice_reason",
+        )
+        self.record("voice_state_transition_total", labels=labels)
+
+    def record_voice_event(
+        self,
+        event: str,
+        outcome: str,
+        *,
+        reason: str = "none",
+        client_kind: str | None = None,
+        transport: str | None = None,
+    ) -> None:
+        """Count one reviewed voice event with no identity or content labels.
+
+        Readiness is deployment-scoped and therefore omits client dimensions.
+        Session, turn, media, and speech events supply both dimensions or
+        neither; accepting only the paired form prevents misleading partial
+        cardinality and keeps the export vocabulary finite.
+        """
+
+        checked_event = self._voice_value(event, _VOICE_EVENTS, "voice_event")
+        checked_outcome = self._voice_value(
+            outcome,
+            _VOICE_EVENT_OUTCOMES,
+            "voice_outcome",
+        )
+        checked_reason = self._voice_value(
+            reason,
+            _VOICE_EVENT_REASONS,
+            "voice_event_reason",
+        )
+        if (client_kind is None) != (transport is None):
+            raise ValueError("voice event client and transport must be paired")
+        labels = (
+            self._base_labels()
+            if client_kind is None
+            else self._voice_labels(
+                client_kind=client_kind,
+                transport=transport,
+            )
+        )
+        labels["result_code"] = checked_outcome
+        labels["voice_reason"] = checked_reason
+        self.record(f"voice_{checked_event}_total", labels=labels)
+
+    def observe_voice_timing(
+        self,
+        timing: str,
+        duration_seconds: float,
+        *,
+        client_kind: str,
+        transport: str,
+    ) -> None:
+        """Record the latest reviewed voice timing without content or IDs."""
+
+        checked_timing = self._voice_value(timing, _VOICE_TIMINGS, "voice_timing")
+        self._set(
+            f"voice_{checked_timing}_seconds",
+            duration_seconds,
+            self._voice_labels(client_kind=client_kind, transport=transport),
+        )
+
+    def observe_voice_count(
+        self,
+        count: str,
+        value: int,
+        *,
+        client_kind: str,
+        transport: str,
+    ) -> None:
+        """Record one bounded voice population or event count."""
+
+        checked_count = self._voice_value(count, _VOICE_COUNTS, "voice_count")
+        self._set(
+            f"voice_{checked_count}",
+            value,
+            self._voice_labels(client_kind=client_kind, transport=transport),
+        )
+
+    def record_voice_cleanup(
+        self,
+        outcome: str,
+        *,
+        client_kind: str,
+        transport: str,
+    ) -> None:
+        """Count cleanup outcomes without exposing session identity."""
+
+        labels = self._voice_labels(client_kind=client_kind, transport=transport)
+        labels["cleanup_outcome"] = self._voice_value(
+            outcome,
+            _VOICE_CLEANUP_OUTCOMES,
+            "cleanup_outcome",
+        )
+        self.record("voice_cleanup_total", labels=labels)
 
     def snapshot(self) -> tuple[RuntimeMetricSample, ...]:
         """Return a deterministic copy suitable for an exporter or status API."""

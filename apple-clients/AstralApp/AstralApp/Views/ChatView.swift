@@ -100,8 +100,15 @@ private struct CanvasArea: View {
                 ReadOnlyBanner(label: model.viewingIndex.flatMap { model.canvasHistory[safe: $0]?.label }) {
                     model.backToLiveCanvas()
                 }
-            } else if model.turnActive && !model.showSkeleton {
-                ProgressView().progressViewStyle(.linear).tint(p.secondary)
+            } else if model.turnActive && model.statusShowsActivity && !model.showSkeleton {
+                if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                    ProgressView().progressViewStyle(.linear).tint(p.secondary)
+                } else {
+                    Rectangle()
+                        .fill(p.secondary.opacity(0.65))
+                        .frame(height: 2)
+                        .accessibilityHidden(true)
+                }
             }
             ZStack(alignment: .topTrailing) {
                 // GeometryReader is a layout firewall: it answers every parent
@@ -201,7 +208,7 @@ private struct SkeletonCanvas: View {
                     .fill(theme.palette.surface.opacity(0.5))
                     .frame(height: i == 0 ? 90 : 60)
                     .frame(maxWidth: .infinity)
-                    .shimmer()
+                    .activityShimmer()
             }
             Spacer()
         }
@@ -399,22 +406,48 @@ private struct ChatList: View {
     private var visible: [AppModel.ChatTurn] {
         model.visibleTurns.filter { !$0.text.isEmpty || !$0.components.isEmpty }
     }
+
+    @ViewBuilder
+    private var rows: some View {
+        ForEach(visible) { turn in ChatBubble(turn: turn) }
+        if let status = model.statusText {
+            StatusLine(text: status, showsActivity: model.statusShowsActivity)
+                .id("status")
+        }
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(visible) { turn in ChatBubble(turn: turn).id(turn.id) }
-                    if let status = model.statusText { StatusLine(text: status).id("status") }
+                if TranscriptLayoutPresentation.usesLazyRows {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        rows
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                } else {
+                    // AppKit's lazy placement engine can fail to converge when
+                    // a voice turn replaces pending rows with committed rows
+                    // while the status row disappears. An eager stack has a
+                    // deterministic content height and avoids that graph loop.
+                    VStack(alignment: .leading, spacing: 8) {
+                        rows
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
                 }
-                .padding(.horizontal, 12).padding(.vertical, 8)
             }
             .accessibilityIdentifier("conversation-message-scroll")
             .scrollDismissesKeyboard(.immediately)
-            .onChange(of: visible.count) { _, _ in
-                // Unanimated: an animated scrollTo re-lays-out the transcript
-                // every animation frame, compounding the live-turn layout storm
-                // (063 livelock). A jump costs exactly one pass.
-                if let last = visible.last { proxy.scrollTo(last.id, anchor: .bottom) }
+            .onChange(of: visible.count) { oldCount, newCount in
+                guard newCount > oldCount, let lastID = visible.last?.id else { return }
+                // Do not mutate scroll geometry inside the same AttributeGraph
+                // transaction that inserted the row. Even an unanimated
+                // synchronous scroll can feed AppKit's anchor translation back
+                // into lazy placement before that transaction settles.
+                Task { @MainActor in
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    proxy.scrollTo(lastID, anchor: .bottom)
+                }
             }
         }
     }
@@ -423,9 +456,18 @@ private struct ChatList: View {
 private struct StatusLine: View {
     @Environment(ThemeStore.self) var theme
     let text: String
+    let showsActivity: Bool
     var body: some View {
         HStack(spacing: 6) {
-            ProgressView().controlSize(.small)
+            if showsActivity {
+                if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "ellipsis")
+                        .font(.caption2.weight(.semibold))
+                        .accessibilityHidden(true)
+                }
+            }
             Text(text).font(.caption).foregroundStyle(theme.palette.muted)
         }
     }
@@ -540,10 +582,8 @@ private struct InputBar: View {
                     }
                 }
             }
+            VoiceComposerControls()
             HStack(spacing: 6) {
-                // The mic glyph is gone on iOS/macOS: it only focused the field,
-                // and dictation is the system keyboard's job. Web + watch keep
-                // their own speech affordances.
                 TextField("Message AstralDeep…", text: $input, axis: .vertical)
                     .textFieldStyle(.plain)
                     .accessibilityIdentifier("chat-composer-input")
@@ -610,6 +650,141 @@ private struct InputBar: View {
         focused = false  // resign native keyboard focus before model-driven re-rendering
         input = ""
         model.sendChat(submittedInput)
+    }
+}
+
+/// The order, visibility, labels, pressed state, and enabled state all come
+/// from the server-owned composer model. This view contributes presentation
+/// only; it cannot invent a local voice mutation or bypass REST authorization.
+private struct VoiceComposerControls: View {
+    @Environment(AppModel.self) var model
+    @Environment(ThemeStore.self) var theme
+    private var p: AstralPalette { theme.palette }
+
+    var body: some View {
+        let controls = model.voice.composer?.controls.filter(\.visible) ?? []
+        if !controls.isEmpty || model.voice.active || model.voice.terminalNotice != nil {
+            VStack(alignment: .leading, spacing: 5) {
+                if let notice = model.voice.terminalNotice {
+                    VoiceTerminalNoticeView(notice: notice)
+                }
+                if !controls.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(controls) { control in
+                                Button {
+                                    Task { await model.performVoiceControl(control.action) }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        if control.busy {
+                                            if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                                                ProgressView().controlSize(.small)
+                                            } else {
+                                                Image(systemName: "ellipsis")
+                                                    .accessibilityHidden(true)
+                                            }
+                                        } else {
+                                            Image(systemName: symbol(control.icon))
+                                        }
+                                        Text(control.label).lineLimit(1)
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .foregroundStyle(control.pressed ? p.surface : p.primary)
+                                    .background(
+                                        control.pressed ? p.primary : p.surface2,
+                                        in: Capsule()
+                                    )
+                                    .overlay(Capsule().stroke(p.border))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!control.enabled || control.busy)
+                                .accessibilityIdentifier("voice-control-\(control.key)")
+                                .accessibilityLabel(control.label)
+                                .accessibilityValue(
+                                    control.busy ? "In progress" : (control.pressed ? "On" : "Off"))
+                            }
+                        }
+                    }
+                }
+                if model.voice.active, let message = model.voice.message, !message.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: model.voice.mediaConnected ? "waveform" : "waveform.slash")
+                        Text(message).lineLimit(2)
+                        if model.voice.awaitingAcceptance > 0 {
+                            if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Image(systemName: "ellipsis")
+                                    .font(.caption2.weight(.semibold))
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(p.muted)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("voice-conversation-status")
+                }
+            }
+        }
+    }
+
+    private func symbol(_ serverIcon: String) -> String {
+        switch serverIcon {
+        case "microphone": "mic.fill"
+        case "device-transfer": "arrow.triangle.2.circlepath"
+        case "stop": "stop.fill"
+        case "speaker-stop": "speaker.slash.fill"
+        case "speaker-muted": "speaker.slash"
+        case "speaker-consent": "speaker.wave.2.bubble"
+        case "chat": "bubble.left.and.bubble.right"
+        default: "waveform"
+        }
+    }
+}
+
+/// A visible and VoiceOver-readable alert anchored to the chat composer. Its
+/// icon and explicit title preserve meaning independently of theme color, and
+/// all server text is rendered by `Text` as inert plain content.
+private struct VoiceTerminalNoticeView: View {
+    @Environment(ThemeStore.self) var theme
+    let notice: VoiceTerminalNotice
+    private var p: AstralPalette { theme.palette }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(p.error)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notice.title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(p.text)
+                Text(notice.serverMessage)
+                    .font(.caption)
+                    .foregroundStyle(p.text)
+                if let guidance = notice.guidance {
+                    Text(guidance)
+                        .font(.caption)
+                        .foregroundStyle(p.text)
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.error.opacity(0.14), in: RoundedRectangle(cornerRadius: AstralRadius.md))
+        .overlay(
+            RoundedRectangle(cornerRadius: AstralRadius.md)
+                .stroke(p.error.opacity(0.75), lineWidth: 1)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("voice-request-terminal-notice")
+        .accessibilityLabel("Voice request alert")
+        .accessibilityValue(notice.accessibilityLabel)
+        .accessibilityAddTraits(.isStaticText)
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }
 
@@ -688,8 +863,46 @@ private struct SendButton: View {
 
 // MARK: - shimmer + safe index
 
+enum TranscriptLayoutPresentation {
+    /// AppKit's `LazyVStack` placement can remain inside one AttributeGraph
+    /// transaction when transcript identities and heights change together.
+    /// iOS keeps lazy rows for long mobile transcripts; macOS uses bounded,
+    /// eager placement inside the rail's concrete viewport.
+    static var usesLazyRows: Bool {
+        #if os(macOS)
+            false
+        #else
+            true
+        #endif
+    }
+}
+
+enum ContinuousActivityPresentation {
+    /// AppKit's indeterminate progress views and animation timelines can feed
+    /// their ticks back through the transcript LazyVStack. On macOS that can
+    /// keep the main view graph permanently dirty, starving websocket/media
+    /// work and growing memory without bound. Static busy affordances retain
+    /// the visible state while limiting layout to real model changes.
+    static var allowsAnimatedIndicators: Bool {
+        #if os(macOS)
+            false
+        #else
+            true
+        #endif
+    }
+}
+
 extension View {
     func shimmer() -> some View { modifier(ShimmerModifier()) }
+
+    @ViewBuilder
+    func activityShimmer() -> some View {
+        if ContinuousActivityPresentation.allowsAnimatedIndicators {
+            shimmer()
+        } else {
+            self
+        }
+    }
 }
 
 struct ShimmerModifier: ViewModifier {

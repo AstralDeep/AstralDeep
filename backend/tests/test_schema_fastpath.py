@@ -2,8 +2,8 @@
 
 A matching schema_meta revision marker must skip the full _init_db
 DDL/migration run while still executing feature 060's fixed-lock independent
-policy-marker check within the 250ms budget. A missing or stale schema marker
-must trigger the full run and restore the marker. Also covers the promoted
+policy-marker check within the 250ms budget. A missing marker triggers the
+full run; an unsupported marker fails closed without mutation. Also covers the promoted
 tool_overrides per-kind backfill
 (_migrate_backfill_tool_kinds_052) semantics and idempotency. Requires a
 reachable Postgres; skipped where unreachable.
@@ -22,10 +22,16 @@ import pytest
 try:
     import psycopg2
     from psycopg2 import sql
-    from shared.database import Database, SCHEMA_REVISION, _build_database_url
+    from shared.database import (
+        Database,
+        SCHEMA_REVISION,
+        SchemaRevisionError,
+        _build_database_url,
+    )
 except Exception:  # pragma: no cover - import guard
     Database = None  # type: ignore
     SCHEMA_REVISION = None  # type: ignore
+    SchemaRevisionError = RuntimeError  # type: ignore
     _build_database_url = None  # type: ignore
 
 
@@ -180,26 +186,18 @@ def test_fast_path_runs_only_marker_statements(monkeypatch, isolated_database_ur
     ), statements
 
 
-def test_revision_mismatch_triggers_full_run(monkeypatch, isolated_database_url):
+def test_unsupported_revision_fails_closed(isolated_database_url):
     db = _db_or_skip(isolated_database_url)
     db.execute(
         "UPDATE schema_meta SET value = ? WHERE key = ?",
         ("000.000-test-stale", "revision"),
     )
-    calls = []
-    real_apply = Database._apply_full_schema
-
-    def spy(self, conn, cursor):
-        calls.append(1)
-        return real_apply(self, conn, cursor)
-
-    monkeypatch.setattr(Database, "_apply_full_schema", spy)
-    Database(isolated_database_url)
-    assert calls == [1]
+    with pytest.raises(SchemaRevisionError, match="not an approved upgrade source"):
+        Database(isolated_database_url)
     row = db.fetch_one(
         "SELECT value FROM schema_meta WHERE key = ?", ("revision",)
     )
-    assert row["value"] == SCHEMA_REVISION
+    assert row["value"] == "000.000-test-stale"
 
 
 def test_missing_marker_triggers_full_run(monkeypatch, isolated_database_url):

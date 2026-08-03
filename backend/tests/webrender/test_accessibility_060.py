@@ -68,7 +68,15 @@ def test_application_status_exposes_role_name_live_state_and_atomic_updates() ->
     assert '"data-status-state"' in update
 
     operation = _js_function(source, "reduceOperationStatus")
-    assert "setStatus((frame.error && frame.error.message) || frame.label, !frame.terminal)" in operation
+    assert 'if (frame.state === "completed")' in operation
+    assert 'setStatus(visible, false, "operation-error:" + frame.operation_id)' in operation
+    assert "restoreActiveStatusOrClear([operationOwner, submissionOwner])" in operation
+    active = _js_function(source, "newestActiveOperationStatus")
+    assert "candidate.terminal || !scopedStatusMatches(candidate)" in active
+    assert "!operationStatusShowsActivity(candidate)" in active
+    restore = _js_function(source, "restoreActiveStatusOrClear")
+    assert "newestVisibleLocalSubmission()" in restore
+    assert '"operation-submission:" + local.request_generation' in restore
 
 
 def test_lifecycle_status_exposes_a_stable_name_role_and_busy_state() -> None:

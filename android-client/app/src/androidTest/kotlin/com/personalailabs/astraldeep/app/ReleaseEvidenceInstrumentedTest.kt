@@ -24,6 +24,7 @@ import com.personalailabs.astraldeep.core.protocol.DeviceCapabilities
 import com.personalailabs.astraldeep.core.protocol.Inbound
 import com.personalailabs.astraldeep.core.protocol.Wire
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -537,7 +538,7 @@ class ReleaseEvidenceInstrumentedTest {
         Log.i(TAG, "release_evidence_sha256=${sha256(bytes)}")
     }
 
-    /** Project the exact 16 schema fields from the trusted stage-deploy outputs. */
+    /** Project the exact schema fields from the trusted stage-deploy outputs. */
     private fun stagingEnvironment(stagingUrl: String): JsonObject {
         val stage = Json.parseToJsonElement(decodeBase64Argument("astralStagingEnvironmentB64")).jsonObject
         STAGING_FIELDS.forEach { field ->
@@ -545,7 +546,60 @@ class ReleaseEvidenceInstrumentedTest {
         }
         val endpoint = stage.getValue("endpoint").jsonPrimitive.content.trimEnd('/')
         assertTrue("astralStagingUrl differs from the staged endpoint", endpoint == stagingUrl)
+        val workerPaths = stage.getValue("worker_paths") as? JsonArray
+        assertTrue(
+            "trusted staging output does not include the voice worker path",
+            workerPaths?.any { it.jsonPrimitive.content == "voice" } == true,
+        )
+        validateVoiceRuntime(stage.getValue("voice_runtime"))
         return buildJsonObject { STAGING_FIELDS.forEach { put(it, stage.getValue(it)) } }
+    }
+
+    /** Validate the stage-owned object without constructing a candidate replacement. */
+    private fun validateVoiceRuntime(value: JsonElement) {
+        assertTrue("trusted voice_runtime is not an object", value is JsonObject)
+        val runtime = value.jsonObject
+        assertTrue(
+            "trusted voice_runtime has a missing or extra field",
+            runtime.keys == VOICE_RUNTIME_FIELDS,
+        )
+        val profileValue = runtime.getValue("speech_profile")
+        assertTrue("trusted speech_profile is not an object", profileValue is JsonObject)
+        val profile = profileValue.jsonObject
+        assertTrue(
+            "trusted speech_profile has a missing or extra field",
+            profile.keys == SPEECH_PROFILE_FIELDS,
+        )
+        assertTrue("unexpected ASR model", profile.getValue("asr_model").jsonPrimitive.content == ASR_MODEL)
+        assertTrue("unexpected TTS model", profile.getValue("tts_model").jsonPrimitive.content == TTS_MODEL)
+        assertTrue("unexpected voice", profile.getValue("voice").jsonPrimitive.content == TTS_VOICE)
+        assertTrue(
+            "unexpected sample rate",
+            profile.getValue("sample_rate_hz").jsonPrimitive.content == TTS_SAMPLE_RATE_HZ.toString(),
+        )
+        listOf(
+            "voice_worker_image_sha256" to runtime,
+            "livekit_image_sha256" to runtime,
+            "livekit_config_sha256" to runtime,
+            "inventory_sha256" to profile,
+            "profile_sha256" to profile,
+        ).forEach { (field, owner) ->
+            assertTrue(
+                "$field is not a SHA-256 digest",
+                SHA256.matches(owner.getValue(field).jsonPrimitive.content),
+            )
+        }
+        listOf(
+            "voice_worker_image_reference",
+            "livekit_image_reference",
+            "livekit_public_url",
+            "livekit_turn_domain",
+        ).forEach { field ->
+            assertTrue(
+                "$field is empty",
+                runtime.getValue(field).jsonPrimitive.content.isNotBlank(),
+            )
+        }
     }
 
     private fun normalizedArchitecture(): String =
@@ -755,7 +809,33 @@ class ReleaseEvidenceInstrumentedTest {
                 "representative_dataset_sha256",
                 "source_schema_revision",
                 "topology",
+                "voice_runtime",
                 "worker_paths",
             )
+        val VOICE_RUNTIME_FIELDS =
+            setOf(
+                "voice_worker_image_reference",
+                "voice_worker_image_sha256",
+                "livekit_image_reference",
+                "livekit_image_sha256",
+                "livekit_config_sha256",
+                "livekit_public_url",
+                "livekit_turn_domain",
+                "speech_profile",
+            )
+        val SPEECH_PROFILE_FIELDS =
+            setOf(
+                "asr_model",
+                "tts_model",
+                "voice",
+                "sample_rate_hz",
+                "inventory_sha256",
+                "profile_sha256",
+            )
+        const val ASR_MODEL = "Systran/faster-whisper-large-v3"
+        const val TTS_MODEL = "speaches-ai/Kokoro-82M-v1.0-ONNX"
+        const val TTS_VOICE = "af_heart"
+        const val TTS_SAMPLE_RATE_HZ = 24000
+        val SHA256 = Regex("^[0-9a-f]{64}$")
     }
 }

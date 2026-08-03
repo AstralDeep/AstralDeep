@@ -6,7 +6,12 @@ import SwiftUI
 
 @main
 struct AstralWatchApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model = WatchModel()
+
+    init() {
+        NoStoreHTTP.prepareForLaunch()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -23,6 +28,9 @@ struct AstralWatchApp: App {
             .environment(model)
             .tint(Color(red: 99 / 255, green: 102 / 255, blue: 241 / 255))  // AstralDeep indigo
             .task { await model.bootstrap() }
+            .onChange(of: scenePhase) { _, phase in
+                model.handleVoiceScenePhase(phase)
+            }
         }
     }
 }

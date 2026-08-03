@@ -29,6 +29,21 @@ FEATURE_060_TEST_CONTAINER := docker run --rm \
 	-w /app/backend \
 	astraldeep:latest
 
+# Canonical local producer outputs consumed by the mandatory pre-push
+# diagnostic. Missing inputs fail closed; callers may override this variable
+# only to point at equivalent freshly generated reports.
+RELEASE_COVERAGE_FLAGS ?= \
+	--backend-python build/060/coverage/backend.xml \
+	--voice-worker-python build/065/coverage/voice-worker.xml \
+	--tooling-python build/060/coverage/tooling-python.xml \
+	--windows-python build/060/coverage/windows.xml \
+	--javascript build/060/coverage/web-istanbul.json \
+	--android-app build/060/coverage/android-app.xml \
+	--android-core build/060/coverage/android-core.xml \
+	--ios build/060/coverage/apple-ios-xccov.json \
+	--macos build/060/coverage/apple-macos-xccov.json \
+	--watchos build/060/coverage/apple-watchos-xccov.json
+
 ## ---------- Lifecycle ----------
 
 up: ## Build images and start all containers in the background
@@ -96,7 +111,7 @@ test: test-backend ## Run all tests
 # emitted JSON always states protected_release_authorization: false and only
 # the protected-decision GitHub job can produce a trusted release decision.
 prepare-release-evidence: ## Collect, normalize, and parse local release evidence (diagnostic, BASE_SHA required)
-	python3 scripts/prepare_release_evidence.py --base-sha "$${BASE_SHA}" --candidate-sha "$$(git rev-parse HEAD)"
+	python3 scripts/prepare_release_evidence.py --base-sha "$${BASE_SHA}" --candidate-sha "$$(git rev-parse HEAD)" $(RELEASE_COVERAGE_FLAGS) --coverage-mode strict
 
 ## ---------- Lint ----------
 

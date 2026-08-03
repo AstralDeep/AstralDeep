@@ -23,7 +23,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 
 import websockets
 import websockets.exceptions
@@ -68,6 +68,11 @@ from orchestrator.work_admission import (
 )
 from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.concurrency_cap import ConcurrencyCap
+from orchestrator.voice_control_binding import (
+    VoiceControlBindingError,
+    VoiceControlBindingIssuer,
+    VoiceControlClaims,
+)
 
 import uuid as _uuid
 
@@ -79,7 +84,12 @@ from shared.protocol import (
     RegisterAgent, RegisterUI, AgentCard, ToolProgress,
     AgentHostRegistration, AgentHostRegistered, CandidateCapabilityMap,
     AGENT_LIFECYCLE_REASON_CODES, ProtocolValidationError, RuntimeFence,
+    MCP_PROTOCOL_VERSION,
+    ChatCreated,
     ConversationCommitReady,
+    CorrelatedNewChat,
+    VoiceControlBinding,
+    VoicePlayoutEvent,
     ToolStreamData, ToolStreamEnd, ToolStreamCancel,
     AgentHopRequest, AgentHopResponse,
     validate_streaming_metadata,
@@ -110,6 +120,51 @@ CONNECTION_LEASE_RENEW_SECONDS = 5.0
 # the first durable server phase.
 OPERATION_PROGRESS_PHASE_SECONDS = 1.0
 _CONNECTION_CLAIM_POLL_SECONDS = 0.25
+# The connection-operation context is runner-local and has no re-entry after
+# terminal cleanup returns.  One immediate exact-authority retry absorbs a
+# transient repository read without creating an orphaned background finalizer.
+_VOICE_TERMINAL_FINALIZATION_ATTEMPTS = 2
+_VOICE_REQUEST_FAILED_MESSAGE = (
+    "Voice request failed. This request did not complete. Review the error in "
+    "the conversation, then try again; typed chat is still available."
+)
+_VOICE_REQUEST_INTERRUPTED_MESSAGE = (
+    "Voice request interrupted. This request did not complete. Please try "
+    "again; typed chat is still available."
+)
+_VOICE_REQUEST_CANCELLED_MESSAGE = (
+    "Voice request cancelled. No completed result was produced. You can try "
+    "again or keep using typed chat."
+)
+_VOICE_RESULT_UNAVAILABLE_MESSAGE = (
+    "The request finished processing, but its result could not be published. "
+    "Please try again or keep using typed chat."
+)
+_VOICE_REQUEST_SUCCEEDED_MESSAGE = (
+    "Request completed. The text result is available in the conversation."
+)
+_VOICE_REQUEST_PROCESSING_MESSAGE = (
+    "Voice request accepted. Working on it; typed chat remains available."
+)
+
+
+class _SafeLLMErrorMetadata(NamedTuple):
+    """Content-free provider failure facts safe for logs and audit routing."""
+
+    exception_class: str
+    status_code: Optional[int]
+    upstream_error_class: str
+    retryable: bool
+
+
+class _LLMHTMLMaintenanceError(RuntimeError):
+    """A successful HTTP envelope carried an upstream maintenance page."""
+
+
+class _LLMMalformedResponseError(RuntimeError):
+    """The provider response omitted the required completion message shape."""
+
+
 LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
 PERSONAL_AGENT_STARTUP_TIMEOUT_SECONDS = 5.0
 PERSONAL_AGENT_HEARTBEAT_TIMEOUT_SECONDS = 5.0
@@ -178,6 +233,9 @@ _CONNECTION_OPERATION_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = (
 _WORKSPACE_MUTATION_LOCKS: contextvars.ContextVar[frozenset[str]] = (
     contextvars.ContextVar("workspace_mutation_locks", default=frozenset())
 )
+_ACTIVE_REQUEST_TEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "active_request_text", default=""
+)
 
 
 @dataclass
@@ -211,10 +269,49 @@ class _ConnectionOperation:
     lane_complete: asyncio.Future[None] | None = None
     lease_lost: bool = False
     auth_principal: str | None = None
+    auth_claims: dict[str, Any] = field(default_factory=dict, repr=False)
+    runtime_websocket: Any | None = field(default=None, repr=False)
     committed_operation: OperationRecord | None = None
     subscribers: dict[int, tuple[Any, _ConnectionIngressFrame]] = field(
         default_factory=dict
     )
+
+
+@dataclass(frozen=True)
+class _VoiceDispatchContext:
+    """Verified content and socket fence carried into the ordinary chat path."""
+
+    admission: Any
+    connection_generation: str
+    origin: Any = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _VoiceOperationRejection:
+    """Pre-acceptance refusal that must win over generic operation success."""
+
+    reason: str
+    safe_summary: str
+
+
+@dataclass(frozen=True)
+class _PendingVoiceFinalization:
+    """Ephemeral accepted-turn result finalized after its shared operation."""
+
+    voice_dispatch: _VoiceDispatchContext
+    user_id: str
+    chat_id: str
+    stage: Any
+
+
+@dataclass(frozen=True)
+class _VoiceOperationTerminalIntent:
+    """Fixed shared-operation outcome recorded by the ordinary chat path."""
+
+    state: OperationState
+    terminal_code: str
+    safe_summary: str
+    retry_after_ms: int | None = None
 
 
 @dataclass
@@ -902,6 +999,14 @@ class Orchestrator:
         self.cancelled_sessions: Dict[str, bool] = {}  # websocket id -> cancelled flag
         self._chat_locks: Dict[int, asyncio.Lock] = {}  # per-websocket lock for chat serialization
         self._registered_events: Dict[int, asyncio.Event] = {}  # gate non-register messages until auth completes
+        # Feature 065: only non-secret signed scope is retained for an active
+        # UI socket. The bearer is sent once and never stored server-side.
+        self._voice_binding_issuer: VoiceControlBindingIssuer | None = None
+        self._voice_control_bindings: Dict[int, VoiceControlClaims] = {}
+        self._voice_device_bindings: Dict[tuple[str, str], int] = {}
+        self._voice_device_kinds: Dict[tuple[str, str], str] = {}
+        self._voice_composer_revisions: Dict[int, int] = {}
+        self._voice_composer_tasks: Dict[int, asyncio.Task[Any]] = {}
         # Feature 060: every accepted UI socket owns one finite connection
         # scope.  The capacity signal is loop-local and lazily created.
         self._connection_contexts: Dict[int, ConnectionContext] = {}
@@ -1024,6 +1129,27 @@ class Orchestrator:
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         data_dir = os.path.join(backend_dir, 'data')
         self.history = HistoryManager(data_dir=data_dir)
+        # Feature 065: voice is an included server-owned capability, but its
+        # isolated media/control plane fails closed without affecting typed
+        # chat. Speech endpoint credentials are never present in this process.
+        self.voice_services = None
+        self.voice_runtime = None
+        self.voice_worker_pool = None
+        self.voice_worker_endpoint = None
+        try:
+            from orchestrator.voice_bootstrap import build_voice_services
+
+            self.voice_services = build_voice_services(self.history.db)
+            self.voice_runtime = self.voice_services.runtime
+            self.voice_worker_pool = self.voice_services.worker_pool
+            self.voice_services.bind_terminal_turn_notifier(
+                self._notify_reconciled_voice_terminal_turn
+            )
+        except Exception as exc:
+            logger.warning(
+                "conversational_voice_unavailable",
+                extra={"reason": getattr(exc, "code", type(exc).__name__)},
+            )
 
         # Feature 060: one PostgreSQL operation/admission authority shared by
         # every compatibility manager.  The migration has already established
@@ -2409,6 +2535,8 @@ class Orchestrator:
             "error",
             "ui_components",
             "correlation_id",
+            "result_type",
+            "responder_info",
         }
         required = {"type", "request_id", "request_generation", "fence"}
         if not required.issubset(frame) or not set(frame).issubset(allowed):
@@ -2465,10 +2593,12 @@ class Orchestrator:
             waiter.set_result(
                 MCPResponse(
                     request_id=request_id,
-                    result=frame.get("result"),
+                    result=None if error is not None else frame.get("result"),
                     error=error,
-                    ui_components=frame.get("ui_components"),
+                    ui_components=None if error is not None else frame.get("ui_components"),
                     correlation_id=frame.get("correlation_id"),
+                    result_type=frame.get("result_type", "complete"),
+                    responder_info=frame.get("responder_info"),
                 )
             )
 
@@ -3308,6 +3438,40 @@ class Orchestrator:
                         logger.debug("close after refused agent registration failed", exc_info=True)
                 return
 
+        # 064 Phase A: validate the agent's exact JSON Schema 2020-12
+        # declaration before publishing any card/routing state. This validator
+        # is bounded and offline; it never dereferences a network URI. Only
+        # after validation is an absent dialect made explicit.
+        from shared.schema_validation import validate_tool_schema
+
+        try:
+            for skill in card.skills:
+                skill.input_schema = validate_tool_schema(
+                    skill.input_schema
+                    or {"type": "object", "properties": {}},
+                    skill.id or skill.name,
+                    require_object_root=True,
+                )
+                output_schema = getattr(skill, "output_schema", None)
+                if output_schema is not None:
+                    skill.output_schema = validate_tool_schema(
+                        output_schema,
+                        skill.id or skill.name,
+                        require_object_root=False,
+                    )
+        except ValueError as exc:
+            logger.warning(
+                "Refusing agent %s registration: %s",
+                card.agent_id,
+                exc,
+            )
+            if websocket is not None:
+                try:
+                    await websocket.close(code=1008, reason="invalid tool schema")
+                except Exception:
+                    logger.debug("close after invalid tool schema failed", exc_info=True)
+            return
+
         if websocket is not None:
             self.agents[card.agent_id] = websocket
         self.agent_cards[card.agent_id] = card
@@ -3706,6 +3870,7 @@ class Orchestrator:
                 await self.register_agent(websocket, msg)
 
             elif isinstance(msg, MCPResponse):
+                msg.validate_result_shape()
                 req_id = msg.request_id
                 if req_id in self.pending_requests:
                     if not self._response_is_from_dispatch_target(req_id, websocket):
@@ -3773,6 +3938,25 @@ class Orchestrator:
 
         except Exception as e:
             logger.error(f"Error handling agent message: {e}")
+            # Resolve a correlatable malformed response immediately. Unknown
+            # additive keys are filtered by Message.from_json; reaching this
+            # branch means the known envelope itself is invalid.
+            try:
+                raw = json.loads(message)
+            except (TypeError, json.JSONDecodeError):
+                raw = None
+            req_id = raw.get("request_id") if isinstance(raw, dict) else None
+            if (
+                isinstance(req_id, str)
+                and raw.get("type") == "mcp_response"
+                and req_id in self.pending_requests
+                and self._response_is_from_dispatch_target(req_id, websocket)
+            ):
+                future = self.pending_requests[req_id]
+                if not future.done():
+                    future.set_exception(
+                        ProtocolValidationError("malformed MCP response")
+                    )
 
     @staticmethod
     def _parsed_ui_frame(message: str) -> dict[str, Any] | None:
@@ -3793,7 +3977,13 @@ class Orchestrator:
         frame_type = frame.get("type")
         if not isinstance(frame_type, str):
             return None
-        if frame_type in {"register_ui", "close", "ping", "pong"}:
+        if frame_type in {
+            "register_ui",
+            "close",
+            "ping",
+            "pong",
+            "voice_playout_event",
+        }:
             return frame_type
         if frame_type == "ui_event" and frame.get("action") == "cancel_task":
             return "cancel_task"
@@ -3999,6 +4189,97 @@ class Orchestrator:
         )
 
     @staticmethod
+    def _connection_admission_class(
+        frame: _ConnectionIngressFrame,
+    ) -> AdmissionClass:
+        """Select the durable admission class for one validated UI frame."""
+
+        if frame.operation_kind == "voice_chat_message":
+            return AdmissionClass.VOICE_INTERACTIVE
+        return AdmissionClass.INTERACTIVE
+
+    async def _send_connection_admission_refusal(
+        self,
+        context: ConnectionContext,
+        frame: _ConnectionIngressFrame,
+        *,
+        code: str,
+        retryable: bool,
+        retry_after_ms: int | None = None,
+    ) -> bool:
+        """Project admission refusal through the frame's canonical lifecycle.
+
+        A validated voice-origin frame has enough immutable correlation to
+        terminalize both the client and worker transcript buffers.  It must
+        therefore receive ``voice_submission_rejected`` rather than the
+        generic connection-operation error used by typed/UI work.  The
+        transcript is still unaccepted: this path creates no message, task, or
+        acknowledgement and never weakens the later proof/authorization gate.
+        """
+
+        if frame.operation_kind == "voice_chat_message":
+            try:
+                message = Message.from_json(frame.raw)
+                if not isinstance(message, UIEvent):
+                    raise ProtocolValidationError(
+                        "voice admission frame must be a UI event"
+                    )
+                origin = message.voice_origin
+            except (ProtocolValidationError, TypeError, ValueError):
+                origin = None
+            claims = (
+                getattr(self, "ui_sessions", {}).get(context.websocket) or {}
+            )
+            user_id = claims.get("sub")
+            if (
+                origin is not None
+                and isinstance(user_id, str)
+                and user_id
+                and frame.chat_id is not None
+                and context.connection_generation is not None
+            ):
+                if code == "capacity_exceeded":
+                    reason = "capacity_exhausted"
+                    retry_policy = "explicit_user_retry"
+                elif code == "idempotency_conflict":
+                    reason = "invalid_binding"
+                    retry_policy = "none"
+                else:
+                    reason = "stale_session"
+                    retry_policy = "none"
+                observability = getattr(
+                    self, "runtime_observability", None
+                )
+                if observability is not None:
+                    observability.record_operation(
+                        "refused",
+                        operation_kind=frame.operation_kind,
+                        result_code=code,
+                    )
+                await self._reject_voice_submission(
+                    context.websocket,
+                    user_id=user_id,
+                    origin=origin,
+                    submission_id=str(frame.submission_id),
+                    request_generation=str(frame.request_generation),
+                    chat_id=frame.chat_id,
+                    connection_generation=str(
+                        context.connection_generation
+                    ),
+                    reason=reason,
+                    retry_policy=retry_policy,
+                )
+                return True
+        await self._send_admission_refusal(
+            context.websocket,
+            submission_id=frame.submission_id,
+            code=code,
+            retryable=retryable,
+            retry_after_ms=retry_after_ms,
+        )
+        return False
+
+    @staticmethod
     def _admission_refusal_message(code: str) -> str:
         """Return the non-sensitive message shared by refusal envelopes."""
 
@@ -4190,6 +4471,342 @@ class Orchestrator:
             phase=phase,
             label=label,
         )
+
+    @staticmethod
+    def _voice_ack_frame(
+        turn: Any,
+        *,
+        connection_generation: str,
+    ) -> dict[str, Any]:
+        """Build the strict content-free acknowledgement for one message."""
+
+        return {
+            "type": "user_message_acked",
+            "schema_version": "1",
+            "connection_generation": connection_generation,
+            "voice_turn_id": turn.turn_id,
+            "submission_id": turn.submission_id,
+            "request_generation": turn.request_generation,
+            "chat_id": turn.chat_id,
+            "message_id": int(turn.message_id),
+        }
+
+    @staticmethod
+    def _voice_turn_state_frame(
+        turn: Any,
+        *,
+        connection_generation: str,
+        message: str,
+        speech_outcome: str | None = None,
+    ) -> dict[str, Any]:
+        """Build one content-safe lifecycle projection for a UI socket."""
+
+        if speech_outcome is not None:
+            if turn.state != "succeeded" or speech_outcome not in {
+                "source_finished",
+                "failed",
+                "suppressed",
+            }:
+                raise ValueError("invalid_voice_turn_speech_outcome")
+
+        frame: dict[str, Any] = {
+            "type": "voice_turn_state",
+            "schema_version": "1",
+            "session_id": turn.session_id,
+            "connection_generation": connection_generation,
+            "generation": turn.session_generation,
+            "media_grant_revision": turn.media_grant_revision,
+            "turn_id": turn.turn_id,
+            "client_turn_id": turn.client_turn_id,
+            "submission_id": turn.submission_id,
+            "request_generation": turn.request_generation,
+            "chat_id": turn.chat_id,
+            "chat_context_revision": turn.chat_context_revision,
+            "detected_language": turn.detected_language,
+            "spoken_output_policy": turn.spoken_output_policy,
+            "output_reason": turn.output_reason,
+            "state": turn.state,
+            "foreground": bool(turn.is_foreground),
+            "sensitive_result_pending": bool(
+                turn.state == "succeeded" and turn.sensitivity == "sensitive"
+            ),
+            "sequence": int(turn.announcement_sequence),
+            "occurred_at": Orchestrator._voice_occurred_at(),
+            "message": message,
+        }
+        if turn.state == "succeeded" and turn.result_commit_id:
+            frame["result_id"] = turn.result_commit_id
+        if speech_outcome is not None:
+            # This describes worker/source completion only. Client playout and
+            # audibility are independently observed and are not inferred here.
+            frame["speech_outcome"] = speech_outcome
+        return frame
+
+    async def _broadcast_voice_turn_state(
+        self,
+        turn: Any,
+        *,
+        message: str,
+        speech_outcome: str | None = None,
+    ) -> None:
+        """Fan a turn lifecycle notice to the user's current real UI sockets.
+
+        Every socket receives its own current connection generation.  The
+        notice is best-effort presentation of already-durable state, so a
+        disconnected client can still recover the authoritative conversation
+        text without causing terminal finalization to retry or duplicate.
+        """
+
+        sessions = getattr(self, "ui_sessions", {}) or {}
+        contexts = getattr(self, "_connection_contexts", {}) or {}
+        for websocket, claims in list(sessions.items()):
+            if not isinstance(claims, dict) or claims.get("sub") != turn.user_id:
+                continue
+            context = contexts.get(id(websocket))
+            if (
+                context is None
+                or not context.registered
+                or context.closing
+                or context.connection_generation is None
+            ):
+                continue
+            try:
+                frame = self._voice_turn_state_frame(
+                    turn,
+                    connection_generation=str(context.connection_generation),
+                    message=message,
+                    speech_outcome=speech_outcome,
+                )
+                await self._safe_send(
+                    websocket,
+                    json.dumps(frame, separators=(",", ":")),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug(
+                    "voice turn lifecycle notice delivery failed",
+                    exc_info=True,
+                )
+
+    async def _notify_reconciled_voice_terminal_turn(self, turn: Any) -> None:
+        """Project a maintenance-repaired terminal turn to current UI sockets."""
+
+        message = {
+            "succeeded": _VOICE_REQUEST_SUCCEEDED_MESSAGE,
+            "cancelled": _VOICE_REQUEST_CANCELLED_MESSAGE,
+            "failed": _VOICE_REQUEST_FAILED_MESSAGE,
+        }.get(turn.state)
+        if message is None:
+            return
+        await self._broadcast_voice_turn_state(turn, message=message)
+
+    async def _send_voice_ack_to_context(
+        self,
+        context: ConnectionContext,
+        frame: _ConnectionIngressFrame,
+        turn: Any,
+    ) -> bool:
+        """Send an accepted voice message only to its exact retry binding."""
+
+        if (
+            turn.message_id is None
+            or not self._voice_replay_frame_matches_turn(frame, turn)
+        ):
+            return False
+        return bool(
+            await self._safe_send(
+                context.websocket,
+                json.dumps(
+                    self._voice_ack_frame(
+                        turn,
+                        connection_generation=str(
+                            context.connection_generation
+                        ),
+                    ),
+                    separators=(",", ":"),
+                ),
+            )
+        )
+
+    @staticmethod
+    def _voice_replay_frame_matches_turn(
+        frame: _ConnectionIngressFrame,
+        turn: Any,
+    ) -> bool:
+        """Match the complete retained tuple before any replay disposition."""
+
+        if frame.operation_kind != "voice_chat_message":
+            return False
+        payload = frame.parsed.get("payload")
+        origin = payload.get("voice_origin") if isinstance(payload, dict) else None
+        if not isinstance(origin, dict):
+            return False
+        return not (
+            str(frame.submission_id) != turn.submission_id
+            or str(frame.request_generation) != turn.request_generation
+            or frame.chat_id != turn.chat_id
+            or origin.get("session_id") != turn.session_id
+            or origin.get("generation") != turn.session_generation
+            or origin.get("media_grant_revision")
+            != turn.media_grant_revision
+            or origin.get("turn_id") != turn.turn_id
+            or origin.get("client_turn_id") != turn.client_turn_id
+            or origin.get("chat_context_revision")
+            != turn.chat_context_revision
+        )
+
+    @staticmethod
+    def _voice_turn_origin_unavailable(turn: Any) -> bool:
+        return bool(
+            getattr(turn, "origin_chat_unavailable_at", None) is not None
+            or getattr(turn, "origin_chat_unavailable_reason", None)
+            in {"deleted", "access_revoked"}
+            or getattr(turn, "rejection_reason", None) == "chat_unavailable"
+        )
+
+    async def _send_voice_unavailable_replay(
+        self,
+        context: ConnectionContext,
+        frame: _ConnectionIngressFrame,
+        turn: Any,
+    ) -> bool:
+        """Return the retained terminal disposition without redispatch."""
+
+        if (
+            not self._voice_turn_origin_unavailable(turn)
+            or not self._voice_replay_frame_matches_turn(frame, turn)
+        ):
+            return False
+        retry_policy = (
+            "none"
+            if getattr(turn, "accepted_at", None) is not None
+            else "explicit_user_retry"
+        )
+        return bool(
+            await self._safe_send(
+                context.websocket,
+                json.dumps(
+                    {
+                        "type": "voice_submission_rejected",
+                        "schema_version": "1",
+                        "connection_generation": str(
+                            context.connection_generation
+                        ),
+                        "session_id": turn.session_id,
+                        "generation": turn.session_generation,
+                        "media_grant_revision": turn.media_grant_revision,
+                        "turn_id": turn.turn_id,
+                        "client_turn_id": turn.client_turn_id,
+                        "submission_id": turn.submission_id,
+                        "request_generation": turn.request_generation,
+                        "chat_id": turn.chat_id,
+                        "reason": "chat_unavailable",
+                        "retry_policy": retry_policy,
+                        "occurred_at": self._voice_occurred_at(),
+                        "message": "That conversation is no longer available.",
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+        )
+
+    async def _replay_voice_ack_if_accepted(
+        self,
+        context: ConnectionContext,
+        frame: _ConnectionIngressFrame,
+    ) -> bool:
+        """Reconcile a reconnect from content-free durable turn metadata."""
+
+        if frame.operation_kind != "voice_chat_message":
+            return False
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            return False
+        claims = getattr(self, "ui_sessions", {}).get(context.websocket) or {}
+        user_id = claims.get("sub")
+        if not isinstance(user_id, str) or not user_id:
+            return False
+        try:
+            turn = await asyncio.to_thread(
+                services.repository.get_turn_by_submission,
+                user_id=user_id,
+                submission_id=str(frame.submission_id),
+                request_generation=str(frame.request_generation),
+            )
+        except Exception:
+            # A retry may arrive before proof verification/message acceptance;
+            # the original execution remains the sole path allowed to accept.
+            return False
+        if self._voice_turn_origin_unavailable(turn):
+            return await self._send_voice_unavailable_replay(
+                context,
+                frame,
+                turn,
+            )
+        return await self._send_voice_ack_to_context(context, frame, turn)
+
+    async def _replay_voice_unavailable_if_tombstoned(
+        self,
+        context: ConnectionContext,
+        frame: _ConnectionIngressFrame,
+    ) -> bool:
+        """Suppress a process-local restart for one unavailable destination."""
+
+        if frame.operation_kind != "voice_chat_message":
+            return False
+        services = getattr(self, "voice_services", None)
+        claims = getattr(self, "ui_sessions", {}).get(context.websocket) or {}
+        user_id = claims.get("sub")
+        if services is None or not isinstance(user_id, str) or not user_id:
+            return False
+        try:
+            turn = await asyncio.to_thread(
+                services.repository.get_turn_by_submission,
+                user_id=user_id,
+                submission_id=str(frame.submission_id),
+                request_generation=str(frame.request_generation),
+            )
+        except Exception:
+            return False
+        return await self._send_voice_unavailable_replay(
+            context,
+            frame,
+            turn,
+        )
+
+    async def _broadcast_voice_ack(
+        self,
+        work: _ConnectionOperation | None,
+        *,
+        fallback_websocket: Any,
+        fallback_connection_generation: str,
+        turn: Any,
+    ) -> None:
+        """Acknowledge every same-operation subscriber without redispatch."""
+
+        delivered = False
+        if work is not None:
+            for subscriber, frame in tuple(work.subscribers.values()):
+                delivered = (
+                    await self._send_voice_ack_to_context(
+                        subscriber,
+                        frame,
+                        turn,
+                    )
+                    or delivered
+                )
+        if not delivered:
+            await self._safe_send(
+                fallback_websocket,
+                json.dumps(
+                    self._voice_ack_frame(
+                        turn,
+                        connection_generation=fallback_connection_generation,
+                    ),
+                    separators=(",", ":"),
+                ),
+            )
 
     @staticmethod
     def _public_terminal_code(code: str | None) -> str:
@@ -4519,12 +5136,36 @@ class Orchestrator:
             or (isinstance(value, str) and len(value) <= 512)
         }
         is_credential_save = action in _LLM_CREDENTIAL_SAVE_ACTIONS
+        is_voice_chat = (
+            action == "chat_message"
+            and isinstance(payload.get("voice_origin"), dict)
+        )
         if is_credential_save:
             # The owner-scoped submission is the durable retry identity across
             # connections.  Never hash credential/config values; a fixed
             # versioned operation identity both avoids secret-derived storage
             # and remains stable when a reconnect has a new wire generation.
             normalized = b"llm_credential_save:v1"
+        elif is_voice_chat:
+            origin = payload["voice_origin"]
+            normalized = json.dumps(
+                {
+                    "operation_kind": "voice_chat_message",
+                    "session_id": origin.get("session_id"),
+                    "generation": origin.get("generation"),
+                    "media_grant_revision": origin.get(
+                        "media_grant_revision"
+                    ),
+                    "turn_id": origin.get("turn_id"),
+                    "client_turn_id": origin.get("client_turn_id"),
+                    "chat_id": chat_id,
+                    "submission_id": str(submission_id),
+                    "request_generation": str(request_generation),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
         else:
             normalized = json.dumps(
                 {
@@ -4555,7 +5196,11 @@ class Orchestrator:
             operation_kind=(
                 "llm_credential_save"
                 if is_credential_save
-                else "connection_frame"
+                else (
+                    "voice_chat_message"
+                    if is_voice_chat
+                    else "connection_frame"
+                )
             ),
             deadline_at_monotonic=(
                 accepted_monotonic + LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS
@@ -4607,17 +5252,17 @@ class Orchestrator:
                     ),
                 )
             if prior_digest != frame.normalized_digest:
-                await self._send_admission_refusal(
-                    context.websocket,
-                    submission_id=frame.submission_id,
+                await self._send_connection_admission_refusal(
+                    context,
+                    frame,
                     code="idempotency_conflict",
                     retryable=False,
                 )
             return
         if len(context.ingress) >= CONNECTION_INGRESS_LIMIT:
-            await self._send_admission_refusal(
-                context.websocket,
-                submission_id=frame.submission_id,
+            await self._send_connection_admission_refusal(
+                context,
+                frame,
                 code="capacity_exceeded",
                 retryable=True,
                 retry_after_ms=1000,
@@ -4646,7 +5291,10 @@ class Orchestrator:
         coordinator = self.work_admission
         results = []
         for frame in batch:
-            if frame.operation_kind == "llm_credential_save":
+            if frame.operation_kind in {
+                "llm_credential_save",
+                "voice_chat_message",
+            }:
                 claims = (
                     getattr(self, "ui_sessions", {}).get(context.websocket)
                     or {}
@@ -4670,22 +5318,25 @@ class Orchestrator:
             ) if isinstance(frame.parsed.get("payload"), dict) else None
             request = OperationRequest(
                 operation_kind=frame.operation_kind,
-                admission_class=AdmissionClass.INTERACTIVE,
+                admission_class=self._connection_admission_class(frame),
                 owner=owner,
                 submission_id=frame.submission_id,
                 idempotency_namespace=(
-                    "llm_credential_save"
-                    if frame.operation_kind == "llm_credential_save"
+                    frame.operation_kind
+                    if frame.operation_kind
+                    in {"llm_credential_save", "voice_chat_message"}
                     else None
                 ),
                 idempotency_key=(
                     str(frame.submission_id)
-                    if frame.operation_kind == "llm_credential_save"
+                    if frame.operation_kind
+                    in {"llm_credential_save", "voice_chat_message"}
                     else None
                 ),
                 normalized_input_digest=(
                     frame.normalized_digest
-                    if frame.operation_kind == "llm_credential_save"
+                    if frame.operation_kind
+                    in {"llm_credential_save", "voice_chat_message"}
                     else None
                 ),
                 chat_id=frame.chat_id,
@@ -4736,18 +5387,31 @@ class Orchestrator:
                     )
         observability = getattr(self, "runtime_observability", None)
         if observability is not None:
-            try:
-                observability.observe_admission(
-                    coordinator.inspect_admission_class(
-                        AdmissionClass.INTERACTIVE
+            observed = {
+                (
+                    self._connection_admission_class(frame),
+                    (
+                        "voice_chat_message"
+                        if frame.operation_kind == "voice_chat_message"
+                        else "connection_frame"
                     ),
-                    operation_kind="connection_frame",
                 )
-            except Exception:
-                logger.debug(
-                    "Interactive admission metric refresh failed",
-                    exc_info=True,
-                )
+                for frame in batch
+            }
+            for admission_class, operation_kind in observed:
+                try:
+                    observability.observe_admission(
+                        coordinator.inspect_admission_class(
+                            admission_class
+                        ),
+                        operation_kind=operation_kind,
+                    )
+                except Exception:
+                    logger.debug(
+                        "%s admission metric refresh failed",
+                        admission_class.value,
+                        exc_info=True,
+                    )
         return results
 
     async def _connection_admission_pump(
@@ -4779,17 +5443,17 @@ class Orchestrator:
                             result.__traceback__,
                         ),
                     )
-                    await self._send_admission_refusal(
-                        context.websocket,
-                        submission_id=frame.submission_id,
+                    await self._send_connection_admission_refusal(
+                        context,
+                        frame,
                         code="operation_failed",
                         retryable=True,
                     )
                     continue
                 if not result.accepted:
-                    await self._send_admission_refusal(
-                        context.websocket,
-                        submission_id=frame.submission_id,
+                    await self._send_connection_admission_refusal(
+                        context,
+                        frame,
                         code=result.code,
                         retryable=result.retryable,
                         retry_after_ms=result.retry_after_ms,
@@ -4813,22 +5477,32 @@ class Orchestrator:
                         existing,
                         projection or result,
                     )
+                    await self._replay_voice_ack_if_accepted(
+                        context,
+                        frame,
+                    )
                     # The first process-local worker owns execution.  A retry
                     # is only another viewer/reconciliation path.
                     continue
+                captured_claims = dict(
+                    getattr(self, "ui_sessions", {}).get(
+                        context.websocket
+                    )
+                    or {}
+                )
                 work = _ConnectionOperation(
                     frame=frame,
                     owner=owner,
                     operation_id=result.operation_id,
                     auth_principal=(
-                        (
-                            getattr(self, "ui_sessions", {}).get(
-                                context.websocket
-                            )
-                            or {}
-                        ).get("preferred_username")
+                        captured_claims.get("preferred_username")
                         or owner.owner_user_id
                         or "unknown"
+                    ),
+                    auth_claims=(
+                        captured_claims
+                        if frame.operation_kind == "voice_chat_message"
+                        else {}
                     ),
                 )
                 work.subscribers[id(context)] = (context, frame)
@@ -4850,8 +5524,13 @@ class Orchestrator:
                     await self._send_operation_projection(
                         context, frame, work, projection
                     )
+                    await self._replay_voice_ack_if_accepted(
+                        context,
+                        frame,
+                    )
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
+                    work.auth_claims.clear()
                     continue
                 try:
                     await self._send_operation_accepted(context, frame, result)
@@ -4883,13 +5562,27 @@ class Orchestrator:
                     context.operations.pop(result.operation_id, None)
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
-                    await self._send_admission_refusal(
-                        context.websocket,
-                        submission_id=frame.submission_id,
+                    work.auth_claims.clear()
+                    await self._send_connection_admission_refusal(
+                        context,
+                        frame,
                         code="operation_failed",
                         retryable=True,
                     )
                     await self._notify_interactive_capacity()
+                    continue
+                if await self._replay_voice_unavailable_if_tombstoned(
+                    context,
+                    frame,
+                ):
+                    # The retained owner/session/turn/submission tuple is a
+                    # terminal destination tombstone. Keep the already
+                    # admitted operation untouched, but never create another
+                    # process-local dispatcher or tool-call path for it.
+                    context.operations.pop(result.operation_id, None)
+                    if registry.get(result.operation_id) is work:
+                        registry.pop(result.operation_id, None)
+                    work.auth_claims.clear()
                     continue
                 if (
                     context.closing
@@ -4916,7 +5609,13 @@ class Orchestrator:
             for work, _projection in scheduled:
                 frame = work.frame
                 work.lane_complete = loop.create_future()
-                if frame.read_only:
+                if frame.operation_kind == "voice_chat_message":
+                    # Voice turns own durable user-scoped operation fences and
+                    # private publication stages. They may overlap on one
+                    # socket/chat; only the short acceptance and terminal
+                    # rebase transactions serialize on the chat row.
+                    work.predecessors = ()
+                elif frame.read_only:
                     work.predecessors = tuple(
                         predecessor
                         for predecessor in (context.mutation_tail,)
@@ -4974,6 +5673,7 @@ class Orchestrator:
                     # turn never enters ``finally``. Release its lane future
                     # here as well so no surviving successor can deadlock.
                     completion = accepted_work.lane_complete
+                    accepted_work.auth_claims.clear()
                     if completion is not None:
                         context.pending_reads.discard(completion)
                         if not completion.done():
@@ -5003,7 +5703,7 @@ class Orchestrator:
             async with context.claim_lock:
                 claim = await self._call_work_admission(
                     self.work_admission.claim_operation,
-                    AdmissionClass.INTERACTIVE,
+                    self._connection_admission_class(work.frame),
                     work.operation_id,
                 )
             if claim is not None:
@@ -5350,18 +6050,23 @@ class Orchestrator:
         self,
         context: ConnectionContext,
         work: _ConnectionOperation,
+        *,
+        websocket: Any | None = None,
     ) -> None:
         """Run an admitted UI frame, atomically publishing canvas mutations."""
 
+        execution_websocket = (
+            context.websocket if websocket is None else websocket
+        )
         if work.frame.action not in _CONVERSATION_MUTATION_ACTIONS:
-            await self.handle_ui_message(context.websocket, work.frame.raw)
+            await self.handle_ui_message(execution_websocket, work.frame.raw)
             return
         chat_id = await self._conversation_mutation_chat_id(context, work)
         if chat_id is None:
             # The existing action handler emits its normal bounded validation
             # error.  No persistence method may mutate a revisioned chat
             # without the stage established below.
-            await self.handle_ui_message(context.websocket, work.frame.raw)
+            await self.handle_ui_message(execution_websocket, work.frame.raw)
             return
         user_id = work.owner.owner_user_id or "legacy"
         stage = None
@@ -5375,7 +6080,7 @@ class Orchestrator:
             try:
                 stage, token, request_generation = (
                     await self._begin_conversation_publication(
-                        context.websocket,
+                        execution_websocket,
                         chat_id=chat_id,
                         user_id=user_id,
                         operation_context=_CONNECTION_OPERATION_CONTEXT.get(),
@@ -5385,10 +6090,12 @@ class Orchestrator:
                     raise RuntimeError(
                         "conversation mutation lacks publication authority"
                     )
-                await self.handle_ui_message(context.websocket, work.frame.raw)
+                await self.handle_ui_message(
+                    execution_websocket, work.frame.raw
+                )
                 if stage.dirty:
                     await self._publish_conversation_snapshot(
-                        context.websocket,
+                        execution_websocket,
                         stage=stage,
                         request_generation=request_generation,
                     )
@@ -5525,13 +6232,15 @@ class Orchestrator:
 
         stop_renewal = asyncio.Event()
         renewal_task: asyncio.Task[Any] | None = None
+        connection_operation_context: dict[str, Any] | None = None
+        terminal_operation: Any = None
         progress_task = asyncio.create_task(
             self._emit_long_running_operation_phase(context, work),
             name=f"connection-progress-{work.operation_id}",
         )
 
         async def _execute() -> None:
-            nonlocal renewal_task
+            nonlocal connection_operation_context, renewal_task, terminal_operation
             # Wait before claiming an execution slot. Claiming first could
             # deadlock a small pool when a later writer occupies the only slot
             # while waiting for an earlier reader that has not yet claimed.
@@ -5546,6 +6255,7 @@ class Orchestrator:
                 context, work
             )
             if terminal is not None:
+                terminal_operation = terminal
                 await self._send_operation_terminal(context, work, terminal)
                 await self._notify_interactive_capacity()
                 return
@@ -5568,15 +6278,18 @@ class Orchestrator:
                 and work.owner.owner_scope is OwnerScope.CONNECTION
             ):
                 raise asyncio.CancelledError
+            connection_operation_context = {
+                "operation": claim.operation,
+                "owner": work.owner,
+                "execution_fence": claim.fence,
+                "operation_kind": work.frame.operation_kind,
+                "connection_generation": context.connection_generation,
+                "request_generation": work.frame.request_generation,
+            }
             token = _CONNECTION_OPERATION_CONTEXT.set(
-                {
-                    "operation": claim.operation,
-                    "owner": work.owner,
-                    "execution_fence": claim.fence,
-                    "connection_generation": context.connection_generation,
-                    "request_generation": work.frame.request_generation,
-                }
+                connection_operation_context
             )
+            runtime_websocket = None
             try:
                 if work.frame.operation_kind == "llm_credential_save":
                     deadline_monotonic = work.frame.deadline_at_monotonic
@@ -5614,7 +6327,7 @@ class Orchestrator:
                             deadline_at_monotonic=deadline_monotonic,
                         )
 
-                    operation_context = LLMConfigOperationContext(
+                    llm_config_context = LLMConfigOperationContext(
                         coordinator=self.work_admission,
                         fence=claim.fence,
                         deadline_at_monotonic=deadline_monotonic,
@@ -5622,24 +6335,82 @@ class Orchestrator:
                         emit_phase=_emit_phase,
                         unlock_after_save=_unlock,
                     )
-                    with active_llm_config_operation(operation_context):
+                    with active_llm_config_operation(llm_config_context):
                         await self._handle_llm_credential_operation(
                             context, work
                         )
-                    if operation_context.failure is not None:
-                        raise operation_context.failure
-                    if operation_context.completed_operation is None:
+                    if llm_config_context.failure is not None:
+                        raise llm_config_context.failure
+                    if llm_config_context.completed_operation is None:
                         raise RuntimeError(
                             "credential save returned without a durable terminal"
                         )
                     work.committed_operation = (
-                        operation_context.completed_operation
+                        llm_config_context.completed_operation
                     )
                 else:
-                    await self._run_connection_ui_operation(context, work)
+                    execution_websocket = context.websocket
+                    if work.frame.operation_kind == "voice_chat_message":
+                        from orchestrator.async_tasks import (
+                            DurableUserTurnWebSocket,
+                        )
+
+                        runtime_websocket = DurableUserTurnWebSocket(
+                            context.websocket,
+                            user_id=work.owner.owner_user_id or "legacy",
+                        )
+                        work.runtime_websocket = runtime_websocket
+                        self.ui_sessions[runtime_websocket] = dict(
+                            work.auth_claims
+                        )
+                        self.rote._profiles[runtime_websocket] = (
+                            self.rote.get_profile(context.websocket)
+                        )
+                        execution_websocket = runtime_websocket
+                    await self._run_connection_ui_operation(
+                        context,
+                        work,
+                        websocket=execution_websocket,
+                    )
             finally:
+                if runtime_websocket is not None:
+                    self.ui_sessions.pop(runtime_websocket, None)
+                    self.rote.cleanup(runtime_websocket)
+                    runtime_websocket.scrub()
+                    work.runtime_websocket = None
+                work.auth_claims.clear()
                 _CONNECTION_OPERATION_CONTEXT.reset(token)
-            await self._complete_connection_operation(context, work)
+            voice_rejection = connection_operation_context.get(
+                "voice_rejection"
+            )
+            voice_terminal_intent = connection_operation_context.get(
+                "voice_terminal_intent"
+            )
+            if isinstance(voice_rejection, _VoiceOperationRejection):
+                terminal_operation = await self._terminalize_connection_operation(
+                    context,
+                    work,
+                    state=OperationState.FAILED,
+                    terminal_code=voice_rejection.reason,
+                    safe_summary=voice_rejection.safe_summary,
+                )
+            elif isinstance(
+                voice_terminal_intent,
+                _VoiceOperationTerminalIntent,
+            ):
+                terminal_operation = await self._terminalize_connection_operation(
+                    context,
+                    work,
+                    state=voice_terminal_intent.state,
+                    terminal_code=voice_terminal_intent.terminal_code,
+                    safe_summary=voice_terminal_intent.safe_summary,
+                    retry_after_ms=voice_terminal_intent.retry_after_ms,
+                )
+            else:
+                terminal_operation = await self._complete_connection_operation(
+                    context,
+                    work,
+                )
 
         try:
             if work.frame.operation_kind == "llm_credential_save":
@@ -5653,7 +6424,7 @@ class Orchestrator:
             else:
                 await _execute()
         except LLMConfigOperationFailure as exc:
-            await self._terminalize_connection_operation(
+            terminal_operation = await self._terminalize_connection_operation(
                 context,
                 work,
                 state=exc.state,
@@ -5662,7 +6433,7 @@ class Orchestrator:
                 retry_after_ms=exc.retry_after_ms,
             )
         except TimeoutError:
-            await self._terminalize_connection_operation(
+            terminal_operation = await self._terminalize_connection_operation(
                 context,
                 work,
                 state=OperationState.RETRYABLE,
@@ -5670,7 +6441,7 @@ class Orchestrator:
                 safe_summary="Credential save timed out",
             )
         except asyncio.CancelledError:
-            await self._terminalize_connection_operation(
+            terminal_operation = await self._terminalize_connection_operation(
                 context,
                 work,
                 state=(
@@ -5705,6 +6476,7 @@ class Orchestrator:
             except Exception:
                 projection = None
             if projection is not None:
+                terminal_operation = projection
                 await self._send_operation_projection(
                     context, work.frame, work, projection
                 )
@@ -5713,7 +6485,7 @@ class Orchestrator:
                 "Connection operation failed operation_id=%s",
                 work.operation_id,
             )
-            await self._terminalize_connection_operation(
+            terminal_operation = await self._terminalize_connection_operation(
                 context,
                 work,
                 state=OperationState.FAILED,
@@ -5721,12 +6493,46 @@ class Orchestrator:
                 safe_summary="Operation failed",
             )
         finally:
+            # The execution body has exited. Stop its progress and lease
+            # observers before reconciliation and terminal speech; otherwise
+            # a final stale renewal can cancel this runner halfway through the
+            # exact-turn voice transition.
             progress_task.cancel()
             await asyncio.gather(progress_task, return_exceptions=True)
             stop_renewal.set()
             if renewal_task is not None:
                 renewal_task.cancel()
                 await asyncio.gather(renewal_task, return_exceptions=True)
+            try:
+                terminal_operation = (
+                    await self._reconcile_pending_voice_operation(
+                        connection_operation_context,
+                        context,
+                        work,
+                        terminal_operation,
+                    )
+                )
+                await self._finish_pending_voice_dispatch(
+                    connection_operation_context,
+                    terminal_operation,
+                )
+            except asyncio.CancelledError:
+                logger.warning("voice_terminal_finalization_cancelled")
+            except Exception:
+                logger.warning(
+                    "voice_terminal_finalization_unavailable",
+                    exc_info=True,
+                )
+            # The admission-pump done callback is a second cleanup fence, but
+            # the runner itself must scrub authority even when cancellation
+            # lands before the inner execution context is established.
+            runtime_websocket = work.runtime_websocket
+            if runtime_websocket is not None:
+                self.ui_sessions.pop(runtime_websocket, None)
+                self.rote.cleanup(runtime_websocket)
+                runtime_websocket.scrub()
+                work.runtime_websocket = None
+            work.auth_claims.clear()
             if work.lane_complete is not None:
                 context.pending_reads.discard(work.lane_complete)
                 if not work.lane_complete.done():
@@ -5870,6 +6676,13 @@ class Orchestrator:
                 )
                 return False
             context.preregistration.append(raw)
+            return True
+        if control == "voice_playout_event":
+            # Playout is authenticated, content-free control evidence.  It
+            # bypasses UI-action dispatch and durable operation admission.
+            # Keep it inline so per-connection sequence/rate checks cannot be
+            # reordered and a client cannot allocate unbounded control tasks.
+            await self._run_ui_control(context, raw)
             return True
         await self._enqueue_connection_frame(context, raw, parsed)
         return True
@@ -6096,8 +6909,344 @@ class Orchestrator:
         except Exception as exc:
             logger.error("UI message task error: %s", exc, exc_info=True)
 
+    @staticmethod
+    def _voice_occurred_at() -> str:
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+            "+00:00",
+            "Z",
+        )
+
+    async def _handle_voice_playout_event(
+        self,
+        websocket: Any,
+        event: VoicePlayoutEvent,
+    ) -> bool:
+        """Route one authenticated observation without audit or task creation."""
+
+        session_claims = getattr(self, "ui_sessions", {}).get(websocket) or {}
+        user_id = session_claims.get("sub")
+        binding = getattr(self, "_voice_control_bindings", {}).get(
+            id(websocket)
+        )
+        reason = "playout_binding_unavailable"
+        if (
+            not isinstance(user_id, str)
+            or not user_id
+            or binding is None
+            or binding.subject != user_id
+            or binding.device_id != event.device_id
+            or binding.connection_generation != event.connection_generation
+            or binding.expires_at <= datetime.now(UTC)
+        ):
+            logger.warning("voice_playout_event_rejected reason=%s", reason)
+            return False
+        device_bindings = getattr(self, "_voice_device_bindings", {})
+        if device_bindings.get((user_id, event.device_id)) != id(websocket):
+            logger.warning("voice_playout_event_rejected reason=%s", reason)
+            return False
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            logger.warning(
+                "voice_playout_event_rejected reason=voice_unavailable"
+            )
+            return False
+        try:
+            await services.handle_client_playout(
+                user_id=user_id,
+                claims=binding,
+                event=event,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            safe_reason = getattr(exc, "code", type(exc).__name__)
+            logger.warning(
+                "voice_playout_event_rejected reason=%s",
+                safe_reason,
+            )
+            return False
+        return True
+
+    async def _reject_voice_submission(
+        self,
+        websocket: Any,
+        *,
+        user_id: str,
+        origin: Any,
+        submission_id: str,
+        request_generation: str,
+        chat_id: str,
+        connection_generation: str,
+        reason: str,
+        retry_policy: str,
+    ) -> None:
+        """Persist and echo one bounded pre-acceptance voice disposition."""
+
+        services = getattr(self, "voice_services", None)
+        turn = None
+        worker_text_cleared = False
+        if services is not None:
+            try:
+                mutation = await asyncio.to_thread(
+                    services.repository.reject_transcript,
+                    user_id=user_id,
+                    turn_id=origin.turn_id,
+                    reason=reason,
+                    retry_policy=retry_policy,
+                    now=datetime.now(UTC),
+                )
+                turn = mutation.turn
+            except Exception:
+                logger.debug(
+                    "Voice transcript rejection persistence was unavailable",
+                    exc_info=True,
+                )
+            if turn is not None:
+                try:
+                    await services.coordinator.emit_transcript_rejected(
+                        turn,
+                        reason=reason,
+                        retry_policy=retry_policy,
+                    )
+                    worker_text_cleared = True
+                except Exception:
+                    logger.debug(
+                        "Voice worker rejection disposition was unavailable",
+                        exc_info=True,
+                    )
+        messages = {
+            "capacity_exhausted": (
+                "Voice request did not start because capacity is full. Please "
+                "try again."
+            ),
+            "chat_unavailable": (
+                "Voice request did not start because that conversation is no "
+                "longer available. Choose a conversation and try again."
+            ),
+            "invalid_binding": (
+                "Voice request did not start because it no longer matches this "
+                "session. Please say it again."
+            ),
+            "invalid_proof": (
+                "Voice request did not start because it could not be verified. "
+                "Please say it again."
+            ),
+            "proof_expired": (
+                "Voice request did not start because it expired before "
+                "acceptance. Please say it again."
+            ),
+            "permission_denied": (
+                "Voice request did not start because it is not authorized."
+            ),
+            "stale_session": (
+                "Voice request did not start because this voice session is no "
+                "longer current. Start voice again and retry."
+            ),
+            "malformed_final": (
+                "Voice request did not start because the speech was not "
+                "understood. Please say it again."
+            ),
+        }
+        message = messages.get(
+            reason,
+            "Voice request did not start. Please try again.",
+        )
+        operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+        if (
+            operation_context is not None
+            and operation_context.get("operation_kind")
+            == "voice_chat_message"
+        ):
+            operation_context["voice_rejection"] = _VoiceOperationRejection(
+                reason=reason,
+                safe_summary=message,
+            )
+        await self._safe_send(
+            websocket,
+            json.dumps(
+                {
+                    "type": "voice_submission_rejected",
+                    "schema_version": "1",
+                    "connection_generation": connection_generation,
+                    "session_id": origin.session_id,
+                    "generation": origin.generation,
+                    "media_grant_revision": origin.media_grant_revision,
+                    "turn_id": origin.turn_id,
+                    "client_turn_id": origin.client_turn_id,
+                    "submission_id": submission_id,
+                    "request_generation": request_generation,
+                    "chat_id": chat_id,
+                    "reason": reason,
+                    "retry_policy": retry_policy,
+                    "occurred_at": self._voice_occurred_at(),
+                    "message": message,
+                },
+                separators=(",", ":"),
+            ),
+        )
+        guidance_scheduler = getattr(
+            services,
+            "schedule_preacceptance_rejection",
+            None,
+        )
+        if (
+            worker_text_cleared
+            and turn is not None
+            and callable(guidance_scheduler)
+        ):
+            try:
+                guidance_scheduler(turn, reason=reason)
+            except Exception:
+                # A visible rejection and cleared worker transcript remain
+                # terminal even if the bounded speech task cannot be started.
+                logger.debug(
+                    "Voice pre-acceptance guidance could not be scheduled",
+                    exc_info=True,
+                )
+
+    async def _admit_voice_chat_message(
+        self,
+        websocket: Any,
+        msg: UIEvent,
+        *,
+        user_id: str,
+        chat_id: str,
+        message: str,
+    ) -> _VoiceDispatchContext | None:
+        """Verify one proof-bound final before it enters ordinary chat."""
+
+        origin = msg.voice_origin
+        if origin is None:
+            return None
+        submission_id = str(msg.submission_id or "")
+        request_generation = str(msg.request_generation or "")
+        connection_generation = str(msg.connection_generation or "")
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            await self._reject_voice_submission(
+                websocket,
+                user_id=user_id,
+                origin=origin,
+                submission_id=submission_id,
+                request_generation=request_generation,
+                chat_id=chat_id,
+                connection_generation=connection_generation,
+                reason="stale_session",
+                retry_policy="none",
+            )
+            return None
+        chat = await asyncio.to_thread(
+            self.history.get_chat,
+            chat_id,
+            user_id=user_id,
+        )
+        if chat is None:
+            retry_policy = "explicit_user_retry"
+            try:
+                retained_turn = await asyncio.to_thread(
+                    services.repository.get_turn_by_submission,
+                    user_id=user_id,
+                    submission_id=submission_id,
+                    request_generation=request_generation,
+                )
+                if retained_turn.accepted_at is not None:
+                    retry_policy = "none"
+            except Exception:
+                pass
+            await self._reject_voice_submission(
+                websocket,
+                user_id=user_id,
+                origin=origin,
+                submission_id=submission_id,
+                request_generation=request_generation,
+                chat_id=chat_id,
+                connection_generation=connection_generation,
+                reason="chat_unavailable",
+                retry_policy=retry_policy,
+            )
+            return None
+        from orchestrator.voice_sessions import (
+            TranscriptSubmission,
+            TranscriptSubmissionRejected,
+        )
+
+        try:
+            request = TranscriptSubmission(
+                user_id=user_id,
+                session_id=origin.session_id,
+                generation=origin.generation,
+                media_grant_revision=origin.media_grant_revision,
+                turn_id=origin.turn_id,
+                client_turn_id=origin.client_turn_id,
+                submission_id=submission_id,
+                request_generation=request_generation,
+                chat_id=chat_id,
+                chat_context_revision=origin.chat_context_revision,
+                source_participant_identity=(
+                    origin.source_participant_identity
+                ),
+                detected_language=origin.detected_language,
+                text=message,
+                text_digest_sha256=origin.text_digest_sha256,
+                transcript_proof=origin.transcript_proof,
+                proof_expires_at=origin.proof_expires_at,
+            )
+            admission = await services.admit_transcript(
+                request,
+                now=datetime.now(UTC),
+            )
+        except TranscriptSubmissionRejected as exc:
+            await self._reject_voice_submission(
+                websocket,
+                user_id=user_id,
+                origin=origin,
+                submission_id=submission_id,
+                request_generation=request_generation,
+                chat_id=chat_id,
+                connection_generation=connection_generation,
+                reason=exc.reason,
+                retry_policy=exc.retry_policy,
+            )
+            return None
+        except (TypeError, ValueError):
+            await self._reject_voice_submission(
+                websocket,
+                user_id=user_id,
+                origin=origin,
+                submission_id=submission_id,
+                request_generation=request_generation,
+                chat_id=chat_id,
+                connection_generation=connection_generation,
+                reason="malformed_final",
+                retry_policy="explicit_user_retry",
+            )
+            return None
+        except Exception:
+            logger.warning(
+                "Voice transcript admission was unavailable",
+                exc_info=True,
+            )
+            await self._reject_voice_submission(
+                websocket,
+                user_id=user_id,
+                origin=origin,
+                submission_id=submission_id,
+                request_generation=request_generation,
+                chat_id=chat_id,
+                connection_generation=connection_generation,
+                reason="stale_session",
+                retry_policy="none",
+            )
+            return None
+        return _VoiceDispatchContext(
+            admission=admission,
+            connection_generation=connection_generation,
+            origin=origin,
+        )
+
     async def handle_ui_message(self, websocket, message: str):
         """Handle message from a UI client."""
+        raw_frame: dict[str, Any] | None = None
         try:
             raw_frame = self._parsed_ui_frame(message)
             if (
@@ -6179,6 +7328,23 @@ class Orchestrator:
                     user_id = user_data.get("sub", "legacy")
                     _resume_requested = getattr(msg, "resume", None) is not None
                     _resume_confirmed_not_found = False
+
+                    # Feature 065: voice mutations require a fresh bearer
+                    # scoped to this authenticated subject, stable device, and
+                    # fenced connection. Failure disables voice for this
+                    # socket without weakening ordinary typed chat.
+                    if msg.device_id is not None:
+                        try:
+                            await self._issue_voice_control_binding(
+                                websocket,
+                                msg,
+                                user_data,
+                            )
+                        except VoiceControlBindingError as exc:
+                            logger.warning(
+                                "voice control binding unavailable: %s",
+                                exc.code,
+                            )
 
                     # Feature 052 (FR-012): profile save + login audit events
                     # leave the first-paint critical path. One task keeps the
@@ -6354,6 +7520,25 @@ class Orchestrator:
                     if evt:
                         evt.set()
 
+                    # Feature 065: publish the server-owned composer only
+                    # after resume ownership has been resolved. A bounded
+                    # refresh catches the worker becoming ready shortly after
+                    # backend startup without making typed chat wait.
+                    if (
+                        msg.device_id is not None
+                        and msg.connection_generation is not None
+                        and "voice" in (msg.capabilities or [])
+                    ):
+                        self._start_voice_composer_refresh(
+                            user_id=user_id,
+                            device_id=msg.device_id,
+                            connection_generation=msg.connection_generation,
+                            selected_chat_id=(
+                                (msg.resume or {}).get("active_chat_id")
+                                or self._ws_active_chat.get(id(websocket))
+                            ),
+                        )
+
                     # Feature 054: mandatory first-run provider-setup gate.
                     # An unconfigured user's very first post-login surface is
                     # the setup dialog — pushed HERE, before the welcome
@@ -6528,6 +7713,9 @@ class Orchestrator:
                     await self._safe_send(websocket, AuthRequired(reason=reason).to_json())
                     return
 
+            elif isinstance(msg, VoicePlayoutEvent):
+                await self._handle_voice_playout_event(websocket, msg)
+
             elif msg.type in ("llm_config_set", "llm_config_clear"):
                 # Feature 006-user-llm-config: per-user LLM credential
                 # set/clear over WS. Both require an authenticated socket.
@@ -6608,12 +7796,44 @@ class Orchestrator:
                 # Audit: record the WS UI action in the user's audit log
                 try:
                     from audit.hooks import record_ws_action
-                    _action_chat_id = msg.session_id or (msg.payload or {}).get("chat_id")
+                    _audit_payload = msg.payload or {}
+                    _action_chat_id = msg.session_id or _audit_payload.get(
+                        "chat_id"
+                    )
+                    _voice_audit_origin = _audit_payload.get("voice_origin")
+                    if (
+                        msg.action == "chat_message"
+                        and isinstance(_voice_audit_origin, dict)
+                    ):
+                        # The final transcript already follows the ordinary
+                        # message-retention policy.  Do not create a second
+                        # PHI-bearing copy (or retain its digest/proof) in WS
+                        # audit metadata; only immutable correlation fences
+                        # are operationally necessary here (065 FR-046/047).
+                        _audit_payload = {
+                            "voice_origin": {
+                                key: _voice_audit_origin.get(key)
+                                for key in (
+                                    "schema_version",
+                                    "session_id",
+                                    "generation",
+                                    "media_grant_revision",
+                                    "turn_id",
+                                    "client_turn_id",
+                                    "chat_context_revision",
+                                )
+                            },
+                            "chat_id": _action_chat_id,
+                            "submission_id": str(msg.submission_id or ""),
+                            "request_generation": str(
+                                msg.request_generation or ""
+                            ),
+                        }
                     asyncio.create_task(record_ws_action(
                         claims=self.ui_sessions.get(websocket),
                         action=str(msg.action or ""),
                         chat_id=_action_chat_id,
-                        payload=msg.payload or {},
+                        payload=_audit_payload,
                     ))
                 except Exception as _e:
                     logger.debug(f"WS action audit record failed: {_e}")
@@ -6622,7 +7842,9 @@ class Orchestrator:
                     user_message = msg.payload.get("message", "")
                     chat_id = msg.session_id or msg.payload.get("chat_id")
                     draft_agent_id = msg.payload.get("draft_agent_id")
-                    await self._retire_welcome_canvas(websocket)
+                    voice_origin = msg.voice_origin
+                    if voice_origin is None:
+                        await self._retire_welcome_canvas(websocket)
                     # Feature 013 / FR-018, FR-024: in-chat tool picker
                     # selection narrows the orchestrator's tool list. None
                     # / absent ≡ no narrowing (existing default behavior).
@@ -6637,8 +7859,39 @@ class Orchestrator:
                     else:
                         selected_tools = None
 
-                    # If no chat_id provided, create one
-                    if not chat_id:
+                    voice_dispatch = None
+                    if voice_origin is not None:
+                        if not chat_id:
+                            await self._reject_voice_submission(
+                                websocket,
+                                user_id=user_id,
+                                origin=voice_origin,
+                                submission_id=str(msg.submission_id or ""),
+                                request_generation=str(
+                                    msg.request_generation or ""
+                                ),
+                                chat_id=str(chat_id or voice_origin.session_id),
+                                connection_generation=str(
+                                    msg.connection_generation or ""
+                                ),
+                                reason="invalid_binding",
+                                retry_policy="none",
+                            )
+                            return
+                        voice_dispatch = await self._admit_voice_chat_message(
+                            websocket,
+                            msg,
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            message=user_message,
+                        )
+                        if voice_dispatch is None:
+                            return
+                        user_message = voice_dispatch.admission.canonical_text
+                    # If no chat_id provided, create one for ordinary typed
+                    # chat only. Voice is permanently bound to its recognized
+                    # origin and may never resurrect a deleted destination.
+                    elif not chat_id:
                         chat_id = await asyncio.to_thread(
                             self.history.create_chat, user_id=user_id)
                         # Inform UI about new chat ID
@@ -6659,10 +7912,15 @@ class Orchestrator:
                     # Feature 028: chat_message also marks this socket's active
                     # chat (pre-028 only load_chat did) so workspace upserts in
                     # brand-new chats reach the originating tab's siblings too.
-                    self._ws_active_chat[id(websocket)] = chat_id
+                    if voice_origin is None:
+                        self._ws_active_chat[id(websocket)] = chat_id
 
                     display_message = msg.payload.get("display_message")
-                    async_mode = msg.payload.get("async_mode", False)
+                    async_mode = (
+                        False
+                        if voice_origin is not None
+                        else msg.payload.get("async_mode", False)
+                    )
 
                     # Feature 031: structured attachment references staged on
                     # this turn. Each entry: {attachment_id, filename, category}.
@@ -6687,6 +7945,7 @@ class Orchestrator:
                             websocket, user_message, chat_id, display_message,
                             user_id=user_id, draft_agent_id=draft_agent_id,
                             selected_tools=selected_tools, attachments=attachments,
+                            voice_dispatch=voice_dispatch,
                         )
 
                 elif msg.action == "cancel_task":
@@ -7012,10 +8271,39 @@ class Orchestrator:
 
                 elif msg.action == "new_chat":
                     chat_id = self.history.create_chat(user_id=user_id)
-                    await self._safe_send(websocket, json.dumps({
-                        "type": "chat_created",
-                        "payload": {"chat_id": chat_id, "from_message": False}
-                    }))
+                    if isinstance(msg, CorrelatedNewChat):
+                        await self._safe_send(
+                            websocket,
+                            ChatCreated(
+                                connection_generation=(
+                                    msg.connection_generation or ""
+                                ),
+                                submission_id=msg.submission_id or "",
+                                request_generation=(
+                                    msg.request_generation or ""
+                                ),
+                                payload={
+                                    "schema_version": msg.schema_version,
+                                    "chat_id": chat_id,
+                                    "from_message": False,
+                                    "connection_generation": (
+                                        msg.connection_generation
+                                    ),
+                                    "submission_id": msg.submission_id,
+                                    "request_generation": (
+                                        msg.request_generation
+                                    ),
+                                },
+                            ).to_json(),
+                        )
+                    else:
+                        await self._safe_send(websocket, json.dumps({
+                            "type": "chat_created",
+                            "payload": {
+                                "chat_id": chat_id,
+                                "from_message": False,
+                            },
+                        }))
 
                 # Feature 054 (FR-014): LLM-dependent workspace/component
                 # verbs are refused server-side while the acting user has no
@@ -7655,6 +8943,18 @@ class Orchestrator:
                             raise RuntimeError("ui_event action is not supported")
 
         except Exception as e:
+            if (
+                isinstance(raw_frame, dict)
+                and raw_frame.get("type") == "voice_playout_event"
+            ):
+                # This telemetry/control evidence carries no user-facing
+                # operation. Malformed observations fail closed without a
+                # generic error frame, audit entry, or task side effect.
+                logger.warning(
+                    "voice_playout_event_rejected reason=%s",
+                    getattr(e, "code", type(e).__name__),
+                )
+                return
             # Feature 060 credential Save owns its terminal at the durable
             # operation wrapper.  Preserve that typed, safe outcome across
             # the legacy chrome dispatcher instead of swallowing it as a
@@ -8266,6 +9566,135 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
             raise
 
+    async def _begin_voice_conversation_publication(
+        self,
+        websocket,
+        *,
+        chat_id: str,
+        user_id: str,
+        user_content: Any,
+        operation_context: Any,
+        voice_dispatch: _VoiceDispatchContext,
+    ):
+        """Commit voice acceptance and activate its linked private result.
+
+        Only the user bubble, the complete accepted canvas/layout view, the
+        assistant-result stage, and the content-free voice correlation share
+        this short transaction. Model/tool execution starts after the chat row
+        lock is released and mutates only the result stage.
+        """
+
+        authority = self._conversation_authority(
+            operation_context, websocket
+        )
+        if authority is None:
+            raise RuntimeError("voice publication lacks execution authority")
+        operation, owner, fence = authority
+        turn = voice_dispatch.admission.turn
+        if (
+            str(operation.chat_id or "") != str(chat_id)
+            or str(operation.request_generation or "")
+            != str(turn.request_generation)
+        ):
+            raise RuntimeError("voice publication identity changed")
+        result_request_generation = turn.result_request_generation
+        if result_request_generation is None:
+            raise RuntimeError(
+                "voice result request generation is unavailable"
+            )
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            raise RuntimeError("voice services became unavailable")
+
+        def _accept_turn(**correlation):
+            return services.repository.accept_transcript(
+                user_id=user_id,
+                turn_id=turn.turn_id,
+                message_id=correlation["message_id"],
+                accepted_connection_generation=(
+                    voice_dispatch.connection_generation
+                ),
+                acceptance_commit_id=correlation[
+                    "acceptance_commit_id"
+                ],
+                result_commit_id=correlation["result_commit_id"],
+                operation_id=str(operation.operation_id),
+                now=datetime.now(UTC),
+                transaction=correlation["cursor"],
+            )
+
+        accepted = await asyncio.to_thread(
+            self.conversation_commits.accept_voice_turn,
+            chat_id=chat_id,
+            owner_user_id=user_id,
+            request_generation=str(turn.request_generation),
+            result_request_generation=str(result_request_generation),
+            connection_generation=voice_dispatch.connection_generation,
+            user_content=user_content,
+            operation_fence=fence,
+            operation_owner=owner,
+            accept_turn=_accept_turn,
+        )
+        accepted_turn = accepted.get("accepted_turn")
+        if accepted_turn is None:
+            accepted_turn = await asyncio.to_thread(
+                services.repository.get_turn,
+                user_id=user_id,
+                turn_id=turn.turn_id,
+            )
+        accepted_turn_record = getattr(accepted_turn, "turn", accepted_turn)
+
+        from orchestrator.conversation_publication import (
+            ConversationPublicationStage,
+            activate_conversation_publication,
+        )
+
+        acceptance_record = accepted["acceptance"]
+        acceptance_stage = ConversationPublicationStage(
+            history=self.history,
+            commit_id=acceptance_record["commit_id"],
+            chat_id=chat_id,
+            user_id=user_id,
+            base_render_revision=acceptance_record[
+                "base_render_revision"
+            ],
+            next_render_revision=acceptance_record[
+                "committed_render_revision"
+            ],
+            operation_fence=fence,
+            layouts=accepted["layouts"],
+            publication_role="user_acceptance",
+        )
+        acceptance_stage.seal(committed=True)
+
+        result_record = accepted["result"]
+        result_stage = ConversationPublicationStage(
+            history=self.history,
+            commit_id=result_record["commit_id"],
+            chat_id=chat_id,
+            user_id=user_id,
+            base_render_revision=result_record["base_render_revision"],
+            next_render_revision=(
+                result_record["base_render_revision"] + 1
+            ),
+            operation_fence=fence,
+            layouts=accepted["layouts"],
+            publication_role="assistant_result",
+            execution_base_render_revision=(
+                result_record["execution_base_render_revision"]
+            ),
+        )
+        token = activate_conversation_publication(result_stage)
+        return (
+            result_stage,
+            token,
+            str(result_request_generation),
+            acceptance_stage,
+            acceptance_record,
+            accepted_turn_record,
+            int(accepted["message_id"]),
+        )
+
     async def _begin_detached_conversation_publication(
         self,
         *,
@@ -8527,15 +9956,31 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         layouts = await asyncio.to_thread(
             self.workspace.live_layouts, stage.chat_id, stage.user_id
         )
-        committed = await asyncio.to_thread(
-            self.conversation_commits.publish_commit,
-            commit_id=stage.commit_id,
-            owner_user_id=stage.user_id,
-            messages=None,
-            canvas_components=raw_components,
-            canvas_layouts=layouts,
-            operation_fence=stage.operation_fence,
-        )
+        if stage.publication_role == "assistant_result":
+            committed = await asyncio.to_thread(
+                self.conversation_commits.publish_voice_result,
+                commit_id=stage.commit_id,
+                owner_user_id=stage.user_id,
+                canvas_components=raw_components,
+                canvas_layouts=layouts,
+                operation_fence=stage.operation_fence,
+            )
+        else:
+            committed = await asyncio.to_thread(
+                self.conversation_commits.publish_commit,
+                commit_id=stage.commit_id,
+                owner_user_id=stage.user_id,
+                messages=None,
+                canvas_components=raw_components,
+                canvas_layouts=layouts,
+                operation_fence=stage.operation_fence,
+            )
+        if stage.summary_text is not None:
+            committed = {
+                **committed,
+                "summary_text": stage.summary_text,
+                "summary_source": stage.summary_source,
+            }
         stage.seal(committed=True)
 
         if stage.snapshot_cause:
@@ -8637,6 +10082,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     exc_info=True,
                 )
 
+        # Recent conversations are a projection of durable commits, not of
+        # optional title generation.  In particular, voice acceptance commits
+        # the user's first message before model execution begins; if title
+        # generation or the assistant result later fails, the accepted chat
+        # must still replace the history surface's empty state.  Keep this
+        # owner-scoped and fail-soft so presentation fan-out cannot roll back
+        # or delay the already-authoritative conversation commit.
+        await self._refresh_history_after_commit(stage.user_id)
+
     def _scope_conversation_transient(self, websocket, data: str) -> str:
         """Attach the current equality fence to disposable live UI frames."""
 
@@ -8708,75 +10162,87 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         selected_tools=None,
         attachments=None,
         operation_context=None,
+        voice_dispatch=None,
     ):
         """Run handle_chat_message under a per-websocket lock so messages
         are serialized but the WS receive loop is never blocked."""
         ws_id = id(websocket)
-        lock = self._chat_locks.setdefault(ws_id, asyncio.Lock())
-        async with lock:
-            try:
-                if operation_context is None:
-                    operation_context = _CONNECTION_OPERATION_CONTEXT.get()
-                workspace_locks = getattr(self, "_workspace_locks", None)
-                if workspace_locks is None:
-                    workspace_locks = {}
-                    self._workspace_locks = workspace_locks
-                workspace_lock = workspace_locks.setdefault(
-                    chat_id, asyncio.Lock()
+        try:
+            if operation_context is None:
+                operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+            if voice_dispatch is not None:
+                await self.handle_chat_message(
+                    websocket, message, chat_id, display_message,
+                    user_id=user_id, draft_agent_id=draft_agent_id,
+                    selected_tools=selected_tools, attachments=attachments,
+                    operation_context=operation_context,
+                    voice_dispatch=voice_dispatch,
                 )
-                async with workspace_lock:
-                    await self.handle_chat_message(
-                        websocket, message, chat_id, display_message,
-                        user_id=user_id, draft_agent_id=draft_agent_id,
-                        selected_tools=selected_tools, attachments=attachments,
-                        operation_context=operation_context,
+            else:
+                lock = self._chat_locks.setdefault(ws_id, asyncio.Lock())
+                async with lock:
+                    workspace_locks = getattr(self, "_workspace_locks", None)
+                    if workspace_locks is None:
+                        workspace_locks = {}
+                        self._workspace_locks = workspace_locks
+                    workspace_lock = workspace_locks.setdefault(
+                        chat_id, asyncio.Lock()
                     )
-            except Exception as e:
-                # Full details (including any upstream HTML payload, stack
-                # trace, etc.) go to structured logs only. The user-facing
-                # message is a generic, safe string — never str(e), which
-                # may contain raw HTML, secrets, or PHI from upstream.
-                logger.error(f"Chat task error: {e}", exc_info=True)
-                # Feature 014: a mid-turn exception left some steps in-flight
-                # with no chance to complete. Mark them cancelled so the UI
-                # does not show a stuck spinner. (The success path does NOT
-                # cancel — every step lifecycle call has already fired by
-                # the time handle_chat_message returns; auto-cancelling on
-                # the success path produced false-cancel labels on
-                # successfully-completed steps.)
-                recorder = self._chat_recorders.get(ws_id)
-                if recorder is not None:
-                    try:
-                        await recorder.cancel_all_in_flight()
-                    except Exception:  # pragma: no cover — defensive
-                        logger.debug("ChatStepRecorder exception flush failed", exc_info=True)
-                await self._safe_send(websocket, json.dumps({
-                    "type": "chat_status", "status": "done",
-                    "message": "Something went wrong while processing your request. Please try again."
-                }))
-                # Surface a clean Alert in the chat so the user sees a
-                # tangible response in the message area, matching the
-                # FR-008 / FR-009 (006) "LLM unavailable" pattern.
+                    async with workspace_lock:
+                        await self.handle_chat_message(
+                            websocket, message, chat_id, display_message,
+                            user_id=user_id, draft_agent_id=draft_agent_id,
+                            selected_tools=selected_tools,
+                            attachments=attachments,
+                            operation_context=operation_context,
+                            voice_dispatch=voice_dispatch,
+                        )
+        except Exception as e:
+            # Full details (including any upstream HTML payload, stack
+            # trace, etc.) go to structured logs only. The user-facing
+            # message is a generic, safe string — never str(e), which
+            # may contain raw HTML, secrets, or PHI from upstream.
+            logger.error(f"Chat task error: {e}", exc_info=True)
+            # Feature 014: a mid-turn exception left some steps in-flight
+            # with no chance to complete. Mark them cancelled so the UI
+            # does not show a stuck spinner. (The success path does NOT
+            # cancel — every step lifecycle call has already fired by
+            # the time handle_chat_message returns; auto-cancelling on
+            # the success path produced false-cancel labels on
+            # successfully-completed steps.)
+            recorder = self._chat_recorders.get(ws_id)
+            if recorder is not None:
                 try:
-                    await self.send_ui_render(websocket, [
-                        Alert(
-                            message="Something went wrong while processing your request. Please try again.",
-                            variant="error",
-                        ).to_dict()
-                    ])
+                    await recorder.cancel_all_in_flight()
                 except Exception:  # pragma: no cover — defensive
-                    pass
-            finally:
-                # Feature 014: clear the per-turn step recorder reference.
-                # We do NOT flush in-flight steps here — the success path
-                # has already terminated them, and the exception path above
-                # explicitly flushes. The cancel_task handler (line ~959)
-                # also flushes for genuine user-initiated cancellations.
-                # If a programmer error left a step in_progress, the
-                # GET /api/chats/{id}/steps endpoint heals stale rows
-                # (>30 s old, no active task) into 'interrupted' on the
-                # next chat load.
-                self._chat_recorders.pop(ws_id, None)
+                    logger.debug("ChatStepRecorder exception flush failed", exc_info=True)
+            await self._safe_send(websocket, json.dumps({
+                "type": "chat_status", "status": "done",
+                "message": "Something went wrong while processing your request. Please try again."
+            }))
+            # Surface a clean Alert in the chat so the user sees a
+            # tangible response in the message area, matching the
+            # FR-008 / FR-009 (006) "LLM unavailable" pattern.
+            try:
+                await self.send_ui_render(websocket, [
+                    Alert(
+                        message="Something went wrong while processing your request. Please try again.",
+                        variant="error",
+                    ).to_dict()
+                ])
+            except Exception:  # pragma: no cover — defensive
+                pass
+        finally:
+            # Feature 014: clear the per-turn step recorder reference.
+            # We do NOT flush in-flight steps here — the success path
+            # has already terminated them, and the exception path above
+            # explicitly flushes. The cancel_task handler (line ~959)
+            # also flushes for genuine user-initiated cancellations.
+            # If a programmer error left a step in_progress, the
+            # GET /api/chats/{id}/steps endpoint heals stale rows
+            # (>30 s old, no active task) into 'interrupted' on the
+            # next chat load.
+            self._chat_recorders.pop(ws_id, None)
 
     async def _dispatch_async_chat(
         self, websocket, message: str, chat_id: str, display_message: str = None,
@@ -9488,6 +10954,642 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 pass
         return message
 
+    def _defer_voice_chat_dispatch(
+        self,
+        *,
+        voice_dispatch: _VoiceDispatchContext,
+        user_id: str,
+        chat_id: str,
+        stage: Any,
+    ) -> bool:
+        """Attach one finalizer to the active admitted operation, if present."""
+
+        operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+        if (
+            not isinstance(operation_context, dict)
+            or operation_context.get("operation_kind")
+            != "voice_chat_message"
+        ):
+            return False
+        pending = _PendingVoiceFinalization(
+            voice_dispatch=voice_dispatch,
+            user_id=user_id,
+            chat_id=chat_id,
+            stage=stage,
+        )
+        existing = operation_context.get("voice_finalization")
+        if existing is not None:
+            if (
+                isinstance(existing, _PendingVoiceFinalization)
+                and existing.voice_dispatch is voice_dispatch
+                and existing.stage is stage
+                and existing.user_id == user_id
+                and existing.chat_id == chat_id
+            ):
+                return True
+            raise RuntimeError("voice finalization was already registered")
+        operation_context["voice_finalization"] = pending
+        return True
+
+    @staticmethod
+    def _remember_voice_operation_terminal_intent(
+        task_state: TaskState,
+    ) -> bool:
+        """Persist a fixed voice outcome even when legacy task tracking is off."""
+
+        operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+        if (
+            not isinstance(operation_context, dict)
+            or operation_context.get("operation_kind")
+            != "voice_chat_message"
+        ):
+            return False
+        intents = {
+            TaskState.FAILED: _VoiceOperationTerminalIntent(
+                state=OperationState.FAILED,
+                terminal_code="operation_failed",
+                safe_summary=_VOICE_REQUEST_FAILED_MESSAGE,
+            ),
+            TaskState.CANCELLED: _VoiceOperationTerminalIntent(
+                state=OperationState.CANCELLED,
+                terminal_code="cancelled_by_user",
+                safe_summary=_VOICE_REQUEST_CANCELLED_MESSAGE,
+            ),
+            TaskState.RETRYABLE: _VoiceOperationTerminalIntent(
+                state=OperationState.RETRYABLE,
+                terminal_code="disconnected",
+                safe_summary=_VOICE_REQUEST_INTERRUPTED_MESSAGE,
+                retry_after_ms=1000,
+            ),
+        }
+        intent = intents.get(task_state)
+        if intent is None:
+            raise ValueError("voice terminal intent must be a terminal task state")
+        existing = operation_context.get("voice_terminal_intent")
+        if existing is not None:
+            if existing == intent:
+                return True
+            raise RuntimeError("voice terminal intent was already registered")
+        operation_context["voice_terminal_intent"] = intent
+        return True
+
+    @staticmethod
+    def _operation_projection_matches_work(
+        work: _ConnectionOperation,
+        projection: Any,
+        *,
+        connection_generation: _uuid.UUID | None,
+    ) -> bool:
+        """Validate the complete public identity of one operation projection."""
+
+        if not isinstance(projection, (OperationRecord, SafeOperationProjection)):
+            return False
+        if (
+            projection.operation_id != work.operation_id
+            or projection.operation_kind != work.frame.operation_kind
+            or projection.owner_scope is not work.owner.owner_scope
+            or str(projection.chat_id or "") != str(work.frame.chat_id or "")
+            or projection.request_generation != work.frame.request_generation
+        ):
+            return False
+        if projection.connection_generation != connection_generation:
+            return False
+        if isinstance(projection, OperationRecord):
+            return (
+                projection.owner_user_id == work.owner.owner_user_id
+                and projection.connection_scope_id
+                == work.owner.connection_scope_id
+            )
+        return True
+
+    async def _reconcile_pending_voice_operation(
+        self,
+        operation_context: dict[str, Any] | None,
+        context: ConnectionContext,
+        work: _ConnectionOperation,
+        candidate: Any,
+    ) -> Any:
+        """Resolve one exact terminal before an accepted voice turn is closed."""
+
+        if (
+            not isinstance(operation_context, dict)
+            or not isinstance(
+                operation_context.get("voice_finalization"),
+                _PendingVoiceFinalization,
+            )
+        ):
+            return candidate
+        terminal_states = {
+            OperationState.COMPLETED,
+            OperationState.FAILED,
+            OperationState.CANCELLED,
+            OperationState.RETRYABLE,
+        }
+        if (
+            self._operation_projection_matches_work(
+                work,
+                candidate,
+                connection_generation=context.connection_generation,
+            )
+            and candidate.state in terminal_states
+        ):
+            return candidate
+        try:
+            projection = await self._call_work_admission(
+                self.work_admission.query_operation,
+                owner=work.owner,
+                operation_id=work.operation_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "voice_terminal_operation_reconcile_failed reason=query_failed",
+                exc_info=True,
+            )
+            return None
+        if not self._operation_projection_matches_work(
+            work,
+            projection,
+            connection_generation=context.connection_generation,
+        ):
+            logger.warning(
+                "voice_terminal_operation_reconcile_failed reason=identity_mismatch"
+            )
+            return None
+        if projection.state in terminal_states:
+            return projection
+        if (
+            projection.state is not OperationState.RUNNING
+            or not isinstance(work.fence, ExecutionFence)
+        ):
+            return None
+        try:
+            current = await self._call_work_admission(
+                self.work_admission.assert_current_execution,
+                work.fence,
+            )
+        except StaleExecutionFenceError:
+            return None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "voice_terminal_operation_reconcile_failed "
+                "reason=fence_check_failed",
+                exc_info=True,
+            )
+            return None
+        if (
+            not self._operation_projection_matches_work(
+                work,
+                current,
+                connection_generation=context.connection_generation,
+            )
+            or current.state is not OperationState.RUNNING
+        ):
+            return None
+        resolved = await self._terminalize_connection_operation(
+            context,
+            work,
+            state=OperationState.FAILED,
+            terminal_code="voice_dispatch_incomplete",
+            safe_summary=_VOICE_REQUEST_FAILED_MESSAGE,
+        )
+        if (
+            self._operation_projection_matches_work(
+                work,
+                resolved,
+                connection_generation=context.connection_generation,
+            )
+            and resolved.state in terminal_states
+        ):
+            return resolved
+        return None
+
+    async def _finish_pending_voice_dispatch(
+        self,
+        operation_context: dict[str, Any] | None,
+        terminal_operation: Any,
+    ) -> None:
+        """Bound terminal reconciliation to this runner's live authority.
+
+        The operation context becomes unreachable when the connection runner
+        returns, so transient authority failures are retried inline.  Exhaustion
+        leaves the durable turn unchanged rather than inventing success or
+        failure, logs the missing terminal announcement, and scrubs the
+        runner-local finalizer.
+        """
+
+        if not isinstance(operation_context, dict):
+            return
+        pending = operation_context.get("voice_finalization")
+        if not isinstance(pending, _PendingVoiceFinalization):
+            return
+        operation_state = getattr(terminal_operation, "state", None)
+        if not isinstance(operation_state, OperationState) or operation_state not in {
+            OperationState.COMPLETED,
+            OperationState.FAILED,
+            OperationState.CANCELLED,
+            OperationState.RETRYABLE,
+        }:
+            logger.warning(
+                "voice_terminal_finalization_reconciling reason=operation_nonterminal"
+            )
+            terminal_operation = None
+        for attempt in range(_VOICE_TERMINAL_FINALIZATION_ATTEMPTS):
+            finalized = await self._finish_voice_chat_dispatch(
+                voice_dispatch=pending.voice_dispatch,
+                user_id=pending.user_id,
+                chat_id=pending.chat_id,
+                stage=pending.stage,
+                operation_context=operation_context,
+                operation_projection=terminal_operation,
+            )
+            if finalized:
+                if operation_context.get("voice_finalization") is pending:
+                    operation_context.pop("voice_finalization", None)
+                return
+            if operation_context.get("voice_finalization") is not pending:
+                return
+            if attempt + 1 < _VOICE_TERMINAL_FINALIZATION_ATTEMPTS:
+                # A supplied projection may be stale or belong to a peer.  The
+                # retry must query the exact operation authority from the
+                # retained context rather than replaying that candidate.
+                terminal_operation = None
+                await asyncio.sleep(0)
+        operation = operation_context.get("operation")
+        logger.warning(
+            "voice_terminal_finalization_exhausted attempts=%s operation_id=%s",
+            _VOICE_TERMINAL_FINALIZATION_ATTEMPTS,
+            getattr(operation, "operation_id", None),
+        )
+        if operation_context.get("voice_finalization") is pending:
+            operation_context.pop("voice_finalization", None)
+
+    async def _voice_dispatch_operation_state(
+        self,
+        *,
+        turn: Any,
+        user_id: str,
+        chat_id: str,
+        connection_generation: str,
+        operation_context: Any = None,
+        terminal_projection: Any = None,
+    ) -> tuple[OperationState | None, ExecutionFence | None]:
+        """Read the exact shared operation outcome for one committed voice turn.
+
+        The operation record is the deterministic result authority.  Visible
+        component text is deliberately excluded because an error card and a
+        successful result are both valid committed conversation snapshots.
+        """
+
+        authority = self._conversation_authority(
+            (
+                operation_context
+                if operation_context is not None
+                else _CONNECTION_OPERATION_CONTEXT.get()
+            ),
+            None,
+        )
+        if authority is None:
+            logger.warning(
+                "voice_terminal_operation_unavailable reason=authority_missing"
+            )
+            return None, None
+        operation, owner, fence = authority
+        if (
+            owner.owner_scope is not OwnerScope.USER
+            or owner.owner_user_id != user_id
+            or operation.owner_scope is not owner.owner_scope
+            or operation.operation_kind != "voice_chat_message"
+            or str(operation.operation_id) != str(turn.operation_id or "")
+            or str(operation.chat_id or "") != str(chat_id)
+            or str(operation.request_generation or "")
+            != str(turn.request_generation)
+            or str(operation.connection_generation or "")
+            != str(connection_generation)
+        ):
+            logger.warning(
+                "voice_terminal_operation_unavailable reason=identity_mismatch"
+            )
+            return None, None
+        projection = terminal_projection
+        if projection is None:
+            try:
+                projection = await self._call_work_admission(
+                    self.work_admission.query_operation,
+                    owner=owner,
+                    operation_id=operation.operation_id,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "voice_terminal_operation_unavailable reason=query_failed",
+                    exc_info=True,
+                )
+                return None, None
+        if not isinstance(
+            projection,
+            (OperationRecord, SafeOperationProjection),
+        ):
+            logger.warning(
+                "voice_terminal_operation_unavailable reason=projection_mismatch"
+            )
+            return None, None
+        if (
+            projection.operation_id != operation.operation_id
+            or projection.operation_kind != operation.operation_kind
+            or projection.owner_scope is not owner.owner_scope
+            or projection.chat_id != operation.chat_id
+            or projection.request_generation != operation.request_generation
+            or projection.connection_generation != operation.connection_generation
+        ):
+            logger.warning(
+                "voice_terminal_operation_unavailable reason=projection_mismatch"
+            )
+            return None, None
+        return projection.state, fence
+
+    async def _finish_voice_chat_dispatch(
+        self,
+        *,
+        voice_dispatch: _VoiceDispatchContext,
+        user_id: str,
+        chat_id: str,
+        stage: Any,
+        operation_context: Any = None,
+        operation_projection: Any = None,
+    ) -> bool:
+        """Speak one proven terminal outcome.
+
+        Returns ``True`` when no further finalization is required.  ``False``
+        means exact terminal authority or durable announcement finalization was
+        temporarily unavailable, so a pending caller may retry safely.
+        """
+
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            return False
+        initial_turn = voice_dispatch.admission.turn
+        try:
+            turn = await asyncio.to_thread(
+                services.repository.get_turn,
+                user_id=user_id,
+                turn_id=initial_turn.turn_id,
+            )
+            # A preflight refusal happens before ordinary message acceptance;
+            # it must not fabricate a completion or mutate the recognition
+            # disposition here.
+            if turn.state not in {"accepted", "processing", "waiting_on_user"}:
+                return True
+            operation_state, operation_fence = (
+                await self._voice_dispatch_operation_state(
+                    turn=turn,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    connection_generation=voice_dispatch.connection_generation,
+                    operation_context=operation_context,
+                    terminal_projection=operation_projection,
+                )
+            )
+            if operation_state not in {
+                OperationState.COMPLETED,
+                OperationState.FAILED,
+                OperationState.CANCELLED,
+                OperationState.RETRYABLE,
+            }:
+                logger.warning(
+                    "voice_terminal_operation_unavailable reason=operation_nonterminal"
+                )
+                return False
+            committed = bool(
+                stage is not None and stage.sealed and stage.committed
+            )
+            exact_committed_stage = bool(
+                committed
+                and operation_fence is not None
+                and isinstance(stage.operation_fence, ExecutionFence)
+                and stage.operation_fence == operation_fence
+                and str(stage.commit_id) == str(turn.result_commit_id or "")
+            )
+            if operation_state in {
+                OperationState.FAILED,
+                OperationState.CANCELLED,
+                OperationState.RETRYABLE,
+            }:
+                cancelled = operation_state is OperationState.CANCELLED
+                if cancelled:
+                    notice = _VOICE_REQUEST_CANCELLED_MESSAGE
+                    spoken_terminal = (
+                        "That request was cancelled. No completed result was "
+                        "produced."
+                    )
+                elif operation_state is OperationState.RETRYABLE:
+                    notice = _VOICE_REQUEST_INTERRUPTED_MESSAGE
+                    spoken_terminal = (
+                        "That request was interrupted and did not complete. "
+                        "Please try again."
+                    )
+                else:
+                    notice = _VOICE_REQUEST_FAILED_MESSAGE
+                    spoken_terminal = (
+                        "That request failed and did not complete. Please "
+                        "review the error in the conversation, then try again."
+                    )
+                terminal_turn = await services.finish_turn_announcements(
+                    turn,
+                    terminal_kind="cancelled" if cancelled else "failed",
+                    recap_text=spoken_terminal,
+                    recap_source="terminal_status",
+                    sensitivity="unknown",
+                    result_commit_id=(
+                        turn.result_commit_id if exact_committed_stage else None
+                    ),
+                )
+                await self._broadcast_voice_turn_state(
+                    terminal_turn,
+                    message=notice,
+                )
+                return True
+            if not exact_committed_stage:
+                terminal_turn = await services.finish_turn_announcements(
+                    turn,
+                    terminal_kind="failed",
+                    recap_text=(
+                        "The request finished processing, but no result could "
+                        "be published. Please try again."
+                    ),
+                    recap_source="terminal_status",
+                    sensitivity="unknown",
+                    result_commit_id=None,
+                )
+                await self._broadcast_voice_turn_state(
+                    terminal_turn,
+                    message=_VOICE_RESULT_UNAVAILABLE_MESSAGE,
+                )
+                return True
+
+            content = await asyncio.to_thread(
+                self.conversation_commits.committed_assistant_content,
+                commit_id=stage.commit_id,
+                owner_user_id=user_id,
+            )
+            committed_components: list[dict[str, Any]] = []
+            authoritative_summary = stage.summary_text
+            if isinstance(content, list):
+                committed_components = [
+                    item for item in content if isinstance(item, dict)
+                ]
+            elif isinstance(content, dict):
+                committed_components = [content]
+            elif isinstance(content, str) and content.strip():
+                committed_components = [
+                    {"type": "text", "content": content}
+                ]
+            if authoritative_summary is None:
+                from orchestrator.conversation_publication import (
+                    completion_summary_from_content,
+                )
+
+                completion_summary = completion_summary_from_content(content)
+                if completion_summary is not None:
+                    authoritative_summary = completion_summary.summary_text
+
+            from orchestrator.voice_recap import (
+                apply_sensitivity_policy,
+                build_spoken_recap,
+            )
+
+            recap = build_spoken_recap(
+                authoritative_summary=authoritative_summary,
+                committed_components=committed_components,
+                detected_language=turn.detected_language or "en",
+            )
+            sensitive_detail_recap = recap.text
+            try:
+                from personalization.phi_gate import get_phi_gate
+
+                phi_present = await asyncio.to_thread(
+                    get_phi_gate().detect_for_notice,
+                    recap.text,
+                )
+                confidentiality = (
+                    "sensitive" if phi_present else "non_sensitive"
+                )
+            except Exception:
+                confidentiality = "unknown"
+            recap = apply_sensitivity_policy(
+                recap,
+                confidentiality=confidentiality,
+                contains_phi=lambda _text: confidentiality != "non_sensitive",
+            )
+            if recap.sensitivity == "sensitive":
+                await services.remember_sensitive_recap(
+                    turn,
+                    result_id=stage.commit_id,
+                    text=sensitive_detail_recap,
+                )
+            terminal_delivery = await services.finish_turn_announcements(
+                turn,
+                terminal_kind="succeeded",
+                recap_text=recap.text,
+                recap_source=recap.source,
+                sensitivity=recap.sensitivity or "unknown",
+                result_commit_id=stage.commit_id,
+                with_delivery_status=True,
+            )
+            terminal_turn = getattr(terminal_delivery, "turn", terminal_delivery)
+            await self._broadcast_voice_turn_state(
+                terminal_turn,
+                message=_VOICE_REQUEST_SUCCEEDED_MESSAGE,
+                speech_outcome=getattr(
+                    terminal_delivery,
+                    "speech_outcome",
+                    None,
+                ),
+            )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The committed text result is authoritative. Speech degradation
+            # is observable but must never replace or roll it back.
+            logger.warning(
+                "Voice terminal recap scheduling was unavailable",
+                exc_info=True,
+            )
+            return False
+
+    async def _deliver_accepted_voice_turn(
+        self,
+        websocket: Any,
+        *,
+        voice_dispatch: _VoiceDispatchContext,
+        operation_context: Any,
+        acceptance_stage: Any,
+        acceptance_record: Any,
+        accepted_turn: Any,
+        accepted_message_id: int,
+    ) -> dict[str, Any]:
+        """Deliver one committed acceptance before model execution begins."""
+
+        await self._deliver_committed_conversation_snapshot(
+            websocket,
+            stage=acceptance_stage,
+            request_generation=str(
+                voice_dispatch.admission.turn.request_generation
+            ),
+            committed=acceptance_record,
+            server_initiated=True,
+        )
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            raise RuntimeError("voice services became unavailable")
+        try:
+            await services.coordinator.emit_transcript_accepted(
+                accepted_turn,
+                accepted_message_id=accepted_message_id,
+            )
+        except Exception:
+            logger.warning(
+                "Voice worker acceptance disposition was unavailable",
+                exc_info=True,
+            )
+        active_context = (
+            operation_context
+            or _CONNECTION_OPERATION_CONTEXT.get()
+            or {}
+        )
+        operation = active_context.get("operation")
+        reconnectable_work = getattr(
+            self, "_reconnectable_operations", {}
+        ).get(getattr(operation, "operation_id", None))
+        await self._broadcast_voice_ack(
+            reconnectable_work,
+            fallback_websocket=websocket,
+            fallback_connection_generation=(
+                voice_dispatch.connection_generation
+            ),
+            turn=accepted_turn,
+        )
+        await self._broadcast_voice_turn_state(
+            accepted_turn,
+            message=_VOICE_REQUEST_PROCESSING_MESSAGE,
+        )
+        try:
+            await services.start_turn_announcements(accepted_turn)
+        except Exception:
+            logger.warning(
+                "Voice acknowledgement scheduling was unavailable",
+                exc_info=True,
+            )
+        return {
+            "message_id": accepted_message_id,
+            "turn": accepted_turn,
+        }
+
     async def handle_chat_message(
         self,
         websocket,
@@ -9499,6 +11601,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         selected_tools=None,
         attachments=None,
         operation_context=None,
+        voice_dispatch=None,
     ):
         """Run one chat turn inside its complete staged publication scope."""
 
@@ -9515,7 +11618,82 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         token = None
         request_generation = None
         server_initiated = False
-        if current_scheduled_history_stage() is None:
+        voice_acceptance = None
+        llm_preflight_complete = False
+        if (
+            current_scheduled_history_stage() is None
+            and voice_dispatch is not None
+        ):
+            try:
+                await self._resolve_llm_client_for(websocket)
+                llm_preflight_complete = True
+            except self._LLMUnavailable:
+                # The ordinary preflight below owns the correlated refusal and
+                # setup guidance. Nothing has been accepted or persisted yet.
+                pass
+            if llm_preflight_complete:
+                user_content = display_message if display_message else message
+                async with self._workspace_mutation_lock(chat_id):
+                    (
+                        stage,
+                        token,
+                        request_generation,
+                        acceptance_stage,
+                        acceptance_record,
+                        accepted_turn,
+                        accepted_message_id,
+                    ) = await self._begin_voice_conversation_publication(
+                        websocket,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        user_content=user_content,
+                        operation_context=operation_context,
+                        voice_dispatch=voice_dispatch,
+                    )
+                server_initiated = True
+                deferred = False
+                try:
+                    deferred = self._defer_voice_chat_dispatch(
+                        voice_dispatch=voice_dispatch,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        stage=stage,
+                    )
+                    voice_acceptance = await self._deliver_accepted_voice_turn(
+                        websocket,
+                        voice_dispatch=voice_dispatch,
+                        operation_context=operation_context,
+                        acceptance_stage=acceptance_stage,
+                        acceptance_record=acceptance_record,
+                        accepted_turn=accepted_turn,
+                        accepted_message_id=accepted_message_id,
+                    )
+                except BaseException:
+                    if stage is not None and not stage.sealed:
+                        try:
+                            await asyncio.to_thread(
+                                self.conversation_commits.abort_commit,
+                                commit_id=stage.commit_id,
+                                owner_user_id=stage.user_id,
+                            )
+                            stage.seal(committed=False)
+                        except Exception:
+                            logger.warning(
+                                "conversation stage abort failed",
+                                exc_info=True,
+                            )
+                    if token is not None:
+                        reset_conversation_publication(token)
+                        token = None
+                    if not deferred:
+                        await self._finish_voice_chat_dispatch(
+                            voice_dispatch=voice_dispatch,
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            stage=stage,
+                        )
+                    raise
+        elif current_scheduled_history_stage() is None:
             stage, token, request_generation = (
                 await self._begin_conversation_publication(
                     websocket,
@@ -9540,7 +11718,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
                     server_initiated = True
         try:
-            return await self._handle_chat_message_impl(
+            result = await self._handle_chat_message_impl(
                 websocket,
                 message,
                 chat_id,
@@ -9550,10 +11728,44 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 selected_tools=selected_tools,
                 attachments=attachments,
                 operation_context=operation_context,
+                voice_dispatch=voice_dispatch,
                 conversation_stage=stage,
                 conversation_request_generation=request_generation,
                 conversation_server_initiated=server_initiated,
+                voice_acceptance=voice_acceptance,
+                llm_preflight_complete=llm_preflight_complete,
             )
+            if voice_dispatch is not None:
+                deferred = self._defer_voice_chat_dispatch(
+                    voice_dispatch=voice_dispatch,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    stage=stage,
+                )
+                if not deferred:
+                    await self._finish_voice_chat_dispatch(
+                        voice_dispatch=voice_dispatch,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        stage=stage,
+                    )
+            return result
+        except BaseException:
+            if voice_dispatch is not None:
+                deferred = self._defer_voice_chat_dispatch(
+                    voice_dispatch=voice_dispatch,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    stage=stage,
+                )
+                if not deferred:
+                    await self._finish_voice_chat_dispatch(
+                        voice_dispatch=voice_dispatch,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        stage=stage,
+                    )
+            raise
         finally:
             if stage is not None and not stage.sealed:
                 try:
@@ -9582,9 +11794,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         selected_tools=None,
         attachments=None,
         operation_context=None,
+        voice_dispatch=None,
         conversation_stage=None,
         conversation_request_generation: str | None = None,
         conversation_server_initiated: bool = False,
+        voice_acceptance: dict[str, Any] | None = None,
+        llm_preflight_complete: bool = False,
     ):
         """Process a chat message: LLM determines which tools to call (Multi-Turn Re-Act Loop).
 
@@ -9599,7 +11814,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         the LLM as a structured "Attachments on this turn" block so it calls the
         right reader tool with the real attachment_id.
         """
-        logger.info(f"Processing chat message: '{message}' for chat_id {chat_id}")
+        if voice_dispatch is None:
+            logger.info(
+                "Processing chat message for chat_id %s",
+                chat_id,
+            )
+        else:
+            logger.info(
+                "Processing proof-verified voice chat message for chat_id %s",
+                chat_id,
+            )
         from orchestrator.scheduled_publication import (
             current_scheduled_history_stage,
         )
@@ -9680,13 +11904,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             self, websocket, user_id, message, chat_id,
                             result_sink=_capture_onboarding_result):
                         msg_to_save = display_message if display_message else message
-                        await self._append_conversation_message(
-                            conversation_stage,
-                            chat_id=chat_id,
-                            user_id=user_id,
-                            role="user",
-                            content=msg_to_save,
-                        )
+                        if voice_acceptance is None:
+                            await self._append_conversation_message(
+                                conversation_stage,
+                                chat_id=chat_id,
+                                user_id=user_id,
+                                role="user",
+                                content=msg_to_save,
+                            )
                         confirmation = onboarding_result.get(
                             "text", "Your onboarding settings were updated."
                         )
@@ -9727,8 +11952,24 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # The per-call resolver in _call_llm will also catch this, but
         # exiting early avoids the extra UX latency.
         try:
-            await self._resolve_llm_client_for(websocket)
+            if not llm_preflight_complete:
+                await self._resolve_llm_client_for(websocket)
         except self._LLMUnavailable:
+            if voice_dispatch is not None:
+                turn = voice_dispatch.admission.turn
+                await self._reject_voice_submission(
+                    websocket,
+                    user_id=user_id,
+                    origin=voice_dispatch.origin,
+                    submission_id=str(turn.submission_id),
+                    request_generation=str(turn.request_generation),
+                    chat_id=str(turn.chat_id),
+                    connection_generation=(
+                        voice_dispatch.connection_generation
+                    ),
+                    reason="permission_denied",
+                    retry_policy="none",
+                )
             actor_user_id, auth_principal = self._llm_audit_principals(websocket)
             await self._record_llm_unconfigured(
                 self.audit_recorder,
@@ -9767,13 +12008,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         
         # Save User Message to History. If display_message is provided, save that instead.
         msg_to_save = display_message if display_message else message
-        turn_message_id = await self._append_conversation_message(
-            conversation_stage,
-            chat_id=chat_id,
-            user_id=user_id,
-            role="user",
-            content=msg_to_save,
-        )
+        if voice_acceptance is not None:
+            turn_message_id = int(voice_acceptance["message_id"])
+        else:
+            turn_message_id = await self._append_conversation_message(
+                conversation_stage,
+                chat_id=chat_id,
+                user_id=user_id,
+                role="user",
+                content=msg_to_save,
+            )
 
         # Feature 030 — fire-and-forget PHI awareness notice (notify-only,
         # fail-open; persistence/audit posture unchanged).
@@ -9810,7 +12054,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # `chat_step` events under the correct turn (steps' turn_message_id
         # FK matches this id). Without this stamp, the frontend cannot
         # interleave step lines under the right turn in multi-turn chats.
-        if turn_message_id is not None:
+        if turn_message_id is not None and voice_dispatch is None:
             await self._safe_send(websocket, json.dumps({
                 "type": "user_message_acked",
                 "chat_id": chat_id,
@@ -9843,7 +12087,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             scheduled_history_stage is None
             and chat_data
             and len(chat_data.get("messages", []))
-            + (1 if conversation_stage is not None else 0)
+            + (
+                1
+                if conversation_stage is not None
+                and conversation_stage.publication_role != "assistant_result"
+                else 0
+            )
             == 1
         ):
             asyncio.create_task(
@@ -9892,90 +12141,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug(f"Could not resolve user disabled-agent list: {e}")
             disabled_agents = set()
 
-        # Phase A: walk every (agent, skill) pair, run the full gate
-        # stack, and accumulate the survivors. We can't emit yet —
-        # qualification depends on knowing the full set first (Phase B).
-        eligible: List[Tuple[str, Any]] = []
+        # Phase A: run the single chat visibility predicate off the event loop.
+        # The MCP projection calls the same helper, preventing catalog drift.
+        from orchestrator.tool_visibility import eligible_tool_pairs
 
-        def _collect_eligible():
-            """Run the per-(agent, skill) gate stack off the event loop.
+        def _log_exclusion(agent_id: str, skill_id: Optional[str], reason: str) -> None:
+            subject = f"Tool '{skill_id}'" if skill_id else f"Agent '{agent_id}'"
+            logger.debug(
+                "%s excluded user=%s agent=%s reason=%s",
+                subject,
+                user_id,
+                agent_id,
+                reason,
+            )
 
-            The permission reads inside are the turn's hottest DB path; the
-            active turn memo makes each distinct tool resolve once.
-            """
-            for agent_id, card in self.agent_cards.items():
-                if agent_id not in self.agents and agent_id not in self.local_agents:
-                    continue
-
-                # Draft test: only include tools from the draft agent being tested
-                if draft_agent_id and agent_id != draft_agent_id:
-                    continue
-
-                # 030 follow-up: NON-LIVE drafts never enter normal chats. A
-                # draft under self-test registers with the orchestrator and the
-                # test flow enables its scopes — without this skip its generated
-                # tools leaked into every chat, colliding with (and shadowing)
-                # first-party tools (live incident: a generated Serper-keyed
-                # web_search shadowed the keyless built-in one).
-                if not draft_agent_id and self._is_draft_agent(agent_id):
-                    logger.debug(
-                        f"Agent '{agent_id}' excluded user={user_id} reason=draft_not_live"
-                    )
-                    continue
-
-                # Per-user agent disable (Feature 013 follow-up): user has
-                # muted this agent; skip ALL its tools without touching
-                # scope/permission state. Logged so operators can see when
-                # it kicks in.
-                if agent_id in disabled_agents:
-                    logger.debug(
-                        f"Agent '{agent_id}' excluded user={user_id} reason=user_disabled_agent"
-                    )
-                    continue
-
-                # Draft test (Feature 013 follow-up): when the user is testing
-                # THEIR OWN draft agent, bypass scope/per-tool permission checks
-                # so they can exercise the agent's tools without first granting
-                # themselves scopes. Strictly isolated to the draft being tested
-                # — `agent_id == draft_agent_id` is the only way this branch
-                # fires, so other agents (live or otherwise) are unaffected.
-                in_draft_test_for_this_agent = (
-                    draft_agent_id is not None and agent_id == draft_agent_id
-                )
-
-                for skill in card.skills:
-                    # System-level security block always wins, even in draft test
-                    # — security flags reflect proactive review and we never
-                    # want a draft to short-circuit a flagged tool.
-                    agent_flags = self.security_flags.get(agent_id, {})
-                    if skill.id in agent_flags and agent_flags[skill.id].get("blocked"):
-                        logger.debug(
-                            f"Tool '{skill.id}' excluded user={user_id} agent={agent_id} reason=system_blocked"
-                        )
-                        continue
-
-                    # Check if the user has allowed this tool for this agent
-                    # (Feature 013 / FR-013: per-(tool, kind) row > legacy
-                    # NULL-kind override > agent_scopes fallback). Skipped
-                    # for the draft being tested — see the comment above.
-                    if not in_draft_test_for_this_agent and not self.tool_permissions.is_tool_allowed(user_id, agent_id, skill.id):
-                        logger.debug(
-                            f"Tool '{skill.id}' excluded user={user_id} agent={agent_id} reason=scope_or_override"
-                        )
-                        continue
-
-                    # Feature 013 / FR-018, FR-020, FR-023: in-chat tool
-                    # picker narrowing. Only ever subtracts — applied AFTER
-                    # the scope/permission checks so it cannot widen.
-                    if selected_tools is not None and skill.id not in selected_tools:
-                        logger.debug(
-                            f"Tool '{skill.id}' excluded user={user_id} agent={agent_id} reason=user_selection"
-                        )
-                        continue
-
-                    eligible.append((agent_id, skill))
-
-        await asyncio.to_thread(_collect_eligible)
+        eligible = await asyncio.to_thread(
+            eligible_tool_pairs,
+            self,
+            user_id,
+            disabled_agents=disabled_agents,
+            draft_agent_id=draft_agent_id,
+            selected_tools=selected_tools,
+            log_exclusion=_log_exclusion,
+        )
 
         # Phase B: detect skill-id collisions across the surviving pairs.
         # A skill id owned by >1 distinct agent_id needs qualification so
@@ -10005,7 +12193,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 llm_name = skill.id
                 desc = skill.description
 
-            schema = self._sanitize_tool_schema(skill.input_schema or {"type": "object", "properties": {}})
+            schema = self._adapt_tool_schema_for_model(
+                skill.input_schema or {"type": "object", "properties": {}}
+            )
             tool_def = {
                 "type": "function",
                 "function": {
@@ -10122,6 +12312,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         heartbeat_task = None
         task_terminal_on_exit = None
         task_error_on_exit = None
+        active_request_token = None
         try:
             # ------------------------------------------------------------------
             # SYSTEM PROMPT
@@ -10274,7 +12465,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # still includes the just-added message and keeps the bounded
                 # compatibility slice.
                 raw_history = chat_data["messages"]
-                if conversation_stage is None:
+                if (
+                    conversation_stage is None
+                    or conversation_stage.publication_role
+                    == "assistant_result"
+                ):
                     raw_history = raw_history[:-1]
                 for h_msg in raw_history[-10:]:
                     role = h_msg.get("role")
@@ -10303,6 +12498,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if not hasattr(self, "_active_request"):
                 self._active_request = {}
             if chat_id:
+                active_request_token = _ACTIVE_REQUEST_TEXT.set(message)
                 self._active_request[chat_id] = message
                 # 056 (FR-021): a fresh top-level turn gets a fresh global chain
                 # budget (lazily re-created on the turn's first chained hop). A
@@ -11066,6 +13262,35 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 summary_message_id = turn_message_id
                 if summary_components:
+                    if conversation_stage is not None:
+                        try:
+                            from orchestrator.voice_recap import (
+                                CommittedVisibleTextExtractor,
+                            )
+
+                            summary_text = (
+                                CommittedVisibleTextExtractor().extract(
+                                    summary_components
+                                )
+                            )
+                            if summary_text:
+                                conversation_stage.set_completion_summary(
+                                    text=summary_text,
+                                    source="generated_tool_summary",
+                                )
+                                if isinstance(summary_components[0], dict):
+                                    summary_components[0] = {
+                                        **summary_components[0],
+                                        "summary_text": summary_text,
+                                        "summary_source": (
+                                            "generated_tool_summary"
+                                        ),
+                                    }
+                        except (TypeError, ValueError):
+                            logger.debug(
+                                "completion summary contract was unavailable",
+                                exc_info=True,
+                            )
                     # Chat rail, NOT canvas — the summary is words about the
                     # tool results; a canvas render would replace (wipe) the
                     # components those tools just delivered.
@@ -11203,6 +13428,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     Alert(message=error_text, variant="error", title="Error").to_dict()
                 ])
         finally:
+            if task_terminal_on_exit is not None and voice_dispatch is not None:
+                self._remember_voice_operation_terminal_intent(
+                    task_terminal_on_exit
+                )
             if task_terminal_on_exit is not None and task is not None:
                 if task._canonical_state() not in {
                     TaskState.COMPLETED,
@@ -11224,6 +13453,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             _perm_memo.__exit__(None, None, None)
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
+            if active_request_token is not None:
+                _ACTIVE_REQUEST_TEXT.reset(active_request_token)
 
     def _accumulate_usage(self, chat_id: Optional[str], usage):
         """Accumulate LLM token usage for a conversation.
@@ -11357,21 +13588,84 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return (actor_user_id, auth_principal)
 
     @staticmethod
-    def _classify_llm_upstream_error(exc) -> str:
-        """Map an upstream OpenAI-SDK exception to one of the audit-event
-        ``upstream_error_class`` taxonomy values defined in
-        contracts/audit-events.md §3.
+    def _safe_llm_error_metadata(exc: BaseException) -> _SafeLLMErrorMetadata:
+        """Return content-free error facts and the centralized retry decision.
+
+        Provider exception messages can contain response bodies.  This helper
+        therefore inspects only the Python exception class hierarchy and the
+        SDK's numeric ``status_code`` attribute; callers may safely put the
+        returned values in structured logs.  The audit classification remains
+        the existing feature-006 enum.
         """
-        s = str(exc)
-        if "401" in s or "auth" in s.lower():
-            return "auth_failed"
-        if "429" in s or "rate" in s.lower():
-            return "rate_limit"
-        if "404" in s or "not found" in s.lower() or "model" in s.lower() and "not" in s.lower():
-            return "model_not_found"
-        if any(k in s.lower() for k in ("connection", "timeout", "network", "dns")):
-            return "transport_error"
-        return "other"
+
+        raw_status = getattr(exc, "status_code", None)
+        if raw_status is None:
+            raw_status = getattr(getattr(exc, "response", None), "status_code", None)
+        status_code = (
+            raw_status
+            if isinstance(raw_status, int)
+            and not isinstance(raw_status, bool)
+            and 100 <= raw_status <= 599
+            else None
+        )
+
+        class_names = {
+            base.__name__ for base in type(exc).__mro__
+            if isinstance(getattr(base, "__name__", None), str)
+        }
+        exception_class = type(exc).__name__[:80] or "Exception"
+        transport_classes = {
+            "APIConnectionError",
+            "APITimeoutError",
+            "ConnectError",
+            "ConnectTimeout",
+            "ConnectionError",
+            "NetworkError",
+            "PoolTimeout",
+            "ReadError",
+            "ReadTimeout",
+            "RemoteProtocolError",
+            "TimeoutError",
+            "TimeoutException",
+            "WriteError",
+            "WriteTimeout",
+        }
+        is_transport = (
+            isinstance(exc, (ConnectionError, TimeoutError))
+            or bool(class_names & transport_classes)
+        )
+        is_html_maintenance = isinstance(exc, _LLMHTMLMaintenanceError)
+
+        if status_code in {401, 403}:
+            upstream_error_class = "auth_failed"
+        elif status_code in {404, 424}:
+            upstream_error_class = "model_not_found"
+        elif status_code == 429:
+            upstream_error_class = "rate_limit"
+        elif is_transport:
+            upstream_error_class = "transport_error"
+        else:
+            upstream_error_class = "other"
+
+        retryable_status = (
+            status_code in {408, 409, 425, 429}
+            or (
+                status_code is not None
+                and 500 <= status_code <= 599
+            )
+        )
+        return _SafeLLMErrorMetadata(
+            exception_class=exception_class,
+            status_code=status_code,
+            upstream_error_class=upstream_error_class,
+            retryable=(is_html_maintenance or is_transport or retryable_status),
+        )
+
+    @classmethod
+    def _classify_llm_upstream_error(cls, exc: BaseException) -> str:
+        """Map a provider exception to the existing audit-event enum."""
+
+        return cls._safe_llm_error_metadata(exc).upstream_error_class
 
     async def _call_llm(self, websocket, messages, tools_desc=None, temperature=None,
                         feature: str = "tool_dispatch", response_format=None,
@@ -11390,8 +13684,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         (contracts/narrative-streaming.md). The returned ``(message, usage)``
         is equivalent to the non-streamed shape either way.
 
-        Only retries on transient errors (502, 503, 504). Fails fast on
-        non-transient errors like 424 (model not found) or 401 (auth).
+        Retries only proven transient failures (408/409/425/429/5xx,
+        connection/timeout exceptions, and the internal HTML-maintenance
+        marker). All other 4xx, malformed responses, and unknown exceptions
+        fail after one attempt. The credential client disables SDK-owned
+        retries so this loop is the sole retry budget.
 
         Optional enhancement params, both probe-and-fallback so a plainer
         OpenAI-compatible endpoint is never broken by them:
@@ -11453,6 +13750,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # low-confidence response escalates one tier (below). Flag-gated
         # (default OFF) + fail-open: with the flag off, or no MODEL_TIERS
         # configured, call_model is the already-resolved default, unchanged.
+        #
+        # A USER record is different: its endpoint/key/model triple was tested
+        # together and the selected model is the user's persisted contract
+        # (054 FR-008). Operator MODEL_TIERS must never silently replace that
+        # model. The router may still surface the on-device eligibility hint,
+        # but tier selection/escalation applies only to the operator-managed
+        # SYSTEM credential.
         _route_tier: Optional[int] = None
         escalated = False
         if model_router.router_enabled():
@@ -11462,7 +13766,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 dec = model_router.route(
                     feature, default_model=call_model, device_type=dtype,
                     device_caps=getattr(prof, "capabilities", None))
-                call_model, _route_tier = dec.model, dec.tier
+                if source != self._CredentialSource.USER:
+                    call_model, _route_tier = dec.model, dec.tier
                 # On-device lane (C-D6): record whether this turn could run on a
                 # capable client's local model, so the client/operator can offload.
                 self._last_route_ondevice = bool(dec.ondevice)
@@ -11498,15 +13803,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         response = await self._call_llm_streamed(
                             websocket, client, kwargs, stream_chat_id)
                     except Exception as _stream_exc:
+                        stream_error = self._safe_llm_error_metadata(_stream_exc)
                         logger.warning(
-                            "LLM streaming failed (%s) — falling back to "
-                            "non-streaming for this call", _stream_exc)
+                            "LLM streaming failed exception_class=%s "
+                            "status_code=%s upstream_error_class=%s "
+                            "retryable=%s; falling back to non-streaming for "
+                            "this call",
+                            stream_error.exception_class,
+                            stream_error.status_code,
+                            stream_error.upstream_error_class,
+                            stream_error.retryable,
+                        )
                         stream_allowed = False
                 if response is None:
                     response = await asyncio.to_thread(
                         client.chat.completions.create,
                         **kwargs
                     )
+                choices = getattr(response, "choices", None)
+                if not choices:
+                    raise _LLMMalformedResponseError()
+                _msg = getattr(choices[0], "message", None)
+                if _msg is None:
+                    raise _LLMMalformedResponseError()
                 # Defensive: some upstream proxies return a 200 status with
                 # an HTML maintenance page body (e.g. an Apache 503/502 from
                 # an in-front load balancer that swallowed the upstream
@@ -11514,16 +13833,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # message content, and it would render as the assistant's
                 # reply. Detect the shape and treat it as a transient
                 # failure so the existing retry + clean-Alert path runs.
-                _msg = response.choices[0].message if response.choices else None
                 _content = (getattr(_msg, "content", None) or "").lstrip()
                 if _content and _content[:200].lower().startswith(
                     ("<!doctype html", "<html", "<head", "<body")
                 ):
-                    raise RuntimeError(
-                        "LLM upstream returned an HTML page instead of a "
-                        "model response (likely a provider maintenance "
-                        "page); treating as transient."
-                    )
+                    raise _LLMHTMLMaintenanceError()
                 # Some serving stacks leak Harmony channel tokens
                 # ("<|channel|>thought…") or <think> blocks into content;
                 # strip them before any consumer renders or persists it.
@@ -11572,15 +13886,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                     _next_model)
                         attempt -= 1  # the escalation re-call isn't a retry
                         continue
-                return response.choices[0].message, usage
+                return _msg, usage
             except Exception as e:
-                error_str = str(e)
-
                 # Did the endpoint reject one of our optional enhancement
                 # params? If so, remember it for this (base_url, model), strip
                 # it, and retry immediately — the request itself is fine, just
                 # without the enhancement.
-                drop = self._llm_unsupported_extras(error_str, extra_kwargs)
+                # The raw provider string is inspected only in memory for this
+                # compatibility decision; it is never logged or audited.
+                drop = (
+                    self._llm_unsupported_extras(str(e), extra_kwargs)
+                    if extra_kwargs
+                    else set()
+                )
                 if drop:
                     cache = getattr(self, "_llm_unsupported_params", None)
                     if cache is not None:
@@ -11595,14 +13913,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     attempt -= 1
                     continue
 
-                is_transient = any(code in error_str for code in ["502", "503", "504", "Bad Gateway", "Service Unavailable", "Connection", "timeout"])
-                is_fatal = any(code in error_str for code in ["424", "401", "403", "Repository Not Found", "Invalid username"])
+                error = self._safe_llm_error_metadata(e)
+                logger.warning(
+                    "LLM call failed attempt=%d/%d exception_class=%s "
+                    "status_code=%s upstream_error_class=%s retryable=%s",
+                    attempt,
+                    self.MAX_RETRIES,
+                    error.exception_class,
+                    error.status_code,
+                    error.upstream_error_class,
+                    error.retryable,
+                )
 
-                logger.warning(f"LLM Attempt {attempt}/{self.MAX_RETRIES} failed: {e}")
-
-                # Don't retry fatal errors — they won't resolve with retries
-                if is_fatal:
-                    logger.error(f"Fatal LLM error (no retry): {e}")
+                if not error.retryable or attempt == self.MAX_RETRIES:
                     await self._record_llm_call(
                         self.audit_recorder,
                         actor_user_id=actor_user_id,
@@ -11612,26 +13935,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         resolved=resolved,
                         total_tokens=None,
                         outcome="failure",
-                        upstream_error_class=self._classify_llm_upstream_error(e),
-                    )
-                    if source == self._CredentialSource.USER and websocket is not None:
-                        await self._emit_llm_usage_report(
-                            websocket, feature=feature, model=call_model,
-                            usage=None, outcome="failure",
-                        )
-                    raise e
-
-                if attempt == self.MAX_RETRIES:
-                    await self._record_llm_call(
-                        self.audit_recorder,
-                        actor_user_id=actor_user_id,
-                        auth_principal=auth_principal,
-                        feature=feature,
-                        credential_source=source,
-                        resolved=resolved,
-                        total_tokens=None,
-                        outcome="failure",
-                        upstream_error_class=self._classify_llm_upstream_error(e),
+                        upstream_error_class=error.upstream_error_class,
                     )
                     if source == self._CredentialSource.USER and websocket is not None:
                         await self._emit_llm_usage_report(
@@ -11642,18 +13946,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # existing user-friendly "Failed to get a response from
                     # the AI model" Alert. Raising here would surface raw
                     # upstream payloads (e.g. a provider's 503 HTML page)
-                    # in chat error text — the structured log + audit
-                    # event above retain the full details for operators.
+                    # in chat error text. The structured log and audit event
+                    # retain only the safe class/status/category facts.
                     return None, None
 
                 # Exponential backoff: 1s, 2s, 4s, 8s with ±20% jitter to
                 # avoid thundering-herd when concurrent LLM calls fail against
                 # the same upstream (mirrors stream_manager.compute_backoff).
                 backoff = min(2 ** (attempt - 1), 8) * random.uniform(0.8, 1.2)
-                if is_transient:
-                    logger.info(f"Transient error detected, retrying in {backoff}s...")
+                logger.info(
+                    "Transient LLM error; retrying attempt=%d/%d "
+                    "backoff_seconds=%.3f",
+                    attempt,
+                    self.MAX_RETRIES,
+                    backoff,
+                )
                 await asyncio.sleep(backoff)
-        # Defensive: should be unreachable since the MAX_RETRIES branch raises.
+        # Defensive: unreachable for a positive MAX_RETRIES value.
         return None, None
 
     @staticmethod
@@ -12145,7 +14454,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 ]
 
         except Exception as e:
-            logger.warning(f"Failed to generate tool summary: {e}")
+            error = self._safe_llm_error_metadata(e)
+            logger.warning(
+                "Tool-summary LLM call failed exception_class=%s "
+                "status_code=%s upstream_error_class=%s",
+                error.exception_class,
+                error.status_code,
+                error.upstream_error_class,
+            )
             await self._record_llm_call(
                 self.audit_recorder,
                 actor_user_id=actor_user_id,
@@ -12155,7 +14471,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 resolved=resolved,
                 total_tokens=None,
                 outcome="failure",
-                upstream_error_class=self._classify_llm_upstream_error(e),
+                upstream_error_class=error.upstream_error_class,
             )
             if source == self._CredentialSource.USER and websocket is not None:
                 await self._emit_llm_usage_report(
@@ -12515,8 +14831,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             alert = Alert(message=err_msg, variant="error")
             return GateRefusal(
                 response=MCPResponse(
-                    error={"message": err_msg, "retryable": False},
-                    ui_components=[alert.to_dict()]),
+                    error={"message": err_msg, "retryable": False}),
                 render_components=[alert.to_dict()],
                 render_target="chat")
 
@@ -12528,8 +14843,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             alert = Alert(message=err_msg, variant="warning")
             return GateRefusal(
                 response=MCPResponse(
-                    error={"message": err_msg, "retryable": False},
-                    ui_components=[alert.to_dict()]),
+                    error={"message": err_msg, "retryable": False}),
                 render_components=[alert.to_dict()])
 
         # Feature 063 US3: destructive-operation confirmation gate. Every dispatch
@@ -12539,6 +14853,32 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # tokens are minted for a call that may be refused. remote-compute-1 only;
         # evaluate() fires only for that agent's DESTRUCTIVE verbs (read verbs and
         # non-destructive mutating verbs classify to None and pass straight through).
+        _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+        if (
+            agent_id == "remote-compute-1"
+            and _session_claims.get("_invocation_channel") == "mcp"
+        ):
+            from orchestrator import remote_confirmation
+            if remote_confirmation.is_destructive_unattended(tool_name, args):
+                err_msg = (
+                    f"Tool '{tool_name}' is destructive and cannot run over the "
+                    "unattended MCP channel; use an interactive Astral session."
+                )
+                logger.warning(
+                    "mcp destructive refusal agent=%s tool=%s",
+                    agent_id,
+                    tool_name,
+                )
+                return GateRefusal(
+                    response=MCPResponse(
+                        error={"message": err_msg, "retryable": False}
+                    ),
+                    render_components=[
+                        Alert(message=err_msg, variant="error").to_dict()
+                    ],
+                    render_target="chat",
+                )
+
         if agent_id == "remote-compute-1":
             from orchestrator import remote_confirmation
             _conf = await asyncio.to_thread(
@@ -12548,8 +14888,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _msg, _comps = _conf
                 return GateRefusal(
                     response=MCPResponse(
-                        error={"message": _msg, "retryable": False},
-                        ui_components=_comps),
+                        error={"message": _msg, "retryable": False}),
                     render_components=_comps, render_target="chat")
 
         # Deterministic pre-action policy engine — an ordered, fail-closed rule
@@ -12585,8 +14924,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         alert = Alert(message=msg, variant="warning")
                         return GateRefusal(
                             response=MCPResponse(
-                                error={"message": msg, "retryable": False},
-                                ui_components=[alert.to_dict()]),
+                                error={"message": msg, "retryable": False}),
                             render_components=[alert.to_dict()])
                 elif decision.effect in (policy.DENY, policy.CONFIRM):
                     msg = decision.reason or (
@@ -12598,8 +14936,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=msg, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": msg, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": msg, "retryable": False}),
                         render_components=[alert.to_dict()])
                 if decision.args is not None:
                     args = decision.args  # rewritten (e.g. a secret arg redacted)
@@ -12631,8 +14968,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=msg, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": msg, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": msg, "retryable": False}),
                         render_components=[alert.to_dict()])
 
         # Intent-alignment supervisor (C-S5) + high-risk human-in-the-loop
@@ -12642,7 +14978,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if user_id and agent_id:
             from orchestrator import supervisor as _sup
             if _sup.supervisor_enabled():
-                request_text = getattr(self, "_active_request", {}).get(chat_id, "")
+                request_text = _ACTIVE_REQUEST_TEXT.get() or getattr(
+                    self, "_active_request", {}
+                ).get(chat_id, "")
                 if not _sup.intent_aligned(request_text, tool_name):
                     msg = (f"'{tool_name}' looks like a destructive action you "
                            f"didn't ask for — please confirm before it runs.")
@@ -12650,8 +14988,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=msg, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": msg, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": msg, "retryable": False}),
                         render_components=[alert.to_dict()])
             from orchestrator import hitl as _hitl
             if _hitl.hitl_enabled():
@@ -12670,8 +15007,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=req.summary, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": req.summary, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": req.summary, "retryable": False}),
                         render_components=[alert.to_dict()])
 
         # Map file paths if chat_id provided
@@ -12736,8 +15072,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 return GateRefusal(
                     response=MCPResponse(
-                        error={"message": alert.message, "retryable": False},
-                        ui_components=[alert.to_dict()]),
+                        error={"message": alert.message, "retryable": False}),
                     render_components=[alert.to_dict()],
                     render_target="chat")
 
@@ -12863,8 +15198,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 alert = Alert(message=err_msg, variant="warning")
                 return GateRefusal(
                     response=MCPResponse(
-                        error={"message": err_msg, "retryable": False},
-                        ui_components=[alert.to_dict()]),
+                        error={"message": err_msg, "retryable": False}),
                     render_components=[alert.to_dict()],
                     render_target="chat")
             # 056 US3 (FR-019): a chained hop charges BOTH the executing
@@ -12894,8 +15228,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     alert = Alert(message=err_msg, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
-                            error={"message": err_msg, "retryable": False},
-                            ui_components=[alert.to_dict()]),
+                            error={"message": err_msg, "retryable": False}),
                         render_components=[alert.to_dict()],
                         render_target="chat")
                 self._hop_cap_entries[cap_job_id] = (user_id, initiating_agent_id)
@@ -12960,8 +15293,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                            tool_name, user_id, _json_err.msg)
             alert = Alert(message=msg, variant="error")
             await self.send_ui_render(websocket, [alert.to_dict()])
-            return MCPResponse(error={"message": msg, "retryable": True},
-                               ui_components=[alert.to_dict()])
+            return MCPResponse(error={"message": msg, "retryable": True})
 
         # 055 US2: the LLM-authored params as written, captured before
         # path-mapping / credential injection mutate `args` — the stream
@@ -13324,8 +15656,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             alert = Alert(message=message_text, variant="warning")
             return GateRefusal(
                 response=MCPResponse(
-                    error={"message": message_text, "retryable": False},
-                    ui_components=[alert.to_dict()]),
+                    error={"message": message_text, "retryable": False}),
                 render_components=[alert.to_dict()],
                 hop_audited=True)  # this path emitted its own hop record
 
@@ -13618,6 +15949,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             tool_name=tool_name,
             chat_id=chat_id,
             args_meta={k: v for k, v in (args or {}).items() if not (isinstance(k, str) and k.startswith("_"))},
+            invocation_channel=(claims or {}).get("_invocation_channel"),
         ) as _audit_ctx:
             result = await self._execute_with_retry(websocket, agent_id, tool_name, args)
             if result and result.error:
@@ -13660,6 +15992,62 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ))
         return result
 
+    async def execute_mcp_tool(
+        self,
+        *,
+        claims: Dict[str, Any],
+        user_id: str,
+        agent_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> MCPResponse:
+        """Execute one MCP call through the complete shared authorization stack."""
+
+        # This hashable sentinel supplies verified claims to policy, LLM-context,
+        # delegation, and audit seams without creating a UI transport or retaining
+        # the inbound bearer. It is removed in all outcomes.
+        invocation = object()
+        safe_claims = dict(claims)
+        safe_claims.pop("_raw_token", None)
+        safe_claims["_invocation_channel"] = "mcp"
+        self.ui_sessions[invocation] = safe_claims
+        auth = None
+        result: Optional[MCPResponse] = None
+        try:
+            auth = await self._authorize_and_prepare(
+                invocation,
+                agent_id,
+                tool_name,
+                dict(arguments),
+                None,
+                user_id,
+                stream_params=dict(arguments),
+            )
+            if isinstance(auth, GateRefusal):
+                return auth.response
+            result = await self._execute_with_retry_audited(
+                invocation,
+                agent_id,
+                tool_name,
+                auth.args,
+                chat_id=None,
+                user_id=user_id,
+            )
+            if result is None:
+                return MCPResponse(
+                    error={"message": "Tool returned no response", "retryable": True}
+                )
+            return result
+        finally:
+            cap_job_id = getattr(auth, "cap_job_id", None)
+            if cap_job_id and (result is None or result.error):
+                try:
+                    await self.concurrency_cap.release(user_id, agent_id, cap_job_id)
+                finally:
+                    self._pending_cap_entries.pop(cap_job_id, None)
+                await self._release_hop_cap_slot(cap_job_id)
+            self.ui_sessions.pop(invocation, None)
+
     async def execute_parallel_tools(self, websocket, tool_calls, tool_to_agent: Dict, chat_id: str = None, user_id: str = None, tool_to_unqualified: Optional[Dict[str, str]] = None) -> List[Optional[MCPResponse]]:
         """Execute multiple tool calls with concurrency safety.
 
@@ -13670,6 +16058,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """
         # Phase 1: Prepare all tool calls (args, permissions, credentials)
         prepared = []  # list of (index, tc, tool_name, agent_id, args | None, error_coro | None)
+        separately_rendered_refusals: set[int] = set()
 
         for idx, tc in enumerate(tool_calls):
             # Same qualified→unqualified resolution as the single-tool path:
@@ -13696,8 +16085,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                tool_name, user_id, _json_err.msg)
 
                 async def _arg_err(msg=_pj_msg):
-                    return MCPResponse(error={"message": msg, "retryable": True},
-                                       ui_components=[Alert(message=msg, variant="error").to_dict()])
+                    return MCPResponse(error={"message": msg, "retryable": True})
                 prepared.append((idx, tc, tool_name, agent_id, None, _arg_err()))
                 continue
 
@@ -13773,6 +16161,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 websocket, agent_id, tool_name, args, chat_id, user_id,
                 stream_params=stream_params)
             if isinstance(auth, GateRefusal):
+                if auth.render_components:
+                    if auth.render_target:
+                        await self.send_ui_render(
+                            websocket,
+                            auth.render_components,
+                            target=auth.render_target,
+                        )
+                    else:
+                        await self.send_ui_render(websocket, auth.render_components)
+                    separately_rendered_refusals.add(idx)
                 async def _refused(resp=auth.response):
                     return resp
                 prepared.append((idx, tc, tool_name, agent_id, None, _refused()))
@@ -13874,7 +16272,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 error_components.append(Alert(message=f"Tool error: {str(result)}", variant="error").to_dict())
             else:
                 final_results.append(result)
-                if result and result.error:
+                if result and result.error and i not in separately_rendered_refusals:
                     error_components.append(Alert(message=f"Tool '{tool_names[i]}' failed: {result.error.get('message')}", variant="error").to_dict())
 
         # Only render errors immediately — successful results are batched by caller
@@ -14123,7 +16521,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         request = MCPRequest(
             request_id=request_id,
             method="tools/call",
-            params={"name": tool_name, "arguments": args}
+            params={"name": tool_name, "arguments": args},
+            protocol_version=MCP_PROTOCOL_VERSION,
+            caller_capabilities={},
+            caller_info={"name": "AstralDeep Orchestrator", "version": "1.0.0"},
         )
 
         # Create a future for the response
@@ -14351,6 +16752,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             request_id=request_id,
             method="tools/call",
             params={"name": tool_name, "arguments": call_args},
+            protocol_version=MCP_PROTOCOL_VERSION,
+            caller_capabilities={},
+            caller_info={"name": "AstralDeep Orchestrator", "version": "1.0.0"},
         )
         future = asyncio.get_event_loop().create_future()
         self.pending_requests[request_id] = future
@@ -14533,7 +16937,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """
         try:
             session = self.ui_sessions.get(websocket, {}) or {}
-            if not session.get("_raw_token"):
+            if (
+                not session.get("_raw_token")
+                and session.get("_invocation_channel") != "mcp"
+            ):
                 return False
             scopes = await asyncio.to_thread(
                 self.tool_permissions.get_enabled_scope_names, user_id, agent_id)
@@ -14553,6 +16960,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if not card:
                 return None
             session = self.ui_sessions.get(websocket, {})
+            if session.get("_invocation_channel") == "mcp":
+                return await self._mint_mcp_delegation_token(
+                    agent_id,
+                    user_id,
+                    session,
+                )
             raw_token = session.get("_raw_token")
             if not raw_token:
                 return None
@@ -14606,6 +17019,57 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception as e:
             logger.warning(f"Delegation token generation failed: {e}")
             return None
+
+    async def _mint_mcp_delegation_token(
+        self,
+        agent_id: str,
+        user_id: str,
+        claims: Dict[str, Any],
+    ) -> Optional[str]:
+        """Mint downstream authority from verified claims, never bearer bytes."""
+
+        from orchestrator import delegation as _dg
+
+        card = self.agent_cards.get(agent_id)
+        if not card:
+            return None
+        agent_flags = self.security_flags.get(agent_id, {})
+
+        def _scope_reads():
+            allowed = [
+                skill.id
+                for skill in card.skills
+                if not agent_flags.get(skill.id, {}).get("blocked")
+                and self.tool_permissions.is_tool_allowed(
+                    user_id,
+                    agent_id,
+                    skill.id,
+                )
+            ]
+            scopes = self.tool_permissions.get_enabled_scope_names(user_id, agent_id)
+            return allowed, scopes
+
+        allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
+        if not enabled_scopes:
+            return None
+        now = int(time.time())
+        try:
+            inbound_exp = int(claims.get("exp", now + 300))
+        except (TypeError, ValueError):
+            inbound_exp = now + 300
+        payload = {
+            "sub": user_id,
+            "act": {"sub": f"agent:{agent_id}"},
+            "scope": " ".join(
+                list(enabled_scopes) + [f"tool:{tool}" for tool in allowed_tools]
+            ),
+            "iss": "astral-internal-delegation",
+            "aud": self.delegation.agent_service_client_id,
+            "iat": now,
+            "exp": min(inbound_exp, now + 300),
+            "delegation": True,
+        }
+        return _dg.encode_delegation_payload(payload)
 
     # =========================================================================
     # LIVE STREAMING SUBSCRIPTIONS
@@ -14677,6 +17141,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "_stream": True,
                 "_stream_id": stream_id,
             },
+            protocol_version=MCP_PROTOCOL_VERSION,
+            caller_capabilities={},
+            caller_info={"name": "AstralDeep Orchestrator", "version": "1.0.0"},
         )
         if agent_id in self.local_agents:
             # Feature 040 built-ins run in-process with no agent WS — the
@@ -15249,6 +17716,270 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     # UI HELPERS
     # =========================================================================
 
+    def _voice_binding_runtime_issuer(self) -> VoiceControlBindingIssuer:
+        issuer = self._voice_binding_issuer
+        if issuer is None:
+            issuer = VoiceControlBindingIssuer.from_environ()
+            self._voice_binding_issuer = issuer
+        return issuer
+
+    @staticmethod
+    def _voice_credential_expiry(claims: Dict[str, Any]) -> datetime:
+        """Return the real Keycloak expiry, with a development-only mock seam."""
+
+        expiry = claims.get("exp")
+        if isinstance(expiry, (int, float)) and not isinstance(expiry, bool):
+            try:
+                return datetime.fromtimestamp(expiry, tz=UTC)
+            except (OSError, OverflowError, ValueError):
+                pass
+        environment = os.getenv("ASTRAL_ENV", "").strip().lower() or "production"
+        if environment in {"development", "dev", "test"}:
+            return datetime.now(UTC) + timedelta(minutes=10)
+        raise VoiceControlBindingError("credential_expiry_unavailable")
+
+    async def _issue_voice_control_binding(
+        self,
+        websocket,
+        registration: RegisterUI,
+        claims: Dict[str, Any],
+    ) -> bool:
+        """Deliver one memory-only bearer after authenticated registration."""
+
+        if registration.device_id is None:
+            return False
+        if registration.connection_generation is None:
+            raise VoiceControlBindingError("connection_generation_required")
+        subject = claims.get("sub")
+        if not isinstance(subject, str) or not subject:
+            raise VoiceControlBindingError("binding_subject_unavailable")
+        prior = self._voice_control_bindings.get(id(websocket))
+        if prior is not None and (
+            prior.device_id != registration.device_id
+            or prior.connection_generation != registration.connection_generation
+        ):
+            raise VoiceControlBindingError("binding_scope_mismatch")
+        issued = self._voice_binding_runtime_issuer().mint(
+            subject=subject,
+            device_id=registration.device_id,
+            connection_generation=registration.connection_generation,
+            credential_expires_at=self._voice_credential_expiry(claims),
+        )
+        frame = VoiceControlBinding(
+            device_id=issued.claims.device_id,
+            connection_generation=issued.claims.connection_generation,
+            binding_id=issued.claims.binding_id,
+            binding=issued.bearer,
+            expires_at=(
+                issued.claims.expires_at.isoformat().replace("+00:00", "Z")
+            ),
+        )
+        socket_id = id(websocket)
+        device_key = (issued.claims.subject, issued.claims.device_id)
+        device_bindings = getattr(self, "_voice_device_bindings", None)
+        if device_bindings is None:
+            device_bindings = {}
+            self._voice_device_bindings = device_bindings
+        composer_tasks = getattr(self, "_voice_composer_tasks", None)
+        if composer_tasks is None:
+            composer_tasks = {}
+            self._voice_composer_tasks = composer_tasks
+        composer_revisions = getattr(self, "_voice_composer_revisions", None)
+        if composer_revisions is None:
+            composer_revisions = {}
+            self._voice_composer_revisions = composer_revisions
+        device_kinds = getattr(self, "_voice_device_kinds", None)
+        if device_kinds is None:
+            device_kinds = {}
+            self._voice_device_kinds = device_kinds
+        displaced_socket_id = device_bindings.get(device_key)
+        prior_device_kind = device_kinds.get(device_key)
+
+        # Install the binding before delivering it. WebSocket delivery and the
+        # client's first REST mutation run on independent connections, so a
+        # client can legitimately present the bearer as soon as ``send``
+        # completes. Roll back exactly to the prior socket/device state when
+        # delivery fails; no bearer that the client did not receive remains
+        # current.
+        self._voice_control_bindings[socket_id] = issued.claims
+        device_bindings[device_key] = socket_id
+        device_kinds[device_key] = self._voice_device_kind(registration)
+        if not await self._safe_send(websocket, frame.to_json()):
+            if prior is None:
+                self._voice_control_bindings.pop(socket_id, None)
+            else:
+                self._voice_control_bindings[socket_id] = prior
+            if displaced_socket_id is None:
+                device_bindings.pop(device_key, None)
+            else:
+                device_bindings[device_key] = displaced_socket_id
+            if prior_device_kind is None:
+                device_kinds.pop(device_key, None)
+            else:
+                device_kinds[device_key] = prior_device_kind
+            return False
+        if displaced_socket_id is not None and displaced_socket_id != socket_id:
+            self._voice_control_bindings.pop(displaced_socket_id, None)
+            displaced_task = composer_tasks.pop(
+                displaced_socket_id, None
+            )
+            if displaced_task is not None:
+                displaced_task.cancel()
+            composer_revisions.pop(displaced_socket_id, None)
+        return True
+
+    @staticmethod
+    def _voice_device_kind(registration: RegisterUI) -> str:
+        value = (registration.device or {}).get("device_type")
+        if value == "watch":
+            return "watchos"
+        if value in {"windows", "android", "ios", "macos", "watchos"}:
+            return value
+        return "web"
+
+    def _clear_voice_control_binding(self, websocket) -> None:
+        """Fence the socket's binding synchronously before auth teardown."""
+
+        socket_id = id(websocket)
+        # A few deliberately minimal runtime harnesses construct an
+        # ``Orchestrator`` with ``__new__`` so they can exercise the connection
+        # pumps without booting the voice subsystem.  Disconnect cleanup must
+        # remain safe for those pre-voice and partially constructed instances;
+        # a fully initialized runtime still owns the real mapping.
+        claims = getattr(self, "_voice_control_bindings", {}).pop(socket_id, None)
+        composer_tasks = getattr(self, "_voice_composer_tasks", {})
+        task = composer_tasks.pop(socket_id, None)
+        if task is not None:
+            task.cancel()
+        getattr(self, "_voice_composer_revisions", {}).pop(socket_id, None)
+        if claims is None:
+            return
+        device_bindings = getattr(self, "_voice_device_bindings", {})
+        device_key = (claims.subject, claims.device_id)
+        if device_bindings.get(device_key) == socket_id:
+            device_bindings.pop(device_key, None)
+            getattr(self, "_voice_device_kinds", {}).pop(device_key, None)
+
+    async def publish_voice_composer_state(
+        self,
+        *,
+        user_id: str,
+        device_id: str,
+        connection_generation: str,
+        selected_chat_id: str | None = None,
+    ) -> Dict[str, Any] | None:
+        """Push one current, owner-validated composer projection."""
+
+        socket_id = self._voice_device_bindings.get((user_id, device_id))
+        if socket_id is None:
+            return None
+        claims = self._voice_control_bindings.get(socket_id)
+        if claims is None or claims.connection_generation != connection_generation:
+            return None
+        websocket = next(
+            (candidate for candidate in self.ui_sessions if id(candidate) == socket_id),
+            None,
+        )
+        runtime = getattr(self, "voice_runtime", None)
+        if websocket is None or runtime is None:
+            return None
+        revision = self._voice_composer_revisions.get(socket_id, -1) + 1
+        if selected_chat_id is None:
+            selected_chat_id = self._ws_active_chat.get(socket_id)
+        try:
+            frame = await runtime.get_composer_state(
+                user_id=user_id,
+                device_id=device_id,
+                device_kind=self._voice_device_kinds.get(
+                    (user_id, device_id), "web"
+                ),
+                connection_generation=connection_generation,
+                selected_chat_id=selected_chat_id,
+                revision=revision,
+            )
+        except Exception as exc:
+            logger.warning(
+                "voice_composer_projection_failed",
+                extra={"reason": getattr(exc, "code", type(exc).__name__)},
+            )
+            return None
+        if not await self._safe_send(websocket, json.dumps(frame)):
+            return None
+        self._voice_composer_revisions[socket_id] = revision
+        return dict(frame)
+
+    def _start_voice_composer_refresh(
+        self,
+        *,
+        user_id: str,
+        device_id: str,
+        connection_generation: str,
+        selected_chat_id: str | None,
+    ) -> None:
+        socket_id = self._voice_device_bindings.get((user_id, device_id))
+        if socket_id is None:
+            return
+        prior = self._voice_composer_tasks.pop(socket_id, None)
+        if prior is not None:
+            prior.cancel()
+
+        async def _refresh() -> None:
+            for _attempt in range(46):
+                frame = await self.publish_voice_composer_state(
+                    user_id=user_id,
+                    device_id=device_id,
+                    connection_generation=connection_generation,
+                    selected_chat_id=selected_chat_id,
+                )
+                if frame is None or frame.get("voice", {}).get("available") is True:
+                    return
+                await asyncio.sleep(2)
+
+        task = asyncio.create_task(_refresh())
+        self._voice_composer_tasks[socket_id] = task
+
+        def _forget(completed: asyncio.Task[Any]) -> None:
+            if self._voice_composer_tasks.get(socket_id) is completed:
+                self._voice_composer_tasks.pop(socket_id, None)
+
+        task.add_done_callback(_forget)
+
+    def validate_voice_control_binding(
+        self,
+        *,
+        bearer: str,
+        subject: str,
+        device_id: str,
+        connection_generation: str,
+    ) -> VoiceControlClaims:
+        """Verify a REST control bearer against the currently registered socket.
+
+        A valid HMAC is deliberately insufficient: reconnect, reauthentication,
+        binding rotation, or socket teardown removes the matching claims from
+        ``_voice_control_bindings`` and immediately fences the old bearer.
+        """
+
+        claims = self._voice_binding_runtime_issuer().verify(
+            bearer,
+            expected_subject=subject,
+            expected_device_id=device_id,
+            expected_connection_generation=connection_generation,
+        )
+        device_bindings = getattr(self, "_voice_device_bindings", None)
+        if device_bindings is None:
+            current = any(
+                value == claims for value in self._voice_control_bindings.values()
+            )
+        else:
+            socket_id = device_bindings.get((claims.subject, claims.device_id))
+            current = (
+                socket_id is not None
+                and self._voice_control_bindings.get(socket_id) == claims
+            )
+        if not current:
+            raise VoiceControlBindingError("binding_not_current")
+        return claims
+
     async def _safe_send(self, websocket, data: str) -> bool:
         """Send data over a websocket, returning False if the connection is closed."""
         try:
@@ -15268,26 +17999,64 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     def _trace_frame(self, websocket, data: str, *, ok: bool, error: str = "") -> None:
         """Diagnostic outbound-frame trace, enabled by a marker file so a
-        running container can flip it without an env-recreate. Fail-open."""
+        running container can flip it without an env-recreate. Fail-open.
+
+        The trace is metadata-only. Outbound frames routinely contain chat
+        text, recap text, PHI, provider material, or short-lived voice
+        capabilities, so even an explicitly armed diagnostic trace must never
+        become a second content-retention channel (065 FR-046/FR-047).
+        """
         try:
             if not os.path.exists("/app/.frame_trace"):
                 return
             ftype = "?"
+            trace_data = "[REDACTED]"
             try:
-                ftype = json.loads(data).get("type", "?")
-            except Exception:
-                pass
+                trace_frame = json.loads(data)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                trace_frame = None
+            if trace_frame is not None:
+                candidate_type = (
+                    trace_frame.get("type") if isinstance(trace_frame, dict) else None
+                )
+                if isinstance(candidate_type, str) and re.fullmatch(
+                    r"[a-z][a-z0-9_]{0,127}", candidate_type
+                ):
+                    ftype = candidate_type
+                trace_data = json.dumps(
+                    {"type": ftype, "frame": "[REDACTED]"},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            error = "redacted_send_failure" if error else ""
             sock = type(websocket).__name__
-            logger.info("FRAME_TRACE type=%s sock=%s id=%s bytes=%d ok=%s %s",
-                        ftype, sock, id(websocket), len(data), ok, error)
+            logger.info(
+                "FRAME_TRACE type=%s sock=%s id=%s bytes=%d ok=%s %s",
+                ftype,
+                sock,
+                id(websocket),
+                len(data),
+                ok,
+                error,
+            )
             with open("/app/frame_trace.jsonl", "a", encoding="utf-8") as fh:
-                fh.write(json.dumps({
-                    "ts": time.time(), "type": ftype, "sock": sock,
-                    "sock_id": id(websocket), "ok": ok, "error": error,
-                    "frame": data,
-                }) + "\n")
+                fh.write(
+                    json.dumps(
+                        {
+                            "ts": time.time(),
+                            "type": ftype,
+                            "sock": sock,
+                            "sock_id": id(websocket),
+                            "ok": ok,
+                            "error": error,
+                            "frame": trace_data,
+                        }
+                    )
+                    + "\n"
+                )
         except Exception:
             pass
+
 
     def _vws_fan_targets(self, websocket) -> List[Any]:
         """Real sockets that must mirror a VirtualWebSocket-bound chat frame
@@ -15322,11 +18091,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:  # pragma: no cover - per-socket best-effort
                 logger.debug("vws chat_status fan failed", exc_info=True)
 
-    async def _broadcast_user_history(self):
+    async def _broadcast_user_history(self, user_id: str | None = None):
         """Send each connected UI client their own user's recent chat history.
 
         Groups clients by user_id to avoid redundant DB queries when the
-        same user has multiple tabs open.
+        same user has multiple tabs open.  ``user_id`` narrows commit-driven
+        refreshes to the owner whose durable conversation projection changed;
+        callers that omit it retain the existing all-user refresh behavior.
         """
         if not self.ui_clients:
             return
@@ -15334,6 +18105,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         clients_by_user: Dict[str, list] = {}
         for client in self.ui_clients:
             uid = self._get_user_id(client)
+            if user_id is not None and uid != user_id:
+                continue
             clients_by_user.setdefault(uid, []).append(client)
 
         tasks = []
@@ -15348,6 +18121,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _refresh_history_after_commit(self, user_id: str) -> None:
+        """Fail-soft owner-scoped history projection after a durable commit."""
+
+        try:
+            await self._broadcast_user_history(user_id=user_id)
+        except Exception:
+            # The conversation commit and its snapshot are authoritative.
+            # A transient history-query/render failure recovers on the next
+            # commit, explicit history request, or socket registration.
+            logger.warning(
+                "committed conversation history refresh failed",
+                exc_info=True,
+            )
 
     async def _push_history_surface(self, websocket, *, chats=None, loading: bool = False) -> None:
         """Feature 037: render the chat-history surface (skeleton while loading,
@@ -16320,12 +19107,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from shared.protocol import UIUpsert
         from webrender import render_component_fragment
 
-        targets = [
-            ws for ws in self.ui_clients
-            if self._get_user_id(ws) == user_id and self._ws_active_chat.get(id(ws)) == chat_id
-        ]
-        if websocket is not None and websocket not in targets:
-            targets.append(websocket)
+        from orchestrator.conversation_publication import (
+            current_conversation_publication,
+        )
+
+        publication = current_conversation_publication()
+        if (
+            publication is not None
+            and publication.publication_role == "assistant_result"
+            and publication.matches(self.history, chat_id, user_id)
+        ):
+            # A concurrent voice result is a private candidate until its
+            # terminal rebase commits. The execution adapter discards this
+            # transient projection; real clients receive only the subsequent
+            # complete committed snapshot.
+            targets = [] if websocket is None else [websocket]
+        else:
+            targets = [
+                ws for ws in self.ui_clients
+                if self._get_user_id(ws) == user_id
+                and self._ws_active_chat.get(id(ws)) == chat_id
+            ]
+            if websocket is not None and websocket not in targets:
+                targets.append(websocket)
 
         for ws in targets:
             profile = self.rote.get_profile(ws)
@@ -16711,44 +19515,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return ""
 
     @staticmethod
-    def _sanitize_tool_schema(schema: dict) -> dict:
-        """Fix common agent-generated schema issues before sending to the LLM.
+    def _adapt_tool_schema_for_model(schema: dict) -> dict:
+        """Adapt an already-validated schema for the model function grammar.
 
-        Addresses: property-level "required": true/false (invalid in OpenAI tool
-        schemas) — must be an array at the object level instead.
+        Registration is the validation boundary. This downstream projection
+        does not repair invalid schemas; it only removes the dialect annotation
+        that some model providers reject.
         """
         if not isinstance(schema, dict):
-            return {"type": "object", "properties": {}}
-
-        schema = dict(schema)  # shallow copy
-        props = schema.get("properties")
-        if isinstance(props, dict):
-            required_fields = list(schema.get("required", []) if isinstance(schema.get("required"), list) else [])
-            cleaned_props = {}
-            for key, val in props.items():
-                if isinstance(val, dict):
-                    val = dict(val)  # shallow copy
-                    prop_req = val.pop("required", None)
-                    # If a property had "required": true, promote to object-level required array
-                    if prop_req is True and key not in required_fields:
-                        required_fields.append(key)
-                    # Recurse for nested object properties
-                    if val.get("type") == "object" and "properties" in val:
-                        val = Orchestrator._sanitize_tool_schema(val)
-                    cleaned_props[key] = val
-                else:
-                    cleaned_props[key] = val
-            schema["properties"] = cleaned_props
-            if required_fields:
-                schema["required"] = required_fields
-            elif "required" in schema and not isinstance(schema["required"], list):
-                del schema["required"]
-
-        # Ensure top-level type
-        if "type" not in schema:
-            schema["type"] = "object"
-
-        return schema
+            raise ProtocolValidationError("validated tool schema must be an object")
+        adapted = dict(schema)
+        adapted.pop("$schema", None)
+        return adapted
 
     def _is_draft_agent(self, agent_id: str) -> bool:
         """Hide any agent whose agent_id maps to a non-live draft record.
@@ -17236,6 +20014,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._ws_welcome.pop(id(websocket), None)
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
+            self._clear_voice_control_binding(websocket)
             if websocket in self.ui_sessions:
                 del self.ui_sessions[websocket]
             self._chat_locks.pop(id(websocket), None)
@@ -17286,6 +20065,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._ws_welcome.pop(id(websocket), None)
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
+            self._clear_voice_control_binding(websocket)
             if websocket in self.ui_sessions:
                 del self.ui_sessions[websocket]
             self._chat_locks.pop(id(websocket), None)
@@ -17564,6 +20344,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # Store Orchestrator instance on app.state so REST API routes can access it
         app.state.orchestrator = self
 
+        # Feature 065: mount the internal authenticated worker pool only when
+        # fail-closed voice construction and its dedicated control secret both
+        # passed. The installer is idempotent and rejects path collisions.
+        try:
+            from orchestrator.voice_bootstrap import install_voice_worker_control
+
+            self.voice_worker_endpoint = install_voice_worker_control(
+                app,
+                self.voice_services,
+            )
+        except Exception as exc:
+            self.voice_worker_endpoint = None
+            logger.warning(
+                "voice_worker_control_unavailable",
+                extra={"reason": getattr(exc, "code", type(exc).__name__)},
+            )
+
         # ── Health probes (ungated; no user data) ───────────────────────────
         # /healthz: liveness — the process is serving. /readyz: readiness —
         # the database answers. Wired into the compose healthcheck and any
@@ -17723,6 +20520,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # preflights are short-circuited before reaching the recorder.
         app.add_middleware(AuditHTTPMiddleware)
 
+        # Feature 064: the MCP resource server is absent — routes, metadata,
+        # renderer registration, and CORS policy included — unless the startup
+        # flag was enabled. FeatureFlags is import-time state; recreate the
+        # container to enable or disable this surface.
+        if flags.is_enabled("mcp_server"):
+            from orchestrator.mcp_server_endpoint import install_mcp_server
+
+            install_mcp_server(app, self)
+            logger.info("MCP 2026-07-28 endpoint mounted at /mcp")
+
         # Mount A2A JSON-RPC server (orchestrator as A2A agent)
         try:
             from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
@@ -17768,6 +20575,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             retry_seconds=retention_retry,
             on_sweep=self.task_manager.prune_missing,
         )
+        if self.voice_services is not None:
+            self.voice_services.start()
         try:
             await server.serve()
         finally:
@@ -17799,7 +20608,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 finally:
                     # Kept as an idempotent compatibility guard if a partial
                     # startup failed before drain captured the retention task.
-                    await self.async_task_manager.stop_retention_sweep()
+                    try:
+                        await self.async_task_manager.stop_retention_sweep()
+                    finally:
+                        voice_services = getattr(self, "voice_services", None)
+                        if voice_services is not None:
+                            try:
+                                await voice_services.close()
+                            except Exception:
+                                logger.warning(
+                                    "conversational_voice_shutdown_failed"
+                                )
 
     async def _jwks_warm_loop(self):
         """Warm the Keycloak JWKS at boot, then refresh it in the background.
@@ -17943,7 +20762,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self._broadcast_user_history()
 
         except Exception as e:
-            logger.error(f"Failed to summarize chat title: {e}")
+            error = self._safe_llm_error_metadata(e)
+            logger.error(
+                "Chat-title LLM call failed exception_class=%s "
+                "status_code=%s upstream_error_class=%s",
+                error.exception_class,
+                error.status_code,
+                error.upstream_error_class,
+            )
             await self._record_llm_call(
                 self.audit_recorder,
                 actor_user_id=actor_user_id,
@@ -17953,7 +20779,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 resolved=resolved,
                 total_tokens=None,
                 outcome="failure",
-                upstream_error_class=self._classify_llm_upstream_error(e),
+                upstream_error_class=error.upstream_error_class,
             )
             if source == self._CredentialSource.USER and websocket is not None:
                 await self._emit_llm_usage_report(

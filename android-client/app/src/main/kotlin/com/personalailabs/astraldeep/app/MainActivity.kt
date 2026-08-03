@@ -59,11 +59,18 @@ import com.personalailabs.astraldeep.app.rest.AstralRest
 import com.personalailabs.astraldeep.app.transport.ConnectionState
 import com.personalailabs.astraldeep.app.transport.OrchestratorClient
 import com.personalailabs.astraldeep.app.transport.deviceCapabilities
+import com.personalailabs.astraldeep.app.transport.runtimeVoiceCapability
+import com.personalailabs.astraldeep.app.transport.voiceDeviceId
 import com.personalailabs.astraldeep.app.ui.AppViewModel
 import com.personalailabs.astraldeep.app.ui.RootScaffold
 import com.personalailabs.astraldeep.app.ui.theme.AstralColors
 import com.personalailabs.astraldeep.app.ui.theme.AstralTheme
+import com.personalailabs.astraldeep.app.voice.LiveKitVoiceMediaClient
+import com.personalailabs.astraldeep.app.voice.OkHttpVoiceControlApi
+import com.personalailabs.astraldeep.app.voice.VoiceSessionController
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -71,6 +78,14 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     private val client by lazy { OrchestratorClient(AppConfig.WS_URL) }
     private val rest by lazy { AstralRest(AppConfig.API_BASE) }
+    private val voiceScope by lazy { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) }
+    private val voiceController by lazy {
+        VoiceSessionController(
+            api = OkHttpVoiceControlApi(AppConfig.API_BASE),
+            media = LiveKitVoiceMediaClient(this, voiceScope),
+            scope = voiceScope,
+        )
+    }
     private val oidc by lazy { OidcAuth(this) }
     private val keycloakLogout by lazy {
         KeycloakLogout(keycloakEndpoints(AppConfig.KEYCLOAK_AUTHORITY).endSessionEndpoint)
@@ -147,7 +162,7 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             val vm: AppViewModel =
-                viewModel(factory = AppViewModel.factory(client, rest, conversationResumeStore))
+                viewModel(factory = AppViewModel.factory(client, rest, conversationResumeStore, voiceController))
             // Collect once at the top so the theme can restyle live (US5): the palette
             // drives AstralTheme, and recomposition repaints the whole tree.
             val uiState by vm.state.collectAsStateWithLifecycle()
@@ -176,6 +191,8 @@ class MainActivity : ComponentActivity() {
                                     heightPx = dm.heightPixels,
                                     pixelRatio = dm.density.toDouble(),
                                     supportedTypes = renderer.supportedTypes.toList(),
+                                    deviceId = voiceDeviceId(this@MainActivity),
+                                    voice = runtimeVoiceCapability(this@MainActivity),
                                 ),
                         )
                     }
@@ -208,6 +225,16 @@ class MainActivity : ComponentActivity() {
             .onFailure { signInError.value = it.message ?: "could not start sign-in" }
     }
 
+    override fun onStart() {
+        super.onStart()
+        voiceController.appForegroundChanged(active = true)
+    }
+
+    override fun onStop() {
+        voiceController.appForegroundChanged(active = false, reason = "backgrounded")
+        super.onStop()
+    }
+
     /**
      * Sign out (T019): capture the session's tokens, clear local state immediately
      * (the sign-in screen never waits on the network), then best-effort server-side
@@ -215,6 +242,7 @@ class MainActivity : ComponentActivity() {
      * the fallback — so the refresh token dies even when the backend is down.
      */
     private fun signOut() {
+        voiceController.logout()
         // Clear the LOCAL session SYNCHRONOUSLY on the main thread first, so
         // sign-out is durable even if the Activity is destroyed an instant later.
         // (Doing the clear inside a cancellable lifecycleScope coroutine risked

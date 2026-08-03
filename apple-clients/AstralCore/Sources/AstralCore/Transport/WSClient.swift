@@ -127,6 +127,10 @@ public actor WSClient {
 
     /// Send or queue (bounded) while disconnected.
     public func send(_ text: String) {
+        if let voiceFrame = VoiceCurrentConnectionFrame(frameText: text) {
+            _ = sendCurrentConnectionVoice(voiceFrame)
+            return
+        }
         guard let replay = QueuedOperationReplay(frameText: text) else {
             continuation?.yield(.sendRejected(action: Self.actionHint(text)))
             return
@@ -137,6 +141,29 @@ public actor WSClient {
         } else {
             retain(queued)
         }
+    }
+
+    /// Send a proof-bound voice frame only on the socket that established its
+    /// connection fence. A valid frame is intentionally dropped while
+    /// disconnected; the voice controller owns bounded transcript retry, and
+    /// playout evidence is never replayable.
+    @discardableResult
+    public func sendCurrentConnectionVoice(_ text: String) -> Bool {
+        guard let frame = VoiceCurrentConnectionFrame(frameText: text) else {
+            continuation?.yield(.sendRejected(action: Self.actionHint(text)))
+            return false
+        }
+        return sendCurrentConnectionVoice(frame)
+    }
+
+    /// Typed overload for callers that validate before crossing actor
+    /// isolation. Returns true only when the current established task accepted
+    /// the send attempt; it never retains the frame for reconnect replay.
+    @discardableResult
+    public func sendCurrentConnectionVoice(_ frame: VoiceCurrentConnectionFrame) -> Bool {
+        guard established, let task, task.state == .running else { return false }
+        task.send(.string(frame.frameText)) { _ in }
+        return true
     }
 
     private func runLoop() async {
@@ -151,7 +178,7 @@ public actor WSClient {
             // Nothing but register_ui is ever sent pre-registration: if the
             // credentials don't materialize, the socket is closed unused and
             // we wait out the backoff. Offline launches sit here.
-            let task = URLSession.shared.webSocketTask(with: url)
+            let task = NoStoreHTTP.session.webSocketTask(with: url)
             self.task = task
             established = false
             task.resume()

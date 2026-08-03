@@ -4,7 +4,7 @@
   "runtime_contract_version": 2,
   "digest_algorithm": "sha256",
   "lock_artifact": "windows-client/requirements-release.lock.txt",
-  "lock_digest": "6041036906881c59868b9e53e16d1e22d8371b68af2f36701022a5a239dd43ba",
+  "lock_digest": "82d58a54a8cd1a7ffd925d724ba247f0cfb09e4de0747aeca4a869f7dd87ba35",
   "bundle_digest_contract": "canonical-json-utf8-v1",
   "bundle_digest_vector": {
     "files": {
@@ -18,13 +18,13 @@
     {
       "id": "exact-contract-and-lock",
       "advertised_runtime_contract_version": 2,
-      "advertised_lock_digest": "6041036906881c59868b9e53e16d1e22d8371b68af2f36701022a5a239dd43ba",
+      "advertised_lock_digest": "82d58a54a8cd1a7ffd925d724ba247f0cfb09e4de0747aeca4a869f7dd87ba35",
       "compatible": true
     },
     {
       "id": "runtime-contract-mismatch",
       "advertised_runtime_contract_version": 1,
-      "advertised_lock_digest": "6041036906881c59868b9e53e16d1e22d8371b68af2f36701022a5a239dd43ba",
+      "advertised_lock_digest": "82d58a54a8cd1a7ffd925d724ba247f0cfb09e4de0747aeca4a869f7dd87ba35",
       "compatible": false,
       "refusal_code": "runtime_contract_unsupported"
     },

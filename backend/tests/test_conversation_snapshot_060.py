@@ -773,6 +773,7 @@ async def test_production_turn_seam_emits_one_complete_post_rote_commit_snapshot
             return self.profile
 
     socket = Socket()
+    other_user_socket = Socket()
     history = object.__new__(HistoryManager)
     history.db = database
     orchestrator = object.__new__(Orchestrator)
@@ -781,8 +782,11 @@ async def test_production_turn_seam_emits_one_complete_post_rote_commit_snapshot
     orchestrator.work_admission = coordinator
     orchestrator.conversation_commits = _repository(database, coordinator)
     orchestrator.rote = Rote()
-    orchestrator.ui_clients = [socket]
-    orchestrator.ui_sessions = {socket: {"sub": OWNER}}
+    orchestrator.ui_clients = [socket, other_user_socket]
+    orchestrator.ui_sessions = {
+        socket: {"sub": OWNER},
+        other_user_socket: {"sub": "unrelated-owner"},
+    }
     orchestrator._ws_active_chat = {}
     orchestrator._conversation_scopes = {}
 
@@ -862,6 +866,19 @@ async def test_production_turn_seam_emits_one_complete_post_rote_commit_snapshot
     ]
     assert snapshot["canvas"]["components"][0]["content"] == "Canvas"
     assert snapshot["canvas"]["components"][0]["_presentation"]["target"] == "web"
+    history_lists = [
+        frame for frame in socket.frames if frame.get("type") == "history_list"
+    ]
+    assert len(history_lists) == 1
+    assert history_lists[0]["chats"][0]["id"] == CHAT_ID
+    history_surfaces = [
+        frame
+        for frame in socket.frames
+        if frame.get("type") == "ui_render" and frame.get("target") == "history"
+    ]
+    assert len(history_surfaces) == 1
+    assert CHAT_ID in history_surfaces[0]["html"]
+    assert other_user_socket.frames == []
     layout = await asyncio.to_thread(
         database.fetch_one,
         "SELECT layout_key FROM workspace_layout WHERE chat_id = ? AND user_id = ?",
@@ -880,6 +897,22 @@ async def test_production_turn_seam_emits_one_complete_post_rote_commit_snapshot
     assert len(persisted_chat["messages"]) == 2
     assert persisted_recents[0]["id"] == CHAT_ID
     assert operation.state is OperationState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_commit_history_refresh_is_fail_soft() -> None:
+    orchestrator = object.__new__(Orchestrator)
+    calls = []
+
+    async def fail_refresh(*, user_id: str | None = None) -> None:
+        calls.append(user_id)
+        raise RuntimeError("history projection unavailable")
+
+    orchestrator._broadcast_user_history = fail_refresh
+
+    await orchestrator._refresh_history_after_commit(OWNER)
+
+    assert calls == [OWNER]
 
 
 def test_revisioned_chats_reject_every_legacy_message_and_canvas_write(

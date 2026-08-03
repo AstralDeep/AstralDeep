@@ -161,6 +161,24 @@ def classification_for(tool_name: str) -> Any:
     return DESTRUCTIVE_CLASSIFICATION.get(tool_name)
 
 
+def is_destructive_unattended(tool_name: str, args: Dict[str, Any]) -> bool:
+    """Conservatively classify an unattended/MCP call without remote I/O.
+
+    ``if_exists`` cannot be proven safe without contacting the remote machine,
+    so the unattended boundary refuses it. Conditional action classifiers can
+    be decided entirely from the submitted arguments.
+    """
+
+    classification = classification_for(tool_name)
+    if classification in (None, "never"):
+        return False
+    if classification == "always" or classification == "if_exists":
+        return True
+    if isinstance(classification, dict) and "by_action" in classification:
+        return args.get("action") in set(classification["by_action"])
+    return True
+
+
 def _is_destructive(orch, user_id: str, tool_name: str, args: Dict[str, Any], classification: Any) -> bool:
     if classification == "never":
         return False

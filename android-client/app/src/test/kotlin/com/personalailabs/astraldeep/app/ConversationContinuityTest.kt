@@ -10,6 +10,7 @@ import com.personalailabs.astraldeep.app.transport.LocalSubmission
 import com.personalailabs.astraldeep.app.transport.OrchestratorClient
 import com.personalailabs.astraldeep.app.ui.AppViewModel
 import com.personalailabs.astraldeep.app.ui.ChatSegmentKind
+import com.personalailabs.astraldeep.app.ui.ChatTurn
 import com.personalailabs.astraldeep.app.ui.UiState
 import com.personalailabs.astraldeep.core.protocol.DeviceCapabilities
 import com.personalailabs.astraldeep.core.protocol.Inbound
@@ -348,6 +349,74 @@ class ConversationContinuityTest {
     }
 
     @Test
+    fun successful_terminal_before_commit_snapshot_keeps_transient_answer_visible() {
+        val committedCanvas = listOf(component("text", "committed", "Committed"))
+        var state =
+            vm.bindConversationGeneration(
+                UiState(
+                    activeChatId = chatId,
+                    turns = listOf(ChatTurn("assistant", "Earlier answer")),
+                    pendingTurns = listOf(ChatTurn("user", "Current question")),
+                    canvas = committedCanvas,
+                    preTurnCanvas = committedCanvas,
+                    lastCommittedRenderRevision = 4UL,
+                    turnActive = true,
+                    pendingReplace = true,
+                    statusText = "Running",
+                ),
+                commitBinding(),
+            )
+        state =
+            vm.reduce(
+                state,
+                Inbound.UiRender(
+                    target = "chat",
+                    components = listOf(component("text", "answer", "Transient answer")),
+                    scope = transientScope(sequence = 1UL),
+                ),
+            )
+        state =
+            vm.reduce(
+                state,
+                Inbound.UiRender(
+                    target = "canvas",
+                    components = listOf(component("text", "preview", "Transient canvas")),
+                    scope = transientScope(sequence = 2UL),
+                ),
+            )
+
+        val completed =
+            vm.reduce(
+                state,
+                queuedOperation(
+                    action = "chat_message",
+                    chat = chatId,
+                    connectionGeneration = connection,
+                    requestGeneration = commitRequest,
+                    state = "completed",
+                    sequence = 1UL,
+                ),
+            )
+
+        assertFalse(completed.hasActiveWork)
+        assertNull(completed.workingStatusText)
+        assertEquals(listOf("Current question", "Transient answer"), completed.pendingTurns.map { it.text })
+        assertEquals("preview", completed.transientCanvas?.single()?.id)
+        assertEquals(2UL, completed.lastTransientFrameSequence)
+        assertFalse(completed.pendingReplace)
+
+        val ready =
+            vm.reduce(
+                completed,
+                Inbound.ConversationCommitReady(1, chatId, connection, commitRequest, 5UL),
+            )
+        val committed = vm.reduce(ready, snapshot(5UL, "commit", request = commitRequest))
+        assertEquals("The result is 21.", committed.turns.single().text)
+        assertTrue(committed.pendingTurns.isEmpty())
+        assertNull(committed.transientCanvas)
+    }
+
+    @Test
     fun semantic_parts_are_visible_ordered_and_recovery_never_becomes_blank_debug_syntax() {
         val transcript =
             listOf(
@@ -512,7 +581,8 @@ class ConversationContinuityTest {
 
         val terminal = model.reduce(committed, terminalStatus)
         assertTrue(terminal.pendingSubmissions.isEmpty())
-        assertEquals("Completed", terminal.statusText)
+        assertNull(terminal.statusText)
+        assertNull(terminal.workingStatusText)
     }
 
     @Test
@@ -574,7 +644,8 @@ class ConversationContinuityTest {
                 ),
             )
         assertTrue(completed.pendingSubmissions.isEmpty())
-        assertEquals("Completed", completed.statusText)
+        assertNull(completed.statusText)
+        assertNull(completed.workingStatusText)
     }
 
     @Test
@@ -661,7 +732,8 @@ class ConversationContinuityTest {
                 ),
             )
         assertTrue(terminal.pendingSubmissions.isEmpty())
-        assertEquals("Completed", terminal.statusText)
+        assertNull(terminal.statusText)
+        assertNull(terminal.workingStatusText)
     }
 
     @Test

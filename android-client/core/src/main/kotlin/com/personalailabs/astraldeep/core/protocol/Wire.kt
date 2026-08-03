@@ -35,6 +35,10 @@ object Wire {
         val root =
             runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
                 ?: return Inbound.Unknown("")
+        val type = root.str("type").orEmpty()
+        if (type in VOICE_MEDIA_TYPES && raw.toByteArray(Charsets.UTF_8).size > MAX_VOICE_MEDIA_BYTES) {
+            return Inbound.Unknown(type)
+        }
         return decode(root)
     }
 
@@ -59,12 +63,22 @@ object Wire {
                 )
             }
             "stream_unsubscribed" -> Inbound.StreamUnsubscribed(root.str("tool_name"))
-            "chat_created" -> Inbound.ChatCreated(root.obj("payload")?.str("chat_id") ?: root.str("chat_id"))
-            "user_message_acked" ->
-                Inbound.UserMessageAcked(
-                    chatId = root.obj("payload")?.str("chat_id") ?: root.str("chat_id"),
-                    messageId = root.obj("payload")?.str("message_id") ?: root.str("message_id"),
-                )
+            "chat_created" -> chatCreatedFromJson(root) ?: Inbound.Unknown(type)
+            "user_message_acked" -> messageAckFromJson(root) ?: Inbound.Unknown(type)
+            "composer_state" -> composerStateFromJson(root) ?: Inbound.Unknown(type)
+            "voice_control_binding" ->
+                voiceControlBindingFromJson(root)?.let(Inbound::VoiceControlBindingFrame) ?: Inbound.Unknown(type)
+            "voice_session_state" ->
+                voiceSessionStateFromJson(root)?.let(Inbound::VoiceSessionStateFrame) ?: Inbound.Unknown(type)
+            "voice_turn_state" ->
+                voiceTurnStateFromJson(root)?.let(Inbound::VoiceTurnStateFrame) ?: Inbound.Unknown(type)
+            "voice_submission_rejected" ->
+                voiceSubmissionRejectedFromJson(root)?.let(Inbound::VoiceSubmissionRejectedFrame)
+                    ?: Inbound.Unknown(type)
+            "voice_transcript" ->
+                voiceTranscriptFromJson(root)?.let(Inbound::VoiceTranscriptFrame) ?: Inbound.Unknown(type)
+            "voice_announcement_media" ->
+                voiceAnnouncementFromJson(root)?.let(Inbound::VoiceAnnouncementMediaFrame) ?: Inbound.Unknown(type)
             "chat_loaded" -> Inbound.ChatLoaded(transcriptFromJson(root.obj("chat")))
             "conversation_snapshot" -> conversationSnapshotFromJson(root) ?: Inbound.Unknown(type)
             "conversation_commit_ready" -> conversationCommitReadyFromJson(root) ?: Inbound.Unknown(type)
@@ -192,8 +206,10 @@ object Wire {
             putJsonArray("capabilities") {
                 add("render")
                 add("stream")
+                if (device.hasMicrophone && device.hasAudioOutput) add("voice")
             }
             put("session_id", sessionId)
+            device.deviceId?.let { put("device_id", it) }
             putJsonObject("device") {
                 put("device_type", device.deviceType)
                 put("screen_width", device.screenWidth)
@@ -202,6 +218,11 @@ object Wire {
                 put("viewport_height", device.viewportHeight)
                 put("pixel_ratio", device.pixelRatio)
                 put("has_touch", device.hasTouch)
+                put("has_microphone", device.hasMicrophone)
+                put("has_audio_output", device.hasAudioOutput)
+                put("microphone_permission", device.microphonePermission)
+                put("full_duplex", device.fullDuplex)
+                put("voice_transport", device.voiceTransport)
                 putJsonArray("supported_types") { device.supportedTypes.forEach { add(it) } }
             }
             put("resumed", false)
@@ -277,6 +298,125 @@ object Wire {
             submissionId = submissionId,
         )
 
+    /**
+     * Build the ordinary `chat_message` used for a final voice transcript.
+     * The proof-bearing origin is copied verbatim; no voice-only dispatch exists.
+     */
+    fun encodeVoiceChatMessage(
+        transcript: VoiceTranscript,
+        connectionGeneration: String,
+    ): String {
+        require(canonicalUuid4(connectionGeneration) != null) { "connectionGeneration must be a canonical UUID4" }
+        require(transcript.final && transcript.text.isNotBlank()) { "only a non-empty final transcript may be submitted" }
+        val origin = requireNotNull(transcript.originOrNull()) { "final transcript proof is incomplete" }
+        return buildJsonObject {
+            put("type", "ui_event")
+            put("action", "chat_message")
+            put("session_id", transcript.chatId)
+            put("connection_generation", connectionGeneration)
+            put("submission_id", transcript.submissionId)
+            put("request_generation", transcript.requestGeneration)
+            putJsonObject("payload") {
+                put("message", transcript.text)
+                put("chat_id", transcript.chatId)
+                put("connection_generation", connectionGeneration)
+                put("submission_id", transcript.submissionId)
+                put("request_generation", transcript.requestGeneration)
+                put("snapshot_purpose", "commit")
+                putJsonObject("voice_origin") {
+                    put("schema_version", origin.schemaVersion)
+                    put("session_id", origin.sessionId)
+                    put("generation", origin.generation)
+                    put("media_grant_revision", origin.mediaGrantRevision)
+                    put("turn_id", origin.turnId)
+                    put("client_turn_id", origin.clientTurnId)
+                    put("chat_context_revision", origin.chatContextRevision)
+                    put("source_participant_identity", origin.sourceParticipantIdentity)
+                    put("detected_language", origin.detectedLanguage)
+                    put("text_digest_sha256", origin.textDigestSha256)
+                    put("transcript_proof", origin.transcriptProof)
+                    put("proof_expires_at", origin.proofExpiresAt)
+                }
+            }
+        }.toString()
+    }
+
+    /** Strict correlated new-chat handshake used only to bootstrap explicit voice activation. */
+    fun encodeCorrelatedVoiceNewChat(
+        connectionGeneration: String,
+        submissionId: String,
+        requestGeneration: String,
+    ): String {
+        require(canonicalUuid4(connectionGeneration) != null)
+        require(canonicalUuid4(submissionId) != null)
+        require(canonicalUuid4(requestGeneration) != null)
+        return buildJsonObject {
+            put("type", "ui_event")
+            put("action", "new_chat")
+            put("schema_version", VOICE_SCHEMA_VERSION)
+            put("connection_generation", connectionGeneration)
+            put("submission_id", submissionId)
+            put("request_generation", requestGeneration)
+            putJsonObject("payload") {
+                put("schema_version", VOICE_SCHEMA_VERSION)
+                put("connection_generation", connectionGeneration)
+                put("submission_id", submissionId)
+                put("request_generation", requestGeneration)
+            }
+        }.toString()
+    }
+
+    /** Encode one content-free observation from the matched local audio renderer. */
+    fun encodeVoicePlayoutEvent(value: VoicePlayoutEvent): String {
+        require(canonicalUuid4(value.deviceId) != null)
+        require(canonicalUuid4(value.connectionGeneration) != null)
+        require(canonicalUuid4(value.sessionId) != null)
+        require(value.generation > 0 && value.mediaGrantRevision > 0)
+        require(canonicalUuid4(value.announcementId) != null)
+        require(value.announcementSequence > 0)
+        require(value.turnId == null || canonicalUuid4(value.turnId) != null)
+        require(value.kind in VOICE_ANNOUNCEMENT_KINDS)
+        require(value.quantumRole in VOICE_QUANTUM_ROLES)
+        require(value.quantumIndex in 0..31)
+        require(value.phase in VOICE_PLAYOUT_PHASES)
+        require(value.clientSequence >= 0)
+        require(runCatching { Instant.parse(value.observedAt) }.isSuccess)
+        when (value.quantumRole) {
+            "single" -> {
+                require(value.kind != "result" && value.quantumIndex == 0)
+                require(value.resultReservedSamplesAfter == null)
+            }
+            "result_opening" -> {
+                require(value.kind == "result" && value.quantumIndex == 0)
+                require(value.resultReservedSamplesAfter in 1..36_000)
+            }
+            "result_continuation" -> {
+                require(value.kind == "result" && value.quantumIndex in 1..31)
+                require(value.resultReservedSamplesAfter in 1..720_000)
+            }
+        }
+        require((value.kind == "greeting") == (value.turnId == null))
+        return buildJsonObject {
+            put("type", "voice_playout_event")
+            put("schema_version", VOICE_SCHEMA_VERSION)
+            put("device_id", value.deviceId)
+            put("connection_generation", value.connectionGeneration)
+            put("session_id", value.sessionId)
+            put("generation", value.generation)
+            put("media_grant_revision", value.mediaGrantRevision)
+            put("announcement_id", value.announcementId)
+            put("announcement_sequence", value.announcementSequence)
+            put("turn_id", value.turnId)
+            put("kind", value.kind)
+            put("quantum_role", value.quantumRole)
+            put("quantum_index", value.quantumIndex)
+            value.resultReservedSamplesAfter?.let { put("result_reserved_samples_after", it) }
+            put("phase", value.phase)
+            put("client_sequence", value.clientSequence)
+            put("observed_at", value.observedAt)
+        }.toString()
+    }
+
     // ---- feature 060 strict wire models ----
 
     private data class ScopeDecode(
@@ -286,8 +426,82 @@ object Wire {
 
     private data class ExplicitNullable<out T>(val value: T?)
 
+    private const val VOICE_SCHEMA_VERSION = "1"
+    private const val MAX_VOICE_MEDIA_BYTES = 12 * 1024
+
+    private val VOICE_ANNOUNCEMENT_KINDS =
+        setOf(
+            "greeting", "acknowledgement", "progress", "waiting", "result",
+            "sensitive_notice", "failure", "refusal", "cancellation",
+        )
+    private val VOICE_QUANTUM_ROLES = setOf("single", "result_opening", "result_continuation")
+    private val VOICE_PLAYOUT_PHASES = setOf("started", "finished", "interrupted")
+
     private val snakeCase = Regex("^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
     private val lowerSha256 = Regex("^[0-9a-f]{64}$")
+    private val languageTag = Regex("^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+    private val opaqueId = Regex("^[A-Za-z0-9._:-]+$")
+    private val VOICE_MEDIA_TYPES = setOf("voice_transcript", "voice_announcement_media")
+    private val VOICE_STATES =
+        setOf(
+            "off", "unavailable", "connecting", "greeting", "listening", "speech_detected",
+            "transcribing", "acknowledging", "processing", "waiting_on_user", "speaking_progress",
+            "speaking_result", "muted", "suspended", "reconnecting", "error", "ended",
+        )
+    private val INACTIVE_VOICE_STATES = setOf("off", "unavailable", "suspended", "reconnecting", "error", "ended")
+    private val ACTIVE_VOICE_STATES =
+        setOf(
+            "connecting", "greeting", "listening", "speech_detected", "transcribing", "acknowledging",
+            "processing", "waiting_on_user", "speaking_progress", "speaking_result", "muted",
+            "reconnecting", "error",
+        )
+    private val VOICE_REASONS =
+        setOf(
+            "ready", "feature_disabled", "authentication_required", "permission_not_determined",
+            "permission_denied", "permission_restricted", "no_microphone", "no_audio_output",
+            "media_unavailable", "worker_unavailable", "asr_unavailable", "tts_unavailable",
+            "voice_unavailable", "output_language_unsupported", "capacity_exhausted", "takeover_required",
+            "idle_expired", "backgrounded", "audio_interrupted", "chat_context_unavailable", "auth_expired",
+            "network_interrupted", "media_error", "speech_error", "stale_generation", "ended_by_user",
+            "internal_error",
+        )
+    private val VOICE_ACTIONS =
+        setOf(
+            "voice_session_start",
+            "voice_session_takeover",
+            "voice_session_end",
+            "voice_microphone_set",
+            "voice_speech_stop",
+            "voice_speech_mute_set",
+            "voice_visible_chat_update",
+            "voice_sensitive_recap_request",
+        )
+    private val SPOKEN_OUTPUT_POLICIES = setOf("pending", "full_recap", "english_lifecycle_only")
+    private val OUTPUT_REASONS = setOf("language_pending", "ready", "output_language_unsupported")
+    private val TURN_STATES =
+        setOf(
+            "recognizing", "submitting", "accepted", "processing", "waiting_on_user", "succeeded", "failed",
+            "refused", "cancelled", "abandoned",
+        )
+    private val REJECTION_REASONS =
+        setOf(
+            "capacity_exhausted",
+            "chat_unavailable",
+            "invalid_binding",
+            "invalid_proof",
+            "proof_expired",
+            "permission_denied",
+            "stale_session",
+            "malformed_final",
+        )
+    private val ANNOUNCEMENT_KINDS =
+        setOf(
+            "greeting", "acknowledgement", "progress", "waiting", "result", "sensitive_notice", "failure",
+            "refusal", "cancellation",
+        )
+    private val QUANTUM_ROLES = setOf("single", "result_opening", "result_continuation")
+    private val VOICE_TRANSPORTS = setOf("livekit", "watch_pcm_websocket")
+    private val VOICE_BINDING_PATTERN = Regex("^[A-Za-z0-9._~-]+$")
     private val strictSemVer =
         Regex(
             "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)" +
@@ -785,13 +999,445 @@ object Wire {
         )
     }
 
+    // ---- feature 065 conversational-voice contract ----
+
+    private fun chatCreatedFromJson(root: JsonObject): Inbound.ChatCreated? {
+        if (root["schema_version"] == null) {
+            return Inbound.ChatCreated(root.obj("payload")?.str("chat_id") ?: root.str("chat_id"))
+        }
+        if (!root.hasExactKeys("type", "schema_version", "connection_generation", "submission_id", "request_generation", "payload")) {
+            return null
+        }
+        if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
+        val connection = canonicalUuid4(root.strictString("connection_generation")) ?: return null
+        val submission = canonicalUuid4(root.strictString("submission_id")) ?: return null
+        val request = canonicalUuid4(root.strictString("request_generation")) ?: return null
+        val payload = root.obj("payload") ?: return null
+        if (!payload.hasExactKeys(
+                "schema_version",
+                "chat_id",
+                "from_message",
+                "connection_generation",
+                "submission_id",
+                "request_generation",
+            )
+        ) {
+            return null
+        }
+        val chatId = canonicalUuid4(payload.strictString("chat_id")) ?: return null
+        val fromMessage = payload.strictBoolean("from_message") ?: return null
+        if (
+            payload.strictString("schema_version") != VOICE_SCHEMA_VERSION ||
+            payload.strictString("connection_generation") != connection ||
+            payload.strictString("submission_id") != submission ||
+            payload.strictString("request_generation") != request
+        ) {
+            return null
+        }
+        return Inbound.ChatCreated(chatId, connection, submission, request, fromMessage)
+    }
+
+    private fun messageAckFromJson(root: JsonObject): Inbound.UserMessageAcked? {
+        if (root["schema_version"] == null) {
+            return Inbound.UserMessageAcked(
+                chatId = root.obj("payload")?.str("chat_id") ?: root.str("chat_id"),
+                messageId = root.obj("payload")?.str("message_id") ?: root.str("message_id"),
+            )
+        }
+        if (!root.hasExactKeys(
+                "type",
+                "schema_version",
+                "chat_id",
+                "message_id",
+                "submission_id",
+                "request_generation",
+                "connection_generation",
+                "voice_turn_id",
+            )
+        ) {
+            return null
+        }
+        if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
+        val chatId = canonicalUuid4(root.strictString("chat_id")) ?: return null
+        val messageId = root.strictPositiveInt("message_id")?.toString() ?: return null
+        val submission = canonicalUuid4(root.strictString("submission_id")) ?: return null
+        val request = canonicalUuid4(root.strictString("request_generation")) ?: return null
+        val connection = canonicalUuid4(root.strictString("connection_generation")) ?: return null
+        val voiceTurn = root.explicitNullableUuid("voice_turn_id") ?: return null
+        return Inbound.UserMessageAcked(chatId, messageId, submission, request, connection, voiceTurn.value)
+    }
+
+    private fun composerStateFromJson(root: JsonObject): Inbound.ComposerState? {
+        if (!root.hasExactKeys("type", "schema_version", "revision", "connection_generation", "voice")) return null
+        if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
+        val revision = root.strictNonNegativeInt("revision") ?: return null
+        val connection = canonicalUuid4(root.strictString("connection_generation")) ?: return null
+        val voice = root.obj("voice")?.let(::voiceComposerModelFromJson) ?: return null
+        return Inbound.ComposerState(revision, connection, voice)
+    }
+
+    private fun voiceComposerModelFromJson(root: JsonObject): VoiceComposerModel? {
+        val required =
+            setOf(
+                "available",
+                "state",
+                "speech_muted",
+                "microphone_enabled",
+                "foreground_active",
+                "reason",
+                "output_locale",
+                "chat_context_revision",
+                "applied_chat_context_revision",
+                "chat_context_synced",
+                "controls",
+            )
+        val optional =
+            setOf(
+                "message",
+                "session_id",
+                "generation",
+                "media_grant_revision",
+                "visible_chat_id",
+                "foreground_turn_id",
+                "owner_device",
+                "idle_expires_at",
+            )
+        if (!root.hasRequiredAndOptional(required, optional)) return null
+        val available = root.strictBoolean("available") ?: return null
+        val state = root.strictString("state")?.takeIf { it in VOICE_STATES } ?: return null
+        val speechMuted = root.strictBoolean("speech_muted") ?: return null
+        val microphoneEnabled = root.strictBoolean("microphone_enabled") ?: return null
+        val foregroundActive = root.strictBoolean("foreground_active") ?: return null
+        val reason = root.strictString("reason")?.takeIf { it in VOICE_REASONS } ?: return null
+        if (root.strictString("output_locale") != "en-US") return null
+        val contextRevision = root.explicitNullablePositiveInt("chat_context_revision") ?: return null
+        val appliedRevision = root.explicitNullablePositiveInt("applied_chat_context_revision") ?: return null
+        val contextSynced = root.strictBoolean("chat_context_synced") ?: return null
+        val message = root.optionalBoundedString("message", 240) ?: return null
+        val sessionId = root.optionalNullableUuid("session_id") ?: return null
+        val generation = root.optionalNullablePositiveInt("generation") ?: return null
+        val grantRevision = root.optionalNullablePositiveInt("media_grant_revision") ?: return null
+        val visibleChat = root.optionalNullableUuid("visible_chat_id") ?: return null
+        val foregroundTurn = root.optionalNullableUuid("foreground_turn_id") ?: return null
+        val idleExpiry = root.optionalNullableTimestamp("idle_expires_at") ?: return null
+        val owner = root.optionalOwnerDevice("owner_device") ?: return null
+        val controls = root.arr("controls")?.map { (it as? JsonObject)?.let(::voiceControlFromJson) ?: return null } ?: return null
+        if (controls.isEmpty() || controls.size > 12) return null
+        if (!foregroundActive && (microphoneEnabled || state !in INACTIVE_VOICE_STATES)) return null
+        if (foregroundActive && state !in ACTIVE_VOICE_STATES) return null
+        return VoiceComposerModel(
+            available,
+            state,
+            speechMuted,
+            microphoneEnabled,
+            foregroundActive,
+            reason,
+            "en-US",
+            message.value,
+            contextRevision.value,
+            appliedRevision.value,
+            contextSynced,
+            sessionId.value,
+            generation.value,
+            grantRevision.value,
+            visibleChat.value,
+            foregroundTurn.value,
+            owner.value,
+            idleExpiry.value,
+            controls,
+        )
+    }
+
+    private fun voiceControlFromJson(root: JsonObject): VoiceControl? {
+        if (!root.hasExactKeys("key", "action", "label", "icon", "visible", "enabled", "pressed", "busy")) return null
+        val key = root.strictString("key")?.takeIf(::isOpaqueId) ?: return null
+        val action = root.strictString("action")?.takeIf { it in VOICE_ACTIONS } ?: return null
+        val label = root.strictString("label")?.takeIf { it.isNotEmpty() && it.length <= 80 } ?: return null
+        val icon = root.strictString("icon")?.takeIf { it.isNotEmpty() && it.length <= 64 } ?: return null
+        return VoiceControl(
+            key,
+            action,
+            label,
+            icon,
+            root.strictBoolean("visible") ?: return null,
+            root.strictBoolean("enabled") ?: return null,
+            root.strictBoolean("pressed") ?: return null,
+            root.strictBoolean("busy") ?: return null,
+        )
+    }
+
+    private fun voiceControlBindingFromJson(root: JsonObject): VoiceControlBinding? {
+        if (!root.hasExactKeys("type", "schema_version", "device_id", "connection_generation", "binding_id", "binding", "expires_at")) {
+            return null
+        }
+        if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
+        val binding =
+            root.strictString("binding")
+                ?.takeIf { it.length in 32..512 && VOICE_BINDING_PATTERN.matches(it) }
+                ?: return null
+        return VoiceControlBinding(
+            canonicalUuid4(root.strictString("device_id")) ?: return null,
+            canonicalUuid4(root.strictString("connection_generation")) ?: return null,
+            canonicalUuid4(root.strictString("binding_id")) ?: return null,
+            binding,
+            root.strictString("expires_at")?.takeIf(::isRfc3339Utc) ?: return null,
+        )
+    }
+
+    private fun voiceSessionStateFromJson(root: JsonObject): VoiceSessionState? {
+        val required =
+            setOf(
+                "type", "schema_version", "session_id", "connection_generation", "generation",
+                "media_grant_revision", "visible_chat_id", "chat_context_revision",
+                "applied_chat_context_revision", "chat_context_synced", "state", "speech_muted",
+                "microphone_enabled", "foreground_active", "reason", "occurred_at",
+            )
+        if (!root.hasRequiredAndOptional(required, setOf("message"))) return null
+        if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
+        val state = root.strictString("state")?.takeIf { it in VOICE_STATES } ?: return null
+        val foreground = root.strictBoolean("foreground_active") ?: return null
+        val microphone = root.strictBoolean("microphone_enabled") ?: return null
+        if (!foreground && (microphone || state !in setOf("suspended", "reconnecting", "error", "ended"))) return null
+        if (foreground && state !in ACTIVE_VOICE_STATES) return null
+        return VoiceSessionState(
+            canonicalUuid4(root.strictString("session_id")) ?: return null,
+            canonicalUuid4(root.strictString("connection_generation")) ?: return null,
+            root.strictPositiveInt("generation") ?: return null,
+            root.strictPositiveInt("media_grant_revision") ?: return null,
+            canonicalUuid4(root.strictString("visible_chat_id")) ?: return null,
+            root.strictPositiveInt("chat_context_revision") ?: return null,
+            (root.explicitNullablePositiveInt("applied_chat_context_revision") ?: return null).value,
+            root.strictBoolean("chat_context_synced") ?: return null,
+            state,
+            root.strictBoolean("speech_muted") ?: return null,
+            microphone,
+            foreground,
+            root.strictString("reason")?.takeIf { it in VOICE_REASONS } ?: return null,
+            (root.optionalBoundedString("message", 240) ?: return null).value,
+            root.strictString("occurred_at")?.takeIf(::isRfc3339Utc) ?: return null,
+        )
+    }
+
+    private fun voiceTurnStateFromJson(root: JsonObject): VoiceTurnState? {
+        val required =
+            setOf(
+                "type", "schema_version", "session_id", "connection_generation", "generation",
+                "media_grant_revision", "turn_id", "client_turn_id", "submission_id",
+                "request_generation", "chat_id", "chat_context_revision", "detected_language",
+                "spoken_output_policy", "output_reason", "state", "foreground",
+                "sensitive_result_pending", "sequence", "occurred_at",
+            )
+        if (!root.hasRequiredAndOptional(required, setOf("result_id", "message", "speech_outcome"))) return null
+        if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
+        val language = root.explicitNullableLanguage("detected_language") ?: return null
+        val policy = root.strictString("spoken_output_policy")?.takeIf { it in SPOKEN_OUTPUT_POLICIES } ?: return null
+        val outputReason = root.strictString("output_reason")?.takeIf { it in OUTPUT_REASONS } ?: return null
+        val turnState = root.strictString("state")?.takeIf { it in TURN_STATES } ?: return null
+        when {
+            language.value == null && (policy != "pending" || outputReason != "language_pending") -> return null
+            language.value?.startsWith("en") == true && (policy != "full_recap" || outputReason != "ready") -> return null
+            language.value != null && !language.value.startsWith("en") &&
+                (policy != "english_lifecycle_only" || outputReason != "output_language_unsupported") -> return null
+        }
+        if (turnState == "recognizing" && language.value != null) return null
+        if (turnState !in setOf("recognizing", "abandoned") && language.value == null) return null
+        val speechOutcome =
+            if ("speech_outcome" in root) {
+                VoiceSpeechOutcome.fromWireValue(root.strictString("speech_outcome")) ?: return null
+            } else {
+                null
+            }
+        if (speechOutcome != null && turnState != "succeeded") return null
+        return VoiceTurnState(
+            canonicalUuid4(root.strictString("session_id")) ?: return null,
+            canonicalUuid4(root.strictString("connection_generation")) ?: return null,
+            root.strictPositiveInt("generation") ?: return null,
+            root.strictPositiveInt("media_grant_revision") ?: return null,
+            canonicalUuid4(root.strictString("turn_id")) ?: return null,
+            canonicalUuid4(root.strictString("client_turn_id")) ?: return null,
+            canonicalUuid4(root.strictString("submission_id")) ?: return null,
+            canonicalUuid4(root.strictString("request_generation")) ?: return null,
+            canonicalUuid4(root.strictString("chat_id")) ?: return null,
+            root.strictPositiveInt("chat_context_revision") ?: return null,
+            language.value,
+            policy,
+            outputReason,
+            turnState,
+            root.strictBoolean("foreground") ?: return null,
+            root.strictBoolean("sensitive_result_pending") ?: return null,
+            root.strictNonNegativeInt("sequence") ?: return null,
+            speechOutcome,
+            (root.optionalNullableOpaqueId("result_id") ?: return null).value,
+            (root.optionalBoundedString("message", 240) ?: return null).value,
+            root.strictString("occurred_at")?.takeIf(::isRfc3339Utc) ?: return null,
+        )
+    }
+
+    private fun voiceSubmissionRejectedFromJson(root: JsonObject): VoiceSubmissionRejected? {
+        val required =
+            setOf(
+                "type", "schema_version", "session_id", "connection_generation", "generation",
+                "media_grant_revision", "turn_id", "client_turn_id", "submission_id",
+                "request_generation", "chat_id", "reason", "retry_policy", "occurred_at",
+            )
+        if (!root.hasRequiredAndOptional(required, setOf("message"))) return null
+        if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
+        return VoiceSubmissionRejected(
+            canonicalUuid4(root.strictString("session_id")) ?: return null,
+            canonicalUuid4(root.strictString("connection_generation")) ?: return null,
+            root.strictPositiveInt("generation") ?: return null,
+            root.strictPositiveInt("media_grant_revision") ?: return null,
+            canonicalUuid4(root.strictString("turn_id")) ?: return null,
+            canonicalUuid4(root.strictString("client_turn_id")) ?: return null,
+            canonicalUuid4(root.strictString("submission_id")) ?: return null,
+            canonicalUuid4(root.strictString("request_generation")) ?: return null,
+            canonicalUuid4(root.strictString("chat_id")) ?: return null,
+            root.strictString("reason")?.takeIf { it in REJECTION_REASONS } ?: return null,
+            root.strictString("retry_policy")?.takeIf { it in setOf("explicit_user_retry", "none") } ?: return null,
+            (root.optionalBoundedString("message", 240) ?: return null).value,
+            root.strictString("occurred_at")?.takeIf(::isRfc3339Utc) ?: return null,
+        )
+    }
+
+    private fun voiceTranscriptFromJson(root: JsonObject): VoiceTranscript? {
+        val required =
+            setOf(
+                "type", "schema_version", "session_id", "generation", "turn_id", "client_turn_id",
+                "submission_id", "request_generation", "chat_id", "chat_context_revision",
+                "media_grant_revision", "sequence", "final", "text", "detected_language",
+                "source_participant_identity",
+            )
+        val proofFields = setOf("text_digest_sha256", "transcript_proof", "proof_expires_at")
+        if (!root.hasRequiredAndOptional(required, proofFields)) return null
+        if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
+        val final = root.strictBoolean("final") ?: return null
+        val text = root.strictString("text")?.takeIf { it.length <= 8000 } ?: return null
+        val language = root.explicitNullableLanguage("detected_language") ?: return null
+        val digest = root.strictString("text_digest_sha256")
+        val proof = root.strictString("transcript_proof")
+        val proofExpiry = root.strictString("proof_expires_at")
+        if (final) {
+            if (text.isBlank() || language.value == null || digest?.matches(lowerSha256) != true ||
+                proof?.matches(lowerSha256) != true || proofExpiry?.let(::isRfc3339Utc) != true
+            ) {
+                return null
+            }
+        } else if (proofFields.any(root::containsKey)) {
+            return null
+        }
+        return VoiceTranscript(
+            canonicalUuid4(root.strictString("session_id")) ?: return null,
+            root.strictPositiveInt("generation") ?: return null,
+            canonicalUuid4(root.strictString("turn_id")) ?: return null,
+            canonicalUuid4(root.strictString("client_turn_id")) ?: return null,
+            canonicalUuid4(root.strictString("submission_id")) ?: return null,
+            canonicalUuid4(root.strictString("request_generation")) ?: return null,
+            canonicalUuid4(root.strictString("chat_id")) ?: return null,
+            root.strictPositiveInt("chat_context_revision") ?: return null,
+            root.strictPositiveInt("media_grant_revision") ?: return null,
+            root.strictNonNegativeInt("sequence") ?: return null,
+            final,
+            text,
+            language.value,
+            digest,
+            proof,
+            proofExpiry,
+            root.strictString("source_participant_identity")?.takeIf(::isOpaqueId) ?: return null,
+        )
+    }
+
+    private fun voiceAnnouncementFromJson(root: JsonObject): VoiceAnnouncementMedia? {
+        val required =
+            setOf(
+                "type", "schema_version", "session_id", "generation", "media_grant_revision",
+                "announcement_id", "announcement_sequence", "turn_id", "kind", "quantum_role",
+                "quantum_index", "transport", "worker_identity", "sample_rate_hz", "duration_samples",
+            )
+        val optional =
+            setOf(
+                "result_reserved_samples_after",
+                "track_sid",
+                "track_name",
+                "first_media_sequence",
+                "last_media_sequence",
+            )
+        if (!root.hasRequiredAndOptional(required, optional)) return null
+        if (root.strictString("schema_version") != VOICE_SCHEMA_VERSION) return null
+        val turn = root.explicitNullableUuid("turn_id") ?: return null
+        val kind = root.strictString("kind")?.takeIf { it in ANNOUNCEMENT_KINDS } ?: return null
+        val role = root.strictString("quantum_role")?.takeIf { it in QUANTUM_ROLES } ?: return null
+        val index = root.strictNonNegativeInt("quantum_index")?.takeIf { it <= 31 } ?: return null
+        val transport = root.strictString("transport")?.takeIf { it in VOICE_TRANSPORTS } ?: return null
+        val duration = root.strictPositiveInt("duration_samples")?.takeIf { it <= 96_000 } ?: return null
+        val reserved = root.optionalPositiveInt("result_reserved_samples_after", 720_000) ?: return null
+        val trackSid = root.optionalOpaqueId("track_sid") ?: return null
+        val trackName = root.optionalOpaqueId("track_name") ?: return null
+        val firstSequence = root.optionalNonNegativeInt("first_media_sequence") ?: return null
+        val lastSequence = root.optionalNonNegativeInt("last_media_sequence") ?: return null
+        if ((kind == "greeting") != (turn.value == null)) return null
+        when (role) {
+            "single" -> if (kind == "result" || index != 0 || reserved.value != null) return null
+            "result_opening" -> {
+                val reservedSamples = reserved.value ?: return null
+                if (kind != "result" || index != 0 || duration > 36_000 || reservedSamples !in 1..36_000) return null
+            }
+            "result_continuation" ->
+                if (kind != "result" || index !in 1..31 || reserved.value == null) return null
+        }
+        when (transport) {
+            "livekit" ->
+                if (
+                    trackSid.value == null ||
+                    trackName.value == null ||
+                    firstSequence.value != null ||
+                    lastSequence.value != null
+                ) {
+                    return null
+                }
+            "watch_pcm_websocket" -> {
+                val first = firstSequence.value ?: return null
+                val last = lastSequence.value ?: return null
+                if (trackSid.value != null || trackName.value != null || last < first) return null
+            }
+        }
+        return VoiceAnnouncementMedia(
+            canonicalUuid4(root.strictString("session_id")) ?: return null,
+            root.strictPositiveInt("generation") ?: return null,
+            root.strictPositiveInt("media_grant_revision") ?: return null,
+            canonicalUuid4(root.strictString("announcement_id")) ?: return null,
+            root.strictPositiveInt("announcement_sequence") ?: return null,
+            turn.value,
+            kind,
+            role,
+            index,
+            transport,
+            root.strictString("worker_identity")?.takeIf(::isOpaqueId) ?: return null,
+            root.strictPositiveInt("sample_rate_hz")?.takeIf { it == 24_000 } ?: return null,
+            duration,
+            reserved.value,
+            trackSid.value,
+            trackName.value,
+        )
+    }
+
     private fun parseObject(raw: String): JsonObject? = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
 
     private fun JsonObject.hasExactKeys(vararg keys: String): Boolean = this.keys == keys.toSet()
 
+    private fun JsonObject.hasRequiredAndOptional(
+        required: Set<String>,
+        optional: Set<String>,
+    ): Boolean = keys.containsAll(required) && keys.all { it in required || it in optional }
+
     private fun JsonObject.strictString(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 
     private fun JsonObject.strictBoolean(key: String): Boolean? = (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+
+    private fun JsonObject.strictPositiveInt(key: String): Int? =
+        (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.takeIf { it > 0 }
+
+    private fun JsonObject.strictNonNegativeInt(key: String): Int? =
+        (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.takeIf { it >= 0 }
 
     private fun JsonObject.strictULong(key: String): ULong? =
         (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toULongOrNull()
@@ -806,6 +1452,87 @@ object Wire {
         val element = this[key] ?: return null
         if (element is JsonNull) return ExplicitNullable(null)
         return canonicalUuid4(strictString(key))?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.explicitNullablePositiveInt(key: String): ExplicitNullable<Int>? {
+        val element = this[key] ?: return null
+        if (element is JsonNull) return ExplicitNullable(null)
+        return strictPositiveInt(key)?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.explicitNullableLanguage(key: String): ExplicitNullable<String>? {
+        val element = this[key] ?: return null
+        if (element is JsonNull) return ExplicitNullable(null)
+        return strictString(key)?.takeIf { it.length in 2..32 && languageTag.matches(it) }?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.optionalBoundedString(
+        key: String,
+        maxLength: Int,
+    ): ExplicitNullable<String>? {
+        if (!containsKey(key)) return ExplicitNullable(null)
+        return strictString(key)?.takeIf { it.length <= maxLength }?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.optionalNullableUuid(key: String): ExplicitNullable<String>? {
+        val element = this[key] ?: return ExplicitNullable(null)
+        if (element is JsonNull) return ExplicitNullable(null)
+        return canonicalUuid4(strictString(key))?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.optionalNullablePositiveInt(key: String): ExplicitNullable<Int>? {
+        val element = this[key] ?: return ExplicitNullable(null)
+        if (element is JsonNull) return ExplicitNullable(null)
+        return strictPositiveInt(key)?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.optionalNullableTimestamp(key: String): ExplicitNullable<String>? {
+        val element = this[key] ?: return ExplicitNullable(null)
+        if (element is JsonNull) return ExplicitNullable(null)
+        return strictString(key)?.takeIf(::isRfc3339Utc)?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.optionalOwnerDevice(key: String): ExplicitNullable<VoiceOwnerDevice>? {
+        val element = this[key] ?: return ExplicitNullable(null)
+        if (element is JsonNull) return ExplicitNullable(null)
+        val owner = element as? JsonObject ?: return null
+        if (!owner.hasRequiredAndOptional(setOf("device_id", "device_kind", "generation"), setOf("device_label"))) return null
+        val label = owner.optionalBoundedString("device_label", 80) ?: return null
+        return ExplicitNullable(
+            VoiceOwnerDevice(
+                deviceId = canonicalUuid4(owner.strictString("device_id")) ?: return null,
+                deviceKind =
+                    owner.strictString("device_kind")
+                        ?.takeIf { it in setOf("web", "windows", "android", "ios", "macos", "watchos") }
+                        ?: return null,
+                deviceLabel = label.value,
+                generation = owner.strictPositiveInt("generation") ?: return null,
+            ),
+        )
+    }
+
+    private fun JsonObject.optionalNullableOpaqueId(key: String): ExplicitNullable<String>? {
+        val element = this[key] ?: return ExplicitNullable(null)
+        if (element is JsonNull) return ExplicitNullable(null)
+        return strictString(key)?.takeIf(::isOpaqueId)?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.optionalPositiveInt(
+        key: String,
+        maximum: Int,
+    ): ExplicitNullable<Int>? {
+        if (!containsKey(key)) return ExplicitNullable(null)
+        return strictPositiveInt(key)?.takeIf { it <= maximum }?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.optionalNonNegativeInt(key: String): ExplicitNullable<Int>? {
+        if (!containsKey(key)) return ExplicitNullable(null)
+        return strictNonNegativeInt(key)?.let(::ExplicitNullable)
+    }
+
+    private fun JsonObject.optionalOpaqueId(key: String): ExplicitNullable<String>? {
+        if (!containsKey(key)) return ExplicitNullable(null)
+        return strictString(key)?.takeIf(::isOpaqueId)?.let(::ExplicitNullable)
     }
 
     private fun JsonObject.positiveSortedVersions(key: String): List<Int>? {
@@ -829,6 +1556,8 @@ object Wire {
     private fun isRfc3339Utc(value: String): Boolean = value.endsWith("Z") && runCatching { Instant.parse(value) }.isSuccess
 
     private fun isSnakeCase(value: String): Boolean = snakeCase.matches(value)
+
+    private fun isOpaqueId(value: String): Boolean = value.length in 1..128 && opaqueId.matches(value)
 
     // ---- legacy-compatible helpers ----
 

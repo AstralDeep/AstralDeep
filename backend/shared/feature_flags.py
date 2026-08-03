@@ -156,6 +156,23 @@ class FeatureFlags:
             # is byte-identical to today. Read once at import (container recreate
             # to enable). See specs/063-remote-compute-agents/.
             "remote_compute": self._read("FF_REMOTE_COMPUTE", False),
+            # 064-mcp-2026-07-28-decision: exposes the audience-bound,
+            # stateless MCP Streamable HTTP server. FAIL CLOSED — default OFF;
+            # with the flag off there is no MCP route, protected-resource
+            # metadata, admission activity, or advertisement, preserving the
+            # pre-feature HTTP surface byte-for-byte. Read once at import
+            # (container recreate to enable). See
+            # specs/064-mcp-2026-07-28-decision/.
+            "mcp_server": self._read("FF_MCP_SERVER", False),
+            # 065-conversational-voice: server-owned voice capability across
+            # every shipping client. This is the operational kill switch for
+            # admission and advertising only; disabling it must leave ordinary
+            # typed chat byte-for-byte usable. Default ON because voice is an
+            # included platform capability, not a user-provided integration.
+            "conversational_voice": self._read(
+                "FF_CONVERSATIONAL_VOICE",
+                True,
+            ),
         }
 
     @staticmethod

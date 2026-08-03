@@ -10,11 +10,9 @@ chat responses, live status updates). These REST endpoints provide
 request/response access for CRUD operations.
 """
 import asyncio
-import base64
 import csv
 import io
 import json
-import os
 import re
 import time
 import logging
@@ -22,9 +20,7 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any, Dict, List, Optional, Union
 
-import aiohttp
-import websockets as ws_client
-from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
@@ -63,6 +59,9 @@ from orchestrator.work_admission import (
     OwnerScope,
     SafeOperationProjection,
 )
+from orchestrator.voice_api import router as _voice_control_router
+
+voice_router = _voice_control_router
 
 logger = logging.getLogger("API")
 
@@ -397,6 +396,21 @@ def _refresh_runtime_admission_metrics(orchestrator) -> None:
         )
 
 
+def _runtime_metric_snapshot(orchestrator) -> tuple[Any, ...]:
+    """Merge the runtime and voice collectors into one de-duplicated export."""
+
+    primary = orchestrator.runtime_observability
+    voice_services = getattr(orchestrator, "voice_services", None)
+    voice = getattr(voice_services, "observability", None)
+    collectors = (primary,) if voice is None or voice is primary else (primary, voice)
+    samples: dict[tuple[str, tuple[tuple[str, str], ...]], Any] = {}
+    for collector in collectors:
+        for sample in collector.snapshot():
+            key = (sample.name, tuple(sorted(sample.labels.items())))
+            samples.setdefault(key, sample)
+    return tuple(samples[key] for key in sorted(samples))
+
+
 @operation_router.get(
     "/operations/{operation_id}",
     response_model=SafeOperationResponse,
@@ -504,7 +518,7 @@ async def get_runtime_reliability_metrics(
                 "value": sample.value,
                 "labels": dict(sample.labels),
             }
-            for sample in orchestrator.runtime_observability.snapshot()
+            for sample in _runtime_metric_snapshot(orchestrator)
         ]
     }
 
@@ -587,7 +601,24 @@ async def delete_chat(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    await asyncio.to_thread(orch.history.delete_chat, chat_id, user_id=user_id)
+    voice_mutation = await asyncio.to_thread(
+        orch.history.delete_chat,
+        chat_id,
+        user_id=user_id,
+    )
+    voice_services = getattr(orch, "voice_services", None)
+    if voice_services is not None:
+        try:
+            await voice_services.handle_chat_unavailable(voice_mutation)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The chat transaction already durably fenced the voice rows.
+            # Short-lived grants and the lease sweep remain cleanup backstops.
+            logger.warning(
+                "voice_chat_media_cleanup_unavailable",
+                exc_info=True,
+            )
     # Feature 028 (spec edge case): another tab time-traveling through this
     # chat must have its historical view ended gracefully, not left staring
     # at a snapshot of a chat that no longer exists.
@@ -2153,369 +2184,6 @@ async def get_chrome_menu(payload: dict = Depends(get_current_user_payload)):
     # Native clients consume this — ADMIN TOOLS is web-only (include_admin=False)
     # and "Take the tour" is web-only (include_tour=False, feature 043).
     return menu_model_dict(_roles_from_payload(payload), include_admin=False, include_tour=False)
-
-
-# =============================================================================
-# Voice Router  (STT / TTS proxy to Speaches.ai)
-# =============================================================================
-
-voice_router = APIRouter(prefix="/api/voice", tags=["Voice"])
-
-# Per-user voice session tracking (prevents concurrent sessions)
-_active_voice_sessions: Dict[str, Dict[str, Any]] = {}
-VOICE_SESSION_IDLE_TIMEOUT_S = 30
-
-
-def _is_voice_available() -> bool:
-    """Check whether voice service (Speaches.ai) is configured."""
-    return bool(os.getenv("SPEACHES_URL", "").strip())
-
-
-def _register_voice_session(user_id: str, session_meta: Dict[str, Any]) -> None:
-    """Register a voice session for a user. Replaces any existing session."""
-    _active_voice_sessions[user_id] = session_meta
-    logger.info(
-        "voice_session_registered",
-        extra={"user_id": user_id, "started_at": session_meta.get("started_at")},
-    )
-
-
-def _unregister_voice_session(user_id: str) -> None:
-    """Remove a user's voice session."""
-    if user_id in _active_voice_sessions:
-        session = _active_voice_sessions.pop(user_id)
-        duration = time.time() - session.get("started_at", time.time())
-        logger.info(
-            "voice_session_ended",
-            extra={
-                "user_id": user_id,
-                "duration_s": round(duration, 2),
-                "audio_frames": session.get("frame_count", 0),
-                "speech_events": session.get("speech_events", 0),
-                "transcription_chars": session.get("transcription_chars", 0),
-            },
-        )
-
-
-async def _cleanup_stale_voice_sessions() -> None:
-    """Remove voice sessions that have been idle beyond the timeout."""
-    now = time.time()
-    stale = [
-        uid
-        for uid, meta in _active_voice_sessions.items()
-        if now - meta.get("last_activity", meta.get("started_at", now)) > VOICE_SESSION_IDLE_TIMEOUT_S
-    ]
-    for uid in stale:
-        logger.info("voice_session_stale_cleanup", extra={"user_id": uid})
-        _unregister_voice_session(uid)
-
-
-@voice_router.get("/health", summary="Voice service availability")
-async def voice_health():
-    """Report whether the voice service is configured and available.
-
-    Returns JSON with ``available`` boolean and ``message`` for the frontend.
-    """
-    available = _is_voice_available()
-    return JSONResponse(content={
-        "available": available,
-        "message": "Voice service ready" if available else "Speech server not configured",
-        "active_sessions": len(_active_voice_sessions),
-    })
-
-
-@voice_router.post("/transcribe", summary="Speech-to-text via Speaches.ai")
-async def transcribe_audio(
-    file: UploadFile = File(...),
-    user_id: str = Depends(require_user_id),
-):
-    """Accept an audio file, forward it to the Speaches STT endpoint, return transcribed text."""
-    speaches_url = os.getenv("SPEACHES_URL")
-    if not speaches_url:
-        raise HTTPException(status_code=503, detail="SPEACHES_URL not configured")
-
-    stt_model = os.getenv("SPEACHES_STT_MODEL", "Systran/faster-whisper-large-v3")
-    audio_bytes = await file.read()
-
-    logger.info(
-        "voice_batch_transcribe",
-        extra={"user_id": user_id, "bytes": len(audio_bytes), "model": stt_model},
-    )
-
-    try:
-        form = aiohttp.FormData()
-        form.add_field("file", audio_bytes, filename=file.filename or "audio.webm", content_type=file.content_type or "audio/webm")
-        form.add_field("model", stt_model)
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{speaches_url}/v1/audio/transcriptions", data=form) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    logger.error(f"Speaches STT error {resp.status}: {body}")
-                    raise HTTPException(status_code=502, detail=f"Speaches STT error: {body}")
-                result = await resp.json()
-                return JSONResponse(content=result)
-    except aiohttp.ClientError as e:
-        logger.error(f"Speaches STT connection error: {e}")
-        raise HTTPException(status_code=502, detail=f"Cannot reach Speaches server: {e}")
-
-
-def _truncate_for_speech(text: str, max_chars: int = 300) -> str:
-    """Truncate text at a sentence boundary for natural-sounding TTS."""
-    if len(text) <= max_chars:
-        return text
-    # Find the last sentence-ending punctuation within the limit
-    truncated = text[:max_chars]
-    for end in (". ", "! ", "? "):
-        idx = truncated.rfind(end)
-        if idx > 50:  # ensure at least some content
-            return truncated[: idx + 1]
-    # Fallback: cut at last space
-    idx = truncated.rfind(" ")
-    return (truncated[:idx] if idx > 50 else truncated) + "."
-
-
-@voice_router.post("/speak", summary="Text-to-speech via Speaches.ai")
-async def text_to_speech(
-    request: Request,
-    user_id: str = Depends(require_user_id),
-):
-    """Accept text, truncate for brevity, stream audio from Speaches TTS."""
-    from fastapi.responses import StreamingResponse
-
-    speaches_url = os.getenv("SPEACHES_URL")
-    if not speaches_url:
-        raise HTTPException(status_code=503, detail="SPEACHES_URL not configured")
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid or missing JSON body")
-    text = body.get("text", "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="No text provided")
-
-    voice = body.get("voice", "af_heart")
-    tts_model = os.getenv("SPEACHES_TTS_MODEL", "speaches-ai/Kokoro-82M-v1.0-ONNX-int8")
-
-    # Fast truncation instead of slow LLM summarization
-    text = _truncate_for_speech(text)
-    logger.info(
-        "voice_tts_request",
-        extra={"user_id": user_id, "char_count": len(text), "model": tts_model},
-    )
-
-    try:
-        payload = {"model": tts_model, "input": text, "voice": voice}
-        session = aiohttp.ClientSession()
-        resp = await session.post(f"{speaches_url}/v1/audio/speech", json=payload)
-
-        if resp.status != 200:
-            err = await resp.text()
-            await resp.release()
-            await session.close()
-            logger.error(f"Speaches TTS error {resp.status}: {err}")
-            raise HTTPException(status_code=502, detail=f"Speaches TTS error: {err}")
-
-        content_type = resp.headers.get("Content-Type", "audio/mpeg")
-
-        async def stream_audio():
-            try:
-                async for chunk in resp.content.iter_chunked(4096):
-                    yield chunk
-            finally:
-                await resp.release()
-                await session.close()
-
-        return StreamingResponse(stream_audio(), media_type=content_type)
-    except aiohttp.ClientError as e:
-        logger.error(f"Speaches TTS connection error: {e}")
-        raise HTTPException(status_code=502, detail=f"Cannot reach Speaches server: {e}")
-
-
-@voice_router.websocket("/stream")
-async def voice_stream(ws: WebSocket):
-    """
-    Real-time voice streaming proxy to Speaches Realtime API.
-
-    Protocol (frontend -> this endpoint):
-    - Frontend sends binary audio frames (PCM16 24kHz mono)
-    - This proxy base64-encodes them and forwards as OpenAI Realtime
-      `input_audio_buffer.append` events to Speaches.
-    - Transcription events from Speaches are forwarded back as JSON.
-
-    Frontend should listen for:
-    - {"type": "transcription.delta", "text": "partial..."}
-    - {"type": "transcription.done", "text": "final transcription"}
-    - {"type": "speech.started"}
-    - {"type": "speech.stopped"}
-    - {"type": "error", "message": "..."}
-
-    Only one concurrent voice session is allowed per user.
-    """
-    await ws.accept()
-
-    # Clean up stale sessions before registering
-    await _cleanup_stale_voice_sessions()
-
-    # Use WebSocket object id as session key (auth is handled at HTTP level before upgrade)
-    session_key = f"ws:{id(ws)}"
-
-    # Limit total concurrent sessions to prevent resource exhaustion
-    if len(_active_voice_sessions) >= 5:
-        logger.warning("voice_session_capacity", extra={"active": len(_active_voice_sessions)})
-        await ws.send_json({"type": "error", "message": "Too many active voice sessions. Please try again shortly."})
-        await ws.close()
-        return
-
-    speaches_url = os.getenv("SPEACHES_URL", "").strip()
-    if not speaches_url:
-        await ws.send_json({"type": "error", "message": "Speech server not configured"})
-        await ws.close()
-        return
-
-    stt_model = os.getenv("SPEACHES_STT_MODEL", "Systran/faster-whisper-large-v3")
-
-    # Build the Speaches Realtime WebSocket URL
-    scheme = "wss" if speaches_url.startswith("https") else "ws"
-    host = speaches_url.replace("https://", "").replace("http://", "")
-    realtime_url = f"{scheme}://{host}/v1/realtime?model={stt_model}&intent=transcription"
-
-    # Register this session
-    session_meta: Dict[str, Any] = {
-        "started_at": time.time(),
-        "last_activity": time.time(),
-        "frame_count": 0,
-        "speech_events": 0,
-        "transcription_chars": 0,
-    }
-    _active_voice_sessions[session_key] = session_meta
-    logger.info("voice_stream_started", extra={"session_key": session_key})
-
-    speaches_ws = None
-    try:
-        speaches_ws = await asyncio.wait_for(ws_client.connect(realtime_url), timeout=10.0)
-        logger.info("voice_stream_speaches_connected", extra={"url": realtime_url})
-
-        async def forward_speaches_to_client():
-            """Read events from Speaches and forward simplified events to the frontend."""
-            try:
-                async for message in speaches_ws:
-                    try:
-                        event = json.loads(message)
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-
-                    event_type = event.get("type", "")
-                    logger.debug("voice_speaches_event", extra={"type": event_type})
-
-                    if event_type == "input_audio_buffer.speech_started":
-                        session_meta["speech_events"] += 1
-                        await ws.send_json({"type": "speech.started"})
-
-                    elif event_type == "input_audio_buffer.speech_stopped":
-                        await ws.send_json({"type": "speech.stopped"})
-
-                    elif event_type == "conversation.item.input_audio_transcription.completed":
-                        transcript = event.get("transcript", "")
-                        session_meta["transcription_chars"] += len(transcript)
-                        logger.info(
-                            "voice_transcription_completed",
-                            extra={"char_count": len(transcript)},
-                        )
-                        await ws.send_json({"type": "transcription.done", "text": transcript})
-
-                    elif "transcription" in event_type and "delta" in event_type:
-                        delta = event.get("delta", "")
-                        if delta:
-                            session_meta["transcription_chars"] += len(delta)
-                            await ws.send_json({"type": "transcription.delta", "text": delta})
-
-                    elif event_type == "error":
-                        err_msg = event.get("error", {}).get("message", "Unknown error")
-                        err_type = event.get("error", {}).get("type", "")
-                        # Speaches returns "Not Found" when no speech is detected
-                        # in the committed audio — translate to a clean "no speech" event
-                        if err_msg == "Not Found" or (err_type == "invalid_request_error" and "not found" in err_msg.lower()):
-                            logger.info("voice_no_speech_detected")
-                            await ws.send_json({"type": "transcription.done", "text": ""})
-                        else:
-                            # "error_message", not "message": reserved LogRecord
-                            # attribute — using it in `extra` makes logging raise.
-                            logger.error("voice_speaches_error", extra={"error_message": err_msg, "error_type": err_type})
-                            await ws.send_json({"type": "error", "message": err_msg})
-
-            except (ws_client.exceptions.ConnectionClosed, Exception) as e:
-                logger.warning("voice_speaches_connection_lost", extra={"error": str(e)})
-
-        # Start the Speaches -> client forwarding task
-        forward_task = asyncio.create_task(forward_speaches_to_client())
-
-        # Read binary audio from the frontend and forward to Speaches
-        try:
-            while True:
-                data = await ws.receive()
-
-                if data["type"] == "websocket.disconnect":
-                    logger.info("voice_client_disconnected")
-                    break
-
-                session_meta["last_activity"] = time.time()
-
-                if "bytes" in data and data["bytes"]:
-                    # Frontend sends raw audio bytes -> encode to base64 for OpenAI Realtime protocol
-                    session_meta["frame_count"] += 1
-                    audio_b64 = base64.b64encode(data["bytes"]).decode("ascii")
-                    await speaches_ws.send(json.dumps({
-                        "type": "input_audio_buffer.append",
-                        "audio": audio_b64,
-                    }))
-                elif "text" in data and data["text"]:
-                    # Frontend may send JSON control messages
-                    try:
-                        ctrl = json.loads(data["text"])
-                        ctrl_type = ctrl.get("type", "")
-                        if ctrl_type == "stop":
-                            logger.info("voice_commit_requested")
-                            # Commit the audio buffer to trigger final transcription
-                            await speaches_ws.send(json.dumps({
-                                "type": "input_audio_buffer.commit",
-                            }))
-                    except json.JSONDecodeError:
-                        pass
-
-        except WebSocketDisconnect:
-            logger.info("voice_client_disconnected")
-        finally:
-            forward_task.cancel()
-            try:
-                await forward_task
-            except asyncio.CancelledError:
-                pass
-
-    except asyncio.TimeoutError:
-        logger.error("voice_speaches_connect_timeout", extra={"url": realtime_url})
-        try:
-            await ws.send_json({"type": "error", "message": "Speech server connection timed out. Please try again."})
-        except Exception:
-            pass
-    except Exception as e:
-        logger.error("voice_stream_failed", extra={"error": str(e), "type": type(e).__name__})
-        try:
-            await ws.send_json({"type": "error", "message": f"Cannot connect to speech server: {e}"})
-        except Exception:
-            pass
-    finally:
-        if speaches_ws:
-            try:
-                await speaches_ws.close()
-            except Exception:
-                pass
-        try:
-            await ws.close()
-        except Exception:
-            pass
-        _unregister_voice_session(session_key)
 
 
 # =============================================================================

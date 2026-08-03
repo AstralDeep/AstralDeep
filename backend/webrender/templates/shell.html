@@ -88,16 +88,45 @@
                     aria-label="Run in background">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
             </button>
+            <!-- Feature 065: this is an empty host, not a client-owned button
+                 definition. client.js renders the ordered controls and labels
+                 supplied by the authoritative composer_state frame. -->
+            <div id="astral-voice-controls" class="astral-voice-controls shrink-0" role="group"
+                 aria-label="Voice conversation controls"></div>
             <input id="astral-input" type="text" autocomplete="off" placeholder="Message an agent…" data-tour-target="chat.input"
                    class="astral-field flex-1 min-w-0 rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-astral-text">
             <button type="submit" class="astral-btn astral-btn-primary shrink-0 px-4 py-2 rounded-lg text-sm font-medium bg-astral-primary text-white">Send</button>
           </div>
+          <!-- Local adapter feedback remains textual and live so permission,
+               device, autoplay, and server states never rely on color alone.
+               Typed chat above remains available under every voice failure. -->
+          <div id="astral-voice-feedback" class="astral-voice-feedback" hidden data-state="off" data-reason="ready">
+            <div class="astral-voice-state-line">
+              <span class="astral-voice-state-label" aria-hidden="true"></span>
+              <span id="astral-voice-status" role="status" aria-live="polite" aria-atomic="true"></span>
+            </div>
+            <div id="astral-voice-transcript" class="astral-voice-transcript" aria-live="polite" aria-atomic="true"></div>
+            <button id="astral-voice-audio-resume" class="astral-voice-audio-resume" type="button" hidden>
+              Enable voice audio
+            </button>
+          </div>
+          <div id="astral-voice-turn-notice" class="astral-voice-turn-notice" role="alert"
+               aria-live="assertive" aria-atomic="true" hidden>
+            <span class="astral-voice-turn-notice-icon" aria-hidden="true">!</span>
+            <div class="astral-voice-turn-notice-copy">
+              <strong id="astral-voice-turn-notice-title" class="astral-voice-turn-notice-title"></strong>
+              <span id="astral-voice-turn-notice-message" class="astral-voice-turn-notice-message" hidden></span>
+              <span id="astral-voice-turn-notice-guidance" class="astral-voice-turn-notice-fallback">Typed chat remains available.</span>
+            </div>
+          </div>
+          <div id="astral-voice-audio" hidden aria-hidden="true"></div>
         </form>
       </aside>
     </main>
   </div>
   <!-- Chrome modal root (settings surfaces render here via chrome_render) -->
   <div id="astral-modal"></div>
+  <script src="/static/vendor/livekit-client.umd.min.js?v=%%ASTRAL_V:vendor/livekit-client.umd.min.js%%"></script>
   <script src="/static/client.js?v=%%ASTRAL_V:client.js%%"></script>
 </body>
 </html>

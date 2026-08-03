@@ -11,3 +11,4 @@ pyperclip==1.11.0
 sigstore==3.6.7
 astralprims==0.3.0
 pyinstaller==6.21.0
+livekit==1.1.14

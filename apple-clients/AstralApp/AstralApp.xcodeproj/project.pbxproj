@@ -10,6 +10,7 @@
 		AA00000000000000000000A4 /* AstralCore in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000A2 /* AstralCore */; };
 		AA00000000000000000000A5 /* AstralCore in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000A3 /* AstralCore */; };
 		AA00000000000000000000C1 /* AstralWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000B1 /* AstralWatch.app */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		AC6500000000000000000003 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC6500000000000000000002 /* LiveKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -102,6 +103,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA00000000000000000000A4 /* AstralCore in Frameworks */,
+				AC6500000000000000000003 /* LiveKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -195,6 +197,7 @@
 			name = AstralApp;
 			packageProductDependencies = (
 				AA00000000000000000000A2 /* AstralCore */,
+				AC6500000000000000000002 /* LiveKit */,
 			);
 			productName = AstralApp;
 			productReference = 222F50272FFD60D80016B0D6 /* AstralDeep.app */;
@@ -332,6 +335,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AA00000000000000000000A1 /* XCLocalSwiftPackageReference "../AstralCore" */,
+				AC6500000000000000000001 /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 222F50282FFD60D80016B0D6 /* Products */;
@@ -514,6 +518,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 593LGH35GS;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -545,6 +550,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
 				"ENABLE_APP_SANDBOX[sdk=macosx*]" = YES;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
@@ -576,6 +582,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 593LGH35GS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = WatchInfo.plist;
@@ -840,6 +847,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		AC6500000000000000000001 /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/livekit/client-sdk-swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 2.15.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		AA00000000000000000000A2 /* AstralCore */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -848,6 +866,11 @@
 		AA00000000000000000000A3 /* AstralCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AstralCore;
+		};
+		AC6500000000000000000002 /* LiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AC6500000000000000000001 /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
+			productName = LiveKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check_changed_coverage.py"
+XCCOV_EXPORT_SCRIPT = REPO_ROOT / "scripts" / "export_xccov_line_coverage.py"
 
 if not (REPO_ROOT / "scripts").is_dir():  # repo root absent inside the product image
     pytest.skip(
@@ -32,6 +34,20 @@ def _load_collector() -> ModuleType:
 
 
 collector = _load_collector()
+
+
+def _load_xccov_exporter() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "export_xccov_line_coverage_060", XCCOV_EXPORT_SCRIPT
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+xccov_exporter = _load_xccov_exporter()
 
 
 @pytest.fixture(autouse=True)
@@ -243,6 +259,7 @@ def test_null_delimited_diff_and_explicit_path_mapping(
 
     expected = {
         "backend/orchestrator/a.py": "backend_python",
+        "backend/voice_agent/main.py": "backend_python",
         "scripts/release.py": "tooling_python",
         "windows-client/win_agent/host.py": "windows_python",
         "backend/webrender/static/client.js": "javascript",
@@ -266,7 +283,7 @@ def test_null_delimited_diff_and_explicit_path_mapping(
         assert collector.classify_path(excluded) is None
 
 
-def test_repeated_cobertura_reports_union_and_dedupe_changed_lines(
+def test_distinct_cobertura_reports_union_and_dedupe_changed_lines(
     git_repo: tuple[Path, str], tmp_path: Path
 ) -> None:
     repo, base = git_repo
@@ -281,7 +298,7 @@ def test_repeated_cobertura_reports_union_and_dedupe_changed_lines(
     decision = collector.evaluate_changed_coverage(
         repo,
         _selection(repo, base, candidate),
-        {"backend_python": [first, second, first]},
+        {"backend_python": [first, second]},
     )
     assert decision["status"] == "pass"
     assert decision["languages"]["python"] == {
@@ -290,7 +307,173 @@ def test_repeated_cobertura_reports_union_and_dedupe_changed_lines(
         "percent": 100.0,
     }
     assert len(decision["reports"]["backend_python"]["artifacts"]) == 2
+    first_identity = collector.coverage_report_identity(
+        first.read_bytes(), "backend_python"
+    )
+    second_identity = collector.coverage_report_identity(
+        second.read_bytes(), "backend_python"
+    )
+    assert decision["reports"]["backend_python"]["artifact_identities"] == [
+        {
+            "path": str(first).replace("\\", "/"),
+            **first_identity,
+        },
+        {
+            "path": str(second).replace("\\", "/"),
+            **second_identity,
+        },
+    ]
     assert len(decision["lines"]) == 2
+
+
+@pytest.mark.parametrize(
+    "alias_kind",
+    (
+        "same_path",
+        "hardlink",
+        "copy",
+        "whitespace_copy",
+        "metadata_copy",
+        "cross_partition",
+    ),
+)
+def test_report_inputs_reject_global_path_inode_and_content_aliases(
+    git_repo: tuple[Path, str], tmp_path: Path, alias_kind: str
+) -> None:
+    repo, base = git_repo
+    (repo / "backend" / "service.py").write_text("first = 9\n", encoding="utf-8")
+    candidate = _commit(repo, "changed")
+    report = _cobertura(tmp_path / "coverage.xml", "backend/service.py", {1: 1})
+    alias = tmp_path / "alias.xml"
+    if alias_kind == "same_path":
+        alias = report
+    elif alias_kind == "hardlink":
+        alias.hardlink_to(report)
+    elif alias_kind == "whitespace_copy":
+        alias.write_text(
+            report.read_text(encoding="utf-8").replace("><", ">\n  <"),
+            encoding="utf-8",
+        )
+    elif alias_kind == "metadata_copy":
+        alias.write_text(
+            report.read_text(encoding="utf-8").replace(
+                "<coverage ", '<coverage timestamp="1780000000" '
+            ),
+            encoding="utf-8",
+        )
+    else:
+        alias.write_bytes(report.read_bytes())
+    reports = {"backend_python": [report, alias]}
+    if alias_kind == "cross_partition":
+        reports = {
+            "backend_python": [report],
+            "windows_python": [alias],
+        }
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector.evaluate_changed_coverage(
+            repo,
+            _selection(repo, base, candidate),
+            reports,
+        )
+
+    assert failure.value.code == "duplicate_report"
+
+
+def test_semantic_identity_ignores_irrelevant_json_metadata(tmp_path: Path) -> None:
+    swift_path = "apple-clients/AstralWatch/WatchModel.swift"
+    observations = [
+        {"line": 1, "isExecutable": True, "executionCount": 1}
+    ]
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text(
+        json.dumps({swift_path: observations, "generatedAt": "2026-07-31T00:00:00Z"}),
+        encoding="utf-8",
+    )
+    second.write_text(
+        json.dumps({swift_path: observations, "generatedAt": "2026-08-01T00:00:00Z"}),
+        encoding="utf-8",
+    )
+    first_identity = collector.coverage_report_identity(first.read_bytes(), "apple")
+    second_identity = collector.coverage_report_identity(second.read_bytes(), "apple")
+    assert first_identity["sha256"] != second_identity["sha256"]
+    assert first_identity["semantic_sha256"] == second_identity["semantic_sha256"]
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._unique_report_inputs({"apple": [first, second]})
+    assert failure.value.code == "duplicate_report"
+
+
+def test_native_identity_rejects_metadata_copy_across_target_filters(
+    tmp_path: Path,
+) -> None:
+    first = _cobertura(
+        tmp_path / "backend.xml", "backend/service.py", {1: 1}
+    )
+    second = tmp_path / "windows.xml"
+    second.write_text(
+        first.read_text(encoding="utf-8").replace(
+            "<coverage ", '<coverage timestamp="1780000000" '
+        ),
+        encoding="utf-8",
+    )
+    backend = collector.coverage_report_identity(first.read_bytes(), "backend_python")
+    windows = collector.coverage_report_identity(second.read_bytes(), "windows_python")
+    assert backend["semantic_sha256"] != windows["semantic_sha256"]
+    assert backend["native_semantic_sha256"] == windows["native_semantic_sha256"]
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._unique_report_inputs(
+            {"backend_python": [first], "windows_python": [second]}
+        )
+    assert failure.value.code == "duplicate_report"
+
+
+@pytest.mark.parametrize(
+    ("runtime_name", "candidate_path"),
+    tuple(collector.VOICE_WORKER_SOURCE_ALIASES.items()),
+)
+def test_voice_worker_runtime_sources_map_to_candidate_shared_sources(
+    tmp_path: Path, runtime_name: str, candidate_path: str
+) -> None:
+    report = _cobertura(tmp_path / "voice.xml", runtime_name, {7: 1})
+    _identity, coverage = collector._coverage_report_binding(
+        report.read_bytes(),
+        "backend_python",
+        source=report,
+        producer_key="voice_worker",
+    )
+    assert coverage.files == {candidate_path}
+    assert coverage.executable == {(candidate_path, 7)}
+    generic = collector.parse_coverage_report(report, "backend_python")
+    assert generic.files == {runtime_name}
+
+
+def test_overwritten_voice_shims_have_explicit_backend_ownership() -> None:
+    for shim in collector.VOICE_WORKER_OVERWRITTEN_SHIMS:
+        assert collector._producer_applies_to_path("backend", shim) is True
+        assert collector._producer_applies_to_path("voice_worker", shim) is False
+    for shared_source in collector.VOICE_WORKER_SOURCE_ALIASES.values():
+        assert collector._producer_applies_to_path("backend", shared_source) is True
+        assert collector._producer_applies_to_path("voice_worker", shared_source) is True
+    assert (
+        collector._producer_applies_to_path(
+            "voice_worker", "backend/voice_agent/main.py"
+        )
+        is True
+    )
+    assert (
+        collector._producer_applies_to_path(
+            "backend", "backend/voice_agent/main.py"
+        )
+        is False
+    )
+
+
+def test_apple_core_uses_ios_or_macos_ownership_not_watchos() -> None:
+    core_path = "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift"
+    assert collector._producer_applies_to_path("ios", core_path) is True
+    assert collector._producer_applies_to_path("macos", core_path) is True
+    assert collector._producer_applies_to_path("watchos", core_path) is False
 
 
 @pytest.mark.parametrize(
@@ -405,13 +588,22 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
         '<report><package name="com/example"><sourcefile name="App.kt">'
         '<line nr="3" mi="0" ci="2" mb="0" cb="0"/>'
         '<line nr="4" mi="2" ci="0" mb="0" cb="0"/>'
+        '<line nr="5" mi="0" ci="0" mb="0" cb="0"/>'
+        '<counter type="INSTRUCTION" missed="2" covered="2"/>'
         '<counter type="LINE" missed="1" covered="1"/>'
-        '</sourcefile><counter type="LINE" missed="1" covered="1"/>'
-        '</package><counter type="LINE" missed="1" covered="1"/></report>',
+        '</sourcefile><counter type="INSTRUCTION" missed="2" covered="2"/>'
+        '<counter type="LINE" missed="1" covered="1"/>'
+        '</package><counter type="INSTRUCTION" missed="2" covered="2"/>'
+        '<counter type="LINE" missed="1" covered="1"/></report>',
         encoding="utf-8",
     )
     kotlin = collector.parse_coverage_report(kover, "android_app")
     kotlin_path = "android-client/app/src/main/kotlin/com/example/App.kt"
+    assert kotlin.observed == {
+        (kotlin_path, 3),
+        (kotlin_path, 4),
+        (kotlin_path, 5),
+    }
     assert kotlin.executable == {(kotlin_path, 3), (kotlin_path, 4)}
     assert kotlin.covered == {(kotlin_path, 3)}
 
@@ -538,7 +730,654 @@ def test_realistic_xccov_report_summary_is_not_misused_as_line_proof(
     with pytest.raises(collector.CoveragePolicyError) as failure:
         collector.parse_coverage_report(report, "apple")
     assert failure.value.code == "unsupported_xccov_report"
-    assert "xcrun xccov view --archive --json <xcresult>" in failure.value.message
+    assert "export_xccov_line_coverage.py" in failure.value.message
+
+
+def _apple_export_repo(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    sources = {
+        "app": "apple-clients/AstralApp/AstralApp/AppModel.swift",
+        "core": "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
+        "watch": "apple-clients/AstralWatch/WatchModel.swift",
+    }
+    for relative_path in sources.values():
+        path = repo / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("let first = 1\nlet second = 2\n", encoding="utf-8")
+    _commit(repo, "tracked Apple sources")
+    bundle = repo / "build" / "fixture.xcresult"
+    bundle.mkdir(parents=True)
+    return repo, bundle, sources
+
+
+def _install_fake_xcrun(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    file_list: list[str],
+    files: dict[str, object],
+) -> Path:
+    fixture = tmp_path / "fake-xccov.json"
+    fixture.write_text(
+        json.dumps({"file_list": file_list, "files": files}), encoding="utf-8"
+    )
+    calls = tmp_path / "fake-xccov-calls.jsonl"
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir(exist_ok=True)
+    xcrun = binary_dir / "xcrun"
+    xcrun.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+fixture = json.load(open(os.environ["FAKE_XCCOV_FIXTURE"], encoding="utf-8"))
+with open(os.environ["FAKE_XCCOV_CALLS"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+args = sys.argv[1:]
+if args[:4] == ["xccov", "view", "--archive", "--file-list"]:
+    sys.stdout.write("\\n".join(fixture["file_list"]) + "\\n")
+elif args[:4] == ["xccov", "view", "--archive", "--file"] and args[5] == "--json":
+    value = fixture["files"][args[4]]
+    sys.stdout.write(value if isinstance(value, str) else json.dumps(value))
+else:
+    raise SystemExit(7)
+""",
+        encoding="utf-8",
+    )
+    xcrun.chmod(0o755)
+    monkeypatch.setenv("FAKE_XCCOV_FIXTURE", str(fixture))
+    monkeypatch.setenv("FAKE_XCCOV_CALLS", str(calls))
+    monkeypatch.setenv("PATH", f"{binary_dir}{os.pathsep}{os.environ['PATH']}")
+    return calls
+
+
+def _xccov_lines(*, covered: bool = True) -> list[dict[str, object]]:
+    return [
+        {"line": 2, "isExecutable": True, "executionCount": int(covered)},
+        {
+            "line": 1,
+            "isExecutable": True,
+            "executionCount": 1,
+            "subranges": [{"column": 1, "executionCount": 1, "length": 3}],
+        },
+    ]
+
+
+def test_xccov_exporter_uses_real_per_file_subprocess_contract_and_platform_filters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    raw = {name: (repo / path).as_posix() for name, path in sources.items()}
+    dependency = "/tmp/checkouts/LiveKit/Sources/LiveKit/Room.swift"
+    calls_path = _install_fake_xcrun(
+        tmp_path,
+        monkeypatch,
+        file_list=[raw["watch"], dependency, raw["core"], raw["app"]],
+        files={path: {path: _xccov_lines()} for path in raw.values()},
+    )
+
+    output = repo / "build" / "ios.json"
+    report = xccov_exporter.export_xccov(
+        repo=repo, xcresult=bundle, output=output, platform="ios"
+    )
+    assert list(report) == [sources["app"], sources["core"]]
+    assert report[sources["app"]][0] == {
+        "line": 1,
+        "isExecutable": True,
+        "executionCount": 1,
+    }
+    assert sources["watch"] not in output.read_text(encoding="utf-8")
+    assert collector.parse_coverage_report(output, "apple").files == {
+        sources["app"],
+        sources["core"],
+    }
+
+    second = repo / "build" / "ios-second.json"
+    assert (
+        xccov_exporter.main(
+            [
+                "--repo",
+                str(repo),
+                "--xcresult",
+                str(bundle),
+                "--platform",
+                "ios",
+                "--output",
+                str(second),
+            ]
+        )
+        == 0
+    )
+    assert output.read_bytes() == second.read_bytes()
+
+    watch_output = repo / "build" / "watchos.json"
+    watch_report = xccov_exporter.export_xccov(
+        repo=repo, xcresult=bundle, output=watch_output, platform="watchos"
+    )
+    assert list(watch_report) == [sources["core"], sources["watch"]]
+    assert sources["app"] not in watch_output.read_text(encoding="utf-8")
+
+    calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    assert ["xccov", "view", "--archive", "--file-list", str(bundle)] in calls
+    assert not any(raw["watch"] in call for call in calls[:3])
+    assert any(raw["watch"] in call for call in calls)
+    assert not any(dependency in call for call in calls)
+
+
+def test_xccov_exporter_rejects_out_of_checkout_source_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    alias = f"/tmp/easier-covered/{sources['app']}"
+    _install_fake_xcrun(
+        tmp_path,
+        monkeypatch,
+        file_list=[alias],
+        files={},
+    )
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter.export_xccov(
+            repo=repo,
+            xcresult=bundle,
+            output=repo / "build" / "duplicate.json",
+            platform="ios",
+        )
+    assert failure.value.code == "unsafe_archive_source"
+
+
+def test_xccov_exporter_binds_a_historical_raw_job_checkout_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    archive_root = "/Users/runner/work/AstralDeep/AstralDeep"
+    raw = {
+        name: f"{archive_root}/{relative}"
+        for name, relative in sources.items()
+    }
+    _install_fake_xcrun(
+        tmp_path,
+        monkeypatch,
+        file_list=[raw["core"], raw["app"]],
+        files={path: {path: _xccov_lines()} for path in raw.values()},
+    )
+    output = repo / "build" / "historical-root.json"
+    report = xccov_exporter.export_xccov(
+        repo=repo,
+        xcresult=bundle,
+        output=output,
+        platform="ios",
+        archive_repo_root=archive_root,
+    )
+    assert set(report) == {sources["app"], sources["core"]}
+
+    mismatch = repo / "build" / "mismatched-root.json"
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter.export_xccov(
+            repo=repo,
+            xcresult=bundle,
+            output=mismatch,
+            platform="ios",
+            archive_repo_root="/Users/runner/work/Other/Other",
+        )
+    assert failure.value.code == "unsafe_archive_source"
+    assert not mismatch.exists()
+
+
+@pytest.mark.parametrize(
+    "archive_root",
+    ["relative/repo", "/tmp/repo/", "/tmp/../repo", "/tmp//repo", "/tmp/repo\nnext"],
+)
+def test_xccov_exporter_rejects_noncanonical_historical_roots(
+    archive_root: str,
+) -> None:
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter._canonical_archive_repo_root(archive_root)
+    assert failure.value.code == "invalid_archive_repo_root"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (b"not-json", "invalid_xccov_json"),
+        (b'{"same":[],"same":[]}', "invalid_xccov_json"),
+        (json.dumps({"wrong": _xccov_lines()}).encode(), "invalid_observation"),
+        (
+            json.dumps(
+                {
+                    "source": [
+                        {"line": 1, "isExecutable": True, "executionCount": 1},
+                        {"line": 1, "isExecutable": False},
+                    ]
+                }
+            ).encode(),
+            "invalid_observation",
+        ),
+        (
+            json.dumps(
+                {"source": [{"line": 1, "isExecutable": False, "unknown": 1}]}
+            ).encode(),
+            "invalid_observation",
+        ),
+        (
+            json.dumps(
+                {"source": [{"line": 1, "isExecutable": False, "executionCount": 0}]}
+            ).encode(),
+            "invalid_observation",
+        ),
+        (
+            json.dumps(
+                {
+                    "source": [
+                        {
+                            "line": 1,
+                            "isExecutable": True,
+                            "executionCount": 1,
+                            "subranges": [{"column": 1}],
+                        }
+                    ]
+                }
+            ).encode(),
+            "invalid_observation",
+        ),
+        (
+            json.dumps(
+                {"source": [{"line": 3, "isExecutable": True, "executionCount": 1}]}
+            ).encode(),
+            "source_line_mismatch",
+        ),
+    ],
+)
+def test_xccov_exporter_rejects_malformed_or_partial_per_file_json(
+    payload: bytes, expected: str
+) -> None:
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter._normalize_observations(
+            payload, queried_path="source", maximum_lines=2
+        )
+    assert failure.value.code == expected
+
+
+@pytest.mark.parametrize(
+    "file_list",
+    [
+        ["/tmp/App.swift", "/tmp/App.swift"],
+        ["/tmp/App.swift", "relative.swift"],
+        ["/tmp/App.swift", "/tmp/Bad\rName.swift"],
+    ],
+)
+def test_xccov_exporter_rejects_invalid_file_list_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_list: list[str],
+) -> None:
+    repo, bundle, _sources = _apple_export_repo(tmp_path)
+    _install_fake_xcrun(tmp_path, monkeypatch, file_list=file_list, files={})
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter._archive_file_list(repo, bundle)
+    assert failure.value.code == "invalid_file_list"
+
+
+def test_xccov_exporter_enforces_file_count_and_output_bounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    raw = (repo / sources["app"]).as_posix()
+    raw_core = (repo / sources["core"]).as_posix()
+    _install_fake_xcrun(
+        tmp_path,
+        monkeypatch,
+        file_list=[raw, raw_core],
+        files={
+            raw: {raw: _xccov_lines()},
+            raw_core: {raw_core: _xccov_lines()},
+        },
+    )
+    monkeypatch.setattr(xccov_exporter, "MAX_ARCHIVE_FILES", 1)
+    with pytest.raises(xccov_exporter.ExportError) as too_many:
+        xccov_exporter._archive_file_list(repo, bundle)
+    assert too_many.value.code == "invalid_file_list"
+
+    monkeypatch.setattr(xccov_exporter, "MAX_ARCHIVE_FILES", 10_000)
+    monkeypatch.setattr(xccov_exporter, "MAX_OUTPUT_BYTES", 1)
+    output = repo / "build" / "oversize.json"
+    with pytest.raises(xccov_exporter.ExportError) as oversized:
+        xccov_exporter.export_xccov(
+            repo=repo, xcresult=bundle, output=output, platform="ios"
+        )
+    assert oversized.value.code == "output_too_large"
+    assert not output.exists()
+
+
+def test_xccov_exporter_observation_budget_aborts_before_all_selected_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    raw = {name: (repo / path).as_posix() for name, path in sources.items()}
+    calls_path = _install_fake_xcrun(
+        tmp_path,
+        monkeypatch,
+        file_list=[raw["app"], raw["core"]],
+        files={path: {path: _xccov_lines()} for path in raw.values()},
+    )
+    monkeypatch.setattr(xccov_exporter, "MAX_TOTAL_OBSERVATIONS", 2)
+    output = repo / "build" / "bounded-observations.json"
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter.export_xccov(
+            repo=repo, xcresult=bundle, output=output, platform="ios"
+        )
+    assert failure.value.code == "observation_budget_exceeded"
+    calls = [
+        json.loads(line)
+        for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
+    per_file_calls = [call for call in calls if "--file" in call]
+    assert len(per_file_calls) <= 1
+    assert not output.exists()
+
+
+def test_xccov_exporter_cumulative_input_budget_stops_before_second_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    raw = {name: (repo / path).as_posix() for name, path in sources.items()}
+    files = {path: {path: _xccov_lines()} for path in raw.values()}
+    calls_path = _install_fake_xcrun(
+        tmp_path,
+        monkeypatch,
+        file_list=[raw["app"], raw["core"]],
+        files=files,
+    )
+    first_payload_bytes = len(json.dumps(files[raw["app"]]).encode("utf-8"))
+    monkeypatch.setattr(
+        xccov_exporter, "MAX_TOTAL_XCCOV_BYTES", first_payload_bytes
+    )
+    output = repo / "build" / "bounded-input.json"
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter.export_xccov(
+            repo=repo, xcresult=bundle, output=output, platform="ios"
+        )
+    assert failure.value.code == "input_budget_exceeded"
+    calls = [
+        json.loads(line)
+        for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len([call for call in calls if "--file" in call]) == 1
+    assert not output.exists()
+
+
+def test_xccov_exporter_overall_deadline_covers_inventory_and_all_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    raw = (repo / sources["app"]).as_posix()
+    _install_fake_xcrun(
+        tmp_path,
+        monkeypatch,
+        file_list=[raw],
+        files={raw: {raw: _xccov_lines()}},
+    )
+    monkeypatch.setattr(xccov_exporter, "EXPORT_TIMEOUT_SECONDS", 0)
+    output = repo / "build" / "deadline.json"
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter.export_xccov(
+            repo=repo, xcresult=bundle, output=output, platform="ios"
+        )
+    assert failure.value.code == "export_timeout"
+    assert not output.exists()
+
+
+def test_xccov_exporter_rejects_output_symlink_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    repo, bundle, _sources = _apple_export_repo(tmp_path)
+    victim = repo / "victim.txt"
+    victim.write_text("preserve me", encoding="utf-8")
+    output = repo / "build" / "coverage.json"
+    output.symlink_to(victim)
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter.export_xccov(
+            repo=repo, xcresult=bundle, output=output, platform="ios"
+        )
+    assert failure.value.code == "output_exists"
+    assert victim.read_text(encoding="utf-8") == "preserve me"
+
+
+def test_xccov_exporter_command_and_json_bounds_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(xccov_exporter.ExportError) as failed:
+        xccov_exporter._bounded_command(
+            [sys.executable, "-c", "print('x'); raise SystemExit(7)"],
+            cwd=tmp_path,
+            max_stdout_bytes=2,
+        )
+    assert failed.value.code == "producer_failed"
+
+    with pytest.raises(xccov_exporter.ExportError) as empty:
+        xccov_exporter._bounded_command(
+            [sys.executable, "-c", "pass"], cwd=tmp_path, max_stdout_bytes=2
+        )
+    assert empty.value.code == "producer_output_too_large"
+
+    monkeypatch.setattr(xccov_exporter, "MAX_FILE_LIST_BYTES", 1)
+    with pytest.raises(xccov_exporter.ExportError) as stderr_bound:
+        xccov_exporter._bounded_command(
+            [sys.executable, "-c", "import sys; sys.stderr.write('long'); print('x')"],
+            cwd=tmp_path,
+            max_stdout_bytes=2,
+        )
+    assert stderr_bound.value.code == "producer_output_too_large"
+
+    with pytest.raises(xccov_exporter.ExportError) as stdout_bound:
+        xccov_exporter._bounded_command(
+            [sys.executable, "-c", "print('long')"], cwd=tmp_path, max_stdout_bytes=2
+        )
+    assert stdout_bound.value.code == "producer_output_too_large"
+
+    with pytest.raises(xccov_exporter.ExportError) as unavailable_error:
+        xccov_exporter._bounded_command(
+            [str(tmp_path / "missing-command")], cwd=tmp_path, max_stdout_bytes=2
+        )
+    assert unavailable_error.value.code == "producer_unavailable"
+
+    monkeypatch.setattr(xccov_exporter, "COMMAND_TIMEOUT_SECONDS", 0.01)
+    with pytest.raises(xccov_exporter.ExportError) as timeout:
+        xccov_exporter._bounded_command(
+            [sys.executable, "-c", "import time; time.sleep(1)"],
+            cwd=tmp_path,
+            max_stdout_bytes=2,
+        )
+    assert timeout.value.code == "producer_timeout"
+
+    for content in (b"NaN", b"\xff"):
+        with pytest.raises(xccov_exporter.ExportError) as malformed:
+            xccov_exporter._strict_json(content)
+        assert malformed.value.code == "invalid_xccov_json"
+
+
+def test_xccov_exporter_inventory_path_and_observation_edge_contracts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    bundle = repo / "fixture.xcresult"
+    bundle.mkdir()
+
+    for value in ("", "bad\npath.swift", "../outside.swift", "/absolute.swift"):
+        with pytest.raises(xccov_exporter.ExportError):
+            xccov_exporter._safe_repo_path(value)
+    assert (
+        xccov_exporter._normalize_archive_path(
+            "apple-clients/AstralApp/AstralApp/AppModel.swift"
+        )
+        == "apple-clients/AstralApp/AstralApp/AppModel.swift"
+    )
+    assert xccov_exporter._normalize_archive_path("/tmp/dependency.swift") is None
+
+    inventory_outputs = iter(
+        (
+            b"truncated",
+            b"\xff\x00",
+            b"README.md\x00",
+        )
+    )
+    monkeypatch.setattr(
+        xccov_exporter,
+        "_bounded_command",
+        lambda *_args, **_kwargs: next(inventory_outputs),
+    )
+    for expected in (
+        "invalid_git_inventory",
+        "invalid_git_inventory",
+        "empty_source_inventory",
+    ):
+        with pytest.raises(xccov_exporter.ExportError) as failure:
+            xccov_exporter._tracked_swift_sources(repo, "ios")
+        assert failure.value.code == expected
+
+    file_list_outputs = iter((b"/tmp/App.swift", b"\xff\n", b"\n"))
+    monkeypatch.setattr(
+        xccov_exporter,
+        "_bounded_command",
+        lambda *_args, **_kwargs: next(file_list_outputs),
+    )
+    for _index in range(3):
+        with pytest.raises(xccov_exporter.ExportError) as failure:
+            xccov_exporter._archive_file_list(repo, bundle)
+        assert failure.value.code == "invalid_file_list"
+
+    for value in (True, -1, "1"):
+        with pytest.raises(xccov_exporter.ExportError):
+            xccov_exporter._integer(value, label="fixture")
+    for value in ("not-a-list", [{}] * (xccov_exporter.MAX_SUBRANGES_PER_LINE + 1)):
+        with pytest.raises(xccov_exporter.ExportError):
+            xccov_exporter._validate_subranges(value)
+    with pytest.raises(xccov_exporter.ExportError):
+        xccov_exporter._validate_subranges(
+            [
+                {
+                    "column": 1,
+                    "executionCount": xccov_exporter.MAX_EXECUTION_COUNT + 1,
+                    "length": 1,
+                }
+            ]
+        )
+    with pytest.raises(xccov_exporter.ExportError):
+        xccov_exporter._normalize_observations(
+            json.dumps(
+                {
+                    "source": [
+                        {
+                            "line": 1,
+                            "isExecutable": True,
+                            "executionCount": xccov_exporter.MAX_EXECUTION_COUNT + 1,
+                        }
+                    ]
+                }
+            ).encode(),
+            queried_path="source",
+            maximum_lines=1,
+        )
+    with pytest.raises(xccov_exporter.ExportError):
+        xccov_exporter._normalize_observations(
+            json.dumps({"source": []}).encode(),
+            queried_path="source",
+            maximum_lines=1,
+        )
+
+
+def test_xccov_exporter_filesystem_and_cli_failures_are_non_destructive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    existing = repo / "existing"
+    existing.mkdir()
+    symlink = repo / "linked"
+    symlink.symlink_to(existing, target_is_directory=True)
+
+    for path in (Path("../escape"), Path("missing"), Path("linked")):
+        with pytest.raises(xccov_exporter.ExportError):
+            xccov_exporter._validate_path(path, repo=repo, kind="fixture")
+    with pytest.raises(xccov_exporter.ExportError):
+        xccov_exporter._validate_path(Path("/tmp/outside"), repo=repo, kind="fixture")
+
+    for output in (
+        Path("../escape.json"),
+        Path("missing/report.json"),
+        Path("linked/report.json"),
+        Path("/tmp/outside.json"),
+    ):
+        with pytest.raises(xccov_exporter.ExportError):
+            xccov_exporter._validate_output(output, repo=repo)
+
+    source = repo / "empty.swift"
+    source.write_bytes(b"")
+    with pytest.raises(xccov_exporter.ExportError) as empty_source:
+        xccov_exporter._read_source_line_count(repo, "empty.swift")
+    assert empty_source.value.code == "invalid_source_size"
+    source.write_text("let value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(xccov_exporter, "MAX_FILE_JSON_BYTES", 1)
+    with pytest.raises(xccov_exporter.ExportError) as source_bound:
+        xccov_exporter._read_source_line_count(repo, "empty.swift")
+    assert source_bound.value.code == "source_changed"
+
+    output = repo / "write.json"
+    original_fsync = xccov_exporter.os.fsync
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(xccov_exporter.os, "fsync", fail_fsync)
+    with pytest.raises(xccov_exporter.ExportError) as write_failure:
+        xccov_exporter._write_new_output(output, b"{}\n")
+    assert write_failure.value.code == "output_write_failed"
+    assert not output.exists()
+    monkeypatch.setattr(xccov_exporter.os, "fsync", original_fsync)
+
+    not_bundle = repo / "not-a-result"
+    not_bundle.mkdir()
+    with pytest.raises(xccov_exporter.ExportError) as invalid_bundle:
+        xccov_exporter.export_xccov(
+            repo=repo,
+            xcresult=not_bundle,
+            output=repo / "never.json",
+            platform="ios",
+        )
+    assert invalid_bundle.value.code == "invalid_xcresult"
+    with pytest.raises(xccov_exporter.ExportError) as invalid_platform:
+        xccov_exporter.export_xccov(
+            repo=repo,
+            xcresult=not_bundle,
+            output=repo / "never.json",
+            platform="tvos",
+        )
+    assert invalid_platform.value.code == "invalid_platform"
+
+    assert (
+        xccov_exporter.main(
+            [
+                "--repo",
+                str(repo / "absent"),
+                "--xcresult",
+                "missing.xcresult",
+                "--platform",
+                "ios",
+                "--output",
+                "missing.json",
+            ]
+        )
+        == 2
+    )
+    assert "filesystem_error" in capsys.readouterr().err
 
 
 def test_compact_fail_closed_parser_edge_contracts(tmp_path: Path) -> None:
@@ -876,24 +1715,34 @@ def test_first_repository_anchor_prevents_cross_target_and_repeated_aliases(
         (
             '<report><package name="com/example">'
             '<sourcefile name="Hidden.kt">'
+            '<counter type="INSTRUCTION" missed="1" covered="0"/>'
             '<counter type="LINE" missed="1" covered="0"/></sourcefile>'
             '<sourcefile name="Peer.kt"><line nr="1" mi="0" ci="1"/>'
+            '<counter type="INSTRUCTION" missed="0" covered="1"/>'
             '<counter type="LINE" missed="0" covered="1"/></sourcefile>'
+            '<counter type="INSTRUCTION" missed="1" covered="1"/>'
             '<counter type="LINE" missed="1" covered="1"/></package>'
+            '<counter type="INSTRUCTION" missed="1" covered="1"/>'
             '<counter type="LINE" missed="1" covered="1"/></report>'
         ),
         (
             '<report><package name="com/example"><sourcefile name="Hidden.kt">'
             '<line nr="1" mi="1" ci="0"/><line nr="1" mi="0" ci="1"/>'
+            '<counter type="INSTRUCTION" missed="1" covered="1"/>'
             '<counter type="LINE" missed="1" covered="1"/></sourcefile>'
+            '<counter type="INSTRUCTION" missed="1" covered="1"/>'
             '<counter type="LINE" missed="1" covered="1"/></package>'
+            '<counter type="INSTRUCTION" missed="1" covered="1"/>'
             '<counter type="LINE" missed="1" covered="1"/></report>'
         ),
         (
             '<report><package name="com/example"><sourcefile name="Hidden.kt">'
             '<line nr="1" mi="1" ci="0"/>'
+            '<counter type="INSTRUCTION" missed="1" covered="0"/>'
             '<counter type="LINE" missed="1" covered="0"/></sourcefile>'
+            '<counter type="INSTRUCTION" missed="1" covered="0"/>'
             '<counter type="LINE" missed="0" covered="1"/></package>'
+            '<counter type="INSTRUCTION" missed="1" covered="0"/>'
             '<counter type="LINE" missed="0" covered="1"/></report>'
         ),
     ],
@@ -1054,6 +1903,8 @@ def test_cli_writes_repeatable_exact_identity_json(
         candidate,
         "--backend-python",
         str(report),
+        "--coverage-mode",
+        "partial",
     ]
     assert collector.main([*common, "--output", str(first)]) == 0
     assert collector.main([*common, "--output", str(second)]) == 0
@@ -1063,6 +1914,29 @@ def test_cli_writes_repeatable_exact_identity_json(
     assert document["candidate_sha"] == candidate
     assert document["revisions_validated"] is True
     assert document["status"] == "pass"
+    expected_identity = {
+        "path": report.as_posix(),
+        **collector.coverage_report_identity(report.read_bytes(), "backend_python"),
+        "producer_slot": "backend",
+    }
+    assert document["producer_slots"] == {"backend": expected_identity}
+
+
+def test_cli_rejects_repeated_producer_slots(tmp_path: Path) -> None:
+    report = tmp_path / "coverage.xml"
+    report.write_text("<coverage/>", encoding="utf-8")
+    with pytest.raises(SystemExit) as failure:
+        collector._parser().parse_args(
+            [
+                "--backend-python",
+                str(report),
+                "--backend-python",
+                str(report),
+                "--output",
+                str(tmp_path / "decision.json"),
+            ]
+        )
+    assert failure.value.code == 2
 
 
 def test_cli_missing_report_error_retains_validated_revision_audit_fields(
@@ -1083,6 +1957,8 @@ def test_cli_missing_report_error_retains_validated_revision_audit_fields(
                 candidate,
                 "--fail-under",
                 "91",
+                "--coverage-mode",
+                "partial",
                 "--output",
                 str(output),
             ]
@@ -1100,3 +1976,36 @@ def test_cli_missing_report_error_retains_validated_revision_audit_fields(
         "candidate_source": "manual.candidate_sha",
     }
     assert document["fail_under"] == 91.0
+
+
+def test_cli_strict_mode_requires_the_exact_ten_slot_matrix(
+    git_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    repo, base = git_repo
+    (repo / "backend" / "service.py").write_text("first = 10\n", encoding="utf-8")
+    candidate = _commit(repo, "candidate")
+    report = _cobertura(tmp_path / "backend.xml", "backend/service.py", {1: 1})
+    output = tmp_path / "strict-error.json"
+    assert (
+        collector.main(
+            [
+                "--repo",
+                str(repo),
+                "--base-sha",
+                base,
+                "--candidate-sha",
+                candidate,
+                "--backend-python",
+                str(report),
+                "--coverage-mode",
+                "strict",
+                "--output",
+                str(output),
+            ]
+        )
+        == 1
+    )
+    document = json.loads(output.read_text(encoding="utf-8"))
+    assert document["error"]["code"] == "incomplete_report_matrix"
+    assert "voice_worker" in document["error"]["message"]
+    assert "watchos" in document["error"]["message"]

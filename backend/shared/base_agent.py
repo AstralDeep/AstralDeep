@@ -15,6 +15,7 @@ Provides:
 """
 import asyncio
 import inspect
+import json
 import os
 import sys
 import logging
@@ -29,6 +30,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from shared.protocol import (
     Message, RegisterAgent, MCPRequest, MCPResponse,
     AgentCard, AgentSkill,
+    MCPProtocolError, MCP_INVALID_REQUEST,
     ToolStreamData, ToolStreamEnd, ToolStreamCancel,
 )
 from shared.feature_flags import flags
@@ -236,6 +238,7 @@ class BaseA2AAgent:
                 description=desc,
                 id=name,
                 input_schema=info.get("input_schema"),
+                output_schema=info.get("output_schema"),
                 tags=tags,
                 scope=info.get("scope", "tools:read"),
                 metadata=skill_metadata,
@@ -291,6 +294,37 @@ class BaseA2AAgent:
                         self._resolve_hop_response(websocket, parsed)
                 except Exception as e:
                     self._logger.error(f"Error processing message: {e}")
+                    # A malformed MCP request must fail its caller promptly.
+                    # Merely logging here used to leave the orchestrator's
+                    # pending future alive until the 30-second timeout.
+                    try:
+                        raw = json.loads(message)
+                    except (TypeError, json.JSONDecodeError):
+                        raw = None
+                    if (
+                        isinstance(raw, dict)
+                        and raw.get("type") == "mcp_request"
+                        and isinstance(raw.get("request_id"), str)
+                    ):
+                        protocol_error = (
+                            e.to_error()
+                            if isinstance(e, MCPProtocolError)
+                            else {
+                                "code": MCP_INVALID_REQUEST,
+                                "message": "Malformed MCP request",
+                                "retryable": False,
+                            }
+                        )
+                        await websocket.send_text(
+                            MCPResponse(
+                                request_id=raw["request_id"],
+                                error=protocol_error,
+                                responder_info={
+                                    "name": self.agent_id,
+                                    "version": self.card.version,
+                                },
+                            ).to_json()
+                        )
 
         except WebSocketDisconnect:
             self._logger.info("Connection disconnected")
@@ -318,6 +352,20 @@ class BaseA2AAgent:
         server filters kwargs by signature).
         """
         self._logger.info(f"Processing MCP Request: {msg.method}")
+        try:
+            msg.validate_protocol_metadata(allow_legacy=True)
+        except MCPProtocolError as exc:
+            await ws.send_text(
+                MCPResponse(
+                    request_id=msg.request_id,
+                    error=exc.to_error(),
+                    responder_info={
+                        "name": self.agent_id,
+                        "version": self.card.version,
+                    },
+                ).to_json()
+            )
+            return
         self._decrypt_credentials_if_needed(msg)
         if msg.method == "tools/call" and msg.params is not None:
             from shared.agent_runtime import AgentRuntime
@@ -359,6 +407,26 @@ class BaseA2AAgent:
 
         # --- Existing single-response path (unchanged) ---
         response = await asyncio.to_thread(self.mcp_server.process_request, msg)
+        response.responder_info = {
+            "name": self.agent_id,
+            "version": self.card.version,
+        }
+        try:
+            response.validate_result_shape()
+        except Exception as exc:
+            self._logger.error("Agent produced an invalid MCP response: %s", exc)
+            response = MCPResponse(
+                request_id=msg.request_id,
+                error={
+                    "code": -32603,
+                    "message": "Agent produced an invalid MCP response",
+                    "retryable": False,
+                },
+                responder_info={
+                    "name": self.agent_id,
+                    "version": self.card.version,
+                },
+            )
         await ws.send_text(response.to_json())
         self._logger.info(f"Sent response for {msg.request_id}")
 
@@ -676,11 +744,14 @@ class BaseA2AAgent:
             self._logger.warning("hop response for unknown/settled hop %s", parsed.request_id)
             return
         r = parsed.response or {}
+        hop_error = r.get("error")
         fut.set_result(MCPResponse(
             request_id=parsed.request_id,
-            result=r.get("result"),
-            error=r.get("error"),
-            ui_components=r.get("ui_components"),
+            result=None if hop_error is not None else r.get("result"),
+            error=hop_error,
+            ui_components=None if hop_error is not None else r.get("ui_components"),
+            result_type=r.get("result_type", "complete"),
+            responder_info=r.get("responder_info"),
         ))
 
     # =========================================================================

@@ -1,0 +1,813 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astraldeep.example/contracts/065/worker-control.schema.json",
+  "title": "AstralDeep Voice Worker Control Channel",
+  "description": "Connection-scoped pool frames and session/generation-scoped control frames multiplexed over one challenge-authenticated worker-pool WebSocket. Raw audio and final transcript text are forbidden on this channel; client media/data or the watch bridge carries them. The only bearer allowed is the short-lived direct-worker room grant nested in session_bind; implementations must redact it and speak text from all logs/traces.",
+  "oneOf": [
+    { "$ref": "#/$defs/workerRegister" },
+    { "$ref": "#/$defs/workerRegistered" },
+    { "$ref": "#/$defs/poolHeartbeat" },
+    { "$ref": "#/$defs/bind" },
+    { "$ref": "#/$defs/mediaGrantRotated" },
+    { "$ref": "#/$defs/mediaGrantApplied" },
+    { "$ref": "#/$defs/sessionContextUpdate" },
+    { "$ref": "#/$defs/sessionContextApplied" },
+    { "$ref": "#/$defs/recognitionStarted" },
+    { "$ref": "#/$defs/recognitionFailed" },
+    { "$ref": "#/$defs/turnBound" },
+    { "$ref": "#/$defs/transcriptAccepted" },
+    { "$ref": "#/$defs/transcriptRejected" },
+    { "$ref": "#/$defs/speak" },
+    { "$ref": "#/$defs/stopSpeech" },
+    { "$ref": "#/$defs/setCapture" },
+    { "$ref": "#/$defs/endSession" },
+    { "$ref": "#/$defs/workerReady" },
+    { "$ref": "#/$defs/heartbeat" },
+    { "$ref": "#/$defs/speechLifecycle" },
+    { "$ref": "#/$defs/mediaState" },
+    { "$ref": "#/$defs/transcriptEmitted" }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "nullableUuid": {
+      "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }]
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "nullableOpaqueId": {
+      "oneOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }]
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "poolBase": {
+      "type": "object",
+      "required": ["type", "schema_version", "message_id", "sequence", "sent_at"],
+      "properties": {
+        "type": { "type": "string" },
+        "schema_version": { "const": "1" },
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "sent_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "base": {
+      "type": "object",
+      "required": [
+        "type",
+        "schema_version",
+        "message_id",
+        "session_id",
+        "generation",
+        "sequence",
+        "sent_at"
+      ],
+      "properties": {
+        "type": { "type": "string" },
+        "schema_version": { "const": "1" },
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "sent_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "voiceProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asr_model", "tts_model", "voice", "output_locale", "format", "sample_rate_hz"],
+      "properties": {
+        "asr_model": { "const": "Systran/faster-whisper-large-v3" },
+        "tts_model": { "const": "speaches-ai/Kokoro-82M-v1.0-ONNX" },
+        "voice": { "const": "af_heart" },
+        "output_locale": { "const": "en-US" },
+        "format": { "const": "wav" },
+        "sample_rate_hz": { "const": 24000 }
+      }
+    },
+    "workerRegister": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/poolBase" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "worker_identity",
+            "max_sessions",
+            "runtime_closure_sha256",
+            "profile"
+          ],
+          "properties": {
+            "type": { "const": "worker_register" },
+            "worker_identity": { "$ref": "#/$defs/opaqueId" },
+            "max_sessions": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "runtime_closure_sha256": { "$ref": "#/$defs/sha256" },
+            "profile": { "$ref": "#/$defs/voiceProfile" }
+          }
+        }
+      ]
+    },
+    "workerRegistered": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/poolBase" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "worker_identity",
+            "connection_id",
+            "accepted_max_sessions",
+            "heartbeat_interval_seconds",
+            "registered_at"
+          ],
+          "properties": {
+            "type": { "const": "worker_registered" },
+            "worker_identity": { "$ref": "#/$defs/opaqueId" },
+            "connection_id": { "$ref": "#/$defs/uuid" },
+            "accepted_max_sessions": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "heartbeat_interval_seconds": { "type": "integer", "minimum": 5, "maximum": 60 },
+            "registered_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ]
+    },
+    "poolHeartbeat": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/poolBase" },
+        {
+          "type": "object",
+          "required": ["type", "worker_identity", "connection_id"],
+          "properties": {
+            "type": { "const": "pool_heartbeat" },
+            "sequence": { "type": "integer", "minimum": 1 },
+            "worker_identity": { "$ref": "#/$defs/opaqueId" },
+            "connection_id": { "$ref": "#/$defs/uuid" }
+          }
+        }
+      ]
+    },
+    "workerRtcGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Memory-only direct-RTC room grant minted by orchestrator-only livekit-api after control-channel authentication. It is not a LiveKit API credential and must be redacted from every log, trace, error, and durable record.",
+      "required": [
+        "revision",
+        "livekit_url",
+        "join_token",
+        "issued_at",
+        "expires_at",
+        "room_name",
+        "worker_identity"
+      ],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 1 },
+        "livekit_url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048,
+          "pattern": "^wss?://"
+        },
+        "join_token": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 8192,
+          "description": "Short-lived room-scoped JWT; never the API key or secret."
+        },
+        "issued_at": { "$ref": "#/$defs/timestamp" },
+        "expires_at": { "$ref": "#/$defs/timestamp" },
+        "room_name": { "$ref": "#/$defs/opaqueId" },
+        "worker_identity": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "bind": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "assignment_id",
+            "room_name",
+            "worker_identity",
+            "transport",
+            "media_grant_revision",
+            "worker_rtc_grant_revision",
+            "client_participant_identity",
+            "grant_expires_at",
+            "worker_rtc_grant",
+            "visible_chat_id",
+            "chat_context_revision",
+            "profile"
+          ],
+          "properties": {
+            "type": { "const": "session_bind" },
+            "assignment_id": { "$ref": "#/$defs/uuid" },
+            "room_name": { "$ref": "#/$defs/opaqueId" },
+            "worker_identity": { "$ref": "#/$defs/opaqueId" },
+            "transport": { "enum": ["livekit", "watch_pcm_websocket"] },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "worker_rtc_grant_revision": { "type": "integer", "minimum": 1 },
+            "client_participant_identity": { "$ref": "#/$defs/opaqueId" },
+            "grant_expires_at": { "$ref": "#/$defs/timestamp" },
+            "worker_rtc_grant": { "$ref": "#/$defs/workerRtcGrant" },
+            "visible_chat_id": { "$ref": "#/$defs/uuid" },
+            "chat_context_revision": { "type": "integer", "minimum": 1 },
+            "profile": { "$ref": "#/$defs/voiceProfile" }
+          }
+        }
+      ]
+    },
+    "mediaGrantRotated": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "refresh_id",
+            "previous_media_grant_revision",
+            "media_grant_revision",
+            "client_participant_identity",
+            "transport",
+            "grant_expires_at"
+          ],
+          "properties": {
+            "type": { "const": "media_grant_rotated" },
+            "refresh_id": { "$ref": "#/$defs/uuid" },
+            "previous_media_grant_revision": { "type": "integer", "minimum": 1 },
+            "media_grant_revision": { "type": "integer", "minimum": 2 },
+            "client_participant_identity": { "$ref": "#/$defs/opaqueId" },
+            "transport": { "enum": ["livekit", "watch_pcm_websocket"] },
+            "grant_expires_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ]
+    },
+    "mediaGrantApplied": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "refresh_id", "media_grant_revision", "client_participant_identity", "occurred_at"],
+          "properties": {
+            "type": { "const": "media_grant_applied" },
+            "refresh_id": { "$ref": "#/$defs/uuid" },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "client_participant_identity": { "$ref": "#/$defs/opaqueId" },
+            "occurred_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ]
+    },
+    "sessionContextUpdate": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "media_grant_revision", "visible_chat_id", "chat_context_revision"],
+          "properties": {
+            "type": { "const": "session_context_update" },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "visible_chat_id": { "$ref": "#/$defs/uuid" },
+            "chat_context_revision": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "sessionContextApplied": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "media_grant_revision", "visible_chat_id", "chat_context_revision", "occurred_at"],
+          "properties": {
+            "type": { "const": "session_context_applied" },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "visible_chat_id": { "$ref": "#/$defs/uuid" },
+            "chat_context_revision": { "type": "integer", "minimum": 1 },
+            "occurred_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ]
+    },
+    "recognitionStarted": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "client_turn_id",
+            "media_grant_revision",
+            "visible_chat_id",
+            "chat_context_revision",
+            "occurred_at"
+          ],
+          "properties": {
+            "type": { "const": "recognition_started" },
+            "client_turn_id": { "$ref": "#/$defs/uuid" },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "visible_chat_id": { "$ref": "#/$defs/uuid" },
+            "chat_context_revision": { "type": "integer", "minimum": 1 },
+            "occurred_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ]
+    },
+    "recognitionFailed": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "client_turn_id",
+            "reason",
+            "occurred_at"
+          ],
+          "properties": {
+            "type": { "const": "recognition_failed" },
+            "client_turn_id": { "$ref": "#/$defs/uuid" },
+            "reason": {
+              "enum": [
+                "asr_failed",
+                "empty_transcript",
+                "invalid_asr_result",
+                "self_speech"
+              ]
+            },
+            "occurred_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ]
+    },
+    "turnBound": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "client_turn_id",
+            "turn_id",
+            "chat_id",
+            "chat_context_revision",
+            "media_grant_revision",
+            "submission_id",
+            "request_generation"
+          ],
+          "properties": {
+            "type": { "const": "turn_bound" },
+            "client_turn_id": { "$ref": "#/$defs/uuid" },
+            "turn_id": { "$ref": "#/$defs/uuid" },
+            "chat_id": { "$ref": "#/$defs/uuid" },
+            "chat_context_revision": { "type": "integer", "minimum": 1 },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "submission_id": { "$ref": "#/$defs/uuid" },
+            "request_generation": { "$ref": "#/$defs/uuid" }
+          }
+        }
+      ]
+    },
+    "transcriptAccepted": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "turn_id", "client_turn_id", "submission_id", "request_generation", "chat_id", "media_grant_revision", "accepted_message_id"],
+          "properties": {
+            "type": { "const": "transcript_accepted" },
+            "turn_id": { "$ref": "#/$defs/uuid" },
+            "client_turn_id": { "$ref": "#/$defs/uuid" },
+            "submission_id": { "$ref": "#/$defs/uuid" },
+            "request_generation": { "$ref": "#/$defs/uuid" },
+            "chat_id": { "$ref": "#/$defs/uuid" },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "accepted_message_id": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "transcriptRejected": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "turn_id",
+            "client_turn_id",
+            "submission_id",
+            "request_generation",
+            "chat_id",
+            "media_grant_revision",
+            "reason",
+            "retry_policy"
+          ],
+          "properties": {
+            "type": { "const": "transcript_rejected" },
+            "turn_id": { "$ref": "#/$defs/uuid" },
+            "client_turn_id": { "$ref": "#/$defs/uuid" },
+            "submission_id": { "$ref": "#/$defs/uuid" },
+            "request_generation": { "$ref": "#/$defs/uuid" },
+            "chat_id": { "$ref": "#/$defs/uuid" },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "reason": {
+              "enum": [
+                "capacity_exhausted",
+                "chat_unavailable",
+                "invalid_binding",
+                "invalid_proof",
+                "proof_expired",
+                "permission_denied",
+                "stale_session",
+                "malformed_final"
+              ]
+            },
+            "retry_policy": { "enum": ["explicit_user_retry", "none"] }
+          }
+        }
+      ]
+    },
+    "speak": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "announcement_id",
+            "announcement_sequence",
+            "media_grant_revision",
+            "transport",
+            "turn_id",
+            "kind",
+            "quantum_role",
+            "quantum_index",
+            "max_duration_samples",
+            "text",
+            "sensitive_authorized",
+            "expires_at"
+          ],
+          "properties": {
+            "type": { "const": "speak" },
+            "announcement_id": { "$ref": "#/$defs/uuid" },
+            "announcement_sequence": { "type": "integer", "minimum": 1 },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "transport": { "enum": ["livekit", "watch_pcm_websocket"] },
+            "turn_id": { "$ref": "#/$defs/nullableUuid" },
+            "kind": {
+              "enum": [
+                "greeting",
+                "acknowledgement",
+                "progress",
+                "waiting",
+                "result",
+                "sensitive_notice",
+                "failure",
+                "refusal",
+                "cancellation"
+              ]
+            },
+            "quantum_role": { "enum": ["single", "result_opening", "result_continuation"] },
+            "quantum_index": { "type": "integer", "minimum": 0, "maximum": 31 },
+            "max_duration_samples": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 96000,
+              "description": "Hard per-command audio ceiling at the session's fixed 24 kHz rate; the worker rejects rather than publishes an over-budget synthesis."
+            },
+            "result_reserved_samples_after": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 720000,
+              "description": "Coordinator-CAS result budget reserved through this command; required only for result quanta and echoed by manifest/lifecycle frames."
+            },
+            "phrase_key": { "$ref": "#/$defs/opaqueId" },
+            "text": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "sensitive_authorized": { "type": "boolean" },
+            "expires_at": { "$ref": "#/$defs/timestamp" }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": ["kind"],
+                "properties": { "kind": { "const": "greeting" } }
+              },
+              "then": { "properties": { "turn_id": { "type": "null" } } },
+              "else": { "properties": { "turn_id": { "$ref": "#/$defs/uuid" } } }
+            },
+            {
+              "if": { "properties": { "quantum_role": { "const": "single" } } },
+              "then": {
+                "properties": {
+                  "kind": { "enum": ["greeting", "acknowledgement", "progress", "waiting", "sensitive_notice", "failure", "refusal", "cancellation"] },
+                  "quantum_index": { "const": 0 },
+                  "max_duration_samples": { "type": "integer", "minimum": 1, "maximum": 96000 },
+                  "result_reserved_samples_after": false
+                }
+              }
+            },
+            {
+              "if": { "properties": { "quantum_role": { "const": "result_opening" } } },
+              "then": {
+                "required": ["result_reserved_samples_after"],
+                "properties": {
+                  "kind": { "const": "result" },
+                  "quantum_index": { "const": 0 },
+                  "max_duration_samples": { "type": "integer", "minimum": 1, "maximum": 36000 },
+                  "result_reserved_samples_after": { "type": "integer", "minimum": 1, "maximum": 36000 }
+                }
+              }
+            },
+            {
+              "if": { "properties": { "quantum_role": { "const": "result_continuation" } } },
+              "then": {
+                "required": ["result_reserved_samples_after"],
+                "properties": {
+                  "kind": { "const": "result" },
+                  "quantum_index": { "type": "integer", "minimum": 1, "maximum": 31 },
+                  "max_duration_samples": { "type": "integer", "minimum": 1, "maximum": 96000 }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "stopSpeech": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "media_grant_revision", "reason"],
+          "properties": {
+            "type": { "const": "stop_speech" },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "announcement_id": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+            "reason": {
+              "enum": ["barge_in", "user_stop", "terminal", "mute", "takeover", "end", "stale"]
+            }
+          }
+        }
+      ]
+    },
+    "setCapture": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "media_grant_revision", "enabled"],
+          "properties": {
+            "type": { "const": "set_capture" },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "enabled": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "endSession": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "media_grant_revision", "reason"],
+          "properties": {
+            "type": { "const": "end_session" },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "reason": {
+              "enum": ["user", "idle", "takeover", "logout", "auth_expired", "chat_deleted", "chat_unauthorized", "lease_expired", "media_error", "shutdown"]
+            }
+          }
+        }
+      ]
+    },
+    "workerReady": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "assignment_id", "worker_identity", "worker_rtc_grant_revision", "profile_ready"],
+          "properties": {
+            "type": { "const": "worker_ready" },
+            "assignment_id": { "$ref": "#/$defs/uuid" },
+            "worker_identity": { "$ref": "#/$defs/opaqueId" },
+            "worker_rtc_grant_revision": { "type": "integer", "minimum": 1 },
+            "profile_ready": { "type": "boolean" },
+            "reason": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9_]+$" }
+          }
+        }
+      ]
+    },
+    "heartbeat": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "media_state"],
+          "properties": {
+            "type": { "const": "heartbeat" },
+            "media_state": { "enum": ["connecting", "ready", "reconnecting", "failed", "ended"] }
+          }
+        }
+      ]
+    },
+    "speechLifecycle": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "announcement_id", "announcement_sequence", "media_grant_revision", "turn_id", "kind", "quantum_role", "quantum_index", "occurred_at"],
+          "properties": {
+            "type": {
+              "enum": ["speech_started", "speech_finished", "speech_interrupted", "speech_failed"]
+            },
+            "announcement_id": { "$ref": "#/$defs/uuid" },
+            "announcement_sequence": { "type": "integer", "minimum": 1 },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "turn_id": { "$ref": "#/$defs/nullableUuid" },
+            "kind": {
+              "enum": [
+                "greeting",
+                "acknowledgement",
+                "progress",
+                "waiting",
+                "result",
+                "sensitive_notice",
+                "failure",
+                "refusal",
+                "cancellation"
+              ]
+            },
+            "quantum_role": { "enum": ["single", "result_opening", "result_continuation"] },
+            "quantum_index": { "type": "integer", "minimum": 0, "maximum": 31 },
+            "result_reserved_samples_after": { "type": "integer", "minimum": 1, "maximum": 720000 },
+            "occurred_at": { "$ref": "#/$defs/timestamp" },
+            "reason": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9_]+$" },
+            "duration_ms": { "type": "integer", "minimum": 0, "maximum": 4000 }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": ["kind"],
+                "properties": { "kind": { "const": "greeting" } }
+              },
+              "then": { "properties": { "turn_id": { "type": "null" } } },
+              "else": { "properties": { "turn_id": { "$ref": "#/$defs/uuid" } } }
+            },
+            {
+              "if": { "properties": { "quantum_role": { "const": "single" } } },
+              "then": {
+                "properties": {
+                  "kind": { "enum": ["greeting", "acknowledgement", "progress", "waiting", "sensitive_notice", "failure", "refusal", "cancellation"] },
+                  "quantum_index": { "const": 0 },
+                  "result_reserved_samples_after": false
+                }
+              }
+            },
+            {
+              "if": { "properties": { "quantum_role": { "const": "result_opening" } } },
+              "then": {
+                "required": ["result_reserved_samples_after"],
+                "properties": {
+                  "kind": { "const": "result" },
+                  "quantum_index": { "const": 0 },
+                  "result_reserved_samples_after": { "type": "integer", "minimum": 1, "maximum": 36000 },
+                  "duration_ms": { "type": "integer", "minimum": 0, "maximum": 1500 }
+                }
+              }
+            },
+            {
+              "if": { "properties": { "quantum_role": { "const": "result_continuation" } } },
+              "then": {
+                "required": ["result_reserved_samples_after"],
+                "properties": {
+                  "kind": { "const": "result" },
+                  "quantum_index": { "type": "integer", "minimum": 1, "maximum": 31 }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "mediaState": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "state", "occurred_at"],
+          "properties": {
+            "type": { "const": "media_state" },
+            "state": { "enum": ["connecting", "listening", "speech_detected", "transcribing", "reconnecting", "failed", "ended"] },
+            "reason": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9_]+$" },
+            "occurred_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ]
+    },
+    "transcriptEmitted": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "turn_id",
+            "client_turn_id",
+            "submission_id",
+            "request_generation",
+            "chat_id",
+            "chat_context_revision",
+            "media_grant_revision",
+            "final",
+            "detected_language",
+            "utf8_bytes",
+            "text_digest_sha256",
+            "proof_expires_at",
+            "occurred_at"
+          ],
+          "properties": {
+            "type": { "const": "transcript_emitted" },
+            "turn_id": { "$ref": "#/$defs/uuid" },
+            "client_turn_id": { "$ref": "#/$defs/uuid" },
+            "submission_id": { "$ref": "#/$defs/uuid" },
+            "request_generation": { "$ref": "#/$defs/uuid" },
+            "chat_id": { "$ref": "#/$defs/uuid" },
+            "chat_context_revision": { "type": "integer", "minimum": 1 },
+            "media_grant_revision": { "type": "integer", "minimum": 1 },
+            "final": { "type": "boolean" },
+            "detected_language": {
+              "oneOf": [
+                { "type": "string", "minLength": 2, "maxLength": 32, "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$" },
+                { "type": "null" }
+              ]
+            },
+            "utf8_bytes": { "type": "integer", "minimum": 0, "maximum": 12000 },
+            "text_digest_sha256": {
+              "oneOf": [
+                { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                { "type": "null" }
+              ]
+            },
+            "proof_expires_at": {
+              "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+            },
+            "occurred_at": { "$ref": "#/$defs/timestamp" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "final": { "const": true } } },
+              "then": {
+                "properties": {
+                  "detected_language": { "type": "string", "minLength": 2, "maxLength": 32, "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$" },
+                  "utf8_bytes": { "type": "integer", "minimum": 1, "maximum": 12000 },
+                  "text_digest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                  "proof_expires_at": { "$ref": "#/$defs/timestamp" }
+                }
+              },
+              "else": {
+                "properties": {
+                  "text_digest_sha256": { "type": "null" },
+                  "proof_expires_at": { "type": "null" }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

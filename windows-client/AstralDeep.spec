@@ -11,7 +11,11 @@ import hashlib
 import json
 import sys
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo,
     VarStruct, VSVersionInfo,
@@ -107,13 +111,18 @@ version_res = VSVersionInfo(
 
 hiddenimports = (
     collect_submodules("PySide6.QtCharts")
+    # Feature 065: the frozen client is a direct-RTC participant. Keep the
+    # exact livekit.rtc Python closure explicit so offline analysis cannot
+    # silently omit lazily imported room/audio/data modules.
+    + collect_submodules("livekit.rtc")
     + collect_submodules("aiohttp")
     + collect_submodules("sigstore")
     # Feature 058: the frozen exe IS the interpreter for every BYO agent worker
     # (it re-invokes itself with --byo-worker), so the delivered bundle's only
     # third-party import must resolve INSIDE the bundle — it can never pip-install.
     + collect_submodules("astralprims")
-    + ["PySide6.QtCharts", "websockets",
+    + ["PySide6.QtCharts", "PySide6.QtMultimedia", "websockets",
+       "livekit", "livekit.rtc",
        "win_agent", "win_agent.agent", "win_agent.tools",
        "win_agent.byo_host", "win_agent.byo_worker",
        "astral_client.phi_gate", "astral_client.audit_log", "astral_client.integrity",
@@ -124,7 +133,7 @@ hiddenimports = (
 # Trim heavy, unused Qt modules to keep the binary lean.
 excludes = [
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
-    "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.QtQuick3D", "PySide6.QtMultimedia",
+    "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.QtQuick3D",
     "PySide6.QtPdf", "PySide6.QtPositioning", "PySide6.QtSql", "PySide6.QtTest",
     "tkinter", "PySide6.QtDesigner",
 ]
@@ -132,7 +141,9 @@ excludes = [
 a = Analysis(
     ["main.py"],
     pathex=[],
-    binaries=[],
+    # The Windows livekit wheel carries its RTC FFI native artifact. Collect it
+    # deliberately instead of relying on import discovery inside a one-file exe.
+    binaries=collect_dynamic_libs("livekit"),
     # The brand icon ships inside the bundle too, so the running app can set
     # its window/taskbar icon (assets resolve via sys._MEIPASS when frozen).
     datas=[
@@ -141,7 +152,7 @@ a = Analysis(
         ("deployment/runtime-manifest.json", "deployment"),
         ("requirements-release.lock.txt", "deployment"),
         ("requirements.in", "deployment"),
-    ],
+    ] + collect_data_files("livekit", include_py_files=False),
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

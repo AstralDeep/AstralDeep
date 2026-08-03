@@ -9,6 +9,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from orchestrator import memory_chat  # noqa: E402
+from personalization import project_scope as ps  # noqa: E402
 from personalization.memory_tools import MemoryTools  # noqa: E402
 
 
@@ -18,14 +19,18 @@ class _FakeRepo:
         self.signals = []
 
     def create_memory(self, user_id, category, value, *, source="explicit",
-                       salience=0.0, keywords=None):
-        item = {"id": f"m{len(self.memory)}", "category": category, "value": value,
-                "source": source, "keywords": keywords}
+                       salience=0.0, keywords=None, project_id=None):
+        item = {"id": f"m{len(self.memory)}", "user_id": user_id,
+                "category": category, "value": value, "source": source,
+                "keywords": keywords, "project_id": project_id}
         self.memory.append(item)
         return item
 
-    def list_memory(self, user_id):
-        return list(self.memory)
+    def list_memory(self, user_id, *, project_id=None, include_global=True):
+        rows = [dict(item) for item in self.memory if item["user_id"] == user_id]
+        if project_id is None:
+            return rows
+        return ps.filter_to_project(rows, project_id, include_global=include_global)
 
     def add_signal(self, user_id, category, value):
         self.signals.append((category, value))

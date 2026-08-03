@@ -37,8 +37,6 @@ EVIDENCE_DOCUMENT_TYPES = {
     "release_evidence_set",
     "windows_draft_verification_provenance",
 }
-
-
 def _load_validator() -> Any:
     """Import the sibling validator so schema/policy logic stays single-sourced."""
 
@@ -57,8 +55,30 @@ def _load_validator() -> Any:
 VALIDATOR = _load_validator()
 
 
+def _load_coverage_collector() -> Any:
+    """Import the sibling changed-code collector without duplicating its policy."""
+
+    path = Path(__file__).resolve().parent / "check_changed_coverage.py"
+    spec = importlib.util.spec_from_file_location(
+        "astral_changed_coverage_collector", path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot import changed-code coverage collector at {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+COVERAGE = _load_coverage_collector()
+COVERAGE_INPUT_SLOTS = {
+    producer.key: producer for producer in COVERAGE.COVERAGE_PRODUCERS
+}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo", default=".", help="Git repository root")
     parser.add_argument("--evidence-dir", default="build/060/release-evidence")
     parser.add_argument("--coverage-dir", default="build/060/coverage")
     parser.add_argument("--base-sha", required=True)
@@ -74,6 +94,20 @@ def _parser() -> argparse.ArgumentParser:
         default=str(CONTRACT_ROOT / "windows-deployment-profile.schema.json"),
     )
     parser.add_argument("--staging-outputs")
+    for producer in COVERAGE.COVERAGE_PRODUCERS:
+        parser.add_argument(
+            f"--{producer.flag}",
+            dest=producer.key,
+            action=COVERAGE._SingleReportAction,
+        )
+    parser.add_argument(
+        "--coverage-mode",
+        choices=("strict", "partial"),
+        default="strict",
+        help="strict requires all ten producer slots; partial is diagnostic-only",
+    )
+    parser.add_argument("--fail-under", default="90")
+    parser.add_argument("--coverage-decision-output")
     parser.add_argument(
         "--output", default="build/060/release-evidence/local-diagnostic.json"
     )
@@ -188,6 +222,129 @@ def _coverage_reports(root: Path) -> list[dict[str, str]]:
     return sorted(entries, key=lambda entry: entry["path"])
 
 
+def _coverage_input_summary(
+    args: argparse.Namespace, *, require_complete: bool = False
+) -> dict[str, Any]:
+    """Bind every explicit producer slot before the changed-code collector runs."""
+
+    seen_paths: dict[Path, str] = {}
+    seen_files: dict[tuple[int, int], str] = {}
+    seen_payloads: dict[tuple[int, str], str] = {}
+    seen_semantics: dict[tuple[int, str], str] = {}
+    seen_native_semantics: dict[tuple[int, str], str] = {}
+
+    def bind(path_text: str, *, slot: str, target_key: str) -> dict[str, Any]:
+        path = Path(path_text)
+        try:
+            data = COVERAGE._read_report(path)
+            stat_result = path.stat()
+            identity = COVERAGE.coverage_report_identity(
+                data, target_key, producer_key=slot
+            )
+            canonical_path = path.resolve()
+        except COVERAGE.CoveragePolicyError as exc:
+            raise VALIDATOR.PolicyError(exc.message) from exc
+        file_identity = (stat_result.st_dev, stat_result.st_ino)
+        payload_identity = (identity["size_bytes"], identity["sha256"])
+        semantic_identity = (
+            identity["semantic_size_bytes"],
+            identity["semantic_sha256"],
+        )
+        native_semantic_identity = (
+            identity["native_semantic_size_bytes"],
+            identity["native_semantic_sha256"],
+        )
+        duplicate_of = (
+            seen_paths.get(canonical_path)
+            or seen_files.get(file_identity)
+            or seen_payloads.get(payload_identity)
+            or seen_semantics.get(semantic_identity)
+            or seen_native_semantics.get(native_semantic_identity)
+        )
+        if duplicate_of is not None:
+            raise VALIDATOR.PolicyError(
+                f"duplicate coverage input for {slot}: {path} "
+                f"already bound to {duplicate_of}"
+            )
+        seen_paths[canonical_path] = slot
+        seen_files[file_identity] = slot
+        seen_payloads[payload_identity] = slot
+        seen_semantics[semantic_identity] = slot
+        seen_native_semantics[native_semantic_identity] = slot
+        return {
+            "path": path.as_posix(),
+            **identity,
+        }
+
+    inputs: dict[str, dict[str, Any] | None] = {}
+    for slot, producer in COVERAGE_INPUT_SLOTS.items():
+        path_text = getattr(args, slot)
+        inputs[slot] = (
+            bind(path_text, slot=slot, target_key=producer.target_key)
+            if path_text is not None
+            else None
+        )
+    missing = [
+        slot for slot, identity in inputs.items() if identity is None
+    ]
+    if require_complete and missing:
+        flags = ", ".join(
+            f"--{COVERAGE_INPUT_SLOTS[slot].flag}" for slot in missing
+        )
+        raise VALIDATOR.PolicyError(
+            f"strict coverage mode requires all ten producer slots; missing: {flags}"
+        )
+    return {
+        "complete": not missing,
+        "inputs": inputs,
+        "required_slots": list(COVERAGE_INPUT_SLOTS),
+        "missing_slots": missing,
+    }
+
+
+def _release_identity(evidence_set: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind stage-owned media identity and each candidate client artifact."""
+
+    reports = evidence_set.get("evidence")
+    if not isinstance(reports, list):
+        raise VALIDATOR.PolicyError("evidence set lacks platform reports")
+    stages = [
+        report.get("staging_environment")
+        for report in reports
+        if isinstance(report, Mapping)
+        and isinstance(report.get("staging_environment"), Mapping)
+    ]
+    if not stages:
+        raise VALIDATOR.PolicyError("evidence set lacks a staging environment")
+    stage = stages[0]
+    stage_digest = VALIDATOR.canonical_json_sha256(stage)
+    if any(VALIDATOR.canonical_json_sha256(candidate) != stage_digest for candidate in stages):
+        raise VALIDATOR.PolicyError("platform reports disagree on staging identity")
+    voice_runtime = stage.get("voice_runtime")
+    if not isinstance(voice_runtime, Mapping):
+        raise VALIDATOR.PolicyError("staging environment lacks voice runtime identity")
+    artifacts = []
+    for report in sorted(reports, key=lambda item: str(item.get("platform"))):
+        artifact = report.get("artifact")
+        artifacts.append(
+            {
+                "artifact": artifact,
+                "artifact_record_sha256": (
+                    VALIDATOR.canonical_json_sha256(artifact)
+                    if isinstance(artifact, Mapping)
+                    else None
+                ),
+                "platform": report.get("platform"),
+            }
+        )
+    return {
+        "client_artifacts": artifacts,
+        "staging_environment_sha256": stage_digest,
+        "voice_runtime": dict(voice_runtime),
+        "voice_runtime_sha256": VALIDATOR.canonical_json_sha256(voice_runtime),
+    }
+
+
 def _staging_outputs_summary(
     path_text: str | None, staging_environment_id: str
 ) -> dict[str, str] | None:
@@ -220,6 +377,86 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
             json.dumps(value, indent=2, sort_keys=True).encode("utf-8") + b"\n"
         )
         os.replace(temporary, path)
+
+
+def _changed_coverage_summary(
+    args: argparse.Namespace, coverage_inputs: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Run the sibling collector only when explicit native reports are supplied.
+
+    The resulting decision remains local diagnostic evidence. It is never
+    accepted as protected release authorization, and protected CI independently
+    reconstructs the same inputs with its pinned collector revision.
+    """
+
+    report_options = [
+        (producer.flag, getattr(args, producer.key))
+        for producer in COVERAGE.COVERAGE_PRODUCERS
+    ]
+    if not any(path for _, path in report_options):
+        return None
+    output = Path(args.coverage_decision_output) if args.coverage_decision_output else (
+        Path(args.output).parent / "changed-code-coverage.json"
+    )
+    if str(output) == "-":
+        raise VALIDATOR.PolicyError(
+            "coverage-decision-output must be a file so its bytes can be digested"
+        )
+    if output.absolute() == Path(args.output).absolute():
+        raise VALIDATOR.PolicyError(
+            "coverage decision output must differ from the release diagnostic output"
+        )
+    coverage_argv = [
+        "--repo",
+        args.repo,
+        "--event-name",
+        "manual",
+        "--base-sha",
+        args.base_sha,
+        "--candidate-sha",
+        args.candidate_sha,
+        "--fail-under",
+        args.fail_under,
+        "--coverage-mode",
+        args.coverage_mode,
+        "--output",
+        str(output),
+    ]
+    for option, path in report_options:
+        if path is not None:
+            coverage_argv.extend((f"--{option}", path))
+    exit_code = COVERAGE.main(coverage_argv)
+    decision = VALIDATOR.load_json_document(output)
+    status = decision.get("status")
+    if exit_code != 0 or status != "pass":
+        error = decision.get("error")
+        detail = error.get("code") if isinstance(error, Mapping) else status
+        raise VALIDATOR.PolicyError(
+            f"changed-code coverage diagnostic did not pass: {detail}"
+        )
+    combined = decision.get("combined")
+    percent = combined.get("percent") if isinstance(combined, Mapping) else None
+    if not isinstance(percent, (int, float)) or isinstance(percent, bool):
+        raise VALIDATOR.PolicyError(
+            "passing changed-code coverage decision lacks combined percent"
+        )
+    actual_slots = decision.get("producer_slots")
+    expected_slots = {
+        slot: {**identity, "producer_slot": slot}
+        for slot, identity in coverage_inputs["inputs"].items()
+        if identity is not None
+    }
+    if not isinstance(actual_slots, Mapping) or dict(actual_slots) != expected_slots:
+        raise VALIDATOR.PolicyError(
+            "coverage report identity changed between input binding and collector decision"
+        )
+    content = output.read_bytes()
+    return {
+        "combined_percent": percent,
+        "path": output.as_posix(),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "status": status,
+    }
 
 
 def _failure_document(
@@ -307,9 +544,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         staging_outputs = _staging_outputs_summary(
             args.staging_outputs, result.staging_environment_id
         )
+        coverage_inputs = _coverage_input_summary(
+            args, require_complete=args.coverage_mode == "strict"
+        )
+        changed_coverage = _changed_coverage_summary(args, coverage_inputs)
         diagnostic = {
             "base_sha": args.base_sha,
             "candidate_sha": args.candidate_sha,
+            "changed_coverage": changed_coverage,
+            "coverage_inputs": coverage_inputs,
             "coverage_reports": _coverage_reports(Path(args.coverage_dir)),
             "decision": "diagnostic_policy_passed",
             "documents": [
@@ -326,6 +569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "generated_at": now.isoformat().replace("+00:00", "Z"),
             "protected_release_authorization": False,
             "required_targets": list(result.required_targets),
+            "release_identity": _release_identity(evidence_set),
             "staging_environment_id": result.staging_environment_id,
             "staging_outputs": staging_outputs,
             "used_exception_ids": list(result.used_exception_ids),

@@ -332,6 +332,87 @@ class VirtualWebSocket:
         return f"VirtualWebSocket(task={self.task.task_id})"
 
 
+class DurableUserTurnWebSocket:
+    """Memory-only execution socket for one already-admitted user turn.
+
+    The object deliberately has a distinct identity from the UI transport so
+    the orchestrator can bind a private copy of verified claims and the raw
+    delegation token for the exact task lifetime. Conversation candidate
+    frames remain private until atomic publication; only a fully correlated
+    pre-acceptance voice rejection may be forwarded directly. The durable
+    operation and committed conversation are therefore independent of the
+    originating socket surviving, without turning this adapter into a second
+    authority or content store.
+    """
+
+    _FORWARDED_FRAME_TYPES = frozenset({"voice_submission_rejected"})
+
+    def __init__(self, origin: Any, *, user_id: str) -> None:
+        if origin is None:
+            raise ValueError("origin is required")
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise ValueError("user_id is required")
+        self._origin = origin
+        self.llm_context_user_id: str | None = user_id.strip()
+        self._closed = False
+
+    async def send_text(self, data: str):
+        if self._closed:
+            return None
+        try:
+            frame = json.loads(data)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if (
+            not isinstance(frame, dict)
+            or frame.get("type") not in self._FORWARDED_FRAME_TYPES
+        ):
+            return None
+        sender = getattr(self._origin, "send_text", None)
+        if callable(sender):
+            return await sender(data)
+        sender = getattr(self._origin, "send", None)
+        if callable(sender):
+            return await sender(data)
+        return None
+
+    async def send_json(self, data: Any, mode: str = "text"):
+        del mode
+        if isinstance(data, dict):
+            return await self.send_text(
+                json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+            )
+        if isinstance(data, str):
+            return await self.send_text(data)
+        return None
+
+    async def receive_text(self) -> str:
+        return ""
+
+    async def receive_json(self, mode: str = "text"):
+        del mode
+        return {}
+
+    async def close(self, code: int = 1000):
+        del code
+        self.scrub()
+
+    def scrub(self) -> None:
+        """Release task-local references without closing the real client."""
+
+        self._closed = True
+        self.llm_context_user_id = None
+        self._origin = None
+
+    @property
+    def client(self):
+        origin = self._origin
+        return getattr(origin, "client", ("durable-user-turn", 0))
+
+    def __repr__(self) -> str:
+        return "DurableUserTurnWebSocket(redacted=True)"
+
+
 class BackgroundTaskManager:
     """Legacy async-task surface projected over an injected coordinator."""
 

@@ -64,6 +64,15 @@ object ProtocolManifest {
             "conversation_commit_ready" to HANDLED,
             "operation_status" to HANDLED,
             "agent_lifecycle" to HANDLED,
+            // Feature 065 server-owned conversational voice contract. Every
+            // direct-client push is strictly decoded before controller use.
+            "composer_state" to HANDLED,
+            "voice_control_binding" to HANDLED,
+            "voice_session_state" to HANDLED,
+            "voice_turn_state" to HANDLED,
+            "voice_submission_rejected" to HANDLED,
+            "voice_transcript" to HANDLED,
+            "voice_announcement_media" to HANDLED,
             // heartbeat: transport keepalive
             "heartbeat" to IGNORED,
             // streaming

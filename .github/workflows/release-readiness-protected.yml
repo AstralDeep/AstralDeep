@@ -1,0 +1,46 @@
+# Feature 060/065 protected release-readiness entrypoint.
+#
+# `workflow_run` workflows are loaded from the default branch. Candidate CI may
+# build and upload artifacts, but it cannot replace this caller, the reusable
+# readiness workflow, or the trusted builder that receives staging credentials
+# and attestation authority. Activation remains an explicit repository-owner
+# checkpoint after these bytes land on the protected default branch. Repository
+# secrets are deliberately not inherited: candidate-facing credentials must be
+# request-scoped and revocable before this caller can be enabled.
+name: release-readiness-protected
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  # Keep this id stable for evidence identity. The workflow_run is attached to
+  # the protected default-branch SHA and is not, by itself, a PR-head gate.
+  release-readiness:
+    if: >-
+      ${{
+        vars.RELEASE_READINESS_ACTIVE == 'true' &&
+        vars.RELEASE_EPHEMERAL_CREDENTIALS_READY == 'true' &&
+        vars.VOICE_WORKER_CLOSURE_APPROVED == 'true' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.pull_requests[0].base.sha != ''
+      }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      packages: write
+    uses: ./.github/workflows/release-readiness.yml
+    with:
+      candidate_sha: ${{ github.event.workflow_run.head_sha }}
+      base_sha: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
+      source_run_id: ${{ github.event.workflow_run.id }}
+      request_id: protected-${{ github.event.workflow_run.id }}

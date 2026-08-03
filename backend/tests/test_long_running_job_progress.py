@@ -135,7 +135,8 @@ def _make_fake(history, user_id, llm_content=NARRATION):
                  "_append_conversation_message", "_publish_conversation_snapshot",
                  "_deliver_committed_conversation_snapshot",
                  "_conversation_snapshot_candidate", "_adapt_conversation_snapshot",
-                 "_bind_conversation_scope"):
+                 "_bind_conversation_scope", "_broadcast_user_history",
+                 "_refresh_history_after_commit", "_push_history_surface"):
         setattr(fake, name, types.MethodType(getattr(Orchestrator, name), fake))
     fake._sent = sent
     return fake

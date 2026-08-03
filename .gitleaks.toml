@@ -42,6 +42,13 @@ regexes = [
   '''astral_ci''',
   # Local-dev default DB password (docker-compose / start-docker.sh fallback)
   '''astral_dev''',
+  # Exact generic-api-key false positives. The first is the public package /
+  # renderer name in generated technology summaries; the second is a Python
+  # keyword-argument binding in the release-evidence collector. Anchoring the
+  # complete detected value keeps nearby or extended credential-like values
+  # subject to the default rule set.
+  '''^astralprims/ROTE$''',
+  '''^producer_key=slot$''',
   # The repo's hardcoded UNSIGNED mock JWT (alg HS256 header + a payload that
   # starts with {"realm_access":..., empty signature segment). Lives in
   # backend tests today and in deleted frontend/ files in git history.

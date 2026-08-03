@@ -642,7 +642,12 @@ async def test_parallel_batch_with_destructive_verbs_still_gates(real_orch):
     assert len(results) == 2
     for r in results:
         assert r.error and "confirmation_required" in r.error["message"]
-        assert any(c.get("type") == "card" for c in r.ui_components)  # proposal card
+        assert r.ui_components is None  # errors and UI are exclusive on the wire
+    rendered = [call.args[1] for call in real_orch.send_ui_render.await_args_list]
+    assert sum(
+        any(component.get("type") == "card" for component in components)
+        for components in rendered
+    ) == 2
     db = real_orch.history.db
     assert len(db.rows) == 2
     assert all(row["status"] == "pending" for row in db.rows.values())

@@ -95,7 +95,7 @@ IDENTITY_ENVIRONMENT = (
     "RUNNER_OS",
 )
 
-#: The exact 16-field staging identity every platform report must repeat.
+#: The exact stage-owned identity every platform report must repeat.
 STAGING_ENVIRONMENT_FIELDS = (
     "authentication_posture",
     "candidate_image_reference",
@@ -112,8 +112,36 @@ STAGING_ENVIRONMENT_FIELDS = (
     "representative_dataset_sha256",
     "source_schema_revision",
     "topology",
+    "voice_runtime",
     "worker_paths",
 )
+
+VOICE_RUNTIME_FIELDS = frozenset(
+    {
+        "voice_worker_image_reference",
+        "voice_worker_image_sha256",
+        "livekit_image_reference",
+        "livekit_image_sha256",
+        "livekit_config_sha256",
+        "livekit_public_url",
+        "livekit_turn_domain",
+        "speech_profile",
+    }
+)
+SPEECH_PROFILE_FIELDS = frozenset(
+    {
+        "asr_model",
+        "tts_model",
+        "voice",
+        "sample_rate_hz",
+        "inventory_sha256",
+        "profile_sha256",
+    }
+)
+ASR_MODEL = "Systran/faster-whisper-large-v3"
+TTS_MODEL = "speaches-ai/Kokoro-82M-v1.0-ONNX"
+TTS_VOICE = "af_heart"
+TTS_SAMPLE_RATE_HZ = 24000
 
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
@@ -261,7 +289,49 @@ def _staging_environment(stage: Mapping[str, Any], endpoint: str) -> dict[str, A
     assert str(stage["endpoint"]).rstrip("/") == endpoint, (
         "ASTRAL_STAGING_URL differs from the trusted staged endpoint"
     )
+    worker_paths = stage["worker_paths"]
+    assert isinstance(worker_paths, list) and "voice" in worker_paths, (
+        "trusted staging output does not include the voice worker path"
+    )
+    _validate_voice_runtime(stage["voice_runtime"])
     return {name: stage[name] for name in STAGING_ENVIRONMENT_FIELDS}
+
+
+def _validate_voice_runtime(value: Any) -> None:
+    """Fail closed without rebuilding the stage-owned, secret-free identity."""
+
+    assert isinstance(value, Mapping) and set(value) == VOICE_RUNTIME_FIELDS, (
+        "trusted voice_runtime has a missing, extra, or non-object field"
+    )
+    profile = value["speech_profile"]
+    assert isinstance(profile, Mapping) and set(profile) == SPEECH_PROFILE_FIELDS, (
+        "trusted speech_profile has a missing, extra, or non-object field"
+    )
+    assert profile["asr_model"] == ASR_MODEL
+    assert profile["tts_model"] == TTS_MODEL
+    assert profile["voice"] == TTS_VOICE
+    assert profile["sample_rate_hz"] == TTS_SAMPLE_RATE_HZ
+    for digest_field in (
+        "voice_worker_image_sha256",
+        "livekit_image_sha256",
+        "livekit_config_sha256",
+    ):
+        assert isinstance(value[digest_field], str) and re.fullmatch(
+            r"[0-9a-f]{64}", value[digest_field]
+        ), f"trusted voice_runtime {digest_field} is not a SHA-256 digest"
+    for digest_field in ("inventory_sha256", "profile_sha256"):
+        assert isinstance(profile[digest_field], str) and re.fullmatch(
+            r"[0-9a-f]{64}", profile[digest_field]
+        ), f"trusted speech_profile {digest_field} is not a SHA-256 digest"
+    for reference_field in (
+        "voice_worker_image_reference",
+        "livekit_image_reference",
+        "livekit_public_url",
+        "livekit_turn_domain",
+    ):
+        assert (
+            isinstance(value[reference_field], str) and value[reference_field].strip()
+        ), f"trusted voice_runtime {reference_field} is empty"
 
 
 def _runner_identity() -> dict[str, Any]:

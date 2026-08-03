@@ -1,6 +1,7 @@
 """Tests for memory tools (feature 025, T033/T035)."""
 from __future__ import annotations
 
+from personalization import project_scope as ps
 from personalization.memory_tools import MemoryTools
 from personalization.phi_gate import PHIGate
 
@@ -20,9 +21,10 @@ class _FakeRepo:
         self.signals = []
 
     def create_memory(self, user_id, category, value, *, source="explicit",
-                       salience=0.0, keywords=None):
+                       salience=0.0, keywords=None, project_id=None):
         item = {"id": f"m{len(self.memory)}", "user_id": user_id, "category": category,
-                "value": value, "source": source, "keywords": keywords}
+                "value": value, "source": source, "keywords": keywords,
+                "project_id": project_id}
         self.memory.append(item)
         return item
 
@@ -30,8 +32,11 @@ class _FakeRepo:
         self.signals.append({"category": category, "value": value})
         return {"id": f"s{len(self.signals)}"}
 
-    def list_memory(self, user_id):
-        return list(self.memory)
+    def list_memory(self, user_id, *, project_id=None, include_global=True):
+        rows = [dict(item) for item in self.memory if item["user_id"] == user_id]
+        if project_id is None:
+            return rows
+        return ps.filter_to_project(rows, project_id, include_global=include_global)
 
     # C-M2 link surface (links not asserted by these legacy tests).
     def add_link(self, user_id, a_id, b_id):

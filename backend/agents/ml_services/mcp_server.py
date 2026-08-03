@@ -116,11 +116,10 @@ class MCPServer:
                         return MCPResponse(
                             request_id=request.request_id,
                             error={
-                                "code": -32000,
+                                "code": -32603,
                                 "message": error_msg,
                                 "retryable": result.get("_retryable", True),
                             },
-                            ui_components=ui_comps,
                         )
                     data = result.get("_data")
                     return MCPResponse(

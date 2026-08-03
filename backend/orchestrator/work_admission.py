@@ -33,10 +33,16 @@ _TERMINAL_STATES: frozenset["OperationState"]
 class AdmissionClass(str, Enum):
     GLOBAL = "global"
     INTERACTIVE = "interactive"
+    VOICE_INTERACTIVE = "voice_interactive"
+    MCP = "mcp"
     BACKGROUND = "background"
     SCHEDULED = "scheduled"
     MAINTENANCE = "maintenance"
     SYSTEM = "system"
+
+
+VOICE_INTERACTIVE_PER_USER_ACTIVE_LIMIT = 2
+_VOICE_CAPACITY_RETRY_AFTER_MS = 1_000
 
 
 class OwnerScope(str, Enum):
@@ -98,6 +104,12 @@ class AdmissionClassConfig:
             )
         if self.max_wait_ms is not None and self.max_wait_ms < 0:
             raise AdmissionConfigurationError("max_wait_ms cannot be negative")
+        if self.class_name is AdmissionClass.VOICE_INTERACTIVE and (
+            self.queue_limit != 0 or self.max_wait_ms not in {None, 0}
+        ):
+            raise AdmissionConfigurationError(
+                "voice_interactive must not queue or wait for capacity"
+            )
         if not (1 <= len(self.config_revision) <= 128):
             raise AdmissionConfigurationError(
                 "config_revision must be 1..128 characters"
@@ -148,6 +160,11 @@ class OperationRequest:
             raise ValueError("operation_kind must be bounded snake_case")
         if self.admission_class is AdmissionClass.GLOBAL:
             raise ValueError("global is a parent capacity class, not a work class")
+        if (
+            self.admission_class is AdmissionClass.VOICE_INTERACTIVE
+            and self.owner.owner_scope is not OwnerScope.USER
+        ):
+            raise ValueError("voice_interactive requires authenticated user ownership")
         if not isinstance(self.submission_id, uuid.UUID):
             raise ValueError("submission_id must be a UUID")
         for name, value in (
@@ -725,6 +742,14 @@ def _validate_admission_graph(configs: Sequence[AdmissionClassConfig]) -> None:
     by_name = {config.class_name: config for config in configs}
     if len(by_name) != len(configs):
         raise AdmissionConfigurationError("admission class names must be unique")
+    voice_config = by_name.get(AdmissionClass.VOICE_INTERACTIVE)
+    if (
+        voice_config is not None
+        and voice_config.parent_class_name is not AdmissionClass.INTERACTIVE
+    ):
+        raise AdmissionConfigurationError(
+            "voice_interactive must be a child of interactive"
+        )
     for config in configs:
         if (
             config.parent_class_name is not None
@@ -1135,6 +1160,24 @@ class InMemoryWorkAdmissionRepository:
                 )
             self._expire_queued_locked(current_time, retention)
             self._expire_execution_leases_locked(current_time, retention)
+            if request.admission_class is AdmissionClass.VOICE_INTERACTIVE:
+                running_for_user = sum(
+                    operation.admission_class is AdmissionClass.VOICE_INTERACTIVE
+                    and operation.owner_scope is OwnerScope.USER
+                    and operation.owner_user_id == request.owner.owner_user_id
+                    and operation.state is OperationState.RUNNING
+                    for operation in self._operations.values()
+                )
+                if running_for_user >= VOICE_INTERACTIVE_PER_USER_ACTIVE_LIMIT:
+                    refusal = self._record_submission(
+                        request,
+                        now=current_time,
+                        retention=retention,
+                        refusal_code="capacity_exceeded",
+                        retryable=True,
+                        retry_after_ms=_VOICE_CAPACITY_RETRY_AFTER_MS,
+                    )
+                    return self._refused(refusal)
             queued_count = sum(
                 operation.admission_class is request.admission_class
                 and operation.state is OperationState.QUEUED
@@ -2404,6 +2447,42 @@ class PostgresWorkAdmissionRepository:
             self._lock_class_chain(cursor, request.admission_class)
             self._expire_queued_locked(cursor, current_time, retention)
             self._expire_execution_leases_locked(cursor, current_time, retention)
+            if request.admission_class is AdmissionClass.VOICE_INTERACTIVE:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS running_count
+                    FROM operation_record
+                    WHERE admission_class = %s
+                      AND owner_scope = %s
+                      AND owner_user_id = %s
+                      AND state = 'running'
+                    """,
+                    (
+                        AdmissionClass.VOICE_INTERACTIVE.value,
+                        OwnerScope.USER.value,
+                        request.owner.owner_user_id,
+                    ),
+                )
+                running_row = cursor.fetchone()
+                running_for_user = (
+                    int(running_row["running_count"]) if running_row else 0
+                )
+                if running_for_user >= VOICE_INTERACTIVE_PER_USER_ACTIVE_LIMIT:
+                    self._insert_submission(
+                        cursor,
+                        request,
+                        current_time=current_time,
+                        retention=retention,
+                        refusal_code="capacity_exceeded",
+                        retryable=True,
+                        retry_after_ms=_VOICE_CAPACITY_RETRY_AFTER_MS,
+                    )
+                    return RefusedAdmission(
+                        False,
+                        "capacity_exceeded",
+                        True,
+                        _VOICE_CAPACITY_RETRY_AFTER_MS,
+                    )
             selected_slots = self._select_free_slots(cursor, request.admission_class)
             cursor.execute(
                 """

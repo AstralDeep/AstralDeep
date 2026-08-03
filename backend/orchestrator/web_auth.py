@@ -311,6 +311,30 @@ async def _kill_session(sid: str, sess: Dict[str, Any], *, audit_action: Optiona
         await _audit(audit_action, sess.get("sub", "anonymous"), description, outcome=outcome)
 
 
+async def _end_voice_session(request: Request, user_id: str, reason: str) -> None:
+    """Best-effort identity media fence; durable auth teardown stays primary."""
+
+    app_state = getattr(getattr(request, "app", None), "state", None)
+    voice_services = getattr(
+        getattr(app_state, "orchestrator", None), "voice_services", None
+    )
+    if voice_services is None or not user_id:
+        return
+    try:
+        await voice_services.end_user_voice_session(
+            user_id=user_id,
+            reason=reason,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning(
+            "web_auth: voice cleanup failed reason=%s",
+            reason,
+            exc_info=True,
+        )
+
+
 async def ensure_session(request: Request) -> Optional[Dict[str, Any]]:
     """Session for this request with a guaranteed-usable access token.
 
@@ -328,12 +352,14 @@ async def ensure_session(request: Request) -> Optional[Dict[str, Any]]:
     if exp is None or (exp - time.time()) < _REFRESH_WINDOW_SECONDS:
         refreshed = await _refresh_session(sid, sess)
         if refreshed is None:
+            await _end_voice_session(request, sess.get("sub", ""), "auth_expired")
             return None
         sess = refreshed
         # If the IdP was unreachable and the token is hard-expired (beyond
         # skew), the session can't serve this request.
         exp2 = _token_expires_at(sess.get("access_token", ""))
         if exp2 is not None and (time.time() - exp2) > _CLOCK_SKEW_SECONDS:
+            await _end_voice_session(request, sess.get("sub", ""), "auth_expired")
             return None
     return sess
 
@@ -530,6 +556,7 @@ async def auth_callback(request: Request):
         await _kill_session(prior_sid, prior, audit_action="logout",
                             description="Prior session revoked by user switch on shared browser",
                             outcome="success")
+        await _end_voice_session(request, prior.get("sub", ""), "logout")
 
     # FR-005: entry requires a Keycloak-issued 'user' or 'admin' role. An
     # authenticated account with neither gets an explicit no-access outcome —
@@ -604,8 +631,10 @@ async def auth_logout(request: Request):
                 _SESSIONS.pop(sid, None)
             else:
                 await _kill_session(sid, sess)  # unconditional local sign-out
-    if sess and not _is_mock():
+    if sess:
         user_id = sess.get("sub", "")
+        await _end_voice_session(request, user_id, "logout")
+    if sess and not _is_mock():
         await _revoke_or_queue(user_id, sess.get("refresh_token", ""))
         try:
             from orchestrator.offline_grant import OfflineGrantStore

@@ -10,9 +10,11 @@ and emits one deterministic JSON decision.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import urllib.parse
@@ -41,6 +43,20 @@ JAVASCRIPT_REPORT_IDENTITY = {
     "espree_version": "11.2.0",
 }
 MAX_REPORT_BYTES = 64 * 1024 * 1024
+MAX_CANDIDATE_WITNESS_PATHS = 10_000
+MAX_CANDIDATE_WITNESS_BLOB_BYTES = 16 * 1024 * 1024
+MAX_CANDIDATE_WITNESS_TOTAL_BYTES = 128 * 1024 * 1024
+VOICE_WORKER_SOURCE_ALIASES = {
+    "backend/voice_agent/streaming_egress.py": "backend/shared/streaming_egress.py",
+    "backend/voice_agent/voice_transcript.py": "backend/shared/voice_transcript.py",
+    "backend/voice_agent/watch_ticket.py": "backend/shared/watch_ticket.py",
+}
+VOICE_WORKER_OVERWRITTEN_SHIMS = frozenset(
+    {
+        "backend/voice_agent/voice_transcript.py",
+        "backend/voice_agent/watch_ticket.py",
+    }
+)
 HEX_SHA = re.compile(r"^[0-9a-fA-F]+$")
 HUNK_HEADER = re.compile(
     r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@",
@@ -65,6 +81,40 @@ class CoverageTarget:
     language: str
     roots: tuple[str, ...]
     report_kind: str
+
+
+@dataclass(frozen=True)
+class CoverageProducer:
+    """One independently produced native report slot."""
+
+    key: str
+    target_key: str
+    flag: str
+    required_roots: tuple[str, ...]
+    excluded_roots: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CandidateBlob:
+    """One regular source blob anchored to the immutable candidate tree."""
+
+    object_id: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class BoundCoverageReport:
+    """Stable report bytes plus raw and semantic content identities."""
+
+    path: Path
+    content: bytes
+    sha256: str
+    size_bytes: int
+    semantic_sha256: str
+    semantic_size_bytes: int
+    native_semantic_sha256: str
+    native_semantic_size_bytes: int
+    coverage: CoverageData
 
 
 @dataclass(frozen=True)
@@ -146,6 +196,62 @@ TARGETS = (
     ),
 )
 TARGET_BY_KEY = {target.key: target for target in TARGETS}
+COVERAGE_PRODUCERS = (
+    CoverageProducer(
+        "backend",
+        "backend_python",
+        "backend-python",
+        ("backend",),
+        ("backend/voice_agent",),
+    ),
+    CoverageProducer(
+        "voice_worker",
+        "backend_python",
+        "voice-worker-python",
+        (
+            "backend/voice_agent",
+            *tuple(VOICE_WORKER_SOURCE_ALIASES.values()),
+        ),
+    ),
+    CoverageProducer("tooling", "tooling_python", "tooling-python", ("scripts",)),
+    CoverageProducer(
+        "windows", "windows_python", "windows-python", ("windows-client",)
+    ),
+    CoverageProducer(
+        "javascript",
+        "javascript",
+        "javascript",
+        ("backend/webrender/static/client.js",),
+    ),
+    CoverageProducer(
+        "android_app",
+        "android_app",
+        "android-app",
+        (
+            "android-client/app/src/main/kotlin",
+            "android-client/app/src/main/java",
+        ),
+    ),
+    CoverageProducer(
+        "android_core",
+        "android_core",
+        "android-core",
+        (
+            "android-client/core/src/main/kotlin",
+            "android-client/core/src/main/java",
+        ),
+    ),
+    CoverageProducer(
+        "ios", "apple", "ios", ("apple-clients/AstralApp/AstralApp",)
+    ),
+    CoverageProducer(
+        "macos", "apple", "macos", ("apple-clients/AstralApp/AstralApp",)
+    ),
+    CoverageProducer(
+        "watchos", "apple", "watchos", ("apple-clients/AstralWatch",)
+    ),
+)
+PRODUCER_BY_KEY = {producer.key: producer for producer in COVERAGE_PRODUCERS}
 REPORT_FLAGS = {
     "backend_python": "backend-python",
     "tooling_python": "tooling-python",
@@ -153,7 +259,7 @@ REPORT_FLAGS = {
     "javascript": "javascript",
     "android_app": "android-app",
     "android_core": "android-core",
-    "apple": "apple",
+    "apple": "ios/--macos/--watchos",
 }
 ANCHORS = (
     "backend/",
@@ -479,22 +585,247 @@ def read_changed_lines(
 
 
 def _read_report(path: Path) -> bytes:
+    """Read one unchanged regular file through a stable descriptor."""
+
     try:
-        size = path.stat().st_size
+        before_path = path.lstat()
     except OSError as exc:
         raise CoveragePolicyError(
             "missing_report", f"coverage report is unavailable: {path}"
         ) from exc
-    if size <= 0 or size > MAX_REPORT_BYTES:
+    if stat.S_ISLNK(before_path.st_mode) or not stat.S_ISREG(before_path.st_mode):
         raise CoveragePolicyError(
-            "unparseable_report", f"coverage report has invalid size: {path}"
+            "unparseable_report",
+            f"coverage report must be a regular non-symlink file: {path}",
         )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        return path.read_bytes()
+        descriptor = os.open(path, flags)
     except OSError as exc:
         raise CoveragePolicyError(
             "missing_report", f"coverage report is unreadable: {path}"
         ) from exc
+    try:
+        before_read = os.fstat(descriptor)
+        chunks: list[bytes] = []
+        total = 0
+        while total <= MAX_REPORT_BYTES:
+            chunk = os.read(descriptor, min(1024 * 1024, MAX_REPORT_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        after_read = os.fstat(descriptor)
+    except OSError as exc:
+        raise CoveragePolicyError(
+            "missing_report", f"coverage report is unreadable: {path}"
+        ) from exc
+    finally:
+        os.close(descriptor)
+    try:
+        after_path = path.lstat()
+    except OSError as exc:
+        raise CoveragePolicyError(
+            "report_changed", f"coverage report changed while being read: {path}"
+        ) from exc
+    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+    if (
+        any(getattr(before_read, field) != getattr(after_read, field) for field in stable_fields)
+        or before_path.st_dev != before_read.st_dev
+        or before_path.st_ino != before_read.st_ino
+        or after_path.st_dev != before_read.st_dev
+        or after_path.st_ino != before_read.st_ino
+    ):
+        raise CoveragePolicyError(
+            "report_changed", f"coverage report changed while being read: {path}"
+        )
+    content = b"".join(chunks)
+    if not content or len(content) > MAX_REPORT_BYTES or len(content) != after_read.st_size:
+        raise CoveragePolicyError(
+            "unparseable_report", f"coverage report has invalid size: {path}"
+        )
+    return content
+
+
+def _semantic_report_content(coverage: CoverageData) -> bytes:
+    """Serialize only normalized source observations, never producer metadata."""
+
+    value = {
+        "files": sorted(coverage.files),
+        "observed": sorted([path, line] for path, line in coverage.observed),
+        "executable": sorted([path, line] for path, line in coverage.executable),
+        "covered": sorted([path, line] for path, line in coverage.covered),
+    }
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _native_report_content(content: bytes, target_key: str) -> bytes:
+    """Canonicalize native observations without applying target path filters."""
+
+    target = TARGET_BY_KEY[target_key]
+    if target.report_kind == "cobertura":
+        root = ET.fromstring(content)
+        value: Any = {
+            "kind": "cobertura",
+            "sources": sorted(
+                (node.text or "").strip().replace("\\", "/")
+                for node in root.iter()
+                if _local_name(node) == "source" and (node.text or "").strip()
+            ),
+            "classes": sorted(
+                [
+                    (node.get("filename") or "").replace("\\", "/"),
+                    sorted(
+                        [
+                            int(line.get("number", "-1")),
+                            int(line.get("hits", "-1")),
+                        ]
+                        for line in node.iter()
+                        if _local_name(line) == "line"
+                    ),
+                ]
+                for node in root.iter()
+                if _local_name(node) == "class"
+            ),
+        }
+    elif target.report_kind == "kover":
+        root = ET.fromstring(content)
+        value = {
+            "kind": "kover",
+            "sources": sorted(
+                [
+                    package.get("name") or "",
+                    source.get("name") or "",
+                    sorted(
+                        [
+                            int(line.get("nr", "-1")),
+                            int(line.get("mi", "-1")),
+                            int(line.get("ci", "-1")),
+                        ]
+                        for line in source
+                        if _local_name(line) == "line"
+                    ),
+                ]
+                for package in root.iter()
+                if _local_name(package) == "package"
+                for source in package
+                if _local_name(source) == "sourcefile"
+            ),
+        }
+    elif target.report_kind == "javascript":
+        document = _strict_json(content)
+        coverage = document.get("coverage", {}) if isinstance(document, Mapping) else {}
+        value = {
+            "kind": "javascript",
+            "sources": sorted(
+                [
+                    str(record.get("path", raw_path)).replace("\\", "/"),
+                    sorted(
+                        [
+                            int(location.get("start", {}).get("line", -1)),
+                            int(hits.get(statement_id, -1)),
+                        ]
+                        for statement_id, location in statements.items()
+                    ),
+                ]
+                for raw_path, record in coverage.items()
+                if isinstance(record, Mapping)
+                for statements, hits in [
+                    (record.get("statementMap", {}), record.get("s", {}))
+                ]
+                if isinstance(statements, Mapping) and isinstance(hits, Mapping)
+            ),
+        }
+    else:
+        document = _strict_json(content)
+        value = {
+            "kind": "xccov",
+            "sources": sorted(
+                [
+                    raw_path.replace("\\", "/"),
+                    sorted(
+                        [
+                            int(item.get("line", -1)),
+                            bool(item.get("isExecutable")),
+                            int(item.get("executionCount", 0)),
+                        ]
+                        for item in observations
+                        if isinstance(item, Mapping)
+                    ),
+                ]
+                for raw_path, observations in document.items()
+                if isinstance(raw_path, str)
+                and raw_path.endswith(".swift")
+                and isinstance(observations, list)
+            ),
+        }
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+
+
+def _apply_producer_source_aliases(
+    coverage: CoverageData, producer_key: str | None
+) -> CoverageData:
+    """Map worker-runtime copies back to the candidate sources that built them."""
+
+    aliases = VOICE_WORKER_SOURCE_ALIASES if producer_key == "voice_worker" else {}
+    if not aliases:
+        return coverage
+
+    def remap(observations: set[tuple[str, int]]) -> set[tuple[str, int]]:
+        return {(aliases.get(path, path), line) for path, line in observations}
+
+    return CoverageData(
+        files={aliases.get(path, path) for path in coverage.files},
+        observed=remap(coverage.observed),
+        executable=remap(coverage.executable),
+        covered=remap(coverage.covered),
+    )
+
+
+def _coverage_report_binding(
+    content: bytes,
+    target_key: str,
+    *,
+    source: Path,
+    producer_key: str | None = None,
+) -> tuple[dict[str, Any], CoverageData]:
+    coverage = _apply_producer_source_aliases(
+        _parse_coverage_content(content, target_key, source=source), producer_key
+    )
+    semantic = _semantic_report_content(coverage)
+    native_semantic = _native_report_content(content, target_key)
+    return (
+        {
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size_bytes": len(content),
+            "semantic_sha256": hashlib.sha256(semantic).hexdigest(),
+            "semantic_size_bytes": len(semantic),
+            "native_semantic_sha256": hashlib.sha256(native_semantic).hexdigest(),
+            "native_semantic_size_bytes": len(native_semantic),
+        },
+        coverage,
+    )
+
+
+def coverage_report_identity(
+    content: bytes, target_key: str, *, producer_key: str | None = None
+) -> dict[str, Any]:
+    """Return raw and semantic identities for already-bound report bytes."""
+
+    identity, _coverage = _coverage_report_binding(
+        content,
+        target_key,
+        source=Path("<bound-coverage-report>"),
+        producer_key=producer_key,
+    )
+    return identity
 
 
 def _normalized_report_path(raw: str, target: CoverageTarget) -> str | None:
@@ -571,6 +902,30 @@ def _line_counter(node: ET.Element, *, label: str) -> tuple[int, int]:
     return (
         _integer(counter.get("missed"), label=f"{label} missed LINE counter"),
         _integer(counter.get("covered"), label=f"{label} covered LINE counter"),
+    )
+
+
+def _instruction_counter(node: ET.Element, *, label: str) -> tuple[int, int]:
+    counters = [
+        child
+        for child in _direct_children(node, "counter")
+        if child.get("type") == "INSTRUCTION"
+    ]
+    if len(counters) != 1:
+        raise CoveragePolicyError(
+            "unparseable_report",
+            f"{label} must contain exactly one INSTRUCTION counter",
+        )
+    counter = counters[0]
+    return (
+        _integer(
+            counter.get("missed"),
+            label=f"{label} missed INSTRUCTION counter",
+        ),
+        _integer(
+            counter.get("covered"),
+            label=f"{label} covered INSTRUCTION counter",
+        ),
     )
 
 
@@ -730,11 +1085,15 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
         raise CoveragePolicyError("unparseable_report", "Kover report has no packages")
     report_missed = 0
     report_covered = 0
+    report_instruction_missed = 0
+    report_instruction_covered = 0
     normalized_lines: set[tuple[str, int]] = set()
     for package in packages:
         package_name = (package.get("name") or "").replace(".", "/").strip("/")
         package_missed = 0
         package_covered = 0
+        package_instruction_missed = 0
+        package_instruction_covered = 0
         for source in _direct_children(package, "sourcefile"):
             name = source.get("name")
             if not name:
@@ -744,8 +1103,9 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
             relative = f"{package_name}/{name}" if package_name else name
             relative = f"{target.roots[0]}/{relative}"
             path = _normalized_report_path(relative, target)
-            source_missed = 0
-            source_covered = 0
+            source_instruction_missed = 0
+            source_instruction_covered = 0
+            executable_lines = 0
             seen_numbers: set[int] = set()
             for line_node in _direct_children(source, "line"):
                 line = _integer(line_node.get("nr"), label="Kover line")
@@ -757,13 +1117,8 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
                 seen_numbers.add(line)
                 covered = _integer(line_node.get("ci", 0), label="Kover ci")
                 missed = _integer(line_node.get("mi", 0), label="Kover mi")
-                if covered + missed <= 0:
-                    raise CoveragePolicyError(
-                        "unparseable_report", "Kover line has no instructions"
-                    )
-                is_covered = covered > 0
-                source_covered += int(is_covered)
-                source_missed += int(not is_covered)
+                source_instruction_covered += covered
+                source_instruction_missed += missed
                 if path is not None:
                     observation = (path, line)
                     if observation in normalized_lines:
@@ -772,17 +1127,36 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
                             "duplicate normalized Kover source-line observation",
                         )
                     normalized_lines.add(observation)
+                    data.observed.add(observation)
+                # Kover legitimately emits physical source-line observations
+                # with no mapped JVM instructions (mi=0, ci=0), notably around
+                # coroutine/inline lowering. They are not executable LINE
+                # counter members and must not be counted as missed coverage.
+                if covered + missed == 0:
+                    continue
+                executable_lines += 1
+                is_covered = covered > 0
+                if path is not None:
                     data.add(path, line, is_covered)
-            if _line_counter(source, label=f"Kover sourcefile {name!r}") != (
-                source_missed,
-                source_covered,
+            source_label = f"Kover sourcefile {name!r}"
+            source_line_counter = _line_counter(source, label=source_label)
+            if sum(source_line_counter) < executable_lines:
+                raise CoveragePolicyError(
+                    "unparseable_report",
+                    f"{source_label} LINE counter omits executable observations",
+                )
+            if _instruction_counter(source, label=source_label) != (
+                source_instruction_missed,
+                source_instruction_covered,
             ):
                 raise CoveragePolicyError(
                     "unparseable_report",
-                    f"Kover sourcefile {name!r} LINE counter disagrees with lines",
+                    f"{source_label} INSTRUCTION counter disagrees with lines",
                 )
-            package_missed += source_missed
-            package_covered += source_covered
+            package_missed += source_line_counter[0]
+            package_covered += source_line_counter[1]
+            package_instruction_missed += source_instruction_missed
+            package_instruction_covered += source_instruction_covered
             if path is not None:
                 data.files.add(path)
         if _line_counter(package, label=f"Kover package {package_name!r}") != (
@@ -793,8 +1167,18 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
                 "unparseable_report",
                 f"Kover package {package_name!r} LINE counter disagrees with sourcefiles",
             )
+        if _instruction_counter(
+            package, label=f"Kover package {package_name!r}"
+        ) != (package_instruction_missed, package_instruction_covered):
+            raise CoveragePolicyError(
+                "unparseable_report",
+                f"Kover package {package_name!r} INSTRUCTION counter "
+                "disagrees with sourcefiles",
+            )
         report_missed += package_missed
         report_covered += package_covered
+        report_instruction_missed += package_instruction_missed
+        report_instruction_covered += package_instruction_covered
     if _line_counter(root, label="Kover report") != (
         report_missed,
         report_covered,
@@ -802,6 +1186,14 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
         raise CoveragePolicyError(
             "unparseable_report",
             "Kover report LINE counter disagrees with packages",
+        )
+    if _instruction_counter(root, label="Kover report") != (
+        report_instruction_missed,
+        report_instruction_covered,
+    ):
+        raise CoveragePolicyError(
+            "unparseable_report",
+            "Kover report INSTRUCTION counter disagrees with packages",
         )
     return data
 
@@ -987,7 +1379,7 @@ def _parse_xccov(content: bytes, target: CoverageTarget) -> CoverageData:
         raise CoveragePolicyError(
             "unsupported_xccov_report",
             "xccov summary JSON lacks per-line execution counts; export and "
-            "map `xcrun xccov view --archive --json <xcresult>` observations",
+            "map per-file observations with scripts/export_xccov_line_coverage.py",
         )
     data = CoverageData()
     archive_entries = [
@@ -1016,8 +1408,10 @@ def _parse_xccov(content: bytes, target: CoverageTarget) -> CoverageData:
     return data
 
 
-def parse_coverage_report(path: Path, target_key: str) -> CoverageData:
-    """Parse one Cobertura/Kover, V8/Istanbul, or xccov report."""
+def _parse_coverage_content(
+    content: bytes, target_key: str, *, source: Path
+) -> CoverageData:
+    """Parse already-bounded report bytes so identity and policy use one read."""
 
     try:
         target = TARGET_BY_KEY[target_key]
@@ -1025,7 +1419,6 @@ def parse_coverage_report(path: Path, target_key: str) -> CoverageData:
         raise CoveragePolicyError(
             "invalid_target", f"unknown target {target_key!r}"
         ) from exc
-    content = _read_report(path)
     try:
         if target.report_kind == "cobertura":
             return _parse_cobertura(content, target)
@@ -1038,8 +1431,14 @@ def parse_coverage_report(path: Path, target_key: str) -> CoverageData:
         if exc.code in {"missing_report", "unsupported_xccov_report"}:
             raise
         raise CoveragePolicyError(
-            "unparseable_report", f"{path}: {exc.message}"
+            "unparseable_report", f"{source}: {exc.message}"
         ) from exc
+
+
+def parse_coverage_report(path: Path, target_key: str) -> CoverageData:
+    """Parse one Cobertura/Kover, V8/Istanbul, or xccov report."""
+
+    return _parse_coverage_content(_read_report(path), target_key, source=path)
 
 
 def _percentage(covered: int, executable: int) -> float:
@@ -1060,12 +1459,483 @@ def _threshold(value: float | int | str) -> Decimal:
     return threshold
 
 
+def _unique_report_inputs(
+    reports: Mapping[str, Sequence[Path]],
+    producer_slots: Mapping[str, Path] | None = None,
+) -> dict[str, list[BoundCoverageReport]]:
+    """Read each producer artifact once and reject aliased evidence globally."""
+
+    seen_paths: dict[Path, str] = {}
+    seen_files: dict[tuple[int, int], str] = {}
+    seen_payloads: dict[tuple[int, str], str] = {}
+    seen_semantics: dict[tuple[int, str], str] = {}
+    seen_native_semantics: dict[tuple[int, str], str] = {}
+    slot_by_path = {
+        Path(path).resolve(): slot for slot, path in (producer_slots or {}).items()
+    }
+    loaded: dict[str, list[BoundCoverageReport]] = {}
+    for target_key in sorted(reports):
+        loaded[target_key] = []
+        for value in sorted((Path(path) for path in reports[target_key]), key=str):
+            content = _read_report(value)
+            try:
+                stat_result = value.stat()
+            except OSError as exc:
+                raise CoveragePolicyError(
+                    "missing_report",
+                    f"coverage report is unavailable: {value}",
+                ) from exc
+            canonical_path = value.resolve()
+            file_identity = (stat_result.st_dev, stat_result.st_ino)
+            artifact_identity, coverage = _coverage_report_binding(
+                content,
+                target_key,
+                source=value,
+                producer_key=slot_by_path.get(canonical_path),
+            )
+            payload_identity = (
+                artifact_identity["size_bytes"],
+                artifact_identity["sha256"],
+            )
+            semantic_identity = (
+                artifact_identity["semantic_size_bytes"],
+                artifact_identity["semantic_sha256"],
+            )
+            native_semantic_identity = (
+                artifact_identity["native_semantic_size_bytes"],
+                artifact_identity["native_semantic_sha256"],
+            )
+            duplicate_of = (
+                seen_paths.get(canonical_path)
+                or seen_files.get(file_identity)
+                or seen_payloads.get(payload_identity)
+                or seen_semantics.get(semantic_identity)
+                or seen_native_semantics.get(native_semantic_identity)
+            )
+            if duplicate_of is not None:
+                raise CoveragePolicyError(
+                    "duplicate_report",
+                    f"coverage report for {target_key} duplicates {duplicate_of}",
+                )
+            identity = f"{target_key}:{value}"
+            seen_paths[canonical_path] = identity
+            seen_files[file_identity] = identity
+            seen_payloads[payload_identity] = identity
+            seen_semantics[semantic_identity] = identity
+            seen_native_semantics[native_semantic_identity] = identity
+            loaded[target_key].append(
+                BoundCoverageReport(
+                    path=value,
+                    content=content,
+                    sha256=artifact_identity["sha256"],
+                    size_bytes=artifact_identity["size_bytes"],
+                    semantic_sha256=artifact_identity["semantic_sha256"],
+                    semantic_size_bytes=artifact_identity["semantic_size_bytes"],
+                    native_semantic_sha256=artifact_identity[
+                        "native_semantic_sha256"
+                    ],
+                    native_semantic_size_bytes=artifact_identity[
+                        "native_semantic_size_bytes"
+                    ],
+                    coverage=coverage,
+                )
+            )
+    return loaded
+
+
+def _path_matches_root(path: str, root: str) -> bool:
+    return path == root or path.startswith(f"{root}/")
+
+
+def _producer_applies_to_path(slot_key: str, path: str) -> bool:
+    """Return whether a strict producer is responsible for one maintained path."""
+
+    if slot_key == "backend":
+        return path in VOICE_WORKER_OVERWRITTEN_SHIMS or (
+            path.startswith("backend/")
+            and not path.startswith("backend/voice_agent/")
+        )
+    if slot_key == "voice_worker":
+        return (
+            path.startswith("backend/voice_agent/")
+            and path not in VOICE_WORKER_OVERWRITTEN_SHIMS
+        ) or path in set(VOICE_WORKER_SOURCE_ALIASES.values())
+    if slot_key == "ios":
+        return any(
+            _path_matches_root(path, root)
+            for root in (
+                "apple-clients/AstralApp/AstralApp",
+                "apple-clients/AstralCore/Sources",
+            )
+        )
+    if slot_key == "macos":
+        return any(
+            _path_matches_root(path, root)
+            for root in (
+                "apple-clients/AstralApp/AstralApp",
+                "apple-clients/AstralCore/Sources",
+            )
+        )
+    if slot_key == "watchos":
+        return _path_matches_root(path, "apple-clients/AstralWatch")
+    target = TARGET_BY_KEY[PRODUCER_BY_KEY[slot_key].target_key]
+    return any(_path_matches_root(path, root) for root in target.roots)
+
+
+def _producer_owned_coverage(
+    coverage: CoverageData, slot_key: str
+) -> CoverageData:
+    """Exclude observations outside a strict producer's owned source partition."""
+
+    def owned(path: str) -> bool:
+        return _producer_applies_to_path(slot_key, path)
+
+    return CoverageData(
+        files={path for path in coverage.files if owned(path)},
+        observed={item for item in coverage.observed if owned(item[0])},
+        executable={item for item in coverage.executable if owned(item[0])},
+        covered={item for item in coverage.covered if owned(item[0])},
+    )
+
+
+def _candidate_source_blobs(repo: Path, candidate_sha: str) -> dict[str, CandidateBlob]:
+    """Inventory regular blobs from one immutable candidate tree."""
+
+    output = _git(repo, ["ls-tree", "-r", "-z", "-l", "--full-tree", candidate_sha])
+    blobs: dict[str, CandidateBlob] = {}
+    for record in output.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+            mode, kind, raw_object_id, raw_size = metadata.split()
+            path = raw_path.decode("utf-8", "strict")
+            object_id = raw_object_id.decode("ascii", "strict")
+            size_bytes = int(raw_size)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise CoveragePolicyError(
+                "invalid_candidate_tree", "candidate tree has malformed blob metadata"
+            ) from exc
+        if kind != b"blob" or mode not in {b"100644", b"100755"}:
+            continue
+        blobs[_repo_path(path)] = CandidateBlob(object_id, size_bytes)
+    return blobs
+
+
+def _candidate_source_line_counts(
+    repo: Path,
+    blobs: Mapping[str, CandidateBlob],
+    paths: set[str],
+) -> dict[str, int]:
+    """Batch-read bounded candidate blobs and count their physical source lines."""
+
+    if len(paths) > MAX_CANDIDATE_WITNESS_PATHS:
+        raise CoveragePolicyError(
+            "candidate_witness_limit",
+            "coverage reports cite too many candidate source paths for witness validation",
+        )
+    selected = {
+        path: blobs[path]
+        for path in sorted(paths)
+        if path in blobs
+        and blobs[path].size_bytes <= MAX_CANDIDATE_WITNESS_BLOB_BYTES
+    }
+    by_object = {blob.object_id: blob.size_bytes for blob in selected.values()}
+    if sum(by_object.values()) > MAX_CANDIDATE_WITNESS_TOTAL_BYTES:
+        raise CoveragePolicyError(
+            "candidate_witness_limit",
+            "candidate source blobs exceed the bounded witness-validation budget",
+        )
+    object_ids = sorted(by_object)
+    if not object_ids:
+        return {}
+    process = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "--batch"],
+        input=("\n".join(object_ids) + "\n").encode("ascii"),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.returncode != 0:
+        raise CoveragePolicyError(
+            "git_error", "git cat-file --batch failed during candidate witness validation"
+        )
+    cursor = 0
+    line_counts_by_object: dict[str, int] = {}
+    for object_id in object_ids:
+        header_end = process.stdout.find(b"\n", cursor)
+        if header_end < 0:
+            raise CoveragePolicyError(
+                "invalid_candidate_tree", "candidate blob batch output is truncated"
+            )
+        try:
+            returned_id, kind, raw_size = process.stdout[cursor:header_end].split()
+            size_bytes = int(raw_size)
+        except ValueError as exc:
+            raise CoveragePolicyError(
+                "invalid_candidate_tree", "candidate blob batch header is malformed"
+            ) from exc
+        if (
+            returned_id.decode("ascii", "strict") != object_id
+            or kind != b"blob"
+            or size_bytes != by_object[object_id]
+        ):
+            raise CoveragePolicyError(
+                "invalid_candidate_tree", "candidate blob identity or size changed"
+            )
+        content_start = header_end + 1
+        content_end = content_start + size_bytes
+        if (
+            content_end >= len(process.stdout)
+            or process.stdout[content_end : content_end + 1] != b"\n"
+        ):
+            raise CoveragePolicyError(
+                "invalid_candidate_tree", "candidate blob batch payload is truncated"
+            )
+        content = process.stdout[content_start:content_end]
+        if b"\0" not in content:
+            line_counts_by_object[object_id] = content.count(b"\n") + int(
+                bool(content) and not content.endswith(b"\n")
+            )
+        cursor = content_end + 1
+    if cursor != len(process.stdout):
+        raise CoveragePolicyError(
+            "invalid_candidate_tree", "candidate blob batch output has trailing data"
+        )
+    return {
+        path: line_counts_by_object[blob.object_id]
+        for path, blob in selected.items()
+        if blob.object_id in line_counts_by_object
+    }
+
+
+def _strict_producer_contributions(
+    repo: Path,
+    candidate_sha: str,
+    changed: Mapping[str, set[int]],
+    maintained: Mapping[str, CoverageTarget],
+    report_inputs: Mapping[str, Sequence[BoundCoverageReport]],
+    producer_slots: Mapping[str, Path] | None,
+) -> dict[str, int]:
+    """Require one useful, producer-scoped native report in every release slot."""
+
+    expected_slots = set(PRODUCER_BY_KEY)
+    actual_slots = set(producer_slots or {})
+    if actual_slots != expected_slots:
+        missing = sorted(expected_slots - actual_slots)
+        unexpected = sorted(actual_slots - expected_slots)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected {', '.join(unexpected)}")
+        raise CoveragePolicyError(
+            "incomplete_report_matrix",
+            "strict coverage requires the exact ten producer slots: "
+            + "; ".join(details),
+        )
+
+    artifacts_by_path = {
+        artifact.path.resolve(): artifact
+        for artifacts in report_inputs.values()
+        for artifact in artifacts
+    }
+    candidate_blobs = _candidate_source_blobs(repo, candidate_sha)
+    candidate_paths = set(candidate_blobs)
+    witness_paths = {
+        path
+        for artifact in artifacts_by_path.values()
+        for path, _line in artifact.coverage.executable
+        if path in candidate_blobs and classify_path(path) is not None
+    }
+    candidate_line_counts = _candidate_source_line_counts(
+        repo, candidate_blobs, witness_paths
+    )
+    contributions: dict[str, int] = {}
+    artifacts_by_slot: dict[str, BoundCoverageReport] = {}
+    for slot_key in sorted(expected_slots):
+        producer = PRODUCER_BY_KEY[slot_key]
+        artifact = artifacts_by_path[Path(producer_slots[slot_key]).resolve()]
+        artifacts_by_slot[slot_key] = artifact
+        useful = {
+            observation
+            for observation in artifact.coverage.executable
+            if any(
+                _path_matches_root(observation[0], root)
+                for root in producer.required_roots
+            )
+            and not any(
+                _path_matches_root(observation[0], root)
+                for root in producer.excluded_roots
+            )
+            and observation[0] in candidate_paths
+            and classify_path(observation[0]) is not None
+            and classify_path(observation[0]).key == producer.target_key
+            and observation[1] <= candidate_line_counts.get(observation[0], 0)
+        }
+        if not useful:
+            roots = ", ".join(producer.required_roots)
+            raise CoveragePolicyError(
+                "unproductive_report",
+                f"producer slot {slot_key!r} has no executable contribution "
+                f"under its required source scope: {roots}",
+            )
+        if slot_key == "voice_worker" and any(
+            not (
+                _path_matches_root(path, "backend/voice_agent")
+                or path in set(VOICE_WORKER_SOURCE_ALIASES.values())
+            )
+            for path in artifact.coverage.files
+        ):
+            raise CoveragePolicyError(
+                "producer_scope_mismatch",
+                "voice_worker coverage contains maintained sources outside "
+                "backend/voice_agent and its audited backend/shared source aliases",
+            )
+        if slot_key == "ios" and any(
+            _path_matches_root(path, "apple-clients/AstralWatch")
+            for path in artifact.coverage.files
+        ):
+            raise CoveragePolicyError(
+                "producer_scope_mismatch", "ios coverage contains Watch sources"
+            )
+        if slot_key == "macos" and any(
+            _path_matches_root(path, "apple-clients/AstralWatch")
+            for path in artifact.coverage.files
+        ):
+            raise CoveragePolicyError(
+                "producer_scope_mismatch", "macos coverage contains Watch sources"
+            )
+        if slot_key == "watchos":
+            watch_roots = (
+                "apple-clients/AstralWatch",
+                "apple-clients/AstralCore/Sources",
+            )
+            if any(
+                not any(_path_matches_root(path, root) for root in watch_roots)
+                for path in artifact.coverage.files
+            ):
+                raise CoveragePolicyError(
+                    "producer_scope_mismatch",
+                    "watchos coverage contains maintained App sources outside its "
+                    "Watch and AstralCore source scope",
+                )
+        contributions[slot_key] = len(useful)
+
+    for changed_path, target in maintained.items():
+        applicable = [
+            slot_key
+            for slot_key in sorted(expected_slots)
+            if _producer_applies_to_path(slot_key, changed_path)
+        ]
+        if target.key == "apple" and _path_matches_root(
+            changed_path, "apple-clients/AstralCore/Sources"
+        ):
+            core_slots = [
+                slot_key
+                for slot_key in applicable
+                if slot_key in {"ios", "macos"}
+            ]
+            mapped_slots = [
+                slot_key
+                for slot_key in core_slots
+                if changed_path in artifacts_by_slot[slot_key].coverage.files
+            ]
+            if not mapped_slots:
+                raise CoveragePolicyError(
+                    "producer_unmapped_changed_file",
+                    "neither ios nor macos coverage maps changed AstralCore file "
+                    f"{changed_path!r}",
+                )
+            complete_slots = []
+            for slot_key in mapped_slots:
+                observed = {
+                    line
+                    for path, line in artifacts_by_slot[slot_key].coverage.observed
+                    if path == changed_path
+                }
+                if changed[changed_path] <= observed:
+                    complete_slots.append(slot_key)
+            if not complete_slots:
+                missing = sorted(
+                    set.intersection(
+                        *(
+                            changed[changed_path]
+                            - {
+                                line
+                                for path, line in artifacts_by_slot[
+                                    slot_key
+                                ].coverage.observed
+                                if path == changed_path
+                            }
+                            for slot_key in mapped_slots
+                        )
+                    )
+                )
+                example_line = missing[0] if missing else min(changed[changed_path])
+                raise CoveragePolicyError(
+                    "producer_unmapped_changed_line",
+                    "neither ios nor macos coverage completely observes changed "
+                    f"AstralCore lines for {changed_path!r}; example line "
+                    f"{example_line}",
+                )
+            continue
+        for slot_key in applicable:
+            coverage = artifacts_by_slot[slot_key].coverage
+            if changed_path not in coverage.files:
+                raise CoveragePolicyError(
+                    "producer_unmapped_changed_file",
+                    f"producer slot {slot_key!r} does not map changed file "
+                    f"{changed_path!r}",
+                )
+            if target.key == "apple":
+                observed = {
+                    line
+                    for path, line in coverage.observed
+                    if path == changed_path
+                }
+                missing = sorted(changed[changed_path] - observed)
+                if missing:
+                    raise CoveragePolicyError(
+                        "producer_unmapped_changed_line",
+                        f"producer slot {slot_key!r} does not observe changed Apple "
+                        f"line {changed_path!r}:{missing[0]}",
+                    )
+        if target.key != "apple" and len(applicable) > 1:
+            executable = set().union(
+                *(
+                    {
+                        line
+                        for path, line in artifacts_by_slot[slot_key].coverage.executable
+                        if path == changed_path and line in changed[changed_path]
+                    }
+                    for slot_key in applicable
+                )
+            )
+            for slot_key in applicable:
+                slot_executable = {
+                    line
+                    for path, line in artifacts_by_slot[slot_key].coverage.executable
+                    if path == changed_path
+                }
+                missing = sorted(executable - slot_executable)
+                if missing:
+                    raise CoveragePolicyError(
+                        "producer_unmapped_changed_line",
+                        f"producer slot {slot_key!r} does not map executable changed "
+                        f"line {changed_path!r}:{missing[0]}",
+                    )
+    return contributions
+
+
 def evaluate_changed_coverage(
     repo: Path,
     selection: RevisionSelection,
     reports: Mapping[str, Sequence[Path]],
     *,
     fail_under: float | int | str = 90,
+    producer_slots: Mapping[str, Path] | None = None,
+    strict_producers: bool = False,
 ) -> dict[str, Any]:
     """Evaluate changed executable lines and return a deterministic decision.
 
@@ -1075,6 +1945,58 @@ def evaluate_changed_coverage(
     """
 
     threshold = _threshold(fail_under)
+    report_inputs = _unique_report_inputs(reports, producer_slots)
+    slot_by_path: dict[Path, str] = {}
+    if producer_slots is not None:
+        supplied_paths = {
+            report.path.resolve()
+            for artifacts in report_inputs.values()
+            for report in artifacts
+        }
+        for slot_key, path in producer_slots.items():
+            try:
+                producer = PRODUCER_BY_KEY[slot_key]
+            except KeyError as exc:
+                raise CoveragePolicyError(
+                    "invalid_report_slot", f"unknown producer slot {slot_key!r}"
+                ) from exc
+            canonical_path = Path(path).resolve()
+            target_paths = {
+                report.path.resolve()
+                for report in report_inputs.get(producer.target_key, [])
+            }
+            if canonical_path not in target_paths:
+                raise CoveragePolicyError(
+                    "invalid_report_slot",
+                    f"producer slot {slot_key!r} is not bound to {producer.target_key}",
+                )
+            if canonical_path in slot_by_path:
+                raise CoveragePolicyError(
+                    "duplicate_report",
+                    f"producer slot {slot_key!r} reuses another slot's report",
+                )
+            slot_by_path[canonical_path] = slot_key
+        if set(slot_by_path) != supplied_paths:
+            raise CoveragePolicyError(
+                "invalid_report_slot",
+                "every supplied report must have exactly one producer slot",
+            )
+    producer_summary: dict[str, dict[str, Any]] = {}
+    for artifacts in report_inputs.values():
+        for artifact in artifacts:
+            slot_key = slot_by_path.get(artifact.path.resolve())
+            if slot_key is None:
+                continue
+            producer_summary[slot_key] = {
+                "path": str(artifact.path).replace("\\", "/"),
+                "sha256": artifact.sha256,
+                "size_bytes": artifact.size_bytes,
+                "semantic_sha256": artifact.semantic_sha256,
+                "semantic_size_bytes": artifact.semantic_size_bytes,
+                "native_semantic_sha256": artifact.native_semantic_sha256,
+                "native_semantic_size_bytes": artifact.native_semantic_size_bytes,
+                "producer_slot": slot_key,
+            }
     changed = read_changed_lines(repo, selection.base_sha, selection.candidate_sha)
     maintained: dict[str, CoverageTarget] = {}
     for path in sorted(changed):
@@ -1086,22 +2008,51 @@ def evaluate_changed_coverage(
             "unexpected_empty_executable_diff",
             "immutable comparison contains no maintained executable source paths",
         )
+    producer_contributions = (
+        _strict_producer_contributions(
+            repo,
+            selection.candidate_sha,
+            changed,
+            maintained,
+            report_inputs,
+            producer_slots,
+        )
+        if strict_producers
+        else {}
+    )
 
     target_data: dict[str, CoverageData] = {}
     report_summary: dict[str, Any] = {}
     for target_key in sorted({target.key for target in maintained.values()}):
         target = TARGET_BY_KEY[target_key]
-        artifacts = sorted(
-            {Path(path) for path in reports.get(target_key, ())}, key=str
-        )
+        artifacts = report_inputs.get(target_key, [])
         if not artifacts:
             raise CoveragePolicyError(
                 "missing_report",
                 f"changed {target_key} code requires --{REPORT_FLAGS[target_key]}",
             )
         merged = CoverageData()
+        artifact_identities: list[dict[str, Any]] = []
         for artifact in artifacts:
-            merged.merge(parse_coverage_report(artifact, target_key))
+            slot_key = slot_by_path.get(artifact.path.resolve())
+            owned_coverage = (
+                _producer_owned_coverage(artifact.coverage, slot_key)
+                if slot_key is not None
+                else artifact.coverage
+            )
+            merged.merge(owned_coverage)
+            identity = {
+                "path": str(artifact.path).replace("\\", "/"),
+                "sha256": artifact.sha256,
+                "size_bytes": artifact.size_bytes,
+                "semantic_sha256": artifact.semantic_sha256,
+                "semantic_size_bytes": artifact.semantic_size_bytes,
+                "native_semantic_sha256": artifact.native_semantic_sha256,
+                "native_semantic_size_bytes": artifact.native_semantic_size_bytes,
+            }
+            if slot_key is not None:
+                identity["producer_slot"] = slot_key
+            artifact_identities.append(identity)
         changed_files = sorted(
             path for path, mapped in maintained.items() if mapped.key == target_key
         )
@@ -1129,7 +2080,10 @@ def evaluate_changed_coverage(
                     )
         target_data[target_key] = merged
         report_summary[target_key] = {
-            "artifacts": [str(path).replace("\\", "/") for path in artifacts],
+            "artifacts": [
+                str(report.path).replace("\\", "/") for report in artifacts
+            ],
+            "artifact_identities": artifact_identities,
             "changed_files": changed_files,
             "mapped_files": sorted(set(changed_files) & merged.files),
         }
@@ -1216,6 +2170,8 @@ def evaluate_changed_coverage(
             "executable_lines": len(line_records),
         },
         "reports": report_summary,
+        "producer_slots": producer_summary,
+        "producer_contributions": producer_contributions,
         "languages": language_summary,
         "combined": {
             "covered_lines": combined_covered,
@@ -1254,6 +2210,21 @@ def _load_event(path: str | None, event_name: str | None) -> Mapping[str, Any] |
     return payload
 
 
+class _SingleReportAction(argparse.Action):
+    """Reject repeated producer flags instead of silently taking the last path."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[Any] | None,
+        option_string: str | None = None,
+    ) -> None:
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"{option_string} may be supplied exactly once")
+        setattr(namespace, self.dest, values)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=".", help="Git repository root")
@@ -1264,13 +2235,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--main-ref", default="refs/heads/main")
     parser.add_argument("--base-sha")
     parser.add_argument("--candidate-sha")
-    parser.add_argument("--backend-python", action="append", default=[])
-    parser.add_argument("--tooling-python", action="append", default=[])
-    parser.add_argument("--windows-python", action="append", default=[])
-    parser.add_argument("--javascript", action="append", default=[])
-    parser.add_argument("--android-app", action="append", default=[])
-    parser.add_argument("--android-core", action="append", default=[])
-    parser.add_argument("--apple", action="append", default=[])
+    for producer in COVERAGE_PRODUCERS:
+        parser.add_argument(
+            f"--{producer.flag}",
+            dest=producer.key,
+            action=_SingleReportAction,
+        )
+    parser.add_argument(
+        "--coverage-mode",
+        choices=("strict", "partial"),
+        default="strict",
+        help="strict requires useful native reports in all ten producer slots",
+    )
     parser.add_argument("--fail-under", default="90")
     parser.add_argument("--output", required=True)
     return parser
@@ -1297,17 +2273,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         selected = validate_revisions(Path(args.repo), selected)
         revisions_validated = True
-        reports = {
-            "backend_python": [Path(path) for path in args.backend_python],
-            "tooling_python": [Path(path) for path in args.tooling_python],
-            "windows_python": [Path(path) for path in args.windows_python],
-            "javascript": [Path(path) for path in args.javascript],
-            "android_app": [Path(path) for path in args.android_app],
-            "android_core": [Path(path) for path in args.android_core],
-            "apple": [Path(path) for path in args.apple],
-        }
+        reports = {target.key: [] for target in TARGETS}
+        producer_slots: dict[str, Path] = {}
+        for producer in COVERAGE_PRODUCERS:
+            path_text = getattr(args, producer.key)
+            if path_text is None:
+                continue
+            path = Path(path_text)
+            reports[producer.target_key].append(path)
+            producer_slots[producer.key] = path
         decision = evaluate_changed_coverage(
-            Path(args.repo), selected, reports, fail_under=args.fail_under
+            Path(args.repo),
+            selected,
+            reports,
+            fail_under=args.fail_under,
+            producer_slots=producer_slots,
+            strict_producers=args.coverage_mode == "strict",
         )
     except CoveragePolicyError as exc:
         decision = {

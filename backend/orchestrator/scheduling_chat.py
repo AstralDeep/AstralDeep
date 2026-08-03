@@ -195,10 +195,7 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
         cleaned, next_run = await asyncio.to_thread(
             _validate_proposal, orch, user_id, args or {})
     except ValueError as exc:
-        alert = Alert(message=f"That schedule cannot be created: {exc}",
-                      variant="warning").to_dict()
-        return MCPResponse(error={"message": str(exc), "retryable": False},
-                           ui_components=[alert])
+        return MCPResponse(error={"message": str(exc), "retryable": False})
 
     proposal_id = uuid.uuid4().hex
     _proposals(orch)[proposal_id] = {

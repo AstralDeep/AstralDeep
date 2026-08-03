@@ -7,24 +7,35 @@
 # identical bytes keylessly, and uploads ONLY a run artifact. Publication is a
 # separate environment-approved workflow; this job holds no write authority.
 name: Release Windows client
+run-name: >-
+  release-windows-bridge ${{ inputs.tag }}
+  readiness-${{ inputs.readiness_run_id }}
+  decision-${{ inputs.decision_artifact_id }}
 
 on:
-  push:
-    tags: ["v*"]
-  # Dispatch exists for rehearsal in a DISPOSABLE repository only (T128); the
-  # signing identity then carries the branch ref, which the shipped updater
-  # policy rejects — rehearsals prove mechanics, never produce shippable
-  # signatures for this repository.
+  # The publisher creates the tag with GITHUB_TOKEN, so that tag push cannot
+  # recursively trigger another workflow. It explicitly dispatches this bridge
+  # at the existing exact tag ref; the job rejects a branch/default-ref dispatch
+  # so the shipped updater's tag-bound signer identity remains unchanged.
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing v<semver> tag to rehearse against
+        description: Existing v<semver> tag to sign at this exact tag ref
+        required: true
+        type: string
+      readiness_run_id:
+        description: Exact protected readiness run that emitted the decision
+        required: true
+        type: string
+      decision_artifact_id:
+        description: Exact trusted decision artifact from that readiness run
         required: true
         type: string
 
 permissions:
   contents: read
   actions: read
+  attestations: read
   id-token: write
 
 jobs:
@@ -34,31 +45,34 @@ jobs:
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
+      RELEASE_TRUSTED_BUILDER_SHA: ${{ vars.RELEASE_TRUSTED_BUILDER_SHA }}
+      MINIMUM_DECISION_REMAINING_SECONDS: "900"
     steps:
       - name: Resolve the exact tag and target commit
         id: resolve
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${{ github.ref_name }}"
-          fi
+          TAG="${{ inputs.tag }}"
           [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
             echo "::error::tag must be v<strict-semver>: $TAG" >&2; exit 1; }
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            OBJECT_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)"
-            OBJECT_TYPE="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.type)"
-            if [ "$OBJECT_TYPE" = "tag" ]; then
-              TARGET_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$OBJECT_SHA" --jq .object.sha)"
-            else
-              TARGET_SHA="$OBJECT_SHA"
-            fi
+          EXPECTED_REF="refs/tags/$TAG"
+          test "$GITHUB_REF" = "$EXPECTED_REF" || {
+            echo "::error::bridge must run at the exact requested tag ref $EXPECTED_REF" >&2
+            exit 1
+          }
+          OBJECT_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)"
+          OBJECT_TYPE="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.type)"
+          if [ "$OBJECT_TYPE" = "tag" ]; then
+            TARGET_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$OBJECT_SHA" --jq .object.sha)"
           else
-            TARGET_SHA="${{ github.sha }}"
+            TARGET_SHA="$OBJECT_SHA"
           fi
           [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$TARGET_SHA" || {
+            echo "::error::resolved tag target differs from the workflow tag-ref commit" >&2
+            exit 1
+          }
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "target_sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
 
@@ -66,6 +80,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ steps.resolve.outputs.target_sha }}
+          path: candidate-source
           persist-credentials: false
 
       # The decision names the windows candidate's originating run, attempt,
@@ -75,74 +90,329 @@ jobs:
         shell: bash
         env:
           TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+          READINESS_RUN_ID: ${{ inputs.readiness_run_id }}
+          DECISION_ARTIFACT_ID: ${{ inputs.decision_artifact_id }}
         run: |
           set -euo pipefail
-          mkdir -p build/060/bridge build/060/decision
-          DECISION_ARTIFACT_ID=""
-          for run_id in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$TARGET_SHA&status=success&per_page=100" \
-              --paginate --jq '.workflow_runs[].id'); do
-            candidate_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
-              --jq '[.artifacts[] | select(.name == "trusted-release-decision")][0].id // empty')"
-            if [ -n "$candidate_id" ]; then
-              DECISION_ARTIFACT_ID="$candidate_id"
-              break
-            fi
-          done
-          test -n "$DECISION_ARTIFACT_ID" || {
-            echo "::error::no passing protected-decision run exposes a trusted decision for $TARGET_SHA" >&2
+          [[ "$RELEASE_TRUSTED_BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$READINESS_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$DECISION_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ ! -L candidate-source && -d candidate-source ]]
+          test "$(git -C candidate-source rev-parse HEAD)" = "$TARGET_SHA" || {
+            echo "::error::isolated candidate checkout differs from the tagged commit" >&2
             exit 1
           }
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$DECISION_ARTIFACT_ID/zip" > build/060/decision.zip
-          unzip -o -q build/060/decision.zip -d build/060/decision
-          gh attestation verify build/060/decision/trusted-release-decision.json \
-            --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-trusted-builder.yml"
+          for path in build build/060 build/060/bridge; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              echo "::error::protected bridge output path is pre-existing or symlinked: $path" >&2
+              exit 1
+            fi
+          done
+          install -d -m 0700 build build/060 build/060/bridge
+          PREFIX="$RUNNER_TEMP/trusted-decision-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          RUN_RESPONSE="$PREFIX-run.json"
+          DECISION_ARTIFACT_RESPONSE="$PREFIX-artifact.json"
+          DECISION_EXTRACTOR="$PREFIX-extractor.py"
+          DECISION_ARCHIVE="$PREFIX.zip"
+          DECISION_TARGET="$PREFIX-output"
+          for path in "$RUN_RESPONSE" "$DECISION_ARTIFACT_RESPONSE" "$DECISION_EXTRACTOR" \
+              "$DECISION_ARCHIVE" "$DECISION_TARGET"; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              echo "::error::refusing pre-existing or symlinked decision path: $path" >&2
+              exit 1
+            fi
+          done
+          umask 077
+          set -o noclobber
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$READINESS_RUN_ID" > "$RUN_RESPONSE"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$DECISION_ARTIFACT_ID" \
+            > "$DECISION_ARTIFACT_RESPONSE"
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/$GITHUB_REPOSITORY/contents/scripts/extract_release_artifact.py?ref=$RELEASE_TRUSTED_BUILDER_SHA" \
+            > "$DECISION_EXTRACTOR"
+          set +o noclobber
+          export RUN_RESPONSE DECISION_ARTIFACT_RESPONSE DECISION_EXTRACTOR
+          READINESS_RUN_ATTEMPT="$(python3 -I - <<'PY'
+          import json, os, pathlib
 
-      - name: Extract the windows candidate identities from the decision
+          def document(variable, limit):
+              path = pathlib.Path(os.environ[variable])
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit(f"{variable} is not a new regular file")
+              data = path.read_bytes()
+              if not 0 < len(data) <= limit:
+                  raise SystemExit(f"{variable} exceeds its API response bound")
+              return json.loads(data)
+
+          run_id = os.environ["READINESS_RUN_ID"]
+          run = document("RUN_RESPONSE", 2 * 1024 * 1024)
+          if (
+              str(run.get("id")) != run_id
+              or run.get("name") != "release-readiness-protected"
+              or run.get("path") != ".github/workflows/release-readiness-protected.yml"
+              or run.get("event") != "workflow_run"
+              or run.get("status") != "completed"
+              or run.get("conclusion") != "success"
+              or run.get("head_repository", {}).get("full_name")
+              != os.environ["GITHUB_REPOSITORY"]
+              or run.get("head_sha") != os.environ["RELEASE_TRUSTED_BUILDER_SHA"]
+          ):
+              raise SystemExit("readiness run is not the exact successful protected workflow")
+          attempt = run.get("run_attempt")
+          if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+              raise SystemExit("readiness run attempt is invalid")
+          artifact = document("DECISION_ARTIFACT_RESPONSE", 2 * 1024 * 1024)
+          size = artifact.get("size_in_bytes")
+          if (
+              str(artifact.get("id")) != os.environ["DECISION_ARTIFACT_ID"]
+              or artifact.get("name") != "trusted-release-decision"
+              or artifact.get("expired") is not False
+              or isinstance(size, bool)
+              or not isinstance(size, int)
+              or not 0 < size <= 4 * 1024 * 1024
+              or str(artifact.get("workflow_run", {}).get("id")) != run_id
+          ):
+              raise SystemExit("trusted decision artifact is not bound to the exact protected run")
+          extractor = pathlib.Path(os.environ["DECISION_EXTRACTOR"])
+          if extractor.is_symlink() or not extractor.is_file():
+              raise SystemExit("protected extractor is not a regular file")
+          if not 0 < extractor.stat().st_size <= 256 * 1024:
+              raise SystemExit("protected extractor API response exceeds its byte bound")
+          print(attempt)
+          PY
+          )"
+          export READINESS_RUN_ATTEMPT
+          chmod 0500 "$DECISION_EXTRACTOR"
+          set -o noclobber
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$DECISION_ARTIFACT_ID/zip" \
+            > "$DECISION_ARCHIVE"
+          set +o noclobber
+          [[ ! -L "$DECISION_ARCHIVE" && -f "$DECISION_ARCHIVE" ]]
+          ARCHIVE_BYTES="$(wc -c < "$DECISION_ARCHIVE")"
+          (( ARCHIVE_BYTES > 0 && ARCHIVE_BYTES <= 4 * 1024 * 1024 ))
+          python3 -I "$DECISION_EXTRACTOR" \
+            --archive "$DECISION_ARCHIVE" \
+            --target "$DECISION_TARGET" \
+            --expected-member trusted-release-decision.json
+          DECISION_PATH="$DECISION_TARGET/trusted-release-decision.json"
+          [[ ! -L "$DECISION_PATH" && -f "$DECISION_PATH" ]]
+          gh attestation verify "$DECISION_PATH" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-readiness.yml" \
+            --signer-digest "$RELEASE_TRUSTED_BUILDER_SHA"
+          export DECISION_PATH
+          DECISION_VALID_UNTIL="$(python3 -I - <<'PY'
+          import json, os, pathlib, re
+          from datetime import datetime, timezone
+
+          decision = json.loads(pathlib.Path(os.environ["DECISION_PATH"]).read_text())
+          workflow = decision.get("workflow", {})
+          expected_ref = (
+              f"{os.environ['GITHUB_REPOSITORY']}/.github/workflows/"
+              f"release-readiness.yml@{os.environ['RELEASE_TRUSTED_BUILDER_SHA']}"
+          )
+          if (
+              decision.get("document_type") != "trusted_release_decision"
+              or decision.get("repository") != os.environ["GITHUB_REPOSITORY"]
+              or decision.get("decision") != "passed"
+              or decision.get("required_check_name") != "release-readiness / protected-decision"
+              or decision.get("workflow_ref") != expected_ref
+              or decision.get("candidate_sha") != os.environ["TARGET_SHA"]
+              or str(workflow.get("run_id")) != os.environ["READINESS_RUN_ID"]
+              or str(workflow.get("run_attempt")) != os.environ["READINESS_RUN_ATTEMPT"]
+              or workflow.get("job_id") != "protected-decision"
+          ):
+              raise SystemExit("attested decision identity differs from its protected run")
+          if not re.fullmatch(r"[0-9a-f]{40}", decision.get("candidate_sha", "")):
+              raise SystemExit("attested decision candidate SHA is malformed")
+          value = decision.get("valid_until", "")
+          if not isinstance(value, str) or re.fullmatch(
+              r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+              r"(?:\.[0-9]{1,6})?Z",
+              value,
+          ) is None:
+              raise SystemExit("attested decision expiry is not canonical UTC")
+          valid_until = datetime.fromisoformat(value.replace("Z", "+00:00"))
+          if valid_until <= datetime.now(timezone.utc):
+              raise SystemExit("attested decision has expired")
+          print(value)
+          PY
+          )"
+          printf 'DECISION_PATH=%s\nDECISION_ARTIFACT_ID=%s\nDECISION_RUN_ID=%s\nDECISION_RUN_ATTEMPT=%s\nDECISION_VALID_UNTIL=%s\nRELEASE_ARTIFACT_EXTRACTOR=%s\n' \
+            "$DECISION_PATH" "$DECISION_ARTIFACT_ID" "$READINESS_RUN_ID" \
+            "$READINESS_RUN_ATTEMPT" "$DECISION_VALID_UNTIL" "$DECISION_EXTRACTOR" \
+            >> "$GITHUB_ENV"
+
+      - name: Extract the evidence artifact identity from the decision
         shell: bash
         env:
           TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json, os, pathlib, re, subprocess
+          python3 -I - <<'PY'
+          import json, os, pathlib, re
 
-          decision = json.loads(pathlib.Path(
-              "build/060/decision/trusted-release-decision.json"
-          ).read_text(encoding="utf-8"))
+          decision = json.loads(
+              pathlib.Path(os.environ["DECISION_PATH"]).read_text(encoding="utf-8")
+          )
           if decision["candidate_sha"] != os.environ["TARGET_SHA"]:
               raise SystemExit("decision candidate SHA differs from the tagged commit")
           member = decision["evidence_set_artifact"]
-          evidence_zip = pathlib.Path("build/060/evidence.zip")
-          with evidence_zip.open("wb") as handle:
-              subprocess.run(
-                  ["gh", "api",
-                   f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{member['artifact_id']}/zip"],
-                  check=True, stdout=handle,
+          member_path = pathlib.PurePosixPath(str(member.get("member", "")))
+          canonical_member = member_path.as_posix()
+          if (
+              member.get("repository") != os.environ["GITHUB_REPOSITORY"]
+              or str(member.get("run_id")) != os.environ["DECISION_RUN_ID"]
+              or str(member.get("run_attempt")) != os.environ["DECISION_RUN_ATTEMPT"]
+              or not re.fullmatch(r"[1-9][0-9]*", str(member.get("artifact_id", "")))
+              or not re.fullmatch(
+                  r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}",
+                  str(member.get("artifact_name", "")),
               )
-          subprocess.run(
-              ["unzip", "-o", "-q", str(evidence_zip), "-d", "build/060/evidence"],
-              check=True,
+              or not re.fullmatch(r"[0-9a-f]{64}", str(member.get("sha256", "")))
+              or not re.fullmatch(r"[A-Za-z0-9._~!$&'()*+,;=:@%/-]+", canonical_member)
+              or canonical_member != member.get("member")
+              or member_path.is_absolute()
+              or any(part in {"", ".", ".."} for part in member_path.parts)
+          ):
+              raise SystemExit("decision evidence artifact identity is malformed")
+          expected_reference = (
+              f"gh://{os.environ['GITHUB_REPOSITORY']}/runs/{member['run_id']}"
+              f"/attempts/{member['run_attempt']}/artifacts/{member['artifact_id']}"
+              f"/members/{canonical_member}"
           )
+          if member.get("immutable_reference") != expected_reference:
+              raise SystemExit("decision evidence immutable reference is inconsistent")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"EVIDENCE_RUN_ID={member['run_id']}\n")
+              handle.write(f"EVIDENCE_RUN_ATTEMPT={member['run_attempt']}\n")
+              handle.write(f"EVIDENCE_ARTIFACT_ID={member['artifact_id']}\n")
+              handle.write(f"EVIDENCE_ARTIFACT_NAME={member['artifact_name']}\n")
+              handle.write(f"EVIDENCE_MEMBER={member['member']}\n")
+              handle.write(f"EVIDENCE_SHA256={member['sha256']}\n")
+          PY
+
+      - name: Safely extract and verify the signed evidence member
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE_ARCHIVE="$RUNNER_TEMP/release-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+          EVIDENCE_TARGET="$RUNNER_TEMP/release-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          EVIDENCE_METADATA="$RUNNER_TEMP/release-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-metadata.json"
+          EVIDENCE_RUN_METADATA="$RUNNER_TEMP/release-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-run.json"
+          for path in "$EVIDENCE_ARCHIVE" "$EVIDENCE_TARGET" "$EVIDENCE_METADATA" \
+              "$EVIDENCE_RUN_METADATA"; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              echo "::error::refusing pre-existing or symlinked evidence path: $path" >&2
+              exit 1
+            fi
+          done
+          set -o noclobber
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$EVIDENCE_ARTIFACT_ID" \
+            > "$EVIDENCE_METADATA"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EVIDENCE_RUN_ID" \
+            > "$EVIDENCE_RUN_METADATA"
+          set +o noclobber
+          export EVIDENCE_METADATA EVIDENCE_RUN_METADATA
+          python3 -I - <<'PY'
+          import json, os, pathlib
+
+          def document(variable, limit):
+              path = pathlib.Path(os.environ[variable])
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit(f"{variable} is not a new regular file")
+              data = path.read_bytes()
+              if not 0 < len(data) <= limit:
+                  raise SystemExit(f"{variable} exceeds its API response bound")
+              return json.loads(data)
+
+          run_id = os.environ["EVIDENCE_RUN_ID"]
+          attempt = os.environ["EVIDENCE_RUN_ATTEMPT"]
+          run = document("EVIDENCE_RUN_METADATA", 2 * 1024 * 1024)
+          if (
+              str(run.get("id")) != run_id
+              or str(run.get("run_attempt")) != attempt
+              or run.get("name") != "release-readiness-protected"
+              or run.get("path") != ".github/workflows/release-readiness-protected.yml"
+              or run.get("event") != "workflow_run"
+              or run.get("status") != "completed"
+              or run.get("conclusion") != "success"
+              or run.get("head_sha") != os.environ["RELEASE_TRUSTED_BUILDER_SHA"]
+              or run.get("head_repository", {}).get("full_name")
+              != os.environ["GITHUB_REPOSITORY"]
+          ):
+              raise SystemExit("evidence run metadata differs from the signed decision")
+          artifact = document("EVIDENCE_METADATA", 2 * 1024 * 1024)
+          size = artifact.get("size_in_bytes")
+          if (
+              str(artifact.get("id")) != os.environ["EVIDENCE_ARTIFACT_ID"]
+              or artifact.get("name") != os.environ["EVIDENCE_ARTIFACT_NAME"]
+              or artifact.get("expired") is not False
+              or isinstance(size, bool)
+              or not isinstance(size, int)
+              or not 0 < size <= 512 * 1024 * 1024
+              or str(artifact.get("workflow_run", {}).get("id")) != run_id
+          ):
+              raise SystemExit("evidence artifact metadata differs from the signed decision")
+          PY
+          set -o noclobber
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$EVIDENCE_ARTIFACT_ID/zip" \
+            > "$EVIDENCE_ARCHIVE"
+          set +o noclobber
+          [[ ! -L "$EVIDENCE_ARCHIVE" && -f "$EVIDENCE_ARCHIVE" ]]
+          EVIDENCE_ARCHIVE_BYTES="$(wc -c < "$EVIDENCE_ARCHIVE")"
+          (( EVIDENCE_ARCHIVE_BYTES > 0 && EVIDENCE_ARCHIVE_BYTES <= 512 * 1024 * 1024 ))
+          python3 -I "$RELEASE_ARTIFACT_EXTRACTOR" \
+            --archive "$EVIDENCE_ARCHIVE" --target "$EVIDENCE_TARGET"
+          EVIDENCE_PATH="$EVIDENCE_TARGET/$EVIDENCE_MEMBER"
+          [[ ! -L "$EVIDENCE_PATH" && -f "$EVIDENCE_PATH" ]]
+          test "$(sha256sum "$EVIDENCE_PATH" | cut -d ' ' -f 1)" = "$EVIDENCE_SHA256" || {
+            echo "::error::release evidence member digest differs from the signed decision" >&2
+            exit 1
+          }
+          export EVIDENCE_PATH
+          python3 -I - <<'PY'
+          import json, os, pathlib, re
+
           evidence_set = json.loads(
-                  pathlib.Path("build/060/evidence", member["member"]).read_text(encoding="utf-8")
+              pathlib.Path(os.environ["EVIDENCE_PATH"]).read_text(encoding="utf-8")
           )
           windows = next(
               item for item in evidence_set["evidence"] if item["platform"] == "windows"
           )
           reference = windows["artifact"]["immutable_reference"]
           match = re.fullmatch(
-              r"gh://[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/runs/([0-9]+)/attempts/([0-9]+)"
-              r"/artifacts/([0-9]+)/members/(.+)",
+              rf"gh://{re.escape(os.environ['GITHUB_REPOSITORY'])}/runs/([1-9][0-9]*)"
+              r"/attempts/([1-9][0-9]*)"
+              r"/artifacts/([1-9][0-9]*)/members/(.+)",
               reference,
           )
           if match is None:
               raise SystemExit(f"windows artifact reference is not exact: {reference}")
+          origin_member = pathlib.PurePosixPath(match.group(4))
+          canonical_member = origin_member.as_posix()
+          if (
+              canonical_member != match.group(4)
+              or origin_member.is_absolute()
+              or any(part in {"", ".", ".."} for part in origin_member.parts)
+              or not re.fullmatch(r"[A-Za-z0-9._~!$&'()*+,;=:@%/-]+", canonical_member)
+              or windows["artifact"].get("name") != origin_member.name
+              or not re.fullmatch(r"[0-9a-f]{64}", windows["artifact"].get("sha256", ""))
+              or match.group(1) != os.environ["DECISION_RUN_ID"]
+              or match.group(2) != os.environ["DECISION_RUN_ATTEMPT"]
+          ):
+              raise SystemExit(
+                  "windows artifact identity is not canonical or decision-run bound"
+              )
+          artifact_name = (
+              f"windows-unsigned-{os.environ['TARGET_SHA']}-{match.group(1)}-{match.group(2)}"
+          )
           lines = [
               f"ORIGIN_RUN_ID={match.group(1)}",
               f"ORIGIN_RUN_ATTEMPT={match.group(2)}",
               f"ORIGIN_ARTIFACT_ID={match.group(3)}",
-              f"ORIGIN_MEMBER={match.group(4)}",
+              f"ORIGIN_ARTIFACT_NAME={artifact_name}",
+              f"ORIGIN_MEMBER={canonical_member}",
               f"EXECUTABLE_SHA256={windows['artifact']['sha256']}",
           ]
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
@@ -151,21 +421,124 @@ jobs:
 
       - name: Download the archived build-once executable by exact artifact id
         shell: bash
+        env:
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ORIGIN_ARTIFACT_ID/zip" > build/060/candidate.zip
-          unzip -j -o -q build/060/candidate.zip "$ORIGIN_MEMBER" -d build/060/bridge
-          PRE_SHA256="$(sha256sum build/060/bridge/AstralDeep.exe | cut -d ' ' -f 1)"
+          CANDIDATE_ARCHIVE="$RUNNER_TEMP/windows-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+          CANDIDATE_TARGET="$RUNNER_TEMP/windows-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CANDIDATE_METADATA="$RUNNER_TEMP/windows-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-metadata.json"
+          CANDIDATE_RUN_METADATA="$RUNNER_TEMP/windows-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-run.json"
+          for path in "$CANDIDATE_ARCHIVE" "$CANDIDATE_TARGET" "$CANDIDATE_METADATA" \
+              "$CANDIDATE_RUN_METADATA"; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              echo "::error::refusing pre-existing or symlinked candidate path: $path" >&2
+              exit 1
+            fi
+          done
+          set -o noclobber
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ORIGIN_ARTIFACT_ID" \
+            > "$CANDIDATE_METADATA"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ORIGIN_RUN_ID" \
+            > "$CANDIDATE_RUN_METADATA"
+          set +o noclobber
+          export CANDIDATE_METADATA CANDIDATE_RUN_METADATA
+          python3 -I - <<'PY'
+          import json, os, pathlib
+
+          def document(variable, limit):
+              path = pathlib.Path(os.environ[variable])
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit(f"{variable} is not a new regular file")
+              data = path.read_bytes()
+              if not 0 < len(data) <= limit:
+                  raise SystemExit(f"{variable} exceeds its API response bound")
+              return json.loads(data)
+
+          run_id = os.environ["ORIGIN_RUN_ID"]
+          run = document("CANDIDATE_RUN_METADATA", 2 * 1024 * 1024)
+          if (
+              str(run.get("id")) != run_id
+              or str(run.get("run_attempt")) != os.environ["ORIGIN_RUN_ATTEMPT"]
+              or run.get("name") != "release-readiness-protected"
+              or run.get("path") != ".github/workflows/release-readiness-protected.yml"
+              or run.get("event") != "workflow_run"
+              or run.get("status") != "completed"
+              or run.get("conclusion") != "success"
+              or run.get("head_sha") != os.environ["RELEASE_TRUSTED_BUILDER_SHA"]
+              or run.get("head_repository", {}).get("full_name")
+              != os.environ["GITHUB_REPOSITORY"]
+          ):
+              raise SystemExit("candidate run metadata differs from the signed evidence")
+          artifact = document("CANDIDATE_METADATA", 2 * 1024 * 1024)
+          size = artifact.get("size_in_bytes")
+          if (
+              str(artifact.get("id")) != os.environ["ORIGIN_ARTIFACT_ID"]
+              or artifact.get("name") != os.environ["ORIGIN_ARTIFACT_NAME"]
+              or artifact.get("expired") is not False
+              or isinstance(size, bool)
+              or not isinstance(size, int)
+              or not 0 < size <= 512 * 1024 * 1024
+              or str(artifact.get("workflow_run", {}).get("id")) != run_id
+          ):
+              raise SystemExit("candidate artifact metadata differs from the signed evidence")
+          PY
+          set -o noclobber
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ORIGIN_ARTIFACT_ID/zip" \
+            > "$CANDIDATE_ARCHIVE"
+          set +o noclobber
+          [[ ! -L "$CANDIDATE_ARCHIVE" && -f "$CANDIDATE_ARCHIVE" ]]
+          CANDIDATE_ARCHIVE_BYTES="$(wc -c < "$CANDIDATE_ARCHIVE")"
+          (( CANDIDATE_ARCHIVE_BYTES > 0 && CANDIDATE_ARCHIVE_BYTES <= 512 * 1024 * 1024 ))
+          python3 -I "$RELEASE_ARTIFACT_EXTRACTOR" \
+            --archive "$CANDIDATE_ARCHIVE" --target "$CANDIDATE_TARGET"
+          ORIGIN_PATH="$CANDIDATE_TARGET/$ORIGIN_MEMBER"
+          [[ ! -L "$ORIGIN_PATH" && -f "$ORIGIN_PATH" ]]
+          PRE_SHA256="$(sha256sum "$ORIGIN_PATH" | cut -d ' ' -f 1)"
           test "$PRE_SHA256" = "$EXECUTABLE_SHA256" || {
             echo "::error::archived executable digest $PRE_SHA256 differs from the decision-recorded executable_sha256" >&2
             exit 1
           }
+          if [[ -e build/060/bridge/AstralDeep.exe || -L build/060/bridge/AstralDeep.exe ]]; then
+            echo "::error::refusing to replace a pre-existing bridge executable" >&2
+            exit 1
+          fi
+          install -m 0600 "$ORIGIN_PATH" build/060/bridge/AstralDeep.exe
           echo "PRE_SHA256=$PRE_SHA256" >> "$GITHUB_ENV"
+
+      - name: Re-check decision lifetime immediately before OIDC signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import json, os, pathlib, re
+          from datetime import datetime, timedelta, timezone
+
+          path = pathlib.Path(os.environ["DECISION_PATH"])
+          if path.is_symlink() or not path.is_file():
+              raise SystemExit("trusted decision path changed before signing")
+          decision = json.loads(path.read_text(encoding="utf-8"))
+          value = decision.get("valid_until", "")
+          if value != os.environ["DECISION_VALID_UNTIL"]:
+              raise SystemExit("trusted decision lifetime changed before signing")
+          if not isinstance(value, str) or re.fullmatch(
+              r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+              r"(?:\.[0-9]{1,6})?Z",
+              value,
+          ) is None:
+              raise SystemExit("trusted decision expiry is not canonical UTC")
+          seconds = int(os.environ["MINIMUM_DECISION_REMAINING_SECONDS"])
+          if seconds != 900:
+              raise SystemExit("minimum decision lifetime margin changed")
+          valid_until = datetime.fromisoformat(value.replace("Z", "+00:00"))
+          if valid_until <= datetime.now(timezone.utc) + timedelta(seconds=seconds):
+              raise SystemExit("trusted decision has insufficient lifetime for OIDC signing")
+          PY
 
       # Keyless ambient OIDC: Fulcio issues a certificate whose SAN is this
       # workflow's identity at the triggering ref —
       #   https://github.com/<repo>/.github/workflows/release-windows.yml@refs/tags/<tag>
-      # for tag pushes, which is exactly what the shipped 0.3.0 verifier pins.
+      # for tag-ref dispatches, which is exactly what the shipped 0.3.0 verifier pins.
       - name: Detach-sign the identical bytes with sigstore
         uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
         with:
@@ -189,9 +562,11 @@ jobs:
             echo "::error::executable bytes changed during signing" >&2
             exit 1
           }
-          BRIDGE_WORKFLOW_SHA256="$(sha256sum .github/workflows/release-windows.yml | cut -d ' ' -f 1)"
+          BRIDGE_WORKFLOW_PATH="candidate-source/.github/workflows/release-windows.yml"
+          [[ ! -L "$BRIDGE_WORKFLOW_PATH" && -f "$BRIDGE_WORKFLOW_PATH" ]]
+          BRIDGE_WORKFLOW_SHA256="$(sha256sum "$BRIDGE_WORKFLOW_PATH" | cut -d ' ' -f 1)"
           export POST_SHA256 BRIDGE_WORKFLOW_SHA256
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import json, os, pathlib
 
           manifest = {
@@ -202,6 +577,9 @@ jobs:
               "originating_run_id": os.environ["ORIGIN_RUN_ID"],
               "originating_run_attempt": int(os.environ["ORIGIN_RUN_ATTEMPT"]),
               "originating_artifact_id": os.environ["ORIGIN_ARTIFACT_ID"],
+              "decision_run_id": os.environ["DECISION_RUN_ID"],
+              "decision_run_attempt": int(os.environ["DECISION_RUN_ATTEMPT"]),
+              "decision_artifact_id": os.environ["DECISION_ARTIFACT_ID"],
               "executable_sha256": os.environ["EXECUTABLE_SHA256"],
               "pre_signing_sha256": os.environ["PRE_SHA256"],
               "post_signing_sha256": os.environ["POST_SHA256"],

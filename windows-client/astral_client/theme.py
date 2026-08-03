@@ -141,6 +141,18 @@ def build_stylesheet() -> str:
 * {{ font-family: {FONT}; }}
 QWidget {{ background: transparent; color: {TEXT}; font-size: 14px; }}
 QLabel {{ background: transparent; border: none; }}
+QLabel#voiceRequestTerminalNotice {{
+    background: {_SEMANTIC["error"][1]};
+    border: 2px solid {_SEMANTIC["error"][0]};
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: {TEXT};
+    font-weight: 700;
+}}
+QLabel#voiceRequestTerminalNotice[noticeKind="speech_error"] {{
+    background: {_SEMANTIC["warning"][1]};
+    border-color: {_SEMANTIC["warning"][0]};
+}}
 QMainWindow, QWidget#root {{ background: {BG}; }}
 QScrollArea {{ background: transparent; border: none; }}
 QLineEdit, QPlainTextEdit, QTextEdit {{ background: {SURFACE_2}; border: 1px solid {BORDER};

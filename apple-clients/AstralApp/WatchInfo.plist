@@ -40,6 +40,11 @@
 	<string>$(ASTRAL_SERVER_BASE_URL)</string>
 	<key>ASTRALKeycloakAuthority</key>
 	<string>$(ASTRAL_KEYCLOAK_AUTHORITY)</string>
+	<!-- Feature 065 — foreground conversational voice sends ephemeral PCM to
+	     AstralDeep's authenticated first-party watch relay. Audio is never
+	     recorded to local storage. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AstralDeep uses the microphone for an active voice conversation you start.</string>
 	<!-- See the iOS Info.plist: ATS-clean; loopback only, for Debug. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>

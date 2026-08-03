@@ -1,4 +1,17 @@
 // :app — the Android/Compose client. Depends on :core for all pure logic.
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -9,12 +22,86 @@ plugins {
     alias(libs.plugins.ktlint)
 }
 
+@CacheableTask
+abstract class CopyCanonicalVoiceFixture065Task : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sourceFixture: RegularFileProperty
+
+    @get:Input
+    abstract val expectedSha256: Property<String>
+
+    @get:OutputFile
+    abstract val unitTestFixture: RegularFileProperty
+
+    @get:OutputFile
+    abstract val instrumentedTestFixture: RegularFileProperty
+
+    @TaskAction
+    fun copyAndVerify() {
+        val source = sourceFixture.get().asFile
+        require(source.isFile) { "canonical Feature 065 voice fixture is missing" }
+        val canonicalBytes = source.readBytes()
+        val sourceDigest = sha256(canonicalBytes)
+        require(sourceDigest == expectedSha256.get()) {
+            "canonical Feature 065 voice fixture digest changed: $sourceDigest"
+        }
+        for (output in listOf(unitTestFixture, instrumentedTestFixture)) {
+            val destination = output.get().asFile
+            Files.createDirectories(destination.parentFile.toPath())
+            val temporary = destination.resolveSibling(".${destination.name}.tmp")
+            Files.write(temporary.toPath(), canonicalBytes)
+            Files.move(
+                temporary.toPath(),
+                destination.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+            require(sha256(destination.readBytes()) == sourceDigest) {
+                "Feature 065 bundled fixture differs from its canonical source"
+            }
+        }
+    }
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+}
+
 // Release signing is read from a gitignored keystore.properties (see docs/play-store-release.md).
 // Absent on CI and fresh clones — release builds are simply unsigned there.
 val keystoreProperties =
     Properties().apply {
         val f = rootProject.file("keystore.properties")
         if (f.exists()) f.inputStream().use { load(it) }
+    }
+
+// Feature 065 has one canonical C0-C6 fixture at the repository root. Android
+// test resources/assets are generated from those exact bytes; no client-owned
+// JSON variant is kept in this project.
+val canonicalVoiceFixture =
+    rootProject.layout.projectDirectory.file(
+        "../backend/tests/fixtures/voice_065/client_conformance.json",
+    )
+val canonicalVoiceFixtureSha256 =
+    "bc98077594fa8d51dd664fadefaa48cf596a94e7fb2a961a972dbabca4f02143"
+val voiceFixtureUnitOutput =
+    layout.buildDirectory.file(
+        "generated/voice-fixture-065/testResources/voice_065/client_conformance.json",
+    )
+val voiceFixtureAndroidTestOutput =
+    layout.buildDirectory.file(
+        "generated/voice-fixture-065/androidTestAssets/voice_065/client_conformance.json",
+    )
+
+val copyCanonicalVoiceFixture065 =
+    tasks.register<CopyCanonicalVoiceFixture065Task>("copyCanonicalVoiceFixture065") {
+        group = "verification"
+        description = "Hash-check and copy the canonical Feature 065 fixture into test bundles"
+        sourceFixture.set(canonicalVoiceFixture)
+        expectedSha256.set(canonicalVoiceFixtureSha256)
+        unitTestFixture.set(voiceFixtureUnitOutput)
+        instrumentedTestFixture.set(voiceFixtureAndroidTestOutput)
     }
 
 android {
@@ -77,6 +164,26 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
+
+    sourceSets {
+        getByName("test").resources.directories.add(
+            "build/generated/voice-fixture-065/testResources",
+        )
+        getByName("androidTest").assets.directories.add(
+            "build/generated/voice-fixture-065/androidTestAssets",
+        )
+    }
+}
+
+tasks.configureEach {
+    if (
+        name.startsWith("test") ||
+        name.contains("AndroidTest") ||
+        name.startsWith("kover") ||
+        (name.startsWith("process") && name.endsWith("UnitTestJavaRes"))
+    ) {
+        dependsOn(copyCanonicalVoiceFixture065)
+    }
 }
 
 composeCompiler {
@@ -113,6 +220,11 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.appauth)
     implementation(libs.coil.compose)
+    implementation(libs.livekit.android)
+    // LiveKit 2.27.0 publishes vulnerable protobuf-javalite 3.22.0. The
+    // catalog's strict 3.25.5 constraint is the approved compatible repair
+    // for CVE-2024-7254/GHSA-735f-pc8j-v9w8; the generated lock pins it.
+    implementation(libs.protobuf.javalite)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test.junit)

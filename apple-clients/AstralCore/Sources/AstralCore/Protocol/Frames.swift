@@ -584,27 +584,43 @@ public struct UpsertOp: Sendable, Equatable {
 /// component types this client renders natively (everything else is
 /// substituted server-side).
 public struct DeviceDescriptor: Sendable {
+    /// Stable, non-secret installation UUID. The live socket binding remains
+    /// the authority for every voice control mutation.
+    public var deviceId: String?
     public var deviceType: String
     public var viewportWidth: Int
     public var viewportHeight: Int
     public var pixelRatio: Double
     public var hasTouch: Bool
     public var hasMicrophone: Bool
+    public var hasAudioOutput: Bool
+    public var microphonePermission: String
+    public var fullDuplex: Bool
+    public var voiceTransport: String
     public var supportedTypes: [String]
     public var userAgent: String
 
     public init(
         deviceType: String, viewportWidth: Int, viewportHeight: Int,
+        deviceId: String? = nil,
         pixelRatio: Double = 2.0, hasTouch: Bool = true,
-        hasMicrophone: Bool = true, supportedTypes: [String],
+        hasMicrophone: Bool = true, hasAudioOutput: Bool = true,
+        microphonePermission: String = "not_determined",
+        fullDuplex: Bool = true, voiceTransport: String = "livekit",
+        supportedTypes: [String],
         userAgent: String
     ) {
+        self.deviceId = deviceId
         self.deviceType = deviceType
         self.viewportWidth = viewportWidth
         self.viewportHeight = viewportHeight
         self.pixelRatio = pixelRatio
         self.hasTouch = hasTouch
         self.hasMicrophone = hasMicrophone
+        self.hasAudioOutput = hasAudioOutput
+        self.microphonePermission = microphonePermission
+        self.fullDuplex = fullDuplex
+        self.voiceTransport = voiceTransport
         self.supportedTypes = supportedTypes
         self.userAgent = userAgent
     }
@@ -644,6 +660,10 @@ public struct DeviceDescriptor: Sendable {
             "pixel_ratio": .number(pixelRatio),
             "has_touch": .bool(hasTouch),
             "has_microphone": .bool(hasMicrophone),
+            "has_audio_output": .bool(hasAudioOutput),
+            "microphone_permission": .string(microphonePermission),
+            "full_duplex": .bool(fullDuplex),
+            "voice_transport": .string(voiceTransport),
             "has_camera": .bool(false),
             "has_file_system": .bool(deviceType != "watch"),
             "connection_type": .string("wifi"),
@@ -691,15 +711,23 @@ public enum Outbound {
         // Do not add `agent_host` or its capability here; feature 059 alone
         // may enable macOS by supplying the structured model above.
         guard continuityUUID4(connectionGeneration) != nil else { return "{}" }
+        let voiceCapable =
+            device.hasMicrophone && device.hasAudioOutput
+            && device.deviceId.flatMap(continuityUUID4) != nil
+        var capabilities = ["render", "stream"]
+        if voiceCapable { capabilities.append("voice") }
         var frame: [String: JSONValue] = [
             "type": .string("register_ui"),
             "token": .string(token),
             "session_id": sessionId.map(JSONValue.string) ?? .null,
-            "capabilities": .array([.string("render"), .string("stream")]),
+            "capabilities": .array(capabilities.map(JSONValue.string)),
             "device": device.json,
             "resumed": .bool(resumed),
             "connection_generation": .string(connectionGeneration),
         ]
+        if voiceCapable, let deviceId = device.deviceId {
+            frame["device_id"] = .string(deviceId)
+        }
         if let resume { frame["resume"] = resume.json }
         return encode(.object(frame))
     }
