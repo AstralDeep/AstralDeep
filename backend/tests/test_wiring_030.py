@@ -380,17 +380,13 @@ def test_first_party_catalog_constants_match_post_029_catalog():
 
 
 # ---------------------------------------------------------------------------
-# Provenance caption (030 second wave)
+# Provenance caption — REMOVED by owner decision (2026-08-03): chat replies
+# carry no appended disclaimer. Pin the removal so it cannot silently return.
 # ---------------------------------------------------------------------------
 
 
-def test_provenance_caption_model_only_vs_tool_grounded():
-    no_tools = Orchestrator._provenance_caption(False)
-    with_tools = Orchestrator._provenance_caption(True)
-    assert no_tools["type"] == "text" and no_tools["variant"] == "caption"
-    assert "Model knowledge only" in no_tools["content"]
-    assert "tool results" in with_tools["content"]
-    assert no_tools["content"] != with_tools["content"]
+def test_chat_replies_carry_no_provenance_caption():
+    assert not hasattr(Orchestrator, "_provenance_caption")
 
 
 # ---------------------------------------------------------------------------

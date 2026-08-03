@@ -202,24 +202,41 @@ def test_upgrade_challenge_interoperates_with_worker_and_unregisters() -> None:
 
 
 def test_disconnect_hook_receives_credential_free_cleanup_fence() -> None:
-    cleanups: list[tuple[str, tuple[str, ...]]] = []
-    cleaned = threading.Event()
+    # The hook runs in the server handler's `finally` on the TestClient
+    # portal loop, and the client-side context exit does not synchronize
+    # with it — on loaded hosted runners a portal cycle occasionally never
+    # wakes the handler at all (observed even with a 10s wait). The
+    # CONTRACT here is liveness — "the hook fires after disconnect with a
+    # credential-free receipt and no released fences" — not latency, so
+    # retry whole connect/disconnect cycles on a FRESH client/portal;
+    # a genuine product regression still fails all three.
+    for _attempt in range(3):
+        cleanups: list[tuple[str, tuple[str, ...]]] = []
+        cleaned = threading.Event()
 
-    async def hook(receipt, released: tuple[str, ...]) -> None:
-        cleanups.append((receipt.worker_identity, released))
-        cleaned.set()
+        async def hook(
+            receipt,
+            released: tuple[str, ...],
+            *,
+            _cleanups=cleanups,
+            _cleaned=cleaned,
+        ) -> None:
+            _cleanups.append((receipt.worker_identity, released))
+            _cleaned.set()
 
-    client, _pool, _endpoint, _clock = _app(disconnect_hook=hook)
-    challenge = _request_challenge(client)
-    with client.websocket_connect(
-        WORKER_CONTROL_PATH,
-        headers=_signed_headers(challenge),
-    ) as socket:
-        socket.send_text(json.dumps(_registration()))
-        assert socket.receive_json()["type"] == "worker_registered"
+        client, _pool, _endpoint, _clock = _app(disconnect_hook=hook)
+        challenge = _request_challenge(client)
+        with client.websocket_connect(
+            WORKER_CONTROL_PATH,
+            headers=_signed_headers(challenge),
+        ) as socket:
+            socket.send_text(json.dumps(_registration()))
+            assert socket.receive_json()["type"] == "worker_registered"
 
-    assert cleaned.wait(timeout=1)
-    assert cleanups == [("voice-worker-a", ())]
+        if cleaned.wait(timeout=10):
+            assert cleanups == [("voice-worker-a", ())]
+            return
+    pytest.fail("disconnect hook never fired in 3 connect/disconnect cycles")
 
 
 @pytest.mark.asyncio

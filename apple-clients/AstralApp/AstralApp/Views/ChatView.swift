@@ -789,8 +789,12 @@ private struct InputBar: View {
                     }
                 }
             }
-            VoiceComposerControls()
+            VoiceComposerNotices()
             HStack(spacing: 6) {
+                // P11 cross-client composer order — voice leads the input row
+                // (Android: mic · input · paperclip · send; Windows: ghost
+                // buttons beside the field), instead of a floating chip row.
+                VoiceComposerControls()
                 TextField("Message AstralDeep…", text: $input, axis: .vertical)
                     .textFieldStyle(.plain)
                     .accessibilityIdentifier("chat-composer-input")
@@ -863,7 +867,9 @@ private struct InputBar: View {
 /// The order, visibility, labels, pressed state, and enabled state all come
 /// from the server-owned composer model. This view contributes presentation
 /// only; it cannot invent a local voice mutation or bypass REST authorization.
-private struct VoiceComposerControls: View {
+/// The slim rows ABOVE the input: the durable terminal notice and the voice
+/// status line. Renders nothing when there is nothing to say.
+private struct VoiceComposerNotices: View {
     @Environment(AppModel.self) var model
     @Environment(ThemeStore.self) var theme
     private var p: AstralPalette { theme.palette }
@@ -881,6 +887,42 @@ private struct VoiceComposerControls: View {
         return message
     }
 
+    var body: some View {
+        if let notice = model.voice.terminalNotice {
+            VoiceTerminalNoticeView(notice: notice)
+        }
+        if let message = statusMessage {
+            HStack(spacing: 5) {
+                Image(systemName: model.voice.mediaConnected ? "waveform" : "waveform.slash")
+                Text(message).lineLimit(2)
+                if model.voice.awaitingAcceptance > 0 {
+                    if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "ellipsis")
+                            .font(.caption2.weight(.semibold))
+                            .accessibilityHidden(true)
+                    }
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(p.muted)
+            .padding(.horizontal, 6)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("voice-conversation-status")
+        }
+    }
+}
+
+/// The voice controls themselves, rendered INSIDE the input row at its
+/// leading edge — the same composer icon language as the paperclip and Send,
+/// matching Android (mic · input · paperclip · send) and Windows (ghost
+/// buttons beside the field). Server model drives order/visibility/state.
+private struct VoiceComposerControls: View {
+    @Environment(AppModel.self) var model
+    @Environment(ThemeStore.self) var theme
+    private var p: AstralPalette { theme.palette }
+
     /// 066/P5: before the first `composer_state` of a connection (and after a
     /// teardown clears it) the server model is absent — render a disabled
     /// default mic instead of nothing, the native twin of the web client's
@@ -892,75 +934,44 @@ private struct VoiceComposerControls: View {
 
     var body: some View {
         let controls = model.voice.composer?.controls.filter(\.visible) ?? []
-        if !controls.isEmpty || model.voice.active || model.voice.terminalNotice != nil
-            || showsDefaultControl
-        {
-            VStack(alignment: .leading, spacing: 5) {
-                if let notice = model.voice.terminalNotice {
-                    VoiceTerminalNoticeView(notice: notice)
-                }
-                if showsDefaultControl {
-                    chipLabel(icon: "mic.fill", busy: false, pressed: false)
-                        .opacity(0.5)
-                        .accessibilityIdentifier("voice-control-voice-start")
-                        .accessibilityLabel("Start voice conversation")
-                        .accessibilityValue("Checking voice availability")
-                        .help("Checking voice availability…")
-                } else if !controls.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(controls) { control in
-                                Button {
-                                    Task { await model.performVoiceControl(control.action) }
-                                } label: {
-                                    // P11 shared control style: composer
-                                    // controls are ICONS with the server label
-                                    // as the tooltip + accessible name, like
-                                    // web/Windows/Android — never a text chip.
-                                    chipLabel(
-                                        icon: symbol(control.icon),
-                                        busy: control.busy,
-                                        pressed: control.pressed
-                                    )
-                                    .opacity(control.enabled ? 1 : 0.5)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(!control.enabled || control.busy)
-                                .accessibilityIdentifier("voice-control-\(control.key)")
-                                .accessibilityLabel(control.label)
-                                .accessibilityValue(
-                                    control.busy ? "In progress" : (control.pressed ? "On" : "Off")
-                                )
-                                .help(control.label)
-                            }
-                        }
+        if showsDefaultControl {
+            inlineIcon(icon: "mic.fill", busy: false, pressed: false)
+                .opacity(0.45)
+                .accessibilityIdentifier("voice-control-voice-start")
+                .accessibilityLabel("Start voice conversation")
+                .accessibilityValue("Checking voice availability")
+                .help("Checking voice availability…")
+        } else if !controls.isEmpty {
+            HStack(spacing: 2) {
+                ForEach(controls) { control in
+                    Button {
+                        Task { await model.performVoiceControl(control.action) }
+                    } label: {
+                        // P11 shared control style: composer controls are
+                        // ICONS with the server label as the tooltip +
+                        // accessible name — never a text chip.
+                        inlineIcon(
+                            icon: symbol(control.icon),
+                            busy: control.busy,
+                            pressed: control.pressed
+                        )
+                        .opacity(control.enabled ? 1 : 0.45)
                     }
-                }
-                if let message = statusMessage {
-                    HStack(spacing: 5) {
-                        Image(systemName: model.voice.mediaConnected ? "waveform" : "waveform.slash")
-                        Text(message).lineLimit(2)
-                        if model.voice.awaitingAcceptance > 0 {
-                            if ContinuousActivityPresentation.allowsAnimatedIndicators {
-                                ProgressView().controlSize(.mini)
-                            } else {
-                                Image(systemName: "ellipsis")
-                                    .font(.caption2.weight(.semibold))
-                                    .accessibilityHidden(true)
-                            }
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(p.muted)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("voice-conversation-status")
+                    .buttonStyle(.plain)
+                    .disabled(!control.enabled || control.busy)
+                    .accessibilityIdentifier("voice-control-\(control.key)")
+                    .accessibilityLabel(control.label)
+                    .accessibilityValue(
+                        control.busy ? "In progress" : (control.pressed ? "On" : "Off")
+                    )
+                    .help(control.label)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func chipLabel(icon: String, busy: Bool, pressed: Bool) -> some View {
+    private func inlineIcon(icon: String, busy: Bool, pressed: Bool) -> some View {
         Group {
             if busy {
                 if ContinuousActivityPresentation.allowsAnimatedIndicators {
@@ -969,14 +980,15 @@ private struct VoiceComposerControls: View {
                     Image(systemName: "ellipsis").accessibilityHidden(true)
                 }
             } else {
-                Image(systemName: icon)
+                Image(systemName: icon).font(.system(size: 18))
             }
         }
-        .font(.caption.weight(.semibold))
-        .frame(width: 38, height: 30)
-        .foregroundStyle(pressed ? p.surface : p.primary)
-        .background(pressed ? p.primary : p.surface2, in: Capsule())
-        .overlay(Capsule().stroke(p.border))
+        .frame(width: 32, height: 32)
+        .foregroundStyle(pressed ? Color.white : p.muted)
+        .background(
+            pressed ? AnyShapeStyle(p.primary) : AnyShapeStyle(.clear),
+            in: Circle()
+        )
     }
 
     private func symbol(_ serverIcon: String) -> String {

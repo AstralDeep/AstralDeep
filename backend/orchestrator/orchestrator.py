@@ -13183,8 +13183,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 websocket, parsed_components, chat_id, user_id=user_id
                             ) or []
                             _turn_canvas_components.extend(parsed_components)
-                            chat_summary = (list(leak_alerts) + chat_core
-                                            + [self._provenance_caption(_tools_ran)])
+                            chat_summary = list(leak_alerts) + chat_core
                             await self.send_ui_render(websocket, chat_summary, target="chat")
                             # Feature 045: the chat transcript stores the TEXT the
                             # user saw (chat_summary), NOT the rich components —
@@ -13210,8 +13209,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                      variant="caption").to_dict()]
                         else:
                             chat_core = self._chat_narrative(content, chat_id=chat_id)
-                        response_components = (list(leak_alerts) + chat_core
-                                               + [self._provenance_caption(_tools_ran)])
+                        response_components = list(leak_alerts) + chat_core
                         # Feature 030: text-only turns for a never-configured
                         # account get a deterministic enable affordance — not
                         # left to the model's prose (which pointed users at a
@@ -19815,22 +19813,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return Card(id=f"doc_{digest}", title=title, content=[
             Text(content=text, variant="markdown"),
         ]).to_dict()
-
-    @staticmethod
-    def _provenance_caption(tools_ran: bool) -> Dict[str, Any]:
-        """Deterministic provenance chip for chat replies (feature 030).
-
-        The walkthrough found clinical/grant prose presented authoritatively
-        with no provenance at all. This caption is server-composed (never
-        left to the model) and distinguishes model-memory answers from
-        tool-grounded ones. Renderer-level honesty, model-independent.
-        """
-        if tools_ran:
-            text = "Based on this turn's tool results — sources and steps are shown above."
-        else:
-            text = ("Model knowledge only — no live tools or sources were used in this "
-                    "reply. Verify independently before relying on it.")
-        return Text(content=text, variant="caption").to_dict()
 
     async def _notify_phi_if_detected(self, websocket, chat_id: str,
                                       user_id: str, message: str) -> None:
