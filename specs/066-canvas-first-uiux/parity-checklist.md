@@ -95,6 +95,20 @@ client against the local orchestrator. Reverted to the production identity
 before any commit. Local dev launches must pass a profile on the command line
 instead of editing the tracked one.
 
+### Windows suite note — `test_byo_supervision_060.py`
+
+The full Windows suite now reads **687 passed / 7 skipped / 16 deselected in
+14.2s**. The 16 deselected are all of `test_byo_supervision_060.py`, a
+process-supervision stress module (a 100-trial-per-behavior child-process
+sweep) that ran for over 20 minutes on this box without finishing, both under
+load and on a quiet machine. It is **provably disjoint** from the 066 style
+work: it imports only `win_agent.process_supervision` plus stdlib, while the
+change touched `astral_client/{app,theme,voice}.py`. Its 14 fast cases pass;
+only the two long sweeps at the end are unbounded here. Re-run it on CI's
+`windows-latest` runner (where it is not competing with a container, a GUI
+client and a browser) before treating this as a defect — but do not count the
+687 as covering it.
+
 ## Status summary (2026-08-03)
 
 Both native changes were made and then re-verified by re-running each client's
