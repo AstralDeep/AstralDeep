@@ -114,9 +114,20 @@ async def test_validation_error_stores_nothing(
 
 
 def test_validate_config_submission_reports_all_missing_fields():
+    # 066: `custom` is key-optional (keyless OpenAI-compatible endpoints),
+    # so a missing api_key is NOT an error for it — only the endpoint and
+    # model remain required.
     fields, errors = validate_config_submission(
         {"provider": "custom", "api_key": "", "model": "", "base_url": ""})
-    assert set(errors) == {"base_url", "model", "api_key"}
+    assert set(errors) == {"base_url", "model"}
+
+
+def test_validate_config_submission_still_requires_key_for_keyed_provider():
+    # The key-required contract is per-preset, not dropped globally: a
+    # provider with key_required=True still refuses an empty api_key.
+    fields, errors = validate_config_submission(
+        {"provider": "openai", "api_key": "", "model": "", "base_url": ""})
+    assert "api_key" in errors
 
 
 def test_validate_unknown_provider_short_circuits():

@@ -132,6 +132,17 @@ async function installHarness(page, { locator = true, url = "https://candidate.e
           frame,
           locatorAtSend: localStorage.getItem(window.__locatorKey),
         });
+        // 066: the client gates action() sends behind the post-registration
+        // rote_config verdict (socketReady + queue flush). Mirror the real
+        // server so ui_events dispatch immediately instead of queueing.
+        if (frame.type === "register_ui") {
+          queueMicrotask(() => {
+            this.receive({
+              type: "rote_config",
+              device_profile: { device_type: "browser" },
+            });
+          });
+        }
       }
 
       close() {

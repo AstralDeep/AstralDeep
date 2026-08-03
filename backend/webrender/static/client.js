@@ -3265,7 +3265,11 @@
     var nodes = chat.querySelectorAll(
       '.astral-chat-error[data-turn-generation="' + generation + '"]');
     for (var i = 0; i < nodes.length; i++) nodes[i].remove();
-    if (statusOwner && statusOwner.indexOf("operation-error:") === 0) setStatus("");
+    // The STATUS line is deliberately untouched: error ownership there is
+    // operation-scoped (060 contract — "a different success cannot erase the
+    // failure notice") and is released only by its own owner or the next
+    // explicit request. Clearing it here erased another operation's settled
+    // failure whenever any same-generation operation completed.
   }
 
   // ---- query-start loading skeleton ----

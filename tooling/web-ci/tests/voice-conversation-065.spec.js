@@ -363,6 +363,18 @@ async function installHarness(page, {
         const frame = JSON.parse(raw);
         this.sent.push(frame);
         window.__socketEvents.push(frame);
+        // 066: the client gates action() sends behind the post-registration
+        // rote_config verdict (socketReady + queue flush). Mirror the real
+        // server: registration is acknowledged with a device verdict, so
+        // ui_events dispatch immediately instead of queueing forever.
+        if (frame.type === "register_ui") {
+          queueMicrotask(() => {
+            this.receive({
+              type: "rote_config",
+              device_profile: { device_type: "browser" },
+            });
+          });
+        }
       }
 
       close() {
