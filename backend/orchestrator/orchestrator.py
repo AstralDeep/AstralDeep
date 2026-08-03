@@ -187,6 +187,7 @@ _LLM_CREDENTIAL_SAVE_ACTIONS = frozenset(
 
 _READ_ONLY_UI_ACTIONS = frozenset(
     {
+        "capability_update",
         "discover_agents",
         "get_agent_permissions",
         "get_dashboard",
@@ -8272,6 +8273,24 @@ class Orchestrator:
 
                 elif msg.action == "new_chat":
                     chat_id = self.history.create_chat(user_id=user_id)
+                    # 066 (FR-024): a fresh chat greets with the welcome
+                    # examples exactly like a fresh session — same wel_
+                    # purge-on-first-send rules, never persisted. Sent BEFORE
+                    # chat_created: once the client binds the new chat id,
+                    # loose renders route into the transient reducer and a
+                    # late welcome would be dropped.
+                    try:
+                        from orchestrator.welcome import welcome_components
+                        _tools_avail = await asyncio.to_thread(
+                            self.compute_tools_available_for_user, user_id)
+                        with perf_span("welcome.render", user=user_id):
+                            await self.send_ui_render(
+                                websocket,
+                                welcome_components(tools_available=_tools_avail),
+                                speak=False)
+                        self._ws_welcome[id(websocket)] = True
+                    except Exception as _e:  # non-fatal — an empty canvas is fine
+                        logger.debug(f"new-chat welcome render failed (non-fatal): {_e}")
                     if isinstance(msg, CorrelatedNewChat):
                         await self._safe_send(
                             websocket,
@@ -8304,6 +8323,21 @@ class Orchestrator:
                                 "chat_id": chat_id,
                                 "from_message": False,
                             },
+                        }))
+                elif msg.action == "capability_update":
+                    # 066 (FR-008): live client-capability envelope — refresh
+                    # this socket's ROTE profile so server-side adaptation
+                    # never goes stale, and echo the fresh verdict so the
+                    # shell can stamp it.
+                    _device_info = (msg.payload or {}).get("device")
+                    if isinstance(_device_info, dict) and _device_info:
+                        rote_profile = self.rote.register_device(
+                            websocket, _device_info)
+                        await self._safe_send(websocket, json.dumps({
+                            "type": "rote_config",
+                            "device_profile": rote_profile.to_dict(),
+                            "speech_server_available": bool(
+                                os.getenv("SPEACHES_URL", "").strip()),
                         }))
 
                 # Feature 054 (FR-014): LLM-dependent workspace/component
@@ -20799,6 +20833,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 error.status_code,
                 error.upstream_error_class,
             )
+            # 066 (FR-020): a chat with a completed turn must never stay
+            # "New Chat" — deterministic fallback from the user's message.
+            try:
+                fallback = " ".join((message or "").split())[:48].strip()
+                if fallback:
+                    self.history.update_chat_title(
+                        chat_id, fallback, user_id=user_id)
+                    await self._broadcast_user_history()
+            except Exception:
+                logger.debug("chat-title fallback failed", exc_info=True)
             await self._record_llm_call(
                 self.audit_recorder,
                 actor_user_id=actor_user_id,

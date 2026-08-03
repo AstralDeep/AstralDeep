@@ -385,7 +385,48 @@
       has_file_system: true,
       connection_type: (nav.connection && nav.connection.effectiveType) || "unknown",
       user_agent: navigator.userAgent,
+      // 066 additive capability envelope fields (server defaults are safe
+      // when an older client omits them).
+      reduced_motion: !!(window.matchMedia
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
+      pointer_type: (window.matchMedia
+        && window.matchMedia("(pointer: coarse)").matches) ? "coarse" : "fine",
     };
+  }
+
+  // 066: live capability envelope — re-report on material change (resize
+  // settle wired into the layout debounce; permission and connection changes
+  // below) so server-side adaptation never goes stale. Debounced + de-duped.
+  var lastCapabilitySignature = "";
+  function maybeReportCapabilities(force) {
+    if (!isSocketReady()) return;
+    var caps = detectDeviceCapabilities();
+    var sig = [caps.viewport_width, caps.viewport_height, caps.device_type,
+      caps.pixel_ratio, caps.microphone_permission, caps.connection_type,
+      caps.reduced_motion, caps.pointer_type].join("|");
+    if (!force && sig === lastCapabilitySignature) return;
+    lastCapabilitySignature = sig;
+    action("capability_update", { device: caps }, false);
+  }
+  if (navigator.connection && navigator.connection.addEventListener) {
+    navigator.connection.addEventListener("change", function () {
+      setTimeout(function () { maybeReportCapabilities(); }, 50);
+    });
+  }
+  if (window.matchMedia) {
+    var rmQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (rmQuery.addEventListener) rmQuery.addEventListener("change", function () {
+      maybeReportCapabilities();
+    });
+  }
+  if (navigator.permissions && navigator.permissions.query) {
+    try {
+      navigator.permissions.query({ name: "microphone" }).then(function (st) {
+        if (st && st.addEventListener) st.addEventListener("change", function () {
+          setTimeout(function () { maybeReportCapabilities(); }, 50);
+        });
+      }).catch(function () {});
+    } catch (e) {}
   }
 
   // ROTE ↔ shell cooperation, split exactly like the Android client:
@@ -400,13 +441,40 @@
   function applyDeviceProfile(dt) {
     if (dt) document.body.setAttribute("data-rote-device", String(dt));
   }
+  // 066 canvas-first modes: "stacked" (<700), "collapsed" (700-1023 default —
+  // canvas full width, floating composer, transcript drawer), "split" (>=1024
+  // default — right rail). The user's explicit choice persists per device and
+  // wins over the width default at >=700px.
+  var LAYOUT_PREF_KEY = "astral-chat-pref"; // "open" | "closed" | absent=auto
+  function chatLayoutPref() {
+    try {
+      var v = localStorage.getItem(LAYOUT_PREF_KEY);
+      return v === "open" || v === "closed" ? v : "auto";
+    } catch (e) { return "auto"; }
+  }
+  function setChatLayoutPref(v) {
+    try {
+      if (v === "auto") localStorage.removeItem(LAYOUT_PREF_KEY);
+      else localStorage.setItem(LAYOUT_PREF_KEY, v);
+    } catch (e) {}
+    applyLayoutClass();
+  }
   function applyLayoutClass() {
-    var mode = window.innerWidth < 600 ? "stacked" : "split";
+    var w = window.innerWidth, mode;
+    if (w < 700) mode = "stacked";
+    else {
+      var pref = chatLayoutPref();
+      if (pref === "open") mode = "split";
+      else if (pref === "closed") mode = "collapsed";
+      else mode = w >= 1024 ? "split" : "collapsed";
+    }
     if (document.body.getAttribute("data-astral-layout") !== mode) {
       document.body.setAttribute("data-astral-layout", mode);
-      if (mode === "split") { // stacked-only chrome state must not linger
+      if (mode !== "stacked") { // stacked-only chrome state must not linger
         document.body.classList.remove("astral-history-open", "astral-msgs-open");
       }
+      if (mode !== "collapsed") document.body.classList.remove("astral-chat-open");
+      if (mode === "split") clearChatUnread();
     }
   }
   applyDeviceProfile(detectDeviceType());
@@ -414,7 +482,64 @@
   var layoutResizeTimer = null;
   window.addEventListener("resize", function () {
     clearTimeout(layoutResizeTimer);
-    layoutResizeTimer = setTimeout(applyLayoutClass, 120);
+    layoutResizeTimer = setTimeout(function () {
+      applyLayoutClass();
+      maybeReportCapabilities();
+    }, 220);
+  });
+
+  // ---- 066: chat visibility controls + unread accounting ----
+  var collapseBtn = document.getElementById("astral-collapse-btn");
+  var chatToggleBtn = document.getElementById("astral-chat-toggle");
+  var chatUnreadEl = document.getElementById("astral-chat-unread");
+  var chatUnread = 0;
+  function clearChatUnread() {
+    chatUnread = 0;
+    if (chatUnreadEl) { chatUnreadEl.hidden = true; chatUnreadEl.textContent = "0"; }
+  }
+  function noteAssistantActivity() {
+    var layout = document.body.getAttribute("data-astral-layout");
+    var hidden = (layout === "collapsed" && !document.body.classList.contains("astral-chat-open"))
+      || (layout === "stacked" && !document.body.classList.contains("astral-msgs-open"));
+    if (!hidden) return;
+    chatUnread++;
+    if (chatUnreadEl) {
+      chatUnreadEl.hidden = false;
+      chatUnreadEl.textContent = chatUnread > 9 ? "9+" : String(chatUnread);
+    }
+    if (chatToggleBtn && window.matchMedia
+        && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      chatToggleBtn.classList.remove("astral-peek");
+      void chatToggleBtn.offsetWidth;
+      chatToggleBtn.classList.add("astral-peek");
+    }
+  }
+  if (collapseBtn) collapseBtn.addEventListener("click", function () {
+    setChatLayoutPref("closed");
+  });
+  if (chatToggleBtn) chatToggleBtn.addEventListener("click", function () {
+    var open = document.body.classList.toggle("astral-chat-open");
+    chatToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    chatToggleBtn.setAttribute("title", open ? "Hide conversation" : "Show conversation");
+    if (open) clearChatUnread();
+  });
+  // Re-pin the rail from collapsed mode: double-click the transcript toggle.
+  if (chatToggleBtn) chatToggleBtn.addEventListener("dblclick", function () {
+    setChatLayoutPref("open");
+  });
+  // Coarse-pointer component chrome: tap a component to reveal its actions.
+  document.addEventListener("click", function (e) {
+    if (!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) return;
+    if (e.target.closest && e.target.closest("button, a, input, select, textarea")) return;
+    var comp = e.target.closest && e.target.closest(".astral-component");
+    if (!comp) return;
+    var open = comp.classList.toggle("astral-chrome-open");
+    if (open) {
+      var others = document.querySelectorAll(".astral-component.astral-chrome-open");
+      for (var i = 0; i < others.length; i++) {
+        if (others[i] !== comp) others[i].classList.remove("astral-chrome-open");
+      }
+    }
   });
 
   function configureStatusElement(node) {
@@ -436,6 +561,14 @@
     statusEl.textContent = s || "";
     statusEl.setAttribute("aria-busy", busy === true ? "true" : "false");
     statusEl.setAttribute("data-status-state", s ? (busy === true ? "busy" : "settled") : "idle");
+    // 066: mirror turn status beside the composer — the topbar is too far
+    // from the conversation to carry progress/failure alone.
+    var turnStatus = document.getElementById("astral-turn-status");
+    if (turnStatus) {
+      turnStatus.textContent = s || "";
+      turnStatus.hidden = !s;
+      turnStatus.setAttribute("data-busy", busy === true ? "true" : "false");
+    }
   }
 
   // ---- Feature 065: server-owned conversational voice + local media adapter ----
@@ -807,6 +940,44 @@
     return true;
   }
 
+  // 066: real SVG icons for the composer voice controls (static trusted
+  // markup keyed by the server's data-icon contract).
+  var VOICE_ICONS = {
+    "microphone": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>',
+    "device-transfer": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>',
+    "stop": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>',
+    "speaker-stop": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>',
+    "speaker-muted": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="22" y1="3" x2="3" y2="22"></line></svg>',
+    "chat": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>',
+    "speaker-consent": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>',
+  };
+
+  // 066: the voice affordance is ALWAYS present — this client-local default
+  // renders before any composer_state frame arrives (and again on socket
+  // teardown) so an absent/failed server projection can never leave the
+  // composer without a voice control.
+  function renderDefaultVoiceControl(reasonText) {
+    if (!voiceControlsEl) return;
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "astral-voice-control";
+    button.setAttribute("data-voice-key", "voice-start");
+    button.setAttribute("data-voice-action", "voice_session_start");
+    button.setAttribute("data-icon", "microphone");
+    button.setAttribute("data-default", "1");
+    button.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-busy", "false");
+    button.setAttribute("aria-label", "Start voice conversation");
+    button.setAttribute("title", reasonText || "Checking voice availability…");
+    button.disabled = true;
+    button.innerHTML = VOICE_ICONS.microphone;
+    var label = document.createElement("span");
+    label.className = "astral-sr-only";
+    label.textContent = "Start voice conversation";
+    button.appendChild(label);
+    voiceControlsEl.replaceChildren(button);
+  }
+
   function renderVoiceControls(voice) {
     if (!voiceControlsEl) return;
     var fragment = document.createDocumentFragment();
@@ -823,6 +994,7 @@
       button.setAttribute("aria-busy", control.busy ? "true" : "false");
       button.disabled = !control.enabled;
       button.hidden = !control.visible;
+      button.innerHTML = VOICE_ICONS[control.icon] || VOICE_ICONS.microphone;
       var label = document.createElement("span");
       label.className = "astral-sr-only";
       label.textContent = control.label;
@@ -2777,6 +2949,8 @@
       label: "Submitting…",
       shows_status: exposeStatus !== false,
       status_order: ++operationSubmissionOrdinal,
+      // 066: retained so a failed turn can offer an exact retry.
+      message: name === "chat_message" && typeof body.message === "string" ? body.message : null,
     };
     operationSubmissionByGeneration[requestGeneration] = local;
     operationSubmissionById[submissionId] = local;
@@ -2794,6 +2968,52 @@
     return true;
   }
 
+  // ---- 066: connection honesty. Actions attempted while the socket is not
+  // healthily registered queue visibly (bounded) or refuse loudly — they are
+  // never silently dropped. `socketReady` flips on the post-registration
+  // rote_config verdict and off on close.
+  var socketReady = false;
+  var pendingActions = [];
+  var PENDING_ACTION_LIMIT = 5;
+  var PENDING_ACTION_TTL_MS = 45000;
+  function isSocketReady() {
+    return socketReady && ws && ws.readyState === 1;
+  }
+  function setConnState(state, text) {
+    var pill = document.getElementById("astral-conn");
+    var textEl = document.getElementById("astral-conn-text");
+    if (!pill) return;
+    if (state === "connected") { pill.hidden = true; return; }
+    pill.hidden = false;
+    pill.setAttribute("data-conn", state);
+    if (textEl) textEl.textContent = text
+      || (state === "connecting" ? "Connecting…" : "Reconnecting — messages will queue");
+  }
+  function queueOutboundAction(entry) {
+    if (pendingActions.length >= PENDING_ACTION_LIMIT) {
+      showToast("Not connected — too many queued actions. Try again shortly.", "error");
+      return false;
+    }
+    entry.at = Date.now();
+    entry.timer = setTimeout(function () {
+      var idx = pendingActions.indexOf(entry);
+      if (idx !== -1) pendingActions.splice(idx, 1);
+      if (entry.onRefused) entry.onRefused();
+      else showToast("Still not connected — the action was not sent.", "error");
+    }, PENDING_ACTION_TTL_MS);
+    pendingActions.push(entry);
+    setConnState(ws && ws.readyState === 0 ? "connecting" : "offline");
+    return true;
+  }
+  function flushPendingActions() {
+    var entries = pendingActions;
+    pendingActions = [];
+    for (var i = 0; i < entries.length; i++) {
+      clearTimeout(entries[i].timer);
+      try { entries[i].dispatch(); } catch (e) {}
+    }
+  }
+
   function action(name, payload, exposeStatus) {
     if (name === "chat_message") openRequest("commit", activeChatId);
     var suppliedGeneration = requestState && (name === "chat_message" || name === "load_chat")
@@ -2808,6 +3028,20 @@
       request_generation: submission.requestGeneration,
     };
     if (connectionGeneration) frame.connection_generation = connectionGeneration;
+    if (!isSocketReady() && name !== "get_history" && name !== "watch_task") {
+      // Queue chrome/settings actions too (FR-015): the same no-silent-drop
+      // rule chat sends get. Frames are rebuilt at dispatch time so the
+      // then-current connection_generation is used.
+      finishOperationSubmission(submission.requestGeneration);
+      queueOutboundAction({
+        label: name,
+        dispatch: function () { action(name, payload, exposeStatus); },
+        onRefused: function () {
+          showToast("“" + name.replace(/_/g, " ") + "” was not sent — still reconnecting.", "error");
+        },
+      });
+      return submission;
+    }
     send(frame);
     return submission;
   }
@@ -2957,6 +3191,50 @@
     bubble.innerHTML = htmlStr || "";
     wrap.appendChild(bubble); chat.appendChild(wrap); processSideEffects(bubble);
     chat.scrollTop = chat.scrollHeight;
+    if (role !== "user") noteAssistantActivity();
+  }
+
+  // 066: inline failed-turn notice — the user's message stays visible, the
+  // failure is explained beside the conversation, and retry re-sends the
+  // exact content. Never blanks the canvas.
+  function appendFailedTurnNotice(message, retryText) {
+    var err = document.createElement("div");
+    err.className = "astral-chat-error";
+    err.setAttribute("role", "alert");
+    var line = document.createElement("div");
+    line.textContent = message || "The turn could not be completed.";
+    err.appendChild(line);
+    if (retryText) {
+      var retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "astral-retry-btn";
+      retry.textContent = "↻ Retry";
+      retry.addEventListener("click", function () {
+        if (err.parentNode) err.parentNode.removeChild(err);
+        sendChat(retryText);
+      });
+      err.appendChild(retry);
+    }
+    chat.appendChild(err);
+    chat.scrollTop = chat.scrollHeight;
+    noteAssistantActivity();
+  }
+
+  // 066: a failed turn materializes its transient content into the canonical
+  // rail (instead of evaporating with the overlay) and gains a retry.
+  function surfaceFailedTurn(frame, localSubmission) {
+    if (frame.action !== "chat_message") return;
+    try {
+      var overlayChat = transientOverlay && transientOverlay.chat;
+      if (overlayChat) {
+        while (overlayChat.firstChild) chat.appendChild(overlayChat.firstChild);
+      }
+      var retryText = localSubmission && localSubmission.message
+        ? localSubmission.message : null;
+      appendFailedTurnNotice(
+        (frame.error && frame.error.message) || "The turn could not be completed.",
+        retryText);
+    } catch (e) {}
   }
 
   // ---- query-start loading skeleton ----
@@ -3673,6 +3951,7 @@
       setStatus(visible, true, operationOwner);
     }
     if (frame.terminal && ["failed", "cancelled", "retryable"].indexOf(frame.state) !== -1) {
+      if (frame.state !== "cancelled") surfaceFailedTurn(frame, localSubmission);
       clearTransientOverlay();
     }
     return true;
@@ -4045,6 +4324,13 @@
         break;
       case "rote_config": // ROTE's device verdict drives the shell layout
         applyDeviceProfile(data.device_profile && data.device_profile.device_type);
+        // 066: the post-registration verdict marks the socket healthy — flush
+        // queued sends and retire the connection pill.
+        if (!socketReady) {
+          socketReady = true;
+          setConnState("connected");
+          flushPendingActions();
+        }
         break;
       case "agent_host_inventory_reconciled": case "agent_host_registration_refused":
       case "agent_host_registered": // host-only; the browser is author-only
@@ -4128,6 +4414,51 @@
   function sendChat(message) {
     var ready = (typeof readyAttachments === "function") ? readyAttachments() : [];
     if (!message && !ready.length) return;
+    if (!isSocketReady()) {
+      // 066: never silently drop a send — queue it visibly and dispatch on
+      // registration, or refuse loudly with the text preserved.
+      queueChatSend(message, ready);
+      if (typeof clearStagedAttachments === "function") clearStagedAttachments();
+      return;
+    }
+    doSendChat(message, ready);
+    if (typeof clearStagedAttachments === "function") clearStagedAttachments();
+  }
+
+  function queueChatSend(message, ready) {
+    var html = "";
+    if (ready.length) {
+      var names = ready.map(function (a) { return a.filename; }).join(", ");
+      html += attachChipHtml(names);
+    }
+    if (message) html += "<div>" + escapeText(message) + "</div>";
+    var wrap = document.createElement("div");
+    wrap.className = "flex justify-end astral-bubble-queued";
+    var bubble = document.createElement("div");
+    bubble.className = "bg-astral-primary/20 border border-astral-primary/30 rounded-lg p-3 max-w-[85%] text-sm text-astral-text";
+    bubble.innerHTML = html;
+    wrap.appendChild(bubble);
+    chat.appendChild(wrap);
+    chat.scrollTop = chat.scrollHeight;
+    var accepted = queueOutboundAction({
+      label: "chat_message",
+      dispatch: function () {
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        doSendChat(message, ready);
+      },
+      onRefused: function () {
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        appendFailedTurnNotice("Still offline — your message was not sent.", message);
+        if (input && !input.value) input.value = message || "";
+      },
+    });
+    if (!accepted && wrap.parentNode) {
+      wrap.parentNode.removeChild(wrap);
+      if (input && !input.value) input.value = message || "";
+    }
+  }
+
+  function doSendChat(message, ready) {
     openRequest("commit", activeChatId);
     var html = "";
     if (ready.length) {
@@ -4164,7 +4495,6 @@
     // ack drives the status line instead.
     if (bgArmed) setBgArmed(false);
     else showSkeleton(); // optimistic loading state until the first canvas content
-    if (typeof clearStagedAttachments === "function") clearStagedAttachments();
   }
 
   if (form) form.addEventListener("submit", function (e) {
@@ -4548,8 +4878,8 @@
     }
     if (bar) return; // already up
     bar = document.createElement("div");
-    bar.id = "astral-canvas-toolbar";
-    bar.style.cssText = "position:sticky;top:0;z-index:5;display:flex;justify-content:flex-end;gap:8px;padding:2px 4px;";
+    bar.id = "astral-canvas-toolbar"; // 066: astral.css owns the surface (solid
+    // backdrop) so the sticky row never see-throughs over component content.
     if (canvasFlags.exp) bar.appendChild(chromeToolbarButton("⬇ Export page", "astral-export-canvas", null));
     if (canvasFlags.share) bar.appendChild(chromeToolbarButton("↗ Share page", "astral-share-btn", "canvas"));
     canvas.insertBefore(bar, canvas.firstChild);
@@ -5192,11 +5522,15 @@
     voiceComposerRevision = -1;
     voiceTakeover = null;
     clearVoiceBindingRenewal();
-    if (voiceControlsEl && !preserveVoiceControls) voiceControlsEl.replaceChildren();
+    if (voiceControlsEl && !preserveVoiceControls) {
+      // 066: never leave the composer without a voice affordance.
+      renderDefaultVoiceControl("Voice unavailable while reconnecting…");
+    }
     connectionGeneration = randomUuid4();
     ws = new WebSocket(WS_URL);
     ws.onopen = function () {
       attempts = 0; authRetried = false; setStatus("");
+      setConnState("connecting", "Registering…");
       // resumed: firstConnect ? serverResumed : true
       sendRegistration(firstConnect ? serverResumed : true);
       firstConnect = false;
@@ -5211,6 +5545,8 @@
     ws.onmessage = onMessage;
     ws.onerror = function () { try { ws.close(); } catch (e) {} };
     ws.onclose = function () {
+      socketReady = false;
+      setConnState("offline", "Reconnecting — messages will queue");
       operationSubmissionByGeneration = Object.create(null);
       operationSubmissionById = Object.create(null);
       clearVoiceBindingRenewal();

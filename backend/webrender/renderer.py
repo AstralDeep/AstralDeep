@@ -1254,6 +1254,11 @@ def _provenance_footer(component: Dict[str, Any]) -> str:
     ctype = str(component.get("type", "")).strip().lower()
     if ctype in _PROV_SKIP_TYPES:
         return ""
+    # 066 (FR-024): static welcome content is chrome, not model output — an
+    # "AI-generated" marker on it would be a false provenance claim.
+    _cid = component.get("component_id") or component.get("id") or ""
+    if str(_cid).startswith("wel_"):
+        return ""
     kind = provenance_of(component)
     if kind == "grounded":
         tool = _subtree_tool_source(component)

@@ -9,29 +9,29 @@ Status legend: [ ] open · [x] done · [~] in progress
 - [x] T002 `_adopt_operation_chat` wired after chat creation in the ui_event chat_message branch — committed `38ce6ac2`
 - [x] T003 `openai_auth_kwargs` + shared keyless httpx client; applied at client_factory, probe, REST probes, agent codegen, knowledge synthesis — committed `38ce6ac2`
 - [x] T004 `custom` preset key-optional + surface copy + pinned providers test update — committed `38ce6ac2`
-- [ ] T005 Tests: bind_chat unit (both repos: None→chat, idempotent re-bind, cross-chat refusal, stale fence) + first-message-of-new-chat integration (typed + welcome-example) + fence strictness regression (FR-028/029, SC-002)
-- [ ] T006 Tests: openai_auth_kwargs (real key passthrough; empty/sentinel → no Authorization header on the wire) + key-optional custom save/test/load-models paths (FR-025/026)
+- [x] T005 Tests: bind_chat unit — None→chat adopt, idempotent re-bind, cross-chat refusal, already-scoped refusal, stale fence ([test_bind_chat_066.py](../../backend/tests/test_bind_chat_066.py); live first-message verified in browser; Postgres-repo variant exercised via the shared contract in CI)
+- [x] T006 Tests: keyless auth — real-key passthrough, keyless transport, shared client, header stripped at the wire, key-optional custom ([test_keyless_auth_066.py](../../backend/llm_config/tests/test_keyless_auth_066.py))
 
 ## Phase P1 — Web core (layout, composer, envelope)
 
-- [ ] T010 shell.html: composer rework (voice default control with SVG icon + honest reason, connection pill, input min-width row), canvas toolbar host, chat collapse toggle, drawer/overlay hosts
-- [ ] T011 astral.css: three layout modes (`stacked <700`, `collapsed 700–1023 default`, `expanded ≥1024 + toggle`), floating composer (collapsed), overlay drawer, stacked sheet with dim, SVG icon masks for `data-icon`, queued/error bubble styles, bounded canvas width
-- [ ] T012 client.js: layout-mode state machine + localStorage persistence + toggle wiring; auto-reveal badge/peek on assistant text (reduced-motion aware)
-- [ ] T013 client.js: connection state surfacing + bounded send queue (pre-registration + disconnected), flush-on-register, 45s refusal with retry; input preserved (FR-013/014; SC-003)
-- [ ] T014 client.js: voice default state before frames; composer_state refines; enable-without-reload (FR-011/012; SC-005)
-- [ ] T015 Capability envelope: client `capability_update` (debounced resize/orientation/permission/connection/reduced-motion) + `reduced_motion`/`pointer_type` fields; server handler refreshes ROTE profile + pushes `rote_config` (FR-007..010; SC-004)
-- [ ] T016 rote/capabilities.py additive fields with safe defaults
+- [x] T010 shell.html: composer rework (default voice control + SVG, connection pill, turn-status line, chat toggle w/ unread badge, rail header + collapse) — verified live
+- [x] T011 astral.css: three layout modes, floating composer, overlay drawer, SVG icons via client injection, queued/error styles, bounded canvas, calm chrome reveal, canvas toolbar surface — verified live at 520/800/1264px
+- [x] T012 client.js: layout-mode machine + localStorage pref + toggles + unread badge/peek (reduced-motion aware) — verified live
+- [x] T013 client.js: connection pill + bounded queue (5, 45s TTL) for chat AND chrome actions, flush on the rote_config verdict, refusal restores text (SC-003 drill pending in T040)
+- [x] T014 client.js: default voice control before frames + on teardown; composer_state refines (verified live: enabled when worker admitted, default when absent)
+- [x] T015 Capability envelope live: `capability_update` action (client debounce + server handler + rote_config re-push) — verified live (browser→tablet→browser reclassification in logs, no reconnect)
+- [x] T016 rote/capabilities.py: additive `reduced_motion` + `pointer_type` fields
 
 ## Phase P2 — Lifecycle & chrome
 
-- [ ] T020 Turn failure UX: keep user bubble, inline error + retry (same payload), never blank canvas, stuck-request recovery (FR-017/021; SC-008)
-- [ ] T021 Status phases near composer (routing / tool-with-identity / composing) from existing progress frames (FR-016)
-- [ ] T022 Markdown bubbles (safe subset, escape-first) + preview strip (FR-018)
-- [ ] T023 Boilerplate → metadata: provenance/sample-data lines attach to the narrative message as a caption, not standalone bubbles (FR-019)
-- [ ] T024 Title generation: verify post-keyless fix; deterministic fallback (truncated first message) on failure (FR-020; SC-009)
-- [ ] T025 Component chrome at rest hidden; hover/focus reveal + touch/keyboard affordance; provenance marker consolidated (FR-022; SC-007)
-- [ ] T026 Canvas page actions in stable toolbar (no scroll overlap) (FR-023)
-- [ ] T027 Welcome on explicit new chat + wel_ excluded from provenance stamping (FR-024)
+- [x] T020 Turn failure UX: transient bubbles materialize into the rail on terminal failure + inline error card with exact-text ↻ Retry; canvas never blanked (verified live pre-fence-fix); client stuck-request watchdog deliberately dropped (R6)
+- [~] T021 Status near composer: shipped (mirrored turn-status line + spinner); tool-identity phase enrichment still open
+- [~] T022 Markdown bubbles: stream frames + chat renders already markdown; REMAINING: the 062 words-only snapshot rail path renders literal asterisks (root cause pinned in research R11) + preview strip
+- [ ] T023 Boilerplate → metadata: provenance caption still rides as trailing bubble text; restyle as footnote metadata pending
+- [x] T024 Titles: root cause was the keyless 403 (fixed); deterministic fallback added on title-LLM failure
+- [x] T025 Component chrome hidden at rest; hover/focus reveal + coarse-pointer tap toggle — verified live (dashboard at rest shows zero chrome rows)
+- [x] T026 Canvas toolbar: solid backdrop surface, sticky without see-through overlap
+- [x] T027 Welcome on new chat (ordered before chat_created) + wel_ provenance-stamp exclusion — verified live
 
 ## Phase P3 — Voice reliability & diagnosability
 
