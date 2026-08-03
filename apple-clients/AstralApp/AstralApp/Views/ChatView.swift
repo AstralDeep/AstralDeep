@@ -920,15 +920,17 @@ private struct VoiceComposerControls: View {
                                     chipLabel(
                                         icon: symbol(control.icon),
                                         busy: control.busy,
-                                        pressed: control.pressed)
-                                        .opacity(control.enabled ? 1 : 0.5)
+                                        pressed: control.pressed
+                                    )
+                                    .opacity(control.enabled ? 1 : 0.5)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(!control.enabled || control.busy)
                                 .accessibilityIdentifier("voice-control-\(control.key)")
                                 .accessibilityLabel(control.label)
                                 .accessibilityValue(
-                                    control.busy ? "In progress" : (control.pressed ? "On" : "Off"))
+                                    control.busy ? "In progress" : (control.pressed ? "On" : "Off")
+                                )
                                 .help(control.label)
                             }
                         }
