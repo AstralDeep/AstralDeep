@@ -1242,6 +1242,19 @@ body[data-astral-layout="split"] .astral-rail-head { display: flex; }
 }
 @keyframes astral-spin { to { transform: rotate(360deg); } }
 
+/* Composer row: in the narrow split rail the input takes its own full-width
+   line above the controls, so it never degrades to a few characters
+   (066 FR-004). Wide/floating composers keep the single-row arrangement. */
+body[data-astral-layout="split"] .astral-chat-form .flex.gap-2.items-center {
+  flex-wrap: wrap;
+}
+body[data-astral-layout="split"] #astral-input {
+  flex: 1 1 100%;
+  order: -1;
+  min-width: 0;
+}
+#astral-input { min-width: 180px; }
+
 /* Transcript toggle (collapsed mode only) + unread badge. */
 .astral-chat-toggle { display: none; position: relative; }
 .astral-chat-unread {

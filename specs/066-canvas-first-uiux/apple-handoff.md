@@ -1,0 +1,111 @@
+# Apple handoff — canvas-first UX (066)
+
+**Written on the Windows box, 2026-08-03, for the iOS/macOS/watchOS pass on the Mac.**
+Everything below is either verified live on this machine or explicitly marked
+unverified. Read [spec.md](spec.md) for the requirements and
+[parity-checklist.md](parity-checklist.md) for the row-by-row status.
+
+## What changed, in one paragraph
+
+The web client became canvas-first: three layout modes replace the old
+fixed 380px rail, the composer gained an always-present voice control plus
+connection/queue honesty, failed turns keep the user's message and offer
+retry, per-component chrome hides at rest, and the client now re-reports its
+capability envelope live so server-side adaptation never goes stale. Two
+blocking product bugs were fixed on the way (every first message of a new
+chat failed at a publication fence; keyless custom LLM endpoints were
+unusable). Windows and Android received the one structural parity fix they
+needed — canvas leads, conversation trails.
+
+## The layout contract Apple should match
+
+| Mode | Trigger (web) | Arrangement |
+|---|---|---|
+| `stacked` | < 700 CSS px | Canvas column on top (flex 1), collapsible "Messages (N)" panel, docked composer full width |
+| `collapsed` | 700–1023 px by default; any width by user choice | Canvas uses the FULL width; composer floats as a centered bar (max 760px) over the canvas bottom; transcript opens as a drawer inside that bar with an unread badge |
+| `split` | ≥ 1024 px by default | Canvas leads (left, stretching), conversation rail trails (right, ~320–420px) with a header + collapse control |
+
+Apple equivalents to decide on the Mac: iPhone → `stacked`; iPad
+portrait/compact-width multitasking → `stacked` or `collapsed`; iPad
+landscape + macOS windows → `split` with the canvas LEADING. The
+non-negotiable invariants are: canvas takes the leading edge, the
+conversation never permanently occupies more than ~1/3 of a wide window, and
+the composer input never falls below ~20 visible characters.
+
+## Capability envelope (the ROTE contract)
+
+Registration and every material change now carry:
+`viewport_width/height`, `screen_width/height`, `pixel_ratio`, `has_touch`,
+`has_geolocation`, `has_microphone`, `microphone_permission`,
+`has_audio_output`, `connection_type`, `user_agent`, plus the two fields
+added by this feature: **`reduced_motion` (bool)** and
+**`pointer_type` ("fine" | "coarse")**.
+
+Web re-reports via a `ui_event` with `action: "capability_update"` and
+`payload.device` = the same dict as `register_ui.device`; the server refreshes
+the socket's ROTE profile and re-pushes `rote_config`. **No new frame type**
+(`ui_protocol.json` untouched — Constitution XII).
+
+Apple clients own their own reflow (like Android), so re-reporting is
+optional there; if the Apple canvas ever depends on server-side density
+adaptation, use the same action. The additive fields are safe to send today —
+older servers ignore unknown keys, and the server defaults them.
+
+## Voice composer
+
+The server's `composer_state` frame is unchanged. The web fix was
+web-specific: an empty control host was being hidden by CSS, so a failed
+server projection erased the voice affordance entirely. Web now pre-renders a
+disabled voice-start control and re-renders it on socket teardown. **Apple
+clients that render the server's control model directly do not need this**;
+what they DO need is to keep showing a disabled mic with the reason when
+`available=false`, never nothing.
+
+Real SVG icons now back the `data-icon` values: `microphone`,
+`device-transfer`, `stop`, `speaker-stop`, `speaker-muted`, `chat`,
+`speaker-consent`. Match SF Symbols to those semantics.
+
+## Voice service status (read before testing voice on the Mac)
+
+The speech endpoint (`https://api-llm-factory.ai.uky.edu/v1`) was verified on
+2026-08-03 to serve BOTH speech models and their routes:
+ASR `Systran/faster-whisper-large-v3` (POST `/audio/transcriptions` → 200) and
+TTS `speaches-ai/Kokoro-82M-v1.0-ONNX` voice `af_heart`
+(POST `/audio/speech` → 200, 34,860-byte WAV). The 2026-08-02 wiki note that
+the inventory omitted them is stale.
+
+The production sandbox still returns 503 on `POST /api/voice/sessions`
+(no admitted worker). Diagnosis + runbook:
+[voice-prod-diagnosis.md](voice-prod-diagnosis.md). The top suspect is a
+container that was `restart`ed rather than recreated after the secret
+rotation, so it presents a stale `VOICE_CONTROL_SECRET` — locally this
+reproduces as `"WebSocket /api/voice/worker-control" 401` in the orchestrator
+log with an EMPTY worker log.
+
+## Screenshots
+
+`screenshots/` in this directory (captured on this Windows box):
+
+- `web-split-1264.png` — split mode, welcome canvas, rail with header/collapse
+- `web-collapsed-1264.png` — collapsed mode, full-width canvas, floating composer
+- `web-collapsed-open-1264.png` — the transcript drawer open over the canvas
+- `web-stacked-504.png` — stacked mode (phone width), Messages bar
+- `web-turn-dice.png` — a completed turn: canvas component + rail narrative
+- `web-failed-turn.png` — the failure state (message kept, error near composer)
+
+Windows and Android screenshots: see the notes in `screenshots/README.md` —
+the Windows client needs a signed-in run, and the Android emulator was not
+launched in this pass.
+
+## Open items for the Apple pass
+
+1. Verify P1–P9 in [parity-checklist.md](parity-checklist.md) on iOS
+   (iPhone + iPad), macOS, and watchOS; record divergences with reasons.
+2. Decide the iPad multitasking mapping (compact width → stacked vs collapsed).
+3. Confirm the disabled-with-reason voice state renders on every Apple client
+   when `available=false` (watch included).
+4. If voice is exercised, run the runbook first — a 503 there is the
+   deployment issue above, not an Apple-client bug.
+5. Not audited anywhere yet (flagged in the checklist, not claimed): native
+   send-queue behavior while disconnected (P6) and native failed-turn retry
+   (P7). These are web-only implementations today.

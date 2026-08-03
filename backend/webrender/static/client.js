@@ -464,8 +464,11 @@
     if (w < 700) mode = "stacked";
     else {
       var pref = chatLayoutPref();
-      if (pref === "open") mode = "split";
-      else if (pref === "closed") mode = "collapsed";
+      // The rail is only offerable where it leaves a usable composer: below
+      // 1024 a persisted "keep it open" would crush the input to a few
+      // characters (066 FR-004), so the width bound wins over the preference.
+      if (pref === "closed") mode = "collapsed";
+      else if (pref === "open" && w >= 1024) mode = "split";
       else mode = w >= 1024 ? "split" : "collapsed";
     }
     if (document.body.getAttribute("data-astral-layout") !== mode) {

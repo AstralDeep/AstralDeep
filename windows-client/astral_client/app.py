@@ -1891,10 +1891,19 @@ class MainWindow(QMainWindow):
             self.canvas.show_skeleton()
         # 055 US5: the canvas context menu opens export URLs against this origin.
         self.canvas.http_base = _http_base(url)
+        # 066 canvas-first parity: the canvas leads (left, stretching) and the
+        # conversation rail sits on the trailing edge — the same arrangement as
+        # the web split mode and the Android SplitShell. The rail is
+        # collapsible by dragging the handle to the edge; the canvas keeps every
+        # pixel it frees.
         split = QSplitter(Qt.Orientation.Horizontal)
-        split.addWidget(self._wrap(self.rail, "Conversation"))
         split.addWidget(self._wrap(self.canvas, "Canvas"))
-        split.setSizes([380, 900])
+        split.addWidget(self._wrap(self.rail, "Conversation"))
+        split.setSizes([900, 380])
+        split.setStretchFactor(0, 1)  # canvas absorbs window growth
+        split.setStretchFactor(1, 0)  # rail keeps its width
+        split.setCollapsible(0, False)  # the canvas is never collapsible
+        split.setCollapsible(1, True)
 
         self._input = QLineEdit()
         self._input.setPlaceholderText("Message AstralDeep…  (type / for commands)")
