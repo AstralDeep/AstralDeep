@@ -738,7 +738,28 @@ jobs:
       - secret-scan
       # T120 activation (second checkpoint) adds `- release-readiness` here so
       # main image publication depends on the protected decision check.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #
+      # `always()` + explicit result checks: voice-worker-test legitimately
+      # SKIPS when VOICE_WORKER_CLOSURE_APPROVED is unset, and a skipped
+      # dependency silently skips its dependents — main merges published NO
+      # image (observed on the 066 merge: publish=skipped). Every other gate
+      # must be a genuine success; voice-worker-test may be success or that
+      # sanctioned skip.
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && needs.lint.result == 'success'
+      && needs.javascript-lint.result == 'success'
+      && needs.voice-contract-validator.result == 'success'
+      && needs.voice-web-conformance.result == 'success'
+      && needs.release-tooling-tests.result == 'success'
+      && needs.windows-client.result == 'success'
+      && needs.build.result == 'success'
+      && (needs.voice-worker-test.result == 'success' || needs.voice-worker-test.result == 'skipped')
+      && needs.test.result == 'success'
+      && needs.test-flags-off.result == 'success'
+      && needs.coverage-gate.result == 'success'
+      && needs.smoke.result == 'success'
+      && needs.secret-scan.result == 'success'
     permissions:
       contents: read
       packages: write

@@ -19,6 +19,13 @@ on:
 permissions:
   contents: read
 
+# A new push to the same PR branch cancels the previous 8-job macos-26 fleet
+# instead of running both to completion (mirrors ci.yml; pushes to main never
+# cancel each other).
+concurrency:
+  group: apple-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   XCODE_VERSION: "26.6"
   XCODE_BUILD: "17F113"
@@ -431,7 +438,9 @@ jobs:
   apple-required:
     name: Required · Apple aggregate
     if: always()
-    runs-on: macos-26
+    # Marker downloads + shell checks only — no macOS toolchain needed, and
+    # ubuntu starts faster than a 10x-billed macos-26 runner.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     needs:
       - swift-lint
