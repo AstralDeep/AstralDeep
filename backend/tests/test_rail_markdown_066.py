@@ -110,6 +110,28 @@ class TestSnapshotTextPresentation:
         assert block_md(source) in html
         assert html.startswith('<div class="astral-md prose')
 
+    def test_malformed_non_dict_part_is_skipped_not_fatal(self) -> None:
+        snap = augment_conversation_snapshot_for_target(
+            {
+                "transcript": [
+                    {
+                        "role": "assistant",
+                        "parts": [
+                            "not-a-dict",
+                            {"type": "text", "text": "**still bold**"},
+                        ],
+                    }
+                ]
+            },
+            None,
+            target="web",
+        )
+        parts = snap["transcript"][0]["parts"]
+        # The malformed entry is left untouched...
+        assert parts[0] == "not-a-dict"
+        # ...and the well-formed sibling still gains its rendition.
+        assert "<strong" in parts[1]["_presentation"]["html"]
+
     def test_native_targets_never_receive_the_envelope(self) -> None:
         snap = augment_conversation_snapshot_for_target(
             self._snapshot("assistant", "**bold**"), None, target="android"

@@ -403,7 +403,7 @@ jobs:
             -e LOOP_GUARD_ENFORCE=1 \
             -e PERF_CONCURRENT_FLOOR_MS=5000 \
             -w /app/backend --entrypoint bash astraldeep:ci \
-            -c "python -m pip install --require-hashes -r /ci/python/requirements.lock.txt && python -m pytest -q -m 'not integration' --cov=. --cov-report= && python -m pytest audit/tests llm_config/tests orchestrator/tests onboarding/tests personalization/tests scheduler/tests dreaming/tests verification/tests agents/tests agents/journal_review/tests agents/ml_services/tests agents/summarizer/tests agents/web_research/tests feedback/tests security_benchmark/tests shared/tests -q --cov=. --cov-append --cov-report= && python -m pytest tests/perf/concurrent_surfaces.py -q --cov=. --cov-append --cov-report=xml:coverage.xml"
+            -c "python -m pip install --require-hashes -r /ci/python/requirements.lock.txt && python -m pytest -q -m 'not integration' --cov=. --cov-report= && python -m pytest audit/tests llm_config/tests orchestrator/tests onboarding/tests personalization/tests scheduler/tests dreaming/tests verification/tests agents/tests agents/journal_review/tests agents/ml_services/tests agents/summarizer/tests agents/web_research/tests feedback/tests security_benchmark/tests shared/tests voice_agent/tests --ignore=voice_agent/tests/test_packaging_065.py -q --cov=. --cov-append --cov-report= && python -m pytest tests/perf/concurrent_surfaces.py -q --cov=. --cov-append --cov-report=xml:coverage.xml"
       # coverage.xml lands in the mounted checkout at backend/coverage.xml.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -497,7 +497,7 @@ jobs:
             -e FF_RECURSIVE_DELEGATION=0 \
             -e FF_SCHEDULER_EXECUTION=0 \
             -w /app/backend --entrypoint bash astraldeep:ci \
-            -c "python -m pytest -q -m 'not integration' && python -m pytest audit/tests llm_config/tests orchestrator/tests onboarding/tests personalization/tests scheduler/tests dreaming/tests verification/tests agents/tests agents/journal_review/tests agents/ml_services/tests agents/summarizer/tests agents/web_research/tests feedback/tests security_benchmark/tests shared/tests -q && python -m pytest tests/perf/concurrent_surfaces.py -q"
+            -c "python -m pytest -q -m 'not integration' && python -m pytest audit/tests llm_config/tests orchestrator/tests onboarding/tests personalization/tests scheduler/tests dreaming/tests verification/tests agents/tests agents/journal_review/tests agents/ml_services/tests agents/summarizer/tests agents/web_research/tests feedback/tests security_benchmark/tests shared/tests voice_agent/tests --ignore=voice_agent/tests/test_packaging_065.py -q && python -m pytest tests/perf/concurrent_surfaces.py -q"
 
   # ── FR-034: changed-code coverage ≥ 90% vs origin/main (Constitution III). ──
   coverage-gate:
