@@ -217,7 +217,9 @@ def test_topbar_renders_and_routes_action_buttons(qapp):
         "signout": {"label": "Sign out", "action": "logout"},
     })
     assert len(tb._action_buttons) == 2
-    assert any("Workspace timeline" in b.text() for b in tb._action_buttons)
+    # 066: action buttons are icon-only (web/Android presentation), so the
+    # label lives in the accessible name and tooltip, not the button text.
+    assert any(b.accessibleName() == "Workspace timeline" for b in tb._action_buttons)
     tb._action_buttons[0].click()
     assert opened and opened[0][0] == "workspace_timeline"
 

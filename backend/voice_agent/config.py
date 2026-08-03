@@ -22,6 +22,9 @@ _ALLOWED_WORKER_ENVIRONMENT = frozenset(
     {
         "ASTRAL_VOICE_CONTROL_URL",
         "VOICE_CONTROL_SECRET",
+        # Feature 066: optional endpoint-silence tuning, read by the session
+        # module at import (clamped 320-2560 ms; empty/invalid -> 960 ms).
+        "VOICE_ENDPOINT_SILENCE_MS",
         "VOICE_SPEECH_API_KEY",
         "VOICE_SPEECH_BASE_URL",
         "VOICE_WORKER_CLOSURE_SHA256",

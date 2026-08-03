@@ -74,6 +74,29 @@ _PULSE_SVG = (
     'M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3"/></svg>'
 )
 
+# Page-scoped canvas actions (066): export the whole canvas, share the whole
+# canvas. These used to live in a sticky bar pinned above the canvas content,
+# which cost a permanent strip of the primary surface for two rarely-used
+# controls. They now sit in the top bar and are revealed by client.js only
+# while the rendered canvas actually carries the matching workspace flag
+# (`data-astral-export` / `data-astral-share`), so an unflagged or empty canvas
+# shows nothing at all. The native clients expose the same two actions from the
+# component context menu (Windows `component_menu`, Android `ArtifactChrome`) —
+# neither ever had a persistent bar.
+_EXPORT_SVG = (
+    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+    '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+)
+_SHARE_SVG = (
+    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>'
+    '<line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>'
+    '<line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>'
+)
+
 # icon id (from the model) -> SVG glyph
 _ICON_SVG = {"gear": _GEAR_SVG, "history": _HISTORY_SVG, "sparkle": _PULSE_SVG}
 
@@ -194,6 +217,22 @@ def render_topbar(roles=None) -> str:
         'aria-label="Recent chats" title="Recent chats" aria-expanded="false">'
         f"{_CHATS_SVG}</button>"
     )
+    # The two canvas page actions. Rendered `hidden`; client.js unhides each one
+    # only while the canvas carries its flag. They keep the class names the
+    # delegated click handlers already dispatch on, so moving them out of the
+    # canvas changed their location and nothing about their behavior.
+    page_action_btns = (
+        '<button type="button" id="astral-export-page-btn" hidden '
+        'class="astral-export-canvas astral-page-action items-center justify-center '
+        'p-1.5 rounded-lg text-astral-muted hover:text-astral-text hover:bg-white/5" '
+        'aria-label="Export page" title="Export page — download this canvas as HTML">'
+        f"{_EXPORT_SVG}</button>"
+        '<button type="button" id="astral-share-page-btn" hidden data-share-scope="canvas" '
+        'class="astral-share-btn astral-page-action items-center justify-center '
+        'p-1.5 rounded-lg text-astral-muted hover:text-astral-text hover:bg-white/5" '
+        'aria-label="Share page" title="Share page — create a link to this canvas">'
+        f"{_SHARE_SVG}</button>"
+    )
     right_parts = []
     for control in model.topbar:
         if control.kind == "brand":
@@ -204,6 +243,7 @@ def render_topbar(roles=None) -> str:
             )
             right_parts.append(new_chat_btn)
             right_parts.append(recent_chats_btn)
+            right_parts.append(page_action_btns)
         elif control.kind == "action":
             right_parts.append(_icon_button(control))
         elif control.kind == "menu":  # the Settings gear + dropdown

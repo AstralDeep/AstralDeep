@@ -599,6 +599,10 @@ public struct DeviceDescriptor: Sendable {
     public var voiceTransport: String
     public var supportedTypes: [String]
     public var userAgent: String
+    /// 066 capability-envelope fields. Additive on the wire — older servers
+    /// ignore unknown device keys, so sending them is always safe.
+    public var reducedMotion: Bool
+    public var pointerType: String
 
     public init(
         deviceType: String, viewportWidth: Int, viewportHeight: Int,
@@ -608,7 +612,9 @@ public struct DeviceDescriptor: Sendable {
         microphonePermission: String = "not_determined",
         fullDuplex: Bool = true, voiceTransport: String = "livekit",
         supportedTypes: [String],
-        userAgent: String
+        userAgent: String,
+        reducedMotion: Bool = false,
+        pointerType: String = "coarse"
     ) {
         self.deviceId = deviceId
         self.deviceType = deviceType
@@ -623,6 +629,8 @@ public struct DeviceDescriptor: Sendable {
         self.voiceTransport = voiceTransport
         self.supportedTypes = supportedTypes
         self.userAgent = userAgent
+        self.reducedMotion = reducedMotion
+        self.pointerType = pointerType
     }
 
     public static func ios(viewportWidth: Int, viewportHeight: Int) -> DeviceDescriptor {
@@ -639,7 +647,8 @@ public struct DeviceDescriptor: Sendable {
             viewportHeight: viewportHeight, pixelRatio: 2.0,
             hasTouch: false,
             supportedTypes: ClientDispositions.macos.nativeComponentTypes,
-            userAgent: "AstralDeep-macOS/0.1")
+            userAgent: "AstralDeep-macOS/0.1",
+            pointerType: "fine")
     }
 
     public static func watch(viewportWidth: Int, viewportHeight: Int) -> DeviceDescriptor {
@@ -667,6 +676,8 @@ public struct DeviceDescriptor: Sendable {
             "has_camera": .bool(false),
             "has_file_system": .bool(deviceType != "watch"),
             "connection_type": .string("wifi"),
+            "reduced_motion": .bool(reducedMotion),
+            "pointer_type": .string(pointerType),
             "user_agent": .string(userAgent),
             "supported_types": .array(supportedTypes.map { .string($0) }),
         ])

@@ -12,7 +12,10 @@ rest) and the server-owned provider catalog
   cannot diverge (zero client-side prefill/lock logic).
 * The API key is write-only: a "saved" placeholder is shown when a record
   exists and the key itself is NEVER echoed into markup or components.
-  Keyless local-runtime presets may save with an empty key.
+  Key-optional presets (local runtimes and ``custom`` — self-hosted
+  OpenAI-compatible endpoints are commonly keyless) may save with an empty
+  key; the probe-gated save still refuses a keyless config the endpoint
+  actually rejects.
 * ``chrome_llm_save`` delegates to
   :func:`llm_config.ws_handlers.handle_llm_config_set` — the same
   probe-gated, persisting path the WS ``llm_config_set`` message uses — and

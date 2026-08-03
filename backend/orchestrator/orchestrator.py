@@ -7894,6 +7894,13 @@ class Orchestrator:
                     elif not chat_id:
                         chat_id = await asyncio.to_thread(
                             self.history.create_chat, user_id=user_id)
+                        # 066: the durable operation was admitted BEFORE this
+                        # conversation existed (no chat id at ingress) — bind
+                        # the chat it just created so the publication fences
+                        # keep strict identity semantics. Scoped to the only
+                        # branch that creates a chat; voice is permanently
+                        # bound to its origin and never reaches here.
+                        await self._adopt_operation_chat(chat_id)
                         # Inform UI about new chat ID
                         await self._safe_send(websocket, json.dumps({
                             "type": "chat_created",
@@ -7904,6 +7911,9 @@ class Orchestrator:
                                 self.history.get_chat, chat_id, user_id=user_id):
                             await asyncio.to_thread(
                                 self.history.create_chat, chat_id, user_id=user_id)
+                            # Same 066 adoption: a client-supplied id whose
+                            # conversation did not exist yet.
+                            await self._adopt_operation_chat(chat_id)
                             await self._safe_send(websocket, json.dumps({
                                 "type": "chat_created",
                                 "payload": {"chat_id": chat_id, "from_message": True}
@@ -8271,6 +8281,24 @@ class Orchestrator:
 
                 elif msg.action == "new_chat":
                     chat_id = self.history.create_chat(user_id=user_id)
+                    # 066 (FR-024): a fresh chat greets with the welcome
+                    # examples exactly like a fresh session — same wel_
+                    # purge-on-first-send rules, never persisted. Sent BEFORE
+                    # chat_created: once the client binds the new chat id,
+                    # loose renders route into the transient reducer and a
+                    # late welcome would be dropped.
+                    try:
+                        from orchestrator.welcome import welcome_components
+                        _tools_avail = await asyncio.to_thread(
+                            self.compute_tools_available_for_user, user_id)
+                        with perf_span("welcome.render", user=user_id):
+                            await self.send_ui_render(
+                                websocket,
+                                welcome_components(tools_available=_tools_avail),
+                                speak=False)
+                        self._ws_welcome[id(websocket)] = True
+                    except Exception as _e:  # non-fatal — an empty canvas is fine
+                        logger.debug(f"new-chat welcome render failed (non-fatal): {_e}")
                     if isinstance(msg, CorrelatedNewChat):
                         await self._safe_send(
                             websocket,
@@ -8304,7 +8332,6 @@ class Orchestrator:
                                 "from_message": False,
                             },
                         }))
-
                 # Feature 054 (FR-014): LLM-dependent workspace/component
                 # verbs are refused server-side while the acting user has no
                 # LLM configuration, regardless of client behavior. (The
@@ -9425,6 +9452,34 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     # =========================================================================
     # LLM-POWERED TOOL ROUTING
     # =========================================================================
+
+    async def _adopt_operation_chat(self, chat_id) -> None:
+        """Bind a pre-conversation operation to the chat its turn created.
+
+        The first message of a new chat is admitted before the conversation
+        exists, so its durable operation row carries ``chat_id=None``. Once
+        the turn has created (or resolved) the real chat, bind it durably
+        AND refresh the in-context record so every downstream publication
+        fence keeps strict identity semantics. A no-op for operations that
+        were admitted with their conversation already bound.
+        """
+        if not chat_id:
+            return
+        operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+        if not isinstance(operation_context, dict):
+            return
+        operation = operation_context.get("operation")
+        fence = operation_context.get("execution_fence")
+        if (
+            not isinstance(operation, OperationRecord)
+            or fence is None
+            or operation.chat_id is not None
+        ):
+            return
+        updated = await self._call_work_admission(
+            self.work_admission.bind_chat, fence, str(chat_id)
+        )
+        operation_context["operation"] = updated
 
     @staticmethod
     def _conversation_authority(operation_context, websocket):
@@ -20770,6 +20825,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 error.status_code,
                 error.upstream_error_class,
             )
+            # 066 (FR-020): a chat with a completed turn must never stay
+            # "New Chat" — deterministic fallback from the user's message.
+            try:
+                fallback = " ".join((message or "").split())[:48].strip()
+                if fallback:
+                    self.history.update_chat_title(
+                        chat_id, fallback, user_id=user_id)
+                    await self._broadcast_user_history()
+            except Exception:
+                logger.debug("chat-title fallback failed", exc_info=True)
             await self._record_llm_call(
                 self.audit_recorder,
                 actor_user_id=actor_user_id,

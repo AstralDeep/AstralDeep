@@ -864,10 +864,12 @@ class KnowledgeSynthesizer:
             self.model = None
             return False
         try:
+            from llm_config.client_factory import openai_auth_kwargs
+
             self.client = OpenAI(
-                api_key=getattr(cfg, "api_key", "") or "not-needed",
                 base_url=cfg.base_url,
                 timeout=Timeout(300.0, connect=10.0),
+                **openai_auth_kwargs(getattr(cfg, "api_key", "") or ""),
             )
             self.model = cfg.model
             return True

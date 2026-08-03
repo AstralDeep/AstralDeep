@@ -12,21 +12,55 @@ import UniformTypeIdentifiers
     import PhotosUI
 #endif
 
+// 066 layout contract (specs/066-canvas-first-uiux/apple-handoff.md): the
+// canvas is the primary surface on every device class. Three width-driven
+// modes mirror the web reference — `stacked` < 700pt, `collapsed` 700–1023pt
+// (canvas full width, floating composer, conversation as a drawer with an
+// unread badge), `split` ≥ 1024pt (canvas LEADING, rail trailing). The stored
+// per-device preference can force `collapsed` at any width ≥ 700, but the
+// width bound always beats the preference so the rail can never crush the
+// composer below ~20 visible characters (FR-004). pt ≈ CSS px keeps the
+// breakpoints in parity with the web client's 700/1024.
+private enum ShellLayoutMode {
+    case stacked, collapsed, split
+
+    static func forWidth(_ width: CGFloat, pref: String) -> ShellLayoutMode {
+        if width < 700 { return .stacked }
+        if pref == "closed" { return .collapsed }
+        if width < 1024 { return .collapsed }
+        return .split
+    }
+}
+
 struct ChatShell: View {
     @Environment(AppModel.self) var model
-    #if os(iOS)
-        @Environment(\.horizontalSizeClass) private var hSize
-    #endif
-    private var isSplit: Bool {
-        #if os(iOS)
-            return hSize == .regular
-        #else
-            return true
-        #endif
-    }
+    // FR-002: the collapse/expand choice persists per device across launches
+    // ("" = automatic, "open" pins the split rail, "closed" collapses it).
+    @AppStorage("astralChatPref") private var chatPref = ""
+    // The composer draft and the canvas sheets live HERE, above the mode
+    // switch: a resize across a breakpoint swaps the shell (new structural
+    // identity), and view-local state would silently discard typed-but-unsent
+    // text or dismiss an open timeline/refine sheet mid-edit.
+    @State private var draft = ""
+    @State private var showTimeline = false
+    @State private var refineTarget: RefineTarget?
     var body: some View {
-        Group {
-            if isSplit { SplitShell() } else { StackedShell() }
+        // The outer GeometryReader is itself a layout firewall (063 class): it
+        // answers the parent's proposal in O(1) and hands every shell a
+        // CONCRETE size, so no flexible sibling ever asks a transcript/canvas
+        // ScrollView for its ideal height.
+        GeometryReader { geo in
+            shell(size: geo.size)
+                .frame(width: geo.size.width, height: geo.size.height)
+        }
+        .sheet(isPresented: $showTimeline) {
+            CanvasTimelineOverlay(history: model.canvasHistory) { idx in
+                model.viewCanvasSnapshot(idx)
+                showTimeline = false
+            }
+        }
+        .sheet(item: $refineTarget) { target in
+            RefineSheet(target: target)
         }
         #if os(macOS)
             // T033/FR-017: Finder drag-and-drop stages chips exactly like the
@@ -40,29 +74,165 @@ struct ChatShell: View {
             }
         #endif
     }
+
+    @ViewBuilder
+    private func shell(size: CGSize) -> some View {
+        switch ShellLayoutMode.forWidth(size.width, pref: chatPref) {
+        case .stacked:
+            StackedShell(
+                draft: $draft, showTimeline: $showTimeline,
+                refineTarget: $refineTarget)
+        case .collapsed:
+            CollapsedShell(
+                containerSize: size, draft: $draft,
+                showTimeline: $showTimeline, refineTarget: $refineTarget,
+                onPinRail: { chatPref = "open" })
+        case .split:
+            SplitShell(
+                containerSize: size, draft: $draft,
+                showTimeline: $showTimeline, refineTarget: $refineTarget,
+                onCollapseRail: { chatPref = "closed" })
+        }
+    }
 }
 
 // MARK: - Layouts
 
 private struct StackedShell: View {
     @Environment(AppModel.self) var model
+    @Binding var draft: String
+    @Binding var showTimeline: Bool
+    @Binding var refineTarget: RefineTarget?
     var body: some View {
         VStack(spacing: 0) {
-            CanvasArea().frame(maxWidth: .infinity, maxHeight: .infinity)
+            CanvasArea(showTimeline: $showTimeline, refineTarget: $refineTarget)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             if model.turnActive { StepTrailView(lines: model.stepTrail) }
             MessagesPanel()
-            InputBar()
+            InputBar(input: $draft)
         }
     }
 }
 
+/// 066 `collapsed` mode: the canvas takes the FULL width and the composer
+/// floats as a centered bar (max 760pt) over its bottom edge; the transcript
+/// opens as a drawer inside that bar, with an unread badge on the toggle
+/// (FR-001/FR-003). `safeAreaInset` keeps the canvas's own scroll content
+/// clear of the bar while the bar visually overlays it — and, like every
+/// other transcript host, the drawer's ChatList gets a CONCRETE height so
+/// flexible-space rounds stay O(1) (063 livelock class).
+private struct CollapsedShell: View {
+    @Environment(AppModel.self) var model
+    @Environment(ThemeStore.self) var theme
+    let containerSize: CGSize
+    @Binding var draft: String
+    @Binding var showTimeline: Bool
+    @Binding var refineTarget: RefineTarget?
+    let onPinRail: () -> Void
+    @State private var drawerOpen = false
+    @State private var unread = 0
+    private var p: AstralPalette { theme.palette }
+
+    private var assistantCount: Int {
+        model.visibleTurns.filter {
+            $0.role != "user" && (!$0.text.isEmpty || !$0.components.isEmpty)
+        }.count
+    }
+    private var drawerHeight: CGFloat {
+        min(420, max(220, containerSize.height * 0.46))
+    }
+
+    var body: some View {
+        CanvasArea(showTimeline: $showTimeline, refineTarget: $refineTarget)
+            .safeAreaInset(edge: .bottom) {
+                floatingBar
+                    .frame(maxWidth: 760)
+                    .background(p.surface, in: RoundedRectangle(cornerRadius: 18))
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(p.border))
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 12)
+            }
+            .onChange(of: assistantCount) { oldCount, newCount in
+                // FR-003: new assistant activity while the conversation is
+                // hidden surfaces as a badge, never an auto-reveal. Status
+                // updates ride setStatus paths, not turns, so they can't trip
+                // this counter. HEURISTIC: +1 deltas are treated as live
+                // turns, larger jumps as hydration (chat restore/switch).
+                // Known miscounts (recorded in the 066 follow-ups register):
+                // a multi-doc-card ui_upsert lands >1 in one transaction
+                // (under-counts), and a reasoning row + narrative in one
+                // reply can badge twice (over-counts). A structural fix needs
+                // reducer-level live-vs-hydration provenance, not a view-side
+                // delta guess.
+                if !drawerOpen, newCount == oldCount + 1 {
+                    unread = min(unread + 1, 10)
+                }
+            }
+    }
+
+    private var floatingBar: some View {
+        VStack(spacing: 0) {
+            if drawerOpen {
+                HStack(spacing: 6) {
+                    Text("CONVERSATION")
+                        .font(.caption2.bold()).foregroundStyle(p.muted)
+                    Spacer()
+                    // The pin can only take effect where split is reachable
+                    // (≥1024pt — width bound beats preference); below that it
+                    // would be an inert affordance, so it is not offered.
+                    if containerSize.width >= 1024 {
+                        Button(action: onPinRail) {
+                            Image(systemName: "sidebar.trailing")
+                                .font(.caption.weight(.semibold)).foregroundStyle(p.muted)
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Pin conversation rail")
+                        .help("Pin conversation rail")
+                    }
+                }
+                .padding(.horizontal, 14).padding(.top, 8)
+                ChatList().frame(height: drawerHeight)
+                Divider().overlay(p.border)
+            }
+            if model.turnActive { StepTrailView(lines: model.stepTrail) }
+            HStack(alignment: .bottom, spacing: 2) {
+                ChatDrawerToggle(unread: unread, open: drawerOpen) {
+                    drawerOpen.toggle()
+                    if drawerOpen { unread = 0 }
+                }
+                .padding(.leading, 8).padding(.bottom, 12)
+                InputBar(input: $draft)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+}
+
+/// 066 `split` mode: canvas LEADS (left, stretching), the conversation rail
+/// TRAILS (right, clamped 320–420pt) — the same structural flip Windows'
+/// QSplitter and Android's SplitShell received (parity row P1).
 private struct SplitShell: View {
     @Environment(AppModel.self) var model
     @Environment(ThemeStore.self) var theme
+    let containerSize: CGSize
+    @Binding var draft: String
+    @Binding var showTimeline: Bool
+    @Binding var refineTarget: RefineTarget?
+    let onCollapseRail: () -> Void
+
+    // Web reference: clamp(320px, 28vw, 420px).
+    private var railWidth: CGFloat {
+        max(320, min(420, containerSize.width * 0.28))
+    }
+
     var body: some View {
         HStack(spacing: 0) {
+            CanvasArea(showTimeline: $showTimeline, refineTarget: $refineTarget)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider().overlay(theme.palette.border)
             VStack(spacing: 0) {
-                PanelHeader(title: "Conversation")
+                RailHeader(onCollapse: onCollapseRail)
                 // Same layout firewall as CanvasArea: without it the rail
                 // VStack's flexible rounds measure the full transcript per
                 // proposal (063 livelock class — this is the macOS/iPad shape).
@@ -70,12 +240,66 @@ private struct SplitShell: View {
                     ChatList().frame(width: geo.size.width, height: geo.size.height)
                 }
                 if model.turnActive { StepTrailView(lines: model.stepTrail) }
-                InputBar()
+                InputBar(input: $draft)
             }
-            .frame(width: 360)
-            Divider().overlay(theme.palette.border)
-            CanvasArea().frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: railWidth)
         }
+    }
+}
+
+private struct RailHeader: View {
+    @Environment(ThemeStore.self) var theme
+    let onCollapse: () -> Void
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("CONVERSATION")
+                .font(.caption2.bold()).foregroundStyle(theme.palette.muted)
+            Spacer()
+            Button(action: onCollapse) {
+                Image(systemName: "chevron.right.2")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(theme.palette.muted)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Collapse conversation rail")
+            .help("Collapse conversation rail")
+        }
+        .padding(.horizontal, 14).padding(.vertical, 4)
+        .background(theme.palette.surface)
+    }
+}
+
+private struct ChatDrawerToggle: View {
+    @Environment(ThemeStore.self) var theme
+    let unread: Int
+    let open: Bool
+    let action: () -> Void
+    private var p: AstralPalette { theme.palette }
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: open ? "chevron.down" : "bubble.left.and.bubble.right")
+                .font(.system(size: 16)).foregroundStyle(p.muted)
+                .frame(width: 38, height: 38)
+                .background(p.surface2, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.border))
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            if unread > 0, !open {
+                Text(unread > 9 ? "9+" : "\(unread)")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(p.primary, in: Capsule())
+                    .offset(x: 5, y: -5)
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityIdentifier("collapsed-chat-toggle")
+        .accessibilityLabel(open ? "Hide conversation" : "Show conversation")
+        .accessibilityValue(unread > 0 && !open ? "\(unread) unread" : "")
+        .help(open ? "Hide conversation" : "Show conversation")
     }
 }
 
@@ -84,8 +308,10 @@ private struct SplitShell: View {
 private struct CanvasArea: View {
     @Environment(AppModel.self) var model
     @Environment(ThemeStore.self) var theme
-    @State private var showTimeline = false
-    @State private var refineTarget: RefineTarget?
+    // Owned by ChatShell (the sheets are attached there too) so a layout-mode
+    // switch cannot dismiss an open timeline or refine sheet mid-edit.
+    @Binding var showTimeline: Bool
+    @Binding var refineTarget: RefineTarget?
     private var p: AstralPalette { theme.palette }
 
     private var canvasItems: [(key: String, comp: AstralComponent)] {
@@ -167,15 +393,6 @@ private struct CanvasArea: View {
             }
         }
         .background(p.bg)
-        .sheet(isPresented: $showTimeline) {
-            CanvasTimelineOverlay(history: model.canvasHistory) { idx in
-                model.viewCanvasSnapshot(idx)
-                showTimeline = false
-            }
-        }
-        .sheet(item: $refineTarget) { target in
-            RefineSheet(target: target)
-        }
     }
 }
 
@@ -389,18 +606,6 @@ private struct MessagesPanel: View {
     }
 }
 
-private struct PanelHeader: View {
-    @Environment(ThemeStore.self) var theme
-    let title: String
-    var body: some View {
-        Text(title.uppercased())
-            .font(.caption2.bold()).foregroundStyle(theme.palette.muted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(theme.palette.surface)
-    }
-}
-
 private struct ChatList: View {
     @Environment(AppModel.self) var model
     private var visible: [AppModel.ChatTurn] {
@@ -552,7 +757,9 @@ private struct ReasoningSnippet: View {
 private struct InputBar: View {
     @Environment(AppModel.self) var model
     @Environment(ThemeStore.self) var theme
-    @State private var input = ""
+    // Owned by ChatShell so the draft survives layout-mode switches
+    // (stacked/collapsed/split give this view a new structural identity).
+    @Binding var input: String
     @State private var showImporter = false
     #if os(iOS)
         @State private var showPhotoPicker = false
@@ -661,53 +868,75 @@ private struct VoiceComposerControls: View {
     @Environment(ThemeStore.self) var theme
     private var p: AstralPalette { theme.palette }
 
+    /// 066/P5+P11: the feedback line renders for every live status and every
+    /// unavailability reason, and hides ONLY the at-rest boilerplate
+    /// (off/ready — "Voice is available."), so the composer is quiet at rest
+    /// without ever showing a disabled mic with no explanation. This is the
+    /// Windows quiet-set rule (`state=="off" && message in {"", "off",
+    /// "ready"}`); Apple's local fallback fabricates a message for every
+    /// state, so gating on off/ready is the equivalent predicate.
+    private var statusMessage: String? {
+        guard let message = model.voice.message, !message.isEmpty else { return nil }
+        if model.voice.phase == "off", model.voice.reason == "ready" { return nil }
+        return message
+    }
+
+    /// 066/P5: before the first `composer_state` of a connection (and after a
+    /// teardown clears it) the server model is absent — render a disabled
+    /// default mic instead of nothing, the native twin of the web client's
+    /// pre-rendered voice-start control. The first real frame replaces it.
+    private var showsDefaultControl: Bool {
+        model.voice.composer == nil && !model.voice.active
+            && model.voice.terminalNotice == nil
+    }
+
     var body: some View {
         let controls = model.voice.composer?.controls.filter(\.visible) ?? []
-        if !controls.isEmpty || model.voice.active || model.voice.terminalNotice != nil {
+        if !controls.isEmpty || model.voice.active || model.voice.terminalNotice != nil
+            || showsDefaultControl
+        {
             VStack(alignment: .leading, spacing: 5) {
                 if let notice = model.voice.terminalNotice {
                     VoiceTerminalNoticeView(notice: notice)
                 }
-                if !controls.isEmpty {
+                if showsDefaultControl {
+                    chipLabel(icon: "mic.fill", busy: false, pressed: false)
+                        .opacity(0.5)
+                        .accessibilityIdentifier("voice-control-voice-start")
+                        .accessibilityLabel("Start voice conversation")
+                        .accessibilityValue("Checking voice availability")
+                        .help("Checking voice availability…")
+                } else if !controls.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(controls) { control in
                                 Button {
                                     Task { await model.performVoiceControl(control.action) }
                                 } label: {
-                                    HStack(spacing: 5) {
-                                        if control.busy {
-                                            if ContinuousActivityPresentation.allowsAnimatedIndicators {
-                                                ProgressView().controlSize(.small)
-                                            } else {
-                                                Image(systemName: "ellipsis")
-                                                    .accessibilityHidden(true)
-                                            }
-                                        } else {
-                                            Image(systemName: symbol(control.icon))
-                                        }
-                                        Text(control.label).lineLimit(1)
-                                    }
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 10).padding(.vertical, 6)
-                                    .foregroundStyle(control.pressed ? p.surface : p.primary)
-                                    .background(
-                                        control.pressed ? p.primary : p.surface2,
-                                        in: Capsule()
+                                    // P11 shared control style: composer
+                                    // controls are ICONS with the server label
+                                    // as the tooltip + accessible name, like
+                                    // web/Windows/Android — never a text chip.
+                                    chipLabel(
+                                        icon: symbol(control.icon),
+                                        busy: control.busy,
+                                        pressed: control.pressed
                                     )
-                                    .overlay(Capsule().stroke(p.border))
+                                    .opacity(control.enabled ? 1 : 0.5)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(!control.enabled || control.busy)
                                 .accessibilityIdentifier("voice-control-\(control.key)")
                                 .accessibilityLabel(control.label)
                                 .accessibilityValue(
-                                    control.busy ? "In progress" : (control.pressed ? "On" : "Off"))
+                                    control.busy ? "In progress" : (control.pressed ? "On" : "Off")
+                                )
+                                .help(control.label)
                             }
                         }
                     }
                 }
-                if model.voice.active, let message = model.voice.message, !message.isEmpty {
+                if let message = statusMessage {
                     HStack(spacing: 5) {
                         Image(systemName: model.voice.mediaConnected ? "waveform" : "waveform.slash")
                         Text(message).lineLimit(2)
@@ -728,6 +957,26 @@ private struct VoiceComposerControls: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func chipLabel(icon: String, busy: Bool, pressed: Bool) -> some View {
+        Group {
+            if busy {
+                if ContinuousActivityPresentation.allowsAnimatedIndicators {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "ellipsis").accessibilityHidden(true)
+                }
+            } else {
+                Image(systemName: icon)
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .frame(width: 38, height: 30)
+        .foregroundStyle(pressed ? p.surface : p.primary)
+        .background(pressed ? p.primary : p.surface2, in: Capsule())
+        .overlay(Capsule().stroke(p.border))
     }
 
     private func symbol(_ serverIcon: String) -> String {

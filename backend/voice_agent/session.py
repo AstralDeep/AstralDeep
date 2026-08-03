@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import math
+import os
 import re
 import time
 from collections import deque
@@ -61,13 +62,49 @@ VAD_THRESHOLD = 0.5
 # a 128-ms candidate before allocating a turn. Ambiguous frames provide bounded
 # pre-roll and may bridge that evidence within one 512-ms window. This survives
 # normal Opus posterior smoothing while rejecting a lone spike and keeping the
-# pre-recognition buffer finite. Endpoint after 1.28 seconds of below-release
-# evidence so ordinary clause pauses survive as one conversational turn.
+# pre-recognition buffer finite. The turn endpoints after a bounded run of
+# below-release evidence so ordinary clause pauses survive as one
+# conversational turn (VAD_END_SILENCE_FRAMES below).
 VAD_RELEASE_THRESHOLD = VAD_THRESHOLD - 0.15
 VAD_MIN_HIGH_CONFIDENCE_FRAMES = 2
 VAD_MIN_CANDIDATE_FRAMES = 4
 VAD_MAX_CANDIDATE_FRAMES = 16
-VAD_END_SILENCE_FRAMES = 40
+# Feature 066 near-real-time tuning. The 065 launch value was a fixed 40
+# frames (1.28 s); that figure was an implementation choice, never a spec
+# contract (no 065 spec/plan/research text pins it). Endpointing floors of
+# roughly 0.8-1.0 s are standard for conversational agents, and 066 optimizes
+# time-to-transcript, so the default drops to 960 ms (30 frames). Operators
+# tune VOICE_ENDPOINT_SILENCE_MS, clamped to a sane [320, 2560] ms and rounded
+# to whole 32 ms frames; unset/invalid values fall back to the default. Read
+# once at import like the feature flags - changing it requires a restart.
+_ENDPOINT_SILENCE_DEFAULT_MS = 960
+_ENDPOINT_SILENCE_MIN_MS = 320
+_ENDPOINT_SILENCE_MAX_MS = 2_560
+
+
+def _endpoint_silence_frames(raw: str | None) -> int:
+    """Return the clamped, frame-rounded endpoint-silence run length."""
+
+    try:
+        requested_ms = int(str(raw).strip(), 10)
+    except (TypeError, ValueError):
+        requested_ms = _ENDPOINT_SILENCE_DEFAULT_MS
+    clamped_ms = min(
+        max(requested_ms, _ENDPOINT_SILENCE_MIN_MS), _ENDPOINT_SILENCE_MAX_MS
+    )
+    return max(1, round(clamped_ms / AUDIO_STREAM_FRAME_MS))
+
+
+VAD_END_SILENCE_FRAMES = _endpoint_silence_frames(
+    os.environ.get("VOICE_ENDPOINT_SILENCE_MS")
+)
+# Feature 066: the endpoint-silence run is proven non-speech frame by frame
+# (any at-or-above-release frame resets the counter), so all but a short tail
+# is trimmed before the batch ASR POST - at the default endpoint that removes
+# ~0.83 s of upload bytes and whisper decode time from every turn. Four frames
+# (128 ms) of retained tail preserve the release transient so the recognizer
+# closes the final word cleanly.
+ASR_TAIL_SILENCE_FRAMES = 4
 MAX_UTTERANCE_FRAMES = 1_875
 MAX_RETAINED_FINALS = 4
 MAX_RETAINED_FINAL_BYTES = 48 * 1024
@@ -1807,6 +1844,7 @@ class DirectRtcSession(BoundControlSession):
         if not self._utterance_active or not self._utterance:
             await self._abort_utterance("empty_utterance", emit=False)
             return
+        self._trim_trailing_silence()
         pcm = bytes(self._utterance)
         self._utterance.clear()
         self._candidate_speech_frames = 0
@@ -1822,6 +1860,28 @@ class DirectRtcSession(BoundControlSession):
             self._recognize(pcm),
             name=f"voice-asr-{self.binding.session_id}",
         )
+
+    def _trim_trailing_silence(self) -> None:
+        """Drop the proven trailing endpoint-silence run before batch ASR.
+
+        ``_silence_frames`` already counts exactly the contiguous trailing
+        below-release run (any speech-evidence frame resets it), so the VAD's
+        existing per-frame verdicts identify the trim without re-analyzing
+        audio. Internal clause pauses are bridged mid-utterance and are never
+        trailing, so they stay intact. The max-length finalize path can also
+        trim, bounded to at most the proven trailing run it arrived with
+        (< the endpoint threshold, or it would have endpointed already). A
+        bounded ASR_TAIL_SILENCE_FRAMES tail is kept for recognizer context.
+        Fail closed: never trim into speech evidence or empty the buffer.
+        """
+
+        excess_frames = self._silence_frames - ASR_TAIL_SILENCE_FRAMES
+        if excess_frames <= 0:
+            return
+        trim_bytes = excess_frames * AUDIO_FRAME_SAMPLES * 2
+        if trim_bytes >= len(self._utterance):
+            return
+        del self._utterance[len(self._utterance) - trim_bytes :]
 
     async def _recognize(self, pcm: bytes) -> None:
         try:

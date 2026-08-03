@@ -640,10 +640,12 @@ class AgentCodeGenerator:
             return None, None
         if cfg is None:
             return None, None
+        from llm_config.client_factory import openai_auth_kwargs
+
         return OpenAI(
-            api_key=getattr(cfg, "api_key", "") or "not-needed",
             base_url=cfg.base_url,
             timeout=Timeout(180.0, connect=10.0),
+            **openai_auth_kwargs(getattr(cfg, "api_key", "") or ""),
         ), cfg.model
 
     def _slugify(self, name: str) -> str:

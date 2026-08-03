@@ -21,6 +21,7 @@ from .session import (
     SileroVad,
 )
 from .speech_adapters import (
+    FixedPhraseTTSCache,
     SpeechPreflight,
     SpeechPreflightError,
     SpeechPreflightResult,
@@ -93,7 +94,12 @@ def build_pool_client(
     resolved_rtc = rtc_factory or LiveKitRtcFactory()
     resolved_vad_factory = vad_factory or SileroVad
     asr = SpeachesBatchSTT(transport=transport, api_key=config.speech_api_key)
-    tts = SpeachesTTS(transport=transport, api_key=config.speech_api_key)
+    # Feature 066: repeated server-owned announcements are served from bounded
+    # worker memory instead of a fresh TTS round trip; user-content text never
+    # matches the closed vocabulary and passes straight through.
+    tts = FixedPhraseTTSCache(
+        SpeachesTTS(transport=transport, api_key=config.speech_api_key)
+    )
     client_holder: dict[str, PoolClient] = {}
 
     def create_session(binding: SessionBinding) -> DirectRtcSession:
@@ -140,6 +146,51 @@ async def run_speech_preflight(
         transport=resolved_transport,
         api_key=config.speech_api_key,
     ).run()
+
+
+# Feature 066 (FR-036). A speech service that is briefly missing its models
+# or routes used to kill the worker at startup: the preflight raised, nothing
+# caught it, and the process exited 78 — silently, because this package logs
+# nothing before admission. Under `restart: "no"` (staging) the worker then
+# stayed dead until an operator noticed, which is the exact failure this
+# requirement removes. Re-check on bounded backoff instead, and say why on
+# every attempt (reason codes only — a closed, content-free vocabulary).
+_PREFLIGHT_RETRY_INITIAL_SECONDS = 5.0
+_PREFLIGHT_RETRY_MAX_SECONDS = 60.0
+#: A misconfigured credential cannot heal by waiting — fail fast as before.
+_PREFLIGHT_FATAL_REASONS = frozenset({"missing_credential"})
+
+
+def _log_preflight(reason: str, attempt: int) -> None:
+    print(f"voice_worker_preflight:{reason} attempt={attempt}", file=sys.stderr)
+
+
+async def preflight_until_ready(config: WorkerConfig, stop: asyncio.Event) -> bool:
+    """Re-check the speech profile until it is ready or shutdown is requested.
+
+    Returns True once the profile is proven, False if stopped first. Calls
+    ``run_speech_preflight`` with exactly its production signature so the
+    single-call-site contract (and every test double of it) is unchanged.
+    """
+
+    backoff = _PREFLIGHT_RETRY_INITIAL_SECONDS
+    attempt = 0
+    while not stop.is_set():
+        attempt += 1
+        try:
+            await run_speech_preflight(config)
+        except SpeechPreflightError as exc:
+            if exc.reason in _PREFLIGHT_FATAL_REASONS:
+                raise
+            _log_preflight(exc.reason, attempt)
+        else:
+            _log_preflight("ok", attempt)
+            return True
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=backoff)
+        except asyncio.TimeoutError:
+            backoff = min(backoff * 2, _PREFLIGHT_RETRY_MAX_SECONDS)
+    return False
 
 
 def _build_speech_transport(config: WorkerConfig) -> Any:
@@ -227,7 +278,8 @@ async def run_worker(config: WorkerConfig | None = None) -> None:
             loop.add_signal_handler(stop_signal, stop.set)
         except (NotImplementedError, RuntimeError):
             continue
-    await run_speech_preflight(resolved)
+    if not await preflight_until_ready(resolved, stop):
+        return
     client = build_pool_client(resolved)
     bridge = WatchBridgeServer(
         supervisor=client.supervisor,

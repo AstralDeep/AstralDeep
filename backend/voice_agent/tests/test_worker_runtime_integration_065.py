@@ -14,6 +14,7 @@ import pytest
 import voice_agent.main as main_module
 from voice_agent.config import WorkerConfig
 from voice_agent.control import PoolClient, ProtocolViolation
+from voice_agent.speech_adapters import FixedPhraseTTSCache
 from voice_agent.session import (
     DirectRtcSession,
     SessionBinding,
@@ -611,9 +612,12 @@ def test_production_builder_constructs_direct_rtc_with_shared_speech_adapters() 
     assert runtime._rtc_factory is rtc_factory
     assert runtime._vad is vad_instances[0]
     assert runtime._asr._transport is transport
-    assert runtime._tts._transport is transport
+    # Feature 066: the production TTS is the bounded fixed-phrase cache
+    # wrapping the exact-profile adapter.
+    assert isinstance(runtime._tts, FixedPhraseTTSCache)
+    assert runtime._tts._inner._transport is transport
     assert runtime._asr._api_key == "speech-key"
-    assert runtime._tts._api_key == "speech-key"
+    assert runtime._tts._inner._api_key == "speech-key"
     assert (
         runtime._notice_sink(SessionNotice("final_transcript", text="secret")) is False
     )

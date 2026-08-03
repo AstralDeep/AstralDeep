@@ -157,7 +157,18 @@ private fun SplitShell(
     renderer: Renderer,
     vm: AppViewModel,
 ) {
+    // 066 canvas-first parity: the canvas leads and the conversation rail sits
+    // on the trailing edge — the same arrangement as the web split mode and the
+    // Windows splitter.
     Row(modifier = Modifier.fillMaxSize()) {
+        CanvasArea(
+            state = state,
+            renderer = renderer,
+            onSelectSnapshot = vm::viewCanvasSnapshot,
+            onBackToLive = vm::backToLiveCanvas,
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+        )
+        VerticalDivider()
         Column(modifier = Modifier.width(360.dp).fillMaxHeight()) {
             PanelHeader("Conversation")
             ChatList(state.visibleTurns, Modifier.fillMaxWidth().weight(1f), renderer)
@@ -173,14 +184,6 @@ private fun SplitShell(
                 onOpenAttachments = { vm.openSurface("attachments") },
             )
         }
-        VerticalDivider()
-        CanvasArea(
-            state = state,
-            renderer = renderer,
-            onSelectSnapshot = vm::viewCanvasSnapshot,
-            onBackToLive = vm::backToLiveCanvas,
-            modifier = Modifier.weight(1f).fillMaxHeight(),
-        )
     }
 }
 

@@ -80,6 +80,26 @@ def test_new_chat_button_in_topbar_for_every_role():
         assert 'data-menu-key="new-chat"' not in html
 
 
+def test_canvas_page_actions_live_in_the_topbar_hidden_by_default():
+    """Export page / Share page moved out of a sticky bar above the canvas and
+    into the top bar (066). Two things must hold together: they ship HIDDEN, so
+    an empty or unflagged canvas shows no chrome at all and client.js is the
+    only thing that reveals them; and they keep the class names the delegated
+    click handlers dispatch on, so the move changed placement, not behavior."""
+    for roles in (["user"], ["admin", "user"], None):
+        html = render_topbar(roles=roles)
+        for btn_id in ('id="astral-export-page-btn"', 'id="astral-share-page-btn"'):
+            assert btn_id in html
+            assert html.index(btn_id) < html.index('id="astral-settings"')
+        # The handler hooks: export by class, share by class + canvas scope.
+        assert "astral-export-canvas" in html
+        assert 'data-share-scope="canvas"' in html
+        # Both are hidden at render time — nothing reveals itself server-side.
+        assert html.count("hidden") >= 2
+        assert 'aria-label="Export page"' in html
+        assert 'aria-label="Share page"' in html
+
+
 # ── Feature 033 (C-U8) — Pulse digest top-bar icon (flag-gated) ──────────────
 
 def test_pulse_icon_absent_when_flag_off(monkeypatch):

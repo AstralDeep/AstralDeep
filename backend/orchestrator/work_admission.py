@@ -366,6 +366,10 @@ class WorkAdmissionRepository(Protocol):
         self, owner: OperationOwner, operation_id: uuid.UUID
     ) -> SafeOperationProjection: ...
 
+    def bind_chat(
+        self, fence: ExecutionFence, chat_id: str, *, now: datetime | None
+    ) -> OperationRecord: ...
+
     def reconcile_submission(
         self, owner: OperationOwner, submission_id: uuid.UUID
     ) -> SubmissionResult: ...
@@ -705,6 +709,18 @@ class WorkAdmissionCoordinator:
     def update_phase(self, fence: ExecutionFence, phase_code: str) -> OperationRecord:
         _validate_safe_code(phase_code, "phase_code")
         return self._repository.update_phase(fence, phase_code, now=self._now())
+
+    def bind_chat(self, fence: ExecutionFence, chat_id: str) -> OperationRecord:
+        """Bind the conversation a fenced turn just created onto its operation.
+
+        Only the ``None -> chat`` transition is legal: an operation admitted
+        before its conversation existed (the first message of a new chat has
+        no chat_id at ingress) adopts the chat its turn created, durably, so
+        every downstream publication fence keeps strict identity semantics.
+        Re-binding the same chat is an idempotent no-op; a different existing
+        binding is a cross-conversation conflict and refuses.
+        """
+        return self._repository.bind_chat(fence, chat_id, now=self._now())
 
     def renew_execution_lease(self, fence: ExecutionFence) -> SlotLeaseRenewal:
         return self._repository.renew_execution_lease(
@@ -1753,6 +1769,31 @@ class InMemoryWorkAdmissionRepository:
             updated = replace(
                 record,
                 phase_code=phase_code,
+                state_revision=record.state_revision + 1,
+                updated_at=current_time,
+            )
+            self._operations[record.operation_id] = updated
+            return updated
+
+    def bind_chat(
+        self,
+        fence: ExecutionFence,
+        chat_id: str,
+        *,
+        now: datetime | None,
+    ) -> OperationRecord:
+        current_time = self._now(now)
+        with self._lock:
+            record = self._operations.get(fence.operation_id)
+            if record is None or not self._fence_matches(record, fence):
+                raise StaleExecutionFenceError("execution fence is stale")
+            if record.chat_id is not None:
+                if str(record.chat_id) == str(chat_id):
+                    return record
+                raise ValueError("operation is bound to a different conversation")
+            updated = replace(
+                record,
+                chat_id=str(chat_id),
                 state_revision=record.state_revision + 1,
                 updated_at=current_time,
             )
@@ -3401,6 +3442,44 @@ class PostgresWorkAdmissionRepository:
                 """,
                 (
                     phase_code,
+                    current_time,
+                    str(fence.operation_id),
+                    fence.execution_generation,
+                    str(fence.execution_lease_token),
+                ),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise StaleExecutionFenceError("execution fence is stale")
+            return self._operation_from_row(row)
+
+    def bind_chat(
+        self,
+        fence: ExecutionFence,
+        chat_id: str,
+        *,
+        now: datetime | None,
+    ) -> OperationRecord:
+        with self._transaction() as cursor:
+            current_time = self._current_time(cursor, now)
+            operation = self._assert_current_execution_cursor(cursor, fence)
+            if operation.chat_id is not None:
+                if str(operation.chat_id) == str(chat_id):
+                    return operation
+                raise ValueError("operation is bound to a different conversation")
+            cursor.execute(
+                """
+                UPDATE operation_record
+                SET chat_id = %s, state_revision = state_revision + 1,
+                    updated_at = %s
+                WHERE operation_id = %s AND state = 'running'
+                  AND execution_generation = %s
+                  AND execution_lease_token = %s
+                  AND chat_id IS NULL
+                RETURNING *
+                """,
+                (
+                    str(chat_id),
                     current_time,
                     str(fence.operation_id),
                     fence.execution_generation,

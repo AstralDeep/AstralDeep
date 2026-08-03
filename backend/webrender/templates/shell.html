@@ -53,8 +53,19 @@
           <p class="astral-canvas-empty-sub">Ask something below and AstralDeep will build a live interface for it.</p>
         </div>
       </section>
-      <!-- Chat panel: raised glass rail (astral.css owns surface/border) -->
-      <aside class="astral-chat-panel w-[380px] max-w-[40%] flex flex-col min-h-0">
+      <!-- Chat panel: raised glass rail. astral.css owns surface/border AND
+           width/placement per layout mode (066): "split" right rail,
+           "collapsed" floating composer + overlay drawer, "stacked" bottom
+           sheet. No Tailwind width classes here — the mode CSS decides. -->
+      <aside class="astral-chat-panel flex flex-col min-h-0">
+        <!-- 066: rail header — collapse control (split mode only) -->
+        <div class="astral-rail-head">
+          <span class="astral-rail-title">Conversation</span>
+          <button type="button" id="astral-collapse-btn" class="astral-rail-collapse"
+                  title="Hide the chat panel (canvas full width)" aria-label="Hide the chat panel">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="13 17 18 12 13 7"></polyline><polyline points="6 17 11 12 6 7"></polyline></svg>
+          </button>
+        </div>
         <!-- Server-driven chat-history surface (skeleton → list), ROTE-adapted -->
         <div id="astral-history" class="astral-history-region shrink-0 overflow-y-auto max-h-44 border-b border-white/10 px-3 py-2 space-y-1"></div>
         <!-- Stacked layout only: collapsible transcript bar (the web twin of
@@ -65,6 +76,16 @@
                 aria-expanded="false" aria-controls="astral-chat"><span id="astral-msgs-label">Messages</span></button>
         <div id="astral-chat" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
         <form id="astral-form" class="astral-chat-form p-3 flex flex-col gap-2">
+          <!-- 066: connection state pill — visible whenever the socket is not
+               healthily registered; sends queue instead of vanishing. -->
+          <div id="astral-conn" class="astral-conn" hidden data-conn="connecting">
+            <span class="astral-conn-dot" aria-hidden="true"></span>
+            <span id="astral-conn-text" role="status" aria-live="polite">Connecting…</span>
+          </div>
+          <!-- 066: turn status line — phases render here, beside the composer,
+               instead of only in the far-away topbar. client.js mirrors the
+               topbar #astral-status writes into it. -->
+          <div id="astral-turn-status" class="astral-turn-status" role="status" aria-live="polite" aria-atomic="true" hidden></div>
           <!-- Attachment chips for files staged on the next turn -->
           <div id="astral-attachments" class="astral-attachments hidden flex flex-wrap gap-1.5"></div>
           <!-- Feature 040 (US5): slash-command typeahead (shown while typing a
@@ -88,13 +109,21 @@
                     aria-label="Run in background">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
             </button>
-            <!-- Feature 065: this is an empty host, not a client-owned button
-                 definition. client.js renders the ordered controls and labels
-                 supplied by the authoritative composer_state frame. -->
+            <!-- Feature 065 host + 066 default: the voice affordance is ALWAYS
+                 present. This pre-rendered start control is the client-local
+                 default (disabled, honest reason) until the authoritative
+                 composer_state frame replaces the host's children. -->
             <div id="astral-voice-controls" class="astral-voice-controls shrink-0" role="group"
-                 aria-label="Voice conversation controls"></div>
+                 aria-label="Voice conversation controls"><button type="button" class="astral-voice-control" data-voice-key="voice-start" data-voice-action="voice_session_start" data-icon="microphone" data-default="1" disabled aria-pressed="false" aria-busy="false" aria-label="Start voice conversation" title="Checking voice availability…"><span class="astral-sr-only">Start voice conversation</span></button></div>
             <input id="astral-input" type="text" autocomplete="off" placeholder="Message an agent…" data-tour-target="chat.input"
                    class="astral-field flex-1 min-w-0 rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-astral-text">
+            <!-- 066: transcript toggle for the collapsed (floating-composer)
+                 mode — unread badge; hidden on split/stacked by astral.css. -->
+            <button type="button" id="astral-chat-toggle" class="astral-attach-btn astral-chat-toggle shrink-0"
+                    aria-expanded="false" aria-controls="astral-chat" title="Show conversation" aria-label="Show conversation">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+              <span id="astral-chat-unread" class="astral-chat-unread" hidden>0</span>
+            </button>
             <button type="submit" class="astral-btn astral-btn-primary shrink-0 px-4 py-2 rounded-lg text-sm font-medium bg-astral-primary text-white">Send</button>
           </div>
           <!-- Local adapter feedback remains textual and live so permission,

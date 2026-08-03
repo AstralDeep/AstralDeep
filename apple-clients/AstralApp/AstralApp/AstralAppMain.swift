@@ -123,6 +123,11 @@ struct AstralApp: App {
         }
         #if os(macOS)
             .windowStyle(.titleBar)
+            // 066: a fresh window opens wide enough for the split layout
+            // (canvas leading, rail trailing); the ≥1024pt breakpoint matches
+            // the web client. Users can still resize down to the 900pt
+            // minimum, where the collapsed (floating-composer) mode takes over.
+            .defaultSize(width: 1280, height: 820)
         #endif
     }
 }

@@ -176,6 +176,41 @@ struct WatchChatView: View {
 
     @ViewBuilder
     private var voiceConversationControls: some View {
+        if model.voiceComposer == nil, model.voiceTerminalNotice == nil {
+            // 066/P5: before the first composer_state of a connection (and
+            // after a reset clears it) the server model is absent — show a
+            // disabled default mic instead of nothing, matching web's
+            // pre-rendered voice-start control. The first real frame
+            // replaces it. Gate on FRAME PRESENCE (composer), not on a
+            // visible primary control: an owning-but-suspended session has a
+            // real composer with zero visible session controls, and it must
+            // read "suspended", never "checking availability".
+            Button {
+            } label: {
+                Label("Start voice conversation", systemImage: "mic.fill")
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(WatchBrand.primary)
+            .disabled(true)
+            .accessibilityIdentifier("voice.conversation.primary")
+            .accessibilityLabel("Start voice conversation")
+            .accessibilityValue("Checking voice availability")
+            Text("Checking voice availability…")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else if model.primaryVoiceControl == nil, model.voiceComposer != nil {
+            // Composer present but no visible primary (e.g. this watch owns a
+            // suspended session): surface the honest state label instead of
+            // nothing.
+            Text(model.voiceStatusLabel)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("voice.conversation.state")
+                .accessibilityLabel("Voice conversation")
+                .accessibilityValue(model.voiceStatusLabel)
+        }
         if let primary = model.primaryVoiceControl {
             Button {
                 model.performPrimaryVoiceAction()
@@ -241,13 +276,17 @@ struct WatchChatView: View {
         }
     }
 
+    // P11: one SF Symbol per server icon semantic, identical to the
+    // iOS/macOS map in ChatView.swift (and the same glyph semantics as
+    // Windows' _CONTROL_GLYPHS and web's VOICE_ICONS).
     private func voiceIcon(_ serverIcon: String) -> String {
         switch serverIcon {
         case "microphone": return "mic.fill"
         case "device-transfer": return "arrow.triangle.2.circlepath"
-        case "stop", "speaker-stop": return "stop.fill"
-        case "speaker-muted": return "speaker.slash.fill"
-        case "speaker-consent": return "speaker.wave.2.badge.exclamationmark"
+        case "stop": return "stop.fill"
+        case "speaker-stop": return "speaker.slash.fill"
+        case "speaker-muted": return "speaker.slash"
+        case "speaker-consent": return "speaker.wave.2.bubble"
         case "chat": return "bubble.left.and.bubble.right"
         default: return "waveform"
         }

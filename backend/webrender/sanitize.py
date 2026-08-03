@@ -245,3 +245,49 @@ def block_md(text: Any) -> str:
 
     flush_para(para)
     return "".join(out)
+
+
+def plain_md(text: Any) -> str:
+    """Strip the markdown constructs :func:`block_md` / :func:`inline_md`
+    recognize, returning RAW plain text (feature 066).
+
+    The inverse of the renderers, for contexts that show a short excerpt of
+    assistant prose as text — chat-list previews — where the markup itself
+    was leaking to the user as literal ``**asterisks**``. It reuses the same
+    patterns as the renderers so the two cannot drift, and deliberately does
+    NOT escape: every consumer escapes at render time (escape-first is
+    preserved end to end).
+    """
+    if text is None or text == "":
+        return ""
+    s = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    kept: list[str] = []
+    fenced = False
+    for line in s.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if _HR.match(stripped):
+            continue
+        stripped = re.sub(r"^#{1,6}\s*", "", stripped)   # ATX headings
+        stripped = re.sub(r"^>\s?", "", stripped)         # blockquote
+        stripped = _LIST_START.sub("", stripped)          # list markers
+        if stripped and all(
+            _TABLE_SEP_CELL.match(cell.strip())
+            for cell in _UNESCAPED_PIPE.split(stripped)
+            if cell.strip()
+        ):
+            continue  # a table's ---|--- separator row
+        stripped = _UNESCAPED_PIPE.sub(" ", stripped)     # table cell pipes
+        if stripped:
+            kept.append(stripped)
+    out = " ".join(kept)
+    out = _CODE.sub(lambda m: m.group(1), out)
+    out = _LINK.sub(lambda m: m.group(1), out)
+    out = _BOLD.sub(lambda m: m.group(1) or m.group(2), out)
+    out = _STRIKE.sub(lambda m: m.group(1), out)
+    out = _EM.sub(lambda m: m.group(1) or m.group(2), out)
+    return re.sub(r"\s+", " ", out).strip()

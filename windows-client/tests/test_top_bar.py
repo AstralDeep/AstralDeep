@@ -65,4 +65,44 @@ def test_recent_chats_does_not_use_the_clock_glyph(qapp):
     android's RootScaffold explicitly warns about."""
     tb = _bar(qapp)
     assert "🕓" not in tb.recent_btn.text()
-    assert "Recent chats" in tb.recent_btn.text()
+    # 066: the button is icon-only (web/Android presentation), so its identity
+    # is carried by the accessible name + tooltip rather than visible text.
+    assert tb.recent_btn.accessibleName() == "Recent chats"
+    assert tb.recent_btn.toolTip() == "Recent chats"
+
+
+def test_topbar_controls_are_icon_only_with_names(qapp):
+    """066 style parity: web and Android render every top-bar control except
+    "＋ New" as an icon with the name in the tooltip. Windows shipped full text
+    labels, which read as a different application beside them. Icon-only is
+    only acceptable while every control still NAMES itself for a screen reader
+    and for hover — this pins both halves together."""
+    tb = _bar(qapp)
+    tb._rebuild_topbar_actions(
+        [{"surface": "workspace_timeline", "label": "Workspace timeline",
+          "icon": "clock"}]
+    )
+
+    for btn, name in (
+        (tb.recent_btn, "Recent chats"),
+        (tb.settings_btn, "Settings"),
+        (tb._action_buttons[0], "Workspace timeline"),
+    ):
+        assert len(btn.text()) <= 2, f"{name} still renders a text label"
+        assert btn.accessibleName() == name
+        assert btn.toolTip() == name
+
+    # "＋ New" keeps its word on every client — it is the primary action.
+    assert "New" in tb.new_btn.text()
+
+
+def test_every_server_action_icon_name_has_a_glyph(qapp):
+    """The icon names the top-bar model can emit, from the single source
+    `backend/webrender/chrome/menu_model.py` (web resolves the same three in
+    `chrome/topbar.py::_ICON_SVG`). `sparkle` was absent from the Windows map,
+    so Pulse digest was the one control still rendering as text next to
+    icon-only neighbours. A new server icon must land here too."""
+    from astral_client.app import TopBar
+
+    for name in ("sparkle", "history", "gear"):
+        assert TopBar._ACTION_ICONS.get(name), f"no Windows glyph for icon {name!r}"

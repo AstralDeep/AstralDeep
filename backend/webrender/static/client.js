@@ -385,7 +385,50 @@
       has_file_system: true,
       connection_type: (nav.connection && nav.connection.effectiveType) || "unknown",
       user_agent: navigator.userAgent,
+      // 066 additive capability envelope fields (server defaults are safe
+      // when an older client omits them).
+      reduced_motion: !!(window.matchMedia
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
+      pointer_type: (window.matchMedia
+        && window.matchMedia("(pointer: coarse)").matches) ? "coarse" : "fine",
     };
+  }
+
+  // 066: live capability envelope — re-report on material change (resize
+  // settle wired into the layout debounce; permission and connection changes
+  // below) so server-side adaptation never goes stale. Rides the existing
+  // `update_device` action (the server's live-viewport path: it diffs the
+  // profile and re-adapts the persisted canvas). Debounced + de-duped.
+  var lastCapabilitySignature = "";
+  function maybeReportCapabilities(force) {
+    if (!isSocketReady()) return;
+    var caps = detectDeviceCapabilities();
+    var sig = [caps.viewport_width, caps.viewport_height, caps.device_type,
+      caps.pixel_ratio, caps.microphone_permission, caps.connection_type,
+      caps.reduced_motion, caps.pointer_type].join("|");
+    if (!force && sig === lastCapabilitySignature) return;
+    lastCapabilitySignature = sig;
+    action("update_device", { device: caps }, false);
+  }
+  if (navigator.connection && navigator.connection.addEventListener) {
+    navigator.connection.addEventListener("change", function () {
+      setTimeout(function () { maybeReportCapabilities(); }, 50);
+    });
+  }
+  if (window.matchMedia) {
+    var rmQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (rmQuery.addEventListener) rmQuery.addEventListener("change", function () {
+      maybeReportCapabilities();
+    });
+  }
+  if (navigator.permissions && navigator.permissions.query) {
+    try {
+      navigator.permissions.query({ name: "microphone" }).then(function (st) {
+        if (st && st.addEventListener) st.addEventListener("change", function () {
+          setTimeout(function () { maybeReportCapabilities(); }, 50);
+        });
+      }).catch(function () {});
+    } catch (e) {}
   }
 
   // ROTE ↔ shell cooperation, split exactly like the Android client:
@@ -393,20 +436,50 @@
   // DeviceProfile (rote_config, after register_ui) is stamped on
   // body[data-rote-device], provisionally seeded from local detection so
   // phones never flash the desktop arrangement. The SHELL owns the
-  // ARRANGEMENT via body[data-astral-layout]: "stacked" below 600 CSS px
-  // (Android's COMPACT window-width class → StackedShell), "split"
-  // otherwise — recomputed live on resize, like Compose recomputes its
-  // windowSizeClass on every configuration change.
+  // ARRANGEMENT via body[data-astral-layout]: "stacked" below 700 CSS px,
+  // "collapsed" 700–1023 (or by preference), "split" at ≥1024 — see
+  // applyLayoutClass — recomputed live on resize, like Compose recomputes
+  // its windowSizeClass on every configuration change.
   function applyDeviceProfile(dt) {
     if (dt) document.body.setAttribute("data-rote-device", String(dt));
   }
+  // 066 canvas-first modes: "stacked" (<700), "collapsed" (700-1023 default —
+  // canvas full width, floating composer, transcript drawer), "split" (>=1024
+  // default — right rail). The user's explicit choice persists per device and
+  // wins over the width default at >=700px.
+  var LAYOUT_PREF_KEY = "astral-chat-pref"; // "open" | "closed" | absent=auto
+  function chatLayoutPref() {
+    try {
+      var v = localStorage.getItem(LAYOUT_PREF_KEY);
+      return v === "open" || v === "closed" ? v : "auto";
+    } catch (e) { return "auto"; }
+  }
+  function setChatLayoutPref(v) {
+    try {
+      if (v === "auto") localStorage.removeItem(LAYOUT_PREF_KEY);
+      else localStorage.setItem(LAYOUT_PREF_KEY, v);
+    } catch (e) {}
+    applyLayoutClass();
+  }
   function applyLayoutClass() {
-    var mode = window.innerWidth < 600 ? "stacked" : "split";
+    var w = window.innerWidth, mode;
+    if (w < 700) mode = "stacked";
+    else {
+      var pref = chatLayoutPref();
+      // The rail is only offerable where it leaves a usable composer: below
+      // 1024 a persisted "keep it open" would crush the input to a few
+      // characters (066 FR-004), so the width bound wins over the preference.
+      if (pref === "closed") mode = "collapsed";
+      else if (pref === "open" && w >= 1024) mode = "split";
+      else mode = w >= 1024 ? "split" : "collapsed";
+    }
     if (document.body.getAttribute("data-astral-layout") !== mode) {
       document.body.setAttribute("data-astral-layout", mode);
-      if (mode === "split") { // stacked-only chrome state must not linger
+      if (mode !== "stacked") { // stacked-only chrome state must not linger
         document.body.classList.remove("astral-history-open", "astral-msgs-open");
       }
+      if (mode !== "collapsed") document.body.classList.remove("astral-chat-open");
+      if (mode === "split") clearChatUnread();
     }
   }
   applyDeviceProfile(detectDeviceType());
@@ -414,7 +487,64 @@
   var layoutResizeTimer = null;
   window.addEventListener("resize", function () {
     clearTimeout(layoutResizeTimer);
-    layoutResizeTimer = setTimeout(applyLayoutClass, 120);
+    layoutResizeTimer = setTimeout(function () {
+      applyLayoutClass();
+      maybeReportCapabilities();
+    }, 220);
+  });
+
+  // ---- 066: chat visibility controls + unread accounting ----
+  var collapseBtn = document.getElementById("astral-collapse-btn");
+  var chatToggleBtn = document.getElementById("astral-chat-toggle");
+  var chatUnreadEl = document.getElementById("astral-chat-unread");
+  var chatUnread = 0;
+  function clearChatUnread() {
+    chatUnread = 0;
+    if (chatUnreadEl) { chatUnreadEl.hidden = true; chatUnreadEl.textContent = "0"; }
+  }
+  function noteAssistantActivity() {
+    var layout = document.body.getAttribute("data-astral-layout");
+    var hidden = (layout === "collapsed" && !document.body.classList.contains("astral-chat-open"))
+      || (layout === "stacked" && !document.body.classList.contains("astral-msgs-open"));
+    if (!hidden) return;
+    chatUnread++;
+    if (chatUnreadEl) {
+      chatUnreadEl.hidden = false;
+      chatUnreadEl.textContent = chatUnread > 9 ? "9+" : String(chatUnread);
+    }
+    if (chatToggleBtn && window.matchMedia
+        && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      chatToggleBtn.classList.remove("astral-peek");
+      void chatToggleBtn.offsetWidth;
+      chatToggleBtn.classList.add("astral-peek");
+    }
+  }
+  if (collapseBtn) collapseBtn.addEventListener("click", function () {
+    setChatLayoutPref("closed");
+  });
+  if (chatToggleBtn) chatToggleBtn.addEventListener("click", function () {
+    var open = document.body.classList.toggle("astral-chat-open");
+    chatToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    chatToggleBtn.setAttribute("title", open ? "Hide conversation" : "Show conversation");
+    if (open) clearChatUnread();
+  });
+  // Re-pin the rail from collapsed mode: double-click the transcript toggle.
+  if (chatToggleBtn) chatToggleBtn.addEventListener("dblclick", function () {
+    setChatLayoutPref("open");
+  });
+  // Coarse-pointer component chrome: tap a component to reveal its actions.
+  document.addEventListener("click", function (e) {
+    if (!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) return;
+    if (e.target.closest && e.target.closest("button, a, input, select, textarea")) return;
+    var comp = e.target.closest && e.target.closest(".astral-component");
+    if (!comp) return;
+    var open = comp.classList.toggle("astral-chrome-open");
+    if (open) {
+      var others = document.querySelectorAll(".astral-component.astral-chrome-open");
+      for (var i = 0; i < others.length; i++) {
+        if (others[i] !== comp) others[i].classList.remove("astral-chrome-open");
+      }
+    }
   });
 
   function configureStatusElement(node) {
@@ -436,6 +566,14 @@
     statusEl.textContent = s || "";
     statusEl.setAttribute("aria-busy", busy === true ? "true" : "false");
     statusEl.setAttribute("data-status-state", s ? (busy === true ? "busy" : "settled") : "idle");
+    // 066: mirror turn status beside the composer — the topbar is too far
+    // from the conversation to carry progress/failure alone.
+    var turnStatus = document.getElementById("astral-turn-status");
+    if (turnStatus) {
+      turnStatus.textContent = s || "";
+      turnStatus.hidden = !s;
+      turnStatus.setAttribute("data-busy", busy === true ? "true" : "false");
+    }
   }
 
   // ---- Feature 065: server-owned conversational voice + local media adapter ----
@@ -807,6 +945,44 @@
     return true;
   }
 
+  // 066: real SVG icons for the composer voice controls (static trusted
+  // markup keyed by the server's data-icon contract).
+  var VOICE_ICONS = {
+    "microphone": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>',
+    "device-transfer": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>',
+    "stop": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>',
+    "speaker-stop": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>',
+    "speaker-muted": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="22" y1="3" x2="3" y2="22"></line></svg>',
+    "chat": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>',
+    "speaker-consent": '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>',
+  };
+
+  // 066: the voice affordance is ALWAYS present — this client-local default
+  // renders before any composer_state frame arrives (and again on socket
+  // teardown) so an absent/failed server projection can never leave the
+  // composer without a voice control.
+  function renderDefaultVoiceControl(reasonText) {
+    if (!voiceControlsEl) return;
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "astral-voice-control";
+    button.setAttribute("data-voice-key", "voice-start");
+    button.setAttribute("data-voice-action", "voice_session_start");
+    button.setAttribute("data-icon", "microphone");
+    button.setAttribute("data-default", "1");
+    button.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-busy", "false");
+    button.setAttribute("aria-label", "Start voice conversation");
+    button.setAttribute("title", reasonText || "Checking voice availability…");
+    button.disabled = true;
+    button.innerHTML = VOICE_ICONS.microphone;
+    var label = document.createElement("span");
+    label.className = "astral-sr-only";
+    label.textContent = "Start voice conversation";
+    button.appendChild(label);
+    voiceControlsEl.replaceChildren(button);
+  }
+
   function renderVoiceControls(voice) {
     if (!voiceControlsEl) return;
     var fragment = document.createDocumentFragment();
@@ -823,6 +999,7 @@
       button.setAttribute("aria-busy", control.busy ? "true" : "false");
       button.disabled = !control.enabled;
       button.hidden = !control.visible;
+      button.innerHTML = VOICE_ICONS[control.icon] || VOICE_ICONS.microphone;
       var label = document.createElement("span");
       label.className = "astral-sr-only";
       label.textContent = control.label;
@@ -2777,6 +2954,8 @@
       label: "Submitting…",
       shows_status: exposeStatus !== false,
       status_order: ++operationSubmissionOrdinal,
+      // 066: retained so a failed turn can offer an exact retry.
+      message: name === "chat_message" && typeof body.message === "string" ? body.message : null,
     };
     operationSubmissionByGeneration[requestGeneration] = local;
     operationSubmissionById[submissionId] = local;
@@ -2794,6 +2973,52 @@
     return true;
   }
 
+  // ---- 066: connection honesty. Actions attempted while the socket is not
+  // healthily registered queue visibly (bounded) or refuse loudly — they are
+  // never silently dropped. `socketReady` flips on the post-registration
+  // rote_config verdict and off on close.
+  var socketReady = false;
+  var pendingActions = [];
+  var PENDING_ACTION_LIMIT = 5;
+  var PENDING_ACTION_TTL_MS = 45000;
+  function isSocketReady() {
+    return socketReady && ws && ws.readyState === 1;
+  }
+  function setConnState(state, text) {
+    var pill = document.getElementById("astral-conn");
+    var textEl = document.getElementById("astral-conn-text");
+    if (!pill) return;
+    if (state === "connected") { pill.hidden = true; return; }
+    pill.hidden = false;
+    pill.setAttribute("data-conn", state);
+    if (textEl) textEl.textContent = text
+      || (state === "connecting" ? "Connecting…" : "Reconnecting — messages will queue");
+  }
+  function queueOutboundAction(entry) {
+    if (pendingActions.length >= PENDING_ACTION_LIMIT) {
+      showToast("Not connected — too many queued actions. Try again shortly.", "error");
+      return false;
+    }
+    entry.at = Date.now();
+    entry.timer = setTimeout(function () {
+      var idx = pendingActions.indexOf(entry);
+      if (idx !== -1) pendingActions.splice(idx, 1);
+      if (entry.onRefused) entry.onRefused();
+      else showToast("Still not connected — the action was not sent.", "error");
+    }, PENDING_ACTION_TTL_MS);
+    pendingActions.push(entry);
+    setConnState(ws && ws.readyState === 0 ? "connecting" : "offline");
+    return true;
+  }
+  function flushPendingActions() {
+    var entries = pendingActions;
+    pendingActions = [];
+    for (var i = 0; i < entries.length; i++) {
+      clearTimeout(entries[i].timer);
+      try { entries[i].dispatch(); } catch (e) {}
+    }
+  }
+
   function action(name, payload, exposeStatus) {
     if (name === "chat_message") openRequest("commit", activeChatId);
     var suppliedGeneration = requestState && (name === "chat_message" || name === "load_chat")
@@ -2808,6 +3033,20 @@
       request_generation: submission.requestGeneration,
     };
     if (connectionGeneration) frame.connection_generation = connectionGeneration;
+    if (!isSocketReady() && name !== "get_history" && name !== "watch_task") {
+      // Queue chrome/settings actions too (FR-015): the same no-silent-drop
+      // rule chat sends get. Frames are rebuilt at dispatch time so the
+      // then-current connection_generation is used.
+      finishOperationSubmission(submission.requestGeneration);
+      queueOutboundAction({
+        label: name,
+        dispatch: function () { action(name, payload, exposeStatus); },
+        onRefused: function () {
+          showToast("“" + name.replace(/_/g, " ") + "” was not sent — still reconnecting.", "error");
+        },
+      });
+      return submission;
+    }
     send(frame);
     return submission;
   }
@@ -2957,6 +3196,80 @@
     bubble.innerHTML = htmlStr || "";
     wrap.appendChild(bubble); chat.appendChild(wrap); processSideEffects(bubble);
     chat.scrollTop = chat.scrollHeight;
+    if (role !== "user") noteAssistantActivity();
+  }
+
+  // 066: inline failed-turn notice — the user's message stays visible, the
+  // failure is explained beside the conversation, and retry re-sends the
+  // exact content. Never blanks the canvas.
+  function appendFailedTurnNotice(message, retryText, generation) {
+    var err = document.createElement("div");
+    err.className = "astral-chat-error";
+    err.setAttribute("role", "alert");
+    if (generation) err.setAttribute("data-turn-generation", generation);
+    var line = document.createElement("div");
+    line.textContent = message || "The turn could not be completed.";
+    err.appendChild(line);
+    if (retryText) {
+      var retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "astral-retry-btn";
+      retry.textContent = "↻ Retry";
+      retry.addEventListener("click", function () {
+        if (err.parentNode) err.parentNode.removeChild(err);
+        sendChat(retryText);
+      });
+      err.appendChild(retry);
+    }
+    chat.appendChild(err);
+    chat.scrollTop = chat.scrollHeight;
+    noteAssistantActivity();
+  }
+
+  // 066: a failed turn materializes its transient content into the canonical
+  // rail (instead of evaporating with the overlay) and gains a retry.
+  function surfaceFailedTurn(frame, localSubmission) {
+    if (frame.action !== "chat_message") return;
+    try {
+      var retryText = localSubmission && localSubmission.message
+        ? localSubmission.message : null;
+      // Move whatever the turn had staged in the overlay into the canonical
+      // rail (it is about to be cleared)...
+      var overlayChat = transientOverlay && transientOverlay.chat;
+      var moved = false;
+      if (overlayChat) {
+        while (overlayChat.firstChild) {
+          chat.appendChild(overlayChat.firstChild);
+          moved = true;
+        }
+      }
+      // ...and if the overlay was already gone, rebuild the user's message
+      // from the retained submission so their words NEVER disappear on a
+      // failure (066 FR-017). Deterministic, not overlay-dependent.
+      if (!moved && retryText) {
+        appendChatBubble("user", "<div>" + escapeText(retryText) + "</div>");
+      }
+      appendFailedTurnNotice(
+        (frame.error && frame.error.message) || "The turn could not be completed.",
+        retryText, frame.request_generation);
+    } catch (e) {}
+  }
+
+  // 066: a turn whose operation reported a non-final failure (e.g. an
+  // execution lease expiring during a slow model call) can still go on to
+  // succeed. When any later content or completion arrives for the same
+  // request generation, retract the failure notice and its status so the
+  // user is never told a turn failed while its answer is on screen.
+  function retractFailedTurnNotice(generation) {
+    if (!generation) return;
+    var nodes = chat.querySelectorAll(
+      '.astral-chat-error[data-turn-generation="' + generation + '"]');
+    for (var i = 0; i < nodes.length; i++) nodes[i].remove();
+    // The STATUS line is deliberately untouched: error ownership there is
+    // operation-scoped (060 contract — "a different success cannot erase the
+    // failure notice") and is released only by its own owner or the next
+    // explicit request. Clearing it here erased another operation's settled
+    // failure whenever any same-generation operation completed.
   }
 
   // ---- query-start loading skeleton ----
@@ -3235,7 +3548,21 @@
     message.parts.forEach(function (part) {
       if (part.type === "text") {
         var textPart = document.createElement("div");
-        textPart.textContent = part.text;
+        // 066: render the server's markdown rendition when present (same
+        // escape-first pipeline as the live path); plain text otherwise.
+        var textEnvelope = part._presentation;
+        if (textEnvelope) {
+          textPart.className = "astral-bubble-md";
+          var textTemplate = document.createElement("template");
+          textTemplate.innerHTML = textEnvelope.html;
+          if (textTemplate.content.querySelector("script,iframe,object,embed")) {
+            throw new Error("presentation_unsafe_element");
+          }
+          textPart.appendChild(textTemplate.content);
+          presentations.push({ target: textEnvelope.target, html: textEnvelope.html });
+        } else {
+          textPart.textContent = part.text;
+        }
         built.bubble.appendChild(textPart);
         if (part.text) hasVisibleContent = true;
       } else if (part.type === "components") {
@@ -3300,7 +3627,15 @@
       message.parts.forEach(function (part) {
         if (!part || typeof part !== "object" || Array.isArray(part)) throw new Error("snapshot_part");
         if (part.type === "text") {
-          if (!exactKeys(part, ["text", "type"]) || typeof part.text !== "string") throw new Error("snapshot_text_part");
+          // 066: an assistant text part may carry the transport-only web
+          // rendition envelope (2 keys — never the components' workspace key).
+          if ((!exactKeys(part, ["text", "type"]) && !exactKeys(part, ["_presentation", "text", "type"]))
+              || typeof part.text !== "string") throw new Error("snapshot_text_part");
+          if (part._presentation && (!exactKeys(part._presentation, ["html", "target"])
+              || part._presentation.target !== "web"
+              || typeof part._presentation.html !== "string" || !part._presentation.html)) {
+            throw new Error("snapshot_text_presentation");
+          }
         } else if (part.type === "components") {
           if (!exactKeys(part, ["components", "type"]) || !Array.isArray(part.components)) throw new Error("snapshot_components_part");
         } else if (part.type === "structured") {
@@ -3611,6 +3946,19 @@
     restoreActiveStatusOrClear(owners);
   }
 
+  // 066 (FR-016): one second into EVERY accepted connection operation the
+  // server publishes a generic progress phase (`operation_status` with
+  // label "Working…"). setStatus is last-writer-wins, so that generic label
+  // used to overwrite the turn's OWN richer phase text — and for a tool-less
+  // turn nothing re-asserted it, leaving the user staring at "Working…" for
+  // the whole model call. A chat turn publishes its own phases, so the
+  // generic one must not take the line from them. Terminal/error frames are
+  // untouched: they are the failure surface.
+  function genericPhaseWouldClobber(frame) {
+    return frame.action === "chat_message" && frame.phase === "running"
+      && turnPhaseActive;
+  }
+
   /** Retain/render one canonical operation projection. */
   function reduceOperationStatus(frame) {
     var flags = {
@@ -3658,10 +4006,14 @@
     var submissionOwner = "operation-submission:" + frame.request_generation;
     var localSubmission = operationSubmissionByGeneration[frame.request_generation];
     if (frame.terminal) finishOperationSubmission(frame.request_generation);
+    if (frame.terminal) turnPhaseActive = false; // the turn's phases are over
     if (frame.state === "completed") {
       // Completion is reconciliation state, not user-facing progress. Clear it
       // only if this operation (or its local submission) still owns the line.
       // A concurrent operation or unrelated notice must remain visible.
+      retractFailedTurnNotice(frame.request_generation);
+      // The turn's own chat_status "done" clears any phase text it owns, so
+      // this stays byte-identical to the 060 contract.
       restoreActiveStatusOrClear([operationOwner, submissionOwner]);
     } else if (frame.terminal) {
       // Failure/cancellation/retry guidance persists, but is settled and must
@@ -3669,10 +4021,12 @@
       setStatus(visible, false, "operation-error:" + frame.operation_id);
     } else if (operationStatusShowsActivity(frame)
         && (!localSubmission || localSubmission.shows_status !== false)
-        && !(statusOwner && statusOwner.indexOf("operation-error:") === 0)) {
+        && !(statusOwner && statusOwner.indexOf("operation-error:") === 0)
+        && !genericPhaseWouldClobber(frame)) {
       setStatus(visible, true, operationOwner);
     }
     if (frame.terminal && ["failed", "cancelled", "retryable"].indexOf(frame.state) !== -1) {
+      if (frame.state !== "cancelled") surfaceFailedTurn(frame, localSubmission);
       clearTransientOverlay();
     }
     return true;
@@ -3942,17 +4296,43 @@
           );
           break;
         }
-        var chatStatusLabel = { idle: "", thinking: "Thinking…", executing: "Working…", done: "" }[data.status] || "";
-        if (chatStatusLabel) {
+        if (data.status === "info") {
+          // 066: informational server notices (e.g. attachment auto-parse)
+          // used to vanish on web — surface them like the native banner and
+          // never latch the busy line.
+          if (data.message) showToast(String(data.message), "info");
+          restoreActiveStatusOrClear([chatStatusOwner]);
+          break;
+        }
+        // 066 (FR-016): prefer the server's OWN phase text — it names what is
+        // happening — and fall back to the generic label per status.
+        lastChatStatusText = (data.message && String(data.message).trim())
+          || { idle: "", thinking: "Thinking…", executing: "Working…",
+               fixing: "Working…", retrying: "Retrying…", combining: "Combining…",
+               condensing: "Condensing…", done: "" }[data.status] || "";
+        if (lastChatStatusText) {
+          // The turn now owns the line with its own phase — the server's
+          // generic one-second "Working…" must not take it back.
+          turnPhaseActive = true;
           setStatus(
-            chatStatusLabel,
+            lastChatStatusText,
             true,
             chatStatusOwner
           );
-        } else restoreActiveStatusOrClear([chatStatusOwner]);
+        } else {
+          turnPhaseActive = false;
+          lastChatStatusText = "";
+          restoreActiveStatusOrClear([chatStatusOwner]);
+        }
         break;
       case "chat_step":
-        if (scopedStatusMatches(data)) renderStep(data.step);
+        // 066: chat_step carries {type, chat_id, step} ONLY — it has no
+        // connection/request generation, so the 060 continuity fence
+        // (scopedStatusMatches) rejected EVERY step frame and the web client
+        // silently dropped the whole step trail. Scope it by chat id, the
+        // way tool_progress already is.
+        if (data.chat_id && activeChatId && data.chat_id !== activeChatId) break;
+        renderStep(data.step);
         break;
       case "chat_created":
         if (correlatedVoiceChatCreated(data)) break;
@@ -4031,10 +4411,16 @@
         if (!scopedStatusMatches(data)) break;
         var tpChat = data.session_id || data.chat_id;
         if (tpChat && activeChatId && tpChat !== activeChatId) break;
-        if (data.terminal) { setStatus(""); break; } // outcome lands as a persisted upsert
+        if (data.terminal) { turnPhaseActive = false; setStatus(""); break; } // outcome lands as a persisted upsert
+        // 066: the frame already carries agent_id — name the agent behind the
+        // job instead of discarding it (derived from the catalog, never guessed).
         var tpText = data.message || ((data.tool_name || "job") + " running…");
+        if (!data.message && data.agent_id && agentNameById[data.agent_id]) {
+          tpText = (data.tool_name || "job") + " — " + agentNameById[data.agent_id] + " running…";
+        }
         if (typeof data.percentage === "number") tpText += " (" + Math.round(data.percentage) + "%)";
-        setStatus(tpText);
+        turnPhaseActive = true;
+        setStatus(tpText, true, "chat-status");
         break;
       }
       case "operation_status":
@@ -4045,10 +4431,22 @@
         break;
       case "rote_config": // ROTE's device verdict drives the shell layout
         applyDeviceProfile(data.device_profile && data.device_profile.device_type);
+        // 066: the post-registration verdict marks the socket healthy — flush
+        // queued sends and retire the connection pill.
+        if (!socketReady) {
+          socketReady = true;
+          setConnState("connected");
+          flushPendingActions();
+        }
+        break;
+      case "agent_list":
+        // 066: index the catalog the server already sends so step labels can
+        // name the agent behind a tool (derived, never guessed).
+        indexAgentList(data);
         break;
       case "agent_host_inventory_reconciled": case "agent_host_registration_refused":
       case "agent_host_registered": // host-only; the browser is author-only
-      case "system_config": case "agent_list": case "agent_registered":
+      case "system_config": case "agent_registered":
       case "history_list": case "heartbeat": case "llm_config_ack": case "saved_components_list":
         break; // not needed for the core flow
       default: break;
@@ -4105,6 +4503,42 @@
   }
 
   var stepEls = {};
+  // 066: agent identity for step labels, DERIVED from the agent_list the
+  // server already sends — never guessed. A tool name that maps to exactly
+  // one agent gets the agent's name appended; an ambiguous or unknown name
+  // renders bare.
+  var toolToAgentName = Object.create(null);
+  var agentNameById = Object.create(null);
+  function indexAgentList(payload) {
+    var agents = (payload && payload.agents) || [];
+    for (var i = 0; i < agents.length; i++) {
+      var a = agents[i];
+      if (!a || typeof a !== "object") continue;
+      if (a.id && a.name) agentNameById[a.id] = a.name;
+      var tools = a.tools || [];
+      for (var j = 0; j < tools.length; j++) {
+        var name = tools[j] && tools[j].name;
+        if (!name || !a.name) continue;
+        // Record collisions as null so an ambiguous tool never claims one agent.
+        toolToAgentName[name] = Object.prototype.hasOwnProperty.call(toolToAgentName, name)
+          && toolToAgentName[name] !== a.name ? null : a.name;
+      }
+    }
+  }
+  function stepLabel(step) {
+    var raw = step.name || step.kind || "step";
+    var qualified = String(raw).split("__");
+    if (qualified.length === 2 && agentNameById[qualified[0]]) {
+      return qualified[1] + " — " + agentNameById[qualified[0]];
+    }
+    var agent = toolToAgentName[raw];
+    return agent ? raw + " — " + agent : raw;
+  }
+
+  // The turn's own phase text (from chat_status.message / a live step) and
+  // whether it currently owns the status line — see genericPhaseWouldClobber.
+  var lastChatStatusText = "";
+  var turnPhaseActive = false;
   function renderStep(step) {
     if (!step) return;
     var el = stepEls[step.id];
@@ -4117,7 +4551,17 @@
     var icon = step.status === "completed" ? "✓" : step.status === "errored" ? "✗" : "•";
     // Chat shows only the tool/step name; result summaries stay in the
     // persisted step record (chat-steps API / audit), not the transcript.
-    el.textContent = icon + " " + (step.name || step.kind || "step");
+    var label = stepLabel(step);
+    el.textContent = icon + " " + label;
+    // 066 (FR-016): the live step also drives the status line beside the
+    // composer, so the phase reads "web_search — Web Research" instead of a
+    // bare "Working…". A terminal step falls back to the last phase text.
+    if (step.status === "in_progress" || step.status === "started") {
+      turnPhaseActive = true;
+      setStatus(label, true, "chat-status");
+    } else if (lastChatStatusText) {
+      setStatus(lastChatStatusText, true, "chat-status");
+    }
     chat.scrollTop = chat.scrollHeight;
   }
 
@@ -4128,6 +4572,51 @@
   function sendChat(message) {
     var ready = (typeof readyAttachments === "function") ? readyAttachments() : [];
     if (!message && !ready.length) return;
+    if (!isSocketReady()) {
+      // 066: never silently drop a send — queue it visibly and dispatch on
+      // registration, or refuse loudly with the text preserved.
+      queueChatSend(message, ready);
+      if (typeof clearStagedAttachments === "function") clearStagedAttachments();
+      return;
+    }
+    doSendChat(message, ready);
+    if (typeof clearStagedAttachments === "function") clearStagedAttachments();
+  }
+
+  function queueChatSend(message, ready) {
+    var html = "";
+    if (ready.length) {
+      var names = ready.map(function (a) { return a.filename; }).join(", ");
+      html += attachChipHtml(names);
+    }
+    if (message) html += "<div>" + escapeText(message) + "</div>";
+    var wrap = document.createElement("div");
+    wrap.className = "flex justify-end astral-bubble-queued";
+    var bubble = document.createElement("div");
+    bubble.className = "bg-astral-primary/20 border border-astral-primary/30 rounded-lg p-3 max-w-[85%] text-sm text-astral-text";
+    bubble.innerHTML = html;
+    wrap.appendChild(bubble);
+    chat.appendChild(wrap);
+    chat.scrollTop = chat.scrollHeight;
+    var accepted = queueOutboundAction({
+      label: "chat_message",
+      dispatch: function () {
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        doSendChat(message, ready);
+      },
+      onRefused: function () {
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        appendFailedTurnNotice("Still offline — your message was not sent.", message);
+        if (input && !input.value) input.value = message || "";
+      },
+    });
+    if (!accepted && wrap.parentNode) {
+      wrap.parentNode.removeChild(wrap);
+      if (input && !input.value) input.value = message || "";
+    }
+  }
+
+  function doSendChat(message, ready) {
     openRequest("commit", activeChatId);
     var html = "";
     if (ready.length) {
@@ -4164,7 +4653,6 @@
     // ack drives the status line instead.
     if (bgArmed) setBgArmed(false);
     else showSkeleton(); // optimistic loading state until the first canvas content
-    if (typeof clearStagedAttachments === "function") clearStagedAttachments();
   }
 
   if (form) form.addEventListener("submit", function (e) {
@@ -4528,10 +5016,15 @@
       .catch(function () { showToast("Couldn't create the share link.", "error"); });
   }
 
-  // Canvas toolbar (export page / share page). The server stamps the flag
+  // Canvas page actions (export page / share page). The server stamps the flag
   // state as data-astral-export / data-astral-share on the .dynamic-renderer
-  // root of every full canvas render (renderer.py _workspace_flag_attrs);
-  // the toolbar exists only while a flagged renderer is on the canvas.
+  // root of every full canvas render (renderer.py _workspace_flag_attrs).
+  //
+  // These controls used to be a sticky bar pinned above the canvas content.
+  // They now live in the TOP BAR (chrome/topbar.py renders them `hidden`) and
+  // this function only decides whether each one is shown — so the canvas, the
+  // primary surface, keeps its full height and no strip of chrome sits over
+  // the first component. Same buttons, same classes, same delegated handlers.
   var canvasFlags = { exp: false, share: false };
   function readCanvasFlags() {
     var r = canvas.querySelector(".dynamic-renderer");
@@ -4539,30 +5032,13 @@
     canvasFlags.share = !!(r && r.getAttribute("data-astral-share"));
   }
   function syncCanvasToolbar() {
-    var bar = document.getElementById("astral-canvas-toolbar");
-    var want = (canvasFlags.exp || canvasFlags.share) && !timelineMode
-      && !!canvas.querySelector(".dynamic-renderer");
-    if (!want) {
-      if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
-      return;
-    }
-    if (bar) return; // already up
-    bar = document.createElement("div");
-    bar.id = "astral-canvas-toolbar";
-    bar.style.cssText = "position:sticky;top:0;z-index:5;display:flex;justify-content:flex-end;gap:8px;padding:2px 4px;";
-    if (canvasFlags.exp) bar.appendChild(chromeToolbarButton("⬇ Export page", "astral-export-canvas", null));
-    if (canvasFlags.share) bar.appendChild(chromeToolbarButton("↗ Share page", "astral-share-btn", "canvas"));
-    canvas.insertBefore(bar, canvas.firstChild);
-  }
-  function chromeToolbarButton(text, cls, shareScope) {
-    var b = document.createElement("button");
-    b.type = "button";
-    b.className = cls;
-    b.textContent = text;
-    if (shareScope) b.setAttribute("data-share-scope", shareScope);
-    b.style.cssText = "font-size:11px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);"
-      + "border-radius:8px;padding:3px 10px;color:inherit;cursor:pointer;";
-    return b;
+    // A historical (timeline) view is read-only, and an empty canvas has
+    // nothing to export or share — in both cases neither control appears.
+    var live = !timelineMode && !!canvas.querySelector(".dynamic-renderer");
+    var exportBtn = document.getElementById("astral-export-page-btn");
+    var shareBtn = document.getElementById("astral-share-page-btn");
+    if (exportBtn) exportBtn.hidden = !(live && canvasFlags.exp);
+    if (shareBtn) shareBtn.hidden = !(live && canvasFlags.share);
   }
 
   document.addEventListener("click", function (e) {
@@ -5192,17 +5668,25 @@
     voiceComposerRevision = -1;
     voiceTakeover = null;
     clearVoiceBindingRenewal();
-    if (voiceControlsEl && !preserveVoiceControls) voiceControlsEl.replaceChildren();
+    if (voiceControlsEl && !preserveVoiceControls) {
+      // 066: never leave the composer without a voice affordance.
+      renderDefaultVoiceControl("Voice unavailable while reconnecting…");
+    }
     connectionGeneration = randomUuid4();
     ws = new WebSocket(WS_URL);
     ws.onopen = function () {
       attempts = 0; authRetried = false; setStatus("");
+      setConnState("connecting", "Registering…");
       // resumed: firstConnect ? serverResumed : true
       sendRegistration(firstConnect ? serverResumed : true);
       firstConnect = false;
       // Startup/reconnect metadata is retained and reconciled like every other
       // operation, but it is not user work and must not flash a global spinner.
       action("get_history", {}, false);
+      // 066: ask for the agent catalog once per connection (Windows and
+      // Android already do; the web client never did) so step labels can
+      // name the agent behind a tool.
+      action("discover_agents", {}, false);
       // Re-attach to still-running background tasks: watch_task re-registers
       // this socket as a watcher and answers task_completed immediately when
       // the task finished while the socket was down.
@@ -5211,6 +5695,8 @@
     ws.onmessage = onMessage;
     ws.onerror = function () { try { ws.close(); } catch (e) {} };
     ws.onclose = function () {
+      socketReady = false;
+      setConnState("offline", "Reconnecting — messages will queue");
       operationSubmissionByGeneration = Object.create(null);
       operationSubmissionById = Object.create(null);
       clearVoiceBindingRenewal();

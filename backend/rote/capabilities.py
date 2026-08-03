@@ -155,6 +155,10 @@ class DeviceCapabilities:
     has_file_system: bool = True
     connection_type: str = "unknown"  # wifi, 4g, 3g, 2g, slow-2g
     user_agent: str = ""
+    # 066 additive envelope fields (older clients omit them; defaults are the
+    # least-restrictive interpretation so behavior is unchanged when absent).
+    reduced_motion: bool = False
+    pointer_type: str = "fine"  # fine | coarse
 
 
 @dataclass

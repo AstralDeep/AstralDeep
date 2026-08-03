@@ -179,10 +179,14 @@ struct AstralTopBar: View {
         .accessibilityLabel("Settings")
     }
 
+    // P11: keyed on the server model's own icon names (sparkle/history/gear —
+    // menu_model.py), the same rule the Windows fix pinned after its map was
+    // keyed on names the server never sends.
     private func topBarIcon(_ icon: String?) -> String {
         switch icon {
         case "sparkle": return "sparkles"
         case "history": return "clock.arrow.circlepath"
+        case "gear": return "gearshape"
         default: return "ellipsis.circle"
         }
     }

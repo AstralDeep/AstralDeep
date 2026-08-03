@@ -102,6 +102,9 @@ services:
       ASTRAL_ENV: development
       VOICE_WORKER_IDENTITY: ${VOICE_WORKER_IDENTITY:-voice-worker-local-1}
       VOICE_WORKER_MAX_SESSIONS: ${VOICE_WORKER_MAX_SESSIONS:-4}
+      # Feature 066: optional endpoint-silence tuning in milliseconds
+      # (clamped 320-2560); empty keeps the worker default of 960 ms.
+      VOICE_ENDPOINT_SILENCE_MS: ${VOICE_ENDPOINT_SILENCE_MS:-}
       VOICE_WATCH_BRIDGE_LISTEN_HOST: 0.0.0.0
       VOICE_WATCH_BRIDGE_LISTEN_PORT: 7890
       # An honest local-only marker until the login-gated T004 closure exists.

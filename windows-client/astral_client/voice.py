@@ -75,6 +75,23 @@ _CONTROL_ORDER = (
     "voice-chat-context",
     "voice-sensitive-recap",
 )
+# Glyphs for the server-owned `icon` names in webrender/chrome/composer_model.py.
+# Mirrors the web client's VOICE_ICONS vocabulary (client.js) so a control means
+# the same thing on every surface. Keyed on the ICON, not the control key, so
+# two controls sharing an icon stay consistent.
+_CONTROL_GLYPHS = {
+    "microphone": "🎙",
+    "device-transfer": "🔄",
+    "stop": "⏹",
+    "speaker-stop": "🔇",
+    "speaker-muted": "🔈",
+    "chat": "💬",
+    "speaker-consent": "🔊",
+}
+# A voice status the composer stays quiet about: session off with nothing the
+# server actually wants to say. Mirrors client.js `state === "off" && !message`
+# (the reason rides through as the message, so the neutral one counts as none).
+_QUIET_VOICE_MESSAGES = frozenset({"", "off", "ready"})
 _CONTROL_ACTIONS = {
     "voice-start": "voice_session_start",
     "voice-takeover": "voice_session_takeover",
@@ -1280,6 +1297,9 @@ class VoiceComposerWidget(QWidget):
         self.status_label.setObjectName("voiceConversationStatus")
         self.status_label.setAccessibleName("Voice conversation status")
         self.status_label.setAccessibleDescription("Voice controls are loading")
+        # Pre-frame the state is unknown, not "unavailable" — web hides the
+        # line and says "Checking voice availability…" in the control tooltip.
+        self.status_label.setVisible(False)
         self.transcript_label = QLabel("")
         self.transcript_label.setObjectName("voiceTranscriptPreview")
         self.transcript_label.setAccessibleName("Voice transcript preview")
@@ -1326,8 +1346,18 @@ class VoiceComposerWidget(QWidget):
             control = controls.get(key)
             if control is None or not control["visible"]:
                 continue
-            button = QPushButton(control["label"])
+            # 066 cross-client style parity: web and Android render the voice
+            # controls as ICONS with the server's label carried in the tooltip
+            # + accessible name. Windows rendered the label as button TEXT, so
+            # a composer that reads "Start voice conversation | Voice: off"
+            # beside a phone's single mic glyph looked like another product.
+            # Same server model, same order, same labels — icon presentation.
+            # An unmapped icon name keeps its text rather than becoming a
+            # blank button.
+            glyph = _CONTROL_GLYPHS.get(control["icon"], "")
+            button = QPushButton(glyph or control["label"])
             button.setObjectName("voiceComposerControl")
+            button.setProperty("iconOnly", bool(glyph))
             button.setProperty("voiceControlKey", key)
             button.setProperty("voiceAction", control["action"])
             button.setProperty("pressed", control["pressed"])
@@ -1369,6 +1399,16 @@ class VoiceComposerWidget(QWidget):
         safe_message = str(message or safe_state).strip()[:240]
         self.status_label.setText(f"Voice: {safe_state.replace('_', ' ')}")
         self.status_label.setAccessibleDescription(safe_message)
+        # 066 parity: web hides its voice state line when the session is off
+        # and the server has nothing to say (`hidden = state === "off" &&
+        # !message` in client.js), so an idle composer is just the mic icon.
+        # Windows kept a permanent "Voice: off" chip in the composer row.
+        # Anything the server actually reports — a reason, an error, any live
+        # state — still shows, and the accessible description is set either
+        # way, so a screen reader loses nothing.
+        self.status_label.setVisible(
+            not (safe_state == "off" and safe_message.lower() in _QUIET_VOICE_MESSAGES)
+        )
         self.setProperty("voiceState", safe_state)
 
     def set_voice_turn_status(
