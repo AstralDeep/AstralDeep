@@ -8283,7 +8283,11 @@ class Orchestrator:
                         ])
 
                 elif msg.action == "new_chat":
-                    chat_id = self.history.create_chat(user_id=user_id)
+                    # Sync DB write off the event-loop thread (feature 052);
+                    # first driven under LOOP_GUARD_ENFORCE by the Bug-A
+                    # regression test.
+                    chat_id = await asyncio.to_thread(
+                        self.history.create_chat, user_id=user_id)
                     # 066 (FR-024): a fresh chat greets with the welcome
                     # examples exactly like a fresh session — same wel_
                     # purge-on-first-send rules, never persisted. Sent BEFORE
