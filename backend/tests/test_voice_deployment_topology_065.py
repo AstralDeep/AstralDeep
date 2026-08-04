@@ -143,7 +143,13 @@ def test_compose_pins_livekit_and_keeps_speech_inputs_worker_local(
     assert 'OPENAI_API_KEY: ""' in orchestrator
     assert "VOICE_SPEECH_BASE_URL" not in orchestrator
     assert "VOICE_SPEECH_API_KEY" not in orchestrator
-    assert "LIVEKIT_INTERNAL_URL: http://livekit:7880" in orchestrator
+    # Env-overridable with the local plaintext default: production must point
+    # this at the LiveKit TLS vhost (https → derived wss) or every session
+    # start fails closed with invalid_livekit_url.
+    assert (
+        "LIVEKIT_INTERNAL_URL: ${LIVEKIT_INTERNAL_URL:-http://livekit:7880}"
+        in orchestrator
+    )
     assert "LIVEKIT_API_KEY:" in orchestrator
     assert "LIVEKIT_API_SECRET:" in orchestrator
     assert "VOICE_UI_BINDING_SECRET:" in orchestrator

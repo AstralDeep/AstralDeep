@@ -58,7 +58,13 @@ services:
       HOST_SYS: /host/sys
       OPENAI_BASE_URL: ""
       OPENAI_API_KEY: ""
-      LIVEKIT_INTERNAL_URL: http://livekit:7880
+      # Overridable for production: the coordinator derives the WORKER's RTC
+      # URL from this (http→ws, https→wss) and refuses plaintext ws outside
+      # development (fail-closed `invalid_livekit_url`). A production deploy
+      # MUST set LIVEKIT_INTERNAL_URL=https://<livekit TLS vhost> so the
+      # derived URL is wss; the hard-set plaintext default made prod voice
+      # structurally unable to start sessions (503 invalid_livekit_url).
+      LIVEKIT_INTERNAL_URL: ${LIVEKIT_INTERNAL_URL:-http://livekit:7880}
       LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set the LiveKit API key}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set the LiveKit API secret}
