@@ -152,7 +152,9 @@ async def _cleanup(orch, user_id: str, chat_id: str | None) -> None:
 async def test_first_turn_card_narrative_survives_commit_snapshot(orch):
     """new_chat → first chat_message: the commit snapshot carries the answer."""
     user_id = f"buga-{uuid.uuid4().hex[:10]}"
-    _seed_user(orch, user_id)
+    # set_sync is a synchronous DB write — keep it off the event-loop thread
+    # (LOOP_GUARD_ENFORCE=1 in CI raises on it).
+    await asyncio.to_thread(_seed_user, orch, user_id)
     ws, context = _connect(orch, user_id)
     chat_id = None
     try:
