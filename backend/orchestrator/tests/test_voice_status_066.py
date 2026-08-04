@@ -280,6 +280,23 @@ def test_refusal_log_rejects_invalid_capacity() -> None:
         AdmissionRefusalLog(capacity=65)
 
 
+def test_auth_spam_cannot_evict_registration_refusals() -> None:
+    # The pre-accept authentication path is reachable unauthenticated, so
+    # its churn must never rotate a genuine (signed-challenge) registration
+    # refusal out of the operator view.
+    stamps = iter(NOW + timedelta(seconds=index) for index in range(40))
+    log = AdmissionRefusalLog(capacity=3, utcnow=lambda: next(stamps))
+    log.record("registration", "closure_mismatch")
+    for _index in range(20):
+        log.record("authentication", "invalid_challenge")
+    entries = log.snapshot()
+    registration = [item for item in entries if item.stage == "registration"]
+    assert [item.reason for item in registration] == ["closure_mismatch"]
+    assert len(entries) == 4  # 3 bounded auth entries + the registration one
+    assert entries[0].stage == "authentication"  # newest first across stages
+    assert entries[-1].reason == "closure_mismatch"
+
+
 # ---------------------------------------------------------------------------
 # Endpoint records ONLY at the three genuine refusal exits
 # ---------------------------------------------------------------------------

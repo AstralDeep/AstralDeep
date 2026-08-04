@@ -209,6 +209,11 @@ class AdmissionRefusalLog:
     Recorded only at the three genuine refusal exits (authentication failure,
     registration timeout, registration refusal) — never on the healthy
     challenge-issue leg, and never for a worker that was already admitted.
+
+    Retention is PER STAGE: the pre-accept authentication path is reachable
+    by any unauthenticated client, so its churn must never evict a genuine
+    registration-stage refusal (which requires a validly signed challenge)
+    from the operator's FR-034 view.
     """
 
     def __init__(
@@ -219,7 +224,10 @@ class AdmissionRefusalLog:
     ) -> None:
         if not 1 <= capacity <= 64:
             raise WorkerControlConfigError("invalid_refusal_retention")
-        self._entries: deque[AdmissionRefusal] = deque(maxlen=capacity)
+        self._entries: dict[str, deque[AdmissionRefusal]] = {
+            "authentication": deque(maxlen=capacity),
+            "registration": deque(maxlen=capacity),
+        }
         self._utcnow = utcnow or (lambda: datetime.now(UTC))
 
     def record(self, stage: str, reason: str) -> None:
@@ -228,19 +236,21 @@ class AdmissionRefusalLog:
             if isinstance(reason, str) and _ERROR_CODE.fullmatch(reason)
             else "admission_refused"
         )
-        if stage not in {"authentication", "registration"}:
+        if stage not in self._entries:
             stage = "registration"
         logger.warning(
             "voice_worker_admission_refused stage=%s reason=%s", stage, code
         )
-        self._entries.appendleft(
+        self._entries[stage].appendleft(
             AdmissionRefusal(stage=stage, reason=code, occurred_at=self._utcnow())
         )
 
     def snapshot(self) -> tuple[AdmissionRefusal, ...]:
-        """Return retained refusals, most recent first."""
+        """Return retained refusals, most recent first across both stages."""
 
-        return tuple(self._entries)
+        merged = [entry for stage in self._entries.values() for entry in stage]
+        merged.sort(key=lambda entry: entry.occurred_at, reverse=True)
+        return tuple(merged)
 
 
 class WorkerDisconnectHook(Protocol):

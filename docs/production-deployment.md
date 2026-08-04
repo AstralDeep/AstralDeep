@@ -149,9 +149,14 @@ and LiveKit's HTTP admin API (`/twirp`) — a plain `proxy_pass` to
 WebRTC MEDIA does not traverse the proxy: `LIVEKIT_NODE_IP` must be the
 host's routable address, and the UDP media range (`50000-50099` in the
 bundled config, plus TCP 7881 fallback) must be reachable from clients.
-The MAIN app vhost proxies `/api/voice/*` (REST + the worker-control and
-watch-bridge WebSockets) to the orchestrator like every other `/api` route —
-the voice vhost is only for LiveKit RTC.
+The MAIN app vhost proxies `/api/voice/*` REST plus the worker-control
+WebSocket (`/api/voice/worker-control`) to the orchestrator like every
+other `/api` route. The watchOS PCM bridge is the one exception: the
+WORKER serves `/api/voice/watch-bridge` itself on
+`VOICE_WATCH_BRIDGE_LISTEN_PORT` (compose publishes `127.0.0.1:7890`), so
+`VOICE_WATCH_BRIDGE_PUBLIC_URL`'s host needs its own upgrade-capable proxy
+rule to the worker's port — proxying that path to the orchestrator 404s.
+The voice vhost is only for LiveKit RTC.
 
 ### Environment contract
 
@@ -163,7 +168,7 @@ the voice vhost is only for LiveKit RTC.
 | `LIVEKIT_NODE_IP` | LiveKit | Host's routable address advertised for WebRTC media. |
 | `VOICE_CONTROL_SECRET` | orchestrator + worker | Worker-admission challenge HMAC. Rotation requires a compose **recreate** of BOTH containers (see runbook). |
 | `VOICE_UI_BINDING_SECRET` | orchestrator only | User/device control-binding HMAC; never copied into the worker. |
-| `VOICE_WORKER_CLOSURE_SHA256` | orchestrator + worker | **Closure digest provenance**: the sha256 of the DEPLOYED worker image's `backend/voice_agent/CLOSURE.json`. Both containers must carry the SAME value, and it must be recomputed from the image actually shipped (`docker exec astraldeep-voice-worker sha256sum /app/backend/voice_agent/CLOSURE.json`) whenever the worker image changes — a stale pin refuses registration with `closure_mismatch`. The all-zero digest is a development-only marker; production boot refuses it (`unapproved_voice_worker_closure`). |
+| `VOICE_WORKER_CLOSURE_SHA256` | orchestrator + worker | **Closure digest provenance**: the sha256 of `backend/voice_agent/CLOSURE.json` AT THE COMMIT THE DEPLOYED WORKER IMAGE WAS BUILT FROM. `CLOSURE.json` is deliberately NOT baked into the worker image (the manifest describes the image's inputs; `tooling/voice-worker/closure_manifest.py` hard-fails if it ever becomes one), so the digest is recomputed REPO-SIDE at that commit — `python tooling/voice-worker/closure_manifest.py verify` validates the checked-in manifest and prints its digest, or `sha256sum backend/voice_agent/CLOSURE.json` at the exact deployed commit. Both containers must carry the SAME value; a stale pin refuses registration with `closure_mismatch`. The all-zero digest is a development-only marker; production boot refuses it (`unapproved_voice_worker_closure`). |
 | `VOICE_COORDINATOR_REPLICA_ID` | orchestrator | **Coordinator replica identity**: stable, unique per orchestrator replica (e.g. `voice-coordinator-prod-1`). Owns durable session leases; boot-refused when unset in production (`missing_voice_replica_id`). Two replicas sharing one id would fence each other's sessions at startup/shutdown. |
 | `VOICE_WORKER_IDENTITY` / `VOICE_WORKER_MAX_SESSIONS` | worker | Stable worker identity (re-registration replaces the prior socket) and its capacity offer. |
 | `VOICE_SPEECH_BASE_URL` / `VOICE_SPEECH_API_KEY` | worker only | Speech endpoint (ASR + TTS routes). In compose these are wired from `OPENAI_BASE_URL`/`OPENAI_API_KEY`; the orchestrator's own copies are blanked (054). |

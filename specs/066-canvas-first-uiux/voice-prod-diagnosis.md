@@ -57,8 +57,12 @@ docker compose up -d --force-recreate astraldeep
 # 3) Confirm admission, then click the mic again:
 docker logs astraldeep --since 2m 2>&1 | grep -i worker-control   # expect "[accepted]" with no 401 loop
 
-# 4) Verify the closure pin matches the deployed image:
-docker exec astraldeep-voice-worker sh -c 'sha256sum $(find / -name CLOSURE.json 2>/dev/null | head -1)'
+# 4) Verify the closure pin. CLOSURE.json is deliberately NOT in the worker
+#    image (closure_manifest.py refuses it as an image input), so recompute
+#    REPO-SIDE at the exact commit the deployed image was built from:
+git -C /opt/AstralDeep rev-parse HEAD   # must be the deployed image's commit
+sha256sum /opt/AstralDeep/backend/voice_agent/CLOSURE.json
+# (or: python tooling/voice-worker/closure_manifest.py verify)
 ```
 
 ## Spec linkage
