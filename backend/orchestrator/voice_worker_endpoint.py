@@ -18,8 +18,10 @@ import os
 import re
 import secrets
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from fastapi import APIRouter, WebSocket
@@ -28,12 +30,14 @@ from starlette.websockets import WebSocketDisconnect
 
 from .voice_coordinator import (
     MAX_CONTROL_FRAME_BYTES,
+    AdmissionRefusal,
     ControlProtocolError,
     RegistrationError,
     StaleFence,
     WorkerConnectionRelease,
     WorkerPool,
     WorkerRegistrationReceipt,
+    WorkerStatusEntry,
     SessionReservation,
 )
 
@@ -199,6 +203,46 @@ class WorkerChallengeStore:
         return value
 
 
+class AdmissionRefusalLog:
+    """Bounded, memory-only retention of refused worker admission attempts.
+
+    Recorded only at the three genuine refusal exits (authentication failure,
+    registration timeout, registration refusal) — never on the healthy
+    challenge-issue leg, and never for a worker that was already admitted.
+    """
+
+    def __init__(
+        self,
+        *,
+        capacity: int = 8,
+        utcnow: Callable[[], datetime] | None = None,
+    ) -> None:
+        if not 1 <= capacity <= 64:
+            raise WorkerControlConfigError("invalid_refusal_retention")
+        self._entries: deque[AdmissionRefusal] = deque(maxlen=capacity)
+        self._utcnow = utcnow or (lambda: datetime.now(UTC))
+
+    def record(self, stage: str, reason: str) -> None:
+        code = (
+            reason
+            if isinstance(reason, str) and _ERROR_CODE.fullmatch(reason)
+            else "admission_refused"
+        )
+        if stage not in {"authentication", "registration"}:
+            stage = "registration"
+        logger.warning(
+            "voice_worker_admission_refused stage=%s reason=%s", stage, code
+        )
+        self._entries.appendleft(
+            AdmissionRefusal(stage=stage, reason=code, occurred_at=self._utcnow())
+        )
+
+    def snapshot(self) -> tuple[AdmissionRefusal, ...]:
+        """Return retained refusals, most recent first."""
+
+        return tuple(self._entries)
+
+
 class WorkerDisconnectHook(Protocol):
     async def __call__(
         self,
@@ -254,12 +298,14 @@ class WorkerControlEndpoint:
         challenges: WorkerChallengeStore | None = None,
         disconnect_hook: WorkerDisconnectHook | None = None,
         frame_hook: WorkerFrameHook | None = None,
+        refusals: AdmissionRefusalLog | None = None,
     ) -> None:
         if not isinstance(pool, WorkerPool):
             raise TypeError("pool must be WorkerPool")
         self.pool = pool
         self.settings = settings
         self.challenges = challenges or WorkerChallengeStore(settings)
+        self.refusals = refusals or AdmissionRefusalLog()
         self._disconnect_hook = disconnect_hook
         self._frame_hook = frame_hook
         self.router = APIRouter()
@@ -274,6 +320,16 @@ class WorkerControlEndpoint:
 
         return self.pool.readiness()
 
+    def worker_status(self) -> tuple[WorkerStatusEntry, ...]:
+        """Expose the credential-free per-worker registry facts (FR-034)."""
+
+        return self.pool.worker_status()
+
+    def admission_refusals(self) -> tuple[AdmissionRefusal, ...]:
+        """Expose retained admission refusals, most recent first (FR-034)."""
+
+        return self.refusals.snapshot()
+
     async def handle(self, websocket: WebSocket) -> None:
         if websocket.scope.get("query_string", b""):
             await _deny(websocket, status_code=400)
@@ -284,7 +340,8 @@ class WorkerControlEndpoint:
 
         try:
             authenticated_identity = self._authenticate(websocket)
-        except WorkerControlAuthError:
+        except WorkerControlAuthError as exc:
+            self.refusals.record("authentication", exc.code)
             await _deny(websocket, status_code=401)
             return
         if authenticated_identity is None:
@@ -324,8 +381,14 @@ class WorkerControlEndpoint:
         except WebSocketDisconnect:
             return
         except asyncio.TimeoutError:
+            if receipt is None:
+                self.refusals.record("registration", "registration_timeout")
             await socket.close(1008, "registration_timeout")
         except (ControlProtocolError, RegistrationError, StaleFence) as exc:
+            if receipt is None:
+                self.refusals.record(
+                    "registration", getattr(exc, "code", "admission_refused")
+                )
             logger.warning(
                 "voice_worker_control_closed reason=%s",
                 getattr(exc, "code", str(exc)),

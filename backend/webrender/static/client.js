@@ -660,6 +660,7 @@
   var VOICE_REASON_TEXT = Object.freeze({
     permission_denied: "Microphone permission was denied. Allow it in browser settings or keep typing.",
     permission_restricted: "Microphone permission is restricted. You can keep typing messages.",
+    permission_not_determined: "Voice is waiting on the microphone permission prompt. Allow or deny it, then try again.",
     no_microphone: "No microphone is available. Connect one or keep typing messages.",
     no_audio_output: "No audio output is available. You can keep typing messages.",
     media_unavailable: "Browser audio is unavailable. You can keep typing messages.",
@@ -673,6 +674,17 @@
     ended_by_user: "Voice conversation ended. Accepted requests will keep running.",
     speech_error: "Assistant speech failed. The text result may still be available in chat. You can keep typing messages.",
     media_error: "Voice media failed. You can retry or keep typing.",
+    // 066 T032/FR-033: every refusal reason the server can return on session
+    // create renders as its own honest line instead of the generic error text.
+    feature_disabled: "Voice is not enabled on this server. You can keep typing messages.",
+    authentication_required: "Sign in to use voice. You can keep typing messages.",
+    worker_unavailable: "No voice worker is available right now. You can keep typing messages.",
+    asr_unavailable: "The speech recognition service is unavailable right now. You can keep typing messages.",
+    tts_unavailable: "The speech synthesis service is unavailable right now. You can keep typing messages.",
+    voice_unavailable: "Voice is temporarily unavailable. You can keep typing messages.",
+    output_language_unsupported: "Voice output is not supported for this language. You can keep typing messages.",
+    capacity_exhausted: "Voice is at capacity right now. Try again shortly.",
+    chat_context_unavailable: "The active chat changed before voice could start. Try again.",
   });
 
   function voiceCapability() {
@@ -1847,15 +1859,18 @@
       setVoiceFeedback("error", "auth_expired", "Voice controls are reconnecting. Try again in a moment.", true);
       return;
     }
+    pending.awaiting_permission = true;
     try {
       await acquireVoiceMicrophone();
     } catch (error) {
+      pending.awaiting_permission = false;
       var permissionReason = voicePermissionReason(error);
       voicePermissionState = permissionReason === "permission_denied" ? "denied" : "restricted";
       teardownVoiceMedia(false);
       setVoiceFeedback("error", permissionReason, null, true);
       return;
     }
+    pending.awaiting_permission = false;
     if (voiceActivation !== pending || pending.connection_generation !== connectionGeneration
         || activeChatId !== (pending.chat_id || pending.initial_chat_id)) {
       teardownVoiceMedia(false);
@@ -1938,7 +1953,13 @@
     pending.timeout = setTimeout(function () {
       if (voiceActivation !== pending) return;
       teardownVoiceMedia(false);
-      setVoiceFeedback("error", "network_interrupted", "Voice activation timed out. You can retry or keep typing.", true);
+      // 066 T032/FR-033: a timeout while the browser permission prompt is
+      // still open is a permission-shaped condition, not a network failure.
+      if (pending.awaiting_permission) {
+        setVoiceFeedback("error", "permission_not_determined", null, true);
+      } else {
+        setVoiceFeedback("error", "network_interrupted", "Voice activation timed out. You can retry or keep typing.", true);
+      }
     }, 30000);
     setVoiceFeedback("connecting", "ready", null, true);
     if (!activeChatId) sendCorrelatedVoiceNewChat(voiceActivation);
