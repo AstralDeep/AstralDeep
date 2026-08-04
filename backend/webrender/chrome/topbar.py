@@ -217,6 +217,21 @@ def render_topbar(roles=None) -> str:
         'aria-label="Recent chats" title="Recent chats" aria-expanded="false">'
         f"{_CHATS_SVG}</button>"
     )
+    # 066 collapse-trap fix: when the conversation is hidden (collapsed
+    # layout), the only reopen affordance was a subtle composer icon whose
+    # re-pin action was a DOUBLE-click — owner-reported as "nothing to get
+    # it back". This topbar twin restores the conversation in one click.
+    # Rendered `hidden`; client.js unhides it exactly while the conversation
+    # is hidden, and mirrors the unread badge.
+    show_chat_btn = (
+        '<button type="button" id="astral-topbar-chat-btn" hidden '
+        'class="astral-topbar-chat items-center justify-center p-1.5 rounded-lg '
+        'text-astral-muted hover:text-astral-text hover:bg-white/5 relative" '
+        'aria-label="Show conversation" title="Show conversation">'
+        f"{_CHATS_SVG}"
+        '<span id="astral-topbar-chat-unread" class="astral-chat-unread" hidden>0</span>'
+        "</button>"
+    )
     # The two canvas page actions. Rendered `hidden`; client.js unhides each one
     # only while the canvas carries its flag. They keep the class names the
     # delegated click handlers already dispatch on, so moving them out of the
@@ -243,6 +258,7 @@ def render_topbar(roles=None) -> str:
             )
             right_parts.append(new_chat_btn)
             right_parts.append(recent_chats_btn)
+            right_parts.append(show_chat_btn)
             right_parts.append(page_action_btns)
         elif control.kind == "action":
             right_parts.append(_icon_button(control))

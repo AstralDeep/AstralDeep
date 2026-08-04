@@ -1346,6 +1346,9 @@ body[data-astral-layout="collapsed"] .astral-chat-toggle.astral-peek { animation
    beat the flex display, hence the explicit rule. */
 .astral-page-action { display: inline-flex; }
 .astral-page-action[hidden] { display: none; }
+/* 066 collapse-trap fix: the topbar "Show conversation" twin. */
+.astral-topbar-chat { display: inline-flex; }
+.astral-topbar-chat[hidden] { display: none; }
 
 /* ---- readable canvas on very wide windows ---- */
 #astral-canvas > .astral-component,

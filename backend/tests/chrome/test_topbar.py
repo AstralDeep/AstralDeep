@@ -100,6 +100,24 @@ def test_canvas_page_actions_live_in_the_topbar_hidden_by_default():
         assert 'aria-label="Share page"' in html
 
 
+def test_show_conversation_toggle_lives_in_the_topbar_hidden_by_default():
+    """066 collapse-trap fix: hiding the conversation rail used to leave only
+    a subtle composer icon (whose re-pin was a DOUBLE-click) as the way back —
+    owner-reported as "nothing to get it back". The topbar carries an
+    always-discoverable one-click twin: shipped hidden, revealed by client.js
+    exactly while the conversation is hidden, with an unread badge mirror."""
+    for roles in (["user"], ["admin", "user"], None):
+        html = render_topbar(roles=roles)
+        assert 'id="astral-topbar-chat-btn"' in html
+        assert 'aria-label="Show conversation"' in html
+        opening_tag = html.split('id="astral-topbar-chat-btn"')[1].split(">")[0]
+        assert "hidden" in opening_tag  # shipped hidden — client.js reveals
+        assert 'id="astral-topbar-chat-unread"' in html
+        assert html.index('id="astral-topbar-chat-btn"') < html.index(
+            'id="astral-settings"'
+        )
+
+
 # ── Feature 033 (C-U8) — Pulse digest top-bar icon (flag-gated) ──────────────
 
 def test_pulse_icon_absent_when_flag_off(monkeypatch):

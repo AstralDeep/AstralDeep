@@ -481,6 +481,7 @@
       if (mode !== "collapsed") document.body.classList.remove("astral-chat-open");
       if (mode === "split") clearChatUnread();
     }
+    syncTopbarChatToggle();
   }
   applyDeviceProfile(detectDeviceType());
   applyLayoutClass();
@@ -498,9 +499,33 @@
   var chatToggleBtn = document.getElementById("astral-chat-toggle");
   var chatUnreadEl = document.getElementById("astral-chat-unread");
   var chatUnread = 0;
+  // Collapse-trap fix: an always-discoverable topbar twin of the composer
+  // toggle, visible exactly while the conversation is hidden. The topbar is
+  // injected server-side, so resolve lazily (the first applyLayoutClass runs
+  // before this block).
+  function topbarChatBtn() {
+    return document.getElementById("astral-topbar-chat-btn");
+  }
+  function syncTopbarChatToggle() {
+    var btn = topbarChatBtn();
+    if (!btn) return;
+    var layout = document.body.getAttribute("data-astral-layout");
+    var hidden = layout === "collapsed"
+      && !document.body.classList.contains("astral-chat-open");
+    btn.hidden = !hidden;
+    var badge = document.getElementById("astral-topbar-chat-unread");
+    if (badge) {
+      // Hoisting guard: the first applyLayoutClass runs before chatUnread
+      // is initialized.
+      var count = typeof chatUnread === "number" ? chatUnread : 0;
+      badge.hidden = count === 0;
+      badge.textContent = count > 9 ? "9+" : String(count);
+    }
+  }
   function clearChatUnread() {
     chatUnread = 0;
     if (chatUnreadEl) { chatUnreadEl.hidden = true; chatUnreadEl.textContent = "0"; }
+    syncTopbarChatToggle();
   }
   function noteAssistantActivity() {
     var layout = document.body.getAttribute("data-astral-layout");
@@ -512,6 +537,7 @@
       chatUnreadEl.hidden = false;
       chatUnreadEl.textContent = chatUnread > 9 ? "9+" : String(chatUnread);
     }
+    syncTopbarChatToggle();
     if (chatToggleBtn && window.matchMedia
         && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       chatToggleBtn.classList.remove("astral-peek");
@@ -527,10 +553,28 @@
     chatToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
     chatToggleBtn.setAttribute("title", open ? "Hide conversation" : "Show conversation");
     if (open) clearChatUnread();
+    syncTopbarChatToggle();
   });
   // Re-pin the rail from collapsed mode: double-click the transcript toggle.
   if (chatToggleBtn) chatToggleBtn.addEventListener("dblclick", function () {
     setChatLayoutPref("open");
+  });
+  // The topbar twin restores the conversation in ONE click: re-pin the rail
+  // where the width allows a usable composer, otherwise open the drawer.
+  document.addEventListener("click", function (event) {
+    var btn = event.target && event.target.closest
+      ? event.target.closest("#astral-topbar-chat-btn") : null;
+    if (!btn) return;
+    setChatLayoutPref("open");
+    if (document.body.getAttribute("data-astral-layout") === "collapsed") {
+      document.body.classList.add("astral-chat-open");
+      if (chatToggleBtn) {
+        chatToggleBtn.setAttribute("aria-expanded", "true");
+        chatToggleBtn.setAttribute("title", "Hide conversation");
+      }
+      clearChatUnread();
+    }
+    syncTopbarChatToggle();
   });
   // Coarse-pointer component chrome: tap a component to reveal its actions.
   document.addEventListener("click", function (e) {
