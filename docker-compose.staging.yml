@@ -139,7 +139,9 @@ services:
       FF_SCHEDULER_EXECUTION: "true"
       OPENAI_BASE_URL: ""
       OPENAI_API_KEY: ""
-      LIVEKIT_INTERNAL_URL: http://livekit:7880
+      # Overridable: production/staging posture refuses the plaintext-derived
+      # worker RTC URL (invalid_livekit_url) — point at the LiveKit TLS vhost.
+      LIVEKIT_INTERNAL_URL: ${LIVEKIT_INTERNAL_URL:-http://livekit:7880}
       LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:?set the public staging WSS URL}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set the protected LiveKit API key}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set the protected LiveKit API secret}

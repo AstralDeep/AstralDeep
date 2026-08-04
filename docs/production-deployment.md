@@ -104,6 +104,30 @@ reverse proxy (nginx, Caddy, Traefik) in front of it in production:
    register `https://your-host/auth/callback` as a valid redirect URI on the
    Keycloak client.
 
+## Conversational voice (feature 065) — production URLs
+
+Voice is fail-closed about transport outside development. The two URLs are
+different things and BOTH must be TLS in production:
+
+1. `LIVEKIT_PUBLIC_URL=wss://<voice vhost>` — what CLIENTS join
+   (e.g. `wss://sandbox-voice.example.edu`). Plain `ws://` is refused at boot
+   (`insecure_public_url`).
+2. `LIVEKIT_INTERNAL_URL=https://<voice vhost>` — what the ORCHESTRATOR and
+   the VOICE WORKER use. The coordinator derives the worker's RTC URL from it
+   (`http`→`ws`, `https`→`wss`) and refuses a plaintext derivation outside
+   development — the symptom is every `POST /api/voice/sessions` failing
+   `503 invalid_livekit_url`. The compose default
+   (`http://livekit:7880`) is for local development only; production MUST
+   override it in `.env`.
+
+The reverse proxy for the voice vhost must pass BOTH the WebSocket upgrade
+(`/rtc`) and LiveKit's HTTP admin API (`/twirp`) to the LiveKit service —
+a plain `proxy_pass` to `livekit:7880` with upgrade headers covers both.
+Remember `LIVEKIT_NODE_IP` must be the host's routable address for WebRTC
+media, and `VOICE_CONTROL_SECRET` changes require a compose RECREATE (a
+`docker restart` keeps the old value; the worker then loops 401 on the
+worker-control WebSocket).
+
 ## Health probes
 
 | Endpoint | Meaning | Use |
