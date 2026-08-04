@@ -187,9 +187,15 @@ def test_ci_runs_lock_install_isolation_and_lint_as_an_independent_job() -> None
     assert version < install < manager < isolation < lint
     assert job.count("working-directory: tooling/web-ci") >= 3
 
+    # Transitive through the unprivileged `gates` aggregation (see
+    # test_release_workflows_060 for the publish/gates chain rationale).
     publish = _workflow_job(workflow, "publish")
-    assert "- javascript-lint" in publish
-    assert "- release-tooling-tests" in publish
+    assert "- gates" in publish
+    gates = _workflow_job(workflow, "gates")
+    assert "- javascript-lint" in gates
+    assert "needs.javascript-lint.result }}' == 'success'" in gates
+    assert "- release-tooling-tests" in gates
+    assert "needs.release-tooling-tests.result }}' == 'success'" in gates
 
 
 def test_web_ci_packages_cannot_enter_product_manifests_or_image() -> None:
