@@ -2222,3 +2222,62 @@ def test_constructor_and_input_validation_fail_before_database_use(
     with pytest.raises(ValueError, match="invalid_media_grant_expiry"):
         request = _create()
         replace(request, media_grant_expires_at=request.media_grant_issued_at)
+
+
+def test_user_delete_of_lease_reaped_session_is_idempotent_066(
+    repository: VoiceSessionRepository,
+) -> None:
+    """Bug B (2026-08-03): a client that stalls stops renewing, the reaper
+    ends its session, and the user's later DELETE must succeed instead of
+    raising session_already_ended (which mapped to a 503 on the wire)."""
+
+    create = _create()
+    active = _activate_and_sync(repository, create)
+    reaped = {
+        item.session_id: item
+        for item in repository.expire_session_leases(now=NOW + timedelta(seconds=46))
+    }
+    assert active.session_id in reaped
+    assert reaped[active.session_id].end_reason == "lease_expired"
+
+    # Same device, rotated binding (bindings rotate every ~2 minutes, so the
+    # DELETE rarely carries the binding stored on the reaped row).
+    rotated = _control(
+        create,
+        binding_id=str(uuid.uuid4()),
+        connection_generation=str(uuid.uuid4()),
+    )
+    ended = repository.end_session(
+        user_id=create.user_id,
+        session_id=active.session_id,
+        expected_generation=active.generation,
+        expected_media_grant_revision=active.media_grant_revision,
+        control=rotated,
+        reason="user",
+        now=NOW + timedelta(seconds=50),
+    )
+    assert ended.state == "ended"
+    assert ended.end_reason == "lease_expired"
+
+    # A foreign device is still refused, and non-user internal reasons keep
+    # their exact-replay semantics.
+    with pytest.raises(VoiceSessionRepositoryError, match="binding_scope_mismatch"):
+        repository.end_session(
+            user_id=create.user_id,
+            session_id=active.session_id,
+            expected_generation=active.generation,
+            expected_media_grant_revision=active.media_grant_revision,
+            control=_control(create, device_id=str(uuid.uuid4())),
+            reason="user",
+            now=NOW + timedelta(seconds=51),
+        )
+    with pytest.raises(StaleSessionFence, match="session_already_ended"):
+        repository.end_session(
+            user_id=create.user_id,
+            session_id=active.session_id,
+            expected_generation=active.generation,
+            expected_media_grant_revision=active.media_grant_revision,
+            control=_control(create),
+            reason="media_error",
+            now=NOW + timedelta(seconds=52),
+        )

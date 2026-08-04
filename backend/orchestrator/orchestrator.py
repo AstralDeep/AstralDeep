@@ -1145,6 +1145,9 @@ class Orchestrator:
             self.voice_services.bind_terminal_turn_notifier(
                 self._notify_reconciled_voice_terminal_turn
             )
+            self.voice_runtime.bind_session_state_publisher(
+                self.publish_voice_session_state
+            )
         except Exception as exc:
             logger.warning(
                 "conversational_voice_unavailable",
@@ -8280,7 +8283,11 @@ class Orchestrator:
                         ])
 
                 elif msg.action == "new_chat":
-                    chat_id = self.history.create_chat(user_id=user_id)
+                    # Sync DB write off the event-loop thread (feature 052);
+                    # first driven under LOOP_GUARD_ENFORCE by the Bug-A
+                    # regression test.
+                    chat_id = await asyncio.to_thread(
+                        self.history.create_chat, user_id=user_id)
                     # 066 (FR-024): a fresh chat greets with the welcome
                     # examples exactly like a fresh session — same wel_
                     # purge-on-first-send rules, never persisted. Sent BEFORE
@@ -17960,6 +17967,45 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return None
         self._voice_composer_revisions[socket_id] = revision
         return dict(frame)
+
+    async def publish_voice_session_state(self, session) -> None:
+        """Push one durable ``voice_session_state`` projection to its owner.
+
+        Bound to the voice runtime's session-state publisher seam. Clients
+        shipped this reducer in feature 065 (chat-context resync, microphone
+        restore, ended teardown) but the frame was never produced; the PATCH,
+        DELETE, and lease/idle-reaper paths now feed it. Ended sessions also
+        refresh the composer so the Start control returns.
+        """
+
+        from orchestrator.voice_runtime import session_state_frame
+
+        socket_id = self._voice_device_bindings.get(
+            (session.user_id, session.device_id)
+        )
+        if socket_id is None:
+            return
+        claims = self._voice_control_bindings.get(socket_id)
+        if claims is None:
+            return
+        if claims.connection_generation == session.owner_connection_generation:
+            websocket = next(
+                (
+                    candidate
+                    for candidate in self.ui_sessions
+                    if id(candidate) == socket_id
+                ),
+                None,
+            )
+            if websocket is not None:
+                frame = session_state_frame(session, now=datetime.now(UTC))
+                await self._safe_send(websocket, json.dumps(frame))
+        if session.ended_at is not None:
+            await self.publish_voice_composer_state(
+                user_id=session.user_id,
+                device_id=session.device_id,
+                connection_generation=claims.connection_generation,
+            )
 
     def _start_voice_composer_refresh(
         self,

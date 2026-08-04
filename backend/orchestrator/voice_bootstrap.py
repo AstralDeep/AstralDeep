@@ -1553,6 +1553,12 @@ class VoiceServices:
                 session,
                 session.end_reason or "lease_expired",
             )
+            # A reaper end is otherwise invisible to the owner device: without
+            # this push a client that silently stopped renewing keeps showing
+            # a live session it no longer has (and its later DELETE conflicts).
+            publish_state = getattr(self.runtime, "publish_session_state", None)
+            if callable(publish_state):
+                await publish_state(session)
             metric_reason = (
                 "idle_expired" if session.end_reason == "idle" else "lease_expired"
             )

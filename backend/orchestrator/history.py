@@ -206,15 +206,74 @@ def _is_rail_text_only(components: list[Any]) -> bool:
     return True
 
 
+# Text-only WRAPPER chrome whose nested words must survive the rail
+# reduction. ``Orchestrator._chat_narrative`` persists a multi-paragraph
+# answer as ``Card(title=…, content=[Text(answer)])`` — chat-rail narrative
+# that never enters the workspace. Dropping the whole card (the pre-fix
+# feature-063 rule) erased the assistant's answer from the committed
+# conversation snapshot: the end-of-turn snapshot then REPLACED the live
+# view answer-less on every client ("first message of a new chat gets no
+# response"). Rich components inside a wrapper still drop to the canvas.
+_RAIL_WRAPPER_TYPES = {"card", "container", "collapsible"}
+
+
+def _rail_wrapper_is_anchored(component: Mapping[str, Any]) -> bool:
+    """True when a wrapper carries an AUTHOR workspace identity.
+
+    ``_component_identity`` preserves an author-supplied ``component_id``
+    (e.g. the ``doc_…`` narrative doc card, which the workspace re-hydrates
+    to the canvas beside its concise rail lead) and synthesizes a ``cc_…``
+    fingerprint for identity-less components (the ``_chat_narrative`` card,
+    which lives nowhere but the transcript). Lifting an anchored wrapper's
+    words would duplicate its canvas rendition in the rail; dropping an
+    unanchored one loses the words entirely.
+    """
+    identity = component.get("component_id")
+    return isinstance(identity, str) and bool(identity) and not identity.startswith("cc_")
+
+
+def _wrapper_texts(component: Mapping[str, Any]) -> list[str]:
+    """Depth-first text-primitive contents of one text-only wrapper."""
+    texts: list[str] = []
+    for key in ("content", "children"):
+        children = component.get(key)
+        if not isinstance(children, list):
+            continue
+        for child in children:
+            if not isinstance(child, Mapping):
+                continue
+            child_type = str(child.get("type", "")).strip().lower()
+            if child_type == "text":
+                text = child.get("content")
+                if not isinstance(text, str):
+                    text = child.get("text")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text)
+            elif child_type in _RAIL_WRAPPER_TYPES:
+                texts.extend(_wrapper_texts(child))
+    return texts
+
+
 def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Reduce a transcript message's parts to TEXT ONLY (feature 063).
 
     The chat rail is the conversation; the canvas is where UI lives. So a
     ``components`` part is reduced to the plain text of any top-level ``text``
     primitives it carries (lifted to ``text`` parts, so no assistant words are
-    lost) and every other component — cards, tables, lists, alerts, metrics — is
+    lost) and every other component — tables, lists, alerts, metrics — is
     dropped from the transcript: it is canvas state, not conversation. A message
     left with no parts is omitted (it was purely a rendered component).
+
+    One refinement over the original feature-063 rule: a TEXT-ONLY wrapper
+    (card/container/collapsible whose children are all words — the shape
+    ``_chat_narrative`` persists for multi-paragraph answers) has its nested
+    text lifted instead of being dropped, UNLESS it carries an author
+    workspace identity (``doc_…`` narrative doc cards re-hydrate to the
+    canvas; lifting them would duplicate the write-up beside its rail lead).
+    Identity-less narrative chrome never enters the workspace, so dropping
+    it lost the assistant's words entirely from the committed snapshot. A
+    wrapper with any rich child still drops whole: it is a canvas component
+    and the workspace re-hydrates it.
 
     This supersedes the feature-062 rule that kept text-like components in the
     rail (they still appeared as duplicate cards beside the canvas)."""
@@ -226,13 +285,21 @@ def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for comp in part.get("components", []):
             if not isinstance(comp, Mapping):
                 continue
-            if str(comp.get("type", "")).strip().lower() != "text":
-                continue  # a UI component — canvas only
-            text = comp.get("content")
-            if not isinstance(text, str):
-                text = comp.get("text")
-            if isinstance(text, str) and text.strip():
-                kept.append({"type": "text", "text": text})
+            comp_type = str(comp.get("type", "")).strip().lower()
+            if comp_type == "text":
+                text = comp.get("content")
+                if not isinstance(text, str):
+                    text = comp.get("text")
+                if isinstance(text, str) and text.strip():
+                    kept.append({"type": "text", "text": text})
+            elif (
+                comp_type in _RAIL_WRAPPER_TYPES
+                and not _rail_wrapper_is_anchored(comp)
+                and _is_rail_text_only([comp])
+            ):
+                for text in _wrapper_texts(comp):
+                    kept.append({"type": "text", "text": text})
+            # anything else is a UI component — canvas only
     return kept
 
 
