@@ -148,13 +148,20 @@ def test_standard_ci_gates_contract_validation_windows_and_web_coverage() -> Non
     assert "ASTRAL_VOICE_COVERAGE_ISTANBUL_OUTPUT" in conformance_step
     assert "chmod 0644 /work/build/065/coverage/web-istanbul.json" in conformance_step
 
+    # Publication depends on these gates TRANSITIVELY through the
+    # unprivileged `gates` aggregation (publish's own guard must stay inside
+    # the draft-bootstrap push-only grammar; a skipped direct need would skip
+    # publish silently — see test_release_workflows_060 for the full chain).
     publish_needs = workflow.split("  publish:", 1)[1].split("    if:", 1)[0]
+    assert "- gates" in publish_needs
+    gates_job = workflow.split("  gates:", 1)[1].split("\n  publish:", 1)[0]
     for required_job in (
         "voice-contract-validator",
         "voice-web-conformance",
         "windows-client",
     ):
-        assert f"- {required_job}" in publish_needs
+        assert f"- {required_job}" in gates_job
+        assert f"needs.{required_job}.result }}}}' == 'success'" in gates_job
 
 
 def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only() -> None:
