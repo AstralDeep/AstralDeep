@@ -272,14 +272,25 @@ jobs:
     # owner-controlled repository variable, set after the dependency record and
     # matching review are complete, may authorize a CI-only rebuild. Runtime
     # export and upload are absent from this job. An unset variable evaluates false.
-    if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
+    #
+    # The gate lives on the STEPS, not the job: a job-level skip poisons the
+    # implicit transitive success() of every downstream job — publish skipped
+    # silently on main even through the `gates` aggregation, because GitHub
+    # evaluates success() over the whole dependency chain and always() on the
+    # privileged publish job is forbidden by the draft-bootstrap grammar.
+    # An unauthorized run succeeds as an explicit no-op instead of skipping.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Report the unauthorized no-op honestly
+        if: vars.VOICE_WORKER_CLOSURE_APPROVED != 'true'
+        run: echo "VOICE_WORKER_CLOSURE_APPROVED is not 'true' — worker rebuild not authorized; succeeding as a no-op so downstream success() gating stays truthful."
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build the voice-worker runtime and test images
+        if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
         run: |
           set -euo pipefail
           test -f Dockerfile.voice.dockerignore
@@ -294,6 +305,7 @@ jobs:
             --tag astraldeep-voice-worker:test \
             .
       - name: Run the isolated voice-worker suite with Cobertura coverage
+        if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
         run: |
           set -euo pipefail
           mkdir -p build/065/coverage
@@ -318,6 +330,7 @@ jobs:
             '
           test -s build/065/coverage/voice-worker.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
         with:
           name: voice-worker-coverage
           path: build/065/coverage/voice-worker.xml
