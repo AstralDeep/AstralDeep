@@ -232,23 +232,17 @@ def _rail_wrapper_is_anchored(component: Mapping[str, Any]) -> bool:
     return isinstance(identity, str) and bool(identity) and not identity.startswith("cc_")
 
 
-# Feature 066 T023: non-default text variants whose weight must survive the
-# words-only rail lift so a caption hydrates as a caption, not full narrative.
-# The value rides the existing open part dict (additive, server-authored) and
-# only ever changes the web `_presentation` rendition — natives render words.
-_CARRIED_TEXT_VARIANTS = frozenset({"caption", "h1", "h2", "h3"})
-
-
-def _lifted_text_part(text: str, variant: Any) -> dict[str, Any]:
-    part: dict[str, Any] = {"type": "text", "text": text}
-    if variant in _CARRIED_TEXT_VARIANTS:
-        part["variant"] = variant
-    return part
-
-
-def _wrapper_texts(component: Mapping[str, Any]) -> list[tuple[str, Any]]:
-    """Depth-first (text, variant) contents of one text-only wrapper."""
-    texts: list[tuple[str, Any]] = []
+# Feature 066 T023 (investigated, deliberately NOT carried): a lifted
+# caption's variant may NOT ride the rail part. The canonical transcript
+# contract requires text parts to be EXACTLY {"type", "text"} — enforced
+# server-side (shared/protocol.py ConversationSnapshot._validate_part), by
+# Apple's exact-key ConversationPart decode, and by the 060 native==original
+# snapshot pin — so any additional key breaks continuity for real caption
+# turns. Restoring caption weight on hydration therefore needs a deliberate
+# cross-client contract extension, not a server-side-only carry.
+def _wrapper_texts(component: Mapping[str, Any]) -> list[str]:
+    """Depth-first text-primitive contents of one text-only wrapper."""
+    texts: list[str] = []
     for key in ("content", "children"):
         children = component.get(key)
         if not isinstance(children, list):
@@ -262,7 +256,7 @@ def _wrapper_texts(component: Mapping[str, Any]) -> list[tuple[str, Any]]:
                 if not isinstance(text, str):
                     text = child.get("text")
                 if isinstance(text, str) and text.strip():
-                    texts.append((text, child.get("variant")))
+                    texts.append(text)
             elif child_type in _RAIL_WRAPPER_TYPES:
                 texts.extend(_wrapper_texts(child))
     return texts
@@ -305,14 +299,14 @@ def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if not isinstance(text, str):
                     text = comp.get("text")
                 if isinstance(text, str) and text.strip():
-                    kept.append(_lifted_text_part(text, comp.get("variant")))
+                    kept.append({"type": "text", "text": text})
             elif (
                 comp_type in _RAIL_WRAPPER_TYPES
                 and not _rail_wrapper_is_anchored(comp)
                 and _is_rail_text_only([comp])
             ):
-                for text, variant in _wrapper_texts(comp):
-                    kept.append(_lifted_text_part(text, variant))
+                for text in _wrapper_texts(comp):
+                    kept.append({"type": "text", "text": text})
             # anything else is a UI component — canvas only
     return kept
 
@@ -437,15 +431,14 @@ def augment_conversation_snapshot_for_target(
         pipeline (``render_text`` markdown branch -> ``block_md``), so the
         semantic value stays authoritative and nothing new is trusted.
 
-        T023: a lifted part may carry a non-default variant (caption,
-        h1-h3); rendering it with that variant keeps a caption at caption
-        weight instead of promoting it to full narrative markdown.
+        T023 note: the markdown variant is deliberately fixed. A lifted
+        caption CANNOT carry its variant here because canonical text parts
+        are exactly ``{"type", "text"}`` (see the contract note above
+        ``_wrapper_texts``); caption-weight hydration awaits a cross-client
+        contract extension.
         """
-        variant = part.get("variant")
-        if variant not in _CARRIED_TEXT_VARIANTS:
-            variant = "markdown"
         rendered = render_one(
-            {"type": "text", "variant": variant, "content": part["text"]}
+            {"type": "text", "variant": "markdown", "content": part["text"]}
         )
         if rendered:
             part["_presentation"] = {"target": "web", "html": rendered}
