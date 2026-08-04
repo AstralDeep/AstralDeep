@@ -130,6 +130,34 @@ arrangement sits behind a GeometryReader firewall or a concrete height — the
 drawer's `ChatList` gets a fixed height, and `CanvasArea`'s internal firewall is
 untouched.
 
+## Consistency re-check — Windows box (2026-08-04, 066 close-out branch)
+
+Suites re-run on the Windows machine with the T030/T032/T034 close-out in
+place: backend root lane **6065 passed** (every non-green traced to local
+dev-`.env` leakage [`DELEGATION_REQUIRED`/056 flags — 59/59 pass with
+CI-equivalent env] or the known artifact-blocked evidence set), nested lanes
+**945 passed**, voice-worker test image **351 passed**, Windows
+**692 passed / 6 skipped** (+4 new refusal-line pins; byo-supervision sweeps
+deselected per the 2026-08-03 note), Android **:core + :app 349 passed**.
+Ruff clean from the repo root.
+
+Voice refusal-reason parity (FR-033) now reads:
+
+| Client | Session-create refusal rendering |
+|---|---|
+| Web | honest line per server reason (T032; drift-pinned both directions against `VOICE_REASONS`) |
+| Windows | honest line per server reason (`_REFUSAL_REASON_TEXT`, web wording; unmapped code renders verbatim) — WAS the raw code |
+| Apple | honest line per server reason (T051 `messageFor`) |
+| Android | server `composer_state`/`statusMessage` driven; not audited this pass |
+
+Transcript-part strictness (T023 finding, recorded so nobody re-attempts the
+variant carry): canonical text parts are EXACTLY `{type,text}` — server
+`ConversationSnapshot._validate_part`, Apple `ConversationPart.init`
+(exact-key, silently drops), 060 `native == original` pin. Android's wire
+decoder (`Wire.kt`, `ignoreUnknownKeys=true`) and Windows
+(`_validate_semantic_json`, rejects only `_presentation`) are tolerant — the
+strict members make the contract binding for everyone.
+
 ## Status summary (2026-08-03)
 
 Both native changes were made and then re-verified by re-running each client's
