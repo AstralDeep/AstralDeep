@@ -220,6 +220,26 @@ async def get_voice_capability(
         return _error_response(exc)
 
 
+@router.get("/status")
+async def get_voice_status(
+    request: Request,
+    user_id: str = Depends(require_user_id),
+) -> Response:
+    """FR-034 operator surface: admitted workers, load, recent admission refusals.
+
+    Every field is credential-free; the fixed speech profile is public
+    configuration.  Speech-preflight verdicts stay in worker logs (FR-036).
+    """
+
+    try:
+        _status_rate_limiter(request).check(user_id)
+        services = _voice_services(request)
+        value = await _invoke(services, "voice_status")
+        return _response(value)
+    except Exception as exc:
+        return _error_response(exc)
+
+
 @router.post("/sessions")
 async def create_voice_session(
     request: Request,
@@ -458,15 +478,26 @@ def _orchestrator(request: Request) -> Any:
 
 
 def _capability_rate_limiter(request: Request) -> _CapabilityRateLimiter:
+    return _installed_rate_limiter(request, "voice_capability_rate_limiter")
+
+
+def _status_rate_limiter(request: Request) -> _CapabilityRateLimiter:
+    # A separate bucket so status polling can never starve capability checks.
+    return _installed_rate_limiter(request, "voice_status_rate_limiter")
+
+
+def _installed_rate_limiter(
+    request: Request, state_key: str
+) -> _CapabilityRateLimiter:
     state = request.app.state
-    limiter = getattr(state, "voice_capability_rate_limiter", None)
+    limiter = getattr(state, state_key, None)
     if isinstance(limiter, _CapabilityRateLimiter):
         return limiter
     with _CAPABILITY_LIMITER_INSTALL_LOCK:
-        limiter = getattr(state, "voice_capability_rate_limiter", None)
+        limiter = getattr(state, state_key, None)
         if limiter is None:
             limiter = _CapabilityRateLimiter()
-            state.voice_capability_rate_limiter = limiter
+            setattr(state, state_key, limiter)
         if not isinstance(limiter, _CapabilityRateLimiter):
             raise VoiceApiError("voice_unavailable", status_code=503)
         return limiter

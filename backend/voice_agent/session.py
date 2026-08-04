@@ -69,6 +69,17 @@ VAD_RELEASE_THRESHOLD = VAD_THRESHOLD - 0.15
 VAD_MIN_HIGH_CONFIDENCE_FRAMES = 2
 VAD_MIN_CANDIDATE_FRAMES = 4
 VAD_MAX_CANDIDATE_FRAMES = 16
+# 066 R-9 follow-through: a TRUE bounded pre-roll. Speech onsets ramp from
+# below the release threshold (unvoiced plosives, soft attacks), and the
+# candidate buffer resets on any sub-release frame — so the head of an
+# utterance was lost and users were transcribed "from the middle". The ring
+# retains the last 24 admitted frames (768 ms — a strict superset of the
+# 512 ms candidate window) regardless of posterior dips, and activation
+# seeds the utterance from it. Fenced frames never reach the ring (admission
+# is checked upstream), and a capture-epoch change (fence transition) clears
+# it, so audio from before an assistant playout can never resurface in the
+# next turn.
+VAD_PREROLL_FRAMES = 24
 # Feature 066 near-real-time tuning. The 065 launch value was a fixed 40
 # frames (1.28 s); that figure was an implementation choice, never a spec
 # contract (no 065 spec/plan/research text pins it). Endpointing floors of
@@ -788,6 +799,8 @@ class DirectRtcSession(BoundControlSession):
         self._candidate_speech_frames = 0
         self._utterance_active = False
         self._silence_frames = 0
+        self._vad_preroll: deque[bytes] = deque(maxlen=VAD_PREROLL_FRAMES)
+        self._preroll_epoch = 0
         self._recognizing = False
         self._recognition_task: asyncio.Task[None] | None = None
         self._client_turn_id: str | None = None
@@ -1780,6 +1793,14 @@ class DirectRtcSession(BoundControlSession):
         if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
             await self._abort_utterance("vad_failed")
             return
+        # Pre-roll ring maintenance for every ADMITTED, validated frame. A
+        # capture-epoch change marks a fence transition (assistant playout,
+        # reconnect), so the ring resets there and pre-fence audio can never
+        # seed a later turn — exact fence semantics, no clock reads.
+        if self._preroll_epoch != self._capture_epoch:
+            self._vad_preroll.clear()
+            self._preroll_epoch = self._capture_epoch
+        self._vad_preroll.append(bytes(pcm))
         if not self._utterance_active:
             if probability >= VAD_THRESHOLD:
                 self._utterance.extend(pcm)
@@ -1798,6 +1819,10 @@ class DirectRtcSession(BoundControlSession):
                 if len(self._recognition_bindings) >= MAX_RETAINED_FINALS:
                     raise RtcSessionError("transcript_buffer_full")
                 self._utterance_active = True
+                # Seed the turn from the pre-roll ring: it is a superset of
+                # the candidate frames plus the onset audio the candidate
+                # logic discarded on sub-release dips.
+                self._utterance = bytearray(b"".join(self._vad_preroll))
                 self._silence_frames = 0
                 self._client_turn_id = str(uuid4())
                 self._recognition_binding = _RecognitionBinding(
@@ -1850,6 +1875,7 @@ class DirectRtcSession(BoundControlSession):
         self._candidate_speech_frames = 0
         self._utterance_active = False
         self._silence_frames = 0
+        self._vad_preroll.clear()
         self._vad.reset()
         self._recognizing = True
         self._update_capture_open()
@@ -2147,6 +2173,7 @@ class DirectRtcSession(BoundControlSession):
         self._candidate_speech_frames = 0
         self._utterance_active = False
         self._silence_frames = 0
+        self._vad_preroll.clear()
         self._vad.reset()
         if not self._recognizing:
             if self._recognition_binding is not None:

@@ -273,6 +273,29 @@ class VoiceHttpError(RuntimeError):
         super().__init__(code)
 
 
+# 066 T032 parity: honest composer lines for server refusal reasons, wording
+# aligned with web's VOICE_REASON_TEXT and Apple's messageFor. An unmapped
+# code still renders verbatim (honest, if terse) rather than a generic line.
+_REFUSAL_REASON_TEXT = {
+    "worker_unavailable": "No voice worker is available right now. You can keep typing.",
+    "asr_unavailable": "The speech recognition service is unavailable right now. You can keep typing.",
+    "tts_unavailable": "The speech synthesis service is unavailable right now. You can keep typing.",
+    "voice_unavailable": "Voice is temporarily unavailable. You can keep typing.",
+    "media_unavailable": "Voice is temporarily unavailable. You can keep typing.",
+    "capacity_exhausted": "Voice is at capacity right now. Try again shortly.",
+    "feature_disabled": "Voice is not enabled on this server. You can keep typing.",
+    "authentication_required": "Sign in to use voice. You can keep typing.",
+    "auth_expired": "Voice ended because your session expired. You can keep typing.",
+    "output_language_unsupported": "Voice output is not supported for this language. You can keep typing.",
+    "chat_context_unavailable": "The active chat changed before voice could start. Try again.",
+}
+
+
+def _refusal_line(reason: object) -> str:
+    code = str(reason or "voice_unavailable")
+    return _REFUSAL_REASON_TEXT.get(code, code)
+
+
 class VoiceHttpClient:
     """Bounded stdlib client for the server's authenticated voice REST API."""
 
@@ -2249,7 +2272,7 @@ class VoiceController(QObject):
                     if self._activation_id == activation_id:
                         self._activation_id = None
                     self._set_status(
-                        "unavailable", str(ready.get("reason") or "voice_unavailable")
+                        "unavailable", _refusal_line(ready.get("reason"))
                     )
                     return
                 if action == "voice_session_takeover":
@@ -2306,7 +2329,10 @@ class VoiceController(QObject):
             except (VoiceHttpError, WindowsProtocolError) as exc:
                 if self._activation_id == activation_id:
                     self._activation_id = None
-                self._set_status("error", str(exc))
+                if isinstance(exc, VoiceHttpError):
+                    self._set_status("error", _refusal_line(exc.code))
+                else:
+                    self._set_status("error", str(exc))
 
         self._run_async(_work)
 

@@ -232,6 +232,14 @@ def _rail_wrapper_is_anchored(component: Mapping[str, Any]) -> bool:
     return isinstance(identity, str) and bool(identity) and not identity.startswith("cc_")
 
 
+# Feature 066 T023 (investigated, deliberately NOT carried): a lifted
+# caption's variant may NOT ride the rail part. The canonical transcript
+# contract requires text parts to be EXACTLY {"type", "text"} — enforced
+# server-side (shared/protocol.py ConversationSnapshot._validate_part), by
+# Apple's exact-key ConversationPart decode, and by the 060 native==original
+# snapshot pin — so any additional key breaks continuity for real caption
+# turns. Restoring caption weight on hydration therefore needs a deliberate
+# cross-client contract extension, not a server-side-only carry.
 def _wrapper_texts(component: Mapping[str, Any]) -> list[str]:
     """Depth-first text-primitive contents of one text-only wrapper."""
     texts: list[str] = []
@@ -280,6 +288,20 @@ def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     kept: list[dict[str, Any]] = []
     for part in parts:
         if part.get("type") != "components":
+            # Canonical-boundary normalization (066 R-9 rail fix): stored
+            # narrative parts may carry authoring fields (``variant``,
+            # ``content``) that the canonical transcript contract forbids —
+            # text parts must be EXACTLY {"type","text"}. A voice turn's rail
+            # delivery rides canonical ``conversation_snapshot`` frames, so an
+            # un-normalized part made every client reject the whole snapshot
+            # (``invalid_snapshot``) and the rail silently never updated.
+            if part.get("type") == "text":
+                text = part.get("text")
+                if not isinstance(text, str):
+                    text = part.get("content")
+                if isinstance(text, str) and text.strip():
+                    kept.append({"type": "text", "text": text})
+                continue
             kept.append(part)
             continue
         for comp in part.get("components", []):
@@ -422,6 +444,12 @@ def augment_conversation_snapshot_for_target(
         components path uses and goes through the IDENTICAL escape-first
         pipeline (``render_text`` markdown branch -> ``block_md``), so the
         semantic value stays authoritative and nothing new is trusted.
+
+        T023 note: the markdown variant is deliberately fixed. A lifted
+        caption CANNOT carry its variant here because canonical text parts
+        are exactly ``{"type", "text"}`` (see the contract note above
+        ``_wrapper_texts``); caption-weight hydration awaits a cross-client
+        contract extension.
         """
         rendered = render_one(
             {"type": "text", "variant": "markdown", "content": part["text"]}

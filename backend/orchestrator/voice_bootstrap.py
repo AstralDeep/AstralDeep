@@ -1031,6 +1031,45 @@ class VoiceServices:
             raise RuntimeError("terminal_turn_notifier_already_bound")
         self.terminal_turn_notifier = notifier
 
+    def voice_status(self) -> dict[str, Any]:
+        """Project the FR-034 operator surface: readiness, workers, refusals.
+
+        Every field is credential-free.  Speech-preflight verdicts live in the
+        worker's own logs (FR-036) and are deliberately absent here.
+        """
+
+        def _stamp(value: datetime) -> str:
+            return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+        readiness = self.worker_pool.readiness()
+        endpoint = self.worker_endpoint
+        refusals = endpoint.admission_refusals() if endpoint is not None else ()
+        return {
+            "ready": readiness.ready,
+            "reason": readiness.reason,
+            "worker_count": readiness.worker_count,
+            "capacity_total": readiness.capacity_total,
+            "capacity_available": readiness.capacity_available,
+            "profile": dict(readiness.profile),
+            "workers": [
+                {
+                    "worker_identity": entry.worker_identity,
+                    "accepted_max_sessions": entry.accepted_max_sessions,
+                    "active_sessions": entry.active_sessions,
+                    "registered_at": _stamp(entry.registered_at),
+                }
+                for entry in self.worker_pool.worker_status()
+            ],
+            "recent_refusals": [
+                {
+                    "stage": refusal.stage,
+                    "reason": refusal.reason,
+                    "occurred_at": _stamp(refusal.occurred_at),
+                }
+                for refusal in refusals
+            ],
+        }
+
     def install_worker_control(
         self,
         app: Any,

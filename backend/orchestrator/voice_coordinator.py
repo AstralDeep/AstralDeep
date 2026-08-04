@@ -641,6 +641,25 @@ class WorkerPoolReadiness:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class WorkerStatusEntry:
+    """Credential-free FR-034 projection of one admitted worker connection."""
+
+    worker_identity: str
+    accepted_max_sessions: int
+    active_sessions: int
+    registered_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionRefusal:
+    """Credential-free FR-034 record of one refused worker admission attempt."""
+
+    stage: str
+    reason: str
+    occurred_at: datetime
+
+
 @dataclass(slots=True)
 class _WorkerConnection:
     connection_id: str
@@ -1670,6 +1689,29 @@ class WorkerPool:
             worker_count=len(live),
             capacity_total=total,
             capacity_available=available,
+        )
+
+    def worker_status(self) -> tuple[WorkerStatusEntry, ...]:
+        """Project the admitted workers readiness() counts, per FR-034.
+
+        The same liveness and replacement filters as :meth:`readiness` apply,
+        so the list always explains the aggregate counters.
+        """
+
+        now = self._clock.monotonic()
+        return tuple(
+            WorkerStatusEntry(
+                worker_identity=connection.worker_identity,
+                accepted_max_sessions=connection.capacity,
+                active_sessions=len(connection.assignments),
+                registered_at=connection.registered_at,
+            )
+            for connection in sorted(
+                self._connections.values(),
+                key=lambda item: (item.worker_identity, item.connection_id),
+            )
+            if self._connection_live(connection, now)
+            and connection.worker_identity not in self._replacing_identities
         )
 
     def _parse_registration(

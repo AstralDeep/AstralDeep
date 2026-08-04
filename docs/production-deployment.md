@@ -104,7 +104,13 @@ reverse proxy (nginx, Caddy, Traefik) in front of it in production:
    register `https://your-host/auth/callback` as a valid redirect URI on the
    Keycloak client.
 
-## Conversational voice (feature 065) — production URLs
+## Conversational voice (features 065/066) — deployment topology contract
+
+This section is the FR-037 production topology contract: the reverse-proxy
+voice host rules, the environment contract (including worker closure digest
+provenance and coordinator replica identity), and the diagnosis runbook.
+
+### Production URLs
 
 Voice is fail-closed about transport outside development. The two URLs are
 different things and BOTH must be TLS in production:
@@ -120,13 +126,85 @@ different things and BOTH must be TLS in production:
    (`http://livekit:7880`) is for local development only; production MUST
    override it in `.env`.
 
-The reverse proxy for the voice vhost must pass BOTH the WebSocket upgrade
-(`/rtc`) and LiveKit's HTTP admin API (`/twirp`) to the LiveKit service —
-a plain `proxy_pass` to `livekit:7880` with upgrade headers covers both.
-Remember `LIVEKIT_NODE_IP` must be the host's routable address for WebRTC
-media, and `VOICE_CONTROL_SECRET` changes require a compose RECREATE (a
-`docker restart` keeps the old value; the worker then loops 401 on the
-worker-control WebSocket).
+### Reverse-proxy voice host rules
+
+The voice vhost (e.g. `sandbox-voice.<domain>`) terminates TLS and forwards
+to the LiveKit container. It must pass BOTH the WebSocket upgrade (`/rtc`)
+and LiveKit's HTTP admin API (`/twirp`) — a plain `proxy_pass` to
+`livekit:7880` with upgrade headers covers both:
+
+```apache
+# Apache (sandbox topology); nginx equivalent needs the same two behaviors.
+<VirtualHost *:443>
+  ServerName sandbox-voice.example.edu
+  SSLEngine on
+  RewriteEngine on
+  RewriteCond %{HTTP:Upgrade} =websocket [NC]
+  RewriteRule ^/(.*) ws://livekit:7880/$1 [P,L]
+  ProxyPass        / http://livekit:7880/
+  ProxyPassReverse / http://livekit:7880/
+</VirtualHost>
+```
+
+WebRTC MEDIA does not traverse the proxy: `LIVEKIT_NODE_IP` must be the
+host's routable address, and the UDP media range (`50000-50099` in the
+bundled config, plus TCP 7881 fallback) must be reachable from clients.
+The MAIN app vhost proxies `/api/voice/*` REST plus the worker-control
+WebSocket (`/api/voice/worker-control`) to the orchestrator like every
+other `/api` route. The watchOS PCM bridge is the one exception: the
+WORKER serves `/api/voice/watch-bridge` itself on
+`VOICE_WATCH_BRIDGE_LISTEN_PORT` (compose publishes `127.0.0.1:7890`), so
+`VOICE_WATCH_BRIDGE_PUBLIC_URL`'s host needs its own upgrade-capable proxy
+rule to the worker's port — proxying that path to the orchestrator 404s.
+The voice vhost is only for LiveKit RTC.
+
+### Environment contract
+
+| Variable | Holder | Contract |
+|---|---|---|
+| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | orchestrator + LiveKit | Grant-minting HMAC pair; never reaches clients or the worker env. |
+| `LIVEKIT_PUBLIC_URL` | orchestrator | `wss://<voice vhost>` in production (boot-refused otherwise). |
+| `LIVEKIT_INTERNAL_URL` | orchestrator | `https://<voice vhost>` in production; worker RTC URL is derived from it. |
+| `LIVEKIT_NODE_IP` | LiveKit | Host's routable address advertised for WebRTC media. |
+| `VOICE_CONTROL_SECRET` | orchestrator + worker | Worker-admission challenge HMAC. Rotation requires a compose **recreate** of BOTH containers (see runbook). |
+| `VOICE_UI_BINDING_SECRET` | orchestrator only | User/device control-binding HMAC; never copied into the worker. |
+| `VOICE_WORKER_CLOSURE_SHA256` | orchestrator + worker | **Closure digest provenance**: the sha256 of `backend/voice_agent/CLOSURE.json` AT THE COMMIT THE DEPLOYED WORKER IMAGE WAS BUILT FROM. `CLOSURE.json` is deliberately NOT baked into the worker image (the manifest describes the image's inputs; `tooling/voice-worker/closure_manifest.py` hard-fails if it ever becomes one), so the digest is recomputed REPO-SIDE at that commit — `python tooling/voice-worker/closure_manifest.py verify` validates the checked-in manifest and prints its digest, or `sha256sum backend/voice_agent/CLOSURE.json` at the exact deployed commit. Both containers must carry the SAME value; a stale pin refuses registration with `closure_mismatch`. The all-zero digest is a development-only marker; production boot refuses it (`unapproved_voice_worker_closure`). |
+| `VOICE_COORDINATOR_REPLICA_ID` | orchestrator | **Coordinator replica identity**: stable, unique per orchestrator replica (e.g. `voice-coordinator-prod-1`). Owns durable session leases; boot-refused when unset in production (`missing_voice_replica_id`). Two replicas sharing one id would fence each other's sessions at startup/shutdown. |
+| `VOICE_WORKER_IDENTITY` / `VOICE_WORKER_MAX_SESSIONS` | worker | Stable worker identity (re-registration replaces the prior socket) and its capacity offer. |
+| `VOICE_SPEECH_BASE_URL` / `VOICE_SPEECH_API_KEY` | worker only | Speech endpoint (ASR + TTS routes). In compose these are wired from `OPENAI_BASE_URL`/`OPENAI_API_KEY`; the orchestrator's own copies are blanked (054). |
+| `VOICE_WATCH_BRIDGE_PUBLIC_URL` / `VOICE_WATCH_BRIDGE_PORT` | orchestrator/worker | watchOS PCM bridge public URL + port. |
+| `VOICE_MAX_WORKERS` / `VOICE_MAX_SESSIONS_PER_WORKER` / `VOICE_MAX_TOTAL_SESSIONS` | orchestrator | Pool bounds (defaults 8 / 4 / 100). |
+| `FF_CONVERSATIONAL_VOICE` | orchestrator | Feature flag; read once at import — toggling requires a container recreate. |
+
+### Restart ordering and self-heal guarantees
+
+- **Orchestrator restarts**: a running worker re-registers within its
+  reconnect backoff; registration refusals are logged with their exact
+  reason on both sides (FR-035).
+- **Speech-service outages**: a worker whose ASR/TTS preflight failed
+  re-checks on a bounded 5s→60s backoff (`preflight_until_ready`, FR-036)
+  and self-heals when models/routes return — no container restart needed.
+  Preflight verdicts are logged per attempt on the worker.
+- **Secret rotation**: `docker restart` does NOT re-read the env file. Any
+  change to `VOICE_CONTROL_SECRET`, LiveKit keys, or the closure pin needs
+  `docker compose up -d --force-recreate voice-worker astraldeep`.
+
+### Diagnosis runbook
+
+First stop (FR-034): `GET /api/voice/status` (authenticated) reports
+admitted workers (identity, accepted/active sessions, registered-at) and the
+most recent admission refusals with stage + reason. `reason:
+"worker_unavailable"` with an `authentication`-stage refusal loop means a
+control-secret mismatch — recreate the worker (stale env). An empty worker
+list with NO refusals means the worker never dialed in — check its own logs
+for preflight or DNS failures.
+
+The full log-correlation runbook (both-container log reads, recreate
+commands, closure verification) lives at
+[specs/066-canvas-first-uiux/voice-prod-diagnosis.md](../specs/066-canvas-first-uiux/voice-prod-diagnosis.md);
+its two top suspects — stale recreated env and a worker that preflighted
+before the speech service was live — are the observed production failure
+modes.
 
 ## Health probes
 

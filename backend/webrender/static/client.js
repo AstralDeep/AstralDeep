@@ -481,6 +481,7 @@
       if (mode !== "collapsed") document.body.classList.remove("astral-chat-open");
       if (mode === "split") clearChatUnread();
     }
+    syncTopbarChatToggle();
   }
   applyDeviceProfile(detectDeviceType());
   applyLayoutClass();
@@ -498,9 +499,33 @@
   var chatToggleBtn = document.getElementById("astral-chat-toggle");
   var chatUnreadEl = document.getElementById("astral-chat-unread");
   var chatUnread = 0;
+  // Collapse-trap fix: an always-discoverable topbar twin of the composer
+  // toggle, visible exactly while the conversation is hidden. The topbar is
+  // injected server-side, so resolve lazily (the first applyLayoutClass runs
+  // before this block).
+  function topbarChatBtn() {
+    return document.getElementById("astral-topbar-chat-btn");
+  }
+  function syncTopbarChatToggle() {
+    var btn = topbarChatBtn();
+    if (!btn) return;
+    var layout = document.body.getAttribute("data-astral-layout");
+    var hidden = layout === "collapsed"
+      && !document.body.classList.contains("astral-chat-open");
+    btn.hidden = !hidden;
+    var badge = document.getElementById("astral-topbar-chat-unread");
+    if (badge) {
+      // Hoisting guard: the first applyLayoutClass runs before chatUnread
+      // is initialized.
+      var count = typeof chatUnread === "number" ? chatUnread : 0;
+      badge.hidden = count === 0;
+      badge.textContent = count > 9 ? "9+" : String(count);
+    }
+  }
   function clearChatUnread() {
     chatUnread = 0;
     if (chatUnreadEl) { chatUnreadEl.hidden = true; chatUnreadEl.textContent = "0"; }
+    syncTopbarChatToggle();
   }
   function noteAssistantActivity() {
     var layout = document.body.getAttribute("data-astral-layout");
@@ -512,6 +537,7 @@
       chatUnreadEl.hidden = false;
       chatUnreadEl.textContent = chatUnread > 9 ? "9+" : String(chatUnread);
     }
+    syncTopbarChatToggle();
     if (chatToggleBtn && window.matchMedia
         && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       chatToggleBtn.classList.remove("astral-peek");
@@ -527,10 +553,28 @@
     chatToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
     chatToggleBtn.setAttribute("title", open ? "Hide conversation" : "Show conversation");
     if (open) clearChatUnread();
+    syncTopbarChatToggle();
   });
   // Re-pin the rail from collapsed mode: double-click the transcript toggle.
   if (chatToggleBtn) chatToggleBtn.addEventListener("dblclick", function () {
     setChatLayoutPref("open");
+  });
+  // The topbar twin restores the conversation in ONE click: re-pin the rail
+  // where the width allows a usable composer, otherwise open the drawer.
+  document.addEventListener("click", function (event) {
+    var btn = event.target && event.target.closest
+      ? event.target.closest("#astral-topbar-chat-btn") : null;
+    if (!btn) return;
+    setChatLayoutPref("open");
+    if (document.body.getAttribute("data-astral-layout") === "collapsed") {
+      document.body.classList.add("astral-chat-open");
+      if (chatToggleBtn) {
+        chatToggleBtn.setAttribute("aria-expanded", "true");
+        chatToggleBtn.setAttribute("title", "Hide conversation");
+      }
+      clearChatUnread();
+    }
+    syncTopbarChatToggle();
   });
   // Coarse-pointer component chrome: tap a component to reveal its actions.
   document.addEventListener("click", function (e) {
@@ -660,6 +704,7 @@
   var VOICE_REASON_TEXT = Object.freeze({
     permission_denied: "Microphone permission was denied. Allow it in browser settings or keep typing.",
     permission_restricted: "Microphone permission is restricted. You can keep typing messages.",
+    permission_not_determined: "Voice is waiting on the microphone permission prompt. Allow or deny it, then try again.",
     no_microphone: "No microphone is available. Connect one or keep typing messages.",
     no_audio_output: "No audio output is available. You can keep typing messages.",
     media_unavailable: "Browser audio is unavailable. You can keep typing messages.",
@@ -673,6 +718,17 @@
     ended_by_user: "Voice conversation ended. Accepted requests will keep running.",
     speech_error: "Assistant speech failed. The text result may still be available in chat. You can keep typing messages.",
     media_error: "Voice media failed. You can retry or keep typing.",
+    // 066 T032/FR-033: every refusal reason the server can return on session
+    // create renders as its own honest line instead of the generic error text.
+    feature_disabled: "Voice is not enabled on this server. You can keep typing messages.",
+    authentication_required: "Sign in to use voice. You can keep typing messages.",
+    worker_unavailable: "No voice worker is available right now. You can keep typing messages.",
+    asr_unavailable: "The speech recognition service is unavailable right now. You can keep typing messages.",
+    tts_unavailable: "The speech synthesis service is unavailable right now. You can keep typing messages.",
+    voice_unavailable: "Voice is temporarily unavailable. You can keep typing messages.",
+    output_language_unsupported: "Voice output is not supported for this language. You can keep typing messages.",
+    capacity_exhausted: "Voice is at capacity right now. Try again shortly.",
+    chat_context_unavailable: "The active chat changed before voice could start. Try again.",
   });
 
   function voiceCapability() {
@@ -685,15 +741,33 @@
     };
   }
 
+  // 066: Firefox can refuse the cross-origin LiveKit WebSocket outright
+  // (privacy extensions / proxy settings), so voice may not work there.
+  // The disclaimer renders only for Firefox users, only while voice is
+  // starting or failing — the at-rest composer stays quiet (P11).
+  var VOICE_FIREFOX = /\bFirefox\//.test(navigator.userAgent || "");
+  var VOICE_FIREFOX_HINT = "Note: voice may not work correctly in Firefox "
+    + "(privacy settings or extensions can block it). Chrome or Edge is "
+    + "recommended for voice.";
+  var VOICE_FIREFOX_HINT_STATES = { connecting: true, reconnecting: true, error: true, unavailable: true };
+
   function voiceMessage(state, reason, message) {
+    var resolved;
     if (typeof message === "string" && message.trim()) {
       if (reason === "speech_error"
           && !/text result may still be available/i.test(message)) {
-        return message.trim() + " The text result may still be available in chat.";
+        resolved = message.trim() + " The text result may still be available in chat.";
+      } else {
+        resolved = message.trim();
       }
-      return message.trim();
+    } else {
+      resolved = VOICE_REASON_TEXT[reason] || VOICE_STATE_TEXT[state] || VOICE_STATE_TEXT.error;
     }
-    return VOICE_REASON_TEXT[reason] || VOICE_STATE_TEXT[state] || VOICE_STATE_TEXT.error;
+    if (VOICE_FIREFOX && VOICE_FIREFOX_HINT_STATES[state]
+        && resolved.indexOf(VOICE_FIREFOX_HINT) === -1) {
+      resolved = resolved + " " + VOICE_FIREFOX_HINT;
+    }
+    return resolved;
   }
 
   function setVoiceFeedback(state, reason, message, forceVisible) {
@@ -1847,15 +1921,18 @@
       setVoiceFeedback("error", "auth_expired", "Voice controls are reconnecting. Try again in a moment.", true);
       return;
     }
+    pending.awaiting_permission = true;
     try {
       await acquireVoiceMicrophone();
     } catch (error) {
+      pending.awaiting_permission = false;
       var permissionReason = voicePermissionReason(error);
       voicePermissionState = permissionReason === "permission_denied" ? "denied" : "restricted";
       teardownVoiceMedia(false);
       setVoiceFeedback("error", permissionReason, null, true);
       return;
     }
+    pending.awaiting_permission = false;
     if (voiceActivation !== pending || pending.connection_generation !== connectionGeneration
         || activeChatId !== (pending.chat_id || pending.initial_chat_id)) {
       teardownVoiceMedia(false);
@@ -1938,7 +2015,13 @@
     pending.timeout = setTimeout(function () {
       if (voiceActivation !== pending) return;
       teardownVoiceMedia(false);
-      setVoiceFeedback("error", "network_interrupted", "Voice activation timed out. You can retry or keep typing.", true);
+      // 066 T032/FR-033: a timeout while the browser permission prompt is
+      // still open is a permission-shaped condition, not a network failure.
+      if (pending.awaiting_permission) {
+        setVoiceFeedback("error", "permission_not_determined", null, true);
+      } else {
+        setVoiceFeedback("error", "network_interrupted", "Voice activation timed out. You can retry or keep typing.", true);
+      }
     }, 30000);
     setVoiceFeedback("connecting", "ready", null, true);
     if (!activeChatId) sendCorrelatedVoiceNewChat(voiceActivation);
@@ -2660,6 +2743,9 @@
         delete voicePublishedTracks[sid];
         continue;
       }
+      // R-9: the SFU takes ~0.9-1.1s to bind the downtrack after publish
+      // (measured live), so a 1000ms watchdog raced real subscriptions and
+      // reported "Speech playback failed" for audio that was about to play.
       voiceMediaTimers.push(setTimeout(function (expectedSid) {
         if (voiceSubscribingTrackSid !== expectedSid) return;
         var value = voicePublishedTracks[expectedSid];
@@ -2670,7 +2756,7 @@
         delete voiceAnnouncementByTrack[expectedSid];
         delete voicePublishedTracks[expectedSid];
         startNextVoiceTrack();
-      }, 1000, sid));
+      }, 2500, sid));
       return;
     }
   }
@@ -2751,8 +2837,11 @@
     }
     var source;
     var processor;
+    var keepAlive = null;
+    var mediaStream;
     try {
-      source = context.createMediaStreamSource(new window.MediaStream([mediaTrack]));
+      mediaStream = new window.MediaStream([mediaTrack]);
+      source = context.createMediaStreamSource(mediaStream);
       processor = context.createScriptProcessor(1024, 1, 1);
     } catch (e) {
       try { published.publication.setSubscribed(false); } catch (_error) {}
@@ -2762,9 +2851,31 @@
       startNextVoiceTrack();
       return;
     }
+    // R-9 (066): Chrome and Firefox deliver ONLY ZEROS from a remote WebRTC
+    // track into a WebAudio graph unless the track also feeds a media-element
+    // sink. This muted keep-alive element unblocks the real samples; audible
+    // output still comes solely from the processor -> destination graph, so
+    // nothing plays twice. Fault-isolated: an enhancement failure (e.g. an
+    // environment whose srcObject rejects the stream) must never fail the
+    // playout itself.
+    if (voiceAudioHostEl) {
+      try {
+        keepAlive = document.createElement("audio");
+        keepAlive.muted = true;
+        keepAlive.autoplay = true;
+        keepAlive.srcObject = mediaStream;
+        voiceAudioHostEl.appendChild(keepAlive);
+        var keepAlivePlay = keepAlive.play();
+        if (keepAlivePlay && keepAlivePlay.catch) keepAlivePlay.catch(function () {});
+      } catch (keepAliveError) {
+        if (keepAlive && keepAlive.parentNode) keepAlive.parentNode.removeChild(keepAlive);
+        keepAlive = null;
+      }
+    }
     var active = {
       sid: sid, manifest: manifest, pending: pending, published: published,
-      source: source, processor: processor, finished: false, finishing: false,
+      source: source, processor: processor, keepAlive: keepAlive,
+      finished: false, finishing: false,
       started: false, remainingFrames: manifest.duration_samples * (context.sampleRate / 24000),
       tailTimer: null, timeout: null,
     };
@@ -2774,6 +2885,32 @@
       var input = event.inputBuffer;
       var output = event.outputBuffer;
       var available = output.length;
+      // R-9: the downtrack binds ~1s after subscribe, so the first graph
+      // frames are silent padding — counting them burned the playout budget
+      // and truncated the announcement's tail. Hold the countdown until real
+      // samples arrive, bounded to 1800ms so true silence can never stall.
+      if (!active.heardAudio) {
+        var probe = input.numberOfChannels > 0 ? input.getChannelData(0) : null;
+        var heard = false;
+        if (probe) {
+          for (var probeIndex = 0; probeIndex < probe.length; probeIndex += 16) {
+            if (probe[probeIndex] > 0.0005 || probe[probeIndex] < -0.0005) {
+              heard = true;
+              break;
+            }
+          }
+        }
+        if (!heard) {
+          active.silentLeadFrames = (active.silentLeadFrames || 0) + available;
+          if (active.silentLeadFrames <= context.sampleRate * 1.8) {
+            for (var silentChannel = 0; silentChannel < output.numberOfChannels; silentChannel++) {
+              output.getChannelData(silentChannel).fill(0);
+            }
+            return;
+          }
+        }
+        active.heardAudio = true;
+      }
       var accepted = Math.min(available, active.remainingFrames);
       for (var channel = 0; channel < output.numberOfChannels; channel++) {
         var outputData = output.getChannelData(channel);
@@ -2824,6 +2961,14 @@
     try { active.processor.onaudioprocess = null; } catch (e) {}
     try { active.source.disconnect(); } catch (e) {}
     try { active.processor.disconnect(); } catch (e) {}
+    if (active.keepAlive) {
+      try { active.keepAlive.pause(); } catch (e) {}
+      try { active.keepAlive.srcObject = null; } catch (e) {}
+      if (active.keepAlive.parentNode) {
+        active.keepAlive.parentNode.removeChild(active.keepAlive);
+      }
+      active.keepAlive = null;
+    }
     try { active.published.publication.setSubscribed(false); } catch (e) {}
     stopVoiceAudioTrack(active.pending.track);
     if (phase && active.started) voicePlayout(active.manifest, phase);
