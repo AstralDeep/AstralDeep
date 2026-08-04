@@ -1424,7 +1424,14 @@ final class URLSessionAppleVoiceControlAPI: AppleVoiceControlAPI {
         let path =
             "api/voice/sessions/\(fence.sessionId)" + "?expected_generation=\(fence.generation)"
             + "&expected_media_grant_revision=\(fence.mediaGrantRevision)"
-        return await request(binding: binding, path: path, method: "DELETE", body: nil).status == 204
+        let result = await request(binding: binding, path: path, method: "DELETE", body: nil)
+        if result.status == 204 { return true }
+        // A session the lease reaper already ended is a clean end for the
+        // owning device (the server treats the matching-fence user DELETE as
+        // idempotent; older servers answer 409 session_already_ended) —
+        // showing "stale_generation" for it read as a broken Stop button.
+        return result.status == 409
+            && result.body?["code"]?.stringValue == "session_already_ended"
     }
 
     private func startRequest(
@@ -1860,7 +1867,31 @@ final class AppleVoiceSessionController {
                 fields: ["visible_chat_id": .string(chatId)])
             {
                 self.session = updated
-                feedback("connecting", "chat_context_unavailable", "Updating the voice chat context…")
+                if updated.chatContextSynced && updated.foregroundActive {
+                    // The PATCH response already confirms the new chat
+                    // context is applied — restore capture immediately
+                    // instead of wedging on "Updating the voice chat
+                    // context…" until a server push. (The server also emits
+                    // voice_session_state after every session PATCH, which
+                    // authoritatively reconciles phase if we diverge.)
+                    if microphoneDesired {
+                        try? await media.setMicrophoneEnabled(true)
+                    }
+                    feedback("listening", "ready")
+                } else {
+                    feedback(
+                        "connecting", "chat_context_unavailable",
+                        "Updating the voice chat context…")
+                }
+            } else {
+                // A silently-dropped context PATCH used to leave a phantom
+                // live session (mic off, no renewals visible to the user).
+                // Surface it and enter the normal recovery path.
+                markRecoveryRequired()
+                scheduleRecovery()
+                feedback(
+                    "reconnecting", "network_interrupted",
+                    "Voice is re-syncing the chat context…")
             }
         }
     }
