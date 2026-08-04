@@ -79,6 +79,42 @@ class TestLiftStaysCanonical:
             {"type": "text", "text": "Source: sensor 4"},
         ]
 
+    def test_stored_text_parts_are_normalized_to_canonical_shape(self) -> None:
+        # R-9 rail fix (2026-08-04, observed live): STORED narrative parts
+        # (not components-wrapped) carry authoring fields like variant/
+        # content; the pass-through branch must normalize them, or every
+        # voice-turn conversation_snapshot fails the canonical exact-key
+        # validation on all clients and the rail silently never updates.
+        parts = _rail_parts(
+            [
+                {"type": "text", "variant": "markdown", "text": "Narrative words"},
+                {"type": "text", "variant": "markdown", "content": "From content"},
+                {"type": "text", "text": "Already canonical"},
+            ]
+        )
+        assert parts == [
+            {"type": "text", "text": "Narrative words"},
+            {"type": "text", "text": "From content"},
+            {"type": "text", "text": "Already canonical"},
+        ]
+
+    def test_blank_stored_text_parts_are_dropped(self) -> None:
+        parts = _rail_parts(
+            [
+                {"type": "text", "variant": "markdown", "text": "   "},
+                {"type": "text", "text": "kept"},
+            ]
+        )
+        assert parts == [{"type": "text", "text": "kept"}]
+
+    def test_structured_and_recovery_parts_still_pass_through(self) -> None:
+        structured = {"type": "structured", "value": {"a": 1}, "plain_text": "a=1"}
+        recovery = {"type": "recovery", "code": "x_y", "message": "went wrong"}
+        assert _rail_parts([dict(structured), dict(recovery)]) == [
+            structured,
+            recovery,
+        ]
+
 
 class TestCanonicalContractRefusesVariant:
     """Documents WHY the carry is forbidden: the canonical validator."""

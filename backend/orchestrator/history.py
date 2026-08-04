@@ -288,6 +288,20 @@ def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     kept: list[dict[str, Any]] = []
     for part in parts:
         if part.get("type") != "components":
+            # Canonical-boundary normalization (066 R-9 rail fix): stored
+            # narrative parts may carry authoring fields (``variant``,
+            # ``content``) that the canonical transcript contract forbids —
+            # text parts must be EXACTLY {"type","text"}. A voice turn's rail
+            # delivery rides canonical ``conversation_snapshot`` frames, so an
+            # un-normalized part made every client reject the whole snapshot
+            # (``invalid_snapshot``) and the rail silently never updated.
+            if part.get("type") == "text":
+                text = part.get("text")
+                if not isinstance(text, str):
+                    text = part.get("content")
+                if isinstance(text, str) and text.strip():
+                    kept.append({"type": "text", "text": text})
+                continue
             kept.append(part)
             continue
         for comp in part.get("components", []):

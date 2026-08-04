@@ -2699,6 +2699,9 @@
         delete voicePublishedTracks[sid];
         continue;
       }
+      // R-9: the SFU takes ~0.9-1.1s to bind the downtrack after publish
+      // (measured live), so a 1000ms watchdog raced real subscriptions and
+      // reported "Speech playback failed" for audio that was about to play.
       voiceMediaTimers.push(setTimeout(function (expectedSid) {
         if (voiceSubscribingTrackSid !== expectedSid) return;
         var value = voicePublishedTracks[expectedSid];
@@ -2709,7 +2712,7 @@
         delete voiceAnnouncementByTrack[expectedSid];
         delete voicePublishedTracks[expectedSid];
         startNextVoiceTrack();
-      }, 1000, sid));
+      }, 2500, sid));
       return;
     }
   }
@@ -2832,6 +2835,32 @@
       var input = event.inputBuffer;
       var output = event.outputBuffer;
       var available = output.length;
+      // R-9: the downtrack binds ~1s after subscribe, so the first graph
+      // frames are silent padding — counting them burned the playout budget
+      // and truncated the announcement's tail. Hold the countdown until real
+      // samples arrive, bounded to 1800ms so true silence can never stall.
+      if (!active.heardAudio) {
+        var probe = input.numberOfChannels > 0 ? input.getChannelData(0) : null;
+        var heard = false;
+        if (probe) {
+          for (var probeIndex = 0; probeIndex < probe.length; probeIndex += 16) {
+            if (probe[probeIndex] > 0.0005 || probe[probeIndex] < -0.0005) {
+              heard = true;
+              break;
+            }
+          }
+        }
+        if (!heard) {
+          active.silentLeadFrames = (active.silentLeadFrames || 0) + available;
+          if (active.silentLeadFrames <= context.sampleRate * 1.8) {
+            for (var silentChannel = 0; silentChannel < output.numberOfChannels; silentChannel++) {
+              output.getChannelData(silentChannel).fill(0);
+            }
+            return;
+          }
+        }
+        active.heardAudio = true;
+      }
       var accepted = Math.min(available, active.remainingFrames);
       for (var channel = 0; channel < output.numberOfChannels; channel++) {
         var outputData = output.getChannelData(channel);
