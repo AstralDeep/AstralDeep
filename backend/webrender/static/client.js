@@ -2838,26 +2838,11 @@
     var source;
     var processor;
     var keepAlive = null;
+    var mediaStream;
     try {
-      var mediaStream = new window.MediaStream([mediaTrack]);
+      mediaStream = new window.MediaStream([mediaTrack]);
       source = context.createMediaStreamSource(mediaStream);
       processor = context.createScriptProcessor(1024, 1, 1);
-      // R-9 (066): Chrome and Firefox deliver ONLY ZEROS from a remote
-      // WebRTC track into a WebAudio graph unless the track also feeds a
-      // media-element sink. This muted keep-alive element unblocks the real
-      // samples; the audible output still comes solely from the
-      // processor -> destination graph, so nothing plays twice.
-      if (voiceAudioHostEl) {
-        keepAlive = document.createElement("audio");
-        keepAlive.muted = true;
-        keepAlive.autoplay = true;
-        keepAlive.srcObject = mediaStream;
-        voiceAudioHostEl.appendChild(keepAlive);
-        try {
-          var keepAlivePlay = keepAlive.play();
-          if (keepAlivePlay && keepAlivePlay.catch) keepAlivePlay.catch(function () {});
-        } catch (playError) {}
-      }
     } catch (e) {
       try { published.publication.setSubscribed(false); } catch (_error) {}
       showVoiceResultSpeechFailure(manifest);
@@ -2865,6 +2850,27 @@
       delete voicePublishedTracks[sid];
       startNextVoiceTrack();
       return;
+    }
+    // R-9 (066): Chrome and Firefox deliver ONLY ZEROS from a remote WebRTC
+    // track into a WebAudio graph unless the track also feeds a media-element
+    // sink. This muted keep-alive element unblocks the real samples; audible
+    // output still comes solely from the processor -> destination graph, so
+    // nothing plays twice. Fault-isolated: an enhancement failure (e.g. an
+    // environment whose srcObject rejects the stream) must never fail the
+    // playout itself.
+    if (voiceAudioHostEl) {
+      try {
+        keepAlive = document.createElement("audio");
+        keepAlive.muted = true;
+        keepAlive.autoplay = true;
+        keepAlive.srcObject = mediaStream;
+        voiceAudioHostEl.appendChild(keepAlive);
+        var keepAlivePlay = keepAlive.play();
+        if (keepAlivePlay && keepAlivePlay.catch) keepAlivePlay.catch(function () {});
+      } catch (keepAliveError) {
+        if (keepAlive && keepAlive.parentNode) keepAlive.parentNode.removeChild(keepAlive);
+        keepAlive = null;
+      }
     }
     var active = {
       sid: sid, manifest: manifest, pending: pending, published: published,

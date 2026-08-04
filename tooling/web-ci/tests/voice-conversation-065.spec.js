@@ -2392,7 +2392,10 @@ test("a result publication that never subscribes reports a turn-scoped speech fa
     );
   }, { announcement: manifest, workerIdentity: WORKER_IDENTITY });
 
-  await expect(page.locator("#astral-voice-turn-notice")).toBeVisible({ timeout: 2500 });
+  // 066 R-9: the subscribe watchdog is 2500ms (the SFU binds the downtrack
+  // ~0.9-1.1s after publish; the old 1000ms watchdog raced real
+  // subscriptions), so the failure notice appears shortly after 2.5s.
+  await expect(page.locator("#astral-voice-turn-notice")).toBeVisible({ timeout: 4000 });
   await expect(page.locator("#astral-voice-turn-notice")).toHaveAttribute(
     "data-state", "speech_error",
   );
