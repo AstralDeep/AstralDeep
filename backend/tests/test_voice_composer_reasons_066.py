@@ -76,3 +76,46 @@ def test_permission_wait_flag_brackets_microphone_acquisition() -> None:
     assert CLIENT_JS.count("pending.awaiting_permission = false;") >= 2, (
         "awaiting_permission must clear on both the success and failure legs"
     )
+
+
+class TestFirefoxDisclaimer:
+    """Voice may not work in Firefox (WS refusal by extensions/proxies);
+    the composer must say so — but only there, and only while voice is
+    starting or failing, so the at-rest composer stays quiet (P11)."""
+
+    def test_hint_exists_and_names_firefox(self) -> None:
+        match = re.search(
+            r'var VOICE_FIREFOX_HINT = ("[^"]*"\s*(?:\+\s*"[^"]*")*)', CLIENT_JS
+        )
+        assert match, "client.js lost the Firefox voice disclaimer"
+        text = "".join(re.findall(r'"([^"]*)"', match.group(1)))
+        assert "Firefox" in text
+        assert "voice may not work" in text.lower()
+
+    def test_detection_is_user_agent_gated(self) -> None:
+        assert re.search(
+            r"var VOICE_FIREFOX = /\\bFirefox\\//\.test\(navigator\.userAgent",
+            CLIENT_JS,
+        ), "Firefox detection lost"
+
+    def test_hint_applies_only_to_starting_or_failing_states(self) -> None:
+        match = re.search(
+            r"var VOICE_FIREFOX_HINT_STATES = \{([^}]*)\}", CLIENT_JS
+        )
+        assert match, "client.js lost the Firefox hint state gate"
+        states = set(re.findall(r"([a-z_]+):", match.group(1)))
+        assert states == {"connecting", "reconnecting", "error", "unavailable"}
+        # Never on a healthy or at-rest composer.
+        assert "off" not in states and "listening" not in states
+
+    def test_voice_message_appends_the_hint_once(self) -> None:
+        body = re.search(
+            r"function voiceMessage\(state, reason, message\) \{(.*?)\n  \}",
+            CLIENT_JS,
+            re.DOTALL,
+        )
+        assert body, "voiceMessage lost"
+        assert "VOICE_FIREFOX && VOICE_FIREFOX_HINT_STATES[state]" in body.group(1)
+        assert "indexOf(VOICE_FIREFOX_HINT) === -1" in body.group(1), (
+            "the hint must not duplicate when a message already carries it"
+        )

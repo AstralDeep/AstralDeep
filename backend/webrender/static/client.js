@@ -697,15 +697,33 @@
     };
   }
 
+  // 066: Firefox can refuse the cross-origin LiveKit WebSocket outright
+  // (privacy extensions / proxy settings), so voice may not work there.
+  // The disclaimer renders only for Firefox users, only while voice is
+  // starting or failing — the at-rest composer stays quiet (P11).
+  var VOICE_FIREFOX = /\bFirefox\//.test(navigator.userAgent || "");
+  var VOICE_FIREFOX_HINT = "Note: voice may not work correctly in Firefox "
+    + "(privacy settings or extensions can block it). Chrome or Edge is "
+    + "recommended for voice.";
+  var VOICE_FIREFOX_HINT_STATES = { connecting: true, reconnecting: true, error: true, unavailable: true };
+
   function voiceMessage(state, reason, message) {
+    var resolved;
     if (typeof message === "string" && message.trim()) {
       if (reason === "speech_error"
           && !/text result may still be available/i.test(message)) {
-        return message.trim() + " The text result may still be available in chat.";
+        resolved = message.trim() + " The text result may still be available in chat.";
+      } else {
+        resolved = message.trim();
       }
-      return message.trim();
+    } else {
+      resolved = VOICE_REASON_TEXT[reason] || VOICE_STATE_TEXT[state] || VOICE_STATE_TEXT.error;
     }
-    return VOICE_REASON_TEXT[reason] || VOICE_STATE_TEXT[state] || VOICE_STATE_TEXT.error;
+    if (VOICE_FIREFOX && VOICE_FIREFOX_HINT_STATES[state]
+        && resolved.indexOf(VOICE_FIREFOX_HINT) === -1) {
+      resolved = resolved + " " + VOICE_FIREFOX_HINT;
+    }
+    return resolved;
   }
 
   function setVoiceFeedback(state, reason, message, forceVisible) {
