@@ -2772,9 +2772,27 @@
     }
     var source;
     var processor;
+    var keepAlive = null;
     try {
-      source = context.createMediaStreamSource(new window.MediaStream([mediaTrack]));
+      var mediaStream = new window.MediaStream([mediaTrack]);
+      source = context.createMediaStreamSource(mediaStream);
       processor = context.createScriptProcessor(1024, 1, 1);
+      // R-9 (066): Chrome and Firefox deliver ONLY ZEROS from a remote
+      // WebRTC track into a WebAudio graph unless the track also feeds a
+      // media-element sink. This muted keep-alive element unblocks the real
+      // samples; the audible output still comes solely from the
+      // processor -> destination graph, so nothing plays twice.
+      if (voiceAudioHostEl) {
+        keepAlive = document.createElement("audio");
+        keepAlive.muted = true;
+        keepAlive.autoplay = true;
+        keepAlive.srcObject = mediaStream;
+        voiceAudioHostEl.appendChild(keepAlive);
+        try {
+          var keepAlivePlay = keepAlive.play();
+          if (keepAlivePlay && keepAlivePlay.catch) keepAlivePlay.catch(function () {});
+        } catch (playError) {}
+      }
     } catch (e) {
       try { published.publication.setSubscribed(false); } catch (_error) {}
       showVoiceResultSpeechFailure(manifest);
@@ -2785,7 +2803,8 @@
     }
     var active = {
       sid: sid, manifest: manifest, pending: pending, published: published,
-      source: source, processor: processor, finished: false, finishing: false,
+      source: source, processor: processor, keepAlive: keepAlive,
+      finished: false, finishing: false,
       started: false, remainingFrames: manifest.duration_samples * (context.sampleRate / 24000),
       tailTimer: null, timeout: null,
     };
@@ -2845,6 +2864,14 @@
     try { active.processor.onaudioprocess = null; } catch (e) {}
     try { active.source.disconnect(); } catch (e) {}
     try { active.processor.disconnect(); } catch (e) {}
+    if (active.keepAlive) {
+      try { active.keepAlive.pause(); } catch (e) {}
+      try { active.keepAlive.srcObject = null; } catch (e) {}
+      if (active.keepAlive.parentNode) {
+        active.keepAlive.parentNode.removeChild(active.keepAlive);
+      }
+      active.keepAlive = null;
+    }
     try { active.published.publication.setSubscribed(false); } catch (e) {}
     stopVoiceAudioTrack(active.pending.track);
     if (phase && active.started) voicePlayout(active.manifest, phase);
