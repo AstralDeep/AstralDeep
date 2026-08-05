@@ -1,20 +1,19 @@
-"""Feature-066 T023 contract pins: why a caption may NOT carry its variant.
+"""Feature-066 T023 contract pins: the bounded caption carry.
 
-T023 proposed carrying the lifted text primitive's variant on the rail part
-so a caption hydrates at caption weight. Adversarial verification during the
-2026-08-04 close-out proved the premise unsafe: canonical transcript text
-parts are EXACTLY ``{"type", "text"}`` — enforced by the server-side
-``ConversationSnapshot._validate_part``, mirrored by Apple's exact-key
-``ConversationPart`` decode, and pinned by the 060 ``native == original``
-snapshot rule — so ANY additional part key breaks conversation continuity
-the first time a real caption flows through. These pins hold that boundary:
-the lift stays canonical for every variant, the canonical validator refuses
-a variant-carrying part (documenting the constraint), and the web rendition
-still arrives through the transport-only envelope.
+T023 CLOSED (2026-08-05) as a deliberate cross-client contract extension:
+canonical transcript text parts are ``{"type", "text"}`` plus an OPTIONAL
+``variant`` drawn from the closed set ``CANONICAL_TEXT_PART_VARIANTS``
+(exactly ``{"caption"}``). The server validator, the web client
+(``validateSnapshotShape``), Windows (``astral_client/protocol.py``),
+Android (``Wire.kt``) and Apple (``ConversationContinuity.swift``) all
+accept the same bounded shape — see
+specs/060-runtime-reliability-hardening/contracts/conversation-continuity.md.
 
-Restoring caption weight on hydration requires a deliberate cross-client
-contract extension (server validator + three native decoders + contract
-doc), tracked as the reopened T023 in specs/066-canvas-first-uiux/tasks.md.
+These pins hold the NEW boundary from both sides: a lifted caption keeps
+its weight through commit and hydration, every other authoring variant
+still normalizes away, and the canonical validator refuses anything
+outside the closed set — the extension must never become an open door for
+arbitrary part keys.
 """
 
 from __future__ import annotations
@@ -25,15 +24,25 @@ from orchestrator.history import (
     _rail_parts,
     augment_conversation_snapshot_for_target,
 )
-from shared.protocol import ConversationSnapshot, ProtocolValidationError
+from shared.protocol import (
+    CANONICAL_TEXT_PART_VARIANTS,
+    ConversationSnapshot,
+    ProtocolValidationError,
+)
 
 
 def _components_part(*components: dict) -> dict:
     return {"type": "components", "components": list(components)}
 
 
-class TestLiftStaysCanonical:
-    def test_caption_primitive_lifts_to_exact_canonical_shape(self) -> None:
+def test_bounded_alphabet_is_exactly_caption() -> None:
+    # Drift pin: widening the closed set is a NEW cross-client contract
+    # change (five validators + the 060 contract doc), never a casual edit.
+    assert CANONICAL_TEXT_PART_VARIANTS == frozenset({"caption"})
+
+
+class TestLiftCarriesCaption:
+    def test_caption_primitive_lifts_with_its_variant(self) -> None:
         parts = _rail_parts(
             [
                 _components_part(
@@ -41,10 +50,12 @@ class TestLiftStaysCanonical:
                 )
             ]
         )
-        assert parts == [{"type": "text", "text": "As of July"}]
+        assert parts == [
+            {"type": "text", "text": "As of July", "variant": "caption"}
+        ]
 
-    def test_every_variant_lifts_to_the_same_shape(self) -> None:
-        for variant in ("caption", "h1", "h2", "h3", "body", "markdown", "odd"):
+    def test_every_other_variant_lifts_to_the_canonical_shape(self) -> None:
+        for variant in ("h1", "h2", "h3", "body", "markdown", "odd", None):
             parts = _rail_parts(
                 [
                     _components_part(
@@ -54,7 +65,7 @@ class TestLiftStaysCanonical:
             )
             assert parts == [{"type": "text", "text": "words"}], variant
 
-    def test_wrapper_lift_keeps_caption_words_and_canonical_shape(self) -> None:
+    def test_wrapper_lift_keeps_caption_weight_and_body_shape(self) -> None:
         parts = _rail_parts(
             [
                 _components_part(
@@ -72,29 +83,29 @@ class TestLiftStaysCanonical:
                 )
             ]
         )
-        # The caption's WORDS survive (words-only rail rule) even though its
-        # weight cannot; no part may carry a variant key.
         assert parts == [
             {"type": "text", "text": "Body words"},
-            {"type": "text", "text": "Source: sensor 4"},
+            {"type": "text", "text": "Source: sensor 4", "variant": "caption"},
         ]
 
-    def test_stored_text_parts_are_normalized_to_canonical_shape(self) -> None:
-        # R-9 rail fix (2026-08-04, observed live): STORED narrative parts
-        # (not components-wrapped) carry authoring fields like variant/
-        # content; the pass-through branch must normalize them, or every
-        # voice-turn conversation_snapshot fails the canonical exact-key
-        # validation on all clients and the rail silently never updates.
+    def test_stored_text_parts_normalize_but_keep_bounded_variant(self) -> None:
+        # R-9 rail fix pins still hold: STORED narrative parts carrying
+        # authoring fields (variant/content) normalize to the canonical
+        # shape — except the bounded caption carve-out, which must survive
+        # re-derivation or a committed caption would lose its weight on the
+        # next hydration.
         parts = _rail_parts(
             [
                 {"type": "text", "variant": "markdown", "text": "Narrative words"},
                 {"type": "text", "variant": "markdown", "content": "From content"},
+                {"type": "text", "variant": "caption", "text": "As of July"},
                 {"type": "text", "text": "Already canonical"},
             ]
         )
         assert parts == [
             {"type": "text", "text": "Narrative words"},
             {"type": "text", "text": "From content"},
+            {"type": "text", "text": "As of July", "variant": "caption"},
             {"type": "text", "text": "Already canonical"},
         ]
 
@@ -116,8 +127,8 @@ class TestLiftStaysCanonical:
         ]
 
 
-class TestCanonicalContractRefusesVariant:
-    """Documents WHY the carry is forbidden: the canonical validator."""
+class TestCanonicalContractBoundsVariant:
+    """The validator accepts the closed set and refuses everything else."""
 
     @staticmethod
     def _snapshot(parts: list[dict]) -> ConversationSnapshot:
@@ -144,10 +155,22 @@ class TestCanonicalContractRefusesVariant:
     def test_canonical_part_shape_is_accepted(self) -> None:
         self._snapshot([{"type": "text", "text": "words"}]).validate()
 
-    def test_variant_carrying_part_is_refused(self) -> None:
+    def test_caption_carrying_part_is_accepted(self) -> None:
+        self._snapshot(
+            [{"type": "text", "text": "words", "variant": "caption"}]
+        ).validate()
+
+    @pytest.mark.parametrize("variant", ["h1", "body", "markdown", "odd", "", 3, None])
+    def test_unbounded_variant_is_refused(self, variant) -> None:
         with pytest.raises(ProtocolValidationError):
             self._snapshot(
-                [{"type": "text", "text": "words", "variant": "caption"}]
+                [{"type": "text", "text": "words", "variant": variant}]
+            ).validate()
+
+    def test_any_other_extra_key_is_still_refused(self) -> None:
+        with pytest.raises(ProtocolValidationError):
+            self._snapshot(
+                [{"type": "text", "text": "words", "weight": "caption"}]
             ).validate()
 
 
@@ -161,13 +184,32 @@ class TestHydrationRendition:
         )
         return snap["transcript"][0]["parts"][0]
 
-    def test_lifted_caption_words_render_via_the_markdown_pipeline(self) -> None:
-        # Until the contract extension lands, a lifted caption renders like
-        # every other rail text: markdown weight, escape-first, words intact.
+    def test_plain_rail_text_renders_via_the_markdown_pipeline(self) -> None:
         part = self._hydrated_part({"type": "text", "text": "As of July"})
         html = part["_presentation"]["html"]
         assert "astral-md" in html
         assert "As of July" in html
+
+    def test_caption_part_renders_at_caption_weight(self) -> None:
+        part = self._hydrated_part(
+            {"type": "text", "text": "As of July", "variant": "caption"}
+        )
+        html = part["_presentation"]["html"]
+        assert "text-astral-muted" in html
+        assert "astral-md" not in html
+        assert "As of July" in html
+
+    def test_caption_rendition_is_escape_first(self) -> None:
+        part = self._hydrated_part(
+            {
+                "type": "text",
+                "text": "<script>alert(1)</script>",
+                "variant": "caption",
+            }
+        )
+        html = part["_presentation"]["html"]
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
 
     def test_rendition_is_escape_first(self) -> None:
         part = self._hydrated_part(
@@ -177,8 +219,11 @@ class TestHydrationRendition:
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
 
-    def test_native_target_gets_no_presentation(self) -> None:
+    def test_native_target_keeps_the_variant_key_untouched(self) -> None:
+        # The 060 native == original rule: the semantic snapshot passes
+        # through byte-identical, caption carry included.
         part = self._hydrated_part(
-            {"type": "text", "text": "As of July"}, target="windows"
+            {"type": "text", "text": "As of July", "variant": "caption"},
+            target="windows",
         )
-        assert part == {"type": "text", "text": "As of July"}
+        assert part == {"type": "text", "text": "As of July", "variant": "caption"}

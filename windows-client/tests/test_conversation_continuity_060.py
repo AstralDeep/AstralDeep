@@ -17,10 +17,12 @@ from PySide6.QtWidgets import QLabel  # noqa: E402
 from astral_client import app as appmod  # noqa: E402
 from astral_client.app import MainWindow  # noqa: E402
 from astral_client.protocol import (  # noqa: E402
+    CANONICAL_TEXT_PART_VARIANTS,
     ConversationCommitReady,
     ConversationContinuityReducer,
     ConversationResumeStore,
     OrchestratorClient,
+    WindowsProtocolError,
     decode_semantic_transcript,
     parse_runtime_frame,
 )
@@ -313,10 +315,44 @@ def test_semantic_decoder_preserves_parts_components_structured_recovery_and_att
         "text", "components", "structured", "recovery"
     ]
     assert decoded[0].parts[0].text == "Hello Ω"
+    assert decoded[0].parts[0].variant is None
     assert decoded[0].parts[1].components[0]["content"] == "21"
     assert decoded[0].parts[2].plain_text == "total: 21"
     assert decoded[0].parts[3].code == "saved_content_unrenderable"
     assert decoded[0].attachments[0]["filename"] == "rolls.json"
+
+
+def test_text_part_variant_is_bounded_and_carried() -> None:
+    """066 T023 contract extension: optional bounded variant on text parts."""
+
+    def _message(part: dict) -> list[dict]:
+        return [
+            {
+                "message_id": "m1",
+                "role": "assistant",
+                "created_at": "2026-08-05T10:00:00Z",
+                "parts": [part],
+                "attachments": [],
+            }
+        ]
+
+    # Drift pin against the backend's closed set.
+    assert CANONICAL_TEXT_PART_VARIANTS == frozenset({"caption"})
+
+    decoded = decode_semantic_transcript(
+        _message({"type": "text", "text": "As of July", "variant": "caption"})
+    )
+    assert decoded[0].parts[0].variant == "caption"
+    assert decoded[0].parts[0].text == "As of July"
+
+    with pytest.raises(WindowsProtocolError):
+        decode_semantic_transcript(
+            _message({"type": "text", "text": "words", "variant": "h1"})
+        )
+    with pytest.raises(WindowsProtocolError):
+        decode_semantic_transcript(
+            _message({"type": "text", "text": "words", "weight": "caption"})
+        )
 
 
 def test_request_scoped_transients_are_overlay_only_and_strictly_sequenced() -> None:

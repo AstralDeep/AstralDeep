@@ -97,7 +97,11 @@ public enum ConversationPart: Sendable, Equatable {
         }
         switch type {
         case "text":
-            guard Set(object.keys) == ["type", "text"],
+            // 066 T023: exactly {type, text} plus an OPTIONAL bounded variant
+            // (backend CANONICAL_TEXT_PART_VARIANTS twin). The weight hint is
+            // validated then dropped here; rendering parity is tracked with
+            // the parity checklist.
+            guard Set(object.keys) == ["type", "text"] || Self.boundedCaptionShape(object),
                 let text = object["text"]?.stringValue,
                 continuityNonBlank(text)
             else { return nil }
@@ -129,6 +133,11 @@ public enum ConversationPart: Sendable, Equatable {
         default:
             return nil
         }
+    }
+
+    /// 066 T023: the bounded caption shape a text part may additionally take.
+    private static func boundedCaptionShape(_ object: [String: JSONValue]) -> Bool {
+        Set(object.keys) == ["type", "text", "variant"] && object["variant"]?.stringValue == "caption"
     }
 
     public var visibleText: String? {

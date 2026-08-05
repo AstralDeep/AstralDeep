@@ -13,6 +13,7 @@ import sys
 # Ensure shared module is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from shared.database import Database
+from shared.protocol import CANONICAL_TEXT_PART_VARIANTS
 from orchestrator.conversation_publication import (
     canonical_components_sha256,
     canonical_layouts_sha256,
@@ -232,17 +233,24 @@ def _rail_wrapper_is_anchored(component: Mapping[str, Any]) -> bool:
     return isinstance(identity, str) and bool(identity) and not identity.startswith("cc_")
 
 
-# Feature 066 T023 (investigated, deliberately NOT carried): a lifted
-# caption's variant may NOT ride the rail part. The canonical transcript
-# contract requires text parts to be EXACTLY {"type", "text"} — enforced
-# server-side (shared/protocol.py ConversationSnapshot._validate_part), by
-# Apple's exact-key ConversationPart decode, and by the 060 native==original
-# snapshot pin — so any additional key breaks continuity for real caption
-# turns. Restoring caption weight on hydration therefore needs a deliberate
-# cross-client contract extension, not a server-side-only carry.
-def _wrapper_texts(component: Mapping[str, Any]) -> list[str]:
-    """Depth-first text-primitive contents of one text-only wrapper."""
-    texts: list[str] = []
+# Feature 066 T023 (CLOSED as a deliberate cross-client contract extension):
+# a lifted caption's variant now rides the rail part as an optional bounded
+# ``variant`` key — accepted by the server validator (shared/protocol.py
+# CANONICAL_TEXT_PART_VARIANTS), the web/Windows/Android/Apple decoders, and
+# documented in specs/060-…/contracts/conversation-continuity.md. Every other
+# authoring variant still normalizes away, so the canonical boundary stays
+# exact for non-caption text.
+def _lifted_text_part(text: str, variant: Any) -> dict[str, Any]:
+    """One canonical rail text part; caption weight survives the lift."""
+    part: dict[str, Any] = {"type": "text", "text": text}
+    if variant in CANONICAL_TEXT_PART_VARIANTS:
+        part["variant"] = variant
+    return part
+
+
+def _wrapper_texts(component: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    """Depth-first (text, variant) contents of one text-only wrapper."""
+    texts: list[tuple[str, Any]] = []
     for key in ("content", "children"):
         children = component.get(key)
         if not isinstance(children, list):
@@ -256,7 +264,7 @@ def _wrapper_texts(component: Mapping[str, Any]) -> list[str]:
                 if not isinstance(text, str):
                     text = child.get("text")
                 if isinstance(text, str) and text.strip():
-                    texts.append(text)
+                    texts.append((text, child.get("variant")))
             elif child_type in _RAIL_WRAPPER_TYPES:
                 texts.extend(_wrapper_texts(child))
     return texts
@@ -291,8 +299,9 @@ def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Canonical-boundary normalization (066 R-9 rail fix): stored
             # narrative parts may carry authoring fields (``variant``,
             # ``content``) that the canonical transcript contract forbids —
-            # text parts must be EXACTLY {"type","text"}. A voice turn's rail
-            # delivery rides canonical ``conversation_snapshot`` frames, so an
+            # text parts must be EXACTLY {"type","text"} plus the T023
+            # bounded ``variant`` carve-out. A voice turn's rail delivery
+            # rides canonical ``conversation_snapshot`` frames, so an
             # un-normalized part made every client reject the whole snapshot
             # (``invalid_snapshot``) and the rail silently never updated.
             if part.get("type") == "text":
@@ -300,7 +309,7 @@ def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if not isinstance(text, str):
                     text = part.get("content")
                 if isinstance(text, str) and text.strip():
-                    kept.append({"type": "text", "text": text})
+                    kept.append(_lifted_text_part(text, part.get("variant")))
                 continue
             kept.append(part)
             continue
@@ -313,14 +322,14 @@ def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if not isinstance(text, str):
                     text = comp.get("text")
                 if isinstance(text, str) and text.strip():
-                    kept.append({"type": "text", "text": text})
+                    kept.append(_lifted_text_part(text, comp.get("variant")))
             elif (
                 comp_type in _RAIL_WRAPPER_TYPES
                 and not _rail_wrapper_is_anchored(comp)
                 and _is_rail_text_only([comp])
             ):
-                for text in _wrapper_texts(comp):
-                    kept.append({"type": "text", "text": text})
+                for text, variant in _wrapper_texts(comp):
+                    kept.append(_lifted_text_part(text, variant))
             # anything else is a UI component — canvas only
     return kept
 
@@ -445,14 +454,15 @@ def augment_conversation_snapshot_for_target(
         pipeline (``render_text`` markdown branch -> ``block_md``), so the
         semantic value stays authoritative and nothing new is trusted.
 
-        T023 note: the markdown variant is deliberately fixed. A lifted
-        caption CANNOT carry its variant here because canonical text parts
-        are exactly ``{"type", "text"}`` (see the contract note above
-        ``_wrapper_texts``); caption-weight hydration awaits a cross-client
-        contract extension.
+        T023: a part carrying the bounded canonical ``variant`` renders at
+        that weight (a lifted caption hydrates as a caption); everything
+        else keeps the markdown default.
         """
+        variant = part.get("variant")
+        if variant not in CANONICAL_TEXT_PART_VARIANTS:
+            variant = "markdown"
         rendered = render_one(
-            {"type": "text", "variant": "markdown", "content": part["text"]}
+            {"type": "text", "variant": variant, "content": part["text"]}
         )
         if rendered:
             part["_presentation"] = {"target": "web", "html": rendered}

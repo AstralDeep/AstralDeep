@@ -317,6 +317,11 @@ class ConversationResumeStore:
         return True
 
 
+# 066 T023 contract extension: the closed set of variants a canonical text
+# part may carry (mirrors backend shared/protocol.py CANONICAL_TEXT_PART_VARIANTS).
+CANONICAL_TEXT_PART_VARIANTS = frozenset({"caption"})
+
+
 @dataclass(frozen=True)
 class SemanticPart:
     """One validated canonical transcript part in original wire order."""
@@ -328,6 +333,7 @@ class SemanticPart:
     plain_text: Optional[str] = None
     code: Optional[str] = None
     message: Optional[str] = None
+    variant: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -377,10 +383,21 @@ def decode_semantic_transcript(transcript: object) -> list[SemanticMessage]:
                 raise WindowsProtocolError("transcript part is invalid")
             part_type = part["type"]
             if part_type == "text":
-                _exact(part, {"type", "text"}, "text part")
+                # 066 T023: exactly {type, text} plus an OPTIONAL bounded variant.
+                if set(part) == {"type", "text", "variant"}:
+                    if part.get("variant") not in CANONICAL_TEXT_PART_VARIANTS:
+                        raise WindowsProtocolError(
+                            "text part variant is outside the canonical set"
+                        )
+                else:
+                    _exact(part, {"type", "text"}, "text part")
                 if not isinstance(part.get("text"), str):
                     raise WindowsProtocolError("text part must contain text")
-                safe_parts.append(SemanticPart(type="text", text=part["text"]))
+                safe_parts.append(
+                    SemanticPart(
+                        type="text", text=part["text"], variant=part.get("variant")
+                    )
+                )
                 visible = visible or bool(part["text"])
             elif part_type == "components":
                 _exact(part, {"type", "components"}, "components part")
