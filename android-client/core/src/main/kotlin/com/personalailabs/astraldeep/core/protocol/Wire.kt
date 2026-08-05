@@ -743,18 +743,17 @@ object Wire {
         return parts.all { part -> (part as? JsonObject)?.let(::canonicalTranscriptPart) == true }
     }
 
+    // 066 T023: the bounded caption shape a text part may additionally take
+    // (mirrors backend CANONICAL_TEXT_PART_VARIANTS).
+    private fun boundedTextVariantShape(part: JsonObject): Boolean =
+        part.hasExactKeys("type", "text", "variant") &&
+            part.strictString("variant") in CANONICAL_TEXT_PART_VARIANTS
+
     private fun canonicalTranscriptPart(part: JsonObject): Boolean =
         when (part.strictString("type")) {
-            // 066 T023: exactly {type, text} plus an OPTIONAL bounded variant
-            // (mirrors backend CANONICAL_TEXT_PART_VARIANTS).
             "text" ->
-                (
-                    part.hasExactKeys("type", "text") ||
-                        (
-                            part.hasExactKeys("type", "text", "variant") &&
-                                part.strictString("variant") in CANONICAL_TEXT_PART_VARIANTS
-                            )
-                    ) && part.strictString("text") != null
+                (part.hasExactKeys("type", "text") || boundedTextVariantShape(part)) &&
+                    part.strictString("text") != null
             "components" -> {
                 val components = part.arr("components")
                 part.hasExactKeys("type", "components") &&
