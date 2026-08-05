@@ -33,6 +33,50 @@ def test_message_attachment_list_for_chat():
     assert repo.list_for_chat("c1", "u2") == []
 
 
+def test_list_for_chat_grouped_by_message_matches_per_message_reads():
+    """The chat-scoped bulk read is the substitute for the per-message N+1.
+
+    load_chat groups list_for_chat by message_id instead of issuing one
+    list_for_message per user message, so the grouping must reproduce the
+    per-message result exactly — same attachments, same order, same scoping.
+    """
+    db = FakeDB()
+    repo = MessageAttachmentRepository(db)
+    repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id="m1")
+    repo.insert(chat_id="c1", attachment_id="a2", user_id="u1", message_id="m1")
+    repo.insert(chat_id="c1", attachment_id="a3", user_id="u1", message_id="m2")
+    repo.insert(chat_id="c1", attachment_id="a4", user_id="u2", message_id="m1")
+    repo.insert(chat_id="c2", attachment_id="a5", user_id="u1", message_id="m3")
+
+    grouped: dict = {}
+    for link in repo.list_for_chat("c1", "u1"):
+        grouped.setdefault(link["message_id"], []).append(link["attachment_id"])
+
+    assert grouped == {"m1": ["a1", "a2"], "m2": ["a3"]}
+    for message_id, attachment_ids in grouped.items():
+        assert [
+            r["attachment_id"] for r in repo.list_for_message(message_id, "u1")
+        ] == attachment_ids
+    # Another user's link and another chat's link never enter the grouping.
+    assert "a4" not in grouped["m1"]
+    assert "m3" not in grouped
+
+
+def test_list_for_chat_reports_message_id_as_text():
+    """Callers key the grouping on ``str(messages.id)``.
+
+    ``messages.id`` is an integer PK but ``message_attachment.message_id`` is
+    TEXT, so insert stores the text form and reads must return it — otherwise
+    the bulk grouping silently matches nothing.
+    """
+    db = FakeDB()
+    repo = MessageAttachmentRepository(db)
+    repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id=4242)
+
+    (link,) = repo.list_for_chat("c1", "u1")
+    assert link["message_id"] == "4242"
+
+
 def test_parser_repo_create_pending_is_dedup_safe():
     db = FakeDB()
     repo = AttachmentParserRepository(db)

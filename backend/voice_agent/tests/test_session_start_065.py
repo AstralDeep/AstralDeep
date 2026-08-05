@@ -985,7 +985,15 @@ async def test_exact_signed_final_replays_until_matching_rejection_then_scrubs()
     room.emit("reconnected")
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    assert len(room.local_participant.published_data) == 2
+    # Count only transcript publications: the guidance announcement manifest
+    # shares this record and lands whenever synthesis completes.
+    assert (
+        sum(
+            record["topic"] == VOICE_TRANSCRIPT_TOPIC
+            for record in room.local_participant.published_data
+        )
+        == 2
+    )
 
     await session.close("test")
     await task

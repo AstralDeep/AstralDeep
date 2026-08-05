@@ -61,6 +61,43 @@ def test_non_whitelisted_attributes_still_refused():
         assert needle not in html, needle
 
 
+def test_data_ui_dispatch_family_is_refused():
+    """client.js delegates on ``[data-ui-action]`` document-wide with no class
+    and no container scoping, so an author-supplied one would be a one-click
+    trigger for an arbitrary chrome action fired as the viewing user."""
+    html = render_one({"type": "card", "title": "Quarterly report", "content": [],
+                       "attributes": {"data-ui-action": "chrome_perms_save",
+                                      "data-ui-payload": '{"agent_id":"x"}',
+                                      "data-ui-collect": "true",
+                                      "data-ui-form": "1"}})
+    for needle in ("data-ui-action", "data-ui-payload", "data-ui-collect",
+                   "data-ui-form", "chrome_perms_save"):
+        assert needle not in html, needle
+
+
+def test_data_ui_refusal_covers_both_wire_shapes_and_key_case():
+    # astralprims' to_dict() merges `attributes` at the TOP level, so the
+    # refusal must hold for the flattened shape too, and keys are lowercased
+    # before the whitelist runs.
+    flat = render_one({"type": "badge", "label": "x",
+                       "DATA-UI-ACTION": "chrome_agent_enabled"})
+    nested = render_one({"type": "badge", "label": "x",
+                         "attributes": {"Data-Ui-Action": "chrome_agent_enabled"}})
+    for html in (flat, nested):
+        assert "chrome_agent_enabled" not in html
+        assert "data-ui-action" not in html.lower()
+
+
+def test_morph_anchor_data_attribute_still_passes_through():
+    # The designer's nested-ref anchor is the one data-* key the product sets
+    # through this path; narrowing must not break it.
+    html = render_one({"type": "table", "headers": ["A"], "rows": [["1"]],
+                       "attributes": {"data-component-id": "wc_anchor",
+                                      "data-ui-action": "chrome_open"}})
+    assert 'data-component-id="wc_anchor"' in html
+    assert "chrome_open" not in html
+
+
 def test_hostile_aria_value_is_attribute_escaped():
     html = render_one({"type": "badge", "label": "x",
                        "attributes": {"aria-label": '"><script>alert(1)</script>'}})

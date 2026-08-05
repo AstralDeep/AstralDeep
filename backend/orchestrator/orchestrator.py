@@ -971,6 +971,11 @@ class Orchestrator:
         self._dispatch_context: Dict[str, Dict[str, Any]] = {}
         # Strong refs to in-flight hop-mediation tasks (asyncio keeps weak refs).
         self._background_hop_tasks: set = set()
+        # Same, for spoken-acknowledgement scheduling. The model turn must not
+        # wait for the utterance to finish playing, so the runner call is
+        # detached; ordering against the terminal recap is preserved by the
+        # announcement runner's own serialized command deque.
+        self._voice_ack_tasks: set = set()
         # 056 US1/US4 (FR-021): per-turn global chain budgets keyed by chat id
         # (reset at each turn start; lazily created on first hop).
         self._chain_budgets: Dict[str, Any] = {}
@@ -3842,6 +3847,10 @@ class Orchestrator:
                 logger.info(f"Agent {agent_id} deregistered")
             if agent_id in self.security_flags:
                 del self.security_flags[agent_id]
+            try:
+                await self._sweep_cap_slots_for_agent(agent_id)
+            except Exception:
+                logger.debug("cap slot sweep failed", exc_info=True)
 
     # =========================================================================
     # MESSAGE HANDLING
@@ -11640,13 +11649,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             accepted_turn,
             message=_VOICE_REQUEST_PROCESSING_MESSAGE,
         )
+        def _ack_finished(task: "asyncio.Task") -> None:
+            self._voice_ack_tasks.discard(task)
+            if task.cancelled():
+                return
+            if task.exception() is not None:
+                logger.warning(
+                    "Voice acknowledgement scheduling was unavailable",
+                    exc_info=task.exception(),
+                )
+
         try:
-            await services.start_turn_announcements(accepted_turn)
+            ack_task = asyncio.create_task(
+                services.start_turn_announcements(accepted_turn),
+                name=f"voice-ack-{getattr(accepted_turn, 'turn_id', 'unknown')}",
+            )
         except Exception:
             logger.warning(
                 "Voice acknowledgement scheduling was unavailable",
                 exc_info=True,
             )
+        else:
+            self._voice_ack_tasks.add(ack_task)
+            ack_task.add_done_callback(_ack_finished)
         return {
             "message_id": accepted_message_id,
             "turn": accepted_turn,
@@ -12509,10 +12534,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # that anything wrapped in its markers is untrusted DATA, never
             # instructions. Untrusted (non-digest) tool outputs are wrapped at
             # append time below. No-op when the flag is off.
+            # The sentinel is fresh random bytes every turn, so it must NOT sit
+            # in the leading system message: tool-calling chat templates render
+            # the ~16k-token tool block inside or right after that block, and a
+            # per-turn prefix change defeats the server's automatic prefix
+            # caching for the whole prompt. It rides a trailing system message
+            # instead (same placement as the learned-recipe hint below), which
+            # leaves the prefix byte-identical across turns. Rotation is
+            # unchanged, so the threat model is unchanged.
             datamark_on = flags.is_enabled("datamarking")
             turn_sentinel = datamarking.make_turn_sentinel() if datamark_on else None
-            if datamark_on:
-                system_prompt += "\n\n" + datamarking.spotlight_system_addendum(turn_sentinel)
 
             # ------------------------------------------------------------------
             # MULTI-TURN LOOP
@@ -12554,6 +12585,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 *history_messages,
                 {"role": "user", "content": message}
             ]
+            if datamark_on:
+                messages.append({
+                    "role": "system",
+                    "content": datamarking.spotlight_system_addendum(turn_sentinel),
+                })
 
             # Expose the user's request to the per-tool supervisor gate
             # (intent-alignment, C-S5) during this turn's tool dispatch.
@@ -15985,6 +16021,42 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self.concurrency_cap.release(u_id, a_id, cap_job_id)
             except Exception:
                 logger.debug("hop cap release failed", exc_info=True)
+
+    async def _sweep_cap_slots_for_agent(self, agent_id: str) -> int:
+        """Release every concurrency slot still held for a now-dead agent.
+
+        A long-running slot is normally released by the terminal ``ToolProgress``
+        that the agent's OWN ``JobPoller`` emits. When the agent dies that poller
+        dies with it, so the slot would be held for the life of the process —
+        after ``max_per_user_agent`` such deaths the user is permanently refused
+        with "You already have N jobs running".
+        """
+        if not agent_id:
+            return 0
+        stale = [
+            cid for cid, (_u, a) in list(self._pending_cap_entries.items())
+            if a == agent_id
+        ]
+        stale += [
+            cid for cid, (_u, a) in list(self._hop_cap_entries.items())
+            if a == agent_id and cid not in stale
+        ]
+        for cap_job_id in stale:
+            entry = self._pending_cap_entries.pop(cap_job_id, None)
+            if entry:
+                try:
+                    await self.concurrency_cap.release(entry[0], entry[1], cap_job_id)
+                except Exception:
+                    logger.debug("cap sweep release failed", exc_info=True)
+            await self._release_hop_cap_slot(cap_job_id)
+            self._job_context.pop(cap_job_id, None)
+        if stale:
+            logger.warning(
+                "Released %d orphaned concurrency slot(s) for disconnected agent %s",
+                len(stale),
+                agent_id,
+            )
+        return len(stale)
 
     async def _execute_with_retry_audited(self, websocket, agent_id, tool_name, args, chat_id=None, user_id=None):
         """Dispatch a tool with the SAME ToolDispatchAudit start/end events,
@@ -20473,6 +20545,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # (no separate :5173 frontend). astralprims defines primitives, the
         # orchestrator renders them (webrender), ROTE adapts per device.
         import os as _os
+        import secrets as _secrets
         from fastapi.responses import HTMLResponse as _HTMLResponse
         _webrender_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "webrender")
         _shell_path = _os.path.join(_webrender_dir, "templates", "shell.html")
@@ -20539,10 +20612,36 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # Feature 052: per-file content-hash asset URLs — a changed file is
             # fetched under a new URL, unchanged files stay immutable-cached.
             shell = _apply_asset_versions(shell, _os.path.join(_webrender_dir, "static"))
+            # The shell hands the access token to page JS, so an injected script
+            # would be a full impersonation. Both inline blocks are
+            # server-substituted here, so they can carry a per-response nonce and
+            # everything else executable must be same-origin.
+            nonce = _secrets.token_urlsafe(16)
+            shell = shell.replace("%%ASTRAL_NONCE%%", nonce)
             resp = _HTMLResponse(shell.replace("%%ASTRAL_TOPBAR%%", topbar))
             # The shell carries a per-session token and references versioned
             # assets — never cache it (security + always-fresh asset URLs).
             resp.headers["Cache-Control"] = "no-store"
+            # style-src keeps 'unsafe-inline': the self-hosted Tailwind build
+            # generates CSS at runtime by injecting <style>, and the renderers
+            # emit inline style="" attributes. blob:/data: cover the voice audio
+            # path and the renderer's permitted data: image payloads.
+            resp.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                f"script-src 'self' 'nonce-{nonce}'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: blob:; "
+                "media-src 'self' data: blob:; "
+                "connect-src 'self' ws: wss:; "
+                "font-src 'self'; "
+                "object-src 'none'; "
+                "base-uri 'none'; "
+                "frame-ancestors 'none'; "
+                "form-action 'self'"
+            )
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            resp.headers["Referrer-Policy"] = "no-referrer"
+            resp.headers["Permissions-Policy"] = "camera=(), geolocation=()"
             return resp
 
         app.mount("/static", _NoCacheStaticFiles(directory=_os.path.join(_webrender_dir, "static")), name="static")
@@ -20577,6 +20676,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(share_router)
         app.include_router(auth_router)
         app.include_router(web_auth_router)  # Feature 026 — /auth/login,/callback,/session,/logout
+        # Feature 068: the kiosk sign-in surface (/kiosk + /auth/kiosk/*) is
+        # ABSENT unless enabled — no route, no OpenAPI entry, and GET / keeps
+        # feature 028's redirect-straight-to-Keycloak posture untouched.
+        # FeatureFlags is import-time state; recreate the container to toggle.
+        if flags.is_enabled("kiosk_login"):
+            from orchestrator.web_auth import kiosk_router
+            app.include_router(kiosk_router)
+            logger.info("Kiosk sign-in surface mounted at /kiosk")
         app.include_router(attachments_router)
         app.include_router(voice_router)
         app.include_router(task_router)
@@ -20903,7 +21010,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     payload_b64 = parts[1]
                     payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
                     payload_json = base64.b64decode(payload_b64).decode('utf-8')
-                    return json.loads(payload_json)
+                    decoded = json.loads(payload_json)
+                    from shared.auth_clients import is_first_party_user_claims
+                    ok, reason = is_first_party_user_claims(decoded)
+                    if not ok:
+                        logger.warning(
+                            "Refusing non-first-party token for a UI session: %s",
+                            reason,
+                        )
+                        return None
+                    return decoded
             except Exception as e:
                 logger.debug(f"Mock JWT decode failed, falling back to default test_user: {e}")
             logger.info("Mock Auth: Accepting token as test_user")
@@ -20959,6 +21075,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.warning(
                     f"Token azp '{azp}' is not an accepted client "
                     f"(allowed: {sorted(allowed_azps())})"
+                )
+                return None
+
+            # A delegated agent token carries the human's sub, the user's roles,
+            # the realm iss and the requesting client's azp, so it clears every
+            # gate above. Only the audience distinguishes it.
+            from shared.auth_clients import is_first_party_user_claims
+            ok, reason = is_first_party_user_claims(payload)
+            if not ok:
+                logger.warning(
+                    "Refusing non-first-party token for a UI session: %s",
+                    reason,
                 )
                 return None
 

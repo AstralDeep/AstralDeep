@@ -2,12 +2,24 @@ import importlib.util
 import os
 import sys
 import csv
-import tempfile
 
 # Add backend to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from agents.general.mcp_tools import modify_data
+
+
+def _confined_source_path(name: str, user_id: str = "legacy") -> str:
+    """Build a source path modify_data will accept.
+
+    ``file_path`` is confined to the caller's own directories, so a fixture
+    file has to live under ``backend/tmp/<user_id>/`` — an arbitrary temp
+    path is refused (H3-1).
+    """
+    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    user_dir = os.path.join(backend_dir, "tmp", user_id)
+    os.makedirs(user_dir, exist_ok=True)
+    return os.path.join(user_dir, name)
 
 
 def test_basic_add_column():
@@ -129,12 +141,10 @@ def test_excel_support_if_available():
         print("Pandas not installed, skipping Excel test")
         return
     
-    # Create a temporary Excel file
-    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
-        excel_path = f.name
+    excel_path = _confined_source_path("modify_data_src.xlsx")
     df = pd.DataFrame({"A": [1, 2, 3], "B": [4, 5, 6]})
     df.to_excel(excel_path, index=False)
-    
+
     modifications = [
         {"action": "add_column", "name": "C", "expression": "row['A'] + row['B']"}
     ]
@@ -189,18 +199,16 @@ def test_invalid_expression():
 
 def test_backward_compatibility_with_file():
     """Original test from file."""
-    src_file = "src_test.csv"
+    src_file = _confined_source_path("src_test.csv")
     with open(src_file, 'w') as f:
         f.write("Code,Title\nA00,Cholera\nA01,Typhoid\nA02,Vibrio")
-    
-    abs_src_path = os.path.abspath(src_file)
-    
+
     modifications = [
         {"action": "add_column", "name": "processed", "value": "true"}
     ]
-    
-    result = modify_data(file_path=abs_src_path, modifications=modifications, filename="file_modified.csv")
-    
+
+    result = modify_data(file_path=src_file, modifications=modifications, filename="file_modified.csv")
+
     file_path = result["_data"]["file_path"]
     assert os.path.exists(file_path)
     with open(file_path, 'r') as f:

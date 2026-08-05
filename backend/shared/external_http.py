@@ -22,6 +22,13 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 
+# One decoder for IPv4-in-IPv6 encodings across both egress guards (HTTP here,
+# SSH in net_guard) so they can never disagree about what an address *is*.
+# ``net_guard`` is pure-stdlib and imports nothing from this module, so the
+# dependency is one-way. Private name imported deliberately: promoting it to a
+# public alias belongs in net_guard, which this change does not own.
+from shared.net_guard import _effective_ip as _decode_embedded_ipv4
+
 logger = logging.getLogger("external_http")
 
 DEFAULT_TIMEOUT = 30
@@ -92,13 +99,10 @@ def _resolve_host_addresses(host: str) -> Iterable[str]:
             yield addr
 
 
-def _is_private_address(addr: str) -> bool:
-    """Return True if the IP literal is loopback / private / link-local / multicast / unspecified / reserved."""
-    try:
-        ip = ipaddress.ip_address(addr)
-    except ValueError:
-        return True
-    return (
+def _classify_blocked(ip) -> bool:
+    """True when a parsed address object is loopback / private / link-local /
+    multicast / unspecified / reserved."""
+    return bool(
         ip.is_loopback
         or ip.is_private
         or ip.is_link_local
@@ -106,6 +110,24 @@ def _is_private_address(addr: str) -> bool:
         or ip.is_unspecified
         or ip.is_reserved
     )
+
+
+def _is_private_address(addr: str) -> bool:
+    """Return True if the IP literal is loopback / private / link-local / multicast / unspecified / reserved.
+
+    The literal is classified AND, when it carries an IPv4-in-IPv6 encoding
+    (``::ffff:a.b.c.d``, 6to4 ``2002:…``, NAT64 ``64:ff9b::…``), so is the
+    embedded IPv4 — either verdict blocks. CPython >= 3.11.10 (post
+    CVE-2024-4032) already classifies those wrappers correctly on its own, so
+    the decode is defense in depth against an interpreter that does not; ORing
+    the two verdicts means it can only ever tighten the result, never widen it.
+    An unparseable literal is blocked (fail-closed).
+    """
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True
+    return _classify_blocked(ip) or _classify_blocked(_decode_embedded_ipv4(addr))
 
 
 def _allowed_private_hosts_from_env() -> Iterable[str]:

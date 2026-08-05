@@ -376,28 +376,59 @@ class LiveKitRtcFactory:
         return frame
 
 
+DEFAULT_VAD_MODEL_PATH = "/opt/voice-assets/silero_vad.onnx"
+# One ONNX graph per model path per worker process. Building it costs a
+# blocking disk read plus a graph load, and it used to run once per voice
+# session inside the supervisor-wide lock, serializing every concurrent
+# activation behind it. Only a successful build is shared: a failure must stay
+# reproducible for the next construction of the same path.
+_VAD_INFERENCE_SESSIONS: dict[str, Any] = {}
+
+
+def _build_vad_inference_session(model_path: Path | str) -> Any:
+    try:
+        import onnxruntime as ort
+    except ImportError:  # pragma: no cover - image/host split
+        raise RtcSessionError("vad_runtime_unavailable") from None
+    path = Path(model_path)
+    if not path.is_file():
+        raise RtcSessionError("vad_model_unavailable")
+    key = str(path.resolve())
+    cached = _VAD_INFERENCE_SESSIONS.get(key)
+    if cached is not None:
+        return cached
+    try:
+        built = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    except Exception:
+        raise RtcSessionError("vad_model_invalid") from None
+    _VAD_INFERENCE_SESSIONS[key] = built
+    return built
+
+
+async def preload_vad_model(model_path: Path | str = DEFAULT_VAD_MODEL_PATH) -> None:
+    """Build the shared VAD graph off the event loop before the first session."""
+
+    try:
+        await asyncio.to_thread(_build_vad_inference_session, model_path)
+    except Exception:
+        # The per-session constructor raises the same reason again; a missing
+        # or unreadable asset must not change when the worker gives up.
+        return
+
+
 class SileroVad:
     """Exact Silero v6 recurrent ONNX inference for 32-ms input frames."""
 
     def __init__(
         self,
         *,
-        model_path: Path | str = "/opt/voice-assets/silero_vad.onnx",
+        model_path: Path | str = DEFAULT_VAD_MODEL_PATH,
     ) -> None:
         try:
             import numpy as np
-            import onnxruntime as ort
         except ImportError:  # pragma: no cover - image/host split
             raise RtcSessionError("vad_runtime_unavailable") from None
-        path = Path(model_path)
-        if not path.is_file():
-            raise RtcSessionError("vad_model_unavailable")
-        try:
-            self._session = ort.InferenceSession(
-                str(path), providers=["CPUExecutionProvider"]
-            )
-        except Exception:
-            raise RtcSessionError("vad_model_invalid") from None
+        self._session = _build_vad_inference_session(model_path)
         self._np = np
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
 
@@ -776,8 +807,10 @@ class DirectRtcSession(BoundControlSession):
         self._rtc_events: asyncio.Queue[_OwnedEvent] = asyncio.Queue(
             rtc_event_queue_size
         )
-        self._ready_controls: deque[dict[str, Any]] = deque()
-        self._ready_rtc_events: deque[_OwnedEvent] = deque()
+        self._control_waiter: asyncio.Task[dict[str, Any]] | None = None
+        self._rtc_waiter: asyncio.Task[_OwnedEvent] | None = None
+        self._overrun_waiter: asyncio.Task[bool] | None = None
+        self._closed_waiter: asyncio.Task[bool] | None = None
         self._overrun_wakeup = asyncio.Event()
         self._overrun_reason: str | None = None
         self._started = asyncio.Event()
@@ -1212,37 +1245,71 @@ class DirectRtcSession(BoundControlSession):
             self._overrun_wakeup.set()
 
     async def _next_owned_event(self) -> tuple[str, Any]:
-        if self._ready_controls:
-            return "control", self._ready_controls.popleft()
-        if self._ready_rtc_events:
-            return "rtc", self._ready_rtc_events.popleft()
-        control_task = asyncio.create_task(self._queue.get())
-        rtc_task = asyncio.create_task(self._rtc_events.get())
-        overrun_task = asyncio.create_task(self._overrun_wakeup.wait())
-        closed_task = asyncio.create_task(self._closed.wait())
-        tasks = {control_task, rtc_task, overrun_task, closed_task}
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        if closed_task in done:
-            if control_task in done:
-                _clear_buffered_value(control_task.result())
-            if rtc_task in done:
-                _discard_owned_event(rtc_task.result())
+        # One persistent waiter per source, re-created only once it completes.
+        # A value that becomes ready alongside another source stays parked in
+        # its own finished task until the loop asks for it, so no waiter is
+        # cancelled and re-created per event.
+        if self._control_waiter is None:
+            self._control_waiter = asyncio.create_task(self._queue.get())
+        if self._rtc_waiter is None:
+            self._rtc_waiter = asyncio.create_task(self._rtc_events.get())
+        if self._overrun_waiter is None:
+            self._overrun_waiter = asyncio.create_task(self._overrun_wakeup.wait())
+        if self._closed_waiter is None:
+            self._closed_waiter = asyncio.create_task(self._closed.wait())
+        control_task = self._control_waiter
+        rtc_task = self._rtc_waiter
+        overrun_task = self._overrun_waiter
+        closed_task = self._closed_waiter
+        await asyncio.wait(
+            (control_task, rtc_task, overrun_task, closed_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if closed_task.done():
+            # Closed wins, and a value this call already recovered can no
+            # longer reach the teardown drain: discard it here.
+            if control_task.done():
+                self._control_waiter = None
+                _clear_buffered_value(_completed_waiter_value(control_task))
+            if rtc_task.done():
+                self._rtc_waiter = None
+                event = _completed_waiter_value(rtc_task)
+                if event is not None:
+                    _discard_owned_event(event)
             return "closed", None
-        if control_task in done and overrun_task in done:
-            self._ready_controls.append(control_task.result())
-        if rtc_task in done and overrun_task in done:
-            self._ready_rtc_events.append(rtc_task.result())
-        if overrun_task in done:
+        if overrun_task.done():
+            self._overrun_waiter = None
             self._overrun_wakeup.clear()
             return "overrun", None
-        if control_task in done:
-            if rtc_task in done:
-                self._ready_rtc_events.append(rtc_task.result())
+        if control_task.done():
+            self._control_waiter = None
             return "control", control_task.result()
+        self._rtc_waiter = None
         return "rtc", rtc_task.result()
+
+    async def _release_owned_waiters(self) -> None:
+        """Cancel every persistent waiter, discarding any value one parked.
+
+        A finished queue waiter holds its value outside the queue, so the
+        teardown drain cannot reach it; zero retention requires this.
+        """
+
+        control = self._control_waiter
+        rtc = self._rtc_waiter
+        self._control_waiter = None
+        self._rtc_waiter = None
+        _clear_buffered_value(_completed_waiter_value(control))
+        event = _completed_waiter_value(rtc)
+        if event is not None:
+            _discard_owned_event(event)
+        waiters = (control, rtc, self._overrun_waiter, self._closed_waiter)
+        self._overrun_waiter = None
+        self._closed_waiter = None
+        pending = [waiter for waiter in waiters if waiter is not None]
+        for waiter in pending:
+            waiter.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _handle_queue_overrun(self) -> None:
         reason = self._overrun_reason or "rtc_event_queue_overrun"
@@ -2852,16 +2919,15 @@ class DirectRtcSession(BoundControlSession):
             self._pending_context = None
             self._overrun_reason = None
             self._overrun_wakeup.clear()
+            # Release before draining so no surviving waiter can park a value
+            # the drain has already passed.
+            await self._release_owned_waiters()
             while not self._queue.empty():
                 with suppress(asyncio.QueueEmpty):
                     _clear_buffered_value(self._queue.get_nowait())
             while not self._rtc_events.empty():
                 with suppress(asyncio.QueueEmpty):
                     _discard_owned_event(self._rtc_events.get_nowait())
-            while self._ready_controls:
-                _clear_buffered_value(self._ready_controls.popleft())
-            while self._ready_rtc_events:
-                _discard_owned_event(self._ready_rtc_events.popleft())
             await self._cancel_retired_output_tasks()
             room = self._room
             self._room = None
@@ -3343,6 +3409,16 @@ def _clear_buffered_value(value: Any) -> None:
         for nested in value:
             _clear_buffered_value(nested)
         value.clear()
+
+
+def _completed_waiter_value(task: asyncio.Task[Any] | None) -> Any:
+    """Return a finished waiter's value, or None when it carries none."""
+
+    if task is None or not task.done() or task.cancelled():
+        return None
+    if task.exception() is not None:
+        return None
+    return task.result()
 
 
 def _discard_owned_event(event: _OwnedEvent) -> None:

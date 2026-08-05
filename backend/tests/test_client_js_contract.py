@@ -287,7 +287,7 @@ def test_shell_injects_token_and_resumed_placeholders(shell_html):
     assert 'window.__ASTRAL_TOKEN__ = "%%ASTRAL_TOKEN%%"' in shell_html
     assert "window.__ASTRAL_RESUMED__ = %%ASTRAL_RESUMED%%" in shell_html
     # both live in ONE inline bootstrap script…
-    m = re.search(r"<script>([^<]*__ASTRAL_TOKEN__[^<]*)</script>", shell_html)
+    m = re.search(r"<script[^>]*>([^<]*__ASTRAL_TOKEN__[^<]*)</script>", shell_html)
     assert m is not None, "no inline bootstrap script found"
     assert "__ASTRAL_RESUMED__" in m.group(1)
     # …which precedes the client so the globals exist before client.js runs.

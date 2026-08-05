@@ -338,7 +338,8 @@ def test_auth_callback_user_switch_revokes_prior_session(db, store, monkeypatch,
     monkeypatch.setattr(web_auth, "_revoke_refresh_token", unreachable)
 
     req = _FakeRequest(
-        cookies={web_auth.COOKIE_NAME: web_auth._sign(sid_a)},
+        cookies={web_auth.COOKIE_NAME: web_auth._sign(sid_a),
+                 web_auth.STATE_COOKIE_NAME: web_auth._sign(state)},
         query_params={"code": "authcode-xyz", "state": state},
     )
     new_sids = []
@@ -368,4 +369,69 @@ def test_auth_callback_user_switch_revokes_prior_session(db, store, monkeypatch,
         store.delete(sid_a)
         store.delete_for_user(user_b)
         _purge_queue(db, user_a, user_b)
+        web_auth._PENDING.pop(state, None)
+
+
+def test_auth_callback_forged_state_leaves_prior_session_intact(db, store, monkeypatch, real_auth_env):
+    """The user-switch revocation above is destructive, so it must be
+    unreachable without the browser-bound state cookie: a forged callback
+    carrying only the victim's session cookie is refused before the token
+    exchange, leaving the victim signed in with an unrevoked refresh token."""
+    user_a = f"uA-{uuid.uuid4()}"
+    sid_a = secrets.token_urlsafe(24)
+    refresh_a = f"rtA-{uuid.uuid4()}"
+    web_auth._SESSIONS[sid_a] = {
+        "sid": sid_a, "access_token": "atA", "refresh_token": refresh_a,
+        "sub": user_a, "created_at": time.time(), "resumed": False,
+    }
+    store.create(sid_a, user_id=user_a, access_token="atA", refresh_token=refresh_a,
+                 hard_max_seconds=web_auth.HARD_MAX_SECONDS)
+
+    state = secrets.token_urlsafe(16)
+    web_auth._PENDING[state] = {"code_verifier": "v" * 43, "created_at": time.time(), "next": "/"}
+
+    posts = []
+
+    class _ForbiddenClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, data=None):
+            posts.append(url)
+            raise AssertionError("token exchange must not run for an unbound state")
+
+    monkeypatch.setattr(web_auth.httpx, "AsyncClient", _ForbiddenClient)
+
+    revoke_attempts = []
+
+    async def revoked(token, client_id=None):
+        revoke_attempts.append(token)
+        return True
+
+    monkeypatch.setattr(web_auth, "_revoke_refresh_token", revoked)
+
+    req = _FakeRequest(
+        cookies={web_auth.COOKIE_NAME: web_auth._sign(sid_a)},   # no state cookie
+        query_params={"code": "authcode-forged", "state": state},
+    )
+    try:
+        resp = asyncio.run(web_auth.auth_callback(req))
+
+        assert resp.status_code == 200
+        assert "invalid callback" in resp.body.decode("utf-8")
+        assert posts == []                                  # the code was never spent
+        assert revoke_attempts == []                        # A's refresh token untouched
+        assert web_auth._SESSIONS.get(sid_a) is not None     # A is still signed in
+        assert store.get(sid_a) is not None
+        assert _queue_rows(db, user_a) == []
+    finally:
+        web_auth._SESSIONS.pop(sid_a, None)
+        store.delete(sid_a)
+        _purge_queue(db, user_a)
         web_auth._PENDING.pop(state, None)

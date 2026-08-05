@@ -84,7 +84,10 @@
   var voiceLastAnnouncementSequence = 0;
   var voiceResultReservation = Object.create(null);
   var voiceResultQuantumIndex = Object.create(null);
-  var voiceMediaTimers = [];
+  // A Set, not an array: every site that adds a timer also removes it once the
+  // timer has definitively fired or been cleared, so a long voice session with
+  // many announcements does not accumulate already-dead ids for teardown to walk.
+  var voiceMediaTimers = new Set();
   var voiceLeaseTimer = null;
   var voiceBindingRenewTimer = null;
   var voiceRecovery = null;
@@ -1114,6 +1117,37 @@
     return true;
   }
 
+  // ---- LiveKit lazy loader: the ~549 KB voice SDK left the shell <body>; it
+  // is injected once on first voice need and idle-prefetched after boot, so a
+  // session that never speaks never parses it. Every window.LivekitClient
+  // reference sits downstream of createVoiceRoom, which this gates. ----
+  var livekitLoading = false;
+  var livekitCallbacks = [];
+
+  function livekitSdkReady() {
+    return !!(window.LivekitClient && typeof window.LivekitClient.Room === "function");
+  }
+
+  function ensureLiveKitSdk(cb) {
+    if (livekitSdkReady()) { if (cb) { try { cb(); } catch (e) {} } return; }
+    if (cb) livekitCallbacks.push(cb);
+    if (livekitLoading) return;
+    livekitLoading = true;
+    var s = document.createElement("script");
+    s.src = window.__ASTRAL_LIVEKIT_URL__ || "/static/vendor/livekit-client.umd.min.js";
+    function flush() {
+      var cbs = livekitCallbacks;
+      livekitCallbacks = [];
+      for (var i = 0; i < cbs.length; i++) { try { cbs[i](); } catch (e) {} }
+    }
+    s.onload = flush;
+    // A failed load must still settle its waiters: they re-enter createVoiceRoom,
+    // which reports the honest media_unavailable state instead of hanging. The
+    // flag resets so a later activation can retry the injection.
+    s.onerror = function () { livekitLoading = false; flush(); };
+    document.head.appendChild(s);
+  }
+
   function roomEventName(name) {
     return window.LivekitClient && window.LivekitClient.RoomEvent
       ? window.LivekitClient.RoomEvent[name] : null;
@@ -1224,7 +1258,7 @@
 
   function clearVoiceMediaTimers() {
     voiceMediaTimers.forEach(function (timer) { clearTimeout(timer); });
-    voiceMediaTimers = [];
+    voiceMediaTimers.clear();
   }
 
   function clearVoiceAudioElements() {
@@ -1762,6 +1796,12 @@
     }
     voiceSession = updateResult.body;
     voiceLastSession = voiceSession;
+    // Recovery can be the first voice work of a page load (a session the server
+    // still considers live), so the lazily-injected SDK may not be resident yet.
+    if (!livekitSdkReady()) {
+      await new Promise(function (resolve) { ensureLiveKitSdk(resolve); });
+      if (voiceRecovery !== recovery || recovery.epoch !== epoch) return;
+    }
     if (!createVoiceRoom(false)) {
       terminalVoiceRecoveryFailure(recovery, "media_unavailable");
       return;
@@ -1987,10 +2027,21 @@
     else setVoiceFeedback("connecting", "chat_context_unavailable", "Waiting for the voice chat context…", true);
   }
 
-  function beginVoiceActivation(kind) {
+  function beginVoiceActivation(kind, sdkRetried) {
     if (voiceActivation) return;
     if (!voiceBindingIsCurrent()) {
       setVoiceFeedback("error", "auth_expired", "Voice controls are reconnecting. Try again in a moment.", true);
+      return;
+    }
+    // The idle prefetch normally lands long before the first gesture, so the
+    // room is built synchronously here and startAudio() keeps its user-gesture
+    // affinity. Only a click inside the first seconds of a page load waits on
+    // the injection; that one loses the gesture and falls back to the existing
+    // "Enable voice audio" affordance. Bounded to a single retry so a bundle
+    // that will not load reaches createVoiceRoom's media_unavailable branch.
+    if (!livekitSdkReady() && sdkRetried !== true) {
+      setVoiceFeedback("connecting", "ready", null, true);
+      ensureLiveKitSdk(function () { beginVoiceActivation(kind, true); });
       return;
     }
     voiceRecoverySuppressed = false;
@@ -2424,7 +2475,17 @@
       text: frame.text,
       timer: null,
     };
-    copy.byte_length = new TextEncoder().encode(JSON.stringify(copy)).length;
+    // Retention-budget accounting only, and it sits on the final-transcript ->
+    // submission path, so this BOUNDS the size instead of serializing to
+    // measure it. JSON-escaped UTF-8 costs at most 6 bytes per UTF-16 code unit
+    // (a control character becomes a six-byte backslash-u escape), and 1024
+    // covers the key names plus every remaining field — each a uuid, 64-hex
+    // digest, RFC3339 stamp or safe integer validated in consumeVoiceTranscript.
+    // Over-estimating only refuses earlier; under-estimating would not be safe.
+    copy.byte_length = 1024 + 6 * (
+      copy.text.length + copy.source_participant_identity.length
+      + copy.detected_language.length
+    );
     if (Object.keys(voicePendingSubmissions).length >= VOICE_MAX_PENDING_SUBMISSIONS
         || copy.byte_length > VOICE_MAX_PENDING_BYTES
         || voicePendingSubmissionBytes + copy.byte_length > VOICE_MAX_PENDING_BYTES) {
@@ -2584,18 +2645,31 @@
     }
     voiceLastAnnouncementSequence = frame.announcement_sequence;
     voiceAnnouncementByTrack[frame.track_sid] = frame;
-    voiceMediaTimers.push(setTimeout(function () { expireVoiceAnnouncement(frame.track_sid); }, 1000));
+    var expiry = setTimeout(function () {
+      voiceMediaTimers.delete(expiry);
+      expireVoiceAnnouncement(frame.track_sid);
+    }, 1000);
+    voiceMediaTimers.add(expiry);
     queueVoiceTrack(frame.track_sid);
     return true;
   }
 
+  // Stateless codecs, reused across every transcript and announcement packet.
+  var VOICE_TEXT_DECODER = new TextDecoder();
+  var VOICE_TEXT_ENCODER = new TextEncoder();
+
   function decodeVoicePacket(payload, maximum) {
     var text;
     try {
-      if (typeof payload === "string") text = payload;
-      else if (payload instanceof Uint8Array) text = new TextDecoder().decode(payload);
-      else return null;
-      if (new TextEncoder().encode(text).length > maximum) return null;
+      if (payload instanceof Uint8Array) {
+        // byteLength IS the UTF-8 size the bound is expressed in, so an
+        // oversized packet is refused without decoding it at all.
+        if (payload.byteLength > maximum) return null;
+        text = VOICE_TEXT_DECODER.decode(payload);
+      } else if (typeof payload === "string") {
+        if (VOICE_TEXT_ENCODER.encode(payload).length > maximum) return null;
+        text = payload;
+      } else return null;
       var value = JSON.parse(text);
       return value && typeof value === "object" && !Array.isArray(value) ? value : null;
     } catch (e) { return null; }
@@ -2648,9 +2722,11 @@
     }
     try { publication.setSubscribed(false); } catch (e) { return false; }
     voicePublishedTracks[sid] = { publication: publication, participant: participant };
-    voiceMediaTimers.push(setTimeout(function () {
+    var orphanSweep = setTimeout(function () {
+      voiceMediaTimers.delete(orphanSweep);
       if (!voiceAnnouncementByTrack[sid] && voicePublishedTracks[sid]) removeVoicePublishedTrack(sid);
-    }, 1000));
+    }, 1000);
+    voiceMediaTimers.add(orphanSweep);
     queueVoiceTrack(sid);
     return true;
   }
@@ -2746,7 +2822,8 @@
       // R-9: the SFU takes ~0.9-1.1s to bind the downtrack after publish
       // (measured live), so a 1000ms watchdog raced real subscriptions and
       // reported "Speech playback failed" for audio that was about to play.
-      voiceMediaTimers.push(setTimeout(function (expectedSid) {
+      var bindWatchdog = setTimeout(function (expectedSid) {
+        voiceMediaTimers.delete(bindWatchdog);
         if (voiceSubscribingTrackSid !== expectedSid) return;
         var value = voicePublishedTracks[expectedSid];
         var expectedManifest = voiceAnnouncementByTrack[expectedSid];
@@ -2756,7 +2833,8 @@
         delete voiceAnnouncementByTrack[expectedSid];
         delete voicePublishedTracks[expectedSid];
         startNextVoiceTrack();
-      }, 2500, sid));
+      }, 2500, sid);
+      voiceMediaTimers.add(bindWatchdog);
       return;
     }
   }
@@ -2930,7 +3008,7 @@
         active.finishing = true;
         active.tailTimer = setTimeout(function () { finishVoiceTrack(active, "finished"); },
           Math.ceil(accepted * 1000 / context.sampleRate) + 20);
-        voiceMediaTimers.push(active.tailTimer);
+        voiceMediaTimers.add(active.tailTimer);
       }
     };
     try {
@@ -2943,7 +3021,7 @@
     active.timeout = setTimeout(function () {
       finishVoiceTrack(active, active.started ? "interrupted" : null);
     }, Math.ceil(manifest.duration_samples / 24) + 2000);
-    voiceMediaTimers.push(active.timeout);
+    voiceMediaTimers.add(active.timeout);
     if (context.state === "suspended") {
       try { Promise.resolve(context.resume()).then(hideVoiceAudioResume).catch(showVoiceAudioResume); }
       catch (e) { showVoiceAudioResume(); }
@@ -2956,8 +3034,14 @@
     if (!active.started && suppressNext !== true) {
       showVoiceResultSpeechFailure(active.manifest);
     }
-    if (active.timeout) clearTimeout(active.timeout);
-    if (active.tailTimer) clearTimeout(active.tailTimer);
+    if (active.timeout) {
+      clearTimeout(active.timeout);
+      voiceMediaTimers.delete(active.timeout);
+    }
+    if (active.tailTimer) {
+      clearTimeout(active.tailTimer);
+      voiceMediaTimers.delete(active.tailTimer);
+    }
     try { active.processor.onaudioprocess = null; } catch (e) {}
     try { active.source.disconnect(); } catch (e) {}
     try { active.processor.disconnect(); } catch (e) {}
@@ -5877,11 +5961,13 @@
     else refreshToken(false, function () { connect(); });
   }).catch(function () { connect(); });
 
-  // Warm the lazy Plotly bundle once the boot work has settled so the first
-  // chart-bearing turn is usually already loaded.
-  function idlePrefetchPlotly() { ensurePlotly(null); }
-  if (window.requestIdleCallback) window.requestIdleCallback(idlePrefetchPlotly, { timeout: 5000 });
-  else setTimeout(idlePrefetchPlotly, 2500);
+  // Warm the lazy Plotly and LiveKit bundles once the boot work has settled so
+  // the first chart-bearing turn and the first voice gesture are usually
+  // already loaded. Prefetching LiveKit is what keeps its move out of the shell
+  // a page-load win rather than an activation-budget regression.
+  function idlePrefetchVendorBundles() { ensurePlotly(null); ensureLiveKitSdk(null); }
+  if (window.requestIdleCallback) window.requestIdleCallback(idlePrefetchVendorBundles, { timeout: 5000 });
+  else setTimeout(idlePrefetchVendorBundles, 2500);
 })();
 
 /* Feature 040 (US5): slash-command typeahead. Discovery only — the server
