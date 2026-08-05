@@ -193,6 +193,13 @@ RFC3339 `created_at`, non-empty `parts`, and `attachments` (possibly empty). Par
 {"type":"text","text":"visible text"}
 ```
 
+A `text` part MAY additionally carry `"variant"` drawn from the closed set `{"caption"}` (feature 066
+T023 contract extension, 2026-08-05): a text primitive lifted into the rail keeps caption weight
+through commit and hydration. Any other value — or any other extra key — remains invalid. Validators:
+backend `shared/protocol.py` (`CANONICAL_TEXT_PART_VARIANTS`), web `client.js`
+`validateSnapshotShape`, Windows `astral_client/protocol.py`, Android `Wire.kt`, Apple
+`ConversationContinuity.swift`. Clients without a caption style render it as plain text.
+
 ```json
 {"type":"components","components":[{"type":"text","content":"visible component"}]}
 ```

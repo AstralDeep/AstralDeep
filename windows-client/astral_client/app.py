@@ -372,9 +372,15 @@ class ChatRail(QWidget):
                 body.setWordWrap(True)
                 body.setTextFormat(Qt.TextFormat.MarkdownText)
                 body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                body.setStyleSheet(
-                    f"color:{T.TEXT}; font-size:13px; background:transparent;"
-                )
+                # 066 T023: a lifted caption keeps its weight on hydration.
+                if part.variant == "caption":
+                    body.setStyleSheet(
+                        f"color:{T.MUTED}; font-size:11px; background:transparent;"
+                    )
+                else:
+                    body.setStyleSheet(
+                        f"color:{T.TEXT}; font-size:13px; background:transparent;"
+                    )
                 layout.addWidget(body)
             elif part.type == "components":
                 for component in part.components:

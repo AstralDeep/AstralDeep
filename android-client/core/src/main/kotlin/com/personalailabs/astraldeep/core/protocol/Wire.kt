@@ -437,6 +437,9 @@ object Wire {
     private val VOICE_QUANTUM_ROLES = setOf("single", "result_opening", "result_continuation")
     private val VOICE_PLAYOUT_PHASES = setOf("started", "finished", "interrupted")
 
+    // 066 T023: bounded canonical text-part variants (backend CANONICAL_TEXT_PART_VARIANTS twin).
+    private val CANONICAL_TEXT_PART_VARIANTS = setOf("caption")
+
     private val snakeCase = Regex("^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
     private val lowerSha256 = Regex("^[0-9a-f]{64}$")
     private val languageTag = Regex("^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
@@ -740,9 +743,17 @@ object Wire {
         return parts.all { part -> (part as? JsonObject)?.let(::canonicalTranscriptPart) == true }
     }
 
+    // 066 T023: the bounded caption shape a text part may additionally take
+    // (mirrors backend CANONICAL_TEXT_PART_VARIANTS).
+    private fun boundedTextVariantShape(part: JsonObject): Boolean =
+        part.hasExactKeys("type", "text", "variant") &&
+            part.strictString("variant") in CANONICAL_TEXT_PART_VARIANTS
+
     private fun canonicalTranscriptPart(part: JsonObject): Boolean =
         when (part.strictString("type")) {
-            "text" -> part.hasExactKeys("type", "text") && part.strictString("text") != null
+            "text" ->
+                (part.hasExactKeys("type", "text") || boundedTextVariantShape(part)) &&
+                    part.strictString("text") != null
             "components" -> {
                 val components = part.arr("components")
                 part.hasExactKeys("type", "components") &&

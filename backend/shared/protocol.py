@@ -1495,6 +1495,15 @@ class ConversationCommitReady(Message):
         return frame
 
 
+# Feature 066 T023 (deliberate cross-client contract extension): the closed
+# set of variants a canonical text part may carry. A lifted caption keeps its
+# weight through commit/hydration; every other authoring variant still
+# normalizes away. Mirrored by the web (client.js validateSnapshotShape),
+# Windows (protocol.py), Android (Wire.kt) and Apple (ConversationContinuity)
+# decoders and documented in specs/060-…/contracts/conversation-continuity.md.
+CANONICAL_TEXT_PART_VARIANTS = frozenset({"caption"})
+
+
 @dataclass
 class ConversationSnapshot(Message):
     """One complete authoritative committed conversation projection.
@@ -1587,8 +1596,14 @@ class ConversationSnapshot(Message):
             raise ProtocolValidationError(f"{prefix} must be an object")
         part_type = part.get("type")
         if part_type == "text":
-            valid = set(part) == {"type", "text"} and isinstance(
-                part.get("text"), str
+            # 066 T023: exactly {type, text} plus an OPTIONAL bounded variant.
+            valid = (
+                set(part) in ({"type", "text"}, {"type", "text", "variant"})
+                and isinstance(part.get("text"), str)
+                and (
+                    "variant" not in part
+                    or part.get("variant") in CANONICAL_TEXT_PART_VARIANTS
+                )
             )
         elif part_type == "components":
             valid = set(part) == {"type", "components"} and isinstance(

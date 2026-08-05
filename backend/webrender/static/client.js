@@ -3773,9 +3773,14 @@
         if (!part || typeof part !== "object" || Array.isArray(part)) throw new Error("snapshot_part");
         if (part.type === "text") {
           // 066: an assistant text part may carry the transport-only web
-          // rendition envelope (2 keys — never the components' workspace key).
-          if ((!exactKeys(part, ["text", "type"]) && !exactKeys(part, ["_presentation", "text", "type"]))
+          // rendition envelope (2 keys — never the components' workspace key)
+          // and, per the T023 contract extension, an optional BOUNDED variant
+          // (mirrors shared/protocol.py CANONICAL_TEXT_PART_VARIANTS).
+          if ((!exactKeys(part, ["text", "type"]) && !exactKeys(part, ["_presentation", "text", "type"])
+              && !exactKeys(part, ["text", "type", "variant"])
+              && !exactKeys(part, ["_presentation", "text", "type", "variant"]))
               || typeof part.text !== "string") throw new Error("snapshot_text_part");
+          if ("variant" in part && part.variant !== "caption") throw new Error("snapshot_text_variant");
           if (part._presentation && (!exactKeys(part._presentation, ["html", "target"])
               || part._presentation.target !== "web"
               || typeof part._presentation.html !== "string" || !part._presentation.html)) {

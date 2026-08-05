@@ -189,6 +189,33 @@ class RuntimeReliabilityWireTest {
     }
 
     @Test
+    fun textPartVariantIsBoundedToTheCanonicalSet() {
+        // 066 T023 contract extension: a text part may carry an OPTIONAL
+        // variant from the closed set {"caption"}; anything else fails closed.
+        fun withTextPart(part: String): JsonObject {
+            val transcript =
+                JsonArray(
+                    listOf(
+                        objectFrom(
+                            """{"message_id":"1","role":"assistant","created_at":"2026-07-15T18:41:00Z","parts":[$part],"attachments":[]}""",
+                        ),
+                    ),
+                )
+            return snapshot().with("transcript", transcript)
+        }
+
+        assertIs<Inbound.ConversationSnapshot>(
+            Wire.decode(withTextPart("""{"type":"text","text":"As of July","variant":"caption"}""")),
+        )
+        assertIs<Inbound.Unknown>(
+            Wire.decode(withTextPart("""{"type":"text","text":"words","variant":"h1"}""")),
+        )
+        assertIs<Inbound.Unknown>(
+            Wire.decode(withTextPart("""{"type":"text","text":"words","weight":"caption"}""")),
+        )
+    }
+
+    @Test
     fun decodesOperationStatusWithExplicitNullsAndTerminalError() {
         val active = assertIs<Inbound.OperationStatus>(Wire.decode(operation()))
 
