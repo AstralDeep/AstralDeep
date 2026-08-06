@@ -547,6 +547,7 @@ class ToolDiagnosticStatus(str, Enum):
     PERMISSION_DENIED = "permission_denied"
     SECURITY_BLOCKED = "security_blocked"
     UNKNOWN_TOOL = "unknown_tool"
+    NO_REGISTERED_MACHINE = "no_registered_machine"
 
 
 class ToolDiagnostic(NamedTuple):
@@ -14609,8 +14610,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         Mirrors the filter stack in handle_chat_message's tool-list build
         (orchestrator.py around lines 2080–2140). Priority order — first match wins:
-        UNKNOWN_TOOL > AGENT_DISABLED_BY_USER > SECURITY_BLOCKED > PERMISSION_DENIED >
-        DISABLED_IN_PICKER > ENABLED.
+        UNKNOWN_TOOL > AGENT_DISABLED_BY_USER > SECURITY_BLOCKED >
+        NO_REGISTERED_MACHINE > PERMISSION_DENIED > DISABLED_IN_PICKER > ENABLED.
         """
         agent_id = self._find_tool_owner(tool_name)
         if not agent_id:
@@ -14649,6 +14650,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 agent_display_name=agent_display,
                 reason=flag.get("reason"),
             )
+
+        # 2b) Remote-compute verbs hidden while the user owns zero machines
+        # (mirrors tool_visibility's no_registered_machine exclusion; a chat
+        # transcript can still tempt the model into re-emitting one).
+        if user_id and agent_id == "remote-compute-1" and tool_name != "list_machines":
+            from orchestrator import remote_machines
+
+            try:
+                machineless = not remote_machines.owns_any_machine(
+                    self.history.db, user_id
+                )
+            except Exception:  # pragma: no cover — defensive
+                machineless = False
+            if machineless:
+                return ToolDiagnostic(
+                    status=ToolDiagnosticStatus.NO_REGISTERED_MACHINE,
+                    agent_id=agent_id,
+                    agent_display_name=agent_display,
+                    reason=None,
+                )
 
         # 3) Permission / scope denial.
         if user_id:
@@ -14754,6 +14775,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 ),
                 variant="error",
                 title="Unknown tool",
+            )
+        if diag.status is ToolDiagnosticStatus.NO_REGISTERED_MACHINE:
+            return Alert(
+                message=(
+                    f"The assistant tried to use the **{tool_name}** tool "
+                    f"(from the **{agent_label}** agent), but you have no "
+                    f"registered remote machine for it to act on. Add one "
+                    f"under Settings → Remote machines, then ask again."
+                ),
+                variant="warning",
+                title="No registered machine",
             )
         # ENABLED — only reachable from the leak path (not from the dispatch
         # gate, which short-circuits before this is rendered).

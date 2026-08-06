@@ -121,6 +121,7 @@ _VOICE_EVENT_REASONS = frozenset(
         "capacity_exhausted",
         "chat_unavailable",
         "feature_disabled",
+        "hallucination_suppressed",
         "idle_expired",
         "internal_error",
         "lease_expired",

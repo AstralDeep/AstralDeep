@@ -147,12 +147,14 @@ through the normal AstralDeep acknowledgement/snapshot path after server accepta
    `recognition_failed` frame with only that exact `client_turn_id` and an allowlisted safe reason.
    For `asr_failed`, `empty_transcript`, and `invalid_asr_result`, the authenticated coordinator
    resolves the existing turn binding and atomically abandons the still-`recognizing` row as
-   `malformed_final`/`explicit_user_retry`. `self_speech` is a distinct internal suppression
-   disposition: after the same owner/session/generation/grant/assignment validation, the coordinator
-   abandons the still-`recognizing` row using the existing durable `malformed_final` classification
-   with retry policy `none`, records only the content-free `self_speech_suppressed` audit reason,
-   emits no user-visible rejection/retry frame, and never accepts a transcript proof or dispatches
-   work.
+   `malformed_final`/`explicit_user_retry`. `self_speech` and `hallucinated_transcript` (a stock
+   ASR hallucination minted from speech-free audio, refused only when the canonical text matches a
+   bounded stock-phrase set AND the utterance carried under 256 ms of voiced evidence) are distinct
+   internal suppression dispositions: after the same owner/session/generation/grant/assignment
+   validation, the coordinator abandons the still-`recognizing` row using the existing durable
+   `malformed_final` classification with retry policy `none`, records only the content-free
+   `self_speech_suppressed` / `hallucination_suppressed` audit reason, emits no user-visible
+   rejection/retry frame, and never accepts a transcript proof or dispatches work.
    Replayed, unbound, stale-generation, and cross-assignment failures have no side effect.
 4. The worker canonicalizes the final (`CRLF` to `LF`, Unicode NFC, outer whitespace removed;
    NUL/other controls except tab/newline rejected), computes lowercase SHA-256 over its UTF-8 bytes,

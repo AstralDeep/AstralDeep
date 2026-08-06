@@ -117,6 +117,29 @@ VAD_END_SILENCE_FRAMES = _endpoint_silence_frames(
 # closes the final word cleanly.
 ASR_TAIL_SILENCE_FRAMES = 4
 MAX_UTTERANCE_FRAMES = 1_875
+# Whisper is documented to mint stock phrases from speech-free audio ("Thank
+# you.", "Obrigado.", ... — both observed live 2026-08-05 entering chat as
+# genuine user turns). Refusal requires a CONJUNCTION: the canonical text is
+# one of these normalized stock phrases AND the utterance carried fewer
+# at-or-above-VAD_THRESHOLD frames than the shortest of them can physically
+# be spoken in (8 frames = 256 ms at the 32 ms frame size). Neither half is
+# safe alone: the phrase list would eat a genuine "thank you", the duration
+# floor would eat genuine short commands ("stop", "yes").
+ASR_HALLUCINATION_MIN_VOICED_FRAMES = 8
+_ASR_STOCK_HALLUCINATIONS = frozenset(
+    {
+        "thankyou",
+        "thankyouverymuch",
+        "thanksforwatching",
+        "thankyouforwatching",
+        "thankyousomuchforwatching",
+        "obrigado",
+        "obrigada",
+        "you",
+        "bye",
+        "goodbye",
+    }
+)
 MAX_RETAINED_FINALS = 4
 MAX_RETAINED_FINAL_BYTES = 48 * 1024
 MAX_SEEN_ANNOUNCEMENTS = 64
@@ -651,6 +674,10 @@ class _RecognitionBinding:
     submission_id: str | None = None
     request_generation: str | None = None
     echo_fingerprints: frozenset[bytes] = frozenset()
+    # At-or-above-VAD_THRESHOLD frames observed across the whole utterance,
+    # stamped at finalize. Content-free speech-evidence floor for the stock
+    # hallucination refusal in _recognition_complete.
+    voiced_frames: int = 0
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -694,6 +721,14 @@ class _SpeechMeta:
     duration_ms: int | None = None
 
 
+def _normalized_speech(canonical: str) -> str:
+    """Punctuation/case-insensitive speech form shared by echo + stock checks."""
+
+    return "".join(
+        character for character in canonical.casefold() if character.isalnum()
+    )
+
+
 def _speech_fingerprint(text: str) -> bytes | None:
     """Hash a punctuation/case-insensitive speech form without retaining text."""
 
@@ -701,9 +736,7 @@ def _speech_fingerprint(text: str) -> bytes | None:
         canonical = canonical_transcript(text)
     except TranscriptProofError:
         return None
-    normalized = "".join(
-        character for character in canonical.casefold() if character.isalnum()
-    )
+    normalized = _normalized_speech(canonical)
     if not normalized:
         return None
     return hashlib.sha256(normalized.encode("utf-8", errors="strict")).digest()
@@ -830,6 +863,7 @@ class DirectRtcSession(BoundControlSession):
         self._reconnecting = False
         self._utterance = bytearray()
         self._candidate_speech_frames = 0
+        self._utterance_voiced_frames = 0
         self._utterance_active = False
         self._silence_frames = 0
         self._vad_preroll: deque[bytes] = deque(maxlen=VAD_PREROLL_FRAMES)
@@ -1886,6 +1920,9 @@ class DirectRtcSession(BoundControlSession):
                 if len(self._recognition_bindings) >= MAX_RETAINED_FINALS:
                     raise RtcSessionError("transcript_buffer_full")
                 self._utterance_active = True
+                # Voiced evidence accumulated during candidacy carries into
+                # the utterance; the active branch below keeps counting.
+                self._utterance_voiced_frames = self._candidate_speech_frames
                 # Seed the turn from the pre-roll ring: it is a superset of
                 # the candidate frames plus the onset audio the candidate
                 # logic discarded on sub-release dips.
@@ -1921,6 +1958,8 @@ class DirectRtcSession(BoundControlSession):
                 self._candidate_speech_frames = 0
             return
         self._utterance.extend(pcm)
+        if probability >= VAD_THRESHOLD:
+            self._utterance_voiced_frames += 1
         if probability >= VAD_RELEASE_THRESHOLD:
             self._silence_frames = 0
         else:
@@ -1939,7 +1978,10 @@ class DirectRtcSession(BoundControlSession):
         self._trim_trailing_silence()
         pcm = bytes(self._utterance)
         self._utterance.clear()
+        if self._recognition_binding is not None:
+            self._recognition_binding.voiced_frames = self._utterance_voiced_frames
         self._candidate_speech_frames = 0
+        self._utterance_voiced_frames = 0
         self._utterance_active = False
         self._silence_frames = 0
         self._vad_preroll.clear()
@@ -2027,6 +2069,22 @@ class DirectRtcSession(BoundControlSession):
                             SessionNotice(
                                 "recognition_failed",
                                 reason="self_speech",
+                                metadata={"client_turn_id": recognition.client_turn_id},
+                            )
+                        )
+                        self._clear_retained_final(recognition.client_turn_id)
+                    elif (
+                        _normalized_speech(canonical) in _ASR_STOCK_HALLUCINATIONS
+                        and recognition.voiced_frames
+                        < ASR_HALLUCINATION_MIN_VOICED_FRAMES
+                    ):
+                        # Stock phrase minted from speech-free audio: refuse
+                        # it like self_speech (silently, no retry guidance)
+                        # instead of submitting a turn the user never spoke.
+                        await self._emit(
+                            SessionNotice(
+                                "recognition_failed",
+                                reason="hallucinated_transcript",
                                 metadata={"client_turn_id": recognition.client_turn_id},
                             )
                         )
@@ -2238,6 +2296,7 @@ class DirectRtcSession(BoundControlSession):
         had_audio = bool(self._utterance)
         self._utterance.clear()
         self._candidate_speech_frames = 0
+        self._utterance_voiced_frames = 0
         self._utterance_active = False
         self._silence_frames = 0
         self._vad_preroll.clear()

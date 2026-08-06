@@ -1685,6 +1685,7 @@ class PoolClient:
             if notice.reason not in {
                 "asr_failed",
                 "empty_transcript",
+                "hallucinated_transcript",
                 "invalid_asr_result",
                 "self_speech",
             }:

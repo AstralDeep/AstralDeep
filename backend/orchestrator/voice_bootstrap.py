@@ -29,6 +29,7 @@ from orchestrator.voice_coordinator import (
     CoordinatorClock,
     HANDOFF_BUDGET_SECONDS,
     PlayoutCompletion,
+    SILENT_RECOGNITION_REASONS,
     SpeechCadenceScheduler,
     StaleFence,
     VoiceCoordinator,
@@ -174,6 +175,7 @@ class _SessionAnnouncementRunner:
         self._active_turn_id: str | None = None
         self._stop_requested = False
         self._closing = False
+        self._observed_handoff_degrades = 0
         self.task = asyncio.create_task(
             self._run(),
             name=f"voice-announcements-{session_id}",
@@ -215,6 +217,18 @@ class _SessionAnnouncementRunner:
                 if self._closing:
                     return
                 decision = self._scheduler.next_decision()
+                degrades = self._scheduler.handoff_degrades
+                if degrades != self._observed_handoff_degrades:
+                    # Content-free telemetry for the degrade path: pre-fix,
+                    # the same condition raised stream_handoff_budget_exceeded
+                    # and was the signal used to diagnose the 2026-08-05 live
+                    # failure. Keep the recurrence visible.
+                    logger.warning(
+                        "voice_cadence_handoff_degraded total=%d deferred_quanta=%d",
+                        degrades,
+                        self._scheduler.deferred_quanta,
+                    )
+                    self._observed_handoff_degrades = degrades
                 if decision is not None:
                     await self._execute_decision(decision)
                     continue
@@ -1143,14 +1157,18 @@ class VoiceServices:
                 await self._apply_worker_idle_state(frame, listening=False)
                 await self._record_frame_event(frame, "turn", "recognizing")
             elif frame_type == "recognition_failed":
-                self_speech = frame.get("reason") == "self_speech"
-                if self_speech:
-                    logger.info("voice_self_speech_suppressed reason=self_speech")
+                failure_reason = frame.get("reason")
+                silent = failure_reason in SILENT_RECOGNITION_REASONS
+                if silent:
+                    logger.info(
+                        "voice_recognition_suppressed reason=%s",
+                        failure_reason,
+                    )
                     await self.coordinator.suppress_self_speech(frame)
                 else:
                     logger.warning(
                         "voice_recognition_failed reason=%s",
-                        frame.get("reason", "invalid_asr_result"),
+                        failure_reason or "invalid_asr_result",
                     )
                     rejection = await self.coordinator.reject_recognition_failed(frame)
                     self.schedule_preacceptance_rejection(
@@ -1158,15 +1176,17 @@ class VoiceServices:
                         reason="malformed_final",
                     )
                 await self._apply_worker_idle_state(frame, listening=False)
+                if failure_reason == "self_speech":
+                    event_reason = "self_speech_suppressed"
+                elif silent:
+                    event_reason = "hallucination_suppressed"
+                else:
+                    event_reason = "speech_unavailable"
                 await self._record_frame_event(
                     frame,
                     "turn",
                     "rejected",
-                    reason=(
-                        "self_speech_suppressed"
-                        if self_speech
-                        else "speech_unavailable"
-                    ),
+                    reason=event_reason,
                 )
             elif frame_type in {
                 "media_state",

@@ -197,8 +197,13 @@ runner reported `stream_handoff_budget_exceeded`. A later turn committed after t
 ended the voice session and correctly emitted no media across that explicit session fence.
 
 The recap repair now treats the 250-ms handoff budget as a maximum source-start latency rather than
-an artificial minimum delay. Reserved recap quanta continue immediately, and a true late handoff
-still fails closed. Successful terminal turn frames carry an optional, exact-turn
+an artificial minimum delay. Reserved recap quanta continue immediately. Since the 2026-08-06
+remediation a missed handoff budget degrades instead of failing closed: the scheduler drops the
+stale ordinary progress quanta (their cadence re-anchors at the miss) and keeps scheduling, so
+terminal, waiting, and acknowledgement announcements are still spoken late rather than lost, and
+`start` no longer re-checks the budget for a quantum whose durable announcement claim is already
+held. The hard `cadence_deadline_exceeded` failure remains for a quantum that misses its
+20-second `CADENCE_HARD_GAP_SECONDS` bound — the genuinely-unusable-stream case. Successful terminal turn frames carry an optional, exact-turn
 `speech_outcome` (`source_finished`, `failed`, or `suppressed`); `source_finished` asserts only
 worker/source completion, never client audibility. Web, Windows, Android, iOS, macOS, and watchOS
 reject the field outside a succeeded turn. Result-only local playout failures are fenced to the

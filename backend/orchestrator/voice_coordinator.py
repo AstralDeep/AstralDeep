@@ -228,8 +228,19 @@ _TRANSCRIPT_REJECTION_REASONS = frozenset(
 )
 _TRANSCRIPT_RETRY_POLICIES = frozenset({"explicit_user_retry", "none"})
 _RECOGNITION_FAILURE_REASONS = frozenset(
-    {"asr_failed", "empty_transcript", "invalid_asr_result", "self_speech"}
+    {
+        "asr_failed",
+        "empty_transcript",
+        "hallucinated_transcript",
+        "invalid_asr_result",
+        "self_speech",
+    }
 )
+# Spurious-audio refusals carry no user intent: assistant playback the worker
+# heard itself (self_speech) and stock ASR hallucinations minted from ambient
+# noise (hallucinated_transcript). Both are durably suppressed with no retry
+# guidance; the retrying rejection path refuses them.
+SILENT_RECOGNITION_REASONS = frozenset({"hallucinated_transcript", "self_speech"})
 
 
 class VoiceCoordinatorError(RuntimeError):
@@ -2809,6 +2820,11 @@ class _CadenceTurn:
     waiting_pending: bool = False
     terminal_pending: bool = False
     terminal_suppressed: bool = False
+    # Consecutive handoff-degrade deferrals since this turn last held the
+    # stream. Bounds starvation: a turn is never deferred twice in a row, so
+    # under a sustained missed-handoff regime its progress quantum speaks
+    # late on the second miss instead of being re-deferred forever.
+    deferrals: int = 0
 
 
 class SpeechCadenceScheduler:
@@ -2836,6 +2852,20 @@ class SpeechCadenceScheduler:
         self._handoff_deadline_at: float | None = None
         self._handoff_enforced = False
         self._failed = False
+        self._handoff_degrades = 0
+        self._deferred_quanta = 0
+
+    @property
+    def handoff_degrades(self) -> int:
+        """Missed-handoff degradations since construction (runner logs deltas)."""
+
+        return self._handoff_degrades
+
+    @property
+    def deferred_quanta(self) -> int:
+        """Stale progress quanta dropped by handoff degradation."""
+
+        return self._deferred_quanta
 
     def add_turn(
         self,
@@ -3009,14 +3039,7 @@ class SpeechCadenceScheduler:
         candidates = self._due_candidates(now)
         if not candidates:
             return None
-        candidate = min(
-            candidates,
-            key=lambda turn: (
-                0 if turn.terminal_pending else 1,
-                turn.latest_start_monotonic,
-                turn.order,
-            ),
-        )
+        candidate = self._select(candidates)
         if now > candidate.latest_start_monotonic + 1e-9:
             self._failed = True
             raise VoiceCoordinatorError("cadence_deadline_exceeded")
@@ -3029,8 +3052,40 @@ class SpeechCadenceScheduler:
                 for turn in candidates
             )
         ):
-            self._failed = True
-            raise VoiceCoordinatorError("stream_handoff_budget_exceeded")
+            # A missed 250 ms stream handoff is a late runner, not an
+            # unusable stream. Degrade instead of latching _failed: stale
+            # ordinary progress quanta are dropped (their cadence re-anchors
+            # at now) while terminal, waiting, and acknowledgement
+            # announcements stay due and are spoken late. Hard failure
+            # remains reserved for the CADENCE_HARD_GAP_SECONDS breach
+            # checked above.
+            deadline = self._handoff_deadline_at
+            self._handoff_deadline_at = None
+            self._handoff_enforced = False
+            self._handoff_degrades += 1
+            for turn in candidates:
+                if (
+                    turn.target_start_monotonic <= deadline
+                    and not turn.terminal_pending
+                    and not turn.waiting_pending
+                    and turn.snapshot.acknowledgement_started
+                    and turn.snapshot.lifecycle == "processing"
+                    # Never defer the same turn twice in a row: on the second
+                    # consecutive miss its progress quantum stays due and is
+                    # spoken late, bounding starvation under a sustained
+                    # missed-handoff regime.
+                    and turn.deferrals == 0
+                ):
+                    self._defer_cadence(turn, now)
+                    turn.deferrals += 1
+                    self._deferred_quanta += 1
+            candidates = self._due_candidates(now)
+            if not candidates:
+                return None
+            candidate = self._select(candidates)
+            if now > candidate.latest_start_monotonic + 1e-9:
+                self._failed = True
+                raise VoiceCoordinatorError("cadence_deadline_exceeded")
         decision = self._decision(candidate)
         other_deadlines = [
             item.latest_start_monotonic for item in candidates if item is not candidate
@@ -3055,14 +3110,13 @@ class SpeechCadenceScheduler:
         if now > decision.latest_start_monotonic + 1e-9:
             self._failed = True
             raise VoiceCoordinatorError("cadence_deadline_exceeded")
-        if (
-            self._handoff_enforced
-            and self._handoff_deadline_at is not None
-            and now > self._handoff_deadline_at + 1e-9
-            and decision.target_start_monotonic <= self._handoff_deadline_at
-        ):
-            self._failed = True
-            raise VoiceCoordinatorError("stream_handoff_budget_exceeded")
+        # No handoff-budget re-check here: reservation/preparation latency
+        # between offer and start can consume the stream-switch budget, but
+        # the quantum was selected moments ago and is still correct — and its
+        # durable announcement claim is already held — so it is spoken late
+        # rather than failing every later announcement including the
+        # terminal. The genuinely-unusable bound stays the latest-start
+        # check above.
         turn = self._turn(decision.turn_id)
         snapshot = turn.snapshot
         lifecycle = snapshot.lifecycle
@@ -3083,6 +3137,7 @@ class SpeechCadenceScheduler:
             turn.waiting_pending = False
         if decision.terminal:
             turn.terminal_pending = False
+        turn.deferrals = 0
         self._stream = decision
         self._offered = None
         self._handoff_deadline_at = None
@@ -3293,6 +3348,28 @@ class SpeechCadenceScheduler:
                 )
             )
         ]
+
+    @staticmethod
+    def _select(candidates: list[_CadenceTurn]) -> _CadenceTurn:
+        return min(
+            candidates,
+            key=lambda turn: (
+                0 if turn.terminal_pending else 1,
+                turn.latest_start_monotonic,
+                turn.order,
+            ),
+        )
+
+    def _defer_cadence(self, turn: _CadenceTurn, now: float) -> None:
+        """Drop one stale ordinary progress quantum by re-anchoring at now."""
+
+        turn.target_start_monotonic = now + CADENCE_TARGET_SECONDS
+        turn.latest_start_monotonic = now + CADENCE_HARD_GAP_SECONDS
+        turn.snapshot = replace(
+            turn.snapshot,
+            next_due_at=self._clock.utcnow()
+            + timedelta(seconds=CADENCE_TARGET_SECONDS),
+        )
 
     def _cancel_offer(self, turn_id: str) -> None:
         if self._offered is not None and self._offered.turn_id == turn_id:
@@ -4488,7 +4565,9 @@ class VoiceCoordinator:
             "invalid_client_turn_id",
             ControlProtocolError,
         )
-        if frame.get("reason") not in _RECOGNITION_FAILURE_REASONS - {"self_speech"}:
+        if frame.get("reason") not in (
+            _RECOGNITION_FAILURE_REASONS - SILENT_RECOGNITION_REASONS
+        ):
             raise ControlProtocolError("invalid_recognition_failure_reason")
         binding = await self.worker_pool.current_recognition_binding(
             session_id=session_id,
@@ -4552,7 +4631,7 @@ class VoiceCoordinator:
             "invalid_client_turn_id",
             ControlProtocolError,
         )
-        if frame.get("reason") != "self_speech":
+        if frame.get("reason") not in SILENT_RECOGNITION_REASONS:
             raise ControlProtocolError("invalid_recognition_failure_reason")
         binding = await self.worker_pool.current_recognition_binding(
             session_id=session_id,

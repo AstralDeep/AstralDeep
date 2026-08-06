@@ -1145,15 +1145,24 @@ async def test_authenticated_recognition_failure_is_durably_rejected(
 
 
 @pytest.mark.asyncio
-async def test_self_speech_is_durably_abandoned_without_retry_guidance(
+@pytest.mark.parametrize(
+    ("failure_reason", "metric_reason"),
+    [
+        ("self_speech", "self_speech_suppressed"),
+        ("hallucinated_transcript", "hallucination_suppressed"),
+    ],
+)
+async def test_silent_recognition_failures_are_abandoned_without_retry_guidance(
     monkeypatch: pytest.MonkeyPatch,
+    failure_reason: str,
+    metric_reason: str,
 ) -> None:
     frame = {
         "type": "recognition_failed",
         "session_id": "00000000-0000-4000-8000-000000000051",
         "generation": 1,
         "client_turn_id": "00000000-0000-4000-8000-000000000052",
-        "reason": "self_speech",
+        "reason": failure_reason,
     }
     rejected_turn = _voice_turn(
         session_id=frame["session_id"],
@@ -1182,7 +1191,10 @@ async def test_self_speech_is_durably_abandoned_without_retry_guidance(
             return SimpleNamespace(turn=rejected_turn)
 
         async def reject_recognition_failed(self, _received):
-            raise AssertionError("self speech must not use the retrying rejection path")
+            raise AssertionError(
+                "silent recognition failures must not use the retrying "
+                "rejection path"
+            )
 
     class Repository:
         def set_true_idle(self, **kwargs):
@@ -1228,7 +1240,7 @@ async def test_self_speech_is_durably_abandoned_without_retry_guidance(
     assert any(
         sample.name == "voice_turn_total"
         and sample.labels["result_code"] == "rejected"
-        and sample.labels["voice_reason"] == "self_speech_suppressed"
+        and sample.labels["voice_reason"] == metric_reason
         for sample in metrics.snapshot()
     )
 
