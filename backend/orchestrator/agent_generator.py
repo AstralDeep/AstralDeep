@@ -562,10 +562,16 @@ def byo_import_violations(code: str) -> List[str]:
 
 _SECURITY_RULES_COMMON = """- Do NOT use `eval()`, `exec()`, `compile()`, or `__import__()`
 - Do NOT use `subprocess`, `os.system`, `os.popen`, or any shell execution
-- Do NOT access `os.environ` for secrets or sensitive keys
+- Do NOT touch `os.environ` or `os.getenv` AT ALL — not even to read a config
+  value. Any reference to them is refused and your code is never run. Take
+  configuration from the tool's own input schema instead.
+- Do NOT use `globals()`, `locals()`, `setattr()`, or `delattr()`
 - Do NOT use `pickle`, `marshal`, or `yaml.load` (unsafe deserialization)
 - Do NOT write/read files outside of returning data
-- Do NOT use `ctypes`, `cffi`, or native code execution"""
+- Do NOT use `ctypes`, `cffi`, or native code execution
+
+Code that breaks any of these rules is REFUSED by a static analyzer BEFORE it
+is ever imported or run, so a violation is a dead end, not a warning."""
 
 #: Server-hosted (027) image: requests/httpx ARE installed.
 _SECURITY_RULES_BACKEND = f"""{_SECURITY_RULES_COMMON}

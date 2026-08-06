@@ -20,6 +20,25 @@ CHARS_PER_TOKEN = 4
 # Default budget: 80% of model context window (in tokens).
 DEFAULT_CONTEXT_BUDGET_RATIO = 0.80
 
+# Floor for the history budget as a fraction of the context window. The
+# tool-definitions overhead can exceed the whole budget on a small-window
+# model (the built-in catalog is ~16.3k tokens; gpt-4's 80% budget is
+# ~6.5k), and an unfloored subtraction clamps to zero — which would fire
+# compaction on every turn of every chat, including a ten-token one, and
+# summarizing history cannot shrink a tool block anyway. Below this floor
+# the honest answer is "the prompt overhead is the problem", not "summarize
+# harder".
+MIN_HISTORY_BUDGET_RATIO = 0.25
+
+#: Prefix of the system message this module injects, so a later pass can
+#: recognize its own output and refuse to re-summarize a summary.
+SUMMARY_PREFIX = "[Summary of prior conversation]"
+
+#: The UI-component recovery retry (orchestrator.py) appends a synthetic
+#: ``user`` message. It is machinery, not the human's question, and must not
+#: be mistaken for the turn's real user turn.
+_SYNTHETIC_USER_PREFIX = "SYSTEM RECOVERY ERROR:"
+
 # Known context window sizes by model family keyword.
 _MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
     "gpt-4o": 128_000,
@@ -53,6 +72,23 @@ def estimate_tokens(messages: List[Dict]) -> int:
             # ChatCompletionMessage object — serialize it
             total_chars += len(str(msg))
     return total_chars // CHARS_PER_TOKEN
+
+
+def estimate_overhead_tokens(tools_desc: List[Dict] | None) -> int:
+    """Estimate the per-call prompt cost of the tool-definitions block.
+
+    Tool definitions ride a sibling kwarg, never ``messages``, yet the chat
+    template renders them into the same context window (~16.3k tokens for the
+    full built-in catalog, measured 2026-08-06). Without this term the budget
+    check is blind to the largest single component of the prompt and fires
+    far too late.
+    """
+    if not tools_desc:
+        return 0
+    try:
+        return len(json.dumps(tools_desc, default=str)) // CHARS_PER_TOKEN
+    except (TypeError, ValueError):
+        return 0
 
 
 def get_context_window(model_name: str) -> int:
@@ -102,62 +138,128 @@ def _identify_turns(messages: List[Dict]) -> List[List[int]]:
     return turns
 
 
+def _role_and_content(msg) -> tuple:
+    if isinstance(msg, dict):
+        return msg.get("role", ""), msg.get("content", "")
+    return getattr(msg, "role", ""), getattr(msg, "content", "")
+
+
+def _protected_indices(messages: List[Dict]) -> set:
+    """Indices that must survive compaction verbatim, in place.
+
+    The current turn's user question, plus any trailing system addenda that
+    were appended directly after it (the datamarking sentinel, the learned
+    recipe hint). ``messages[-1]`` is NOT the user turn: those addenda follow
+    it, and — because compaction runs once per ReAct iteration, not once per
+    chat turn — the in-flight assistant/tool trace follows them. That trace
+    is the one unbounded region in the prompt, so it stays COMPACTABLE;
+    only the question itself is pinned.
+    """
+    protected: set = set()
+    for index in range(len(messages) - 1, 0, -1):
+        role, content = _role_and_content(messages[index])
+        if role != "user":
+            continue
+        if isinstance(content, str) and content.startswith(_SYNTHETIC_USER_PREFIX):
+            # Recovery-retry machinery, not the human's question.
+            continue
+        protected.add(index)
+        for follower in range(index + 1, len(messages)):
+            if _role_and_content(messages[follower])[0] != "system":
+                break
+            protected.add(follower)
+        break
+    return protected
+
+
+def _is_summary(msg) -> bool:
+    role, content = _role_and_content(msg)
+    return role == "system" and isinstance(content, str) and content.startswith(
+        SUMMARY_PREFIX
+    )
+
+
 async def compact_messages(
     messages: List[Dict],
     model_name: str,
     llm_call: Callable,
     budget_ratio: float = DEFAULT_CONTEXT_BUDGET_RATIO,
     min_recent_turns: int = 4,
+    overhead_tokens: int = 0,
 ) -> Tuple[List[Dict], bool]:
     """Compact message history if it exceeds the token budget.
 
     Args:
-        messages: Full message list (system + history + current user).
-        model_name: Model identifier for context window lookup.
-        llm_call: Async callable(messages, tools_desc=None) -> (response, usage).
-                  Used to generate the summary via the LLM.
+        messages: Full message list (system + history + current user +
+                  optional trailing system addenda).
+        model_name: Model identifier for context window lookup — the model
+                  that will SERVE the chat call, since its window is what the
+                  prompt must fit into.
+        llm_call: Async callable(websocket, messages) -> (response, usage);
+                  called with ``websocket=None`` so the summary runs on the
+                  system credential (feature 054 FR-019).
         budget_ratio: Fraction of context window to use as budget.
         min_recent_turns: Minimum number of recent turns to always preserve.
+        overhead_tokens: Per-call prompt cost that rides OUTSIDE ``messages``
+                  (the tool-definitions block — see estimate_overhead_tokens).
+                  Subtracted from the budget so the check sees the real
+                  prompt size.
 
     Returns:
         (possibly_compacted_messages, was_compacted)
     """
+    if not messages:
+        return messages, False
+
     context_window = get_context_window(model_name)
-    budget_tokens = int(context_window * budget_ratio)
+    floor_tokens = int(context_window * MIN_HISTORY_BUDGET_RATIO)
+    budget_tokens = max(floor_tokens, int(context_window * budget_ratio) - overhead_tokens)
     current_tokens = estimate_tokens(messages)
 
     if current_tokens <= budget_tokens:
         return messages, False
 
-    logger.info(
-        f"Compaction triggered: {current_tokens} tokens > {budget_tokens} budget "
-        f"(model={model_name}, window={context_window})"
-    )
-
-    # Identify the system prompt (always index 0) and the current user message (always last)
-    system_msg = messages[0] if messages else None
-    current_user_msg = messages[-1] if messages else None
-
-    # Everything in between is history
-    history = messages[1:-1] if len(messages) > 2 else []
-    if not history:
+    # Everything except the system prompt and the pinned user question is
+    # compactable — including the in-flight assistant/tool trace, which is
+    # the only unbounded region and therefore the only one worth reclaiming.
+    protected = _protected_indices(messages)
+    candidate_indices = [
+        index for index in range(1, len(messages)) if index not in protected
+    ]
+    if not candidate_indices:
         return messages, False
 
-    # Group into turns
-    turns = _identify_turns(history)
+    candidates = [messages[index] for index in candidate_indices]
+    turns = _identify_turns(candidates)
 
     # Preserve the most recent N turns
     if len(turns) <= min_recent_turns:
         return messages, False
 
     compact_turn_count = len(turns) - min_recent_turns
-    compact_indices = set()
+    compact_positions = set()
     for turn in turns[:compact_turn_count]:
-        compact_indices.update(turn)
+        compact_positions.update(turn)
 
-    # Extract messages to summarize
-    to_summarize = [history[i] for i in sorted(compact_indices)]
-    preserved = [history[i] for i in range(len(history)) if i not in compact_indices]
+    to_summarize = [candidates[position] for position in sorted(compact_positions)]
+
+    # Refuse to re-summarize our own summary: with nothing else eligible,
+    # each pass would burn a system-credential LLM call, replace one summary
+    # with another, and leave the token count unchanged — every iteration,
+    # forever.
+    if all(_is_summary(msg) for msg in to_summarize):
+        return messages, False
+
+    logger.info(
+        f"Compaction triggered: {current_tokens} tokens > {budget_tokens} budget "
+        f"(model={model_name}, window={context_window}, "
+        f"overhead={overhead_tokens})"
+    )
+
+    compact_indices = {
+        candidate_indices[position] for position in compact_positions
+    }
+    system_msg = messages[0]
 
     # Build summarization prompt
     summary_input = []
@@ -202,15 +304,33 @@ async def compact_messages(
         # Fallback: just drop the old messages with a note
         summary_text = f"[{compact_turn_count} earlier conversation turns were removed to fit context window]"
 
-    # Build compacted message list
+    # Build compacted message list. Kept messages stay in their ORIGINAL
+    # order, so the pinned user question keeps its place relative to the
+    # in-flight trace and every assistant/tool pair stays adjacent (turns
+    # are compacted whole, so a tool result can never be orphaned from the
+    # tool_calls message it answers).
     summary_msg = {
         "role": "system",
-        "content": f"[Summary of prior conversation]:\n{summary_text}",
+        "content": f"{SUMMARY_PREFIX}:\n{summary_text}",
     }
+    kept = [
+        messages[index]
+        for index in range(1, len(messages))
+        if index not in compact_indices
+    ]
 
-    compacted = [system_msg, summary_msg, *preserved, current_user_msg]
+    compacted = [system_msg, summary_msg, *kept]
 
     new_tokens = estimate_tokens(compacted)
+    if new_tokens >= current_tokens:
+        # No progress — the summary cost more than it saved. Keep the
+        # original rather than growing the prompt every iteration.
+        logger.info(
+            "Compaction made no progress (%d -> %d tokens); keeping original",
+            current_tokens,
+            new_tokens,
+        )
+        return messages, False
     logger.info(
         f"Compaction complete: {current_tokens} → {new_tokens} tokens "
         f"({compact_turn_count} turns summarized, {min_recent_turns} preserved)"

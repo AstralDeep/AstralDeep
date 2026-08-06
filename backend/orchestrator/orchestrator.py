@@ -46,7 +46,7 @@ from orchestrator.tool_permissions import ToolPermissionManager
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
-from orchestrator.compaction import compact_messages
+from orchestrator.compaction import compact_messages, estimate_overhead_tokens
 from orchestrator import context_engineering
 from orchestrator import datamarking
 from orchestrator import model_router
@@ -12716,13 +12716,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # Message compaction: summarize older turns if context budget
                 # exceeded. Feature 054: compaction is a SYSTEM-context helper
                 # by explicit owner decision — llm_call(None, ...) inside
-                # compact_messages resolves the admin system credential; the
-                # model name here is only used for context-window sizing.
+                # compact_messages resolves the admin system credential. The
+                # window is sized on the USER's model (that model serves the
+                # chat call the prompt must fit into), and the budget is
+                # charged for the tool-definitions block, which rides a
+                # sibling kwarg the message estimate can't see (~16.3k tokens
+                # for the full catalog).
                 if flags.is_enabled("message_compaction"):
+                    _user_cfg = await self._llm_store.get(user_id)
                     _sys_cfg = await self._llm_store.get_system()
                     messages, was_compacted = await compact_messages(
-                        messages, getattr(_sys_cfg, "model", None) or "default",
-                        self._call_llm
+                        messages,
+                        getattr(_user_cfg, "model", None)
+                        or getattr(_sys_cfg, "model", None)
+                        or "default",
+                        self._call_llm,
+                        overhead_tokens=estimate_overhead_tokens(tools_desc),
                     )
                     if was_compacted:
                         logger.info("Context compacted before LLM call")

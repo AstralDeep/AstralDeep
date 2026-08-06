@@ -86,6 +86,33 @@ runs only on an eligible user's desktop and is untrusted at the boundary. Full
 enablement, verification, security posture, lifecycle/recovery, compatibility,
 rollback, and desktop-host packaging guidance: **[byo-client-agents.md](byo-client-agents.md)**.
 
+## Server-hosted generated agents (features 027/031) — pre-execution gate
+
+Chat capability gaps (`create_capability`) and uncovered attachment uploads
+(auto-parsers) generate agent code with an LLM and run it on the **server**.
+Codegen is available to every authenticated user — there is no role gate on
+asking for it. What is gated is the *output*:
+
+- A static analyzer (`code_security.CodeSecurityAnalyzer`) inspects every
+  generated file, and any finding at **HIGH or CRITICAL** refuses the code
+  **before it is imported, called, validated, or spawned**. HIGH covers
+  `os.environ`/`os.getenv` access, `globals()`/`setattr()`, and obfuscation
+  patterns; CRITICAL covers `eval`/`exec`, `subprocess`, raw sockets, unsafe
+  deserialization, and class-hierarchy escapes. The same floor re-runs on
+  every LLM auto-fix round and on live-agent revisions, so a second-round
+  payload gets the same treatment as the first.
+- Approval is downstream of that gate, never upstream of it: a refused draft
+  is never executed to produce the card an owner would approve. Auto-created
+  attachment parsers additionally require **admin** approval before going
+  fleet-wide (the uploader cannot self-approve).
+- `FF_SANDBOX_CODEGEN` defaults **ON**: the draft/parser subprocess gets a
+  secret-scrubbed environment (`DATABASE_URL`, `CREDENTIAL_ENCRYPTION_KEY`,
+  provider keys, …) plus rlimits on POSIX. Set it to `false` only to restore
+  the legacy secret-inheriting child, and expect to explain why.
+
+To disable server-side generation entirely, set `FF_AGENTIC_CREATION=false`
+and `FF_ATTACHMENT_AUTOPARSE=false`.
+
 ## TLS / reverse proxy
 
 The service speaks plain HTTP on `:8001` and expects a TLS-terminating

@@ -62,6 +62,20 @@ class SecurityReport:
         }
 
 
+# Severity floor for the pre-execution gate (H4 remediation): generated code
+# whose report reaches ANY of these severities is refused BEFORE it may be
+# imported, called, validated in-process, or Popen'd. HIGH covers os.environ
+# attribute access, globals()/setattr tricks, and obfuscation — the "requires
+# admin review" happens before execution, never after. Codegen itself stays
+# available to every user; only nefarious output is refused.
+EXECUTION_BLOCKING_SEVERITIES = (Severity.CRITICAL, Severity.HIGH)
+
+
+def blocks_execution(report: SecurityReport) -> bool:
+    """True when generated code must be refused before any execution."""
+    return report.max_severity in EXECUTION_BLOCKING_SEVERITIES
+
+
 # ─── Blocklists ──────────────────────────────────────────────────────────
 
 # Modules that are always blocked (critical)
@@ -112,7 +126,13 @@ OBFUSCATION_PATTERNS = [
      "Base64-decoded execution detected"),
     (r"chr\s*\(\s*\d+\s*\)\s*\+\s*chr", Severity.HIGH,
      "Character code concatenation — possible obfuscation"),
-    (r"\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}", Severity.HIGH,
+    # Eight or more hex escapes on one line (separators allowed, so
+    # "\x69" + "\x6d" + ... is still caught). Three was too tight once HIGH
+    # became execution-blocking: a binary-format parser checking a magic
+    # number (b"\x89\x50\x4e\x47" — four escapes) is ordinary, correct code,
+    # and auto-generated parsers are the main thing that writes it. Genuine
+    # obfuscated payloads encode whole statements and run to dozens.
+    (r"(?:\\x[0-9a-fA-F]{2}[^\n]{0,6}?){8,}", Severity.HIGH,
      "Hex-encoded string — possible obfuscation"),
     (r"(?:socket\.(?:bind|listen|connect))", Severity.CRITICAL,
      "Raw socket operation detected"),

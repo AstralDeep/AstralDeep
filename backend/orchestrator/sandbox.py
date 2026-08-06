@@ -23,7 +23,7 @@ constrained here only indirectly (the descriptor cap + the static socket block +
 egress gating); a full seccomp syscall filter is a documented follow-on.
 
 Pure config + a fork-time hook (``resource`` is POSIX-only). Flag
-``FF_SANDBOX_CODEGEN`` (default OFF) gates the wrap, which is additive +
+``FF_SANDBOX_CODEGEN`` (default ON) gates the wrap, which is additive +
 fail-open: off, on a non-POSIX host, or on any setup error, the launch is
 exactly today's. Limits are env-tunable with generous defaults so a normal
 parser agent is unaffected.
@@ -48,8 +48,13 @@ _SECRET_ENV_DENYLIST = (
 
 
 def sandbox_enabled() -> bool:
-    """FF_SANDBOX_CODEGEN feature flag (default OFF)."""
-    return os.getenv("FF_SANDBOX_CODEGEN", "false").strip().lower() in ("1", "true", "yes", "on")
+    """FF_SANDBOX_CODEGEN feature flag (default ON since the H4 remediation).
+
+    The env scrub applies on every platform; the rlimit preexec applies on
+    POSIX only. Set FF_SANDBOX_CODEGEN=false to restore the legacy
+    secret-inheriting child environment.
+    """
+    return os.getenv("FF_SANDBOX_CODEGEN", "true").strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass(frozen=True)
