@@ -16074,15 +16074,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """
         if not agent_id:
             return 0
-        stale = [
+        # Jobs EXECUTING on the dead agent (``_pending_cap_entries`` is keyed by
+        # the executing agent): full teardown — release the slot, release the
+        # initiator's dual-charge if this was a hop, and drop the job context.
+        executing = [
             cid for cid, (_u, a) in list(self._pending_cap_entries.items())
             if a == agent_id
         ]
-        stale += [
-            cid for cid, (_u, a) in list(self._hop_cap_entries.items())
-            if a == agent_id and cid not in stale
-        ]
-        for cap_job_id in stale:
+        for cap_job_id in executing:
             entry = self._pending_cap_entries.pop(cap_job_id, None)
             if entry:
                 try:
@@ -16091,13 +16090,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.debug("cap sweep release failed", exc_info=True)
             await self._release_hop_cap_slot(cap_job_id)
             self._job_context.pop(cap_job_id, None)
-        if stale:
+        # Hops INITIATED by the dead agent whose CALLEE is still alive
+        # (``_hop_cap_entries`` is keyed by the initiating agent): release only
+        # the initiator's dual-charged slot. Popping ``_pending_cap_entries`` or
+        # ``_job_context`` here would tear down a job still running on a live
+        # agent — double-releasing its cap slot and stranding its terminal
+        # ToolProgress so the result is never finalized into the chat.
+        initiated = [
+            cid for cid, (_u, a) in list(self._hop_cap_entries.items())
+            if a == agent_id and cid not in executing
+        ]
+        for cap_job_id in initiated:
+            await self._release_hop_cap_slot(cap_job_id)
+        swept = len(executing) + len(initiated)
+        if swept:
             logger.warning(
                 "Released %d orphaned concurrency slot(s) for disconnected agent %s",
-                len(stale),
+                swept,
                 agent_id,
             )
-        return len(stale)
+        return swept
 
     async def _execute_with_retry_audited(self, websocket, agent_id, tool_name, args, chat_id=None, user_id=None):
         """Dispatch a tool with the SAME ToolDispatchAudit start/end events,
@@ -20671,9 +20683,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "default-src 'self'; "
                 f"script-src 'self' 'nonce-{nonce}'; "
                 "style-src 'self' 'unsafe-inline'; "
-                "img-src 'self' data: blob:; "
-                "media-src 'self' data: blob:; "
-                "connect-src 'self' ws: wss:; "
+                # https: matches webrender.safe_url, which admits http(s):// for
+                # the image/audio primitives; without it agent-rendered remote
+                # images/audio silently fail to load in the web shell while native
+                # clients (no CSP) show them. http:// is omitted — it is
+                # mixed-content-blocked on this https origin anyway.
+                "img-src 'self' data: blob: https:; "
+                "media-src 'self' data: blob: https:; "
+                # 'self' already covers the app's own ws://and wss:// socket;
+                # the bare ws:/wss: schemes matched ANY host, which would let an
+                # injected script exfiltrate the page-embedded access token over
+                # a WebSocket — the exact channel this CSP exists to close.
+                "connect-src 'self'; "
                 "font-src 'self'; "
                 "object-src 'none'; "
                 "base-uri 'none'; "

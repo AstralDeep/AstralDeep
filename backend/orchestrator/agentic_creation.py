@@ -646,15 +646,20 @@ def _stage_revision_code(lifecycle, rev, live_row, rev_dir, new_code):
     tools) could run — the H4 pre-execution contract.
     """
 
+    # Gate BEFORE writing (H4): flagged code must never touch the agents tree
+    # that discovery/start scans. The generate_code path asserts exactly this
+    # (its test checks the tools file does not exist on a block); the revision
+    # path must hold the same contract rather than writing first and gating
+    # after.
     compile(new_code, "mcp_tools.py", "exec")
-    os.makedirs(rev_dir, exist_ok=True)
-    with open(os.path.join(rev_dir, "mcp_tools.py"), "w", encoding="utf-8") as stream:
-        stream.write(new_code)
     report = lifecycle.security.analyze(
         new_code, filename=f"{rev['agent_slug']}/mcp_tools.py"
     )
     if blocks_execution(report):
         return report, None
+    os.makedirs(rev_dir, exist_ok=True)
+    with open(os.path.join(rev_dir, "mcp_tools.py"), "w", encoding="utf-8") as stream:
+        stream.write(new_code)
     # Validate the STAGED bytes — the revision slug's own directory. This
     # used to point at the live agent's slug, so the validator imported the
     # unmodified live file and never inspected the staged code at all.

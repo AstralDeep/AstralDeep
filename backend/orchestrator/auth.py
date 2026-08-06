@@ -59,6 +59,10 @@ _TOKEN_FIELDS = (
 )
 _TOKEN_WINDOW_SECONDS = 60
 _TOKEN_MAX_PER_WINDOW = int(os.getenv("AUTH_TOKEN_PROXY_RATE", "20"))
+# Above this many tracked IPs, sweep aged-out keys so the table cannot grow
+# without bound on this unauthenticated endpoint (one key per distinct source IP
+# would otherwise persist for the life of the process).
+_TOKEN_MAX_TRACKED_IPS = 10_000
 _TOKEN_HITS: Dict[str, List[float]] = {}
 
 
@@ -70,6 +74,15 @@ def reset_token_proxy_state() -> None:
 def _check_token_rate(ip: str) -> bool:
     """Fixed-window per-IP limiter, same shape as device_login._check_start_rate."""
     now = time.time()
+    # Bound the table: when it grows past the tracked-IP cap, drop every key
+    # whose newest hit has aged out of the window. Amortized cheap (runs only
+    # when large) and keeps memory proportional to IPs active within the window.
+    if len(_TOKEN_HITS) > _TOKEN_MAX_TRACKED_IPS:
+        for stale_ip in [
+            k for k, ts in list(_TOKEN_HITS.items())
+            if not ts or now - ts[-1] >= _TOKEN_WINDOW_SECONDS
+        ]:
+            _TOKEN_HITS.pop(stale_ip, None)
     hits = [t for t in _TOKEN_HITS.get(ip, []) if now - t < _TOKEN_WINDOW_SECONDS]
     if len(hits) >= _TOKEN_MAX_PER_WINDOW:
         _TOKEN_HITS[ip] = hits

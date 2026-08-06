@@ -39,11 +39,31 @@ logger = logging.getLogger("orchestrator.sandbox")
 
 #: Secrets a draft/parser agent never needs — scrubbed from the child env so
 #: generated code cannot read them from ``os.environ``. ``AGENT_API_KEY`` is KEPT
-#: (the agent framework needs it to register with the orchestrator).
+#: (the agent framework needs it to register with the orchestrator), and the
+#: ``DB_*`` connection vars are KEPT because a parser agent resolves its
+#: attachment through ``shared.database`` (``resolve_attachment_path``); scrubbing
+#: them would break the very file read the sandbox exists to run. Names here must
+#: be the exact env keys the code reads — an env key that is never set (a typo or
+#: a renamed secret) protects nothing, so this list is verified against the
+#: producers (``credential_manager``/``session_store``/``web_auth``/etc.).
 _SECRET_ENV_DENYLIST = (
-    "OPENAI_API_KEY", "OPENAI_BASE_URL", "DATABASE_URL", "MEMORY_HMAC_KEY",
-    "TXN_TOKEN_KEY", "SESSION_FERNET_KEY", "OFFLINE_GRANT_KEY",
-    "KEYCLOAK_CLIENT_SECRET", "SEARCH_API_KEY", "ANTHROPIC_API_KEY",
+    # LLM / search provider keys (not needed for best-effort extraction).
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "SEARCH_API_KEY",
+    # Fernet key over every user's LLM API key + remote-machine SSH credential.
+    "CREDENTIAL_ENCRYPTION_KEY",
+    # Session cookie Fernet + HMAC — forging a session is full impersonation.
+    "WEB_SESSION_ENC_KEY", "WEB_SESSION_SECRET",
+    # Offline-grant Fernet (also the session-store/device-login enc fallback).
+    "OFFLINE_GRANT_ENC_KEY",
+    # HMAC/signing keys (MEMORY_HMAC_KEY is also the txn/MAS/delegation fallback).
+    "MEMORY_HMAC_KEY", "TXN_TOKEN_KEY", "MAS_MESSAGE_KEY",
+    "DELEGATION_CHILD_SIGNING_KEY",
+    # OIDC confidential-client + token-exchange service-client secrets.
+    "KEYCLOAK_CLIENT_SECRET", "AGENT_SERVICE_CLIENT_SECRET",
+    # Voice/media-plane secrets.
+    "VOICE_CONTROL_SECRET", "LIVEKIT_API_SECRET", "LIVEKIT_API_KEY",
+    # Kept for completeness if ever set as a single URL (the DB_* parts stay).
+    "DATABASE_URL",
 )
 
 

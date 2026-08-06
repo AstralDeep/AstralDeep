@@ -46,7 +46,7 @@ def test_external_scripts_are_same_origin():
     "base-uri 'none'",
     "frame-ancestors 'none'",
     "form-action 'self'",
-    "connect-src 'self' ws: wss:",
+    "connect-src 'self'",
     "media-src 'self' data: blob:",
 ])
 def test_policy_source_declares_directive(directive):

@@ -132,6 +132,11 @@
   var statusEl = document.getElementById("k-status");
 
   var pollTimer = null, rotateTimer = null, stopped = false;
+  // Generation token: bumped whenever the flow restarts. An in-flight fetch
+  // whose continuation captured an older generation must not reschedule — a
+  // rotation firing start() while a poll() is in flight would otherwise leave
+  // two polling loops running, only one of them cancelable by clearTimers().
+  var gen = 0;
 
   function say(text, tone) {
     statusEl.textContent = text;
@@ -140,6 +145,7 @@
   }
 
   function clearTimers() {
+    gen++;   // invalidate any in-flight fetch continuation from a prior attempt
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     if (rotateTimer) { clearTimeout(rotateTimer); rotateTimer = null; }
   }
@@ -186,11 +192,17 @@
   function start() {
     if (stopped) { return; }
     clearTimers();
+    var myGen = gen;
     say("Getting your sign-in code…");
     post("/auth/kiosk/start").then(function (res) {
+      if (stopped || gen !== myGen) { return; }
       if (!res.ok) {
         say(reason(res.body) || "Sign-in by phone is unavailable right now. "
             + "Use the email and password option.", "error");
+        // A transient failure (IdP briefly unreachable, per-IP rate limit) must
+        // not dead-end an unattended, keyboardless screen — retry after a
+        // backoff, mirroring the network-failure path below.
+        rotateTimer = setTimeout(start, 15000);
         return;
       }
       showCode(res.body);
@@ -199,16 +211,18 @@
       // Refresh the code slightly before it lapses — a dead QR on an
       // unattended screen is the whole feature failing.
       rotateTimer = setTimeout(start, Math.max(expires - 10, 5) * 1000);
-      pollTimer = setTimeout(function () { poll(interval); }, interval * 1000);
+      pollTimer = setTimeout(function () { poll(interval, myGen); }, interval * 1000);
     }).catch(function () {
+      if (stopped || gen !== myGen) { return; }
       say("Cannot reach the server. Retrying…", "error");
       pollTimer = setTimeout(start, 5000);
     });
   }
 
-  function poll(interval) {
-    if (stopped) { return; }
+  function poll(interval, myGen) {
+    if (stopped || gen !== myGen) { return; }
     post("/auth/kiosk/poll").then(function (res) {
+      if (stopped || gen !== myGen) { return; }
       if (!res.ok) {
         say(reason(res.body) || "Sign-in failed. Starting over…", "error");
         pollTimer = setTimeout(start, 3000);
@@ -241,9 +255,10 @@
       // pending / slow_down — the server paces us and never shrinks the wait.
       var next = Number(res.body.interval) || interval;
       var wait = (s === "slow_down") ? Math.max(next, interval) : Math.max(next, 1);
-      pollTimer = setTimeout(function () { poll(wait); }, wait * 1000);
+      pollTimer = setTimeout(function () { poll(wait, myGen); }, wait * 1000);
     }).catch(function () {
-      pollTimer = setTimeout(function () { poll(interval); }, Math.max(interval, 5) * 1000);
+      if (stopped || gen !== myGen) { return; }
+      pollTimer = setTimeout(function () { poll(interval, myGen); }, Math.max(interval, 5) * 1000);
     });
   }
 
