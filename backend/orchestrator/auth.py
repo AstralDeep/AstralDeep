@@ -64,20 +64,26 @@ _TOKEN_MAX_PER_WINDOW = int(os.getenv("AUTH_TOKEN_PROXY_RATE", "20"))
 # would otherwise persist for the life of the process).
 _TOKEN_MAX_TRACKED_IPS = 10_000
 _TOKEN_HITS: Dict[str, List[float]] = {}
+_TOKEN_LAST_SWEEP = 0.0
 
 
 def reset_token_proxy_state() -> None:
     """Clear the /auth/token rate-limit window (tests)."""
+    global _TOKEN_LAST_SWEEP
     _TOKEN_HITS.clear()
+    _TOKEN_LAST_SWEEP = 0.0
 
 
 def _check_token_rate(ip: str) -> bool:
     """Fixed-window per-IP limiter, same shape as device_login._check_start_rate."""
+    global _TOKEN_LAST_SWEEP
     now = time.time()
-    # Bound the table: when it grows past the tracked-IP cap, drop every key
-    # whose newest hit has aged out of the window. Amortized cheap (runs only
-    # when large) and keeps memory proportional to IPs active within the window.
-    if len(_TOKEN_HITS) > _TOKEN_MAX_TRACKED_IPS:
+    # Bound the table: drop every key whose newest hit has aged out. Throttled to
+    # at most once per window so a flood past the cap cannot turn every request
+    # into an O(n) scan on the event loop (this endpoint is unauthenticated).
+    if (len(_TOKEN_HITS) > _TOKEN_MAX_TRACKED_IPS
+            and now - _TOKEN_LAST_SWEEP >= _TOKEN_WINDOW_SECONDS):
+        _TOKEN_LAST_SWEEP = now
         for stale_ip in [
             k for k, ts in list(_TOKEN_HITS.items())
             if not ts or now - ts[-1] >= _TOKEN_WINDOW_SECONDS

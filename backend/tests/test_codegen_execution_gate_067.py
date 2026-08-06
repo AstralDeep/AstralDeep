@@ -124,6 +124,35 @@ def test_binary_magic_bytes_are_not_mistaken_for_obfuscation():
     assert blocks_execution(report) is False
 
 
+def test_eight_escape_ole2_signature_clears_the_floor():
+    """The OLE2/CFB magic is EIGHT bytes — the .doc/.xls family an attachment
+    parser must sniff. At the old floor of eight it was refused on every
+    generate and every auto-refine, so the format could never be covered.
+
+    Pins the floor from the permissive side; the nine-escape tests below pin it
+    from the strict side, so a revert to {8,} fails here and a slide to {10,}
+    fails there."""
+    ole2_parser = (
+        'def read_xls(path="x", **kwargs):\n'
+        '    with open(path, "rb") as handle:\n'
+        "        head = handle.read(8)\n"
+        '    if head != b"\\xd0\\xcf\\x11\\xe0\\xa1\\xb1\\x1a\\xe1":\n'
+        '        return {"_ui_components": [], "_data": {"error": "not ole2"}}\n'
+        '    return {"_ui_components": [], "_data": {"ok": True}}\n'
+    )
+    report = CodeSecurityAnalyzer().analyze(ole2_parser)
+    assert blocks_execution(report) is False
+
+
+def test_two_four_byte_magics_on_one_line_clear_the_floor():
+    """A tuple of two 4-byte magics is ordinary parser code, but the separator
+    between the literals is short enough for the pattern's bridge to chain them
+    into eight — so this must clear the floor too."""
+    magics = 'MAGIC = (b"\\x89\\x50\\x4e\\x47", b"\\xff\\xd8\\xff\\xe0")\n'
+    report = CodeSecurityAnalyzer().analyze(magics)
+    assert blocks_execution(report) is False
+
+
 def test_hex_obfuscated_payload_is_still_blocked():
     obfuscated = (
         'payload = "\\x69\\x6d\\x70\\x6f\\x72\\x74\\x20\\x6f\\x73"\n'

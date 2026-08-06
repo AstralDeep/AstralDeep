@@ -58,6 +58,13 @@ _SECRET_ENV_DENYLIST = (
     # HMAC/signing keys (MEMORY_HMAC_KEY is also the txn/MAS/delegation fallback).
     "MEMORY_HMAC_KEY", "TXN_TOKEN_KEY", "MAS_MESSAGE_KEY",
     "DELEGATION_CHILD_SIGNING_KEY",
+    # Audit hash-chain HMAC. Critical PRECISELY BECAUSE the DB_* vars stay
+    # readable: this key is the only thing that makes writes to audit_events
+    # tamper-EVIDENT. A child holding both could rewrite rows and recompute a
+    # chain that verify_chain accepts. Read by audit/pii.py at call time.
+    "AUDIT_HMAC_SECRET",
+    # Optional GitHub PAT used by the desktop-codegen release lookup.
+    "GITHUB_TOKEN",
     # OIDC confidential-client + token-exchange service-client secrets.
     "KEYCLOAK_CLIENT_SECRET", "AGENT_SERVICE_CLIENT_SECRET",
     # Voice/media-plane secrets.
@@ -65,6 +72,12 @@ _SECRET_ENV_DENYLIST = (
     # Kept for completeness if ever set as a single URL (the DB_* parts stay).
     "DATABASE_URL",
 )
+
+#: Prefixes scrubbed wholesale. ``audit/pii.py`` resolves rotation keys as
+#: ``AUDIT_HMAC_SECRET_<KEY_ID_UPPER>`` (e.g. ``AUDIT_HMAC_SECRET_K0``), which no
+#: fixed-name list can enumerate — a retired-but-still-set key signs the same
+#: chain, so it has to go too.
+_SECRET_ENV_PREFIXES = ("AUDIT_HMAC_SECRET_",)
 
 
 def sandbox_enabled() -> bool:
@@ -149,6 +162,9 @@ def sandbox_env(base_env: Optional[Dict[str, str]], tmpdir: str) -> Dict[str, st
     ``tmpdir`` (the per-draft scratch dir)."""
     env = dict(base_env if base_env is not None else os.environ)
     for key in _SECRET_ENV_DENYLIST:
+        env.pop(key, None)
+    # Iterate a snapshot — popping while iterating the live dict would raise.
+    for key in [k for k in env if k.startswith(_SECRET_ENV_PREFIXES)]:
         env.pop(key, None)
     env["TMPDIR"] = tmpdir
     env["TEMP"] = tmpdir

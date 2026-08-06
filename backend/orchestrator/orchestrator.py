@@ -811,6 +811,34 @@ def _apply_asset_versions(shell: str, static_dir: str) -> str:
     return _ASSET_TOKEN_RE.sub(lambda m: versions.get(m.group(1), "dev"), shell)
 
 
+def csp_connect_src() -> str:
+    """The shell CSP's ``connect-src`` value.
+
+    ``'self'`` covers the app's own ``/ws`` socket. The LiveKit signalling
+    socket is the ONE legitimate cross-origin connection the shell opens —
+    ``client.js`` calls ``room.connect(grant.url)`` where ``grant.url`` is
+    ``LIVEKIT_PUBLIC_URL``, a different port in dev (``ws://localhost:7880``)
+    and a different host in production (``wss://voice.<host>``) — so that exact
+    origin is allow-listed.
+
+    Deliberately NOT the bare ``ws:``/``wss:`` schemes this replaced: those match
+    ANY host, so an injected script could stream the page-embedded access token
+    to an attacker. Unset/unparseable leaves ``'self'`` alone (voice is
+    unconfigured anyway); the value is never widened beyond one origin.
+    """
+    raw = (os.getenv("LIVEKIT_PUBLIC_URL", "") or "").strip()
+    if not raw:
+        return "'self'"
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(raw)
+    except Exception:
+        return "'self'"
+    if parts.scheme not in ("ws", "wss", "http", "https") or not parts.netloc:
+        return "'self'"
+    return f"'self' {parts.scheme}://{parts.netloc}"
+
+
 class _NoCacheStaticFiles(StaticFiles):
     """Version-aware static files: immutable when the URL proves freshness.
 
@@ -20671,6 +20699,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # everything else executable must be same-origin.
             nonce = _secrets.token_urlsafe(16)
             shell = shell.replace("%%ASTRAL_NONCE%%", nonce)
+            connect_src = csp_connect_src()
             resp = _HTMLResponse(shell.replace("%%ASTRAL_TOPBAR%%", topbar))
             # The shell carries a per-session token and references versioned
             # assets — never cache it (security + always-fresh asset URLs).
@@ -20690,11 +20719,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # mixed-content-blocked on this https origin anyway.
                 "img-src 'self' data: blob: https:; "
                 "media-src 'self' data: blob: https:; "
-                # 'self' already covers the app's own ws://and wss:// socket;
-                # the bare ws:/wss: schemes matched ANY host, which would let an
-                # injected script exfiltrate the page-embedded access token over
-                # a WebSocket — the exact channel this CSP exists to close.
-                "connect-src 'self'; "
+                # See csp_connect_src(): 'self' + the single LiveKit signalling
+                # origin. Replaces bare ws:/wss:, which matched ANY host.
+                f"connect-src {connect_src}; "
                 "font-src 'self'; "
                 "object-src 'none'; "
                 "base-uri 'none'; "

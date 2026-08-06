@@ -137,6 +137,8 @@
   // rotation firing start() while a poll() is in flight would otherwise leave
   // two polling loops running, only one of them cancelable by clearTimers().
   var gen = 0;
+  var ERR_BACKOFF_MIN = 15000;
+  var errBackoff = ERR_BACKOFF_MIN;   // doubles per consecutive start() failure
 
   function say(text, tone) {
     statusEl.textContent = text;
@@ -171,6 +173,19 @@
     return (body && (body.detail || body.error)) || "";
   }
 
+  // Inverse of showCode, for error paths ONLY. Never call it at the top of
+  // start(): a routine rotation would flash the plate empty and break the
+  // continuity the rotate comment below is protecting.
+  function clearCode() {
+    qr.hidden = true;
+    qr.removeAttribute("src");
+    plate.classList.add("is-empty");
+    plateMsg.hidden = false;
+    codeEl.textContent = "";
+    codeLabel.hidden = true;
+    uriEl.textContent = "";
+  }
+
   function showCode(data) {
     if (data.qr_png_base64) {
       qr.src = "data:image/png;base64," + data.qr_png_base64;
@@ -197,14 +212,21 @@
     post("/auth/kiosk/start").then(function (res) {
       if (stopped || gen !== myGen) { return; }
       if (!res.ok) {
+        // Drop the previous code first: a scannable QR sitting above "sign-in
+        // is unavailable" invites people to scan a flow that no longer polls.
+        clearCode();
         say(reason(res.body) || "Sign-in by phone is unavailable right now. "
             + "Use the email and password option.", "error");
         // A transient failure (IdP briefly unreachable, per-IP rate limit) must
-        // not dead-end an unattended, keyboardless screen — retry after a
-        // backoff, mirroring the network-failure path below.
-        rotateTimer = setTimeout(start, 15000);
+        // not dead-end an unattended, keyboardless screen — retry, mirroring the
+        // network-failure path below. Back off so a PERMANENT misconfiguration
+        // (unknown client, device grant disabled) does not hammer the IdP for
+        // the life of the screen; resets as soon as a start succeeds.
+        rotateTimer = setTimeout(start, errBackoff);
+        errBackoff = Math.min(errBackoff * 2, 300000);   // cap at 5 min
         return;
       }
+      errBackoff = ERR_BACKOFF_MIN;
       showCode(res.body);
       var interval = Math.max(Number(res.body.interval) || 5, 1);
       var expires = Math.max(Number(res.body.expires_in) || 600, 30);
