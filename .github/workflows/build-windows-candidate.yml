@@ -9,8 +9,19 @@ on:
         type: string
     secrets:
       staging_access_token:
-        description: Short-lived token for the bundled staging deployment
-        required: true
+        description: >-
+          Pre-minted short-lived token for the bundled staging deployment.
+          Optional when staging_username/staging_password are supplied — the job
+          then mints its own token immediately before the smoke steps, which is
+          strictly better because this build takes ~30 minutes to reach them and
+          a Keycloak access token minted before dispatch has usually expired.
+        required: false
+      staging_username:
+        description: Least-privilege staging account used to mint a fresh smoke token
+        required: false
+      staging_password:
+        description: Password for staging_username
+        required: false
     outputs:
       artifact_id:
         description: Immutable GitHub Actions artifact ID
@@ -65,6 +76,8 @@ jobs:
         shell: pwsh
         env:
           ASTRAL_WINDOWS_SMOKE_TOKEN: ${{ secrets.staging_access_token }}
+          ASTRAL_STAGING_USERNAME: ${{ secrets.staging_username || secrets.ASTRAL_STAGING_USERNAME }}
+          ASTRAL_STAGING_PASSWORD: ${{ secrets.staging_password || secrets.ASTRAL_STAGING_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
           $actual = (git rev-parse HEAD).Trim()
@@ -74,9 +87,16 @@ jobs:
           if ($actual -ne $env:CANDIDATE_SHA) {
             throw "checked out $actual instead of candidate $env:CANDIDATE_SHA"
           }
-          if ([string]::IsNullOrWhiteSpace($env:ASTRAL_WINDOWS_SMOKE_TOKEN)) {
-            throw "the short-lived Windows staging token is required"
+          # Fail fast on missing staging access, exactly as before — but either
+          # form satisfies it: a pre-minted token, or credentials this job can
+          # mint from later (preferred; see the mint step).
+          $haveToken = -not [string]::IsNullOrWhiteSpace($env:ASTRAL_WINDOWS_SMOKE_TOKEN)
+          $haveCreds = (-not [string]::IsNullOrWhiteSpace($env:ASTRAL_STAGING_USERNAME)) `
+            -and (-not [string]::IsNullOrWhiteSpace($env:ASTRAL_STAGING_PASSWORD))
+          if (-not $haveToken -and -not $haveCreds) {
+            throw "staging access is required: supply staging_username/staging_password (preferred) or a pre-minted staging_access_token"
           }
+          Write-Host "staging access: $(if ($haveCreds) { 'credentials (token minted at smoke time)' } else { 'pre-minted token' })"
 
       # actions/setup-python v6, pinned to immutable action bytes.
       - name: Select release Python 3.11
@@ -142,17 +162,86 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          & windows-client\dist\AstralDeep.exe --validate-deployment `
-            --report build\windows-candidate\deployment-validation.json
-          if ($LASTEXITCODE -ne 0) {
-            throw "frozen deployment validation failed with $LASTEXITCODE"
+          # AstralDeep.exe is built WINDOWED (console=False in AstralDeep.spec).
+          # PowerShell's call operator returns immediately for a GUI subsystem
+          # binary and never sets $LASTEXITCODE, so the previous check compared
+          # $null against 0, threw on EVERY run, and threw before the exe had
+          # even finished writing its report — the report it did write said
+          # "status": "valid". Start-Process -Wait is the only form that both
+          # waits for a windowed process and yields its real exit code.
+          $exe = Join-Path $PWD 'windows-client\dist\AstralDeep.exe'
+          $report = Join-Path $PWD 'build\windows-candidate\deployment-validation.json'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $report) | Out-Null
+          $validate = Start-Process -FilePath $exe `
+            -ArgumentList '--validate-deployment', '--report', $report `
+            -Wait -PassThru -NoNewWindow
+          if ($validate.ExitCode -ne 0) {
+            if (Test-Path $report) { Get-Content $report }
+            throw "frozen deployment validation failed with $($validate.ExitCode)"
           }
+          Get-Content $report
+
+      # Minted HERE, not at job start: the build above takes ~30 minutes, and a
+      # Keycloak access token is typically valid for 5-15. A token supplied by
+      # the caller was usually already expired by the time the smoke steps ran.
+      - name: Mint a fresh staging smoke token
+        id: smoke_token
+        shell: pwsh
+        env:
+          PREMINTED_TOKEN: ${{ secrets.staging_access_token }}
+          ASTRAL_STAGING_USERNAME: ${{ secrets.staging_username || secrets.ASTRAL_STAGING_USERNAME }}
+          ASTRAL_STAGING_PASSWORD: ${{ secrets.staging_password || secrets.ASTRAL_STAGING_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:ASTRAL_STAGING_USERNAME) -or
+              [string]::IsNullOrWhiteSpace($env:ASTRAL_STAGING_PASSWORD)) {
+            # No credentials — carry the caller's pre-minted token through
+            # unchanged. Byte-compatible with the previous behaviour.
+            Write-Host "no staging credentials supplied; using the pre-minted token"
+            "ASTRAL_WINDOWS_SMOKE_TOKEN=$env:PREMINTED_TOKEN" |
+              Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            exit 0
+          }
+          # Authority and client id come from the SAME release profile that is
+          # baked into the exe, so CI can never authenticate against a different
+          # realm than the client it is testing.
+          $profile = Get-Content windows-client\deployment\release-profile.json -Raw | ConvertFrom-Json
+          $authority = $profile.authority
+          $clientId = $profile.client_id
+          if ([string]::IsNullOrWhiteSpace($authority) -or [string]::IsNullOrWhiteSpace($clientId)) {
+            throw "release-profile.json is missing authority/client_id"
+          }
+          Write-Host "minting a staging token from $authority as client $clientId"
+          $body = @{
+            grant_type = 'password'
+            client_id  = $clientId
+            scope      = 'openid'
+            username   = $env:ASTRAL_STAGING_USERNAME
+            password   = $env:ASTRAL_STAGING_PASSWORD
+          }
+          try {
+            $resp = Invoke-RestMethod -Method Post `
+              -Uri "$authority/protocol/openid-connect/token" `
+              -Body $body -ContentType 'application/x-www-form-urlencoded'
+          } catch {
+            # Never echo the response body — it can contain credential material.
+            throw "minting the staging token failed: $($_.Exception.Message). Confirm the account exists and that Direct Access Grants are enabled for '$clientId'."
+          }
+          $token = $resp.access_token
+          if ([string]::IsNullOrWhiteSpace($token)) {
+            throw "the token endpoint returned no access_token"
+          }
+          # Mask before the value can reach any later log line, and keep it out
+          # of step outputs/artifacts — it only ever travels through the env.
+          Write-Host "::add-mask::$token"
+          "ASTRAL_WINDOWS_SMOKE_TOKEN=$token" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "minted a fresh staging token (expires_in=$($resp.expires_in)s)"
 
       - name: Run frozen worker, no-dialog, rendered-chat, offline, and termination smoke
         shell: pwsh
         env:
           ASTRAL_WINDOWS_EXE: ${{ github.workspace }}\windows-client\dist\AstralDeep.exe
-          ASTRAL_WINDOWS_SMOKE_TOKEN: ${{ secrets.staging_access_token }}
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
