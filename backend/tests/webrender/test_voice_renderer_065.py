@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -100,10 +101,19 @@ def test_shell_hosts_accessible_voice_controls_without_replacing_typed_chat() ->
     )
 
 
-def test_shell_loads_hash_pinned_local_livekit_before_client() -> None:
+def test_shell_hands_client_the_hash_pinned_local_livekit_url() -> None:
+    """The SDK is lazily injected by client.js, so the shell publishes its URL.
+
+    Updated for the 067 page-load fix: the eager ``<script src=…livekit…>`` tag
+    is gone (it cost every page load a 561 KB download + parse whether or not
+    the user ever spoke). The bundle is still first-party, same-origin and
+    hash-pinned — only the moment it loads changed — so the supply-chain half of
+    this contract is asserted exactly as before.
+    """
     parser = _shell_parser()
+    shell = SHELL_PATH.read_text(encoding="utf-8")
     sources = [script.get("src") for script in parser.scripts if script.get("src")]
-    livekit = (
+    livekit_url = (
         "/static/vendor/livekit-client.umd.min.js"
         "?v=%%ASTRAL_V:vendor/livekit-client.umd.min.js%%"
     )
@@ -113,11 +123,15 @@ def test_shell_loads_hash_pinned_local_livekit_before_client() -> None:
     actual_digest = hashlib.sha256(LIVEKIT_PATH.read_bytes()).hexdigest()
     assert len(LIVEKIT_PATH.read_bytes()) > 100_000
     assert actual_digest == expected_digest
-    assert sources.index(livekit) < sources.index(client)
-    assert not any(
-        "livekit" in source and not source.startswith("/static/")
-        for source in sources
-    )
+
+    # no eager tag — the bundle never blocks or burdens a page load again
+    assert not any(source and "livekit" in source for source in sources)
+    # …but the versioned same-origin URL reaches the client, before client.js
+    assert f'window.__ASTRAL_LIVEKIT_URL__ = "{livekit_url}"' in shell
+    assert shell.index("__ASTRAL_LIVEKIT_URL__") < shell.index(f'src="{client}"')
+    # every livekit reference in the shell stays first-party
+    for match in re.finditer(r"[\"'](\S*livekit\S*)[\"']", shell):
+        assert match.group(1).startswith("/static/"), match.group(1)
 
 
 def test_client_uses_explicit_media_and_all_required_voice_frame_handlers() -> None:

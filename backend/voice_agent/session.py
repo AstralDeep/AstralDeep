@@ -117,6 +117,29 @@ VAD_END_SILENCE_FRAMES = _endpoint_silence_frames(
 # closes the final word cleanly.
 ASR_TAIL_SILENCE_FRAMES = 4
 MAX_UTTERANCE_FRAMES = 1_875
+# Whisper is documented to mint stock phrases from speech-free audio ("Thank
+# you.", "Obrigado.", ... — both observed live 2026-08-05 entering chat as
+# genuine user turns). Refusal requires a CONJUNCTION: the canonical text is
+# one of these normalized stock phrases AND the utterance carried fewer
+# at-or-above-VAD_THRESHOLD frames than the shortest of them can physically
+# be spoken in (8 frames = 256 ms at the 32 ms frame size). Neither half is
+# safe alone: the phrase list would eat a genuine "thank you", the duration
+# floor would eat genuine short commands ("stop", "yes").
+ASR_HALLUCINATION_MIN_VOICED_FRAMES = 8
+_ASR_STOCK_HALLUCINATIONS = frozenset(
+    {
+        "thankyou",
+        "thankyouverymuch",
+        "thanksforwatching",
+        "thankyouforwatching",
+        "thankyousomuchforwatching",
+        "obrigado",
+        "obrigada",
+        "you",
+        "bye",
+        "goodbye",
+    }
+)
 MAX_RETAINED_FINALS = 4
 MAX_RETAINED_FINAL_BYTES = 48 * 1024
 MAX_SEEN_ANNOUNCEMENTS = 64
@@ -376,28 +399,59 @@ class LiveKitRtcFactory:
         return frame
 
 
+DEFAULT_VAD_MODEL_PATH = "/opt/voice-assets/silero_vad.onnx"
+# One ONNX graph per model path per worker process. Building it costs a
+# blocking disk read plus a graph load, and it used to run once per voice
+# session inside the supervisor-wide lock, serializing every concurrent
+# activation behind it. Only a successful build is shared: a failure must stay
+# reproducible for the next construction of the same path.
+_VAD_INFERENCE_SESSIONS: dict[str, Any] = {}
+
+
+def _build_vad_inference_session(model_path: Path | str) -> Any:
+    try:
+        import onnxruntime as ort
+    except ImportError:  # pragma: no cover - image/host split
+        raise RtcSessionError("vad_runtime_unavailable") from None
+    path = Path(model_path)
+    if not path.is_file():
+        raise RtcSessionError("vad_model_unavailable")
+    key = str(path.resolve())
+    cached = _VAD_INFERENCE_SESSIONS.get(key)
+    if cached is not None:
+        return cached
+    try:
+        built = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    except Exception:
+        raise RtcSessionError("vad_model_invalid") from None
+    _VAD_INFERENCE_SESSIONS[key] = built
+    return built
+
+
+async def preload_vad_model(model_path: Path | str = DEFAULT_VAD_MODEL_PATH) -> None:
+    """Build the shared VAD graph off the event loop before the first session."""
+
+    try:
+        await asyncio.to_thread(_build_vad_inference_session, model_path)
+    except Exception:
+        # The per-session constructor raises the same reason again; a missing
+        # or unreadable asset must not change when the worker gives up.
+        return
+
+
 class SileroVad:
     """Exact Silero v6 recurrent ONNX inference for 32-ms input frames."""
 
     def __init__(
         self,
         *,
-        model_path: Path | str = "/opt/voice-assets/silero_vad.onnx",
+        model_path: Path | str = DEFAULT_VAD_MODEL_PATH,
     ) -> None:
         try:
             import numpy as np
-            import onnxruntime as ort
         except ImportError:  # pragma: no cover - image/host split
             raise RtcSessionError("vad_runtime_unavailable") from None
-        path = Path(model_path)
-        if not path.is_file():
-            raise RtcSessionError("vad_model_unavailable")
-        try:
-            self._session = ort.InferenceSession(
-                str(path), providers=["CPUExecutionProvider"]
-            )
-        except Exception:
-            raise RtcSessionError("vad_model_invalid") from None
+        self._session = _build_vad_inference_session(model_path)
         self._np = np
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
 
@@ -620,6 +674,10 @@ class _RecognitionBinding:
     submission_id: str | None = None
     request_generation: str | None = None
     echo_fingerprints: frozenset[bytes] = frozenset()
+    # At-or-above-VAD_THRESHOLD frames observed across the whole utterance,
+    # stamped at finalize. Content-free speech-evidence floor for the stock
+    # hallucination refusal in _recognition_complete.
+    voiced_frames: int = 0
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -663,6 +721,14 @@ class _SpeechMeta:
     duration_ms: int | None = None
 
 
+def _normalized_speech(canonical: str) -> str:
+    """Punctuation/case-insensitive speech form shared by echo + stock checks."""
+
+    return "".join(
+        character for character in canonical.casefold() if character.isalnum()
+    )
+
+
 def _speech_fingerprint(text: str) -> bytes | None:
     """Hash a punctuation/case-insensitive speech form without retaining text."""
 
@@ -670,9 +736,7 @@ def _speech_fingerprint(text: str) -> bytes | None:
         canonical = canonical_transcript(text)
     except TranscriptProofError:
         return None
-    normalized = "".join(
-        character for character in canonical.casefold() if character.isalnum()
-    )
+    normalized = _normalized_speech(canonical)
     if not normalized:
         return None
     return hashlib.sha256(normalized.encode("utf-8", errors="strict")).digest()
@@ -776,8 +840,10 @@ class DirectRtcSession(BoundControlSession):
         self._rtc_events: asyncio.Queue[_OwnedEvent] = asyncio.Queue(
             rtc_event_queue_size
         )
-        self._ready_controls: deque[dict[str, Any]] = deque()
-        self._ready_rtc_events: deque[_OwnedEvent] = deque()
+        self._control_waiter: asyncio.Task[dict[str, Any]] | None = None
+        self._rtc_waiter: asyncio.Task[_OwnedEvent] | None = None
+        self._overrun_waiter: asyncio.Task[bool] | None = None
+        self._closed_waiter: asyncio.Task[bool] | None = None
         self._overrun_wakeup = asyncio.Event()
         self._overrun_reason: str | None = None
         self._started = asyncio.Event()
@@ -797,6 +863,7 @@ class DirectRtcSession(BoundControlSession):
         self._reconnecting = False
         self._utterance = bytearray()
         self._candidate_speech_frames = 0
+        self._utterance_voiced_frames = 0
         self._utterance_active = False
         self._silence_frames = 0
         self._vad_preroll: deque[bytes] = deque(maxlen=VAD_PREROLL_FRAMES)
@@ -1212,37 +1279,71 @@ class DirectRtcSession(BoundControlSession):
             self._overrun_wakeup.set()
 
     async def _next_owned_event(self) -> tuple[str, Any]:
-        if self._ready_controls:
-            return "control", self._ready_controls.popleft()
-        if self._ready_rtc_events:
-            return "rtc", self._ready_rtc_events.popleft()
-        control_task = asyncio.create_task(self._queue.get())
-        rtc_task = asyncio.create_task(self._rtc_events.get())
-        overrun_task = asyncio.create_task(self._overrun_wakeup.wait())
-        closed_task = asyncio.create_task(self._closed.wait())
-        tasks = {control_task, rtc_task, overrun_task, closed_task}
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        if closed_task in done:
-            if control_task in done:
-                _clear_buffered_value(control_task.result())
-            if rtc_task in done:
-                _discard_owned_event(rtc_task.result())
+        # One persistent waiter per source, re-created only once it completes.
+        # A value that becomes ready alongside another source stays parked in
+        # its own finished task until the loop asks for it, so no waiter is
+        # cancelled and re-created per event.
+        if self._control_waiter is None:
+            self._control_waiter = asyncio.create_task(self._queue.get())
+        if self._rtc_waiter is None:
+            self._rtc_waiter = asyncio.create_task(self._rtc_events.get())
+        if self._overrun_waiter is None:
+            self._overrun_waiter = asyncio.create_task(self._overrun_wakeup.wait())
+        if self._closed_waiter is None:
+            self._closed_waiter = asyncio.create_task(self._closed.wait())
+        control_task = self._control_waiter
+        rtc_task = self._rtc_waiter
+        overrun_task = self._overrun_waiter
+        closed_task = self._closed_waiter
+        await asyncio.wait(
+            (control_task, rtc_task, overrun_task, closed_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if closed_task.done():
+            # Closed wins, and a value this call already recovered can no
+            # longer reach the teardown drain: discard it here.
+            if control_task.done():
+                self._control_waiter = None
+                _clear_buffered_value(_completed_waiter_value(control_task))
+            if rtc_task.done():
+                self._rtc_waiter = None
+                event = _completed_waiter_value(rtc_task)
+                if event is not None:
+                    _discard_owned_event(event)
             return "closed", None
-        if control_task in done and overrun_task in done:
-            self._ready_controls.append(control_task.result())
-        if rtc_task in done and overrun_task in done:
-            self._ready_rtc_events.append(rtc_task.result())
-        if overrun_task in done:
+        if overrun_task.done():
+            self._overrun_waiter = None
             self._overrun_wakeup.clear()
             return "overrun", None
-        if control_task in done:
-            if rtc_task in done:
-                self._ready_rtc_events.append(rtc_task.result())
+        if control_task.done():
+            self._control_waiter = None
             return "control", control_task.result()
+        self._rtc_waiter = None
         return "rtc", rtc_task.result()
+
+    async def _release_owned_waiters(self) -> None:
+        """Cancel every persistent waiter, discarding any value one parked.
+
+        A finished queue waiter holds its value outside the queue, so the
+        teardown drain cannot reach it; zero retention requires this.
+        """
+
+        control = self._control_waiter
+        rtc = self._rtc_waiter
+        self._control_waiter = None
+        self._rtc_waiter = None
+        _clear_buffered_value(_completed_waiter_value(control))
+        event = _completed_waiter_value(rtc)
+        if event is not None:
+            _discard_owned_event(event)
+        waiters = (control, rtc, self._overrun_waiter, self._closed_waiter)
+        self._overrun_waiter = None
+        self._closed_waiter = None
+        pending = [waiter for waiter in waiters if waiter is not None]
+        for waiter in pending:
+            waiter.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _handle_queue_overrun(self) -> None:
         reason = self._overrun_reason or "rtc_event_queue_overrun"
@@ -1819,6 +1920,9 @@ class DirectRtcSession(BoundControlSession):
                 if len(self._recognition_bindings) >= MAX_RETAINED_FINALS:
                     raise RtcSessionError("transcript_buffer_full")
                 self._utterance_active = True
+                # Voiced evidence accumulated during candidacy carries into
+                # the utterance; the active branch below keeps counting.
+                self._utterance_voiced_frames = self._candidate_speech_frames
                 # Seed the turn from the pre-roll ring: it is a superset of
                 # the candidate frames plus the onset audio the candidate
                 # logic discarded on sub-release dips.
@@ -1854,6 +1958,8 @@ class DirectRtcSession(BoundControlSession):
                 self._candidate_speech_frames = 0
             return
         self._utterance.extend(pcm)
+        if probability >= VAD_THRESHOLD:
+            self._utterance_voiced_frames += 1
         if probability >= VAD_RELEASE_THRESHOLD:
             self._silence_frames = 0
         else:
@@ -1872,7 +1978,10 @@ class DirectRtcSession(BoundControlSession):
         self._trim_trailing_silence()
         pcm = bytes(self._utterance)
         self._utterance.clear()
+        if self._recognition_binding is not None:
+            self._recognition_binding.voiced_frames = self._utterance_voiced_frames
         self._candidate_speech_frames = 0
+        self._utterance_voiced_frames = 0
         self._utterance_active = False
         self._silence_frames = 0
         self._vad_preroll.clear()
@@ -1960,6 +2069,22 @@ class DirectRtcSession(BoundControlSession):
                             SessionNotice(
                                 "recognition_failed",
                                 reason="self_speech",
+                                metadata={"client_turn_id": recognition.client_turn_id},
+                            )
+                        )
+                        self._clear_retained_final(recognition.client_turn_id)
+                    elif (
+                        _normalized_speech(canonical) in _ASR_STOCK_HALLUCINATIONS
+                        and recognition.voiced_frames
+                        < ASR_HALLUCINATION_MIN_VOICED_FRAMES
+                    ):
+                        # Stock phrase minted from speech-free audio: refuse
+                        # it like self_speech (silently, no retry guidance)
+                        # instead of submitting a turn the user never spoke.
+                        await self._emit(
+                            SessionNotice(
+                                "recognition_failed",
+                                reason="hallucinated_transcript",
                                 metadata={"client_turn_id": recognition.client_turn_id},
                             )
                         )
@@ -2171,6 +2296,7 @@ class DirectRtcSession(BoundControlSession):
         had_audio = bool(self._utterance)
         self._utterance.clear()
         self._candidate_speech_frames = 0
+        self._utterance_voiced_frames = 0
         self._utterance_active = False
         self._silence_frames = 0
         self._vad_preroll.clear()
@@ -2852,16 +2978,15 @@ class DirectRtcSession(BoundControlSession):
             self._pending_context = None
             self._overrun_reason = None
             self._overrun_wakeup.clear()
+            # Release before draining so no surviving waiter can park a value
+            # the drain has already passed.
+            await self._release_owned_waiters()
             while not self._queue.empty():
                 with suppress(asyncio.QueueEmpty):
                     _clear_buffered_value(self._queue.get_nowait())
             while not self._rtc_events.empty():
                 with suppress(asyncio.QueueEmpty):
                     _discard_owned_event(self._rtc_events.get_nowait())
-            while self._ready_controls:
-                _clear_buffered_value(self._ready_controls.popleft())
-            while self._ready_rtc_events:
-                _discard_owned_event(self._ready_rtc_events.popleft())
             await self._cancel_retired_output_tasks()
             room = self._room
             self._room = None
@@ -3343,6 +3468,16 @@ def _clear_buffered_value(value: Any) -> None:
         for nested in value:
             _clear_buffered_value(nested)
         value.clear()
+
+
+def _completed_waiter_value(task: asyncio.Task[Any] | None) -> Any:
+    """Return a finished waiter's value, or None when it carries none."""
+
+    if task is None or not task.done() or task.cancelled():
+        return None
+    if task.exception() is not None:
+        return None
+    return task.result()
 
 
 def _discard_owned_event(event: _OwnedEvent) -> None:

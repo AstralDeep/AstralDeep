@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from astralprims import Alert, Button, Card, Text
 from orchestrator.bounded_work import run_generation
+from orchestrator.code_security import blocks_execution
 from shared.feature_flags import flags
 from shared.protocol import MCPResponse
 
@@ -638,7 +639,12 @@ def _read_text_file(path: str) -> str:
 
 
 def _stage_revision_code(lifecycle, rev, live_row, rev_dir, new_code):
-    """Compile, write, and gate one revision in the generation executor."""
+    """Compile, write, and gate one revision in the generation executor.
+
+    Returns ``(report, validation)`` where ``validation`` is ``None`` when the
+    security gate refused the code before the validator (which EXECUTES the
+    tools) could run — the H4 pre-execution contract.
+    """
 
     compile(new_code, "mcp_tools.py", "exec")
     os.makedirs(rev_dir, exist_ok=True)
@@ -647,18 +653,25 @@ def _stage_revision_code(lifecycle, rev, live_row, rev_dir, new_code):
     report = lifecycle.security.analyze(
         new_code, filename=f"{rev['agent_slug']}/mcp_tools.py"
     )
+    if blocks_execution(report):
+        return report, None
+    # Validate the STAGED bytes — the revision slug's own directory. This
+    # used to point at the live agent's slug, so the validator imported the
+    # unmodified live file and never inspected the staged code at all.
     validation = lifecycle.validator.validate(
-        new_code, live_row["agent_slug"], lifecycle._agents_dir
+        new_code, rev["agent_slug"], lifecycle._agents_dir
     )
     return report, validation
 
 
-def _gate_revision_code(lifecycle, live_row, new_code):
+def _gate_revision_code(lifecycle, rev, live_row, new_code):
     report = lifecycle.security.analyze(
         new_code, filename=f"{live_row['agent_slug']}/mcp_tools.py"
     )
+    if blocks_execution(report):
+        return report, None
     validation = lifecycle.validator.validate(
-        new_code, live_row["agent_slug"], lifecycle._agents_dir
+        new_code, rev["agent_slug"], lifecycle._agents_dir
     )
     return report, validation
 
@@ -746,10 +759,17 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
         )
         sec_blocker = getattr(report, "max_severity", None)
         sec_name = getattr(sec_blocker, "name", str(sec_blocker or "")).upper()
-        passed = validation.passed and sec_name not in ("CRITICAL", "HIGH")
+        # validation is None when the security gate refused the staged code
+        # before the validator (which executes it) could run.
+        passed = validation is not None and validation.passed
+        validator_summary = (
+            f"validator: {validation.tools_passed}/{validation.tools_tested} tools passed"
+            if validation is not None
+            else "validator: skipped (security gate refused execution)"
+        )
         self_test = {
             "status": "passed" if passed else "failed",
-            "summary": (f"validator: {validation.tools_passed}/{validation.tools_tested} tools passed; "
+            "summary": (f"{validator_summary}; "
                         f"security max severity: {sec_name or 'NONE'}"),
             "tools_called": [], "errors": [] if passed else ["gate checks failed"],
             "evidence": "", "tested_at": int(time.time() * 1000),
@@ -760,7 +780,9 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
             status="generated",
             self_test=json.dumps(self_test),
             security_report=json.dumps(report.to_dict()),
-            validation_report=json.dumps(validation.to_dict()),
+            validation_report=json.dumps(
+                validation.to_dict() if validation is not None else {"passed": False}
+            ),
         )
     except Exception as exc:
         logger.exception("agentic: revision staging failed for %s", agent_id)
@@ -822,18 +844,25 @@ async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, A
     new_code = await run_generation(_read_text_file, staged)
 
     # Re-run the full gate on the staged code at apply time (it may be stale).
+    # A HIGH/CRITICAL security report returns validation=None — the staged
+    # code was refused before the validator could execute it (H4).
     report, validation = await run_generation(
-        _gate_revision_code, lifecycle, live_row, new_code
+        _gate_revision_code, lifecycle, rev, live_row, new_code
     )
     sec_name = getattr(getattr(report, "max_severity", None), "name", "").upper()
-    if sec_name in ("CRITICAL", "HIGH") or not validation.passed:
+    if validation is None or not validation.passed:
+        validator_note = (
+            f"{validation.tools_passed}/{validation.tools_tested}"
+            if validation is not None
+            else "skipped (security gate refused execution)"
+        )
         await run_generation(
             db.update_draft_agent,
             rev["id"],
             status="rejected",
             error_message=(
                 f"Gate failed: security={sec_name or 'NONE'}, validator "
-                f"{validation.tools_passed}/{validation.tools_tested}"
+                f"{validator_note}"
             ),
         )
         await _audit(user_id, "lifecycle.rejected",

@@ -7,6 +7,14 @@ from typing import Any
 
 ExclusionLogger = Callable[[str, str | None, str], None]
 
+# The remote-compute catalog is 18 verbs (~2,700 prompt tokens); 17 of them
+# dead-end at "this machine is not in your inventory" for a user with no
+# registered machine. Only list_machines stays visible machineless — it is
+# the discovery verb whose empty-state reply points at Settings → Remote
+# machines (registration itself is a chrome surface, not a tool).
+_REMOTE_COMPUTE_AGENT_ID = "remote-compute-1"
+_REMOTE_DISCOVERY_SKILL_IDS = frozenset({"list_machines"})
+
 
 def eligible_tool_pairs(
     orchestrator: Any,
@@ -42,6 +50,25 @@ def eligible_tool_pairs(
         if log_exclusion is not None:
             log_exclusion(agent_id, skill_id, reason)
 
+    machineless: bool | None = None
+
+    def remote_machineless() -> bool:
+        nonlocal machineless
+        if machineless is None:
+            from orchestrator import remote_machines
+
+            try:
+                machineless = not remote_machines.owns_any_machine(
+                    orchestrator.history.db,
+                    user_id,
+                )
+            except Exception:
+                # Fail open to the full catalog: this subtraction is a prompt
+                # cost optimization, and the dispatch permission gate still
+                # runs. A transient DB error must not blank the tool list.
+                machineless = False
+        return machineless
+
     for agent_id, card in orchestrator.agent_cards.items():
         if agent_id not in orchestrator.agents and agent_id not in orchestrator.local_agents:
             excluded(agent_id, None, "not_connected")
@@ -65,6 +92,13 @@ def eligible_tool_pairs(
                 continue
             if agent_flags.get(skill_id, {}).get("blocked"):
                 excluded(agent_id, skill_id, "system_blocked")
+                continue
+            if (
+                agent_id == _REMOTE_COMPUTE_AGENT_ID
+                and skill_id not in _REMOTE_DISCOVERY_SKILL_IDS
+                and remote_machineless()
+            ):
+                excluded(agent_id, skill_id, "no_registered_machine")
                 continue
             if not draft_self_test and not orchestrator.tool_permissions.is_tool_allowed(
                 user_id,

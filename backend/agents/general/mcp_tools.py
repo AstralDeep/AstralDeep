@@ -189,6 +189,29 @@ def generate_dynamic_chart(
 
 
 
+def _confine_input_path(file_path: str, user_id: str) -> Optional[str]:
+    """Return the real path of ``file_path`` if this user may read it, else None.
+
+    Only the caller's own attachment upload root and their own download
+    directory qualify. Tool arguments are model-supplied, so an
+    unconstrained absolute path would read any file this process can open.
+    """
+    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    roots = [os.path.join(backend_dir, "tmp", str(user_id))]
+    try:
+        from orchestrator.attachments import store
+        roots.append(os.path.join(str(store.get_upload_root()), str(user_id)))
+    except ImportError:
+        pass
+
+    real = os.path.realpath(file_path)
+    for root in roots:
+        real_root = os.path.realpath(root)
+        if real == real_root or real.startswith(real_root + os.sep):
+            return real
+    return None
+
+
 def modify_data(
     modifications: Optional[List[Dict[str, Any]]] = None,
     csv_data: Optional[str] = None,
@@ -218,18 +241,30 @@ def modify_data(
             - overwrite: Whether to overwrite existing column (default True)
             - dtype: Data type for conversion ("string", "integer", "float", "boolean")
         filename: Optional filename for the modified file (default: modified_data_<timestamp>.<ext>).
-        file_path: Optional absolute path to a CSV/Excel file to modify.
+        file_path: Server-side path to a CSV/Excel file. Not model-facing —
+            it is confined to the caller's own upload/download directories.
         output_format: Output file format ("csv" or "excel"). Defaults to input format.
     """
     if modifications is None:
         modifications = []
 
-    if file_handle and not file_path:
+    if file_handle:
         try:
             from shared.attachment_resolver import resolve_attachment_path
             file_path = resolve_attachment_path(file_handle, user_id)
         except ValueError as e:
             return create_ui_response([Alert(message=str(e), variant="error")])
+    elif file_path:
+        confined = _confine_input_path(file_path, user_id)
+        if confined is None:
+            return create_ui_response([Alert(
+                message=(
+                    "That file is not readable here. Upload it in the chat "
+                    "composer and pass the returned attachment_id as 'file_handle'."
+                ),
+                variant="error",
+            )])
+        file_path = confined
 
     try:
         # Determine input format
@@ -1365,13 +1400,12 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "modify_data": {
         "function": modify_data,
         "scope": "tools:write",
-        "description": "Modify CSV/Excel data with basic CRUD operations like dropping columns as well as row-based calculations. Supports add_column, update_column, calculate_column, drop_column, rename_column, filter_rows, and sort_rows. For files uploaded via the chat composer, pass the attachment_id as 'file_handle'; for ad-hoc local paths use 'file_path'; for tiny pasted data use 'csv_data'. To inspect/analyze an uploaded file (instead of mutating it), use read_spreadsheet first.",
+        "description": "Modify CSV/Excel data with basic CRUD operations like dropping columns as well as row-based calculations. Supports add_column, update_column, calculate_column, drop_column, rename_column, filter_rows, and sort_rows. For files uploaded via the chat composer, pass the attachment_id as 'file_handle'; for tiny pasted data use 'csv_data'. To inspect/analyze an uploaded file (instead of mutating it), use read_spreadsheet first.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "csv_data": {"type": "string", "description": "Raw CSV string data (use only for small/pasted data)"},
                 "file_handle": {"type": "string", "description": "AstralDeep attachment_id from the chat composer (preferred for uploaded files)"},
-                "file_path": {"type": "string", "description": "Absolute path to the CSV/Excel file on disk (use only when no file_handle is available)"},
                 "modifications": {
                     "type": "array",
                     "items": {

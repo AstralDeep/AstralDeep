@@ -151,3 +151,33 @@ def test_rest_auth_dependency_rejects_missing_token(mock_auth_env):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(get_current_user_payload(_Req(), None))
     assert exc.value.status_code == 401
+
+
+def _mock_jwt(payload: dict) -> str:
+    body = base64.b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"eyJhbGciOiJIUzI1NiJ9.{body}.fake-signature-ignore"
+
+
+@pytest.mark.parametrize("claims", [
+    {"sub": "victim", "act": {"sub": "agent:summarizer-1"}, "delegation": True,
+     "aud": "astral-agent-service", "realm_access": {"roles": ["user"]}},
+    {"sub": "victim", "aud": ["account", "astral-mcp"],
+     "realm_access": {"roles": ["user"]}},
+])
+def test_rest_auth_dependency_rejects_delegated_token_in_mock_mode(mock_auth_env, claims):
+    """Mock mode base64-decodes any token verbatim, so the delegated-token hole
+    is REAL in dev, not just a production concern — and a refusal must 401
+    rather than fall through to the permissive test_user."""
+    import asyncio
+    from fastapi import HTTPException
+    from fastapi.security import HTTPAuthorizationCredentials
+    from orchestrator.auth import get_current_user_payload
+
+    class _Req:
+        method = "GET"
+        query_params: dict = {}
+
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=_mock_jwt(claims))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(get_current_user_payload(_Req(), creds))
+    assert exc.value.status_code == 401

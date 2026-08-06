@@ -38,7 +38,7 @@ import time
 from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import shared  # noqa: F401 — normalizes USE_MOCK_AUTH/KEYCLOAK_* env aliases (post-VITE rename)
@@ -60,6 +60,17 @@ _DEATH_REASONS: Dict[str, str] = {}
 
 HARD_MAX_SECONDS = int(os.getenv("OFFLINE_GRANT_MAX_DAYS", "365")) * 24 * 60 * 60
 COOKIE_NAME = "astral_session"
+# One-shot cookie binding an in-flight login to THIS browser: /auth/login mints
+# it alongside the CSRF/PKCE state and /auth/callback refuses any state that
+# does not match it. Scoped to /auth (the only two routes that touch it), so it
+# is independent of the path="/" session cookie.
+STATE_COOKIE_NAME = "astral_oidc_state"
+STATE_COOKIE_PATH = "/auth"
+# The same _PENDING lifetime the pruning sweep in auth_login enforces.
+_STATE_COOKIE_MAX_AGE = 600
+# Deliberately identical for every callback refusal: the page must not tell a
+# forger which check rejected them.
+_INVALID_CALLBACK = "Sign-in could not be completed (invalid callback). Please try again."
 _SCOPE = "openid profile email offline_access"
 # Refresh when the access token has less than this many seconds left (D2).
 _REFRESH_WINDOW_SECONDS = 60
@@ -112,6 +123,35 @@ def _unsign(value: str) -> Optional[str]:
     sid, mac = value.rsplit(".", 1)
     expected = hmac.new(_secret(), sid.encode(), hashlib.sha256).hexdigest()[:32]
     return sid if hmac.compare_digest(mac, expected) else None
+
+
+def _cookie_secure(request: Request) -> bool:
+    """Production posture: always mark auth cookies Secure, even if the request
+    scheme reads as http behind a TLS-terminating proxy. Development keeps the
+    scheme-derived value so http://localhost still works."""
+    from orchestrator.session_store import is_dev_mode
+    return (not is_dev_mode()) or str(request.base_url).startswith("https")
+
+
+def _clear_state_cookie(resp: Response) -> Response:
+    """Drop the one-shot login-state cookie. ``delete_cookie`` only matches when
+    given the SAME path it was set with."""
+    resp.delete_cookie(STATE_COOKIE_NAME, path=STATE_COOKIE_PATH)
+    return resp
+
+
+def _state_is_bound(request: Request, state: str) -> bool:
+    """True when the callback's ``state`` matches the signed cookie that
+    ``/auth/login`` minted for this browser.
+
+    ``_sign`` emits ASCII only, so a non-ASCII cookie value cannot be valid and
+    is refused before ``_unsign`` — whose ``hmac.compare_digest`` raises on
+    non-ASCII ``str``. The state comparison runs over bytes for the same reason:
+    ``state`` is attacker-supplied query text.
+    """
+    raw = request.cookies.get(STATE_COOKIE_NAME, "") or ""
+    bound = (_unsign(raw) if raw.isascii() else None) or ""
+    return bool(state) and bool(bound) and hmac.compare_digest(bound.encode(), state.encode())
 
 
 def _get_store():
@@ -256,18 +296,35 @@ async def _asession_by_sid(sid: str) -> Optional[Dict[str, Any]]:
     return await asyncio.to_thread(_session_by_sid, sid)
 
 
+def _session_client_id(sess: Dict[str, Any]) -> str:
+    """The OIDC client that minted this session's tokens, from the ``azp`` claim.
+
+    Ordinary web sessions come from the confidential web client, but a session
+    can be minted by a different (public) first-party client — the device grant
+    used by the watch broker is one such path. Keycloak only refreshes or
+    revokes a token for its ISSUING client, so presenting such a refresh token
+    as the web client yields ``invalid_grant``: silent refresh would kill the
+    session, and sign-out would silently fail to revoke. Empty string means
+    "unknown", and callers fall back to the configured web client.
+    """
+    return str(_jwt_payload(sess.get("access_token", "")).get("azp", "") or "").strip()
+
+
 async def _refresh_session(sid: str, sess: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Silent refresh at Keycloak (D2). Returns the refreshed session or None.
 
     Never moves the interactive anchor; failure kills the session (the user
     must sign in interactively) and audits ``auth.token_refresh_failed``.
     """
-    authority, client_id, client_secret = _keycloak_config()
+    authority, web_client_id, client_secret = _keycloak_config()
     refresh_token = sess.get("refresh_token", "")
     if not authority or not refresh_token:
         return None
-    data = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": client_id}
-    if client_secret:
+    # Refresh as the issuing client: the secret belongs to the web client alone
+    # and is never sent for a public client (mirrors _revoke_refresh_token).
+    effective = _session_client_id(sess) or web_client_id
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": effective}
+    if client_secret and effective == web_client_id:
         data["client_secret"] = client_secret
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -505,7 +562,14 @@ async def auth_login(request: Request):
         "redirect_uri": _redirect_uri(request), "state": state,
         "code_challenge": challenge, "code_challenge_method": "S256",
     })
-    return RedirectResponse(f"{authority}/protocol/openid-connect/auth?{params}")
+    resp = RedirectResponse(f"{authority}/protocol/openid-connect/auth?{params}")
+    # Bind the state to THIS browser so only the agent that started the login
+    # can finish it. SameSite MUST stay 'lax': the callback is a cross-site
+    # top-level GET from Keycloak and 'strict' would drop the cookie there.
+    resp.set_cookie(STATE_COOKIE_NAME, _sign(state), httponly=True, samesite="lax",
+                    secure=_cookie_secure(request), max_age=_STATE_COOKIE_MAX_AGE,
+                    path=STATE_COOKIE_PATH)
+    return resp
 
 
 @web_auth_router.get("/auth/callback")
@@ -525,9 +589,17 @@ async def auth_callback(request: Request):
         # IdP) — bounded recoverable page, retry preserves the destination.
         desc = request.query_params.get("error_description") or idp_error
         logger.info("web_auth: IdP returned error at callback: %s", idp_error)
-        return _error_page(nxt, f"Sign-in was not completed ({desc[:160]}). Please try again.")
+        return _clear_state_cookie(
+            _error_page(nxt, f"Sign-in was not completed ({desc[:160]}). Please try again."))
     if not code or not pending:
-        return _error_page(nxt, "Sign-in could not be completed (invalid callback). Please try again.")
+        return _clear_state_cookie(_error_page(nxt, _INVALID_CALLBACK))
+    # The state must be bound to this browser by the cookie /auth/login set.
+    # This runs BEFORE the token exchange and BEFORE the user-switch revocation
+    # below, so a forged callback can neither spend an authorization code nor
+    # destroy the session of whoever is signed in here.
+    if not _state_is_bound(request, state or ""):
+        logger.warning("web_auth: callback state is not bound to this browser — refused")
+        return _clear_state_cookie(_error_page(nxt, _INVALID_CALLBACK))
     authority, client_id, client_secret = _keycloak_config()
     data = {
         "grant_type": "authorization_code", "code": code,
@@ -543,7 +615,8 @@ async def auth_callback(request: Request):
         tok = resp.json()
     except Exception:
         logger.exception("web_auth: token exchange failed")
-        return _error_page(nxt, "The identity provider rejected the sign-in. Please try again.")
+        return _clear_state_cookie(
+            _error_page(nxt, "The identity provider rejected the sign-in. Please try again."))
     sub = _sub_from_jwt(tok.get("access_token", ""))
 
     # D6 — user-switch revocation: a live session for someone else on this
@@ -567,15 +640,17 @@ async def auth_callback(request: Request):
         await _audit("login_interactive", sub,
                      "Sign-in refused: account has neither the 'user' nor 'admin' role",
                      outcome="failure")
-        return _no_access_page()
+        return _clear_state_cookie(_no_access_page())
 
     await _audit("login_interactive", sub, "Interactive login completed; new session established")
-    return await asyncio.to_thread(
+    resp = await asyncio.to_thread(
         _establish_session,
         request,
         {"access_token": tok.get("access_token", ""), "refresh_token": tok.get("refresh_token", ""), "sub": sub},
         nxt,
     )
+    # After _establish_session so the session cookie stays the FIRST Set-Cookie.
+    return _clear_state_cookie(resp)
 
 
 @web_auth_router.get("/auth/session")
@@ -635,7 +710,10 @@ async def auth_logout(request: Request):
         user_id = sess.get("sub", "")
         await _end_voice_session(request, user_id, "logout")
     if sess and not _is_mock():
-        await _revoke_or_queue(user_id, sess.get("refresh_token", ""))
+        # Revoke as the issuing client — a session minted by a public
+        # first-party client cannot be revoked as the confidential web client.
+        await _revoke_or_queue(user_id, sess.get("refresh_token", ""),
+                               client_id=_session_client_id(sess) or None)
         try:
             from orchestrator.offline_grant import OfflineGrantStore
             revoked = await asyncio.to_thread(
@@ -803,7 +881,13 @@ async def process_revocation_queue_once() -> int:
 # Internals
 # ---------------------------------------------------------------------------
 
-def _establish_session(request: Request, payload: Dict[str, Any], nxt: str) -> RedirectResponse:
+def _attach_session(request: Request, payload: Dict[str, Any], resp: Response) -> str:
+    """Mint the durable session for ``payload`` and set the signed cookie on ``resp``.
+
+    Split out of :func:`_establish_session` so a redirect flow and a JSON flow
+    can share ONE copy of the cookie policy rather than restating it. Returns
+    the new session id. Blocking (durable persist) — call it off the event loop.
+    """
     sid = secrets.token_urlsafe(24)
     _SESSIONS[sid] = {**payload, "created_at": time.time(), "sid": sid, "resumed": False}
     if not _is_mock():
@@ -817,15 +901,14 @@ def _establish_session(request: Request, payload: Dict[str, Any], nxt: str) -> R
             except Exception:
                 logger.warning("web_auth: durable session persist failed — session is process-local",
                                exc_info=True)
-    safe_next = _validate_next(nxt)
-    resp = RedirectResponse(safe_next, status_code=303)
-    # Production posture: always mark the session cookie Secure, even if the
-    # request scheme reads as http behind a TLS-terminating proxy. Development
-    # keeps the scheme-derived value so http://localhost still works.
-    from orchestrator.session_store import is_dev_mode
-    secure = (not is_dev_mode()) or str(request.base_url).startswith("https")
     resp.set_cookie(COOKIE_NAME, _sign(sid), httponly=True, samesite="lax",
-                    secure=secure, max_age=HARD_MAX_SECONDS, path="/")
+                    secure=_cookie_secure(request), max_age=HARD_MAX_SECONDS, path="/")
+    return sid
+
+
+def _establish_session(request: Request, payload: Dict[str, Any], nxt: str) -> RedirectResponse:
+    resp = RedirectResponse(_validate_next(nxt), status_code=303)
+    _attach_session(request, payload, resp)
     return resp
 
 
@@ -848,3 +931,187 @@ async def _audit(action: str, sub: str, description: str, *, outcome: str = "suc
         )
     except Exception:
         logger.debug("web_auth: audit hook unavailable for %s", action, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Feature 068 — kiosk sign-in (browser terminals with no keyboard)
+#
+# A second, flag-gated entry point beside /auth/login. It shows an RFC 8628
+# device code as a QR — the same broker the watch uses, unchanged — next to the
+# ordinary Keycloak redirect, so a terminal that cannot type is signed in from
+# a phone. GET / is untouched: feature 028's redirect-straight-to-Keycloak
+# posture is byte-identical, and with the flag off this router is never
+# included at all.
+#
+# Two invariants make this safe to expose on an unattended public terminal:
+#
+#   1. The device handle NEVER reaches the browser. /api/auth/device/poll
+#      relays raw access/refresh tokens to its caller by design (the watch is
+#      native and keeps them in the keychain). Here the handle is held
+#      server-side and referenced by a signed, HttpOnly, SameSite=Strict
+#      cookie, so page script cannot redeem it for tokens.
+#   2. The browser only ever receives a status. On approval the session is
+#      minted server-side through the same helper /auth/callback uses.
+# ---------------------------------------------------------------------------
+
+kiosk_router = APIRouter()
+
+KIOSK_COOKIE = "astral_kiosk"
+_KIOSK_FLOW_TTL_SECONDS = 900
+_KIOSK_FLOW_MAX = 512
+
+# flow_id -> {"handle": str, "created_at": float}. Process-local, like the
+# broker's own poll state and the _PENDING login table above.
+_KIOSK_FLOWS: Dict[str, Dict[str, Any]] = {}
+
+
+def _kiosk_client_id() -> str:
+    """The PUBLIC device-grant client the kiosk signs in with.
+
+    Defaults to ``astral-watch`` — the watch's client is already a public
+    device-grant client in both allow-lists, so the kiosk needs no new realm
+    configuration. Set ``KIOSK_DEVICE_CLIENT`` to a dedicated client to make
+    kiosk and watch sessions separately revocable and distinguishable in audit.
+
+    Whatever it is, it must appear in BOTH ``KEYCLOAK_DEVICE_CLIENTS`` and
+    ``KEYCLOAK_ALLOWED_AZP`` (the broker requires the intersection, and the
+    WebSocket handshake would refuse the resulting token), and it can never be
+    the confidential web client — the device grant refuses that by construction.
+    """
+    # Strip BEFORE falling back: a whitespace-only value must not resolve to an
+    # empty client id, which the broker would refuse as unknown_client.
+    return (os.getenv("KIOSK_DEVICE_CLIENT", "") or "").strip() or "astral-watch"
+
+
+def _kiosk_prune() -> None:
+    """Bound the in-flight flow table (mirrors the _PENDING sweep)."""
+    now = time.time()
+    for stale in [k for k, v in _KIOSK_FLOWS.items()
+                  if now - v.get("created_at", 0) > _KIOSK_FLOW_TTL_SECONDS]:
+        _KIOSK_FLOWS.pop(stale, None)
+    if len(_KIOSK_FLOWS) > _KIOSK_FLOW_MAX:
+        for old in sorted(_KIOSK_FLOWS,
+                          key=lambda k: _KIOSK_FLOWS[k].get("created_at", 0))[
+                              : len(_KIOSK_FLOWS) - _KIOSK_FLOW_MAX]:
+            _KIOSK_FLOWS.pop(old, None)
+
+
+def _kiosk_flow_handle(request: Request) -> Optional[str]:
+    """The live device handle bound to this browser, or None."""
+    raw = request.cookies.get(KIOSK_COOKIE, "") or ""
+    flow_id = (_unsign(raw) if raw.isascii() else None) or ""
+    entry = _KIOSK_FLOWS.get(flow_id) if flow_id else None
+    if not entry:
+        return None
+    if time.time() - entry.get("created_at", 0) > _KIOSK_FLOW_TTL_SECONDS:
+        _KIOSK_FLOWS.pop(flow_id, None)
+        return None
+    return str(entry.get("handle", "")) or None
+
+
+def _kiosk_template_path() -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "webrender", "templates", "kiosk.html")
+
+
+@kiosk_router.get("/kiosk", response_class=HTMLResponse)
+async def kiosk_page(request: Request):
+    """The two-column kiosk sign-in page. Unauthenticated by definition."""
+    if await aget_session(request):
+        return RedirectResponse("/", status_code=303)
+    try:
+        with open(_kiosk_template_path(), "r", encoding="utf-8") as fh:
+            page = fh.read()
+    except Exception:
+        logger.exception("web_auth: kiosk template missing")
+        return _error_page("/", "The sign-in page is unavailable.", status=500)
+    resp = HTMLResponse(page)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@kiosk_router.post("/auth/kiosk/start")
+async def kiosk_start(request: Request):
+    """Begin a device flow and bind it to this browser. Returns display fields only."""
+    from orchestrator import device_login
+    ip = request.client.host if request.client else "unknown"
+    try:
+        started = await device_login.start(_kiosk_client_id(), ip)
+    except device_login.DeviceLoginError as exc:
+        return JSONResponse(
+            {"error": getattr(exc, "code", "device_login_error"), "detail": str(exc)},
+            status_code=getattr(exc, "status", 500))
+    _kiosk_prune()
+    flow_id = secrets.token_urlsafe(24)
+    _KIOSK_FLOWS[flow_id] = {"handle": started.get("handle", ""), "created_at": time.time()}
+    resp = JSONResponse({
+        "user_code": started.get("user_code", ""),
+        "verification_uri": started.get("verification_uri", ""),
+        "qr_png_base64": started.get("qr_png_base64", ""),
+        "expires_in": started.get("expires_in", 600),
+        "interval": started.get("interval", 5),
+    })
+    resp.set_cookie(KIOSK_COOKIE, _sign(flow_id), httponly=True, samesite="strict",
+                    secure=_cookie_secure(request), max_age=_KIOSK_FLOW_TTL_SECONDS,
+                    path="/")
+    return resp
+
+
+@kiosk_router.post("/auth/kiosk/poll")
+async def kiosk_poll(request: Request):
+    """Poll the bound device flow; on approval mint the cookie session here.
+
+    The browser receives a status and nothing else — never token material.
+    """
+    from orchestrator import device_login
+    handle = _kiosk_flow_handle(request)
+    if not handle:
+        return JSONResponse({"status": "restart"})
+    ip = request.client.host if request.client else "unknown"
+    try:
+        result = await device_login.poll(handle, ip)
+    except device_login.DeviceLoginError as exc:
+        # A consumed or unknown handle just means "start over" for a kiosk.
+        code = getattr(exc, "code", "device_login_error")
+        if code in ("invalid_handle", "rate_limited"):
+            return JSONResponse({"status": "restart"})
+        return JSONResponse({"error": code, "detail": str(exc)},
+                            status_code=getattr(exc, "status", 500))
+
+    status = str(result.get("status", ""))
+    if status != "approved":
+        out: Dict[str, Any] = {"status": status}
+        if "interval" in result:
+            out["interval"] = result["interval"]
+        if status == "denied":
+            out["reason"] = str(result.get("reason", ""))
+        return JSONResponse(out)
+
+    tokens = result.get("tokens", {}) or {}
+    access_token = str(tokens.get("access_token", ""))
+    sub = _sub_from_jwt(access_token)
+
+    # A kiosk is a shared browser by definition — retire a live session that
+    # belongs to somebody else before minting this one (mirrors /auth/callback).
+    prior = await aget_session(request)
+    if prior and prior.get("sub") and prior["sub"] != sub:
+        await _revoke_or_queue(prior.get("sub", ""), prior.get("refresh_token", ""),
+                               client_id=_session_client_id(prior) or None)
+        await _kill_session(prior.get("sid", ""), prior, audit_action="logout",
+                            description="Prior session revoked by user switch at the kiosk",
+                            outcome="success")
+        await _end_voice_session(request, prior.get("sub", ""), "logout")
+
+    await _audit("login_interactive", sub,
+                 "Interactive login completed at a kiosk; new session established")
+    resp = JSONResponse({"status": "approved", "next": "/"})
+    await asyncio.to_thread(
+        _attach_session,
+        request,
+        {"access_token": access_token,
+         "refresh_token": str(tokens.get("refresh_token", "")),
+         "sub": sub},
+        resp,
+    )
+    resp.delete_cookie(KIOSK_COOKIE, path="/")
+    return resp

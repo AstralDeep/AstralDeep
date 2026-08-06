@@ -72,6 +72,14 @@ def render_children(items: List[Any]) -> str:
 
 
 _SAFE_DATA_ATTR = _re.compile(r"^data-[a-z0-9-]+$")
+# ``data-ui-*`` is the client's generic chrome-dispatch contract: client.js
+# delegates on ``[data-ui-action]`` document-wide with NO class or container
+# guard, so an author-supplied one would be a one-click trigger for any chrome
+# action, fired as the viewing user. Refused as a FAMILY (not a fixed name
+# list) so a future ``data-ui-*`` contract is closed on arrival. The chat
+# dispatch path needs no such rule — it requires the ``.astral-action`` class,
+# and ``class`` is already refused here, so it cannot be forged.
+_REFUSED_DATA_ATTR_PREFIX = "data-ui-"
 # Accessibility pass-through: every WAI-ARIA attribute is ``aria-`` followed by
 # lowercase letters only (aria-label, aria-hidden, aria-describedby,
 # aria-valuemin, ...), so the key whitelist is exact.
@@ -89,10 +97,10 @@ def _base_attrs(comp: Dict[str, Any]) -> str:
     ``attributes`` is astralprims' documented free-form escape hatch; the web
     renderer honors only:
 
-    * ``data-*`` keys — the adaptive UI designer relies on this for nested
-      morph anchors: the materializer stamps ``attributes["data-component-id"]``
-      on refs nested inside arrangements so ``ui_upsert`` morphs keep finding
-      them in the DOM;
+    * ``data-*`` keys EXCEPT the ``data-ui-*`` client-dispatch family — the
+      adaptive UI designer relies on this for nested morph anchors: the
+      materializer stamps ``attributes["data-component-id"]`` on refs nested
+      inside arrangements so ``ui_upsert`` morphs keep finding them in the DOM;
     * ``aria-*`` keys and ``role`` — aria values are attribute-escaped like any
       other text; ``role`` is value-validated against the non-interactive
       ``_SAFE_ROLES`` allowlist and silently dropped otherwise.
@@ -124,8 +132,8 @@ def _explicit_attrs(comp: Dict[str, Any]) -> Dict[str, Any]:
     designer's materializer set a nested ``"attributes"`` dict — so whitelisted
     keys must be honored wherever they appear (the welcome buttons' aria-labels
     arrived flattened and were silently dropped otherwise). Nested entries win
-    on conflict. Only ``data-*``, ``aria-*`` and ``role`` are ever collected;
-    everything else stays refused.
+    on conflict. Only ``data-*`` (minus the ``data-ui-*`` dispatch family),
+    ``aria-*`` and ``role`` are ever collected; everything else stays refused.
     """
     found: Dict[str, Any] = {}
     sources = [comp]
@@ -135,6 +143,8 @@ def _explicit_attrs(comp: Dict[str, Any]) -> Dict[str, Any]:
     for source in sources:
         for key, value in source.items():
             key_s = str(key).lower()
+            if key_s.startswith(_REFUSED_DATA_ATTR_PREFIX):
+                continue
             if (_SAFE_DATA_ATTR.match(key_s) or _SAFE_ARIA_ATTR.match(key_s)
                     or key_s == "role"):
                 found[key_s] = value

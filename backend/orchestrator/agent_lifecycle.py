@@ -48,7 +48,11 @@ from orchestrator.user_agents import (
 )
 from orchestrator.work_admission import ExecutionFence, OperationState
 from orchestrator.agent_validator import AgentSpecValidator
-from orchestrator.code_security import CodeSecurityAnalyzer, Severity
+from orchestrator.code_security import (
+    CodeSecurityAnalyzer,
+    Severity,
+    blocks_execution,
+)
 from shared.process_supervision import (
     ProcessOwner,
     ProcessSupervisor,
@@ -1306,6 +1310,24 @@ class AgentLifecycleManager:
                         await asyncio.to_thread(self._append_log, draft_id, f"Auto-fix produced syntax error: {e}")
                         continue  # Try again — keep the last COMPILING code
 
+                    # Re-run the nefarious-activity gate on the refined bytes.
+                    # The auto-fix loop used to be the one path where NEW code
+                    # reached validator.validate() (which executes it) with a
+                    # syntax check only — an LLM "fix" is exactly as untrusted
+                    # as the original generation.
+                    fix_report = self.security.analyze(
+                        candidate, filename=f"{slug}/mcp_tools.py"
+                    )
+                    if blocks_execution(fix_report):
+                        await asyncio.to_thread(
+                            self._append_log,
+                            draft_id,
+                            "Auto-fix refused by security analysis "
+                            f"(max_severity={fix_report.max_severity}); "
+                            "keeping the last clean code.",
+                        )
+                        continue
+
                     tools_code = candidate
 
                     # Server-hosted drafts retain their legacy editable working
@@ -1658,14 +1680,17 @@ class AgentLifecycleManager:
 
             report = self.security.analyze(tools_code, filename=f"{slug}/mcp_tools.py")
 
-            if not report.passed and report.max_severity == Severity.CRITICAL:
+            # Pre-execution nefarious-activity gate: HIGH (os.environ access,
+            # globals()/setattr tricks, obfuscation) blocks alongside CRITICAL
+            # — nothing below this line may run code the analyzer flagged.
+            if blocks_execution(report):
                 state = await finish_generation(
                     ERROR,
                     security_report=json.dumps(report.to_dict()),
-                    error_message="Security analysis found critical issues in generated code.",
+                    error_message="Security analysis found blocking issues in generated code.",
                 )
                 await self._send_progress(websocket, draft_id, "security_failed",
-                                           "Security analysis found critical issues. Code was not written.",
+                                           "Security analysis found blocking issues. Code was not written.",
                                            ERROR, detail=report.to_dict())
                 await asyncio.to_thread(self._append_log, draft_id, f"Security analysis FAILED: {report.recommendation}")
                 return state
@@ -2145,17 +2170,18 @@ class AgentLifecycleManager:
 
             report = self.security.analyze(new_code, filename=f"{slug}/mcp_tools.py")
 
-            if not report.passed and report.max_severity == Severity.CRITICAL:
+            # Pre-execution gate: HIGH blocks alongside CRITICAL (H4).
+            if blocks_execution(report):
                 await asyncio.to_thread(
                     self.db.update_draft_agent,
                     draft_id,
                     status=ERROR,
                     security_report=json.dumps(report.to_dict()),
-                    error_message="Refinement produced code with critical security issues.",
+                    error_message="Refinement produced code with blocking security issues.",
                     refinement_history=json.dumps(history),
                 )
                 await self._send_progress(websocket, draft_id, "security_failed",
-                                           "Security analysis found critical issues in updated code.",
+                                           "Security analysis found blocking issues in updated code.",
                                            ERROR, detail=report.to_dict())
                 return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
@@ -2311,10 +2337,11 @@ class AgentLifecycleManager:
                 await self.start_draft_agent(draft_id, websocket)
                 return True
 
-            # Security analysis
+            # Security analysis — pre-execution gate: HIGH blocks alongside
+            # CRITICAL (H4).
             report = self.security.analyze(new_code, filename=f"{slug}/mcp_tools.py")
-            if not report.passed and report.max_severity == Severity.CRITICAL:
-                logger.error("Auto-fix produced code with critical security issues")
+            if blocks_execution(report):
+                logger.error("Auto-fix produced code with blocking security issues")
                 await self._send_progress(websocket, draft_id, "auto_fix_failed",
                                            "Auto-fix produced code with security issues. Manual refinement needed.",
                                            TESTING)
@@ -2410,7 +2437,38 @@ class AgentLifecycleManager:
                                            f"Code has syntax errors: {e}", REJECTED)
                 return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
-            # Step 3: Spec validation
+            # Step 3: Decision based on security findings — BEFORE spec
+            # validation, because the 027 validator EXECUTES the tools
+            # in-process. Flagged code must be refused or parked for admin
+            # review without ever running (H4: the verdict used to be
+            # computed here but enforced only after validate()).
+            if report.max_severity == Severity.CRITICAL:
+                await asyncio.to_thread(
+                    self.db.update_draft_agent,
+                    draft_id, status=REJECTED,
+                    security_report=json.dumps(report.to_dict()),
+                    error_message="Critical security issues detected. Agent rejected.",
+                )
+                await self._send_progress(websocket, draft_id, "rejected",
+                                           "Agent rejected: critical security issues found.",
+                                           REJECTED, detail=report.to_dict())
+                await asyncio.to_thread(self._append_log, draft_id, "REJECTED: Critical security issues")
+                return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
+
+            elif report.max_severity == Severity.HIGH:
+                await asyncio.to_thread(
+                    self.db.update_draft_agent,
+                    draft_id, status=PENDING_REVIEW,
+                    security_report=json.dumps(report.to_dict()),
+                )
+                await self._send_progress(websocket, draft_id, "pending_review",
+                                           "Agent requires admin review before going live.",
+                                           PENDING_REVIEW, detail=report.to_dict())
+                await asyncio.to_thread(self._append_log, draft_id, "Sent to admin review queue (high-severity findings)")
+                return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
+
+            # Step 4: Spec validation (executes the tools; only reached by
+            # code the security gate cleared).
             await self._send_progress(websocket, draft_id, "spec_validation",
                                        "Validating tools against spec...", ANALYZING)
 
@@ -2439,32 +2497,6 @@ class AgentLifecycleManager:
                                                "validation": validation_report.to_dict(),
                                            })
                 await asyncio.to_thread(self._append_log, draft_id, "Sent to review: spec validation failed")
-                return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
-
-            # Step 4: Decision based on security findings
-            if report.max_severity == Severity.CRITICAL:
-                await asyncio.to_thread(
-                    self.db.update_draft_agent,
-                    draft_id, status=REJECTED,
-                    security_report=json.dumps(report.to_dict()),
-                    error_message="Critical security issues detected. Agent rejected.",
-                )
-                await self._send_progress(websocket, draft_id, "rejected",
-                                           "Agent rejected: critical security issues found.",
-                                           REJECTED, detail=report.to_dict())
-                await asyncio.to_thread(self._append_log, draft_id, "REJECTED: Critical security issues")
-                return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
-
-            elif report.max_severity == Severity.HIGH:
-                await asyncio.to_thread(
-                    self.db.update_draft_agent,
-                    draft_id, status=PENDING_REVIEW,
-                    security_report=json.dumps(report.to_dict()),
-                )
-                await self._send_progress(websocket, draft_id, "pending_review",
-                                           "Agent requires admin review before going live.",
-                                           PENDING_REVIEW, detail=report.to_dict())
-                await asyncio.to_thread(self._append_log, draft_id, "Sent to admin review queue (high-severity findings)")
                 return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
             else:

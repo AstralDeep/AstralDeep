@@ -76,8 +76,12 @@ class FeatureFlags:
             # and instruct the model to treat their contents as data, never
             # instructions — closing a prompt-injection channel. Composes with
             # C-N15 (a tool's _model_digest is trusted and left unmarked).
-            # No-op when OFF. Default OFF.
-            "datamarking": self._read("FF_DATAMARKING", False),
+            # No-op when OFF. Default ON: the default posture is delimiting
+            # ONLY — it adds a system-prompt paragraph and wraps tool output,
+            # and deletes nothing. Span REMOVAL stays separately opt-in behind
+            # DATAMARK_SANITIZE_SPANS (orchestrator.__init__), and per-line
+            # interleaving is never requested by the chat path.
+            "datamarking": self._read("FF_DATAMARKING", True),
             # 040-inprocess-agents-skills-commands: run the nine bundled
             # first-party agents IN-PROCESS in the orchestrator (no per-agent
             # uvicorn port). The networked WS path is the kill-switch when OFF.
@@ -173,6 +177,14 @@ class FeatureFlags:
                 "FF_CONVERSATIONAL_VOICE",
                 True,
             ),
+            # 068-kiosk-device-login: the /kiosk sign-in page for browser
+            # terminals with no keyboard — an RFC 8628 QR alongside the
+            # ordinary Keycloak redirect. Default OFF; with the flag off the
+            # router is never included, so there is no route and no OpenAPI
+            # entry, and GET / keeps feature 028's redirect-straight-to-
+            # Keycloak posture byte-for-byte. Read once at import (container
+            # recreate to enable). See specs/068-kiosk-device-login/.
+            "kiosk_login": self._read("FF_KIOSK_LOGIN", False),
         }
 
     @staticmethod

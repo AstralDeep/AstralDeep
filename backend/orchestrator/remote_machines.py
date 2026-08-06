@@ -51,6 +51,14 @@ def list_machines(db, owner_user_id: str) -> List[Dict]:
     )
 
 
+def owns_any_machine(db, owner_user_id: str) -> bool:
+    """Existence-only check for tool visibility; no machine data leaves."""
+    return db.fetch_one(
+        "SELECT 1 FROM remote_machine WHERE owner_user_id = ? LIMIT 1",
+        (owner_user_id,),
+    ) is not None
+
+
 def get_machine(db, owner_user_id: str, machine_id: str) -> Optional[Dict]:
     return db.fetch_one(
         "SELECT * FROM remote_machine WHERE machine_id = ? AND owner_user_id = ?",

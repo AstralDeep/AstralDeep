@@ -24,8 +24,14 @@ from orchestrator.sandbox import SandboxLimits  # noqa: E402
 
 # ───────────────────────── flag ──────────────────────────────────────────────
 
-def test_sandbox_default_off(monkeypatch):
+def test_sandbox_default_on(monkeypatch):
+    # H4 remediation: draft/parser children never inherit secrets by default.
     monkeypatch.delenv("FF_SANDBOX_CODEGEN", raising=False)
+    assert sandbox.sandbox_enabled() is True
+
+
+def test_sandbox_explicit_kill_switch(monkeypatch):
+    monkeypatch.setenv("FF_SANDBOX_CODEGEN", "false")
     assert sandbox.sandbox_enabled() is False
 
 

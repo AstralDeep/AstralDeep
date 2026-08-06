@@ -43,17 +43,13 @@ def resolve_attachment_path(file_handle: str, user_id: str) -> str:
     Raises ``ValueError`` if the handle is unknown, not owned by the user,
     or refers to a file that no longer exists on disk.
 
-    If ``file_handle`` is already an absolute path that exists (legacy /
-    test cases), it is returned as-is — for callers that already have a
-    resolved path or for unit tests that bypass the DB.
+    ``file_handle`` is always treated as an attachment id. An on-disk path
+    is never honored: every caller takes this value straight from a tool
+    argument, so accepting a path would let a model read any file the agent
+    process can open, bypassing the ownership query below.
     """
     if not file_handle:
         raise ValueError("file_handle is required")
-
-    # Test-friendly fast path: if the caller supplied a real existing file,
-    # accept it. This keeps unit tests simple without spinning up the DB.
-    if os.path.isabs(file_handle) and os.path.exists(file_handle):
-        return file_handle
 
     try:
         from orchestrator.attachments.repository import AttachmentRepository

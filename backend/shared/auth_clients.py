@@ -21,7 +21,12 @@ compatible).
 from __future__ import annotations
 
 import os
-from typing import Set
+from typing import Any, Dict, Set, Tuple
+
+# Mirrors ``orchestrator.mcp_authz.MCP_AUDIENCE``; duplicated as a literal
+# because ``shared`` must not import from ``orchestrator`` (layering). The two
+# are pinned equal by tests/test_first_party_claims.py.
+MCP_AUDIENCE = "astral-mcp"
 
 
 def _primary_client_id() -> str:
@@ -54,3 +59,61 @@ def is_azp_allowed(azp: str) -> bool:
     if not azp:
         return True
     return azp in allowed_azps()
+
+
+def agent_service_client_id() -> str:
+    """The Keycloak client the RFC 8693 delegation exchange targets."""
+    return (os.getenv("AGENT_SERVICE_CLIENT_ID", "astral-agent-service") or "").strip()
+
+
+def audience_set(payload: Dict[str, Any]) -> Set[str]:
+    """The token's ``aud`` claim as a set — the claim is a string OR a list."""
+    aud = payload.get("aud")
+    if isinstance(aud, str):
+        values = [aud]
+    elif isinstance(aud, (list, tuple, set)):
+        values = list(aud)
+    else:
+        return set()
+    return {str(a).strip() for a in values if str(a).strip()}
+
+
+def is_first_party_user_claims(payload: Dict[str, Any]) -> Tuple[bool, str]:
+    """True when ``payload`` may act as an interactive first-party USER session.
+
+    A DENYLIST, deliberately: Keycloak confidential-client access tokens carry
+    ``aud="account"``, so requiring a positive audience (or re-enabling
+    ``verify_aud``) would refuse every real login. What this refuses is the set
+    of tokens the orchestrator itself mints or obtains for a NON-user purpose
+    and which would otherwise pass the signature/azp/role gates unchanged:
+
+    * ``act`` — the RFC 8693 actor claim on a delegated token;
+    * ``delegation`` — this repo's own delegated-token flag;
+    * ``aud`` containing :data:`MCP_AUDIENCE` — scoped to the MCP endpoint,
+      which does its own ``audience=``-checked decode in ``mcp_authz``.
+
+    NOT refused: ``aud`` containing :func:`agent_service_client_id`. That looks
+    like the obvious discriminator for a Keycloak-exchanged delegation token,
+    and it is wrong here — verified against a live realm, where an ORDINARY
+    interactive login decodes to
+    ``aud=["astral-agent-service","realm-management","account"]`` because the
+    delegation setup adds that audience to the frontend client's tokens by
+    protocol mapper. Refusing it locks every real user out of chat and /api.
+    A Keycloak-exchanged delegation token carries neither ``act`` nor
+    ``delegation`` either, so nothing in the token distinguishes it from a user
+    token in that realm configuration. Closing that replay path needs a REALM
+    change (stop granting the agent-service audience to interactive tokens, or
+    stamp exchanged tokens with a claim of their own), not a code change —
+    see ``docs/keycloak_agent_delegation_setup.md``.
+
+    Returns ``(ok, reason)``; ``reason`` is "" when ``ok``.
+    """
+    if not isinstance(payload, dict):
+        return False, "malformed_claims"
+    if "act" in payload:
+        return False, "delegated_actor_claim"
+    if payload.get("delegation"):
+        return False, "delegation_flag"
+    if MCP_AUDIENCE in audience_set(payload):
+        return False, "mcp_audience"
+    return True, ""

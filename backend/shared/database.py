@@ -34,8 +34,13 @@ logger = logging.getLogger('Database')
 # 064.001: + bounded MCP child admission class and slots (8 active / 32 queued)
 # 065.001: + conversational-voice session/turn fencing, commit/layout versioning,
 #          and the no-queue voice-interactive admission class.
-SCHEMA_PREDECESSOR_REVISION = '064.001'
-SCHEMA_REVISION = '065.001'
+# 066.001: + composite messages(chat_id, user_id, timestamp, id) index for the
+#          per-chat hot paths (transcript load, latest-id turn marker,
+#          recent-chats preview subquery, auto-title COUNT) and
+#          message_attachment(message_id, user_id) for the per-message
+#          attachment reads. Index-only; no table or column changes.
+SCHEMA_PREDECESSOR_REVISION = '065.001'
+SCHEMA_REVISION = '066.001'
 
 _SCHEMA_ADVISORY_LOCK = (1095980114, 60001)
 _USER_AGENT_POLICY_ADVISORY_LOCK = (1095980114, 60002)
@@ -684,8 +689,13 @@ class Database:
                 created_at BIGINT NOT NULL
             )
         ''')
+        # idx_message_attachment_chat also serves the chat-scoped bulk read
+        # (list_for_chat: WHERE chat_id = ? AND user_id = ? ORDER BY created_at).
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_message_attachment_chat ON message_attachment(chat_id, created_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_message_attachment_att ON message_attachment(attachment_id)')
+        # Per-message reads (list_for_message, history._attachments) filter on
+        # (message_id, user_id); without this they sequential-scan the table.
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_message_attachment_message ON message_attachment(message_id, user_id)')
 
         # attachment_parser: registry of globally-available parsers keyed by file
         # type, plus the dedup/provenance for the auto-creation flow. One row per
@@ -806,6 +816,13 @@ class Database:
         # Indexes on user_id for query performance
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)')
+        # Per-chat hot paths (transcript load, latest-id turn marker, recent-chats
+        # preview subquery, auto-title COUNT) all filter on exactly (chat_id,
+        # user_id); timestamp/id complete the sort so the ORDER BY is served by
+        # the index. idx_messages_user_id alone is one user's ENTIRE history, so
+        # it cannot serve them. Plain CREATE INDEX: _apply_full_schema runs inside
+        # the schema advisory transaction, where CONCURRENTLY is not permitted.
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_chat_user_ts ON messages(chat_id, user_id, timestamp, id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_saved_components_user_id ON saved_components(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_chat_files_user_id ON chat_files(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_agent_scopes_user_id ON agent_scopes(user_id, agent_id)')

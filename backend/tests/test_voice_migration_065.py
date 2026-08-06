@@ -140,7 +140,12 @@ def _direct_connections_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _seed_actual_064(sandbox: _IsolatedDatabase) -> dict[str, object]:
-    """Build the checked-out final-064 schema and representative durable rows."""
+    """Build the pre-voice predecessor schema and representative durable rows.
+
+    Applies the checked-out full schema with the 065 voice migration
+    suppressed and stamps SCHEMA_PREDECESSOR_REVISION, so a real start-up
+    re-runs the voice migration from the one approved upgrade source.
+    """
     database = Database.__new__(Database)
     database.database_url = sandbox.dsn
     database._migrate_conversational_voice_065 = (  # type: ignore[method-assign]
@@ -326,8 +331,8 @@ def _insert_voice_turn(
 
 
 def test_revision_contract_is_exact_and_documents_recovery() -> None:
-    assert SCHEMA_PREDECESSOR_REVISION == "064.001"
-    assert SCHEMA_REVISION == "065.001"
+    assert SCHEMA_PREDECESSOR_REVISION == "065.001"
+    assert SCHEMA_REVISION == "066.001"
     source = inspect.getsource(Database._init_db)
     assert "SCHEMA_PREDECESSOR_REVISION" in source
     assert "SchemaRevisionError" in source
@@ -353,7 +358,7 @@ def test_fresh_database_bootstraps_directly_to_065(
         _fetch_one(sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'")[
             "value"
         ]
-        == "065.001"
+        == "066.001"
     )
     assert (
         _fetch_one(sandbox, "SELECT to_regclass('voice_session') AS relation")[
@@ -381,7 +386,7 @@ def test_actual_064_upgrade_preserves_representative_rows_and_adds_exact_shape(
         _fetch_one(sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'")[
             "value"
         ]
-        == "065.001"
+        == "066.001"
     )
     assert SESSION_COLUMNS == _column_names(sandbox, "voice_session")
     assert TURN_COLUMNS == _column_names(sandbox, "voice_turn")
@@ -713,7 +718,7 @@ def test_wrong_predecessor_fails_closed_without_mutating_marker_or_schema(
         )
         connection.commit()
 
-    with pytest.raises(SchemaRevisionError, match="expected '064.001'.*'064.999'"):
+    with pytest.raises(SchemaRevisionError, match="expected '065.001'.*'064.999'"):
         Database(sandbox.dsn)
 
     assert (
@@ -784,7 +789,7 @@ def test_failed_065_transaction_rolls_back_then_retries_cleanly(
         _fetch_one(sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'")[
             "value"
         ]
-        == "064.001"
+        == "065.001"
     )
     assert (
         _fetch_one(sandbox, "SELECT to_regclass('voice_session') AS relation")[
@@ -800,7 +805,7 @@ def test_failed_065_transaction_rolls_back_then_retries_cleanly(
         _fetch_one(sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'")[
             "value"
         ]
-        == "065.001"
+        == "066.001"
     )
 
 
@@ -873,7 +878,7 @@ def test_fast_path_and_marker_clear_repeat_are_idempotent_and_preserve_policy(
         _fetch_one(sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'")[
             "value"
         ]
-        == "065.001"
+        == "066.001"
     )
 
 
@@ -915,7 +920,7 @@ def test_conflicting_preexisting_voice_policy_is_not_overwritten(
         _fetch_one(sandbox, "SELECT value FROM schema_meta WHERE key = 'revision'")[
             "value"
         ]
-        == "064.001"
+        == "065.001"
     )
     assert _fetch_one(
         sandbox,

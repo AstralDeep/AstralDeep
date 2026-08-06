@@ -19,8 +19,11 @@ from .session import (
     SessionBinding,
     SessionSupervisor,
     SileroVad,
+    preload_vad_model,
 )
 from .speech_adapters import (
+    KOKORO_SAMPLE_RATE,
+    SERVER_OWNED_PHRASE_TEXTS,
     FixedPhraseTTSCache,
     SpeechPreflight,
     SpeechPreflightError,
@@ -130,6 +133,9 @@ def build_pool_client(
         session_factory=create_session,
     )
     client = PoolClient(config, supervisor=supervisor)
+    # The runtime cache is reachable from the client so startup can warm it
+    # without rebuilding the adapters the sessions actually share.
+    client.speech_tts = tts
     client_holder["client"] = client
     return client
 
@@ -191,6 +197,46 @@ async def preflight_until_ready(config: WorkerConfig, stop: asyncio.Event) -> bo
         except asyncio.TimeoutError:
             backoff = min(backoff * 2, _PREFLIGHT_RETRY_MAX_SECONDS)
     return False
+
+
+# The preflight proves TTS by synthesizing "On it!" and then deliberately
+# discards it (zero retention before pool authentication), so the first real
+# acknowledgement of the worker's life used to pay a full cold round trip
+# against the <=1.5 s budget. Warm the runtime cache instead, off the critical
+# path, with the phrases that can be spoken earliest. Members of the closed
+# server-owned vocabulary only — the cache refuses anything else anyway.
+WARM_PHRASE_TEXTS: tuple[str, ...] = (
+    "On it!",
+    "Hi! I'm ready when you are.",
+    "I'm on it.",
+    "Let me take care of that.",
+)
+#: Every warmed phrase is an acknowledgement or greeting, which the
+#: coordinator reserves at the single-announcement ceiling.
+_WARM_PHRASE_SAMPLES = KOKORO_SAMPLE_RATE * 4
+
+
+async def warm_phrase_cache(tts: Any) -> None:
+    """Prime the bounded phrase cache without ever failing the worker."""
+
+    for text in WARM_PHRASE_TEXTS:
+        if text not in SERVER_OWNED_PHRASE_TEXTS:
+            continue
+        try:
+            await tts.synthesize(text, max_duration_samples=_WARM_PHRASE_SAMPLES)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The service regressed since the preflight proved it. The live
+            # synthesis path is unchanged; stop rather than retry the rest.
+            return
+
+
+def _start_phrase_cache_warm(client: Any) -> asyncio.Task[None] | None:
+    tts = getattr(client, "speech_tts", None)
+    if tts is None:
+        return None
+    return asyncio.create_task(warm_phrase_cache(tts), name="voice-phrase-warm")
 
 
 def _build_speech_transport(config: WorkerConfig) -> Any:
@@ -280,7 +326,9 @@ async def run_worker(config: WorkerConfig | None = None) -> None:
             continue
     if not await preflight_until_ready(resolved, stop):
         return
+    await preload_vad_model()
     client = build_pool_client(resolved)
+    warm = _start_phrase_cache_warm(client)
     bridge = WatchBridgeServer(
         supervisor=client.supervisor,
         secret=resolved.control_secret,
@@ -292,6 +340,9 @@ async def run_worker(config: WorkerConfig | None = None) -> None:
     try:
         await client.run_forever(stop)
     finally:
+        if warm is not None:
+            warm.cancel()
+            await asyncio.gather(warm, return_exceptions=True)
         await bridge.close()
 
 

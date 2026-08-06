@@ -7,7 +7,7 @@ import sys
 import random
 import csv
 import io
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
@@ -317,18 +317,33 @@ def analyze_generic_data(csv_data: str, missing_strategy: str = 'ask', session_i
         return create_ui_response([Alert(message=f"Failed to parse CSV: {e}", variant="error")])
 
 
-def analyze_csv_file(file_path: str, missing_strategy: str = 'ask', session_id: str = "default", **kwargs) -> Dict[str, Any]:
-    """Analyze a CSV file stored on the backend.
-    
+def analyze_csv_file(
+    attachment_id: Optional[str] = None,
+    missing_strategy: str = 'ask',
+    session_id: str = "default",
+    user_id: Optional[str] = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """Analyze a CSV file the user uploaded via the chat composer.
+
     Args:
-        file_path: Absolute path to the CSV file.
+        attachment_id: AstralDeep attachment_id for the uploaded CSV.
         missing_strategy: Strategy for missing data ('ask', 'drop', 'fill_synthetic').
+
+    The blob is located through the ownership-checked attachment resolver;
+    the tool never accepts a caller-supplied on-disk path.
     """
-    if not os.path.exists(file_path):
-        return create_ui_response([Alert(message=f"File not found: {file_path}", variant="error")])
+    try:
+        from agents.general.file_tools import resolve_attachment
+    except ImportError as e:
+        return create_ui_response([Alert(message=f"Attachments subsystem unavailable: {e}", variant="error")])
+
+    _att, blob_path, err = resolve_attachment(attachment_id, user_id)
+    if err is not None:
+        return create_ui_response([Alert(message=err["error"]["message"], variant="error")])
 
     try:
-        with open(file_path, mode='r', encoding='utf-8') as f:
+        with open(blob_path, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             rows = list(reader)
             if not rows:
@@ -389,14 +404,14 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "analyze_csv_file": {
         "function": analyze_csv_file,
         "scope": "tools:read",
-        "description": "Analyze a CSV file stored on the backend. USE THIS for LARGE CSV files that are already uploaded. Provide the absolute file_path.",
+        "description": "Analyze a CSV file the user uploaded via the chat composer. USE THIS for LARGE CSV files that are already uploaded. Provide the attachment_id.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "Absolute path to the CSV file on disk"},
+                "attachment_id": {"type": "string", "description": "AstralDeep attachment_id from the chat composer"},
                 "missing_strategy": {"type": "string", "description": "Strategy for missing data: 'ask', 'drop', 'fill_synthetic'.", "default": "ask"}
             },
-            "required": ["file_path"]
+            "required": ["attachment_id"]
         }
     }
 }

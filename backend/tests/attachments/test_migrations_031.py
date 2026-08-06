@@ -57,3 +57,18 @@ def test_attachment_parser_gap_is_unique():
         ("uq_attachment_parser_gap",),
     )
     assert row is not None
+
+
+def test_message_attachment_read_paths_are_indexed():
+    db = _db_or_skip()
+    names = {
+        r["indexname"]
+        for r in db.fetch_all(
+            "SELECT indexname FROM pg_indexes WHERE tablename = ?",
+            ("message_attachment",),
+        )
+    }
+    # chat-scoped bulk read (list_for_chat) and per-message read
+    # (list_for_message / history._attachments) each need their own index.
+    assert "idx_message_attachment_chat" in names
+    assert "idx_message_attachment_message" in names

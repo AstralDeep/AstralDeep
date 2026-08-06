@@ -97,6 +97,32 @@ def _seed_pending(nxt=DEEP_LINK):
     return state
 
 
+def _state_cookies(state):
+    """The browser-bound state cookie /auth/login sets. The callback refuses any
+    state that does not come back with it, so every success path needs it."""
+    return {web_auth.STATE_COOKIE_NAME: web_auth._sign(state)}
+
+
+def _no_exchange_client(posts):
+    """Fake httpx.AsyncClient class that records and then refuses any token POST,
+    so a test can prove the authorization code was never spent."""
+    class _FakeAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, data=None):
+            posts.append(url)
+            raise AssertionError("token exchange must not run for an unbound state")
+
+    return _FakeAsyncClient
+
+
 @pytest.fixture(autouse=True)
 def _reset_web_auth():
     """Fresh module state per test: cached store, IdP probe cache, reasons."""
@@ -154,13 +180,19 @@ def test_callback_success_redirects_to_deep_link(db, store, monkeypatch, real_au
     monkeypatch.setattr(web_auth.httpx, "AsyncClient", _token_client(token_response))
     _capture_audit(monkeypatch)
 
-    req = _FakeRequest(query_params={"code": "authcode-1", "state": state})
+    req = _FakeRequest(query_params={"code": "authcode-1", "state": state},
+                       cookies=_state_cookies(state))
     new_sids = []
     try:
         resp = asyncio.run(web_auth.auth_callback(req))
         assert resp.status_code == 303
         assert resp.headers["location"] == DEEP_LINK
         assert web_auth.COOKIE_NAME in resp.headers.get("set-cookie", "")
+        # The one-shot state cookie is cleared on the way out (same path).
+        assert any(c.startswith(f"{web_auth.STATE_COOKIE_NAME}=")
+                   and "max-age=0" in c.lower()
+                   and f"Path={web_auth.STATE_COOKIE_PATH}" in c
+                   for c in resp.headers.getlist("set-cookie"))
         new_sids = [s for s, v in web_auth._SESSIONS.items() if v.get("sub") == user_id]
         assert len(new_sids) == 1
     finally:
@@ -234,7 +266,8 @@ def test_callback_token_exchange_failure_preserves_next(monkeypatch, real_auth_e
             raise RuntimeError("token endpoint unreachable")
 
     monkeypatch.setattr(web_auth.httpx, "AsyncClient", _BoomClient)
-    req = _FakeRequest(query_params={"code": "authcode-3", "state": state})
+    req = _FakeRequest(query_params={"code": "authcode-3", "state": state},
+                       cookies=_state_cookies(state))
     resp = asyncio.run(web_auth.auth_callback(req))
     assert isinstance(resp, HTMLResponse)
     body = resp.body.decode("utf-8")
@@ -272,14 +305,17 @@ def test_callback_no_access_role_refused(db, store, monkeypatch, real_auth_env):
     audits = _capture_audit(monkeypatch)
 
     sessions_before = set(web_auth._SESSIONS)
-    req = _FakeRequest(query_params={"code": "authcode-4", "state": state})
+    req = _FakeRequest(query_params={"code": "authcode-4", "state": state},
+                       cookies=_state_cookies(state))
     try:
         resp = asyncio.run(web_auth.auth_callback(req))
 
         assert resp.status_code == 403
         body = resp.body.decode("utf-8")
         assert "No access" in body
-        assert "set-cookie" not in {k.lower() for k in resp.headers.keys()}
+        # No session cookie is issued — the only Set-Cookie is the one-shot
+        # login-state cookie being cleared.
+        assert web_auth.COOKIE_NAME not in "; ".join(resp.headers.getlist("set-cookie"))
 
         # No session anywhere: cache unchanged, no durable row.
         assert set(web_auth._SESSIONS) == sessions_before
@@ -310,7 +346,8 @@ def test_callback_user_role_passes_gate(db, store, monkeypatch, real_auth_env):
     monkeypatch.setattr(web_auth.httpx, "AsyncClient", _token_client(token_response))
     audits = _capture_audit(monkeypatch)
 
-    req = _FakeRequest(query_params={"code": "authcode-5", "state": state})
+    req = _FakeRequest(query_params={"code": "authcode-5", "state": state},
+                       cookies=_state_cookies(state))
     new_sids = []
     try:
         resp = asyncio.run(web_auth.auth_callback(req))
@@ -326,6 +363,99 @@ def test_callback_user_role_passes_gate(db, store, monkeypatch, real_auth_env):
             web_auth._SESSIONS.pop(s, None)
         store.delete_for_user(user_id)
         web_auth._PENDING.pop(state, None)
+
+
+# ---------------------------------------------------------------------------
+# /auth/callback — the state is bound to the browser that started the login
+# ---------------------------------------------------------------------------
+
+def test_auth_login_binds_state_to_a_signed_cookie(monkeypatch, real_auth_env):
+    """The authorize redirect carries an HttpOnly, SameSite=Lax, /auth-scoped
+    cookie whose signed value is exactly the state that was minted. SameSite
+    must stay 'lax' — the callback is a cross-site top-level GET from Keycloak
+    and 'strict' would drop the cookie there, breaking every login."""
+    class _UpResponse:
+        status_code = 200
+
+    class _UpClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            return _UpResponse()
+
+    monkeypatch.setattr(web_auth.httpx, "AsyncClient", _UpClient)
+
+    pending_before = set(web_auth._PENDING)
+    try:
+        resp = asyncio.run(web_auth.auth_login(_FakeRequest(query_params={"next": "/"})))
+        minted = (set(web_auth._PENDING) - pending_before).pop()
+
+        cookie = resp.headers["set-cookie"]
+        assert cookie.startswith(f"{web_auth.STATE_COOKIE_NAME}=")
+        assert "httponly" in cookie.lower()
+        assert "samesite=lax" in cookie.lower()
+        assert f"Path={web_auth.STATE_COOKIE_PATH}" in cookie
+        value = cookie.split("=", 1)[1].split(";", 1)[0]
+        assert web_auth._unsign(value) == minted
+    finally:
+        for s in set(web_auth._PENDING) - pending_before:
+            web_auth._PENDING.pop(s, None)
+
+
+def test_callback_without_state_cookie_refused_before_token_exchange(monkeypatch, real_auth_env):
+    """A (code, state) pair that did not come back through the browser that
+    started the login is refused — and refused BEFORE the code is spent, so an
+    attacker cannot burn a victim's authorization code either."""
+    state = _seed_pending(DEEP_LINK)
+    posts = []
+    monkeypatch.setattr(web_auth.httpx, "AsyncClient", _no_exchange_client(posts))
+
+    req = _FakeRequest(query_params={"code": "authcode-forged", "state": state})
+    resp = asyncio.run(web_auth.auth_callback(req))
+
+    assert isinstance(resp, HTMLResponse)
+    assert "invalid callback" in resp.body.decode("utf-8")
+    assert posts == []
+    assert state not in web_auth._PENDING
+
+
+def test_callback_state_cookie_from_another_login_refused(monkeypatch, real_auth_env):
+    """The cookie must match THIS state: a validly signed cookie left over from
+    a different login does not satisfy the bond."""
+    state = _seed_pending(DEEP_LINK)
+    other = _seed_pending("/")
+    posts = []
+    monkeypatch.setattr(web_auth.httpx, "AsyncClient", _no_exchange_client(posts))
+
+    try:
+        req = _FakeRequest(query_params={"code": "authcode-forged-2", "state": state},
+                           cookies=_state_cookies(other))
+        resp = asyncio.run(web_auth.auth_callback(req))
+        assert "invalid callback" in resp.body.decode("utf-8")
+        assert posts == []
+    finally:
+        web_auth._PENDING.pop(other, None)
+
+
+def test_callback_unsigned_state_cookie_refused(monkeypatch, real_auth_env):
+    """The cookie is HMAC-signed with the session-cookie key, so a bare state
+    value an attacker can plant from another origin is not accepted."""
+    state = _seed_pending(DEEP_LINK)
+    posts = []
+    monkeypatch.setattr(web_auth.httpx, "AsyncClient", _no_exchange_client(posts))
+
+    req = _FakeRequest(query_params={"code": "authcode-forged-3", "state": state},
+                       cookies={web_auth.STATE_COOKIE_NAME: state})
+    resp = asyncio.run(web_auth.auth_callback(req))
+    assert "invalid callback" in resp.body.decode("utf-8")
+    assert posts == []
 
 
 # ---------------------------------------------------------------------------

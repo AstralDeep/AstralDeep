@@ -9,12 +9,13 @@
   <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin.woff2?v=%%ASTRAL_V:fonts/inter-latin.woff2%%">
   <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/jetbrains-mono-latin.woff2?v=%%ASTRAL_V:fonts/jetbrains-mono-latin.woff2%%">
   <link rel="stylesheet" href="/static/astral.css?v=%%ASTRAL_V:astral.css%%">
-  <script>
+  <script nonce="%%ASTRAL_NONCE%%">
     window.__ASTRAL_TOKEN__ = "%%ASTRAL_TOKEN%%"; window.__ASTRAL_RESUMED__ = %%ASTRAL_RESUMED%%;
     window.__ASTRAL_PLOTLY_URL__ = "/static/vendor/plotly.min.js?v=%%ASTRAL_V:vendor/plotly.min.js%%";
+    window.__ASTRAL_LIVEKIT_URL__ = "/static/vendor/livekit-client.umd.min.js?v=%%ASTRAL_V:vendor/livekit-client.umd.min.js%%";
   </script>
   <script src="/static/vendor/tailwind.js?v=%%ASTRAL_V:vendor/tailwind.js%%"></script>
-  <script>
+  <script nonce="%%ASTRAL_NONCE%%">
     // Map Tailwind `astral-*` color tokens to the runtime CSS variables so
     // every utility (bg-astral-primary, text-astral-muted, astral-primary/20, …)
     // resolves and theme_apply/color_picker can keep mutating them live.
@@ -155,7 +156,10 @@
   </div>
   <!-- Chrome modal root (settings surfaces render here via chrome_render) -->
   <div id="astral-modal"></div>
-  <script src="/static/vendor/livekit-client.umd.min.js?v=%%ASTRAL_V:vendor/livekit-client.umd.min.js%%"></script>
+  <!-- The LiveKit SDK is NOT loaded here: client.js injects it on first voice
+       need and idle-prefetches it after boot (same pattern as Plotly), so a
+       page load that never touches voice never pays for the bundle. Its
+       same-origin, hash-pinned URL arrives via __ASTRAL_LIVEKIT_URL__ above. -->
   <script src="/static/client.js?v=%%ASTRAL_V:client.js%%"></script>
 </body>
 </html>

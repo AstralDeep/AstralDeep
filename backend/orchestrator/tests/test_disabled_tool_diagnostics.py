@@ -151,6 +151,47 @@ def test_priority_user_disable_beats_picker() -> None:
     assert diag.status is ToolDiagnosticStatus.AGENT_DISABLED_BY_USER
 
 
+def test_diagnose_machineless_remote_verb() -> None:
+    """A remote verb hidden by the machineless subtraction gets the honest
+    diagnosis (register a machine), not the ENABLED format-mismatch alert."""
+    cards = {"remote-compute-1": _make_card(
+        "remote-compute-1", ["job_status", "list_machines"], display_name="Remote Compute"
+    )}
+    orch = _make_orch(cards)
+    orch.history.db.fetch_one = lambda sql, params: None  # owns zero machines
+    diag = orch._diagnose_disabled_tool("job_status", "alice", "chat-1")
+    assert diag.status is ToolDiagnosticStatus.NO_REGISTERED_MACHINE
+    assert diag.agent_id == "remote-compute-1"
+
+
+def test_diagnose_machineless_list_machines_stays_enabled() -> None:
+    cards = {"remote-compute-1": _make_card("remote-compute-1", ["list_machines"])}
+    orch = _make_orch(cards)
+    orch.history.db.fetch_one = lambda sql, params: None
+    diag = orch._diagnose_disabled_tool("list_machines", "alice", "chat-1")
+    assert diag.status is ToolDiagnosticStatus.ENABLED
+
+
+def test_diagnose_machine_owner_remote_verb_enabled() -> None:
+    cards = {"remote-compute-1": _make_card("remote-compute-1", ["job_status"])}
+    orch = _make_orch(cards)
+    orch.history.db.fetch_one = lambda sql, params: {"1": 1}
+    diag = orch._diagnose_disabled_tool("job_status", "alice", "chat-1")
+    assert diag.status is ToolDiagnosticStatus.ENABLED
+
+
+def test_diagnose_machineless_probe_error_falls_through() -> None:
+    cards = {"remote-compute-1": _make_card("remote-compute-1", ["job_status"])}
+    orch = _make_orch(cards)
+
+    def _boom(sql, params):
+        raise RuntimeError("db down")
+
+    orch.history.db.fetch_one = _boom
+    diag = orch._diagnose_disabled_tool("job_status", "alice", "chat-1")
+    assert diag.status is ToolDiagnosticStatus.ENABLED
+
+
 # -- _alert_for_disabled_tool -------------------------------------------------
 
 
@@ -162,6 +203,7 @@ def test_priority_user_disable_beats_picker() -> None:
         (ToolDiagnosticStatus.PERMISSION_DENIED, "warning", "permissions"),
         (ToolDiagnosticStatus.SECURITY_BLOCKED, "error", "system-blocked"),
         (ToolDiagnosticStatus.UNKNOWN_TOOL, "error", "no installed agent"),
+        (ToolDiagnosticStatus.NO_REGISTERED_MACHINE, "warning", "Remote machines"),
         (ToolDiagnosticStatus.ENABLED, "info", "tool calling"),
     ],
 )

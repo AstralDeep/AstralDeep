@@ -109,7 +109,19 @@ def _usage():
 
 
 def _system_text(messages):
-    return messages[0]["content"]
+    """All system content, in order.
+
+    The spotlight addendum deliberately rides a TRAILING system message rather
+    than the leading one: it carries a per-turn random sentinel, and keeping it
+    out of the leading block leaves the cacheable prompt prefix (system + tool
+    definitions) byte-identical across turns. What matters here is that some
+    system message defines the sentinel, not which one.
+    """
+    return "\n\n".join(
+        m["content"] for m in messages
+        if isinstance(m, dict) and m.get("role") == "system"
+        and isinstance(m.get("content"), str)
+    )
 
 
 def _tool_messages(messages):

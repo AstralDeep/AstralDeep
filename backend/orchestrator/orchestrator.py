@@ -46,7 +46,7 @@ from orchestrator.tool_permissions import ToolPermissionManager
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
-from orchestrator.compaction import compact_messages
+from orchestrator.compaction import compact_messages, estimate_overhead_tokens
 from orchestrator import context_engineering
 from orchestrator import datamarking
 from orchestrator import model_router
@@ -547,6 +547,7 @@ class ToolDiagnosticStatus(str, Enum):
     PERMISSION_DENIED = "permission_denied"
     SECURITY_BLOCKED = "security_blocked"
     UNKNOWN_TOOL = "unknown_tool"
+    NO_REGISTERED_MACHINE = "no_registered_machine"
 
 
 class ToolDiagnostic(NamedTuple):
@@ -971,6 +972,11 @@ class Orchestrator:
         self._dispatch_context: Dict[str, Dict[str, Any]] = {}
         # Strong refs to in-flight hop-mediation tasks (asyncio keeps weak refs).
         self._background_hop_tasks: set = set()
+        # Same, for spoken-acknowledgement scheduling. The model turn must not
+        # wait for the utterance to finish playing, so the runner call is
+        # detached; ordering against the terminal recap is preserved by the
+        # announcement runner's own serialized command deque.
+        self._voice_ack_tasks: set = set()
         # 056 US1/US4 (FR-021): per-turn global chain budgets keyed by chat id
         # (reset at each turn start; lazily created on first hop).
         self._chain_budgets: Dict[str, Any] = {}
@@ -3842,6 +3848,10 @@ class Orchestrator:
                 logger.info(f"Agent {agent_id} deregistered")
             if agent_id in self.security_flags:
                 del self.security_flags[agent_id]
+            try:
+                await self._sweep_cap_slots_for_agent(agent_id)
+            except Exception:
+                logger.debug("cap slot sweep failed", exc_info=True)
 
     # =========================================================================
     # MESSAGE HANDLING
@@ -11640,13 +11650,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             accepted_turn,
             message=_VOICE_REQUEST_PROCESSING_MESSAGE,
         )
+        def _ack_finished(task: "asyncio.Task") -> None:
+            self._voice_ack_tasks.discard(task)
+            if task.cancelled():
+                return
+            if task.exception() is not None:
+                logger.warning(
+                    "Voice acknowledgement scheduling was unavailable",
+                    exc_info=task.exception(),
+                )
+
         try:
-            await services.start_turn_announcements(accepted_turn)
+            ack_task = asyncio.create_task(
+                services.start_turn_announcements(accepted_turn),
+                name=f"voice-ack-{getattr(accepted_turn, 'turn_id', 'unknown')}",
+            )
         except Exception:
             logger.warning(
                 "Voice acknowledgement scheduling was unavailable",
                 exc_info=True,
             )
+        else:
+            self._voice_ack_tasks.add(ack_task)
+            ack_task.add_done_callback(_ack_finished)
         return {
             "message_id": accepted_message_id,
             "turn": accepted_turn,
@@ -12509,10 +12535,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # that anything wrapped in its markers is untrusted DATA, never
             # instructions. Untrusted (non-digest) tool outputs are wrapped at
             # append time below. No-op when the flag is off.
+            # The sentinel is fresh random bytes every turn, so it must NOT sit
+            # in the leading system message: tool-calling chat templates render
+            # the ~16k-token tool block inside or right after that block, and a
+            # per-turn prefix change defeats the server's automatic prefix
+            # caching for the whole prompt. It rides a trailing system message
+            # instead (same placement as the learned-recipe hint below), which
+            # leaves the prefix byte-identical across turns. Rotation is
+            # unchanged, so the threat model is unchanged.
             datamark_on = flags.is_enabled("datamarking")
             turn_sentinel = datamarking.make_turn_sentinel() if datamark_on else None
-            if datamark_on:
-                system_prompt += "\n\n" + datamarking.spotlight_system_addendum(turn_sentinel)
 
             # ------------------------------------------------------------------
             # MULTI-TURN LOOP
@@ -12554,6 +12586,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 *history_messages,
                 {"role": "user", "content": message}
             ]
+            if datamark_on:
+                messages.append({
+                    "role": "system",
+                    "content": datamarking.spotlight_system_addendum(turn_sentinel),
+                })
 
             # Expose the user's request to the per-tool supervisor gate
             # (intent-alignment, C-S5) during this turn's tool dispatch.
@@ -12679,13 +12716,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # Message compaction: summarize older turns if context budget
                 # exceeded. Feature 054: compaction is a SYSTEM-context helper
                 # by explicit owner decision — llm_call(None, ...) inside
-                # compact_messages resolves the admin system credential; the
-                # model name here is only used for context-window sizing.
+                # compact_messages resolves the admin system credential. The
+                # window is sized on the USER's model (that model serves the
+                # chat call the prompt must fit into), and the budget is
+                # charged for the tool-definitions block, which rides a
+                # sibling kwarg the message estimate can't see (~16.3k tokens
+                # for the full catalog).
                 if flags.is_enabled("message_compaction"):
+                    _user_cfg = await self._llm_store.get(user_id)
                     _sys_cfg = await self._llm_store.get_system()
                     messages, was_compacted = await compact_messages(
-                        messages, getattr(_sys_cfg, "model", None) or "default",
-                        self._call_llm
+                        messages,
+                        getattr(_user_cfg, "model", None)
+                        or getattr(_sys_cfg, "model", None)
+                        or "default",
+                        self._call_llm,
+                        overhead_tokens=estimate_overhead_tokens(tools_desc),
                     )
                     if was_compacted:
                         logger.info("Context compacted before LLM call")
@@ -14573,8 +14619,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         Mirrors the filter stack in handle_chat_message's tool-list build
         (orchestrator.py around lines 2080–2140). Priority order — first match wins:
-        UNKNOWN_TOOL > AGENT_DISABLED_BY_USER > SECURITY_BLOCKED > PERMISSION_DENIED >
-        DISABLED_IN_PICKER > ENABLED.
+        UNKNOWN_TOOL > AGENT_DISABLED_BY_USER > SECURITY_BLOCKED >
+        NO_REGISTERED_MACHINE > PERMISSION_DENIED > DISABLED_IN_PICKER > ENABLED.
         """
         agent_id = self._find_tool_owner(tool_name)
         if not agent_id:
@@ -14613,6 +14659,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 agent_display_name=agent_display,
                 reason=flag.get("reason"),
             )
+
+        # 2b) Remote-compute verbs hidden while the user owns zero machines
+        # (mirrors tool_visibility's no_registered_machine exclusion; a chat
+        # transcript can still tempt the model into re-emitting one).
+        if user_id and agent_id == "remote-compute-1" and tool_name != "list_machines":
+            from orchestrator import remote_machines
+
+            try:
+                machineless = not remote_machines.owns_any_machine(
+                    self.history.db, user_id
+                )
+            except Exception:  # pragma: no cover — defensive
+                machineless = False
+            if machineless:
+                return ToolDiagnostic(
+                    status=ToolDiagnosticStatus.NO_REGISTERED_MACHINE,
+                    agent_id=agent_id,
+                    agent_display_name=agent_display,
+                    reason=None,
+                )
 
         # 3) Permission / scope denial.
         if user_id:
@@ -14718,6 +14784,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 ),
                 variant="error",
                 title="Unknown tool",
+            )
+        if diag.status is ToolDiagnosticStatus.NO_REGISTERED_MACHINE:
+            return Alert(
+                message=(
+                    f"The assistant tried to use the **{tool_name}** tool "
+                    f"(from the **{agent_label}** agent), but you have no "
+                    f"registered remote machine for it to act on. Add one "
+                    f"under Settings → Remote machines, then ask again."
+                ),
+                variant="warning",
+                title="No registered machine",
             )
         # ENABLED — only reachable from the leak path (not from the dispatch
         # gate, which short-circuits before this is rendered).
@@ -15985,6 +16062,42 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self.concurrency_cap.release(u_id, a_id, cap_job_id)
             except Exception:
                 logger.debug("hop cap release failed", exc_info=True)
+
+    async def _sweep_cap_slots_for_agent(self, agent_id: str) -> int:
+        """Release every concurrency slot still held for a now-dead agent.
+
+        A long-running slot is normally released by the terminal ``ToolProgress``
+        that the agent's OWN ``JobPoller`` emits. When the agent dies that poller
+        dies with it, so the slot would be held for the life of the process —
+        after ``max_per_user_agent`` such deaths the user is permanently refused
+        with "You already have N jobs running".
+        """
+        if not agent_id:
+            return 0
+        stale = [
+            cid for cid, (_u, a) in list(self._pending_cap_entries.items())
+            if a == agent_id
+        ]
+        stale += [
+            cid for cid, (_u, a) in list(self._hop_cap_entries.items())
+            if a == agent_id and cid not in stale
+        ]
+        for cap_job_id in stale:
+            entry = self._pending_cap_entries.pop(cap_job_id, None)
+            if entry:
+                try:
+                    await self.concurrency_cap.release(entry[0], entry[1], cap_job_id)
+                except Exception:
+                    logger.debug("cap sweep release failed", exc_info=True)
+            await self._release_hop_cap_slot(cap_job_id)
+            self._job_context.pop(cap_job_id, None)
+        if stale:
+            logger.warning(
+                "Released %d orphaned concurrency slot(s) for disconnected agent %s",
+                len(stale),
+                agent_id,
+            )
+        return len(stale)
 
     async def _execute_with_retry_audited(self, websocket, agent_id, tool_name, args, chat_id=None, user_id=None):
         """Dispatch a tool with the SAME ToolDispatchAudit start/end events,
@@ -20473,6 +20586,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # (no separate :5173 frontend). astralprims defines primitives, the
         # orchestrator renders them (webrender), ROTE adapts per device.
         import os as _os
+        import secrets as _secrets
         from fastapi.responses import HTMLResponse as _HTMLResponse
         _webrender_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "webrender")
         _shell_path = _os.path.join(_webrender_dir, "templates", "shell.html")
@@ -20539,10 +20653,36 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # Feature 052: per-file content-hash asset URLs — a changed file is
             # fetched under a new URL, unchanged files stay immutable-cached.
             shell = _apply_asset_versions(shell, _os.path.join(_webrender_dir, "static"))
+            # The shell hands the access token to page JS, so an injected script
+            # would be a full impersonation. Both inline blocks are
+            # server-substituted here, so they can carry a per-response nonce and
+            # everything else executable must be same-origin.
+            nonce = _secrets.token_urlsafe(16)
+            shell = shell.replace("%%ASTRAL_NONCE%%", nonce)
             resp = _HTMLResponse(shell.replace("%%ASTRAL_TOPBAR%%", topbar))
             # The shell carries a per-session token and references versioned
             # assets — never cache it (security + always-fresh asset URLs).
             resp.headers["Cache-Control"] = "no-store"
+            # style-src keeps 'unsafe-inline': the self-hosted Tailwind build
+            # generates CSS at runtime by injecting <style>, and the renderers
+            # emit inline style="" attributes. blob:/data: cover the voice audio
+            # path and the renderer's permitted data: image payloads.
+            resp.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                f"script-src 'self' 'nonce-{nonce}'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: blob:; "
+                "media-src 'self' data: blob:; "
+                "connect-src 'self' ws: wss:; "
+                "font-src 'self'; "
+                "object-src 'none'; "
+                "base-uri 'none'; "
+                "frame-ancestors 'none'; "
+                "form-action 'self'"
+            )
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            resp.headers["Referrer-Policy"] = "no-referrer"
+            resp.headers["Permissions-Policy"] = "camera=(), geolocation=()"
             return resp
 
         app.mount("/static", _NoCacheStaticFiles(directory=_os.path.join(_webrender_dir, "static")), name="static")
@@ -20577,6 +20717,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(share_router)
         app.include_router(auth_router)
         app.include_router(web_auth_router)  # Feature 026 — /auth/login,/callback,/session,/logout
+        # Feature 068: the kiosk sign-in surface (/kiosk + /auth/kiosk/*) is
+        # ABSENT unless enabled — no route, no OpenAPI entry, and GET / keeps
+        # feature 028's redirect-straight-to-Keycloak posture untouched.
+        # FeatureFlags is import-time state; recreate the container to toggle.
+        if flags.is_enabled("kiosk_login"):
+            from orchestrator.web_auth import kiosk_router
+            app.include_router(kiosk_router)
+            logger.info("Kiosk sign-in surface mounted at /kiosk")
         app.include_router(attachments_router)
         app.include_router(voice_router)
         app.include_router(task_router)
@@ -20903,7 +21051,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     payload_b64 = parts[1]
                     payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
                     payload_json = base64.b64decode(payload_b64).decode('utf-8')
-                    return json.loads(payload_json)
+                    decoded = json.loads(payload_json)
+                    from shared.auth_clients import is_first_party_user_claims
+                    ok, reason = is_first_party_user_claims(decoded)
+                    if not ok:
+                        logger.warning(
+                            "Refusing non-first-party token for a UI session: %s",
+                            reason,
+                        )
+                        return None
+                    return decoded
             except Exception as e:
                 logger.debug(f"Mock JWT decode failed, falling back to default test_user: {e}")
             logger.info("Mock Auth: Accepting token as test_user")
@@ -20959,6 +21116,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.warning(
                     f"Token azp '{azp}' is not an accepted client "
                     f"(allowed: {sorted(allowed_azps())})"
+                )
+                return None
+
+            # A delegated agent token carries the human's sub, the user's roles,
+            # the realm iss and the requesting client's azp, so it clears every
+            # gate above. Only the audience distinguishes it.
+            from shared.auth_clients import is_first_party_user_claims
+            ok, reason = is_first_party_user_claims(payload)
+            if not ok:
+                logger.warning(
+                    "Refusing non-first-party token for a UI session: %s",
+                    reason,
                 )
                 return None
 

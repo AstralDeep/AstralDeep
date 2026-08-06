@@ -146,3 +146,56 @@ Setup:
 
 Watch sign-out uses the existing native logout (`POST /api/auth/logout`,
 `client_id=astral-watch`) with the offline-tolerant revocation queue (044).
+
+## Feature 068 — kiosk sign-in for keyboard-less browser terminals
+
+`GET /kiosk` shows a two-column sign-in page: an RFC 8628 device QR on the
+left (scan with a phone, approve there) and the ordinary
+"sign in with email and password" redirect on the right. It reuses the same
+device-login broker the watch uses — that contract is unchanged — and `GET /`
+is untouched.
+
+Default **OFF** (`FF_KIOSK_LOGIN`). While off the router is never mounted, so
+there is no `/kiosk` route and no OpenAPI entry.
+
+**No realm changes are required.** `KIOSK_DEVICE_CLIENT` defaults to
+`astral-watch`, which is already a public device-grant client in both
+`KEYCLOAK_DEVICE_CLIENTS` and `KEYCLOAK_ALLOWED_AZP`. To turn the page on:
+
+1. Set `FF_KIOSK_LOGIN=true` and recreate the container (the flag is read once
+   at import).
+2. Point the terminal's browser at `https://<host>/kiosk`.
+
+The realm's well-known must advertise `device_authorization_endpoint` — the
+same prerequisite the watch already has. Until it does, the QR column reports
+that phone sign-in is unavailable and the password column still works.
+
+**Delegation needs nothing extra.** The orchestrator performs the RFC 8693
+exchange as `astral-frontend` regardless of which client the user signed in
+with, so the device-grant client does **not** need the six `tools:*` scopes
+assigned to it. (That assignment trap applies to the *requesting* client only —
+see the agent-delegation section.)
+
+### Optional: a dedicated kiosk client
+
+Sharing `astral-watch` means kiosk and watch sessions cannot be told apart in
+the audit trail and cannot be revoked independently. If that matters:
+
+1. Create a public client, e.g. `astral-kiosk` — client authentication **off**
+   (never distribute a secret to a terminal). Capability config → enable
+   **OAuth 2.0 Device Authorization Grant**; Standard/Direct-access flows off
+   (approval happens on the phone, so no redirect URI is needed).
+2. Add it to **both** `KEYCLOAK_DEVICE_CLIENTS` and `KEYCLOAK_ALLOWED_AZP`. The
+   broker requires the intersection, and the WebSocket handshake refuses a
+   token whose `azp` is not allow-listed — miss the second and sign-in appears
+   to succeed, then the app socket fails.
+3. Set `KIOSK_DEVICE_CLIENT=astral-kiosk`.
+
+`astral-frontend` can never be used: the device grant refuses the confidential
+web client by construction (and a test pins it).
+
+> **Session note.** A kiosk session is minted by this public client, and
+> Keycloak only refreshes or revokes a token for its **issuing** client. The
+> orchestrator derives that client from the token's `azp` claim, so silent
+> refresh and sign-out both address the right client. Nothing to configure —
+> but if you add further device-grant clients, they inherit this behavior.

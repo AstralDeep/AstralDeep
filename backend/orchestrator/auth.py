@@ -12,7 +12,8 @@ import asyncio
 import os
 import logging
 import json
-from typing import Optional
+import time
+from typing import Dict, List, Optional
 
 import aiohttp
 from fastapi import APIRouter, Request
@@ -45,15 +46,70 @@ def _get_keycloak_config():
     return authority, client_id, client_secret
 
 
+# --- /auth/token hardening -------------------------------------------------
+# The proxy injects the confidential client_secret, so an unconstrained body
+# would let any unauthenticated caller speak AS that client — including the
+# token-exchange grant DelegationService uses. The only live caller is the
+# Windows client in legacy BFF mode, which sends exactly these two grants and
+# these fields with NO credential of its own, so the allow-lists below are
+# non-breaking by construction.
+_TOKEN_GRANT_TYPES = frozenset({"authorization_code", "refresh_token"})
+_TOKEN_FIELDS = (
+    "grant_type", "code", "redirect_uri", "code_verifier", "refresh_token", "scope",
+)
+_TOKEN_WINDOW_SECONDS = 60
+_TOKEN_MAX_PER_WINDOW = int(os.getenv("AUTH_TOKEN_PROXY_RATE", "20"))
+_TOKEN_HITS: Dict[str, List[float]] = {}
+
+
+def reset_token_proxy_state() -> None:
+    """Clear the /auth/token rate-limit window (tests)."""
+    _TOKEN_HITS.clear()
+
+
+def _check_token_rate(ip: str) -> bool:
+    """Fixed-window per-IP limiter, same shape as device_login._check_start_rate."""
+    now = time.time()
+    hits = [t for t in _TOKEN_HITS.get(ip, []) if now - t < _TOKEN_WINDOW_SECONDS]
+    if len(hits) >= _TOKEN_MAX_PER_WINDOW:
+        _TOKEN_HITS[ip] = hits
+        return False
+    hits.append(now)
+    _TOKEN_HITS[ip] = hits
+    return True
+
+
+async def _audit_token_proxy(action: str, description: str) -> None:
+    """auth-class row for a /auth/token refusal.
+
+    The HTTP audit middleware skips every ``/auth/`` path (narrowing that
+    prefix would audit /auth/session on every page load), so refusals here are
+    recorded directly — the same pattern device_login._audit uses.
+    """
+    try:
+        from audit.hooks import record_auth_event
+        await record_auth_event(
+            claims={"sub": "anonymous"},
+            action=action,
+            description=description,
+            outcome="failure",
+        )
+    except Exception:
+        logger.debug("token proxy: audit hook unavailable for %s", action, exc_info=True)
+
+
 @auth_router.post(
     "/auth/token",
     tags=["Auth"],
     summary="[DEPRECATED] Proxy token request to Keycloak",
     description=(
         "DEPRECATED (feature 028): the React-era BFF proxy for oidc-client-ts. "
-        "No shipped client calls it — the server-side OIDC flow in web_auth.py "
-        "owns login/refresh since 026/028. Kept mounted for external API "
-        "consumers pending a tracked removal."
+        "The web app has used the server-side OIDC flow in web_auth.py since "
+        "026/028; the one remaining caller is the Windows desktop client in "
+        "legacy BFF mode (auth_mode=keycloak_bff), which posts a bare form "
+        "with no credential of its own. Constrained accordingly: only the "
+        "authorization_code and refresh_token grants, an allow-listed field "
+        "set, a server-pinned client_id, and a per-IP rate limit."
     ),
     deprecated=True,
 )
@@ -63,10 +119,12 @@ async def proxy_token(request: Request):
 
     Proxy token requests to Keycloak's token endpoint.
 
-    Accepts the same application/x-www-form-urlencoded body that
-    oidc-client-ts sends (grant_type, code, redirect_uri, code_verifier,
-    client_id, etc.) and injects the client_secret before forwarding.
-    Also handles refresh_token grant type.
+    Accepts the application/x-www-form-urlencoded body the Windows BFF client
+    sends (grant_type, code, redirect_uri, code_verifier, refresh_token) and
+    injects the client_secret before forwarding. The caller presents no
+    credential of its own, so the request is constrained instead: an
+    authorization_code/refresh_token grant allow-list, a field allow-list, a
+    server-pinned client_id, and a per-IP rate limit.
     """
     authority, client_id, client_secret = _get_keycloak_config()
 
@@ -79,20 +137,61 @@ async def proxy_token(request: Request):
             },
         )
 
+    ip = request.client.host if request.client else "unknown"
+    if not _check_token_rate(ip):
+        logger.warning("Token proxy rate limit hit")
+        await _audit_token_proxy(
+            "token_proxy_rate_limited",
+            "POST /auth/token refused: per-IP rate limit exceeded",
+        )
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "rate_limited",
+                "error_description": "too many token requests; retry later",
+            },
+        )
+
     token_url = f"{authority}/protocol/openid-connect/token"
 
-    # Read the form data sent by oidc-client-ts
     form = await request.form()
-    form_data = dict(form)
 
-    # Inject client_secret (server-side only)
+    grant_type = str(form.get("grant_type") or "")
+    if grant_type not in _TOKEN_GRANT_TYPES:
+        logger.warning(f"Token proxy refused grant_type '{grant_type}'")
+        await _audit_token_proxy(
+            "token_proxy_grant_refused",
+            f"POST /auth/token refused unsupported grant_type '{grant_type}'",
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "unsupported_grant_type",
+                "error_description": (
+                    "only authorization_code and refresh_token are proxied"
+                ),
+            },
+        )
+
+    # Field allow-list: everything else (subject_token, audience,
+    # requested_token_type, username, password, …) is dropped, never forwarded.
+    form_data = {}
+    for field in _TOKEN_FIELDS:
+        value = form.get(field)
+        if isinstance(value, str) and value:
+            form_data[field] = value
+
+    # The injected secret belongs to the confidential primary client alone, so
+    # the caller never chooses the identity it speaks as.
+    supplied_client_id = str(form.get("client_id") or "").strip()
+    if supplied_client_id and supplied_client_id != client_id:
+        logger.warning(
+            f"Token proxy overriding caller client_id '{supplied_client_id}' "
+            f"with the configured confidential client"
+        )
+    form_data["client_id"] = client_id
     form_data["client_secret"] = client_secret
 
-    # Ensure client_id is set
-    if "client_id" not in form_data:
-        form_data["client_id"] = client_id
-
-    grant_type = form_data.get("grant_type", "unknown")
     logger.info(f"Proxying {grant_type} request to Keycloak")
 
     async with aiohttp.ClientSession() as session:
@@ -110,6 +209,22 @@ async def proxy_token(request: Request):
 # =============================================================================
 
 security = HTTPBearer(auto_error=False)
+
+
+def _reject_non_first_party(payload: dict) -> None:
+    """401 when ``payload`` is a delegated/agent-service/MCP token.
+
+    Those tokens are minted by this orchestrator for a non-user purpose but
+    otherwise satisfy every gate this dependency applies (signature, azp,
+    issuer), so nothing else would stop one being replayed at /api/* as its
+    on-behalf-of human.
+    """
+    from shared.auth_clients import is_first_party_user_claims
+    ok, reason = is_first_party_user_claims(payload)
+    if not ok:
+        logger.warning(f"Rejecting non-first-party token at REST auth: {reason}")
+        raise HTTPException(status_code=401, detail="Invalid token")
+
 
 async def get_current_user_payload(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
     if request.method == "OPTIONS":
@@ -147,6 +262,7 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
             except Exception:
                 pass
             return mock_payload
+        decoded = None
         try:
             import base64
             parts = token.split('.')
@@ -155,13 +271,17 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
                 payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
                 payload_json = base64.b64decode(payload_b64).decode('utf-8')
                 decoded = json.loads(payload_json)
-                try:
-                    request.state.audit_claims = decoded
-                except Exception:
-                    pass
-                return decoded
         except Exception as e:
             logger.debug(f"Mock JWT decode failed, falling back to default test_user: {e}")
+        if isinstance(decoded, dict):
+            # Outside the try: a refusal must NOT fall through to the
+            # permissive test_user below.
+            _reject_non_first_party(decoded)
+            try:
+                request.state.audit_claims = decoded
+            except Exception:
+                pass
+            return decoded
         fallback = {
             "sub": "test_user",
             "preferred_username": "test_user",
@@ -187,10 +307,20 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
         from shared.jwks_cache import get_jwks
         jwks = await get_jwks(jwks_url, token=token)
 
+        # verify_aud stays off: Keycloak confidential clients set aud="account",
+        # not the client_id. azp is validated instead, and the audience is
+        # denylisted in _reject_non_first_party below.
         payload = jose_jwt.decode(
             token, jwks, algorithms=["RS256"],
             options={"verify_aud": False, "verify_at_hash": False}
         )
+        # Bind the token to our realm: reject when the issuer claim is present
+        # and does not match the configured authority (tolerant of a
+        # trailing-slash diff) — same check Orchestrator.validate_token applies
+        # on the WebSocket path.
+        iss = payload.get("iss")
+        if iss and authority and iss.rstrip("/") != authority.rstrip("/"):
+            raise HTTPException(status_code=401, detail="Invalid issuer")
         # Accept the web client (client_id) plus any first-party clients in the
         # KEYCLOAK_ALLOWED_AZP allow-list (e.g. the native desktop's dedicated
         # public client astral-desktop). Empty allow-list ⇒ web client only.
@@ -198,6 +328,7 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
         from shared.auth_clients import is_azp_allowed
         if azp and not is_azp_allowed(azp):
              raise HTTPException(status_code=401, detail="Invalid client")
+        _reject_non_first_party(payload)
         try:
             request.state.audit_claims = payload
         except Exception:
