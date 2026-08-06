@@ -101,7 +101,14 @@
   var voicePlayoutSequence = 0;
   var voiceIgnoringTrackEnd = false;
   var VOICE_MAX_PENDING_SUBMISSIONS = 4;
-  var VOICE_MAX_PENDING_BYTES = 48 * 1024;
+  // Must exceed one maximal submission or a valid single transcript is refused.
+  // retainFinalVoiceSubmission bounds byte_length at 1024 + 6*(text + identity +
+  // lang); with the 8000-char transcript cap (consumeVoiceTranscript) plus a
+  // worker identity, one item alone reaches ~49 KB, so a 48 KB budget could
+  // never admit a full-length dictation (it tripped "capacity_exhausted" with
+  // zero pending). 96 KB holds one maximal item with headroom while still
+  // bounding the pending queue.
+  var VOICE_MAX_PENDING_BYTES = 96 * 1024;
   var VOICE_SUBMISSION_RETRY_MS = 2500;
   var VOICE_RECOVERY_DEADLINE_MS = 30000;
   var VOICE_RECOVERY_MAX_ATTEMPTS = 4;
@@ -1140,10 +1147,15 @@
       livekitCallbacks = [];
       for (var i = 0; i < cbs.length; i++) { try { cbs[i](); } catch (e) {} }
     }
-    s.onload = flush;
-    // A failed load must still settle its waiters: they re-enter createVoiceRoom,
-    // which reports the honest media_unavailable state instead of hanging. The
-    // flag resets so a later activation can retry the injection.
+    // Reset the flag on BOTH outcomes. A 200 that does not define a usable
+    // window.LivekitClient.Room (truncated/corrupt bundle, proxy error page)
+    // would otherwise leave livekitLoading latched true forever: livekitSdkReady()
+    // stays false, so every later ensureLiveKitSdk() queues a callback and hits
+    // `if (livekitLoading) return`, never flushing — voice recovery hangs. With
+    // the reset, a failed load settles its waiters (they re-enter createVoiceRoom
+    // and report the honest media_unavailable state) and a later activation can
+    // retry the injection.
+    s.onload = function () { livekitLoading = false; flush(); };
     s.onerror = function () { livekitLoading = false; flush(); };
     document.head.appendChild(s);
   }

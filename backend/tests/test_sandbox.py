@@ -142,6 +142,55 @@ def test_sandbox_env_does_not_mutate_input():
     assert base == {"OPENAI_API_KEY": "sk-x"}  # original untouched
 
 
+#: Every name here is read somewhere in backend/ and would be a real compromise
+#: in a generated agent's os.environ. Pinned by name: a denylist that protects
+#: env vars nothing sets (the pre-067 list did) protects nothing at all.
+_MUST_SCRUB = [
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "SEARCH_API_KEY",
+    "CREDENTIAL_ENCRYPTION_KEY",          # Fernet: user LLM keys + SSH creds
+    "WEB_SESSION_ENC_KEY", "WEB_SESSION_SECRET",   # session forgery
+    "OFFLINE_GRANT_ENC_KEY",
+    "MEMORY_HMAC_KEY", "TXN_TOKEN_KEY", "MAS_MESSAGE_KEY",
+    "DELEGATION_CHILD_SIGNING_KEY",
+    "AUDIT_HMAC_SECRET",                  # audit chain forgery (DB_* stays readable)
+    "KEYCLOAK_CLIENT_SECRET", "AGENT_SERVICE_CLIENT_SECRET",
+    "VOICE_CONTROL_SECRET", "LIVEKIT_API_SECRET", "LIVEKIT_API_KEY",
+    "DATABASE_URL", "GITHUB_TOKEN",
+]
+
+#: The child MUST keep these: the framework needs AGENT_API_KEY to register, and
+#: a parser agent resolves its attachment through shared.database (DB_*).
+_MUST_KEEP = {
+    "AGENT_API_KEY": "keep-me", "PATH": "/usr/bin", "PYTHONPATH": "/app",
+    "DB_HOST": "db", "DB_PORT": "5432", "DB_NAME": "astral",
+    "DB_USER": "astral", "DB_PASSWORD": "pw",
+}
+
+
+@pytest.mark.parametrize("name", _MUST_SCRUB)
+def test_sandbox_env_scrubs_every_known_secret(name):
+    env = sandbox.sandbox_env({name: "secret-value", **_MUST_KEEP}, "/tmp/d")
+    assert name not in env, f"{name} leaks into the generated agent's environment"
+
+
+def test_sandbox_env_scrubs_audit_hmac_rotation_keys():
+    """audit/pii.py resolves rotation keys as AUDIT_HMAC_SECRET_<KEY_ID_UPPER>;
+    a retired-but-still-set key signs the same chain, so a fixed-name list is
+    not enough."""
+    env = sandbox.sandbox_env(
+        {"AUDIT_HMAC_SECRET": "a", "AUDIT_HMAC_SECRET_K0": "b",
+         "AUDIT_HMAC_SECRET_LEGACY": "c", **_MUST_KEEP},
+        "/tmp/d",
+    )
+    assert not [k for k in env if k.startswith("AUDIT_HMAC_SECRET")]
+
+
+def test_sandbox_env_keeps_what_the_agent_needs():
+    env = sandbox.sandbox_env({**_MUST_KEEP, "OPENAI_API_KEY": "sk-x"}, "/tmp/d")
+    for key, value in _MUST_KEEP.items():
+        assert env[key] == value, f"{key} must survive the scrub"
+
+
 # ───────────────────────── live: a real child is actually limited ────────────
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX preexec_fn + resource")

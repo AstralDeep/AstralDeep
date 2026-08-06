@@ -196,6 +196,11 @@ def _confine_input_path(file_path: str, user_id: str) -> Optional[str]:
     directory qualify. Tool arguments are model-supplied, so an
     unconstrained absolute path would read any file this process can open.
     """
+    # A falsy user_id would collapse the per-user roots to ``backend/tmp`` and
+    # ``<upload_root>`` themselves — matching EVERY user's subtree — so refuse
+    # it outright rather than confine against a tenant-wide root.
+    if not user_id or not str(user_id).strip():
+        return None
     backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     roots = [os.path.join(backend_dir, "tmp", str(user_id))]
     try:

@@ -126,13 +126,17 @@ OBFUSCATION_PATTERNS = [
      "Base64-decoded execution detected"),
     (r"chr\s*\(\s*\d+\s*\)\s*\+\s*chr", Severity.HIGH,
      "Character code concatenation — possible obfuscation"),
-    # Eight or more hex escapes on one line (separators allowed, so
+    # Nine or more hex escapes on one line (separators allowed, so
     # "\x69" + "\x6d" + ... is still caught). Three was too tight once HIGH
     # became execution-blocking: a binary-format parser checking a magic
-    # number (b"\x89\x50\x4e\x47" — four escapes) is ordinary, correct code,
-    # and auto-generated parsers are the main thing that writes it. Genuine
-    # obfuscated payloads encode whole statements and run to dozens.
-    (r"(?:\\x[0-9a-fA-F]{2}[^\n]{0,6}?){8,}", Severity.HIGH,
+    # number is ordinary, correct code, and auto-generated parsers are the
+    # main thing that writes it. Eight (the old floor) still refused two real
+    # cases: an 8-byte OLE2/CFB signature (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    # — the .doc/.xls family) and a tuple of two 4-byte magics on one line,
+    # whose "…", b"…" separator the bridge chains into eight. Nine clears both
+    # while still catching genuine obfuscated payloads, which encode whole
+    # statements and run to dozens.
+    (r"(?:\\x[0-9a-fA-F]{2}[^\n]{0,6}?){9,}", Severity.HIGH,
      "Hex-encoded string — possible obfuscation"),
     (r"(?:socket\.(?:bind|listen|connect))", Severity.CRITICAL,
      "Raw socket operation detected"),

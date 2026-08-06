@@ -211,14 +211,21 @@ def test_callback_idp_error_preserves_encoded_deep_link(real_auth_env):
     code) yields the bounded error page whose retry link carries the
     URL-ENCODED deep link — next=%2F%3Fchat%3Dabc, not a bare next=%2F."""
     state = _seed_pending(DEEP_LINK)
-    req = _FakeRequest(query_params={"state": state, "error": "access_denied"})
-    resp = asyncio.run(web_auth.auth_callback(req))
-    assert isinstance(resp, HTMLResponse)
-    body = resp.body.decode("utf-8")
-    assert f"/auth/login?next={DEEP_LINK_ENC}" in body
-    assert 'next=%2F"' not in body                  # deep link NOT collapsed to '/'
-    assert "access_denied" in body                  # reason surfaced to the user
-    assert state not in web_auth._PENDING           # pending login consumed
+    try:
+        req = _FakeRequest(query_params={"state": state, "error": "access_denied"})
+        resp = asyncio.run(web_auth.auth_callback(req))
+        assert isinstance(resp, HTMLResponse)
+        body = resp.body.decode("utf-8")
+        assert f"/auth/login?next={DEEP_LINK_ENC}" in body
+        assert 'next=%2F"' not in body                  # deep link NOT collapsed to '/'
+        assert "access_denied" in body                  # reason surfaced to the user
+        # Error exits do NOT consume the pending entry — only the verified-bound
+        # success path does. An unbound hit (or an ?error= replay lacking the
+        # cookie) must not burn a victim's in-flight login; the entry survives
+        # for its natural 600s TTL (auth_login prunes it).
+        assert state in web_auth._PENDING
+    finally:
+        web_auth._PENDING.pop(state, None)
 
 
 def test_callback_missing_state_bounded_error():
@@ -412,18 +419,26 @@ def test_auth_login_binds_state_to_a_signed_cookie(monkeypatch, real_auth_env):
 def test_callback_without_state_cookie_refused_before_token_exchange(monkeypatch, real_auth_env):
     """A (code, state) pair that did not come back through the browser that
     started the login is refused — and refused BEFORE the code is spent, so an
-    attacker cannot burn a victim's authorization code either."""
+    attacker cannot burn a victim's authorization code either.
+
+    The refusal must NOT consume the pending PKCE entry: an unbound hit
+    (prefetcher, URL scanner, replay) that popped it would DoS the real
+    browser's later, correctly-bound callback. The entry survives the refusal."""
     state = _seed_pending(DEEP_LINK)
     posts = []
     monkeypatch.setattr(web_auth.httpx, "AsyncClient", _no_exchange_client(posts))
 
-    req = _FakeRequest(query_params={"code": "authcode-forged", "state": state})
-    resp = asyncio.run(web_auth.auth_callback(req))
+    try:
+        req = _FakeRequest(query_params={"code": "authcode-forged", "state": state})
+        resp = asyncio.run(web_auth.auth_callback(req))
 
-    assert isinstance(resp, HTMLResponse)
-    assert "invalid callback" in resp.body.decode("utf-8")
-    assert posts == []
-    assert state not in web_auth._PENDING
+        assert isinstance(resp, HTMLResponse)
+        assert "invalid callback" in resp.body.decode("utf-8")
+        assert posts == []
+        # Not consumed — the legitimate bound callback can still complete.
+        assert state in web_auth._PENDING
+    finally:
+        web_auth._PENDING.pop(state, None)
 
 
 def test_callback_state_cookie_from_another_login_refused(monkeypatch, real_auth_env):

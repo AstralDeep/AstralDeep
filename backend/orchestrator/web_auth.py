@@ -579,7 +579,12 @@ async def auth_callback(request: Request):
     triggers user-switch revocation of the prior session first (016 FR-008)."""
     code = request.query_params.get("code")
     state = request.query_params.get("state")
-    pending = _PENDING.pop(state, None) if state else None
+    # PEEK (do not consume yet): an unbound hit on this URL — a prefetcher, a
+    # corporate URL scanner, or a replay that lacks the astral_oidc_state cookie
+    # — must not pop the pending PKCE entry, or the real browser arriving later
+    # with the correct cookie finds nothing and its legitimate login is DoSed.
+    # The entry is consumed only after the browser-binding check passes below.
+    pending = _PENDING.get(state) if state else None
     # Recover the destination BEFORE any error exit — FR-003: a deep link is
     # never silently dropped, even on a denied/failed callback.
     nxt = _validate_next((pending or {}).get("next", "/"))
@@ -600,6 +605,9 @@ async def auth_callback(request: Request):
     if not _state_is_bound(request, state or ""):
         logger.warning("web_auth: callback state is not bound to this browser — refused")
         return _clear_state_cookie(_error_page(nxt, _INVALID_CALLBACK))
+    # Bound and valid — NOW consume the one-shot entry (a replay of this exact
+    # bound callback finds nothing and is refused above).
+    _PENDING.pop(state, None)
     authority, client_id, client_secret = _keycloak_config()
     data = {
         "grant_type": "authorization_code", "code": code,

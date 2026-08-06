@@ -646,15 +646,20 @@ def _stage_revision_code(lifecycle, rev, live_row, rev_dir, new_code):
     tools) could run — the H4 pre-execution contract.
     """
 
+    # Gate BEFORE writing (H4): flagged code must never touch the agents tree
+    # that discovery/start scans. The generate_code path asserts exactly this
+    # (its test checks the tools file does not exist on a block); the revision
+    # path must hold the same contract rather than writing first and gating
+    # after.
     compile(new_code, "mcp_tools.py", "exec")
-    os.makedirs(rev_dir, exist_ok=True)
-    with open(os.path.join(rev_dir, "mcp_tools.py"), "w", encoding="utf-8") as stream:
-        stream.write(new_code)
     report = lifecycle.security.analyze(
         new_code, filename=f"{rev['agent_slug']}/mcp_tools.py"
     )
     if blocks_execution(report):
         return report, None
+    os.makedirs(rev_dir, exist_ok=True)
+    with open(os.path.join(rev_dir, "mcp_tools.py"), "w", encoding="utf-8") as stream:
+        stream.write(new_code)
     # Validate the STAGED bytes — the revision slug's own directory. This
     # used to point at the live agent's slug, so the validator imported the
     # unmodified live file and never inspected the staged code at all.
@@ -777,7 +782,10 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
         await run_generation(
             db.update_draft_agent,
             rev_id,
-            status="generated",
+            # A security refusal wrote NO file (H4 gates before the write), so
+            # the draft is not "generated" — leaving it so would offer Apply and
+            # Refine for code that does not exist on disk.
+            status="error" if validation is None else "generated",
             self_test=json.dumps(self_test),
             security_report=json.dumps(report.to_dict()),
             validation_report=json.dumps(
@@ -806,6 +814,21 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
                  correlation_id=rev_id,
                  outcome="success" if self_test["status"] == "passed" else "failure",
                  chat_id=chat_id, agent_id=agent_id)
+
+    if validation is None:
+        # The security gate refused before the staged write, so there is no
+        # mcp_tools.py in the revision slug. A decision card would offer Apply
+        # (which would report the misleading "Staged revision file missing") and
+        # Refine (which would fail reading a file that was never created).
+        return MCPResponse(
+            result={"status": "revision_refused", "draft_id": rev_id,
+                    "security": sec_name or "NONE"},
+            ui_components=[_error_card(
+                f"The revised code was refused by the security gate "
+                f"(max severity {sec_name or 'NONE'}) and nothing was staged. "
+                "Re-run the change with a different instruction."
+            )],
+        )
 
     card = creation_card(
         await run_generation(db.get_draft_agent, rev_id),
