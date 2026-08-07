@@ -253,6 +253,43 @@ jobs:
             windows-client\tests\test_packaged_release.py -q `
             --junitxml=build\windows-candidate\packaged-release.junit.xml
 
+      # The connected GUI smokes report ONLY through a JSON file written by the
+      # frozen exe (status + detail_code); pytest sees a bare exit code, and the
+      # archive steps below are skipped on failure. Without this, a smoke failure
+      # is undiagnosable from the logs — which is exactly where this build stalled.
+      # These reports are already redacted at the source (write_redacted_report)
+      # and the smoke token is masked, so echoing them leaks nothing.
+      - name: Explain a smoke failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $roots = @(
+            (Join-Path $env:TEMP 'pytest-of-runneradmin'),
+            (Join-Path $PWD 'build\windows-candidate')
+          )
+          $found = $false
+          foreach ($root in $roots) {
+            if (-not (Test-Path $root)) { continue }
+            Get-ChildItem -Path $root -Recurse -Filter '*.json' -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'smoke|deployment-validation' } |
+              ForEach-Object {
+                $found = $true
+                Write-Host "===== $($_.FullName) ====="
+                Get-Content $_.FullName -Raw
+                Write-Host ""
+              }
+          }
+          if (-not $found) {
+            Write-Host "no smoke report was written — the exe exited before it could report"
+          }
+          $junit = 'build\windows-candidate\packaged-release.junit.xml'
+          if (Test-Path $junit) {
+            Write-Host "===== failing testcases ====="
+            Select-Xml -Path $junit -XPath '//testcase[failure or error]' |
+              ForEach-Object { Write-Host $_.Node.name }
+          }
+
       - name: Run full Windows source suite with coverage
         shell: pwsh
         env:
