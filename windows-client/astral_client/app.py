@@ -4778,7 +4778,20 @@ def _install_release_smoke(
             report["detail_code"] = "rendered_turn_complete" if passed else "incomplete_rendered_turn"
             window._release_smoke_exit_code = 0 if passed else 1
         else:
-            report.update({"status": "failed", "detail_code": error or "smoke_timeout"})
+            # `smoke_timeout` is one 60 s catch-all, so on its own it cannot say
+            # WHERE the turn died. Record how far the driver actually got — the
+            # offline smoke below already reports its own state this way, and
+            # without it a CI failure is indistinguishable between "never
+            # reached the deployment" and "connected fine, but the turn never
+            # committed" (e.g. the feature-054 provider gate holding the turn).
+            report.update(
+                {
+                    "status": "failed",
+                    "detail_code": error or "smoke_timeout",
+                    "connected_once": bool(getattr(window, "_connected_once", False)),
+                    "prompt_sent": bool(state["sent"]),
+                }
+            )
         write_redacted_report(report_path, report)
         window.close()
         QApplication.instance().quit()
