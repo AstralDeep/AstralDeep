@@ -242,14 +242,41 @@ def test_fresh_hkcu_connected_launch_has_no_configure_dialog_and_terminates(tmp_
     try:
         user32 = ctypes.windll.user32
 
+        def _owned_pids() -> set[int]:
+            """Every PID this launch owns, not just the one we spawned.
+
+            ``AstralDeep.exe`` is packaged ONEFILE (``AstralDeep.spec`` passes
+            ``a.binaries`` inline and has no ``COLLECT``), so the process we
+            Popen is PyInstaller's bootloader: it unpacks to a temp dir and
+            re-executes the real application as a CHILD. The Qt window therefore
+            belongs to a descendant PID, and matching only ``process.pid`` found
+            no windows at all — which is exactly how this test failed the first
+            time it was ever executed. Recomputed each poll because the child
+            does not exist yet on the first pass.
+            """
+            pids = {process.pid}
+            try:
+                import psutil
+
+                pids.update(
+                    child.pid
+                    for child in psutil.Process(process.pid).children(recursive=True)
+                )
+            except Exception:
+                # Never let inspection failure masquerade as a missing window:
+                # the assertion below still fails honestly on the root pid.
+                pass
+            return pids
+
         def _window_titles() -> list[str]:
             found: list[str] = []
+            owned = _owned_pids()
             callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
             def _visit(hwnd, _lparam):
                 pid = ctypes.c_ulong()
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                if pid.value != process.pid or not user32.IsWindowVisible(hwnd):
+                if pid.value not in owned or not user32.IsWindowVisible(hwnd):
                     return True
                 length = user32.GetWindowTextLengthW(hwnd)
                 buffer = ctypes.create_unicode_buffer(length + 1)
@@ -271,6 +298,19 @@ def test_fresh_hkcu_connected_launch_has_no_configure_dialog_and_terminates(tmp_
         assert "AstralDeep — Windows" in titles
         assert all("Configure AstralDeep" not in title for title in titles)
     finally:
+        # Same onefile consequence: terminating the bootloader does not
+        # necessarily take the extracted child with it, and a surviving GUI
+        # process would outlive the job. Stop descendants first, then the root.
+        try:
+            import psutil
+
+            for child in psutil.Process(process.pid).children(recursive=True):
+                try:
+                    child.terminate()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         process.terminate()
         process.wait(timeout=10)
     assert process.returncode is not None
