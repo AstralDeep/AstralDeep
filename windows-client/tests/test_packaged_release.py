@@ -42,6 +42,7 @@ def _clean_env(tmp_path: Path) -> dict[str, str]:
         "ASTRAL_AUTH_BFF",
         "ASTRAL_TOKEN",
         "AGENT_API_KEY",
+        "QT_QPA_PLATFORM",
     ):
         environment.pop(name, None)
     roaming = tmp_path / "Roaming"
