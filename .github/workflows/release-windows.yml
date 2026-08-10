@@ -32,6 +32,18 @@ permissions:
 
 jobs:
   build-sign-release:
+    # A privileged manual dispatch may only start from the protected default
+    # branch. GitHub runs the workflow DEFINITION FROM THE DISPATCHED REF, so
+    # without this guard anyone with write access could push arbitrary YAML to a
+    # feature branch, dispatch it there, and have candidate code write its own
+    # privileges inside a job holding contents: write + id-token: write —
+    # minting a real sigstore signature and overwriting a live release's assets.
+    #
+    # Tag pushes (the real release path) short-circuit the first disjunct, so
+    # github.ref stays refs/tags/<tag> and the Fulcio SAN the shipped v0.3.0
+    # updater pins is byte-identical to today's. The outer parentheses are
+    # required by scripts/verify_release_evidence_bootstrap.py's guard matcher.
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
