@@ -172,3 +172,64 @@ environment-gated and the protected decision is exact-identity bound, but the
 unrestricted fresh-`v*` creation path can still dispatch changed tag-ref signer
 bytes accepted by the legacy updater. T120 remains open until trusted-only tag
 creation or a verifier migration closes that route and the other blockers above.
+
+## Parked: the protected bridge signer (2026-08-07)
+
+`cc15b033` (PR #168) replaced `.github/workflows/release-windows.yml` — the
+feature-060 protected bridge — with the feature-039 DIRECT tag-push release
+path. Windows client **v0.4.0 shipped on it the same day**. Owner-directed and
+deliberate.
+
+- **Recoverable at:** `git show d3cb9a51:.github/workflows/release-windows.yml`
+- **Revival requires:** restoring that file, re-pinning
+  `vars.RELEASE_BRIDGE_WORKFLOW_SHA256` to its SHA-256, and clearing the T120
+  blockers listed above. Restoring the file also re-arms the four parked
+  contract tests automatically — they skip on the absence of the `bridge-sign`
+  job, so no test edit is needed.
+- **Note for anyone reviving it:** the bridge as merged could never have run.
+  Its job guard (`d3cb9a51` `release-windows.yml:42`) and its required
+  `test "$GITHUB_REF" = "refs/tags/$TAG"` step (`:57-60`) are mutually
+  exclusive, and T069 (the fresh-runner release proof) was never executed. The
+  parked design is code-shaped and unexercised; revival means fixing it, not
+  just restoring it.
+
+### Requirements the shipping path does NOT meet
+
+- **FR-048** (`spec.md:497-499`) — signing "MUST consume those exact archived
+  unsigned bytes … without rebuilding." The direct flow rebuilds with
+  PyInstaller inside the signing job, so nothing binds the shipped bytes to
+  bytes any test matrix exercised.
+- **Constitution v2.9.0 (`:870-884`)** — candidate-modifiable workflows MUST
+  hold no release-mutation authority. The direct flow holds `contents: write`
+  because it publishes the Release itself.
+- **Candidate-code isolation** — the signing job builds from the tagged tree, so
+  tagged repository code executes in a job holding `id-token: write`. Anyone who
+  can push a `v*` tag can therefore have arbitrary code from that tag run in the
+  signing job and be signed under the release identity; `v*` tag creation is
+  unrestricted (see above).
+
+These are **recorded divergences** pending either a constitution/spec amendment
+or bridge revival. They are NOT resolved by this note.
+
+### Controls still in force on the direct path
+
+Hash-locked build + signing toolchain (`windows-client/requirements-release.lock.txt`,
+installed `--require-hashes`, enforced by
+`backend/tests/test_python_ci_supply_chain_060.py::test_windows_release_installs_only_hash_locked_build_and_signing_deps`
+and `windows-client/tests/test_release_lock_060.py`); SHA-pinned third-party
+actions; a default-branch-only manual-dispatch guard; a tag ↔
+`astral_client.__version__` agreement check; and an in-job sigstore self-verify
+against the exact client-pinned identity, asserted by
+`test_release_windows_signing_identity_surface_matches_the_shipped_client`.
+
+A green release-tooling lane therefore now means **five controls enforced, four
+parked** — not nine enforced.
+
+### Known-broken chain left by the swap
+
+`release-windows-publisher.yml:97-98, 619-624` still hash-compares
+`release-windows.yml` against a protected template and dispatches it with
+`inputs[tag]` / `inputs[readiness_run_id]` / `inputs[decision_artifact_id]` —
+inputs the direct workflow does not accept. That publisher chain is unreachable
+at runtime today. It is gated off and is deliberately not repaired here; enabling
+`RELEASE_READINESS_ACTIVE` without reading this note would walk into it.

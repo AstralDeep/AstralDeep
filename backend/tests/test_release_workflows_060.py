@@ -181,6 +181,40 @@ def _write_grants(scope: str) -> set[str]:
     return {line for line in _permission_lines(scope) if line.endswith(": write")}
 
 
+def _bridge_is_live() -> bool:
+    """True only while release-windows.yml carries the feature-060 bridge.
+
+    cc15b033 (PR #168, 2026-08-07) deliberately swapped the protected bridge for
+    the feature-039 DIRECT tag-push release path, and Windows client v0.4.0
+    shipped on it that day. The bridge-topology tests below describe a workflow
+    that does not currently exist — never-rebuild, decision-verified
+    consumption, zero write authority, candidate-code isolation — and no
+    build-and-publish-in-one-job workflow can satisfy them.
+
+    They are PARKED, not deleted, so restoring the bridge re-arms them unchanged.
+    The predicate keys on the ``bridge-sign`` job id, a structural marker only
+    the bridge has (asserted by the parked identity test itself), rather than an
+    env var or a hand-toggled flag — so it cannot silently stay skipped after a
+    revival.
+
+    Recoverable at: ``git show d3cb9a51:.github/workflows/release-windows.yml``
+    Decision, revival conditions, and the requirements the shipping path does
+    NOT meet: specs/060-runtime-reliability-hardening/verification/
+    release-trust-bootstrap.md
+    """
+    return "\n  bridge-sign:\n" in _workflow_text(BRIDGE)
+
+
+bridge_parked = pytest.mark.skipif(
+    not _bridge_is_live(),
+    reason=(
+        "protected bridge parked at d3cb9a51 (cc15b033 restored the direct "
+        "tag-push release path; v0.4.0 shipped on it) — see specs/060-runtime-"
+        "reliability-hardening/verification/release-trust-bootstrap.md"
+    ),
+)
+
+
 # ---------------------------------------------------------------------------
 # release-readiness.yml
 # ---------------------------------------------------------------------------
@@ -787,6 +821,53 @@ def test_release_evidence_exception_registrar_is_environment_gated() -> None:
 # ---------------------------------------------------------------------------
 
 
+
+def test_release_windows_signing_identity_surface_matches_the_shipped_client() -> None:
+    """The Fulcio SAN the ALREADY-SHIPPED v0.3.0 updater pins must not drift.
+
+    windows-client/astral_client/integrity.py hard-codes the signing workflow
+    path and fails closed, so the workflow FILE PATH, its ``name:``, and the
+    fact that signing runs at a TAG ref are load-bearing for clients already in
+    the field — a drift here bricks updates for every installed client.
+
+    This is the LIVE half of the parked
+    test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority:
+    it survives the bridge/direct split unchanged, and until now nothing
+    asserted the release side of the identity contract at all (only the client
+    side was pinned).
+    """
+    workflow = _workflow_text(BRIDGE)
+    head = _workflow_head(workflow)
+
+    assert BRIDGE.name == "release-windows.yml"
+    assert re.search(r"(?m)^name: Release Windows client$", head)
+
+    # Signing must run at the tag ref; that is what makes the SAN end
+    # "@refs/tags/<tag>" rather than "@refs/heads/main".
+    assert re.search(r'(?m)^on:$', head)
+    assert re.search(r'(?m)^  push:$', head)
+    assert re.search(r'(?m)^    tags: \["v\*"\]$', head)
+
+    identity = (
+        "https://github.com/AstralDeep/AstralDeep/.github/workflows/"
+        "release-windows.yml@refs/tags/${{ github.ref_name }}"
+    )
+    assert identity in workflow, "the in-job self-verify identity drifted"
+    assert (
+        "--cert-oidc-issuer https://token.actions.githubusercontent.com" in workflow
+    )
+
+    # Both halves of the contract must name the same workflow.
+    integrity = (
+        REPO_ROOT / "windows-client" / "astral_client" / "integrity.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        '"https://github.com/AstralDeep/AstralDeep'
+        '/.github/workflows/release-windows.yml"' in integrity
+    ), "windows-client/astral_client/integrity.py no longer pins this workflow"
+    assert 'f"{_SIGNING_WORKFLOW}@refs/tags/{tag}"' in integrity
+
+@bridge_parked
 def test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority() -> None:
     workflow = _workflow_text(BRIDGE)
     head = _workflow_head(workflow)
@@ -820,6 +901,7 @@ def test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority() 
     assert _job_ids(workflow) == ["bridge-sign"]
 
 
+@bridge_parked
 def test_release_windows_bridge_isolates_candidate_checkout_from_signer_runtime() -> None:
     workflow = _workflow_text(BRIDGE)
 
@@ -834,6 +916,7 @@ def test_release_windows_bridge_isolates_candidate_checkout_from_signer_runtime(
     assert re.search(r"(?m)^\s*python3\s+(?!-I(?:\s|$))", workflow) is None
 
 
+@bridge_parked
 def test_release_windows_bridge_never_rebuilds_and_never_mutates_releases() -> None:
     workflow = _workflow_text(BRIDGE)
     lower = workflow.lower()
