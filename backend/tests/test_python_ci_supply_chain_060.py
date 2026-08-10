@@ -39,9 +39,7 @@ def _bridge_is_live() -> bool:
     The protected bridge is parked at d3cb9a51; cc15b033 restored the direct
     tag-push release path and Windows client v0.4.0 shipped on it.
     """
-    return "
-  bridge-sign:
-" in WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
+    return "\n  bridge-sign:\n" in WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
 
 
 bridge_parked = pytest.mark.skipif(
@@ -294,3 +292,33 @@ def test_ci_only_python_manifest_cannot_enter_product_artifacts() -> None:
 
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert re.search(r"(?mi)^\s*COPY\s+\.\s", dockerfile) is None
+
+
+def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> None:
+    """The signing toolchain must be immutably pinned however it is obtained.
+
+    This is the LIVE half of the parked
+    test_windows_release_bridge_signs_archived_bytes_without_rebuild. The bridge
+    got sigstore from a SHA-pinned official action; the direct tag-push release
+    gets pyinstaller AND the sigstore CLI from the complete hash lock, which is
+    an equal-or-stronger control — a hash-pinned wheel cannot be repointed the
+    way a floating action tag can. But it must be the ONLY install path into a
+    job that holds id-token: write.
+
+    The parked test's literal ``assert "pip install" not in workflow`` was a
+    mechanism artifact, not the property; this asserts the property.
+    """
+    workflow = WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
+    installs = [
+        line.strip() for line in workflow.splitlines() if "pip install" in line
+    ]
+    assert installs, "the release workflow must install its build/signing deps"
+    for line in installs:
+        assert "--require-hashes" in line, f"unhashed pip install: {line}"
+        assert (
+            "windows-client/requirements-release.lock.txt" in line
+        ), f"install is not from the release lock: {line}"
+    assert "pip install --upgrade" not in workflow
+    assert "sigstore>=" not in workflow
+    # The lock's own exactness (every line hashed, sigstore/pyinstaller present)
+    # is enforced by windows-client/tests/test_release_lock_060.py.

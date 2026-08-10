@@ -821,6 +821,52 @@ def test_release_evidence_exception_registrar_is_environment_gated() -> None:
 # ---------------------------------------------------------------------------
 
 
+
+def test_release_windows_signing_identity_surface_matches_the_shipped_client() -> None:
+    """The Fulcio SAN the ALREADY-SHIPPED v0.3.0 updater pins must not drift.
+
+    windows-client/astral_client/integrity.py hard-codes the signing workflow
+    path and fails closed, so the workflow FILE PATH, its ``name:``, and the
+    fact that signing runs at a TAG ref are load-bearing for clients already in
+    the field — a drift here bricks updates for every installed client.
+
+    This is the LIVE half of the parked
+    test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority:
+    it survives the bridge/direct split unchanged, and until now nothing
+    asserted the release side of the identity contract at all (only the client
+    side was pinned).
+    """
+    workflow = _workflow_text(BRIDGE)
+    head = _workflow_head(workflow)
+
+    assert BRIDGE.name == "release-windows.yml"
+    assert re.search(r"(?m)^name: Release Windows client$", head)
+
+    # Signing must run at the tag ref; that is what makes the SAN end
+    # "@refs/tags/<tag>" rather than "@refs/heads/main".
+    assert re.search(r'(?m)^on:$', head)
+    assert re.search(r'(?m)^  push:$', head)
+    assert re.search(r'(?m)^    tags: \["v\*"\]$', head)
+
+    identity = (
+        "https://github.com/AstralDeep/AstralDeep/.github/workflows/"
+        "release-windows.yml@refs/tags/${{ github.ref_name }}"
+    )
+    assert identity in workflow, "the in-job self-verify identity drifted"
+    assert (
+        "--cert-oidc-issuer https://token.actions.githubusercontent.com" in workflow
+    )
+
+    # Both halves of the contract must name the same workflow.
+    integrity = (
+        REPO_ROOT / "windows-client" / "astral_client" / "integrity.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        '"https://github.com/AstralDeep/AstralDeep'
+        '/.github/workflows/release-windows.yml"' in integrity
+    ), "windows-client/astral_client/integrity.py no longer pins this workflow"
+    assert 'f"{_SIGNING_WORKFLOW}@refs/tags/{tag}"' in integrity
+
 @bridge_parked
 def test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority() -> None:
     workflow = _workflow_text(BRIDGE)
