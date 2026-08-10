@@ -33,6 +33,26 @@ LOCK_INSTALL = (
 )
 
 
+def _bridge_is_live() -> bool:
+    """See backend/tests/test_release_workflows_060.py::_bridge_is_live.
+
+    The protected bridge is parked at d3cb9a51; cc15b033 restored the direct
+    tag-push release path and Windows client v0.4.0 shipped on it.
+    """
+    return "
+  bridge-sign:
+" in WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
+
+
+bridge_parked = pytest.mark.skipif(
+    not _bridge_is_live(),
+    reason=(
+        "protected bridge parked at d3cb9a51 — see specs/060-runtime-"
+        "reliability-hardening/verification/release-trust-bootstrap.md"
+    ),
+)
+
+
 def _normalized(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
@@ -224,6 +244,7 @@ def test_windows_candidate_installs_test_lock_only_after_candidate_build() -> No
     assert "tooling/python-ci/requirements.lock.txt" in workflow
 
 
+@bridge_parked
 def test_windows_release_bridge_signs_archived_bytes_without_rebuild() -> None:
     """The 060 bridge signs the exact archived build-once EXE (T119).
 
