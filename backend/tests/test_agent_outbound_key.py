@@ -568,3 +568,170 @@ def test_redaction_is_idempotent_and_survives_a_short_key(monkeypatch, caplog):
     with caplog.at_level(logging.DEBUG):
         logging.getLogger("websockets.client").debug("about to abort")
     assert "about to abort" in caplog.records[-1].getMessage()
+
+
+# --------------------------------------------------------------------------- #
+# Remaining branches: malformed config, the A2A resolvers, and the WS 401 path
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("entry", ["http://[", "http://[oops", "]["])
+def test_a_malformed_trusted_host_entry_is_ignored_not_trusted(monkeypatch, entry):
+    """A typo in AGENT_KEY_TRUSTED_HOSTS must not become a wildcard, and must
+    not crash discovery either."""
+    monkeypatch.setenv("AGENT_KEY_TRUSTED_HOSTS", entry)
+    assert agent_auth_headers("http://evil.example:8771") == {}
+    assert agent_auth_headers("http://localhost:8005") == {AGENT_KEY_HEADER: KEY}
+
+
+@pytest.mark.parametrize("url", ["http://[", "http://[::1", "http://a[b]c"])
+def test_a_malformed_destination_url_is_untrusted(url):
+    assert trusted_agent_destination(url) is False
+    assert agent_auth_headers(url) == {}
+
+
+def test_ws_url_tolerates_a_scheme_less_base_url():
+    assert agent_ws_url("host:8771") == "ws://host:8771/agent"
+    assert agent_ws_url("host:8771/prefix") == "ws://host:8771/prefix/agent"
+
+
+def test_redaction_handles_dict_style_args(caplog):
+    import logging
+
+    from orchestrator.agent_peer_auth import install_key_redaction
+
+    install_key_redaction()
+    with caplog.at_level(logging.DEBUG):
+        logging.getLogger("websockets.client").debug("%(h)s", {"h": f"key={KEY}"})
+    assert KEY not in caplog.records[-1].getMessage()
+
+
+def test_redaction_never_breaks_logging_when_it_raises(monkeypatch, caplog):
+    """A raising record factory would break ALL logging process-wide, so the
+    redactor swallows its own errors."""
+    import logging
+
+    import orchestrator.agent_peer_auth as apa
+
+    def _boom(value, key):
+        raise RuntimeError("redaction exploded")
+
+    monkeypatch.setattr(apa, "_redact", _boom)
+    with caplog.at_level(logging.DEBUG):
+        logging.getLogger("websockets.client").debug("still logged")
+    assert "still logged" in caplog.records[-1].getMessage()
+
+
+async def test_ws_handshake_401_is_caught_and_logged_actionably(caplog):
+    """The card can pass while /agent refuses — e.g. an agent whose card is
+    ungated. InvalidHandshake is the only exception base stable across the
+    websockets 14.0 split."""
+    import logging
+
+    from aiohttp import web
+
+    async def card(request):
+        return web.json_response(CARD)
+
+    async def agent_ws(request):
+        raise web.HTTPUnauthorized(
+            headers={"WWW-Authenticate": 'AstralAgentKey realm="win-agent"'})
+
+    runner = await _serve([
+        web.get("/.well-known/agent-card.json", card),
+        web.get("/agent", agent_ws),
+    ], 9186)
+    try:
+        with caplog.at_level(logging.WARNING):
+            await _orch().discover_agent("http://127.0.0.1:9186")
+    finally:
+        await runner.cleanup()
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("refused the orchestrator's credential on /agent" in m for m in msgs), msgs
+
+
+async def test_a2a_fallback_resolver_is_credentialed_and_bounded(monkeypatch):
+    """discover_a2a_agent's httpx card resolver: carries the header for a
+    trusted destination and cannot hang (it is reachable inline from a user's
+    register_external_agent)."""
+    import httpx
+
+    captured = {}
+    real_init = httpx.AsyncClient.__init__
+
+    def _spy(self, *a, **kw):
+        captured["headers"] = dict(kw.get("headers") or {})
+        captured["timeout"] = kw.get("timeout")
+        captured["follow_redirects"] = kw.get("follow_redirects")
+        return real_init(self, *a, **kw)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", _spy)
+    o = _orch()
+    o.a2a_clients = {}
+    o.a2a_agent_cards = {}
+    # No listener: the resolver fails and the coroutine swallows it. We only
+    # care how the client was CONSTRUCTED.
+    await o.discover_a2a_agent("http://127.0.0.1:9199")
+    assert captured.get("timeout") == 5.0
+    assert captured.get("follow_redirects") is False
+    assert captured.get("headers", {}).get(AGENT_KEY_HEADER) == KEY
+
+
+async def test_a2a_backup_resolver_is_credentialed_and_bounded(monkeypatch):
+    import httpx
+
+    captured = {}
+    real_init = httpx.AsyncClient.__init__
+
+    def _spy(self, *a, **kw):
+        captured["headers"] = dict(kw.get("headers") or {})
+        captured["timeout"] = kw.get("timeout")
+        return real_init(self, *a, **kw)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", _spy)
+    o = _orch()
+    o.a2a_clients = {}
+    o.a2a_agent_cards = {}
+    await o._setup_a2a_client_for_agent("http://127.0.0.1:9199", "fake-agent-1")
+    assert captured.get("timeout") == 5.0
+    assert captured.get("headers", {}).get(AGENT_KEY_HEADER) == KEY
+
+
+async def test_execute_via_a2a_carries_the_key_beside_the_delegation_token(monkeypatch):
+    """Two credentials answering two questions: who this orchestrator is, and
+    what this call may do. The key must never replace the Bearer token."""
+    import httpx
+
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"result": {}}
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            captured["headers"] = dict(headers or {})
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    o = _orch()
+    o.a2a_clients = {"fake-agent-1": "http://127.0.0.1:9199"}
+    await o._execute_via_a2a(
+        "fake-agent-1", "do_thing", {"_delegation_token": "tok-123"}
+    )
+    assert captured["headers"].get(AGENT_KEY_HEADER) == KEY
+    assert captured["headers"].get("Authorization") == "Bearer tok-123"

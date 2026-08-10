@@ -250,12 +250,12 @@ def agent_ws_url(base_url: str) -> str:
     preserves any path prefix, so an agent mounted behind a reverse proxy at
     ``https://host/agents/win`` keeps its WebSocket transport.
     """
-    parsed = urlparse(base_url)
+    # A scheme-less base URL must be normalized BEFORE parsing: urlparse reads
+    # the "host:" of "host:8771" as a scheme and leaves netloc empty, so the
+    # port would become the host. Same trick _declared_hosts uses.
+    raw = base_url if "://" in base_url else "http://" + base_url
+    parsed = urlparse(raw)
     scheme = "wss" if parsed.scheme == "https" else "ws"
-    if parsed.netloc:
-        netloc, prefix = parsed.netloc, parsed.path
-    else:  # tolerate a scheme-less base URL ("host:port/prefix")
-        raw = parsed.path
-        netloc, _, rest = raw.partition("/")
-        prefix = "/" + rest if rest else ""
-    return "{}://{}{}/agent".format(scheme, netloc, prefix.rstrip("/"))
+    return "{}://{}{}/agent".format(
+        scheme, parsed.netloc, parsed.path.rstrip("/")
+    )
