@@ -29,6 +29,15 @@ Additionally, in production mode:
 - **Agent registrations without a valid `AGENT_API_KEY` are refused**
   (WS close 1008). Leaving it unset is safe but means no specialist agents
   come up — the boot log warns about this.
+- **`AGENT_API_KEY` now authenticates BOTH directions.** As well as gating
+  inbound registrations, the orchestrator presents it as the
+  `X-Astral-Agent-Key` header when it dials *out* to an agent's card and
+  `/agent` endpoints, so a client-hosted agent (e.g. the Windows tools agent,
+  which reads and writes files and runs commands on a user's PC) can tell this
+  orchestrator apart from any other host that reaches its port. The key is sent
+  only after the peer answers an unauthenticated probe with the
+  `AstralAgentKey` challenge, and only to a destination listed under
+  `AGENT_KEY_TRUSTED_HOSTS` (see below).
 - Unauthenticated shell requests redirect to Keycloak; unauthenticated
   REST/WS requests are refused. Entry requires the `user` or `admin` realm
   role.
@@ -514,6 +523,12 @@ WEB_SESSION_ENC_KEY=<generated Fernet key>
 OFFLINE_GRANT_ENC_KEY=<generated Fernet key>
 AUDIT_HMAC_SECRET=<high-entropy value>
 AGENT_API_KEY=<random secret>
+# Hosts that may RECEIVE AGENT_API_KEY on outbound agent connections, beyond
+# loopback and the Docker host aliases. Only needed for a client-hosted agent
+# reached at some other address. Deliberately NOT inherited from
+# A2A_EXTERNAL_AGENTS: that is a discovery list, and naming a third-party peer
+# there is not consent for it to hold the fleet-wide registration secret.
+AGENT_KEY_TRUSTED_HOSTS=
 
 # Trust X-Forwarded-* only from the TLS proxy
 FORWARDED_ALLOW_IPS=<proxy ip>
@@ -554,7 +569,11 @@ the pulled image refuses to serve and prints one consolidated checklist in
 [ ] USE_MOCK_AUTH=false
 [ ] WEB_SESSION_ENC_KEY + OFFLINE_GRANT_ENC_KEY generated (Fernet)
 [ ] AUDIT_HMAC_SECRET high-entropy (placeholder is refused at boot)
-[ ] AGENT_API_KEY set (agents refuse to register without it)
+[ ] AGENT_API_KEY set (agents refuse to register without it; it is ALSO the
+    credential this orchestrator presents outbound — 16+ ASCII chars)
+[ ] AGENT_KEY_TRUSTED_HOSTS set IF a client-hosted agent is reached at
+    anything other than loopback or a Docker host alias (else its card
+    fetch 401s and the agent never registers)
 [ ] KEYCLOAK_* configured; realm per docs/keycloak-realm-settings.md
     (incl. Remember Me OFF, Offline Session ≥ 365 d, roles user/admin)
 [ ] KEYCLOAK_ALLOWED_AZP lists the native clients (astral-desktop,

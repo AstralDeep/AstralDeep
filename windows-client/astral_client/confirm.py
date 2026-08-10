@@ -31,6 +31,8 @@ import logging
 import os
 import queue
 import threading
+import time
+import uuid
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger("astral.confirm")
@@ -57,6 +59,12 @@ class _Bridge:
         self._reply: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self._attached = False
         self._poller = None  # QTimer on the GUI thread, if Qt is attached
+        # One confirmation in flight at a time. Two concurrent requesters
+        # (the orchestrator CAN dispatch parallel tool calls at one agent)
+        # would otherwise race on the shared reply queue — Queue.get() makes
+        # no ordering promise across waiters, so requester A could consume
+        # the Allow the user granted to requester B's dialog.
+        self._serial = threading.Lock()
 
     def attach(self, show_fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
         """Called once on the GUI thread. ``show_fn`` displays the dialog for a
@@ -91,11 +99,22 @@ class _Bridge:
             req = self._q.get_nowait()
         except queue.Empty:
             return
+        self._show_and_reply(req)
+
+    def _show_and_reply(self, req: Dict[str, Any]) -> None:
+        """Show one request's dialog and post its correlated reply. The single
+        GUI-side reply path — the tests' simulated pollers call this too, so
+        the correlation contract can't drift between product and test."""
         try:
             reply = self._show_fn(req)
         except Exception as exc:  # noqa: BLE001 — never raise on the GUI thread
             logger.warning("confirm dialog failed: %s", exc)
             reply = {"accepted": False, "choice": None, "reason": "dialog_error"}
+        if not isinstance(reply, dict):
+            reply = {"accepted": bool(reply), "choice": None}
+        # Stamp the reply with its request id so a waiter can never consume an
+        # answer meant for a different (e.g. timed-out) request.
+        reply.setdefault("_confirm_id", req.get("_confirm_id"))
         self._reply.put(reply)
 
     def request_confirm(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -104,20 +123,40 @@ class _Bridge:
 
         If the bridge is not attached (no GUI — e.g. a standalone agent run or
         a test that didn't stub it), returns **declined** (fail-closed).
+
+        Correlated + serialized: each request carries a unique id and the
+        waiter discards any reply that doesn't match it — a dialog answered
+        AFTER its requester timed out must never be delivered to the next
+        request (a stale Allow approving a different action). ``_serial``
+        additionally admits one confirmation at a time, so dialogs are shown
+        to the user one by one in request order.
         """
         with self._lock:
             attached = self._attached
         if not attached:
             return {"accepted": False, "choice": None, "reason": "no_gui"}
-        self._q.put(req)
-        try:
-            reply = self._reply.get(timeout=_timeout())
-        except queue.Empty:
-            logger.warning(
-                "confirm request timed out after %ss: %s", _timeout(), req.get("kind")
-            )
-            return {"accepted": False, "choice": None, "reason": "timeout"}
-        return reply
+        req = dict(req)
+        req["_confirm_id"] = uuid.uuid4().hex
+        with self._serial:
+            self._q.put(req)
+            deadline = time.monotonic() + _timeout()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "confirm request timed out after %ss: %s",
+                        _timeout(), req.get("kind"),
+                    )
+                    return {"accepted": False, "choice": None, "reason": "timeout"}
+                try:
+                    reply = self._reply.get(timeout=remaining)
+                except queue.Empty:
+                    continue
+                if reply.get("_confirm_id") == req["_confirm_id"]:
+                    return reply
+                # A stale reply from an earlier timed-out request: fail closed
+                # by dropping it (its waiter already returned declined).
+                logger.warning("dropping stale confirm reply (kind=%s)", req.get("kind"))
 
 
 # Module-level singleton — one bridge per process.

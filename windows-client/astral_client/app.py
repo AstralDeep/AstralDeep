@@ -287,7 +287,7 @@ class ChatRail(QWidget):
         self._inner = QWidget()
         self._lay = QVBoxLayout(self._inner)
         self._lay.setContentsMargins(12, 12, 12, 12)
-        self._lay.setSpacing(10)
+        self._lay.setSpacing(8)
         self._lay.addStretch(1)
         self._scroll.setWidget(self._inner)
         outer.addWidget(self._scroll, 1)
@@ -300,56 +300,71 @@ class ChatRail(QWidget):
             self._hint.deleteLater()
             self._hint = None
 
-    def add(self, role: str, text: str) -> None:
-        self._drop_hint()
+    @staticmethod
+    def _bubble_frame(role: str) -> QFrame:
+        """One transcript bubble styled like the web (client.js bubble classes):
+        user = primary/20 fill + primary/30 border, right-shifted; assistant =
+        white/5 fill + hairline, left; rounded-lg with p-3 padding. Alignment is
+        carried by a directional inset (Qt labels negotiate wrap width poorly
+        inside stretch rows). The role stays on the accessible name so parity
+        with the label-less web bubbles costs assistive tech nothing."""
         bubble = QFrame()
         is_user = role == "user"
-        bg = T.PRIMARY_SOFT if is_user else T.SURFACE
-        _scoped(
-            bubble, f"background:{bg}; border:1px solid {T.BORDER}; border-radius:10px;"
-        )
+        if is_user:
+            css = (f"background:{T._rgba(T.PRIMARY, 0.20)};"
+                   f"border:1px solid {T._rgba(T.PRIMARY, 0.30)};")
+        else:
+            css = (f"background:{T._rgba(T.TEXT, 0.05)};"
+                   f"border:1px solid {T._rgba(T.TEXT, 0.05)};")
+        _scoped(bubble, css + "border-radius:8px;")
+        bubble.setAccessibleName(
+            {"user": "You", "assistant": "Assistant", "system": "System",
+             "tool": "Tool"}.get(role, role))
+        return bubble
+
+    def _insert_bubble(self, bubble: QFrame, role: str) -> None:
+        """Directional inset (web: flex justify-end / justify-start + max-w-85%)."""
+        wrap = QWidget()
+        row = QHBoxLayout(wrap)
+        inset = 36
+        row.setContentsMargins(inset if role == "user" else 0, 0,
+                               0 if role == "user" else inset, 0)
+        row.addWidget(bubble)
+        self._lay.insertWidget(self._lay.count() - 1, wrap)
+
+    def add(self, role: str, text: str) -> None:
+        self._drop_hint()
+        bubble = self._bubble_frame(role)
         bl = QVBoxLayout(bubble)
-        bl.setContentsMargins(12, 8, 12, 8)
-        who = QLabel("You" if is_user else "Assistant")
-        who.setFrameShape(QFrame.Shape.NoFrame)
-        who.setStyleSheet(
-            f"color:{T.MUTED}; font-size:11px; font-weight:600; background:transparent;"
-        )
+        bl.setContentsMargins(12, 10, 12, 10)
         body = QLabel(text)
         body.setWordWrap(True)
         body.setFrameShape(QFrame.Shape.NoFrame)
         body.setTextFormat(Qt.TextFormat.MarkdownText)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         body.setStyleSheet(f"color:{T.TEXT}; font-size:13px; background:transparent;")
-        bl.addWidget(who)
         bl.addWidget(body)
-        self._lay.insertWidget(self._lay.count() - 1, bubble)
+        self._insert_bubble(bubble, role)
         bar = self._scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
 
     def _semantic_bubble(self, message: SemanticMessage, ctx: RenderContext) -> QWidget:
-        """Build one detached semantic turn using the shared native renderer."""
+        """Build one detached semantic turn using the shared native renderer.
+        System/tool turns keep a small muted role caption (the web renders
+        those inline too); user/assistant turns rely on side + tint alone,
+        exactly like the web bubbles."""
 
-        bubble = QFrame()
-        is_user = message.role == "user"
-        bg = T.PRIMARY_SOFT if is_user else T.SURFACE
-        _scoped(
-            bubble, f"background:{bg}; border:1px solid {T.BORDER}; border-radius:10px;"
-        )
+        bubble = self._bubble_frame(message.role)
         layout = QVBoxLayout(bubble)
-        layout.setContentsMargins(12, 8, 12, 8)
-        role_label = {
-            "user": "You",
-            "assistant": "Assistant",
-            "system": "System",
-            "tool": "Tool",
-        }[message.role]
-        who = QLabel(role_label)
-        who.setFrameShape(QFrame.Shape.NoFrame)
-        who.setStyleSheet(
-            f"color:{T.MUTED}; font-size:11px; font-weight:600; background:transparent;"
-        )
-        layout.addWidget(who)
+        layout.setContentsMargins(12, 10, 12, 10)
+        if message.role not in ("user", "assistant"):
+            who = QLabel({"system": "System", "tool": "Tool"}.get(
+                message.role, message.role))
+            who.setFrameShape(QFrame.Shape.NoFrame)
+            who.setStyleSheet(
+                f"color:{T.MUTED}; font-size:11px; font-weight:600; background:transparent;"
+            )
+            layout.addWidget(who)
         for attachment in message.attachments:
             label = next(
                 (
@@ -421,10 +436,13 @@ class ChatRail(QWidget):
     ) -> None:
         """Replace the committed transcript in one main-thread reducer action."""
 
-        prepared = [self._semantic_bubble(message, ctx) for message in messages]
+        prepared = [
+            (self._semantic_bubble(message, ctx), message.role)
+            for message in messages
+        ]
         self.clear()
-        for bubble in prepared:
-            self._lay.insertWidget(self._lay.count() - 1, bubble)
+        for bubble, role in prepared:
+            self._insert_bubble(bubble, role)
         if not prepared:
             # An empty committed chat is valid; it is not a generic new-chat
             # welcome. Keep the rail intentionally blank.
@@ -518,8 +536,8 @@ class Canvas(QScrollArea):
         self.setWidgetResizable(True)
         self._inner = QWidget()
         self._lay = QVBoxLayout(self._inner)
-        self._lay.setContentsMargins(18, 18, 18, 18)
-        self._lay.setSpacing(14)
+        self._lay.setContentsMargins(16, 16, 16, 16)
+        self._lay.setSpacing(12)
         self._lay.addStretch(1)
         self.setWidget(self._inner)
         self._by_id: Dict[str, QWidget] = {}
@@ -901,6 +919,9 @@ class SurfaceDialog(QDialog):
         super().__init__(parent)
         self.setModal(False)
         self.resize(600, 560)
+        # Web modal card: raised solid surface (surface/0.97) over the dimmed
+        # page — SURFACE_2 is that raised token.
+        self.setStyleSheet(f"QDialog {{ background:{T.SURFACE_2}; }}")
         self._raw_emit = emit
         self._on_retry = on_retry
         self._on_sign_out = on_sign_out
@@ -1093,8 +1114,12 @@ class TopBar(QFrame):
     def __init__(self, user: str, on_new_chat, on_recent, on_open_surface, on_sign_out):
         super().__init__()
         self.setObjectName("topbar")
+        # Web #astral-topbar: translucent bg-tinted glass band with a soft
+        # bottom hairline (Qt has no backdrop blur; the alpha tint over the
+        # root's nebula glows gives the same layered read).
         self.setStyleSheet(
-            f"#topbar {{ background:{T.SURFACE}; border-bottom:1px solid {T.BORDER}; }}"
+            f"#topbar {{ background:{T._rgba(T.BG, 0.65)};"
+            f"border-bottom:1px solid {T._rgba(T.TEXT, 0.06)}; }}"
         )
         self._on_open_surface = on_open_surface
         self._on_sign_out = on_sign_out
@@ -1103,7 +1128,8 @@ class TopBar(QFrame):
         lay.setContentsMargins(14, 8, 12, 8)
         lay.setSpacing(8)
 
-        # Small brand mark only — no wordmark, no visible status/identity text.
+        # Brand mark (status-tinted; tooltip carries connection/integrity) +
+        # the "AstralDeep" wordmark, matching the web's logo + wordmark brand.
         self._mark = QLabel("◆")
         self._mark.setObjectName("applicationStatus")
         self._mark.setAccessibleName("Application status")
@@ -1112,8 +1138,12 @@ class TopBar(QFrame):
             f"color:{T.PRIMARY}; font-size:16px; font-weight:800; background:transparent;"
         )
         self._mark.setToolTip("connecting…")
+        self.brand_label = QLabel("AstralDeep")
+        self.brand_label.setStyleSheet(
+            f"color:{T.TEXT}; font-size:15px; font-weight:600; background:transparent;"
+        )
 
-        self.new_btn = QPushButton("＋ New")
+        self.new_btn = QPushButton("＋ New chat")
         self.new_btn.setObjectName("primary")
         self.new_btn.clicked.connect(on_new_chat)
         # 066 cross-client style parity: web and Android render every top-bar
@@ -1134,13 +1164,9 @@ class TopBar(QFrame):
         self.settings_btn.setToolTip("Settings")
         self.settings_btn.setAccessibleName("Settings")
         self.settings_btn.setObjectName("iconGhost")
+        # Menu chrome (surface, radius, subtle primary hover) comes from the
+        # global QMenu rules in theme.build_stylesheet() — web parity.
         self._menu = QMenu(self)
-        self._menu.setStyleSheet(
-            f"QMenu {{ background:{T.SURFACE}; color:{T.TEXT}; border:1px solid {T.BORDER}; padding:4px; }}"
-            f"QMenu::item {{ padding:6px 24px; }}"
-            f"QMenu::item:selected {{ background:{T.PRIMARY}; color:#ffffff; }}"
-            f"QMenu::separator {{ height:1px; background:{T.BORDER}; margin:4px 8px; }}"
-        )
         self.settings_btn.setMenu(self._menu)
         for b in (self.new_btn, self.recent_btn, self.settings_btn):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1159,8 +1185,11 @@ class TopBar(QFrame):
         # reorder it. Web/Android/Apple all run
         #   brand · New chat · Recent chats · <server-model actions> · Settings
         # and the server-model cluster goes AFTER the client-local buttons, not
-        # before them. Pinned by tests/test_top_bar.py.
+        # before them. Pinned by tests/test_top_bar.py. The brand is a
+        # two-widget cluster (status mark + wordmark), exactly like the web's
+        # logo + "AstralDeep" text.
         lay.addWidget(self._mark)
+        lay.addWidget(self.brand_label)
         lay.addStretch(1)
         lay.addWidget(self.new_btn)
         lay.addWidget(self.recent_btn)
@@ -1311,7 +1340,7 @@ class AgentsDialog(QDialog):
         self._on_verify_integrity = on_verify_integrity
         self.setWindowTitle("Agents & permissions")
         self.setMinimumSize(600, 640)
-        self.setStyleSheet(f"QDialog {{ background:{T.BG}; }}")
+        self.setStyleSheet(f"QDialog {{ background:{T.SURFACE_2}; }}")
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 16)
         root.setSpacing(12)
@@ -1534,7 +1563,7 @@ class HistoryDialog(QDialog):
         self._on_open = on_open
         self.setWindowTitle("Recent chats")
         self.setMinimumSize(460, 520)
-        self.setStyleSheet(f"QDialog {{ background:{T.BG}; }}")
+        self.setStyleSheet(f"QDialog {{ background:{T.SURFACE_2}; }}")
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 16)
         root.setSpacing(10)
@@ -1879,16 +1908,15 @@ class MainWindow(QMainWindow):
             self._win_agent_host = os.getenv("ASTRAL_AGENT_HOST", "host.docker.internal")
             self._win_agent_port = int(os.getenv("WIN_AGENT_PORT", "8771"))
         self._win_agent_registered = False
-        if self._win_agent_enabled:
-            try:
-                import win_agent.agent as _wa
-
-                _wa.start_agent_thread(
-                    port=self._win_agent_port,
-                    deployment_profile=deployment_profile,
-                )
-            except Exception:
-                pass
+        self._win_agent_thread = None
+        self._win_agent_profile = deployment_profile
+        self._win_agent_refusal_notified = False
+        # The CONFIG intent (profile/env), kept separate from the runtime
+        # `_win_agent_enabled` so a failed start cannot make a later retry —
+        # e.g. after the deferred first-run dialog supplies the key —
+        # unreachable. The listener is started further down, once self._banner
+        # exists: a refusal has to be able to tell the user why tools are off.
+        self._win_agent_wanted = self._win_agent_enabled
 
         # Feature 058: this PC hosts the user's OWN agents as supervised child
         # processes. Unlike the built-in tools agent above (an in-process server
@@ -1931,20 +1959,13 @@ class MainWindow(QMainWindow):
             self.canvas.show_skeleton()
         # 055 US5: the canvas context menu opens export URLs against this origin.
         self.canvas.http_base = _http_base(url)
-        # 066 canvas-first parity: the canvas leads (left, stretching) and the
-        # conversation rail sits on the trailing edge — the same arrangement as
-        # the web split mode and the Android SplitShell. The rail is
-        # collapsible by dragging the handle to the edge; the canvas keeps every
-        # pixel it frees.
-        split = QSplitter(Qt.Orientation.Horizontal)
-        split.addWidget(self._wrap(self.canvas, "Canvas"))
-        split.addWidget(self._wrap(self.rail, "Conversation"))
-        split.setSizes([900, 380])
-        split.setStretchFactor(0, 1)  # canvas absorbs window growth
-        split.setStretchFactor(1, 0)  # rail keeps its width
-        split.setCollapsible(0, False)  # the canvas is never collapsible
-        split.setCollapsible(1, True)
-
+        # 066 canvas-first parity: the canvas leads (left, stretching, on the
+        # open page floor — no header band, exactly like the web) and the
+        # conversation rail sits on the trailing edge as a raised translucent
+        # panel with the web's uppercase CONVERSATION rail head. The composer
+        # lives INSIDE the rail, matching the web split mode and the Android
+        # SplitShell — it used to span the whole window under both panels.
+        # The splitter is assembled after the composer widgets exist (below).
         self._input = QLineEdit()
         self._input.setPlaceholderText("Message AstralDeep…  (type / for commands)")
         self._input.returnPressed.connect(self._send)
@@ -1964,12 +1985,8 @@ class MainWindow(QMainWindow):
         # as web's `.astral-attach-btn` (066 style parity).
         self._attach_btn.setObjectName("iconGhost")
         self._attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Menu chrome comes from the global QMenu rules in the theme QSS.
         attach_menu = QMenu(self._attach_btn)
-        attach_menu.setStyleSheet(
-            f"QMenu {{ background:{T.SURFACE}; color:{T.TEXT}; border:1px solid {T.BORDER}; padding:4px; }}"
-            f"QMenu::item {{ padding:6px 24px; }}"
-            f"QMenu::item:selected {{ background:{T.PRIMARY}; color:#ffffff; }}"
-        )
         act_up = attach_menu.addAction("Upload files…")
         act_up.triggered.connect(self._pick_files)
         act_ex = attach_menu.addAction("Choose from your files")
@@ -1982,14 +1999,59 @@ class MainWindow(QMainWindow):
         self._chips_lay.setSpacing(6)
         self._chips_bar.setVisible(False)
 
-        bottom = QHBoxLayout()
-        bottom.setContentsMargins(12, 8, 12, 12)
-        bottom.setSpacing(8)
-        bottom.addWidget(self._attach_btn)
+        # Composer — the web split-rail arrangement (.astral-chat-form): the
+        # input takes its own full-width line, with the icon controls + Send on
+        # the row beneath it (066 FR-004 — the input never degrades to a few
+        # characters inside the narrow rail).
         self._voice_widget = VoiceComposerWidget()
-        bottom.addWidget(self._voice_widget)
-        bottom.addWidget(self._input, 1)
-        bottom.addWidget(self._send_btn)
+        composer = QWidget()
+        _scoped(
+            composer,
+            f"background:{T._rgba(T.BG, 0.45)};"
+            f"border-top:1px solid {T._rgba(T.TEXT, 0.06)};",
+        )
+        composer_lay = QVBoxLayout(composer)
+        composer_lay.setContentsMargins(12, 10, 12, 12)
+        composer_lay.setSpacing(8)
+        composer_lay.addWidget(self._input)
+        controls = QHBoxLayout()
+        controls.setSpacing(8)
+        controls.addWidget(self._attach_btn)
+        controls.addWidget(self._voice_widget, 1)
+        controls.addWidget(self._send_btn)
+        composer_lay.addLayout(controls)
+
+        # Conversation rail column: web .astral-chat-panel — translucent
+        # surface, left hairline, uppercase rail head, transcript, then the
+        # staged-attachment chips and the composer.
+        rail_col = QWidget()
+        _scoped(
+            rail_col,
+            f"background:{T._rgba(T.SURFACE_2, 0.35)};"
+            f"border-left:1px solid {T._rgba(T.TEXT, 0.06)};",
+        )
+        rail_lay = QVBoxLayout(rail_col)
+        rail_lay.setContentsMargins(0, 0, 0, 0)
+        rail_lay.setSpacing(0)
+        rail_head = QLabel("CONVERSATION")
+        rail_head.setStyleSheet(
+            f"color:{T.MUTED}; font-size:11px; font-weight:600; letter-spacing:1px;"
+            f"padding:8px 14px; border-bottom:1px solid {T._rgba(T.TEXT, 0.06)};"
+            "background:transparent;"
+        )
+        rail_lay.addWidget(rail_head)
+        rail_lay.addWidget(self.rail, 1)
+        rail_lay.addWidget(self._chips_bar)
+        rail_lay.addWidget(composer)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.addWidget(self.canvas)
+        split.addWidget(rail_col)
+        split.setSizes([900, 380])
+        split.setStretchFactor(0, 1)  # canvas absorbs window growth
+        split.setStretchFactor(1, 0)  # rail keeps its width
+        split.setCollapsible(0, False)  # the canvas is never collapsible
+        split.setCollapsible(1, True)
 
         self._voice_controller = VoiceController(
             device_id=getattr(
@@ -2047,6 +2109,11 @@ class MainWindow(QMainWindow):
         # itself; during a startup sign-in the click cancels the login instead.
         self._banner.clicked.connect(self._on_banner_clicked)
 
+        # Feature 039: this PC hosts the tools agent the orchestrator dials into.
+        # Started here rather than beside its config above because a refusal
+        # (no usable AGENT_API_KEY) reports itself through the banner.
+        self.maybe_start_tools_agent()
+
         root = QWidget()
         root.setObjectName("root")
         rl = QVBoxLayout(root)
@@ -2054,9 +2121,7 @@ class MainWindow(QMainWindow):
         rl.setSpacing(0)
         rl.addWidget(self.topbar)
         rl.addWidget(self._banner)
-        rl.addWidget(split, 1)
-        rl.addWidget(self._chips_bar)
-        rl.addLayout(bottom)
+        rl.addWidget(split, 1)  # chips + composer live inside the rail column
         self.setCentralWidget(root)
         self._input.setFocus()  # cursor ready in the message box on launch
 
@@ -2105,19 +2170,63 @@ class MainWindow(QMainWindow):
             logger.debug("voice stop failed on close", exc_info=True)
         super().closeEvent(event)
 
-    def _wrap(self, inner: QWidget, title: str) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        head = QLabel(title)
-        head.setStyleSheet(
-            f"color:{T.MUTED}; font-size:11px; font-weight:700; letter-spacing:1px;"
-            f"padding:8px 14px; background:{T.SURFACE};"
+    def maybe_start_tools_agent(self) -> None:
+        """Start the client-hosted tools listener iff a usable key is configured.
+
+        The listener serves file-read/write and command-exec tools on a TCP
+        port, so it requires the shared ``AGENT_API_KEY`` inbound (see
+        ``win_agent.agent``) and refuses to exist without one. Two consequences
+        handled here:
+
+        * A refusal must turn the feature OFF, not just skip the start. The old
+          ``except Exception: pass`` left ``_win_agent_enabled`` True, so
+          ``_on_status`` would still tell the orchestrator to dial a port this
+          process does not own.
+        * The key can arrive AFTER ``__init__``: the deferred first-run dialog
+          resolves config once the window is already up. So this is idempotent
+          and is called again after that resolution.
+        """
+        # `_win_agent_wanted` is the CONFIG decision and is never cleared by a
+        # failed start; `_win_agent_enabled` is the runtime truth _on_status
+        # reads. Collapsing the two made the retry below dead code: the first
+        # refusal cleared the very flag this method guards on, so a key supplied
+        # by the deferred first-run dialog could never start the listener.
+        if not self._win_agent_wanted or self._win_agent_thread is not None:
+            return
+        try:
+            import win_agent.agent as _wa
+
+            self._win_agent_thread = _wa.start_agent_thread(
+                host=os.getenv("ASTRAL_AGENT_BIND", "0.0.0.0"),
+                port=self._win_agent_port,
+                deployment_profile=self._win_agent_profile,
+            )
+        except Exception:  # noqa: BLE001 — never block startup on the listener
+            logger.debug("tools agent start failed", exc_info=True)
+            self._win_agent_thread = None
+        if self._win_agent_thread is None:
+            # Off, and say so: a listener that silently declines to exist is a
+            # support ticket, and the user asked for local tools. Deferred to
+            # the next event-loop turn because during __init__ the banner is not
+            # yet in a layout, and the startup sign-in status would overwrite it
+            # in the same turn anyway.
+            self._win_agent_enabled = False
+            if not self._win_agent_refusal_notified:
+                self._win_agent_refusal_notified = True
+                QTimer.singleShot(0, self._notify_tools_agent_refused)
+        else:
+            self._win_agent_enabled = True
+
+    def _notify_tools_agent_refused(self) -> None:
+        """Tell the user the local tools are off and how to turn them on. Only
+        fires when nothing more urgent already owns the banner."""
+        if self._win_agent_thread is not None:
+            return  # a later attempt succeeded; nothing to report
+        self._show_banner(
+            "Windows tools are off: set AGENT_API_KEY (16+ characters) to "
+            "enable them.",
+            "warning",
         )
-        lay.addWidget(head)
-        lay.addWidget(inner, 1)
-        return w
 
     def _apply_theme_pref(self, theme) -> None:
         """Apply a stored/pushed/surface-emitted theme spec (feature 044 US5) —
@@ -2689,7 +2798,9 @@ class MainWindow(QMainWindow):
 
     def _chip_widget(self, rec: dict) -> QWidget:
         chip = QFrame()
-        _scoped(chip, f"background:{T.SURFACE_2}; border:1px solid {T.BORDER}; border-radius:12px;")
+        # Web .astral-chip: white/6 fill, white/10 hairline, rounded-lg.
+        _scoped(chip, f"background:{T._rgba(T.TEXT, 0.06)};"
+                      f"border:1px solid {T._rgba(T.TEXT, 0.10)}; border-radius:8px;")
         lay = QHBoxLayout(chip)
         lay.setContentsMargins(10, 3, 6, 3)
         lay.setSpacing(6)
@@ -4203,7 +4314,7 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("Astral wants to act on your PC")
         dlg.setMinimumSize(560, 420)
-        dlg.setStyleSheet(f"QDialog {{ background:{T.BG}; }}")
+        dlg.setStyleSheet(f"QDialog {{ background:{T.SURFACE_2}; }}")
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(18, 16, 18, 14)
         lay.setSpacing(10)
@@ -4533,7 +4644,7 @@ def _prompt_config(authority: str = "", ws_url: str = "", agent_key: str = ""):
     dlg = QDialog()
     dlg.setWindowTitle("Configure AstralDeep")
     dlg.setMinimumWidth(540)
-    dlg.setStyleSheet(f"QDialog {{ background:{T.BG}; }}")
+    dlg.setStyleSheet(f"QDialog {{ background:{T.SURFACE_2}; }}")
     lay = QVBoxLayout(dlg)
     lay.setContentsMargins(20, 18, 20, 16)
     lay.setSpacing(8)
@@ -4951,6 +5062,10 @@ def _launch(
                 client_id=getattr(args, "client_id", "astral-desktop"),
                 bff=bool(getattr(args, "bff", False)),
             )
+            # The dialog may have just supplied AGENT_API_KEY, which the window
+            # did not have when it was built. Idempotent — a no-op if the
+            # listener already started (or is off).
+            win.maybe_start_tools_agent()
         win.begin_login(lambda cancel: resolve_auth(args, cancel_event=cancel))
 
     QTimer.singleShot(0, _after_first_paint)

@@ -121,6 +121,13 @@ hiddenimports = (
     # (it re-invokes itself with --byo-worker), so the delivered bundle's only
     # third-party import must resolve INSIDE the bundle — it can never pip-install.
     + collect_submodules("astralprims")
+    # websockets resolves `connect` through a runtime __import__ in its
+    # imports.py, so the concrete client module is not a statically visible
+    # dependency. It has survived freezing only because the `if TYPE_CHECKING:`
+    # block in websockets/__init__.py leaves IMPORT_NAME bytecode that
+    # modulegraph happens to follow — incidental, and it would break silently if
+    # upstream reorganized that block. Collect the package explicitly.
+    + collect_submodules("websockets")
     + ["PySide6.QtCharts", "PySide6.QtMultimedia", "websockets",
        "livekit", "livekit.rtc",
        "win_agent", "win_agent.agent", "win_agent.tools",

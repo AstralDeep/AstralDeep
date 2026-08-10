@@ -17,6 +17,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# This harness drives the real MainWindow; it must not open the
+# client-hosted tools listener on a network port for the capture's lifetime.
+os.environ.setdefault("ASTRAL_WIN_AGENT", "0")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PySide6.QtWidgets import QApplication  # noqa: E402

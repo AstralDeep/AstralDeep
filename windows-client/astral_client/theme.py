@@ -136,11 +136,20 @@ def _derive() -> None:
 def build_stylesheet() -> str:
     """Render the application QSS from the current (mutable) palette. Called at
     import for :data:`APP_STYLESHEET` and again by the app on every live theme
-    change (feature 044 US5)."""
+    change (feature 044 US5).
+
+    The treatments mirror ``backend/webrender/static/astral.css`` (the web
+    reference, feature 066 style parity): radius-sm 6 / radius-md 10 with
+    rounded-lg (8px) buttons+fields, translucent text-channel surfaces instead
+    of solid grays, the primary→secondary accent gradient on primary actions,
+    and the same secondary / ghost / tint button families the web renderer
+    emits."""
     return f"""
 * {{ font-family: {FONT}; }}
 QWidget {{ background: transparent; color: {TEXT}; font-size: 14px; }}
 QLabel {{ background: transparent; border: none; }}
+QToolTip {{ background: {SURFACE_2}; color: {TEXT}; border: 1px solid {BORDER};
+           padding: 4px 8px; }}
 QLabel#voiceRequestTerminalNotice {{
     background: {_SEMANTIC["error"][1]};
     border: 2px solid {_SEMANTIC["error"][0]};
@@ -155,15 +164,52 @@ QLabel#voiceRequestTerminalNotice[noticeKind="speech_error"] {{
 }}
 QMainWindow, QWidget#root {{ background: {BG}; }}
 QScrollArea {{ background: transparent; border: none; }}
-QLineEdit, QPlainTextEdit, QTextEdit {{ background: {SURFACE_2}; border: 1px solid {BORDER};
-           border-radius: 10px; padding: 9px 12px; color: {TEXT};
+QLineEdit, QPlainTextEdit, QTextEdit {{ background: {_rgba(TEXT, 0.05)}; border: 1px solid {_rgba(TEXT, 0.10)};
+           border-radius: 8px; padding: 8px 12px; color: {TEXT};
            selection-background-color: {PRIMARY}; }}
-QLineEdit:focus {{ border: 1px solid {_rgba(PRIMARY, 0.8)}; }}
-QPushButton {{ background: {SURFACE_2}; border: 1px solid {BORDER}; border-radius: 10px;
-           padding: 8px 16px; color: {TEXT}; }}
-QPushButton:hover {{ border-color: {PRIMARY}; }}
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{
+           border: 1px solid {_rgba(PRIMARY, 0.6)};
+           background: {_rgba(TEXT, 0.08)}; }}
+QComboBox {{ background: {_rgba(TEXT, 0.05)}; border: 1px solid {_rgba(TEXT, 0.10)};
+           border-radius: 8px; padding: 6px 10px; color: {TEXT}; }}
+QComboBox:hover {{ border-color: {_rgba(PRIMARY, 0.6)}; }}
+QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox QAbstractItemView {{ background: {SURFACE_2}; color: {TEXT};
+           border: 1px solid {BORDER}; border-radius: 6px; padding: 2px;
+           selection-background-color: {_rgba(PRIMARY, 0.25)};
+           selection-color: {TEXT}; outline: none; }}
+QCheckBox {{ color: {TEXT}; spacing: 8px; }}
+QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px;
+           border: 1px solid {_rgba(TEXT, 0.20)}; background: {_rgba(TEXT, 0.10)}; }}
+QCheckBox::indicator:checked {{ background: {PRIMARY}; border-color: {PRIMARY}; }}
+/* Neutral outline button — the web pager/utility treatment (border-white/10,
+   hover bg-white/10). Named variants below override it. */
+QPushButton {{ background: {_rgba(TEXT, 0.04)}; border: 1px solid {_rgba(TEXT, 0.12)};
+           border-radius: 8px; padding: 8px 16px; color: {TEXT}; }}
+QPushButton:hover {{ border-color: {_rgba(PRIMARY, 0.65)}; background: {_rgba(TEXT, 0.08)}; }}
+QPushButton:disabled {{ color: {_rgba(MUTED, 0.6)}; border-color: {_rgba(TEXT, 0.07)}; }}
 QPushButton#primary {{ background: {GRAD}; border: none; color: white; font-weight: 600; }}
 QPushButton#primary:hover {{ background: {SECONDARY}; }}
+/* Web .astral-btn-secondary — outline with the primary-tinted border. */
+QPushButton#secondary {{ background: transparent; border: 1px solid {_rgba(PRIMARY, 0.40)};
+           color: {TEXT}; }}
+QPushButton#secondary:hover {{ background: {_rgba(PRIMARY, 0.10)}; }}
+/* Web .astral-btn-ghost — text-only, muted until hover. */
+QPushButton#ghost {{ background: transparent; border: none; color: {MUTED}; }}
+QPushButton#ghost:hover {{ background: {_rgba(TEXT, 0.05)}; color: {TEXT}; }}
+/* Web file-upload / file-download soft tint buttons. */
+QPushButton#tintPrimary {{ background: {_rgba(PRIMARY, 0.20)};
+           border: 1px solid {_rgba(PRIMARY, 0.30)}; color: {PRIMARY}; font-weight: 500; }}
+QPushButton#tintPrimary:hover {{ background: {_rgba(PRIMARY, 0.30)}; }}
+QPushButton#tintSecondary {{ background: {_rgba(SECONDARY, 0.20)};
+           border: 1px solid {_rgba(SECONDARY, 0.30)}; color: {SECONDARY}; font-weight: 500; }}
+QPushButton#tintSecondary:hover {{ background: {_rgba(SECONDARY, 0.30)}; }}
+/* Param-picker checklist chips (web .astral-pp-field checklist buttons). */
+QPushButton#chip {{ background: {_rgba(TEXT, 0.05)}; border: 1px solid {_rgba(TEXT, 0.10)};
+           border-radius: 6px; padding: 4px 8px; font-size: 12px; color: {MUTED}; }}
+QPushButton#chip:hover {{ background: {_rgba(TEXT, 0.10)}; }}
+QPushButton#chip:checked {{ background: {_rgba(PRIMARY, 0.30)}; border-color: {PRIMARY};
+           color: white; }}
 /* 066 cross-client style parity: the square, quiet icon button the web client
    uses for its top-bar and voice controls (.astral-voice-control — 38px, 8px
    radius, faint border, muted glyph that takes the accent on hover). Windows
@@ -188,19 +234,32 @@ QPushButton#voiceComposerControl[iconOnly="true"][pressed="true"] {{
            background: {_rgba(PRIMARY, 0.22)}; border-color: {PRIMARY}; color: {TEXT}; }}
 QPushButton#danger {{ background: {_SEMANTIC["error"][0]}; border: none; color: white; font-weight: 600; }}
 QPushButton#danger:hover {{ background: #DC2626; }}
-QTableWidget {{ background: {SURFACE}; gridline-color: {BORDER}; border: 1px solid {BORDER};
-           border-radius: 10px; }}
-QTableWidget::item {{ padding: 4px 8px; color: {TEXT}; }}
-QHeaderView::section {{ background: transparent; color: {MUTED}; border: none;
-           border-bottom: 1px solid {BORDER}; padding: 8px 10px; font-weight: 600; }}
+QTableWidget {{ background: transparent; border: none;
+           alternate-background-color: {_rgba(TEXT, 0.02)};
+           selection-background-color: {_rgba(PRIMARY, 0.20)}; }}
+QTableWidget::item {{ padding: 8px 12px; color: {TEXT};
+           border-bottom: 1px solid {_rgba(TEXT, 0.05)}; }}
+/* Web thead band: bg-astral-primary/10, uppercase muted text-xs headers. */
+QHeaderView::section {{ background: {_rgba(PRIMARY, 0.10)}; color: {MUTED}; border: none;
+           border-bottom: 1px solid {_rgba(TEXT, 0.05)}; padding: 9px 12px;
+           font-weight: 600; font-size: 11px; }}
 QTabBar::tab {{ background: transparent; color: {MUTED}; padding: 8px 16px; border: none; }}
 QTabBar::tab:selected {{ color: {TEXT}; border-bottom: 2px solid {PRIMARY}; }}
+QTabBar::tab:hover {{ color: {TEXT}; }}
 QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 10px; }}
+QMenu {{ background: {SURFACE_2}; color: {TEXT}; border: 1px solid {_rgba(TEXT, 0.12)};
+           border-radius: 8px; padding: 4px; }}
+QMenu::item {{ padding: 6px 24px; border-radius: 6px; }}
+QMenu::item:selected {{ background: {_rgba(PRIMARY, 0.18)}; color: {TEXT}; }}
+QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 8px; }}
 QSplitter::handle {{ background: {BORDER}; width: 1px; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {_rgba(PRIMARY, 0.3)}; border-radius: 5px; min-height: 28px; }}
 QScrollBar::handle:vertical:hover {{ background: {_rgba(PRIMARY, 0.55)}; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
+QScrollBar::handle:horizontal {{ background: {_rgba(PRIMARY, 0.3)}; border-radius: 5px; min-width: 28px; }}
+QScrollBar::handle:horizontal:hover {{ background: {_rgba(PRIMARY, 0.55)}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 """
 

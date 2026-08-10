@@ -3736,16 +3736,92 @@ class Orchestrator:
 
     async def discover_agent(self, base_url: str):
         """Discover an agent by fetching its A2A agent card and connecting via WebSocket."""
+        from orchestrator.agent_peer_auth import (
+            agent_auth_headers, agent_ws_url, peer_demands_agent_key,
+        )
+        from shared.ws_compat import ws_header_kwargs
+
+        # Probe FIRST, credential second. The key is never on the opening
+        # request: we send it only after the peer has answered an
+        # unauthenticated request with OUR challenge scheme, proving it is an
+        # Astral agent waiting for exactly this credential.
+        #
+        # Host trust alone is too coarse to be the only control — it covers a
+        # whole machine, so any port on loopback or the Docker host would
+        # otherwise receive the fleet secret, including an unrelated dev server
+        # or debug port that happens to be listening. Both conditions must hold:
+        # the host is operator-declared AND the peer issued our challenge.
+        peer_headers = {}
         try:
             # Fetch agent card
             card_url = f"{base_url}/.well-known/agent-card.json"
             async with aiohttp.ClientSession() as session:
-                async with session.get(card_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                # allow_redirects=False is load-bearing, not tidiness: aiohttp
+                # forwards request headers across a redirect even to a different
+                # host/port (verified), so a trusted destination could 302 the
+                # shared key straight to an attacker — walking it around the
+                # whole point of agent_auth_headers' destination gate. An agent
+                # card endpoint has no legitimate reason to redirect.
+                async def _get_card(headers):
+                    return await session.get(
+                        card_url, headers=headers, allow_redirects=False,
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    )
+
+                resp = await _get_card({})
+                try:
+                    if resp.status == 401:
+                        # Only an agent that issues OUR challenge gets the key,
+                        # and only at a destination the operator declared.
+                        challenge = resp.headers.get("WWW-Authenticate", "")
+                        if not peer_demands_agent_key(challenge):
+                            logger.info(
+                                "Endpoint at %s requires an authentication scheme this "
+                                "orchestrator does not use; not an Astral agent, and no "
+                                "credential was sent", base_url,
+                            )
+                            return
+                        peer_headers = agent_auth_headers(base_url)
+                        if not peer_headers:
+                            logger.warning(
+                                "Agent at %s demands the orchestrator's credential, but it "
+                                "was withheld — either AGENT_API_KEY is unset, or the host "
+                                "is not loopback / a Docker host alias / listed in "
+                                "AGENT_KEY_TRUSTED_HOSTS", base_url,
+                            )
+                            return
+                    else:
+                        # 200 here means the agent does not gate its card (an
+                        # older agent, or a first-party one). Nothing to prove,
+                        # so nothing is sent — the key stays home.
+                        pass
+                    if resp.status == 401:
+                        resp.release()
+                        resp = await _get_card(peer_headers)
+                    if resp.status in (301, 302, 303, 307, 308):
+                        logger.warning(
+                            "Agent card at %s responded with a redirect (%s); refusing "
+                            "to follow it with a credential attached", card_url,
+                            resp.status,
+                        )
+                        return
+                    if resp.status == 401:
+                        # Challenged, credentialed, still refused: the two keys
+                        # differ. WARNING, not the "not ready yet" INFO below —
+                        # this is a configuration fault that otherwise reads as a
+                        # startup race and gets misdiagnosed as a network problem.
+                        logger.warning(
+                            "Agent at %s refused the orchestrator's credential (401) — "
+                            "AGENT_API_KEY must match on both sides", base_url,
+                        )
+                        return
                     if resp.status != 200:
                         # Log as INFO during discovery to avoid noise during startup
                         logger.info(f"Agent card not ready yet at {card_url} (status: {resp.status})")
                         return
                     card_data = await resp.json()
+                finally:
+                    resp.release()
 
             card = AgentCard.from_dict(card_data)
             agent_id = card.agent_id
@@ -3754,9 +3830,13 @@ class Orchestrator:
                 logger.debug(f"Agent {agent_id} already connected")
                 return
 
-            # Connect via WebSocket with no size limit to allow large files
-            ws_url = f"ws://{base_url.replace('http://', '').replace('https://', '')}/agent"
-            ws = await websockets.connect(ws_url, max_size=50 * 1024 * 1024)
+            # Connect via WebSocket with no size limit to allow large files.
+            # agent_ws_url preserves TLS (https -> wss); the previous inline
+            # expression hardcoded ws:// and stripped https://, which would now
+            # also put the shared key on the wire in the clear.
+            ws_url = agent_ws_url(base_url)
+            ws = await websockets.connect(ws_url, max_size=50 * 1024 * 1024,
+                                          **ws_header_kwargs(peer_headers))
 
             # Listen for RegisterAgent message
             raw = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -3772,6 +3852,19 @@ class Orchestrator:
 
             logger.info(f"Connected to agent: {agent_id} at {base_url}")
 
+        except websockets.exceptions.InvalidHandshake as exc:
+            # InvalidHandshake is the stable base across the websockets 14.0
+            # split (InvalidStatusCode on <=13.x, InvalidStatus on >=14) — never
+            # name either concrete class.
+            status = (getattr(exc, "status_code", None)
+                      or getattr(getattr(exc, "response", None), "status_code", None))
+            if status == 401:
+                logger.warning(
+                    "Agent at %s refused the orchestrator's credential on /agent (401) — "
+                    "AGENT_API_KEY must match on both sides", base_url,
+                )
+            else:
+                logger.debug(f"Discovery handshake to {base_url} rejected: {exc}")
         except Exception as e:
             logger.debug(f"Discovery attempt to {base_url} skipped: {e}")
 
@@ -3811,8 +3904,18 @@ class Orchestrator:
             import httpx
             from a2a.client import A2ACardResolver
             from shared.a2a_bridge import a2a_card_to_custom
+            from orchestrator.agent_peer_auth import agent_auth_headers
 
-            async with httpx.AsyncClient() as http_client:
+            # Client default headers apply to the resolver's own GET. The
+            # timeout is not optional: this coroutine is reachable inline from a
+            # user's register_external_agent, so a hostile card endpoint would
+            # otherwise stall it indefinitely.
+            # follow_redirects=False is httpx's default and is stated here so a
+            # future edit cannot silently enable redirect-following, which would
+            # carry the credential past the destination gate.
+            async with httpx.AsyncClient(headers=agent_auth_headers(base_url),
+                                         follow_redirects=False,
+                                         timeout=5.0) as http_client:
                 resolver = A2ACardResolver(http_client, base_url)
                 a2a_card = await resolver.get_agent_card()
 
@@ -3849,9 +3952,15 @@ class Orchestrator:
         try:
             import httpx
             from a2a.client import A2ACardResolver
+            from orchestrator.agent_peer_auth import agent_auth_headers
 
             a2a_url = f"{base_url}/a2a"
-            async with httpx.AsyncClient() as http_client:
+            # follow_redirects=False is httpx's default and is stated here so a
+            # future edit cannot silently enable redirect-following, which would
+            # carry the credential past the destination gate.
+            async with httpx.AsyncClient(headers=agent_auth_headers(base_url),
+                                         follow_redirects=False,
+                                         timeout=5.0) as http_client:
                 resolver = A2ACardResolver(http_client, a2a_url)
                 a2a_card = await resolver.get_agent_card()
 
@@ -17064,6 +17173,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
 
         headers = {"Content-Type": "application/json"}
+        # Transport credential (who this orchestrator is) — sent ALONGSIDE, never
+        # instead of, the per-call delegation token below, which is a different
+        # credential answering a different question (what this call may do).
+        from orchestrator.agent_peer_auth import agent_auth_headers
+        headers.update(agent_auth_headers(base_url))
         delegation_token = args.get("_delegation_token")
         if delegation_token:
             headers["Authorization"] = f"Bearer {delegation_token}"

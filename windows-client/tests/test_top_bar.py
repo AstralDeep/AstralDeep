@@ -43,10 +43,12 @@ def test_topbar_widget_order_matches_the_shared_model(qapp):
     tb = _bar(qapp)
     order = _order(tb)
 
-    # brand < (stretch) < new < recent < server-model actions < settings
+    # brand cluster (status mark + wordmark, the web's logo + "AstralDeep")
+    # < (stretch) < new < recent < server-model actions < settings
     assert order[0] is tb._mark
-    assert order[1] == "stretch"
-    assert order[2:] == [tb.new_btn, tb.recent_btn, tb._actions_holder, tb.settings_btn]
+    assert order[1] is tb.brand_label
+    assert order[2] == "stretch"
+    assert order[3:] == [tb.new_btn, tb.recent_btn, tb._actions_holder, tb.settings_btn]
 
 
 def test_server_model_actions_sit_between_recent_and_settings(qapp):

@@ -30,6 +30,10 @@ if "--offscreen" in sys.argv:
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# This harness drives the real MainWindow; it must not open the
+# client-hosted tools listener on a network port for the capture's lifetime.
+os.environ.setdefault("ASTRAL_WIN_AGENT", "0")
+
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
