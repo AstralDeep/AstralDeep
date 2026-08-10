@@ -33,7 +33,9 @@ def _drain_in_thread(b):
     """Simulate the GUI-thread QTimer tick draining one pending request.
 
     Blocks on the request queue (as a real poller would, without the 100 ms
-    QTimer cadence), calls the show_fn, posts the reply, then exits.
+    QTimer cadence), then routes through the bridge's REAL ``_show_and_reply``
+    (which stamps the reply-correlation id), so the test exercises the product
+    reply path rather than a hand-mirrored copy of it.
     """
 
     def gui_tick():
@@ -41,11 +43,7 @@ def _drain_in_thread(b):
             req = b._q.get(timeout=5)
         except Exception:  # noqa: BLE001 — queue.Empty after timeout
             return
-        try:
-            reply = b._show_fn(req)
-        except Exception:  # noqa: BLE001 — mirror _drain_once's guard
-            reply = {"accepted": False, "choice": None, "reason": "dialog_error"}
-        b._reply.put(reply)
+        b._show_and_reply(req)
 
     t = threading.Thread(target=gui_tick)
     t.start()
@@ -107,6 +105,35 @@ def test_dialog_error_fail_closed(monkeypatch):
     t.join(timeout=2)
     assert reply["accepted"] is False
     assert reply.get("reason") == "dialog_error"
+
+
+def test_stale_reply_never_approves_the_next_request(monkeypatch):
+    """A dialog answered AFTER its requester timed out must not leak its Allow
+    to the next request (pre-fix, the uncorrelated shared reply queue delivered
+    exactly that: a stale approved=True consumed by a different action)."""
+    monkeypatch.setenv("ASTRAL_CONFIRM_TIMEOUT", "1")
+    b = confirm._Bridge()
+    b.attach(lambda req: {"accepted": True, "choice": None})
+
+    # First request: nobody drains it → its waiter times out (declined) while
+    # the request itself stays queued.
+    first = b.request_confirm({"kind": "action", "tool": "write_file"})
+    assert first["accepted"] is False and first.get("reason") == "timeout"
+
+    # The GUI now (late) answers the FIRST dialog with Allow…
+    stale_req = b._q.get(timeout=2)
+    b._show_and_reply(stale_req)
+
+    # …and a SECOND, different action asks for confirmation. Its dialog is
+    # denied; the stale Allow above must not be consumed as its answer.
+    def deny_second(req):
+        return {"accepted": False, "choice": None}
+
+    b._show_fn = deny_second
+    t = _drain_in_thread(b)
+    second = b.request_confirm({"kind": "action", "tool": "delete_file"})
+    t.join(timeout=3)
+    assert second["accepted"] is False
 
 
 def test_directory_pick_returns_choice(monkeypatch):

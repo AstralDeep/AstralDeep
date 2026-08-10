@@ -88,10 +88,18 @@ async def run(args) -> int:
     if not args.no_agent:
         try:
             import win_agent.agent as wa
-            wa.start_agent_thread(port=agent_port)
-            time.sleep(0.6)
-            print(f"[win-agent] hosting Windows tools on :{agent_port} "
-                  f"(orchestrator reaches it at {agent_host}:{agent_port})")
+            # The listener now requires a usable AGENT_API_KEY inbound and
+            # refuses to start without one. Say so explicitly rather than
+            # letting the run appear to prove a path it never exercised.
+            thread = wa.start_agent_thread(port=agent_port)
+            if thread is None:
+                print("[win-agent] listener REFUSED: no usable AGENT_API_KEY "
+                      "(16+ ASCII chars) — the client-hosted A2A path is NOT "
+                      "being verified by this run")
+            else:
+                time.sleep(0.6)
+                print(f"[win-agent] hosting Windows tools on :{agent_port} "
+                      f"(orchestrator reaches it at {agent_host}:{agent_port})")
         except Exception as e:
             print(f"[win-agent] could not start ({e})")
 

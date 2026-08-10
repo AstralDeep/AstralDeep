@@ -144,10 +144,19 @@ KEYCLOAK_CLIENT_SECRET=<astral-frontend secret>   # from the astral-frontend "Cr
 KEYCLOAK_ALLOWED_AZP=astral-desktop
 
 # ── Windows tools agent auth (client-hosted A2A) ──────────────────────────
-# Random shared secret. The desktop's in-process Windows-tools agent presents
-# this when it registers. (In ASTRAL_ENV=development a keyless agent is also
-# allowed, but set it to exercise the real path.)
+# Random shared secret, used in BOTH directions: the desktop's Windows-tools
+# agent presents it when it registers, AND the orchestrator presents it as
+# X-Astral-Agent-Key when it dials the agent's card / /agent endpoints. The
+# desktop refuses to run the listener at all without it (16+ ASCII chars, no
+# dev carve-out) — it serves file-write and command-exec tools.
 AGENT_API_KEY=<random-string>
+
+# Optional. The orchestrator sends the key ONLY to declared destinations:
+# loopback, the Docker host aliases, A2A_EXTERNAL_AGENTS entries, and hosts
+# listed here. Needed if the desktop agent is reached at some other address.
+# (register_external_agent takes a user-supplied URL, and this key can register
+# any agent id — so it must never travel to a host the operator did not name.)
+#AGENT_KEY_TRUSTED_HOSTS=desktop.lan
 ```
 
 Generate the agent key with, e.g.:
@@ -167,7 +176,8 @@ correct, so usually you only need the authority:
 | `KEYCLOAK_AUTHORITY` / `--authority` | *(none)* | **Required** for real login — same realm URL as above. |
 | `ASTRAL_CLIENT_ID` / `--client-id` | `astral-desktop` | The dedicated public client. |
 | `ASTRAL_WS_URL` / `--url` | `ws://127.0.0.1:8001/ws` | Orchestrator WebSocket. |
-| `AGENT_API_KEY` | *(none)* | Match the orchestrator's value so the Windows-tools agent registers. |
+| `AGENT_API_KEY` | *(none)* | **Required** for the Windows-tools agent, in both directions — it registers with it and refuses inbound requests without it. 16+ ASCII chars, not a placeholder; without it the tools simply do not run. |
+| `ASTRAL_AGENT_BIND` | `0.0.0.0` | Interface for the tools listener. Keep `0.0.0.0` when the orchestrator is in Docker (`host.docker.internal` cannot reach a loopback bind); set `127.0.0.1` when it runs natively. |
 
 > The desktop does **not** read `.env` automatically. When verifying locally
 > it's launched with these passed in (the run step handles that); for end users
@@ -202,6 +212,8 @@ correct, so usually you only need the authority:
 | Login works but app says **no access** | Account lacks the `user`/`admin` realm role | Assign the `user` role to the account. |
 | `invalid_grant` / PKCE error at the token endpoint | PKCE method mismatch | Set **PKCE Code Challenge Method = `S256`** on the client. |
 | Windows-tools agent never registers | `AGENT_API_KEY` mismatch, or the orchestrator (in Docker) can't reach the host | Match `AGENT_API_KEY` on both sides; ensure `host.docker.internal` resolves (Docker Desktop), or set `ASTRAL_AGENT_HOST`. |
+| Orchestrator logs **"refused the orchestrator's credential (401)"** | The agent got no key or the wrong one | The two `AGENT_API_KEY` values differ — or the agent's host is not loopback / a Docker alias, so the orchestrator withheld the key: add that host to `AGENT_KEY_TRUSTED_HOSTS`. |
+| Desktop shows **"Windows tools are off: set AGENT_API_KEY"** | No key, or one under 16 chars / a placeholder | Set a real key on the desktop (`secrets.token_urlsafe(32)`) and relaunch. There is no dev carve-out — the listener will not run unauthenticated. |
 
 ---
 

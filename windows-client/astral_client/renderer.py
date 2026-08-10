@@ -20,6 +20,7 @@ import json
 import re
 import threading
 from dataclasses import dataclass
+from html import escape as html_escape
 from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import Qt, QUrl, Signal
@@ -75,6 +76,7 @@ def _label(
     color: str = T.TEXT,
     size: int = 14,
     bold: bool = False,
+    weight: Optional[int] = None,
     markdown: bool = False,
     wrap: bool = True,
 ) -> QLabel:
@@ -90,9 +92,9 @@ def _label(
         | Qt.TextInteractionFlag.LinksAccessibleByMouse
     )
     lab.setOpenExternalLinks(True)
-    weight = "600" if bold else "400"
+    w = str(weight) if weight else ("600" if bold else "400")
     lab.setStyleSheet(
-        f"color:{color}; font-size:{size}px; font-weight:{weight}; background:transparent;"
+        f"color:{color}; font-size:{size}px; font-weight:{w}; background:transparent;"
     )
     return lab
 
@@ -123,7 +125,7 @@ def _scoped(widget: QWidget, css: str) -> QWidget:
 
 
 def _card_frame(
-    radius: int = 12, bg: str = T.SURFACE, border: str = T.BORDER
+    radius: int = 10, bg: str = T.SURFACE, border: str = T.BORDER
 ) -> QFrame:
     f = QFrame()
     _scoped(f, f"background:{bg}; border:1px solid {border}; border-radius:{radius}px;")
@@ -153,10 +155,12 @@ def _render_into(layout, items: List[dict], ctx: RenderContext) -> None:
 # primitive renderers
 # --------------------------------------------------------------------------- #
 
+# Web type scale (astral.css / Tailwind): h1 text-2xl 24, h2 text-xl 20,
+# h3 text-lg 18, body text-sm 14, caption text-xs 12.
 _TEXT_SIZES = {
-    "h1": (26, True),
-    "h2": (21, True),
-    "h3": (17, True),
+    "h1": (24, True),
+    "h2": (20, True),
+    "h3": (18, True),
     "body": (14, False),
     "caption": (12, False),
 }
@@ -272,59 +276,99 @@ def _r_grid(c, ctx):
 
 def _r_hero(c, ctx):
     frame = QFrame()
-    if c.get("variant") == "gradient":
+    variant = c.get("variant", "default")
+    gradient = variant == "gradient"
+    if gradient:
         # Subtle primary→secondary wash derived from the LIVE palette (parity
         # with the web's .astral-hero--gradient — never hardcoded midnight hex).
+        # The web adds a 3px accent-gradient strip along the top edge; QSS has
+        # no ::after, so the strip rides border-top.
         bg = (
             "qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-            f"stop:0 {T._rgba(T.PRIMARY, 0.16)}, stop:1 {T._rgba(T.SECONDARY, 0.07)})"
+            f"stop:0 {T._rgba(T.PRIMARY, 0.18)}, stop:1 {T._rgba(T.SECONDARY, 0.08)})"
         )
-        border = T._rgba(T.PRIMARY, 0.25)
+        css = (
+            f"background:{bg}; border:1px solid {T._rgba(T.PRIMARY, 0.25)};"
+            f"border-top:3px solid {T.PRIMARY}; border-radius:12px;"
+        )
+    elif variant == "subtle":
+        # Web .astral-hero--subtle: faint text-channel wash, no elevation.
+        css = (
+            f"background:{T._rgba(T.TEXT, 0.02)}; border:1px solid {T.BORDER};"
+            "border-radius:12px;"
+        )
     else:
         # Default hero = plain raised surface with a soft border (web parity).
-        bg = T.SURFACE
-        border = T.BORDER
-    _scoped(frame, f"background:{bg}; border:1px solid {border}; border-radius:14px;")
+        css = f"background:{T.SURFACE}; border:1px solid {T.BORDER}; border-radius:12px;"
+    _scoped(frame, css)
     frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     lay = _vbox(4, (20, 18, 20, 18))
     frame.setLayout(lay)
     if c.get("eyebrow"):
         lab = _label(str(c["eyebrow"]).upper(), color=T.PRIMARY, size=11, bold=True)
         lay.addWidget(lab)
-    lay.addWidget(_label(c.get("title", ""), size=24, bold=True))
+    title_row = QHBoxLayout()
+    title_row.setSpacing(10)
+    if c.get("icon"):
+        icon = QLabel(str(c["icon"]))
+        icon.setStyleSheet("font-size:26px; background:transparent;")
+        title_row.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+    title_row.addWidget(_label(c.get("title", ""), size=24, bold=True), 1)
+    lay.addLayout(title_row)
     if c.get("subtitle"):
         lay.addWidget(_label(c["subtitle"], color=T.MUTED, size=13))
-    badges = c.get("badges") or []
+    badges = [b for b in (c.get("badges") or []) if isinstance(b, str) and b.strip()]
     if badges:
         row = QHBoxLayout()
         row.setSpacing(6)
         for b in badges:
-            row.addWidget(_r_badge({"label": b, "variant": "default"}, ctx))
+            # Web hero badges use the accent (primary-tinted) pill variant.
+            row.addWidget(_r_badge({"label": b, "variant": "accent"}, ctx))
         row.addStretch(1)
         lay.addLayout(row)
     return frame
 
 
 def _r_badge(c, ctx):
-    color, bg = T.VARIANT_COLORS.get(
-        c.get("variant", "default"), T.VARIANT_COLORS["default"]
-    )
-    lab = QLabel(str(c.get("label", "")))
+    # Web pill: bg variant/15, border variant/25, text variant color, text-xs
+    # font-medium, fully-rounded, optional decorative icon before the label.
+    variant = c.get("variant", "default")
+    try:
+        known = variant in T.VARIANT_COLORS
+    except TypeError:  # unhashable variant from raw LLM/agent JSON
+        known, variant = False, "default"
+    if not known or variant == "default":
+        # Web default pill is NEUTRAL (bg-white/10 text border-white/15), not
+        # primary-tinted like the other VARIANT_COLORS consumers.
+        color, bg = T.TEXT, T._rgba(T.TEXT, 0.10)
+    else:
+        color, bg = T.VARIANT_COLORS[variant]
+    label = str(c.get("label", ""))
+    if c.get("icon"):
+        label = f"{c['icon']} {label}"
+    lab = QLabel(label)
     lab.setStyleSheet(
-        f"color:{color}; background:{bg}; border:1px solid {color};"
-        f"border-radius:10px; padding:2px 10px; font-size:12px; font-weight:600;"
+        f"color:{color}; background:{bg}; border:1px solid {T._rgba(color, 0.25)};"
+        f"border-radius:10px; padding:2px 8px; font-size:12px; font-weight:500;"
     )
     lab.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum)
     return lab
 
 
 def _r_metric(c, ctx):
+    # Web .astral-metric: variant-tinted 135° gradient (color/20 → color/5),
+    # a 3px variant accent along the left edge, uppercase muted title, text-2xl
+    # value, optional subtitle + thin progress bar. The old renderer hardcoded
+    # the midnight indigo wash for every variant.
+    variant = c.get("variant", "default")
+    accent, _ = T.VARIANT_COLORS.get(variant, T.VARIANT_COLORS["default"])
     frame = QFrame()
     _scoped(
         frame,
         "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-        "stop:0 rgba(99,102,241,0.18), stop:1 rgba(99,102,241,0.03));"
-        f"border:1px solid {T.BORDER}; border-radius:12px;",
+        f"stop:0 {T._rgba(accent, 0.18)}, stop:1 {T._rgba(accent, 0.04)});"
+        f"border:1px solid {T._rgba(T.TEXT, 0.05)};"
+        f"border-left:3px solid {accent}; border-radius:12px;",
     )
     frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     lay = _vbox(2, (16, 14, 16, 14))
@@ -348,96 +392,183 @@ def _r_metric(c, ctx):
     lay.addLayout(row)
     if c.get("subtitle"):
         lay.addWidget(_label(c["subtitle"], color=T.MUTED, size=12))
+    progress = c.get("progress")
+    if isinstance(progress, (int, float)) and not isinstance(progress, bool):
+        # Web threshold colors: red past 0.9, yellow past 0.7, else primary.
+        pv = max(0.0, min(float(progress), 1.0))
+        pcolor = (T.VARIANT_COLORS["error"][0] if pv > 0.9
+                  else T.VARIANT_COLORS["warning"][0] if pv > 0.7
+                  else T.PRIMARY)
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(int(pv * 100))
+        bar.setTextVisible(False)
+        bar.setFixedHeight(6)
+        bar.setStyleSheet(
+            f"QProgressBar{{background:{T._rgba(T.TEXT, 0.10)}; border:none;"
+            "border-radius:3px;}"
+            f"QProgressBar::chunk{{background:{pcolor}; border-radius:3px;}}"
+        )
+        lay.addSpacing(6)
+        lay.addWidget(bar)
     return frame
 
 
 def _r_keyvalue(c, ctx):
+    # Web .astral-kv: a grid of soft item boxes (bg text/3%, border text/5%,
+    # radius-sm) each holding an uppercase muted label, a semibold value and an
+    # optional hint — honoring the component's `columns` (1–4, default 2).
     frame = _card_frame()
     lay = _vbox(8, (16, 14, 16, 14))
     frame.setLayout(lay)
     if c.get("title"):
         lay.addWidget(_label(c["title"], size=14, bold=True))
+    try:
+        cols = int(c.get("columns", 2))
+    except (TypeError, ValueError, OverflowError):
+        cols = 2
+    cols = min(max(cols, 1), 4)
     grid = QGridLayout()
-    grid.setSpacing(8)
-    for i, item in enumerate(c.get("items", []) or []):
+    grid.setSpacing(10)
+    shown = 0
+    for item in c.get("items", []) or []:
         if not isinstance(item, dict):
             continue
-        k = _label(
-            str(item.get("label", "")).upper(), color=T.MUTED, size=11, bold=True
+        box = QFrame()
+        _scoped(
+            box,
+            f"background:{T._rgba(T.TEXT, 0.03)}; border:1px solid {T._rgba(T.TEXT, 0.05)};"
+            "border-radius:6px;",
         )
-        v = _label(item.get("value", ""), size=14, bold=True)
-        grid.addWidget(k, i, 0)
-        grid.addWidget(v, i, 1)
-    grid.setColumnStretch(1, 1)
+        bl = _vbox(2, (12, 8, 12, 8))
+        box.setLayout(bl)
+        bl.addWidget(
+            _label(str(item.get("label", "")).upper(), color=T.MUTED, size=11, bold=True)
+        )
+        bl.addWidget(_label(item.get("value", ""), size=14, bold=True))
+        if item.get("hint"):
+            bl.addWidget(_label(str(item["hint"]), color=T.MUTED, size=11))
+        grid.addWidget(box, shown // cols, shown % cols)
+        shown += 1
+    for col in range(cols):
+        grid.setColumnStretch(col, 1)
     lay.addLayout(grid)
     return frame
 
 
 def _r_timeline(c, ctx):
+    # Web .astral-timeline: variant-colored status dots with a soft ring, a
+    # monospace time column, medium title + muted description per entry.
     frame = _card_frame()
-    lay = _vbox(8, (16, 14, 16, 14))
+    lay = _vbox(10, (16, 14, 16, 14))
     frame.setLayout(lay)
     if c.get("title"):
         lay.addWidget(_label(c["title"], size=14, bold=True))
     for item in c.get("items", []) or []:
         if not isinstance(item, dict):
             continue
+        accent, _bg = T.VARIANT_COLORS.get(
+            item.get("variant", "default"), T.VARIANT_COLORS["default"]
+        )
         row = QHBoxLayout()
         row.setSpacing(10)
         dot = QLabel("●")
-        dot.setStyleSheet(f"color:{T.PRIMARY}; font-size:10px;")
+        dot.setStyleSheet(f"color:{accent}; font-size:10px; background:transparent;")
         row.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
-        col = _vbox(0)
+        col = _vbox(1)
+        head = QHBoxLayout()
+        head.setSpacing(10)
         if item.get("time"):
-            col.addWidget(_label(item["time"], color=T.MUTED, size=11))
-        col.addWidget(
-            _label(item.get("title", item.get("label", "")), size=13, bold=True)
+            time_lab = QLabel(str(item["time"]))
+            time_lab.setStyleSheet(
+                f"color:{T.MUTED}; font-size:11px; font-family:{T.MONO};"
+                "background:transparent;"
+            )
+            head.addWidget(time_lab, 0, Qt.AlignmentFlag.AlignTop)
+        head.addWidget(
+            _label(item.get("title", item.get("label", "")), size=13, bold=True), 1
         )
+        col.addLayout(head)
         if item.get("description"):
             col.addWidget(_label(item["description"], color=T.MUTED, size=12))
-        row.addLayout(col)
-        row.addStretch(1)
+        row.addLayout(col, 1)
         lay.addLayout(row)
     return frame
 
 
 def _r_rating(c, ctx):
+    # Web .astral-rating: uppercase muted label, warning-filled stars over
+    # dimmed empties, a semibold value (honoring show_value) and a muted
+    # subtitle.
     try:
         val = float(c.get("value", 0))
+    except (TypeError, ValueError):
+        val = 0.0
+    try:
         mx = int(c.get("max_value", c.get("max", 5)))
     except (TypeError, ValueError):
-        val, mx = 0.0, 5
+        mx = 5
     mx = max(1, min(mx, 10))
-    stars = "".join("★" if i < round(val) else "☆" for i in range(mx))
+    val = max(0.0, min(val, float(mx)))
+    filled = int(round(val))
     frame = _card_frame()
     lay = _vbox(4, (16, 12, 16, 12))
     frame.setLayout(lay)
     if c.get("label") or c.get("title"):
-        lay.addWidget(_label(c.get("label") or c.get("title"), size=13, bold=True))
+        lay.addWidget(
+            _label(
+                str(c.get("label") or c.get("title")).upper(),
+                color=T.MUTED, size=11, bold=True,
+            )
+        )
     row = QHBoxLayout()
     row.setSpacing(8)
-    sl = QLabel(stars)
-    sl.setStyleSheet(f"color:{T.VARIANT_COLORS['warning'][0]}; font-size:18px;")
+    sl = QLabel()
+    sl.setTextFormat(Qt.TextFormat.RichText)
+    sl.setText(
+        f'<span style="color:{T.VARIANT_COLORS["warning"][0]}">{"★" * filled}</span>'
+        f'<span style="color:{T._rgba(T.TEXT, 0.18)}">{"★" * (mx - filled)}</span>'
+    )
+    sl.setStyleSheet("font-size:18px; background:transparent;")
     row.addWidget(sl)
-    row.addWidget(_label(f"{val:g}/{mx}", color=T.MUTED, size=13))
+    if c.get("show_value", True) is not False:
+        row.addWidget(_label(f"{val:g}/{mx}", size=13, bold=True))
     row.addStretch(1)
     lay.addLayout(row)
+    if c.get("subtitle"):
+        lay.addWidget(_label(c["subtitle"], color=T.MUTED, size=11))
     return frame
 
 
+#: Alert variant glyphs standing in for the web's inline SVG icons.
+_ALERT_GLYPHS = {"info": "ⓘ", "success": "✓", "warning": "⚠", "error": "⨂"}
+
+
 def _r_alert(c, ctx):
-    color, _ = T.VARIANT_COLORS.get(c.get("variant", "info"), T.VARIANT_COLORS["info"])
+    # Web .astral-alert: variant-TINTED surface (color/10) + tinted border
+    # (color/20) + a 3px left accent, with a colored icon column beside the
+    # colored title and a softened message. The old renderer drew a plain
+    # surface card with only the left accent colored.
+    variant = c.get("variant", "info")
+    vkey = variant if variant in _ALERT_GLYPHS else "info"
+    color, _ = T.VARIANT_COLORS.get(vkey, T.VARIANT_COLORS["info"])
     frame = QFrame()
     _scoped(
         frame,
-        f"background:{T.SURFACE}; border:1px solid {T.BORDER};"
+        f"background:{T._rgba(color, 0.10)}; border:1px solid {T._rgba(color, 0.20)};"
         f"border-left:3px solid {color}; border-radius:8px;",
     )
-    lay = _vbox(4, (14, 12, 14, 12))
-    frame.setLayout(lay)
+    outer = QHBoxLayout(frame)
+    outer.setContentsMargins(14, 12, 14, 12)
+    outer.setSpacing(10)
+    icon = QLabel(_ALERT_GLYPHS[vkey])
+    icon.setStyleSheet(f"color:{color}; font-size:15px; background:transparent;")
+    outer.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+    col = _vbox(4)
     if c.get("title"):
-        lay.addWidget(_label(c["title"], color=color, size=14, bold=True))
-    lay.addWidget(_label(c.get("message", ""), color=T.TEXT, size=13))
+        col.addWidget(_label(c["title"], color=color, size=14, bold=True))
+    col.addWidget(_label(c.get("message", ""), color=T._rgba(T.TEXT, 0.85), size=13))
+    outer.addLayout(col, 1)
     return frame
 
 
@@ -455,6 +586,10 @@ def _r_button(c, ctx):
         btn.setObjectName("primary")
     elif variant == "danger":
         btn.setObjectName("danger")  # solid error-token treatment (theme QSS)
+    elif variant == "secondary":
+        btn.setObjectName("secondary")  # web outline w/ primary-tinted border
+    elif variant == "ghost":
+        btn.setObjectName("ghost")  # web text-only muted treatment
     action = c.get("action")
     payload = c.get("payload") or {}
     if action:
@@ -521,7 +656,7 @@ def _r_param_picker(c, ctx):
             getters[name] = lambda b=box: b.isChecked()
             lay.addWidget(box)
         elif kind == "select":
-            lay.addWidget(_label(label, color=T.MUTED, size=12))
+            lay.addWidget(_label(label, size=13, weight=500))
             combo = QComboBox()
             opts = [str(o) for o in (field.get("options") or [])]
             combo.addItems(opts)
@@ -531,13 +666,15 @@ def _r_param_picker(c, ctx):
             combos[name] = combo
             lay.addWidget(combo)
         elif kind == "checklist":
-            lay.addWidget(_label(label, color=T.MUTED, size=12))
+            lay.addWidget(_label(label, size=13, weight=500))
             sel = set(default) if isinstance(default, list) else set()
             chips: List = []
             row = QHBoxLayout()
             row.setSpacing(6)
             for opt in field.get("options") or []:
                 btn = QPushButton(_btn_label(opt))
+                btn.setObjectName("chip")  # web checklist-chip treatment
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setCheckable(True)
                 btn.setChecked(opt in sel)
                 row.addWidget(btn)
@@ -546,7 +683,7 @@ def _r_param_picker(c, ctx):
             lay.addLayout(row)
             getters[name] = lambda ch=chips: [o for o, b in ch if b.isChecked()]
         elif kind == "number":
-            lay.addWidget(_label(label, color=T.MUTED, size=12))
+            lay.addWidget(_label(label, size=13, weight=500))
             edit = QLineEdit()
             if default is not None:
                 edit.setText(str(default))
@@ -554,13 +691,13 @@ def _r_param_picker(c, ctx):
             lay.addWidget(edit)
         elif kind == "password":
             # Feature 043: write-only key field — never pre-filled (blank = keep).
-            lay.addWidget(_label(label, color=T.MUTED, size=12))
+            lay.addWidget(_label(label, size=13, weight=500))
             edit = QLineEdit()
             edit.setEchoMode(QLineEdit.EchoMode.Password)
             getters[name] = lambda e=edit: e.text()
             lay.addWidget(edit)
         elif kind == "textarea":
-            lay.addWidget(_label(label, color=T.MUTED, size=12))
+            lay.addWidget(_label(label, size=13, weight=500))
             area = QPlainTextEdit()
             if default is not None:
                 area.setPlainText(str(default))
@@ -568,14 +705,14 @@ def _r_param_picker(c, ctx):
             getters[name] = lambda a=area: a.toPlainText()
             lay.addWidget(area)
         else:  # text (default)
-            lay.addWidget(_label(label, color=T.MUTED, size=12))
+            lay.addWidget(_label(label, size=13, weight=500))
             edit = QLineEdit()
             if default is not None:
                 edit.setText(str(default))
             getters[name] = lambda e=edit: e.text()
             lay.addWidget(edit)
         if field.get("help"):
-            lay.addWidget(_label(field["help"], color=T.MUTED, size=11))
+            lay.addWidget(_label(field["help"], color=T.MUTED, size=12))
         vw = field.get("visible_when")
         if isinstance(vw, dict):
             widgets = [lay.itemAt(i).widget() for i in range(first_item, lay.count())]
@@ -694,7 +831,10 @@ def _r_file_upload(c, ctx):
     action = c.get("action")
     payload = c.get("payload") or {}
     btn = QPushButton(_btn_label(label))
-    btn.setObjectName("primary")
+    # Web file-upload buttons wear the soft primary tint (bg primary/20,
+    # border primary/30, primary text), not the solid gradient.
+    btn.setObjectName("tintPrimary")
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
     chosen = _label("", color=T.MUTED, size=12)
 
@@ -745,7 +885,9 @@ def _r_file_download(c, ctx):
     btn = QPushButton(_btn_label(label))
     btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
     if valid:
-        btn.setObjectName("primary")
+        # Web file-download buttons wear the soft SECONDARY tint (violet).
+        btn.setObjectName("tintSecondary")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
         u = str(url)
         # A root-relative /api/download/... URL is an authed backend file: fetch
         # it with the session token and save via a native dialog. An absolute
@@ -761,27 +903,60 @@ def _r_file_download(c, ctx):
     lay.addWidget(btn)
     sha = str(c.get("sha256") or c.get("sha") or "").lower()
     if sha:
-        lay.addWidget(_label("SHA-256", color=T.MUTED, size=11, bold=True))
-        sha_lab = _label(sha, color=T.MUTED, size=11)
+        # Web integrity block: near-black inset well, uppercase micro-label,
+        # secondary-tinted monospace digest.
+        well = QFrame()
+        _scoped(
+            well,
+            f"background:rgba(0,0,0,0.30); border:1px solid {T._rgba(T.TEXT, 0.10)};"
+            "border-radius:6px;",
+        )
+        wl = _vbox(2, (10, 8, 10, 8))
+        well.setLayout(wl)
+        wl.addWidget(_label("SHA-256", color=T._rgba(T.TEXT, 0.40), size=10, bold=True))
+        sha_lab = QLabel(sha)
+        sha_lab.setWordWrap(True)
+        sha_lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         sha_lab.setStyleSheet(
-            f"color:{T.MUTED}; font-family:Consolas,monospace; font-size:11px;"
+            f"color:{T.SECONDARY}; font-family:{T.MONO}; font-size:11px;"
             "background:transparent;"
         )
-        lay.addWidget(sha_lab)
+        wl.addWidget(sha_lab)
+        lay.addWidget(well)
     return frame
 
 
 def _r_code(c, ctx):
+    # Web .astral-code: near-black well (bg black/40, border white/5), an
+    # optional language band, green-400 monospace text.
+    frame = QFrame()
+    _scoped(
+        frame,
+        f"background:rgba(0,0,0,0.40); border:1px solid {T._rgba(T.TEXT, 0.05)};"
+        "border-radius:8px;",
+    )
+    lay = _vbox(0)
+    frame.setLayout(lay)
+    language = c.get("language")
+    if language:
+        band = QLabel(str(language))
+        band.setStyleSheet(
+            f"color:{T.MUTED}; font-size:11px; padding:6px 12px;"
+            f"border-bottom:1px solid {T._rgba(T.TEXT, 0.05)}; background:transparent;"
+        )
+        lay.addWidget(band)
     edit = QPlainTextEdit()
     edit.setReadOnly(True)
     edit.setPlainText(c.get("code", ""))
     edit.setStyleSheet(
-        f"background:{T.SURFACE_2}; border:1px solid {T.BORDER}; border-radius:8px;"
-        f"font-family:Consolas,monospace; font-size:13px; color:{T.TEXT};"
+        "QPlainTextEdit { background:transparent; border:none; padding:8px;"
+        + f"font-family:{T.MONO}; font-size:13px; color:#4ADE80;"
+        + " }"
     )
     lines = c.get("code", "").count("\n") + 1
-    edit.setFixedHeight(min(360, 22 * lines + 20))
-    return edit
+    edit.setFixedHeight(min(360, 22 * lines + 24))
+    lay.addWidget(edit)
+    return frame
 
 
 def _r_divider(c, ctx):
@@ -792,35 +967,88 @@ def _r_divider(c, ctx):
 
 
 def _r_progress(c, ctx):
+    # Web progress: a "label ... NN%" muted header row over a thin (h-2)
+    # rounded track whose fill is the primary→secondary accent gradient — the
+    # percentage never renders inside the bar.
     w = QWidget()
     lay = _vbox(4)
     w.setLayout(lay)
+    try:
+        value = float(c.get("value", 0))
+    except (TypeError, ValueError):
+        value = 0.0
+    pct = int(max(0.0, min(value, 1.0)) * 100)
     if c.get("label"):
-        lay.addWidget(_label(c["label"], color=T.MUTED, size=12))
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        head.addWidget(_label(c["label"], color=T.MUTED, size=12), 1)
+        if c.get("show_percentage", True) is not False:
+            head.addWidget(_label(f"{pct}%", color=T.MUTED, size=12))
+        lay.addLayout(head)
     bar = QProgressBar()
     bar.setRange(0, 100)
-    try:
-        bar.setValue(int(float(c.get("value", 0)) * 100))
-    except (TypeError, ValueError):
-        bar.setValue(0)
-    bar.setTextVisible(bool(c.get("show_percentage", True)))
+    bar.setValue(pct)
+    bar.setTextVisible(False)
+    bar.setFixedHeight(8)
     bar.setStyleSheet(
-        f"QProgressBar{{background:{T.SURFACE_2}; border:1px solid {T.BORDER};"
-        f"border-radius:6px; height:14px; text-align:center; color:{T.TEXT};}}"
-        f"QProgressBar::chunk{{background:{T.PRIMARY}; border-radius:6px;}}"
+        f"QProgressBar{{background:{T._rgba(T.TEXT, 0.10)}; border:none;"
+        "border-radius:4px;}"
+        "QProgressBar::chunk{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+        f"stop:0 {T.PRIMARY}, stop:1 {T.SECONDARY}); border-radius:4px;}}"
     )
     lay.addWidget(bar)
     return w
 
 
 def _r_list(c, ctx):
+    items = c.get("items", []) or []
+    if c.get("variant") == "detailed":
+        # Web detailed list: each item is its own soft link-card (surface-1,
+        # soft border, radius-md) with a semibold title (a link when `url` is
+        # present), muted subtitle and softened description.
+        w = QWidget()
+        lay = _vbox(10)
+        w.setLayout(lay)
+        for item in items:
+            if not isinstance(item, dict):
+                item = {"title": str(item)}
+            card = _card_frame()
+            cl = _vbox(3, (12, 10, 12, 10))
+            card.setLayout(cl)
+            title = str(item.get("title", ""))
+            # Web parity + the same safety posture: the title is escaped and
+            # only http(s) URLs become links (webrender safe_url refuses
+            # javascript:/file:/custom schemes the same way).
+            url = str(item.get("url") or "")
+            if url.startswith(("http://", "https://")):
+                link = QLabel(
+                    f'<a style="color:{T.PRIMARY}; text-decoration:none;" '
+                    f'href="{html_escape(url, quote=True)}">{html_escape(title)}</a>'
+                )
+                link.setTextFormat(Qt.TextFormat.RichText)
+                link.setOpenExternalLinks(True)
+                link.setWordWrap(True)
+                link.setStyleSheet(
+                    "font-size:13px; font-weight:600; background:transparent;"
+                )
+                cl.addWidget(link)
+            else:
+                cl.addWidget(_label(title, size=13, bold=True))
+            if item.get("subtitle"):
+                cl.addWidget(_label(item["subtitle"], color=T.MUTED, size=11))
+            if item.get("description"):
+                cl.addWidget(
+                    _label(item["description"], color=T._rgba(T.TEXT, 0.80), size=13)
+                )
+            lay.addWidget(card)
+        return w
     frame = _card_frame()
     lay = _vbox(6, (16, 12, 16, 12))
     frame.setLayout(lay)
     if c.get("title"):
         lay.addWidget(_label(c["title"], size=14, bold=True))
     ordered = bool(c.get("ordered"))
-    for i, item in enumerate(c.get("items", []) or []):
+    for i, item in enumerate(items):
         if isinstance(item, dict):
             txt = item.get("title", item.get("content", json.dumps(item)))
         else:
@@ -836,6 +1064,15 @@ def _r_list(c, ctx):
     return frame
 
 
+#: Web `_cell` status pills: semantic foreground per well-known status word
+#: (red-400 / yellow-400 / green-400 equivalents from the semantic tokens).
+_TABLE_STATUS_COLORS = {
+    "Critical": "error", "Severe": "error",
+    "Moderate": "warning",
+    "Mild": "success", "Stable": "success",
+}
+
+
 def _r_table(c, ctx):
     headers = c.get("headers", []) or []
     rows = c.get("rows", []) or []
@@ -846,15 +1083,26 @@ def _r_table(c, ctx):
     if title:
         lay.addWidget(_label(title, size=14, bold=True))
     tbl = QTableWidget(len(rows), len(headers))
-    tbl.setHorizontalHeaderLabels([str(h) for h in headers])
+    # Web thead: uppercase text-xs tracking-wider muted (text-transform is not
+    # QSS — uppercase the strings; the band bg/size live in the theme QSS).
+    tbl.setHorizontalHeaderLabels([str(h).upper() for h in headers])
     tbl.verticalHeader().setVisible(False)
     tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
     tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+    tbl.setShowGrid(False)  # web rows separate with border-bottom, not a grid
+    tbl.setAlternatingRowColors(True)  # web zebra: even rows bg-white/2
+    from PySide6.QtGui import QBrush, QColor
+
     for r, row in enumerate(rows):
         for col, cell in enumerate(row if isinstance(row, list) else []):
-            tbl.setItem(r, col, QTableWidgetItem(str(cell)))
+            item = QTableWidgetItem(str(cell))
+            status = _TABLE_STATUS_COLORS.get(str(cell))
+            if status:
+                item.setForeground(QBrush(QColor(T.VARIANT_COLORS[status][0])))
+            tbl.setItem(r, col, item)
     tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-    tbl.setFixedHeight(min(420, 32 * (len(rows) + 1) + 8))
+    tbl.verticalHeader().setDefaultSectionSize(36)  # web px-4 py-3 row rhythm
+    tbl.setFixedHeight(min(420, 36 * len(rows) + 40))
     lay.addWidget(tbl)
     # Feature 044 (T026): a server-side pagination pager when the table
     # advertises a total + page size (parity with the web table_paginate

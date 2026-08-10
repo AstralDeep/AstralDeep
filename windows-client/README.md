@@ -143,8 +143,39 @@ generic/developer launch, the client registers the listener at
 `ASTRAL_AGENT_HOST` / `WIN_AGENT_PORT`. The agent can also run standalone:
 `python -m win_agent.agent --port 8771`.
 
-The agent registers with the orchestrator's `AGENT_API_KEY` when set (required
-outside dev; dev mode is keyless).
+### Authentication (both directions)
+
+`AGENT_API_KEY` is a **shared secret both sides already hold**, and it now
+authenticates **both** directions:
+
+- *Outbound* — the agent presents it in its `register_agent` frame, as before.
+- *Inbound* — every request to `GET /.well-known/agent-card.json` and to the
+  `/agent` WebSocket must carry `X-Astral-Agent-Key` with a matching value, or
+  it is refused with `401` before the socket is upgraded. Without this, any host
+  that could reach the port could drive tools that read and write files and run
+  commands on this PC — and the register frame, which *contains* the key, was
+  pushed to whoever connected before a byte was read.
+
+Consequences to know about:
+
+- **The listener does not start at all without a usable key** — 16+ ASCII
+  characters, not a shipped placeholder. There is deliberately **no development
+  carve-out on the client**: an unauthenticated file-write/command-exec listener
+  should not exist, and a developer who wants it exports `AGENT_API_KEY`. When
+  it is refused, the app says so in a banner rather than failing silently.
+- **`/health` stays open** and returns only `ok`, so a liveness probe works
+  without a credential.
+- **The bind stays `0.0.0.0`** because a containerized orchestrator reaches this
+  host at `host.docker.internal`, which resolves to the bridge address and can
+  never reach a loopback bind. Set `ASTRAL_AGENT_BIND=127.0.0.1` to narrow it
+  when the orchestrator runs natively. A non-loopback bind logs a warning naming
+  the header that guards it.
+- **The orchestrator only sends the key to declared destinations** — loopback,
+  the Docker host aliases, `A2A_EXTERNAL_AGENTS` entries, and hosts listed in
+  its `AGENT_KEY_TRUSTED_HOSTS`. If this agent is reached at some other address,
+  add that host to `AGENT_KEY_TRUSTED_HOSTS` on the orchestrator or the card
+  fetch will 401. The restriction exists because `register_external_agent`
+  accepts a user-supplied URL and this key can register any agent id.
 
 ### Coding agent (feature 039)
 
