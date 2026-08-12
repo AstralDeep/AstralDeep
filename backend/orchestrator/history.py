@@ -252,10 +252,24 @@ def _lifted_text_part(text: str, variant: Any) -> dict[str, Any]:
     rail silently stops committing. Emission is gated; ACCEPTANCE is not (see
     ``CANONICAL_TEXT_PART_VARIANTS``), so flipping the gate on later needs no
     client change. Pins: tests/test_rail_caption_emission_gate.py.
+
+    The gate is deliberately GLOBAL, not per-target: while it is off a caption
+    also flattens for web and Windows, which decode the shape correctly. There
+    is no reliable client-version signal to scope it by (v1.2 and v1.3
+    ``register_ui`` frames are byte-identical), and diverging per target would
+    break snapshot parity. That cost is accepted — do not "fix" it by
+    re-deriving weight downstream.
+
+    The flag is read FIRST so the default path is one boolean and behaves
+    exactly like pre-T023 code: ``variant`` arrives from stored agent output
+    and an agent emitting plain dicts can make it unhashable (e.g. a list),
+    which would raise TypeError from the membership test alone.
     """
     part: dict[str, Any] = {"type": "text", "text": text}
-    if variant in CANONICAL_TEXT_PART_VARIANTS and flags.is_enabled(
-        "rail_caption_variant"
+    if (
+        flags.is_enabled("rail_caption_variant")
+        and isinstance(variant, str)
+        and variant in CANONICAL_TEXT_PART_VARIANTS
     ):
         part["variant"] = variant
     return part

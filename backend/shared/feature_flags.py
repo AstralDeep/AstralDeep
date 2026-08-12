@@ -196,6 +196,10 @@ class FeatureFlags:
             # tolerant client (>= apple-v1.3 / versionCode 5) is sufficient.
             # ACCEPTANCE is deliberately NOT gated — all five validators still
             # take the T023 shape, so enabling this needs no client change.
+            # Read once at import (container recreate to enable). Turning it on
+            # while store-installed v1.2 clients remain in the fleet re-breaks
+            # them with NO server-side signal, so treat the flip as a release
+            # step gated on store adoption, not a runtime tweak.
             "rail_caption_variant": self._read("FF_RAIL_CAPTION_VARIANT", False),
         }
 

@@ -33,8 +33,11 @@ from __future__ import annotations
 
 import pytest
 
-from orchestrator.history import _rail_parts
-from shared.feature_flags import flags
+from orchestrator.history import (
+    _rail_parts,
+    augment_conversation_snapshot_for_target,
+)
+from shared.feature_flags import FeatureFlags, flags
 from shared.protocol import ConversationSnapshot
 
 
@@ -58,8 +61,26 @@ class TestFlagIsRegisteredAndDefaultsOff:
         # without this pin the gate could silently never exist.
         assert "rail_caption_variant" in flags._flags
 
-    def test_gate_defaults_off_for_shipped_client_compatibility(self) -> None:
-        assert flags.is_enabled("rail_caption_variant") is False
+    def test_committed_default_is_off_regardless_of_ambient_env(
+        self, monkeypatch
+    ) -> None:
+        # Pin the COMMITTED default, not the ambient process env — asserting
+        # flags.is_enabled() directly would go red the moment an operator
+        # performs the documented FF_RAIL_CAPTION_VARIANT rollout.
+        monkeypatch.delenv("FF_RAIL_CAPTION_VARIANT", raising=False)
+        assert FeatureFlags().is_enabled("rail_caption_variant") is False
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("true", True), ("1", True), ("yes", True), ("false", False), ("", False)],
+    )
+    def test_env_var_name_is_actually_wired(
+        self, monkeypatch, value, expected
+    ) -> None:
+        # Traverses FeatureFlags._read, so a typo'd or renamed env string
+        # cannot leave the suite green with the rollout silently a no-op.
+        monkeypatch.setenv("FF_RAIL_CAPTION_VARIANT", value)
+        assert FeatureFlags().is_enabled("rail_caption_variant") is expected
 
 
 class TestGateOffEmitsTheShippedClientShape:
@@ -135,6 +156,68 @@ class TestGateOffEmitsTheShippedClientShape:
         assert parts
         for part in parts:
             assert set(part) == {"type", "text"}, part
+
+
+    def test_unhashable_stored_variant_does_not_raise(
+        self, caption_emission
+    ) -> None:
+        # `variant` arrives from stored agent output. An agent emitting plain
+        # dicts rather than typed astralprims classes (an LLM-authored parser,
+        # a BYO agent, an agentic_creation draft) can persist a non-string, and
+        # `x in frozenset` raises TypeError on an unhashable value. The gate is
+        # read FIRST so the default path never evaluates the membership test.
+        caption_emission(False)
+        parts = _rail_parts(
+            [{"type": "text", "variant": ["caption"], "text": "words"}]
+        )
+        assert parts == [{"type": "text", "text": "words"}]
+
+    def test_native_hydration_frame_carries_no_third_key(
+        self, caption_emission
+    ) -> None:
+        # The property that actually protects store clients, asserted where it
+        # ships — after the per-target augmentation — not only at the private
+        # helper. Guards against a future downstream transform re-stamping a
+        # weight hint onto a text part.
+        caption_emission(False)
+        parts = _rail_parts(
+            [
+                _components_part(
+                    {"type": "text", "variant": "caption", "content": "As of July"}
+                )
+            ]
+        )
+        snap = augment_conversation_snapshot_for_target(
+            {"transcript": [{"role": "assistant", "parts": parts}]},
+            None,
+            target="windows",
+        )
+        for part in snap["transcript"][0]["parts"]:
+            assert set(part) == {"type", "text"}, part
+
+    def test_caption_hydrates_at_markdown_weight_with_the_gate_off(
+        self, caption_emission
+    ) -> None:
+        # The ACCEPTED TRADE-OFF, pinned so it is a deliberate state rather
+        # than a bug someone "fixes" by re-deriving weight downstream: while
+        # the gate is off a caption renders at markdown weight everywhere,
+        # including on web and Windows, which decode the shape correctly.
+        caption_emission(False)
+        parts = _rail_parts(
+            [
+                _components_part(
+                    {"type": "text", "variant": "caption", "content": "As of July"}
+                )
+            ]
+        )
+        snap = augment_conversation_snapshot_for_target(
+            {"transcript": [{"role": "assistant", "parts": parts}]},
+            None,
+            target="web",
+        )
+        html = snap["transcript"][0]["parts"][0]["_presentation"]["html"]
+        assert "astral-md" in html
+        assert "text-astral-muted" not in html
 
 
 class TestGateOnRestoresTheT023Carry:
