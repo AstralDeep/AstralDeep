@@ -143,6 +143,37 @@ def _recovery_parts() -> list[dict[str, Any]]:
     ]
 
 
+def _structured_parts(value: Any) -> list[dict[str, Any]]:
+    """One canonical ``structured`` part, or an honest recovery if it is blank.
+
+    ``_plain_text`` renders "" for an empty string and for a nested array that
+    reduces to one, so a stored tool result carrying a blank element would
+    otherwise commit a part whose rendition is invisible. Every Apple client
+    guards ``continuityNonBlank(plain_text)`` — which TRIMS before testing
+    emptiness — and decodes a snapshot all-or-nothing (``parts.count ==
+    rawParts.count``, ``messages.count == transcript.count``), so ONE blank
+    part discards the WHOLE ``conversation_snapshot`` and that chat's rail
+    never hydrates. The blank ``text`` twin is already dropped by
+    ``_rail_parts``; ``structured`` parts pass through it untouched, which is
+    why this is the path that has to refuse.
+
+    Degrading to the visible recovery pair mirrors how a ``None`` element is
+    already handled: the turn says a saved response could not be displayed
+    instead of silently committing something no client can render.
+    """
+
+    plain_text = _plain_text(value)
+    if not plain_text.strip():
+        return _recovery_parts()
+    return [
+        {
+            "type": "structured",
+            "value": _strip_reserved_presentation(value),
+            "plain_text": plain_text,
+        }
+    ]
+
+
 def _allowed_component_types() -> set[str]:
     from webrender.renderer import allowed_primitive_types
 
@@ -421,21 +452,9 @@ def _content_parts(stored: Any) -> list[dict[str, Any]]:
             elif item is None:
                 parts.extend(_recovery_parts())
             else:
-                parts.append(
-                    {
-                        "type": "structured",
-                        "value": _strip_reserved_presentation(item),
-                        "plain_text": _plain_text(item),
-                    }
-                )
+                parts.extend(_structured_parts(item))
         return parts or _recovery_parts()
-    return [
-        {
-            "type": "structured",
-            "value": _strip_reserved_presentation(value),
-            "plain_text": _plain_text(value),
-        }
-    ]
+    return _structured_parts(value)
 
 
 def augment_conversation_snapshot_for_target(

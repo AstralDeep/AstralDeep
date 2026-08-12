@@ -1610,8 +1610,16 @@ class ConversationSnapshot(Message):
                 part.get("components"), list
             )
         elif part_type == "structured":
-            valid = set(part) == {"type", "value", "plain_text"} and isinstance(
-                part.get("plain_text"), str
+            # The rendition must be VISIBLE, not merely a string: every Apple
+            # client guards `continuityNonBlank(plain_text)` (which trims
+            # first) and decodes a snapshot all-or-nothing, so a blank part
+            # discards the whole conversation and that rail never hydrates.
+            # The canonical contract therefore holds the strictest client's
+            # rule — a part no client can render is not canonical.
+            valid = (
+                set(part) == {"type", "value", "plain_text"}
+                and isinstance(part.get("plain_text"), str)
+                and bool(part["plain_text"].strip())
             )
         elif part_type == "recovery":
             valid = set(part) == {"type", "code", "message"} and all(

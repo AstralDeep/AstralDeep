@@ -212,6 +212,16 @@ backend `shared/protocol.py` (`CANONICAL_TEXT_PART_VARIANTS`), web `client.js`
 {"type":"recovery","code":"saved_content_unrenderable","message":"A saved response could not be displayed."}
 ```
 
+A `structured` part's `plain_text` MUST be non-blank — a string with at least one non-whitespace
+character. It is the part's only visible rendition, and the Apple validator
+(`ConversationContinuity.swift`, `continuityNonBlank`, which trims first) rejects a blank one; because
+snapshot decoding is all-or-nothing, a single blank part discards the whole `conversation_snapshot`
+and that chat's rail never hydrates. The server therefore holds the strictest client's rule at both
+ends: `shared/protocol.py` refuses a blank rendition, and `orchestrator/history.py` never emits one
+(see the normalization rules below). Web, Windows and Android accept a blank `plain_text` as shipped;
+that asymmetry is deliberate — emission is strict, acceptance stays as released, so no client needs a
+change.
+
 Server normalization is deterministic:
 
 - stored string → one `text` part, preserving Unicode and ordering;
@@ -220,8 +230,10 @@ Server normalization is deterministic:
   the existing renderer/ROTE vocabulary;
 - other valid JSON object/array → `structured` with the value plus deterministic human-readable
   `plain_text` (stable key/order rules shared by clients);
-- null, malformed stored JSON, or a component that cannot be safely normalized → a visible
-  `recovery` part and a structured diagnostic, never an empty/omitted turn.
+- null, malformed stored JSON, a component that cannot be safely normalized, or a value whose
+  `plain_text` rendition would be blank (an empty/whitespace-only string, or a nested array that
+  reduces to one) → a visible `recovery` part and a structured diagnostic, never an empty/omitted
+  turn.
 
 Clients render `text`; render `components` through their existing shared primitive renderer; render
 `structured.plain_text` while retaining its semantic value for tests; and visibly render `recovery`.
