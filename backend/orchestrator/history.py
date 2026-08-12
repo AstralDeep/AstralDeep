@@ -13,6 +13,7 @@ import sys
 # Ensure shared module is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from shared.database import Database
+from shared.feature_flags import flags
 from shared.protocol import CANONICAL_TEXT_PART_VARIANTS
 from orchestrator.conversation_publication import (
     canonical_components_sha256,
@@ -241,9 +242,21 @@ def _rail_wrapper_is_anchored(component: Mapping[str, Any]) -> bool:
 # authoring variant still normalizes away, so the canonical boundary stays
 # exact for non-caption text.
 def _lifted_text_part(text: str, variant: Any) -> dict[str, Any]:
-    """One canonical rail text part; caption weight survives the lift."""
+    """One canonical rail text part; caption weight survives the lift.
+
+    The carry is gated by ``FF_RAIL_CAPTION_VARIANT`` (default OFF). This is
+    the ONLY place a rail part gains the T023 ``variant`` key, and the gate
+    exists because T023 shipped after apple-v1.2 / Android versionCode 4:
+    those store builds compare the part's key set for EXACT equality, so a
+    caption part makes them drop the whole ``conversation_snapshot`` and the
+    rail silently stops committing. Emission is gated; ACCEPTANCE is not (see
+    ``CANONICAL_TEXT_PART_VARIANTS``), so flipping the gate on later needs no
+    client change. Pins: tests/test_rail_caption_emission_gate.py.
+    """
     part: dict[str, Any] = {"type": "text", "text": text}
-    if variant in CANONICAL_TEXT_PART_VARIANTS:
+    if variant in CANONICAL_TEXT_PART_VARIANTS and flags.is_enabled(
+        "rail_caption_variant"
+    ):
         part["variant"] = variant
     return part
 

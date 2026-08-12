@@ -185,6 +185,18 @@ class FeatureFlags:
             # Keycloak posture byte-for-byte. Read once at import (container
             # recreate to enable). See specs/068-kiosk-device-login/.
             "kiosk_login": self._read("FF_KIOSK_LOGIN", False),
+            # 066 T023 shipped-client compatibility gate: EMIT the bounded
+            # ``variant`` key on canonical rail text parts. T023 landed after
+            # the apple-v1.2 tag and the Android versionCode-4 bundle, and
+            # every already-shipped client validates a text part with EXACT
+            # key-set equality — so a caption-bearing part makes them discard
+            # the WHOLE conversation_snapshot and the chat rail silently stops
+            # committing. Default OFF so a HEAD server stays compatible with
+            # store-installed v1.2 clients; flip ON once store adoption of the
+            # tolerant client (>= apple-v1.3 / versionCode 5) is sufficient.
+            # ACCEPTANCE is deliberately NOT gated — all five validators still
+            # take the T023 shape, so enabling this needs no client change.
+            "rail_caption_variant": self._read("FF_RAIL_CAPTION_VARIANT", False),
         }
 
     @staticmethod
