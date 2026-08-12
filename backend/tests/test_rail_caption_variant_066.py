@@ -14,6 +14,15 @@ its weight through commit and hydration, every other authoring variant
 still normalizes away, and the canonical validator refuses anything
 outside the closed set — the extension must never become an open door for
 arbitrary part keys.
+
+EMISSION GATE (added later): T023 landed AFTER the apple-v1.2 tag and the
+Android versionCode-4 bundle, whose clients compare a text part's key set for
+EXACT equality and therefore discard the whole snapshot when the variant
+appears. So *emitting* the carry is now gated by ``FF_RAIL_CAPTION_VARIANT``
+(default OFF) while *accepting* it is not. The lift pins below therefore
+declare the gate ON — they pin what T023 buys once it is safe to send. The
+default-off shape that protects shipped clients is pinned separately in
+tests/test_rail_caption_emission_gate.py.
 """
 
 from __future__ import annotations
@@ -24,6 +33,7 @@ from orchestrator.history import (
     _rail_parts,
     augment_conversation_snapshot_for_target,
 )
+from shared.feature_flags import flags
 from shared.protocol import (
     CANONICAL_TEXT_PART_VARIANTS,
     ConversationSnapshot,
@@ -42,6 +52,17 @@ def test_bounded_alphabet_is_exactly_caption() -> None:
 
 
 class TestLiftCarriesCaption:
+    """The T023 carry, pinned with the emission gate explicitly ON.
+
+    These assert what the gate ENABLES. With the gate at its shipped default
+    (OFF) every one of these lifts to the bare canonical shape instead — see
+    tests/test_rail_caption_emission_gate.py.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _emit_caption_variant(self, monkeypatch):
+        monkeypatch.setitem(flags._flags, "rail_caption_variant", True)
+
     def test_caption_primitive_lifts_with_its_variant(self) -> None:
         parts = _rail_parts(
             [
