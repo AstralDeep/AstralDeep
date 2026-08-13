@@ -45,7 +45,6 @@ from orchestrator.models import (
     DraftAgentResponse, DraftAgentListResponse,
 )
 from orchestrator.auth import (
-    get_current_user_id,
     get_current_user_payload,
     require_user_id,
     require_user_id_or_web_session,
@@ -2196,15 +2195,25 @@ task_router = APIRouter(prefix="/api/tasks", tags=["Tasks"])
 @task_router.get(
     "/{chat_id}",
     summary="Get active task state",
-    description="Returns the current Re-Act task state for a chat session.",
+    description="Returns the authenticated user's Re-Act task state for a chat session.",
 )
-async def get_task_state(chat_id: str, request: Request):
+async def get_task_state(
+    chat_id: str,
+    request: Request,
+    user_id: str = Depends(require_user_id),
+):
     orch = _get_orchestrator(request)
+    # 073: this route had no auth dependency and no ownership check, so
+    # possession of a chat_id was enough to read another user's task state
+    # including its step history. Task carries user_id, so filter on it rather
+    # than trusting chat_id possession; a non-owner sees the same "none" a
+    # stranger chat returns, which keeps the response non-disclosing.
     task = orch.task_manager.get_active_task(chat_id)
-    if task:
+    if task and task.user_id == user_id:
         return task.to_dict()
-    # No active task — check for most recent completed task
-    all_tasks = orch.task_manager.get_chat_tasks(chat_id)
+    all_tasks = [
+        t for t in orch.task_manager.get_chat_tasks(chat_id) if t.user_id == user_id
+    ]
     if all_tasks:
         latest = max(all_tasks, key=lambda t: t.updated_at)
         return latest.to_dict()
@@ -2223,10 +2232,16 @@ async_task_router = APIRouter(prefix="/api/async-tasks", tags=["AsyncTasks"])
     summary="Get background task status",
     description="Returns the status of an async background query task.",
 )
-async def get_async_task(task_id: str, request: Request):
+async def get_async_task(
+    task_id: str,
+    request: Request,
+    user_id: str = Depends(require_user_id),
+):
     orch = _get_orchestrator(request)
     bg_task = await orch.async_task_manager.get(task_id)
-    if bg_task is None:
+    # 073: unknown and non-owned identities share one non-disclosing response,
+    # so possession of a task_id never confirms that it exists.
+    if bg_task is None or bg_task.user_id != user_id:
         from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=404,
@@ -2248,9 +2263,16 @@ async def get_async_task(task_id: str, request: Request):
     summary="List background tasks",
     description="Returns a list of background tasks for the current user.",
 )
-async def list_async_tasks(request: Request):
+async def list_async_tasks(
+    request: Request,
+    user_id: str = Depends(require_user_id),
+):
     orch = _get_orchestrator(request)
-    user_id = get_current_user_id(request)
+    # 073: this previously called get_current_user_id(request) without await.
+    # That helper is async AND a FastAPI dependency, so the call passed the
+    # Request in as `payload` and bound a coroutine object to user_id. The
+    # filter could therefore never match a real user, and the route had no auth
+    # dependency at all. Resolving the identity through Depends fixes both.
     tasks = await orch.async_task_manager.list_for_user(user_id, limit=20)
     return {
         "tasks": [
@@ -2272,8 +2294,21 @@ async def list_async_tasks(request: Request):
     summary="Cancel a background task",
     description="Requests cancellation of a running background task.",
 )
-async def cancel_async_task(task_id: str, request: Request):
+async def cancel_async_task(
+    task_id: str,
+    request: Request,
+    user_id: str = Depends(require_user_id),
+):
     orch = _get_orchestrator(request)
+    # 073: ownership is checked BEFORE cancelling, otherwise any caller holding
+    # a task_id could cancel another user's running background work.
+    bg_task = await orch.async_task_manager.get(task_id)
+    if bg_task is None or bg_task.user_id != user_id:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Task not found or already completed", "task_id": task_id},
+        )
     cancelled = await orch.async_task_manager.cancel(task_id)
     if not cancelled:
         from fastapi.responses import JSONResponse
