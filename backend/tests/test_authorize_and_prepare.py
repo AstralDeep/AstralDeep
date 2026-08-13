@@ -115,6 +115,22 @@ async def test_strict_tool_schema_receives_declared_context_only(orch):
 
 
 @pytest.mark.asyncio
+async def test_partial_legacy_card_still_honours_strict_schema(orch):
+    """Older/synthetic cards may omit the optional skill name attribute."""
+    orch.agent_cards["a1"] = SimpleNamespace(skills=[SimpleNamespace(
+        id="t1",
+        input_schema={
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    )])
+    out = await _auth(orch, args={"q": "hi"})
+    assert isinstance(out, PreparedDispatch)
+    assert out.args == {"q": "hi"}
+
+
+@pytest.mark.asyncio
 async def test_allow_injects_encrypted_credentials(orch):
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(
         return_value="enc-blob")

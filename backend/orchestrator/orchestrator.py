@@ -15017,9 +15017,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if card is None:
             return True
         for skill in card.skills:
-            if tool_name not in {skill.id, skill.name}:
+            if tool_name not in {
+                getattr(skill, "id", None), getattr(skill, "name", None)
+            }:
                 continue
-            schema = skill.input_schema
+            schema = getattr(skill, "input_schema", None)
             if not isinstance(schema, dict):
                 return True
             properties = schema.get("properties")
