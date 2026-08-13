@@ -5,8 +5,9 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
-from orchestrator.tool_visibility import eligible_tool_pairs
 from shared.schema_validation import JSON_SCHEMA_2020_12
+
+from orchestrator.tool_visibility import eligible_tool_pairs
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,11 @@ def _schema(value: Any) -> dict[str, Any]:
     return projected
 
 
-def _eligible_pairs(orchestrator: Any, user_id: str) -> list[tuple[str, Any]]:
+def _eligible_pairs(
+    orchestrator: Any,
+    user_id: str,
+    claims: dict[str, Any] | None = None,
+) -> list[tuple[str, Any]]:
     """Mirror the normal-chat visibility and permission gates, fail closed."""
 
     disabled = set(orchestrator.history.db.get_user_disabled_agents(user_id))
@@ -46,11 +51,16 @@ def _eligible_pairs(orchestrator: Any, user_id: str) -> list[tuple[str, Any]]:
         orchestrator,
         user_id,
         disabled_agents=disabled,
+        identity_claims=claims,
     )
 
 
-def project_tools(orchestrator: Any, user_id: str) -> tuple[ProjectedTool, ...]:
-    pairs = _eligible_pairs(orchestrator, user_id)
+def project_tools(
+    orchestrator: Any,
+    user_id: str,
+    claims: dict[str, Any] | None = None,
+) -> tuple[ProjectedTool, ...]:
+    pairs = _eligible_pairs(orchestrator, user_id, claims)
     owners: dict[str, set[str]] = {}
     for agent_id, skill in pairs:
         owners.setdefault(skill.id, set()).add(agent_id)
@@ -88,9 +98,14 @@ def project_tools(orchestrator: Any, user_id: str) -> tuple[ProjectedTool, ...]:
     return tuple(sorted(projected, key=lambda item: (item.name, item.agent_id)))
 
 
-def resolve_projected_tool(orchestrator: Any, user_id: str, name: str) -> ProjectedTool | None:
+def resolve_projected_tool(
+    orchestrator: Any,
+    user_id: str,
+    name: str,
+    claims: dict[str, Any] | None = None,
+) -> ProjectedTool | None:
     return next(
-        (tool for tool in project_tools(orchestrator, user_id) if tool.name == name),
+        (tool for tool in project_tools(orchestrator, user_id, claims) if tool.name == name),
         None,
     )
 

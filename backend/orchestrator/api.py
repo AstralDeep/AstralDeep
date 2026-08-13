@@ -19,9 +19,10 @@ import logging
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from orchestrator.models import (
@@ -1123,6 +1124,133 @@ async def condense_components(
 # =============================================================================
 
 agent_router = APIRouter(prefix="/api/agents", tags=["Agents"])
+
+
+def _external_identity_metadata(card: Any, provider: str) -> dict[str, str] | None:
+    metadata = getattr(card, "metadata", None) or {}
+    declared = metadata.get("external_identity") if isinstance(metadata, dict) else None
+    if not isinstance(declared, dict) or declared.get("provider") != provider:
+        return None
+    authorization_url = declared.get("authorization_url")
+    if not isinstance(authorization_url, str):
+        return None
+    parsed = urlsplit(authorization_url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        return None
+    return {
+        "provider": provider,
+        "authorization_url": authorization_url,
+        "label": str(declared.get("label") or provider.upper()),
+    }
+
+
+@agent_router.get(
+    "/{agent_id}/external-identities/{provider}/start",
+    summary="Start a verified external-identity link",
+)
+async def start_external_identity_link(
+    request: Request,
+    agent_id: str,
+    provider: str,
+    user_id: str = Depends(require_user_id_or_web_session),
+):
+    """Bind a short-lived state token to this Astral browser session."""
+    orch = _get_orchestrator(request)
+    card = orch.agent_cards.get(agent_id)
+    declaration = _external_identity_metadata(card, provider) if card else None
+    from orchestrator.agent_identity import identity_projection_trusted
+    from orchestrator.external_identity_links import create_link_state, link_secret_for
+
+    secret = link_secret_for(agent_id)
+    if declaration is None or secret is None or not identity_projection_trusted(card):
+        raise HTTPException(status_code=404, detail="Identity linking is unavailable")
+    state_token = create_link_state(
+        agent_id=agent_id,
+        provider=provider,
+        user_id=user_id,
+        secret=secret,
+    )
+    separator = "&" if "?" in declaration["authorization_url"] else "?"
+    destination = (
+        declaration["authorization_url"]
+        + separator
+        + urlencode({"state": state_token})
+    )
+    return RedirectResponse(destination, status_code=status.HTTP_302_FOUND)
+
+
+@agent_router.get(
+    "/{agent_id}/external-identities/{provider}/callback",
+    summary="Complete a verified external-identity link",
+)
+async def complete_external_identity_link(
+    request: Request,
+    agent_id: str,
+    provider: str,
+    state: str,
+    assertion: str,
+    user_id: str = Depends(require_user_id_or_web_session),
+):
+    """Verify the PanAtlas handoff, persist it, and refresh live sessions."""
+    orch = _get_orchestrator(request)
+    card = orch.agent_cards.get(agent_id)
+    declaration = _external_identity_metadata(card, provider) if card else None
+    from orchestrator.agent_identity import identity_projection_trusted
+    from orchestrator.external_identity_links import (
+        IdentityAlreadyLinkedError,
+        IdentityLinkError,
+        claims_with_saved_identities,
+        link_secret_for,
+        store_verified_identity,
+        verify_link_handoff,
+    )
+
+    secret = link_secret_for(agent_id)
+    if declaration is None or secret is None or not identity_projection_trusted(card):
+        raise HTTPException(status_code=404, detail="Identity linking is unavailable")
+    try:
+        verified = verify_link_handoff(
+            agent_id=agent_id,
+            provider=provider,
+            user_id=user_id,
+            state_token=state,
+            assertion_token=assertion,
+            secret=secret,
+        )
+        await asyncio.to_thread(
+            store_verified_identity,
+            orch.history.db,
+            user_id=user_id,
+            agent_id=agent_id,
+            provider=provider,
+            subject=verified["subject"],
+            issuer=verified["issuer"],
+            state_nonce=verified["state_nonce"],
+        )
+    except IdentityAlreadyLinkedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IdentityLinkError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    for websocket, session in list(orch.ui_sessions.items()):
+        if (session or {}).get("sub") == user_id:
+            orch.ui_sessions[websocket] = await asyncio.to_thread(
+                claims_with_saved_identities,
+                orch.history.db,
+                user_id,
+                session,
+            )
+    return RedirectResponse(
+        "/?external_identity=orcid-linked",
+        status_code=status.HTTP_303_SEE_OTHER,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
 
 
 @agent_router.get(

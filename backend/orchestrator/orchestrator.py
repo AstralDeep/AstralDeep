@@ -7602,10 +7602,19 @@ class Orchestrator:
                     with perf_span("register_ui.reads", user=user_id):
                         try:
                             prefs = await _prefs_task
-                            if prefs:
+                            from orchestrator.external_identity_links import (
+                                claims_with_identity_preferences,
+                                public_user_preferences,
+                            )
+                            user_data = claims_with_identity_preferences(
+                                prefs, user_data
+                            )
+                            self.ui_sessions[websocket] = user_data
+                            public_prefs = public_user_preferences(prefs)
+                            if public_prefs:
                                 await self._safe_send(websocket, json.dumps({
                                     "type": "user_preferences",
-                                    "preferences": prefs,
+                                    "preferences": public_prefs,
                                 }))
                         except Exception as e:
                             logger.warning(f"Failed to load user preferences: {e}")
@@ -12398,6 +12407,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             disabled_agents=disabled_agents,
             draft_agent_id=draft_agent_id,
             selected_tools=selected_tools,
+            identity_claims=self.ui_sessions.get(websocket, {}),
             log_exclusion=_log_exclusion,
         )
 
@@ -15156,6 +15166,39 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()],
                 render_target="chat")
 
+        # External-identity gate. The card opts in by declaring required claims;
+        # values come only from the verified Keycloak payload or a persisted,
+        # signed external-identity link retained for this invocation. Every
+        # direct, parallel, MCP, component, and chained call reaches this shared
+        # gate before credentials or delegation are minted.
+        _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+        identity_card = (
+            getattr(self, "agent_cards", {}).get(agent_id)
+            if agent_id
+            else None
+        )
+        if identity_card is not None:
+            from orchestrator.agent_identity import (
+                identity_access_message,
+                identity_requirement_satisfied,
+            )
+
+            if not identity_requirement_satisfied(identity_card, _session_claims):
+                err_msg = identity_access_message(identity_card)
+                logger.warning(
+                    "Required identity unavailable: user=%s agent=%s tool=%s",
+                    user_id,
+                    agent_id,
+                    tool_name,
+                )
+                alert = Alert(message=err_msg, variant="warning")
+                return GateRefusal(
+                    response=MCPResponse(
+                        error={"message": err_msg, "retryable": False}
+                    ),
+                    render_components=[alert.to_dict()],
+                )
+
         # Permission enforcement gate (RFC 8693 delegation)
         if user_id and agent_id and not await asyncio.to_thread(
                 self.tool_permissions.is_tool_allowed, user_id, agent_id, tool_name):
@@ -15174,7 +15217,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # tokens are minted for a call that may be refused. remote-compute-1 only;
         # evaluate() fires only for that agent's DESTRUCTIVE verbs (read verbs and
         # non-destructive mutating verbs classify to None and pass straight through).
-        _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
         if (
             agent_id == "remote-compute-1"
             and _session_claims.get("_invocation_channel") == "mcp"
@@ -16803,6 +16845,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _dispatch_tool_call(self, agent_id: str, tool_name: str, args: Dict, timeout: float, ui_websocket) -> Optional[MCPResponse]:
         """Internal: actually dispatch the tool call (in-process → WebSocket → A2A)."""
+        from orchestrator.agent_identity import required_identity_claims
+
+        identity_card = getattr(self, "agent_cards", {}).get(agent_id)
+        identity_bound = bool(required_identity_claims(identity_card))
+
+        def identity_transport_unavailable() -> MCPResponse:
+            name = str(getattr(identity_card, "name", None) or agent_id)
+            return MCPResponse(
+                error={
+                    "message": (
+                        f"{name}'s verified-identity WebSocket connection is "
+                        "currently unavailable"
+                    ),
+                    "retryable": False,
+                }
+            )
+
         # 058 (honest-offline, FR-011): a user-created agent runs on the owner's
         # desktop and connects inward over the tunnel — it has no server-reachable
         # URL. When its host is closed it is simply offline; short-circuit to a
@@ -16835,12 +16894,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 return result
             # WebSocket failed with a retryable error — fall back to A2A if available
             if agent_id in self.a2a_clients:
+                if identity_bound:
+                    return result or identity_transport_unavailable()
                 logger.info(f"WebSocket call failed for {agent_id}, falling back to A2A")
                 return await self._execute_via_a2a(agent_id, tool_name, args, timeout)
             return result
 
         # No WebSocket connection — try A2A
         if agent_id in self.a2a_clients:
+            if identity_bound:
+                return identity_transport_unavailable()
             return await self._execute_via_a2a(agent_id, tool_name, args, timeout)
 
         # Agent has a known URL but no active connection — attempt WebSocket reconnect then A2A
@@ -16855,6 +16918,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug(f"WebSocket reconnect failed for {agent_id}: {e}")
 
             # WebSocket reconnect failed — try A2A discovery as fallback
+            if identity_bound:
+                return identity_transport_unavailable()
             logger.info(f"WebSocket reconnect failed for {agent_id}, attempting A2A fallback")
             try:
                 await self.discover_a2a_agent(base_url, notify_ui=False)
@@ -16881,6 +16946,32 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 timeout=timeout,
                 ui_websocket=ui_websocket,
             )
+
+        from orchestrator.agent_identity import (
+            identity_access_message,
+            verified_identity_for,
+        )
+
+        identity_card = getattr(self, "agent_cards", {}).get(agent_id)
+        session_claims = (
+            getattr(self, "ui_sessions", {}).get(ui_websocket, {})
+            if ui_websocket is not None
+            else {}
+        )
+        verified_identity = verified_identity_for(identity_card, session_claims)
+        if verified_identity is None:
+            return MCPResponse(
+                error={
+                    "message": identity_access_message(identity_card),
+                    "retryable": False,
+                }
+            )
+        caller_info: Dict[str, Any] = {
+            "name": "AstralDeep Orchestrator",
+            "version": "1.0.0",
+        }
+        if verified_identity:
+            caller_info["verified_identity"] = verified_identity
         # Cryptographically-random, collision-free request id. A time-based id
         # (``req_<tool>_<ms>``) collided when two same-tool calls landed in one
         # millisecond — resolving the WRONG pending future — and, being sent to
@@ -16896,7 +16987,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             params={"name": tool_name, "arguments": args},
             protocol_version=MCP_PROTOCOL_VERSION,
             caller_capabilities={},
-            caller_info={"name": "AstralDeep Orchestrator", "version": "1.0.0"},
+            caller_info=caller_info,
         )
 
         # Create a future for the response
@@ -17112,6 +17203,31 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """
         import copy
         from shared.local_transport import LoopbackSocket
+        from orchestrator.agent_identity import (
+            identity_access_message,
+            verified_identity_for,
+        )
+
+        identity_card = getattr(self, "agent_cards", {}).get(agent_id)
+        session_claims = (
+            getattr(self, "ui_sessions", {}).get(ui_websocket, {})
+            if ui_websocket is not None
+            else {}
+        )
+        verified_identity = verified_identity_for(identity_card, session_claims)
+        if verified_identity is None:
+            return MCPResponse(
+                error={
+                    "message": identity_access_message(identity_card),
+                    "retryable": False,
+                }
+            )
+        caller_info: Dict[str, Any] = {
+            "name": "AstralDeep Orchestrator",
+            "version": "1.0.0",
+        }
+        if verified_identity:
+            caller_info["verified_identity"] = verified_identity
         # Cryptographically-random, collision-free request id (see
         # _execute_via_websocket) — this id keys both ``pending_requests`` and
         # ``_dispatch_context``, the record a mediated hop resolves authority
@@ -17126,7 +17242,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             params={"name": tool_name, "arguments": call_args},
             protocol_version=MCP_PROTOCOL_VERSION,
             caller_capabilities={},
-            caller_info={"name": "AstralDeep Orchestrator", "version": "1.0.0"},
+            caller_info=caller_info,
         )
         future = asyncio.get_event_loop().create_future()
         self.pending_requests[request_id] = future
@@ -17496,6 +17612,32 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if agent_id not in self.agents and agent_id not in self.local_agents:
             raise RuntimeError(f"agent {agent_id!r} is not connected")
 
+        from orchestrator.agent_identity import (
+            identity_access_message,
+            required_identity_claims,
+            verified_identity_for,
+        )
+
+        identity_card = getattr(self, "agent_cards", {}).get(agent_id)
+        verified_identity: Optional[Dict[str, str]] = {}
+        if required_identity_claims(identity_card):
+            verified_identity = None
+            for session_claims in getattr(self, "ui_sessions", {}).values():
+                if (session_claims or {}).get("sub") != user_id:
+                    continue
+                candidate = verified_identity_for(identity_card, session_claims)
+                if candidate is not None:
+                    verified_identity = candidate
+                    break
+        if verified_identity is None:
+            raise PermissionError(identity_access_message(identity_card))
+        caller_info: Dict[str, Any] = {
+            "name": "AstralDeep Orchestrator",
+            "version": "1.0.0",
+        }
+        if verified_identity:
+            caller_info["verified_identity"] = verified_identity
+
         request_id = f"stream_{tool_name}_{_uuid.uuid4().hex}_{stream_id[-6:]}"
 
         # Inject per-user credentials (E2E encrypted — only the agent can decrypt)
@@ -17520,7 +17662,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             },
             protocol_version=MCP_PROTOCOL_VERSION,
             caller_capabilities={},
-            caller_info={"name": "AstralDeep Orchestrator", "version": "1.0.0"},
+            caller_info=caller_info,
         )
         if agent_id in self.local_agents:
             # Feature 040 built-ins run in-process with no agent WS — the

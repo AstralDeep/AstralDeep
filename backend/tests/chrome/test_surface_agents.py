@@ -43,6 +43,7 @@ class FakeDB:
         self.users = users or {}
         self.disabled = set()
         self.calls = []
+        self.preferences = {}
 
     def get_all_agent_ownership(self):
         return [{"agent_id": k, **v} for k, v in self.ownership.items()]
@@ -72,6 +73,9 @@ class FakeDB:
 
     def get_user(self, user_id):
         return self.users.get(user_id)
+
+    def get_user_preferences(self, user_id):
+        return dict(self.preferences.get(user_id) or {})
 
 
 class FakePerms:
@@ -349,6 +353,43 @@ def test_detail_credentials_section():
     assert 'data-ui-action="chrome_credentials_save"' in html
     assert 'data-ui-action="chrome_credential_delete"' in html
     assert "&quot;key&quot;: &quot;api_key&quot;" in html
+
+
+def test_detail_renders_direct_orcid_connect_button():
+    orch = make_orch()
+    orch.agent_cards["alpha"].metadata["external_identity"] = {
+        "provider": "orcid",
+        "label": "ORCID iD",
+        "authorization_url": "https://panatlas.net/link",
+    }
+    html = run(surface.render(
+        orch, "alice-id", ["user"], {"agent_id": "alpha", "tab": "mine"}
+    ))
+    assert "Connect ORCID" in html
+    assert "/api/agents/alpha/external-identities/orcid/start" in html
+
+
+def test_detail_shows_linked_orcid_status_instead_of_connect_button():
+    orch = make_orch()
+    orch.agent_cards["alpha"].metadata["external_identity"] = {
+        "provider": "orcid",
+        "label": "ORCID iD",
+        "authorization_url": "https://panatlas.net/link",
+    }
+    orch.history.db.preferences["alice-id"] = {
+        "verified_external_identities": {
+            "orcid": {
+                "subject": "0009-0003-6606-0831",
+                "issuer": "https://orcid.org",
+                "verified_by_agent": "alpha",
+            }
+        }
+    }
+    html = run(surface.render(
+        orch, "alice-id", ["user"], {"agent_id": "alpha", "tab": "mine"}
+    ))
+    assert "Connected: 0009-0003-6606-0831" in html
+    assert "Connect ORCID" not in html
 
 
 def test_detail_back_link_and_enable_toggle():
