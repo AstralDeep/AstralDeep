@@ -42,7 +42,22 @@ docker_logs_fixes_known_remaining.md
 .DS_Store
 Thumbs.db
 *.log
+*.log.*
 *.tmp
+
+# Sensitive local credentials and durable runtime state
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
 
 # Python
 __pycache__/
@@ -88,6 +103,8 @@ test-results/
 
 # Environment Variables
 .env
+.env.*
+!.env.example
 .env.local
 .env.development.local
 .env.test.local

@@ -3,7 +3,7 @@
 **Feature**: `074-multirepo-lets-integration`
 
 **Date**: 2026-08-13
-**Source baseline**: AstralDeep `3862a5d1c4ab1969cb8589b023e7f7a7c9f19e68`, LETS tag `v1.0.10` (`82dbe4f5ddf410cc86778784bb612440725ec66d`)
+**Source baseline**: AstralDeep planning anchor `3862a5d1c4ab1969cb8589b023e7f7a7c9f19e68`; refreshed extraction source `fc113c4f99121b2053bb71523835c5c4743f1f56` after the ordinary merge of PR #175; LETS tag `v1.0.10` (`82dbe4f5ddf410cc86778784bb612440725ec66d`)
 
 This document resolves the technical choices required by the feature specification. Repository inventories were read-only; each choice is revalidated against refreshed remote refs before it becomes a mutation.
 
