@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from orchestrator.orchestrator import GateRefusal, PreparedDispatch  # noqa: E402
+from shared.protocol import AgentCard, AgentSkill  # noqa: E402
 
 
 @pytest.fixture
@@ -63,6 +64,54 @@ async def test_allow_returns_prepared_dispatch(orch):
     assert out.args["user_id"] == "u1"
     assert out.args["q"] == "hi"
     assert out.cap_job_id is None
+
+
+@pytest.mark.asyncio
+async def test_strict_tool_schema_does_not_receive_undeclared_context(orch):
+    """Post-gate context injection must not invalidate a strict agent call."""
+    orch.agent_cards["a1"] = AgentCard(
+        name="Strict external agent",
+        description="Rejects undeclared arguments",
+        agent_id="a1",
+        skills=[AgentSkill(
+            id="t1",
+            name="t1",
+            description="strict tool",
+            input_schema={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        )],
+    )
+    out = await _auth(orch, args={"q": "hi"})
+    assert isinstance(out, PreparedDispatch)
+    assert out.args == {"q": "hi"}
+
+
+@pytest.mark.asyncio
+async def test_strict_tool_schema_receives_declared_context_only(orch):
+    orch.agent_cards["a1"] = AgentCard(
+        name="Context-aware agent",
+        description="Declares user context but not session context",
+        agent_id="a1",
+        skills=[AgentSkill(
+            id="t1",
+            name="t1",
+            description="context-aware tool",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "q": {"type": "string"},
+                    "user_id": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        )],
+    )
+    out = await _auth(orch, args={"q": "hi"})
+    assert isinstance(out, PreparedDispatch)
+    assert out.args == {"q": "hi", "user_id": "u1"}
 
 
 @pytest.mark.asyncio

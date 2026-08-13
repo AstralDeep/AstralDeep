@@ -14997,6 +14997,40 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         md = getattr(card, "metadata", {}) or {}
         return tool_name in (md.get("long_running_tools") or [])
 
+    def _tool_accepts_context_arg(
+        self, agent_id: Optional[str], tool_name: str, arg_name: str
+    ) -> bool:
+        """Return whether an orchestrator-injected argument fits the tool schema.
+
+        ``session_id`` and ``user_id`` are execution context, not model-supplied
+        arguments. Historically they were appended to every call after the gate
+        stack had processed the model arguments. A strict external agent can
+        validly advertise ``additionalProperties: false``; appending undeclared
+        context then turns a valid call into an invalid one at the last hop.
+
+        Preserve the legacy behavior when no usable card/schema is available,
+        and otherwise honour the root object's declared property boundary.
+        """
+        if not agent_id:
+            return True
+        card = self.agent_cards.get(agent_id)
+        if card is None:
+            return True
+        for skill in card.skills:
+            if tool_name not in {skill.id, skill.name}:
+                continue
+            schema = skill.input_schema
+            if not isinstance(schema, dict):
+                return True
+            properties = schema.get("properties")
+            if isinstance(properties, dict) and arg_name in properties:
+                return True
+            return (
+                schema.get("additionalProperties", True) is not False
+                and schema.get("unevaluatedProperties", True) is not False
+            )
+        return True
+
     def _policy_roles(self, websocket) -> List[str]:
         """Best-effort session roles for the policy engine. Handles a flat
         ``roles`` claim or the Keycloak ``realm_access.roles`` shape; returns
@@ -15299,8 +15333,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if chat_id:
             args = await asyncio.to_thread(
                 self._map_file_paths, chat_id, args, user_id=user_id)
-            args["session_id"] = chat_id
-            if user_id:
+            if self._tool_accepts_context_arg(agent_id, tool_name, "session_id"):
+                args["session_id"] = chat_id
+            if user_id and self._tool_accepts_context_arg(
+                agent_id, tool_name, "user_id"
+            ):
                 args["user_id"] = user_id
 
         # Inject per-user credentials (E2E encrypted — only agent can decrypt)
