@@ -164,6 +164,57 @@
     "runtimeSourceDiffersFromCurrentMain": false,
     "treeDifferenceSummary": "Only .gitignore, deploy evidence, and seven removed paper artifacts differ; runtime, client, and executor sources are unchanged."
   },
+  "normalizationCheckpoint": {
+    "verifiedAtUtc": "2026-08-13T23:17:28.2159129Z",
+    "archiveRefsCreated": false,
+    "forcePushesUsed": false,
+    "pruningUsed": false,
+    "AstralDeep": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/AstralDeep.git",
+      "branch": "074-multirepo-lets-integration",
+      "headAfterRefreshedMainMerge": "3598a08703890a5299c17cdfd8cc7837368330aa",
+      "containsRefreshedMain": "fc113c4f99121b2053bb71523835c5c4743f1f56"
+    },
+    "LETS": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/LETS.git",
+      "branch": "codex/074-astral-case-study",
+      "branchBase": "7ed23472c162e30c9aaa59da7473f2a488be8149"
+    },
+    "AstralPrimitives": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/AstralPrimitives.git",
+      "branch": "codex/074-canonical-identity",
+      "branchBase": "c1feada40e104ff345c3a94348305dcf27870054"
+    },
+    "AstralPlane": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/AstralPlane.git",
+      "defaultBranch": "main",
+      "main": "2cd12602e361a0dfb3e74655070720be405c09a3",
+      "retainedMaster": "2cd12602e361a0dfb3e74655070720be405c09a3",
+      "legacyPushWorkflow": {
+        "name": "Pylint",
+        "state": "disabled_manually"
+      },
+      "worktree": {
+        "path": "Y:/WORK/MCP/.migration-worktrees/AstralPlane-074",
+        "branch": "codex/074-extract-data-plane",
+        "base": "2cd12602e361a0dfb3e74655070720be405c09a3",
+        "preflight": "passed"
+      }
+    },
+    "AstralProjection": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/AstralProjection.git",
+      "defaultBranch": "main",
+      "main": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+      "retainedMaster": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+      "legacyPushWorkflows": [],
+      "worktree": {
+        "path": "Y:/WORK/MCP/.migration-worktrees/AstralProjection-074",
+        "branch": "codex/074-extract-projection",
+        "base": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+        "preflight": "passed"
+      }
+    }
+  },
   "stopConditions": {
     "liveRefMismatch": true,
     "unexpectedDefaultOrVisibilityChange": true,
