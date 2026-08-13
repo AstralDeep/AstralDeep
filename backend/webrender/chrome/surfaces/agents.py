@@ -17,6 +17,7 @@ Every dynamic interpolation goes through ``esc()`` (escape-by-default).
 import asyncio
 import json
 import logging
+from urllib.parse import quote
 
 from webrender.chrome import esc, notice_block
 
@@ -553,6 +554,44 @@ def _render_credentials(keys, agent_id: str, card, tab: str = "mine") -> str:
     return "".join(parts)
 
 
+def _render_external_identity(preferences, agent_id: str, card) -> str:
+    metadata = getattr(card, "metadata", None) or {}
+    declaration = metadata.get("external_identity") if isinstance(metadata, dict) else None
+    if not isinstance(declaration, dict):
+        return ""
+    provider = declaration.get("provider")
+    if provider != "orcid":
+        return ""
+
+    from orchestrator.external_identity_links import linked_identity_from_preferences
+    linked = linked_identity_from_preferences(
+        preferences, agent_id=agent_id, provider=provider
+    )
+    if linked:
+        status_html = (
+            '<span class="px-2 py-1 rounded text-xs font-medium '
+            'bg-green-500/10 text-green-400 border border-green-500/20">'
+            f'Connected: {esc(linked["subject"])}</span>'
+        )
+    else:
+        href = (
+            f"/api/agents/{quote(agent_id, safe='')}/external-identities/"
+            "orcid/start"
+        )
+        status_html = (
+            f'<a class="{_BTN_PRIMARY}" href="{esc(href)}" target="_blank" '
+            'rel="noopener noreferrer">Connect ORCID</a>'
+        )
+    return (
+        '<div class="astral-external-identity bg-white/5 border border-white/10 '
+        'rounded-lg p-4 flex items-center justify-between gap-3">'
+        '<div><h3 class="text-sm font-semibold text-astral-text">ORCID identity</h3>'
+        '<div class="text-xs text-astral-muted mt-0.5">PanAtlas verifies your '
+        'ORCID login separately from your Astral sign-in.</div></div>'
+        f'{status_html}</div>'
+    )
+
+
 _DETAIL_CONTEXT_SQL = (
     "SELECT (SELECT email FROM users WHERE id = ?) AS email, "
     "(SELECT preferences FROM user_preferences WHERE user_id = ?) AS preferences, "
@@ -586,6 +625,10 @@ def _detail_context_legacy(orch, user_id, agent_id) -> dict:
     except Exception:
         logger.debug("safe-marking lookup failed", exc_info=True)
         is_safe, safe_known = False, False
+    try:
+        preferences = db.get_user_preferences(user_id)
+    except (AttributeError, TypeError):
+        preferences = {}
     return {
         "user_email": _user_email(orch, user_id),
         "owner_email": ownership.get("owner_email"),
@@ -595,6 +638,7 @@ def _detail_context_legacy(orch, user_id, agent_id) -> dict:
         "enabled": not db.is_user_agent_disabled(user_id, agent_id),
         "credential_keys": orch.credential_manager.list_credential_keys(user_id, agent_id),
         "scope_state": dict(orch.tool_permissions.get_agent_scopes(user_id, agent_id)),
+        "preferences": preferences,
     }
 
 
@@ -622,6 +666,7 @@ async def _detail_context(orch, user_id, agent_id) -> dict:
         "enabled": agent_id not in disabled_set,
         "credential_keys": str(keys_raw).split("\n") if keys_raw else [],
         "scope_state": _parse_scope_state(row.get("scope_state")),
+        "preferences": row.get("preferences"),
     }
 
 
@@ -678,6 +723,11 @@ async def _render_detail(orch, user_id, roles, agent_id: str, tab: str) -> str:
             sections.append(_render_safe(agent_id, ctx["is_safe"], tab))
         else:
             logger.debug("safe-marking control render skipped")
+    external_identity = _render_external_identity(
+        ctx["preferences"], agent_id, card
+    )
+    if external_identity:
+        sections.append(external_identity)
     sections.append(_render_credentials(ctx["credential_keys"], agent_id, card, tab))
     return (
         f'<div class="astral-agent-detail space-y-4" data-agent-id="{esc(agent_id)}">'

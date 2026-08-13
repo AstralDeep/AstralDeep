@@ -529,6 +529,12 @@ AGENT_API_KEY=<random secret>
 # A2A_EXTERNAL_AGENTS: that is a discovery list, and naming a third-party peer
 # there is not consent for it to hold the fleet-wide registration secret.
 AGENT_KEY_TRUSTED_HOSTS=
+# Agent IDs allowed to receive a minimal, card-declared verified identity claim.
+# Keep empty unless a reviewed external agent requires it.
+IDENTITY_CLAIM_TRUSTED_AGENTS=
+# JSON agent_id -> independent 32+ character secret for browser-mediated
+# identity links. Keep empty when no reviewed agent provides such a flow.
+EXTERNAL_IDENTITY_LINK_SECRETS={}
 
 # Trust X-Forwarded-* only from the TLS proxy
 FORWARDED_ALLOW_IPS=<proxy ip>
