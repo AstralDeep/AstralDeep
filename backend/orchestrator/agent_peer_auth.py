@@ -255,7 +255,14 @@ def agent_ws_url(base_url: str) -> str:
     # port would become the host. Same trick _declared_hosts uses.
     raw = base_url if "://" in base_url else "http://" + base_url
     parsed = urlparse(raw)
-    scheme = "wss" if parsed.scheme == "https" else "ws"
+    # 073: an already-websocket scheme passes through. Writing a remote agent in
+    # as `wss://host` is a natural mistake now that A2A_EXTERNAL_AGENTS names
+    # WebSocket agents on other hosts, and mapping it to `ws` would silently
+    # downgrade exactly the TLS this function exists to preserve.
+    if parsed.scheme in ("ws", "wss"):
+        scheme = parsed.scheme
+    else:
+        scheme = "wss" if parsed.scheme == "https" else "ws"
     return "{}://{}{}/agent".format(
         scheme, parsed.netloc, parsed.path.rstrip("/")
     )

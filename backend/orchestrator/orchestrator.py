@@ -172,6 +172,14 @@ PERSONAL_AGENT_WATCHDOG_INTERVAL_SECONDS = 1.0
 # Feature 063 US4: how often the always-on background poller checks each open
 # remote Slurm job's status over SSH (read-only). Env-overridable.
 REMOTE_CLUSTER_POLL_INTERVAL_SECONDS = float(os.getenv("REMOTE_CLUSTER_POLL_SECONDS", "30"))
+# External A2A agents (A2A_EXTERNAL_AGENTS) are re-checked on this cadence so a
+# remote agent that was down at boot, or that dropped its socket, reconnects
+# without an orchestrator restart. Much slower than the 5 s localhost sweep in
+# _monitor_agents: each pass is a cross-network round trip per configured host.
+EXTERNAL_AGENT_DISCOVERY_INTERVAL_SECONDS = float(
+    os.getenv("A2A_EXTERNAL_DISCOVERY_SECONDS", "60"))
+EXTERNAL_AGENT_DISCOVERY_MAX_BACKOFF_SECONDS = float(
+    os.getenv("A2A_EXTERNAL_DISCOVERY_MAX_BACKOFF_SECONDS", "900"))
 _PERSONAL_AGENT_HOST_FRAME_TYPES = frozenset(
     {
         "agent_host_inventory",
@@ -1244,6 +1252,9 @@ class Orchestrator:
         # Feature 063 US4: the always-on remote-Slurm-job status poller (launched
         # in start() only when FF_REMOTE_COMPUTE is on; cancelled on shutdown).
         self._remote_job_poll_task: asyncio.Task[Any] | None = None
+        # Periodic re-discovery of A2A_EXTERNAL_AGENTS (launched in start() only
+        # when the env var is set; cancelled on shutdown).
+        self._external_agent_discovery_task: asyncio.Task[Any] | None = None
         self.runtime_observability = RuntimeObservability(
             retention_seconds=operation_retention_seconds,
             deployment_instance=os.getenv(
@@ -3754,7 +3765,7 @@ class Orchestrator:
         peer_headers = {}
         try:
             # Fetch agent card
-            card_url = f"{base_url}/.well-known/agent-card.json"
+            card_url = f"{base_url.rstrip('/')}/.well-known/agent-card.json"
             async with aiohttp.ClientSession() as session:
                 # allow_redirects=False is load-bearing, not tidiness: aiohttp
                 # forwards request headers across a redirect even to a different
@@ -20923,24 +20934,38 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             install_mcp_server(app, self)
             logger.info("MCP 2026-07-28 endpoint mounted at /mcp")
 
-        # Mount A2A JSON-RPC server (orchestrator as A2A agent)
-        try:
-            from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
-            setup_orchestrator_a2a(app, self)
-            logger.info("A2A JSON-RPC endpoint mounted at /a2a/")
-        except Exception as e:
-            logger.warning(f"A2A server setup skipped: {e}")
+        # Mount A2A JSON-RPC server (orchestrator as A2A agent).
+        # 073: this mount is unauthenticated and its dispatch path bypasses
+        # _authorize_and_prepare entirely, so it is absent unless an operator
+        # deliberately enables it. There are no first-party callers; the
+        # orchestrator's OUTBOUND A2A client path (_execute_via_a2a, used when
+        # an agent's WebSocket is unavailable) does not go through this mount.
+        if flags.is_enabled("a2a_server"):
+            try:
+                from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
+                setup_orchestrator_a2a(app, self)
+                logger.warning(
+                    "A2A JSON-RPC endpoint mounted at /a2a/ (FF_A2A_SERVER=true). "
+                    "This surface is unauthenticated and bypasses the tool "
+                    "authorization gate; do not expose it publicly."
+                )
+            except Exception as e:
+                logger.warning(f"A2A server setup skipped: {e}")
 
-        # Discover external A2A agents from env var
+        # Discover external A2A agents from env var, then keep re-checking them.
+        # This used to be a single pass three seconds after boot, which gave up
+        # permanently if the remote host was down, slow, or behind a proxy that
+        # had not finished reloading. _monitor_agents does not cover these: it
+        # only sweeps localhost ports.
         external_agents = os.getenv("A2A_EXTERNAL_AGENTS", "")
         if external_agents:
-            async def _discover_external():
-                await asyncio.sleep(3)  # Wait for server to start
-                for url in external_agents.split(","):
-                    url = url.strip()
-                    if url:
-                        await self.discover_a2a_agent(url)
-            asyncio.create_task(_discover_external())
+            urls = [u.strip() for u in external_agents.split(",") if u.strip()]
+            if urls:
+                async def _discover_external():
+                    await asyncio.sleep(3)  # Wait for server to start
+                    await self._external_agent_discovery_loop(urls)
+                self._external_agent_discovery_task = asyncio.create_task(
+                    _discover_external())
 
         # Start combined server. proxy_headers honors X-Forwarded-Proto/-For
         # from a TLS-terminating reverse proxy (production deployments) so
@@ -20983,6 +21008,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 poller.cancel()
                 await asyncio.gather(poller, return_exceptions=True)
                 self._remote_job_poll_task = None
+            discovery = getattr(self, "_external_agent_discovery_task", None)
+            if discovery is not None:
+                discovery.cancel()
+                await asyncio.gather(discovery, return_exceptions=True)
+                self._external_agent_discovery_task = None
             try:
                 scheduler_loop = getattr(self, "_scheduler_loop", None)
                 if scheduler_loop is not None:
@@ -21078,6 +21108,59 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         import threading
         threading.Thread(target=_phi_warm_worker, name="phi-warm", daemon=True).start()
+
+    async def _external_agent_discovery_loop(self, urls: List[str]):
+        """Keep operator-configured external A2A agents connected.
+
+        Per-URL exponential backoff keeps a permanently dead host from costing a
+        network round trip every interval, and from filling the log. Repeated
+        passes over a healthy agent are cheap and safe: discover_agent returns
+        early once the agent id is already in self.agents, so a pass is a card
+        fetch and nothing more.
+        """
+        logger.info("External agent discovery loop watching %d URL(s)", len(urls))
+        # url -> (next monotonic deadline, current backoff seconds)
+        schedule: Dict[str, tuple] = {url: (0.0, 0.0) for url in urls}
+
+        def _is_connected(url: str) -> bool:
+            return any(
+                stored == url and (aid in self.agents or aid in self.a2a_clients)
+                for aid, stored in self.agent_urls.items()
+            )
+
+        while True:
+            loop = asyncio.get_running_loop()
+            for url in urls:
+                due_at, backoff = schedule[url]
+                if loop.time() < due_at:
+                    continue
+                was_connected = _is_connected(url)
+                try:
+                    await self.discover_a2a_agent(url, notify_ui=False)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.debug("external discovery pass for %s raised", url, exc_info=True)
+
+                if _is_connected(url):
+                    if backoff:
+                        logger.info("External agent at %s is reachable again", url)
+                    schedule[url] = (0.0, 0.0)
+                else:
+                    backoff = (
+                        EXTERNAL_AGENT_DISCOVERY_INTERVAL_SECONDS
+                        if not backoff
+                        else min(backoff * 2, EXTERNAL_AGENT_DISCOVERY_MAX_BACKOFF_SECONDS)
+                    )
+                    schedule[url] = (loop.time() + backoff, backoff)
+                    if was_connected:
+                        logger.warning(
+                            "External agent at %s dropped, retrying in %.0fs", url, backoff)
+                    else:
+                        logger.info(
+                            "External agent at %s not reachable, retrying in %.0fs",
+                            url, backoff)
+            await asyncio.sleep(EXTERNAL_AGENT_DISCOVERY_INTERVAL_SECONDS)
 
     async def _monitor_agents(self, start_port: int, max_ports: int = 10):
         """Continuously monitor and discover agents across a range of ports."""
