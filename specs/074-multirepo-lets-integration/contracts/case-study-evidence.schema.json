@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AstralDeep/AstralDeep/specs/074-multirepo-lets-integration/contracts/case-study-evidence.schema.json",
+  "title": "Astral LETS Case-Study Evidence Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "evidence_class",
+    "lets_release",
+    "repositories",
+    "composition_sha256",
+    "policy_digest",
+    "machine_digest",
+    "config_epoch",
+    "scope_profile",
+    "mode",
+    "environment",
+    "commands",
+    "artifacts",
+    "measurements",
+    "reproduced_at"
+  ],
+  "properties": {
+    "format": {"const": "lets.case-study-evidence/v1"},
+    "evidence_class": {
+      "enum": ["release-baseline", "astral-integration"]
+    },
+    "lets_release": {
+      "type": "string",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "repositories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "astraldeep",
+        "astral-projection",
+        "astral-plane",
+        "astral-primitives",
+        "lets"
+      ],
+      "properties": {
+        "astraldeep": {"$ref": "#/$defs/sha1"},
+        "astral-projection": {"$ref": "#/$defs/sha1"},
+        "astral-plane": {"$ref": "#/$defs/sha1"},
+        "astral-primitives": {"$ref": "#/$defs/sha1"},
+        "lets": {"$ref": "#/$defs/sha1"}
+      }
+    },
+    "composition_sha256": {"$ref": "#/$defs/sha256"},
+    "policy_digest": {"$ref": "#/$defs/letsDigest"},
+    "machine_digest": {"$ref": "#/$defs/letsDigest"},
+    "config_epoch": {"type": "integer", "minimum": 1},
+    "scope_profile": {"const": "astral.tools/v1"},
+    "mode": {"enum": ["off", "shadow", "enforce"]},
+    "environment": {
+      "type": "object",
+      "description": "Non-secret hardware, OS, language, database, topology, and workload facts.",
+      "minProperties": 1,
+      "additionalProperties": true
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "argv", "exit_code", "started_at", "finished_at"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 100},
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"}
+          },
+          "exit_code": {"type": "integer"},
+          "started_at": {"$ref": "#/$defs/timestamp"},
+          "finished_at": {"$ref": "#/$defs/timestamp"},
+          "stdout_sha256": {"$ref": "#/$defs/sha256"},
+          "stderr_sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "relative_path", "sha256", "bytes"],
+        "properties": {
+          "kind": {"type": "string", "minLength": 1, "maxLength": 100},
+          "relative_path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+          },
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "measurements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "unit", "sample_count", "summary", "source_artifact"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 200},
+          "unit": {"type": "string", "minLength": 1, "maxLength": 50},
+          "sample_count": {"type": "integer", "minimum": 1},
+          "summary": {"type": "object", "minProperties": 1},
+          "source_artifact": {"type": "string", "minLength": 1},
+          "exclusions": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "reproduced_at": {"$ref": "#/$defs/timestamp"},
+    "notes": {"type": "string", "maxLength": 10000}
+  },
+  "$defs": {
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "letsDigest": {
+      "type": "string",
+      "pattern": "^(?:sha256:)?[0-9a-f]{64}$"
+    },
+    "timestamp": {"type": "string", "format": "date-time"}
+  }
+}

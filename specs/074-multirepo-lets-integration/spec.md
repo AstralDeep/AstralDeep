@@ -83,11 +83,11 @@ A maintainer can inspect the legacy histories, renamed repository identities, mi
 
 **Why this priority**: The destination repositories contain meaningful prior work, and existing clients and releases depend on verifiable repository identities.
 
-**Independent Test**: Verify archive references at every pre-replacement tip, canonical repository URLs, `main` as the default branch, component checkpoint branches, and a trace from each extracted path to its source revision.
+**Independent Test**: Verify that replacement commits descend normally from each refreshed legacy default tip, canonical repository URLs and `main` defaults are active, component checkpoint branches are identifiable, and each extracted path traces to its source revision.
 
 **Acceptance Scenarios**:
 
-1. **Given** the pre-migration repository tips and unique branches, **When** replacement content is published, **Then** the prior histories remain reachable through immutable named archive references.
+1. **Given** each refreshed pre-migration default tip, **When** replacement content is published, **Then** it lands as ordinary descendant commits with no orphan history or force-rewrite, so prior default-branch commits remain in normal history.
 2. **Given** a local checkout or maintained document containing a pre-rename URL, **When** the migration finishes, **Then** current operational references use the canonical repository name and historical citations remain understandable.
 3. **Given** a cross-repository checkpoint, **When** a maintainer audits it, **Then** each component revision and its corresponding AstralDeep composition revision are identifiable.
 
@@ -142,7 +142,7 @@ A researcher can reproduce an AstralDeep-based LETS evaluation, distinguish prio
 
 #### Repository Preservation and Identity
 
-- **FR-010**: The pre-replacement default tips, tags, and unique branches of AstralProjection and AstralPlane MUST remain reachable through clearly named archive references.
+- **FR-010**: AstralProjection and AstralPlane replacement content MUST land as ordinary commits descended from each refreshed legacy default tip; feature 074 MUST NOT create archive tags or archive branches for the replaced content.
 - **FR-011**: Repository replacement MUST preserve existing Git history rather than create orphan histories or force-rewrite published commits.
 - **FR-012**: AstralProjection and AstralPlane MUST use `main` as their default branch after migration while retaining their current visibility unless the owner directs otherwise.
 - **FR-013**: Current operational remotes, package metadata, documentation, submodule declarations, release policies, and repository links MUST use `AstralDeep/AstralProjection`, `AstralDeep/AstralPlane`, and `AstralDeep/AstralPrimitives` with canonical casing.
@@ -220,7 +220,7 @@ A researcher can reproduce an AstralDeep-based LETS evaluation, distinguish prio
 
 - **Component Revision**: An immutable revision of AstralProjection, AstralPlane, AstralPrimitives, or LETS, including its canonical repository identity and compatibility metadata.
 - **System Composition**: The exact set of component revisions consumed by one AstralDeep revision, together with their contract versions and verification status.
-- **Archive Reference**: A durable named reference preserving a repository's pre-replacement default tip, tags, or unique historical branch.
+- **Legacy Baseline**: The refreshed pre-replacement default-branch commit from which the normal replacement commit descends, recorded for provenance without creating an archive ref.
 - **Agent Authority Binding**: The owner-isolated association between an Astral agent and its LETS tenant, envelope, lease, policy, configuration epoch, lifecycle state, and latest confirmed operation.
 - **Protected Effect Authorization**: A short-lived, audience- and operation-bound LETS result that must be independently verified at the final Astral effect boundary.
 - **Data Plane Revision**: The declared schema, durable-store contract, file-state expectations, and recovery compatibility owned by AstralPlane.
@@ -238,7 +238,7 @@ A researcher can reproduce an AstralDeep-based LETS evaluation, distinguish prio
 - **SC-004**: Every supported client completes the same authenticated golden flow and renders the same shared protocol fixture from the decomposed composition with no unexplained capability, theme, layout, accessibility, or sanitization drift.
 - **SC-005**: One hundred percent of enabled protected effect paths pass enforcement tests proving valid authorization, exhaustion, missing mapping, revocation, expiry, wrong audience, stale state, replay, timeout, unavailable-service, retry, and recovery behavior.
 - **SC-006**: Existing Astral authorization denials remain denials in every LETS posture, and no test or live verification finds a path where LETS widens an Astral permission.
-- **SC-007**: The pre-migration default tips and every unique legacy branch remain reachable through documented archive references, while all current operational repository links resolve directly to canonical names without redirect dependence.
+- **SC-007**: Every Projection and Plane replacement commit is a normal descendant of its recorded pre-migration default tip, with zero force-rewritten default history, while all current operational repository links resolve directly to canonical names without redirect dependence.
 - **SC-008**: Existing installed client update verification continues to succeed through a documented trust transition, with zero unauthenticated repository or workflow identity substitutions.
 - **SC-009**: Final local qualification completes with no failing required component, migration, security, client, compatibility, clean-build, or startup check before any hosted-CI or default-branch integration request.
 - **SC-010**: Each major checkpoint has a pushed kos-wiki record naming exact revisions, behavior changes, verification performed, paper impact, and unresolved risk.
@@ -248,7 +248,7 @@ A researcher can reproduce an AstralDeep-based LETS evaluation, distinguish prio
 ## Assumptions
 
 - No other developer or machine is currently performing overlapping work in the five repositories.
-- Existing repository histories will be preserved with archive references; orphan-history replacement and destructive force-pushes are out of scope.
+- Existing default-branch histories will be preserved by ordinary descendant commits, without archive refs; orphan-history replacement and destructive force-pushes are out of scope. Already-deleted, unmerged Plane branch tips are recorded as a known non-preservation risk and are not republished.
 - AstralProjection and AstralPlane will retain their current private visibility and move their default branch from `master` to `main`.
 - Canonical repository identities are `AstralDeep/AstralDeep`, `AstralDeep/AstralProjection`, `AstralDeep/AstralPlane`, `AstralDeep/AstralPrimitives`, and `AstralDeep/LETS`.
 - The current production deployment remains unchanged until a later, separately authorized cutover.

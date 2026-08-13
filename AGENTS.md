@@ -185,12 +185,20 @@ if the vault commit or push is blocked.
 Finish with an evidence-backed summary: files changed, behavior changed, exact tests/checks and results, live verification performed or still required, feature flags/migrations/contracts affected, and any residual risk. Keep work-in-progress recoverable across machines through a named pushed branch only when the user has requested pushing; otherwise leave a precise local handoff without claiming remote persistence.
 
 <!-- SPECKIT START -->
+## Active Feature Plan
+
+- `074-multirepo-lets-integration`: `specs/074-multirepo-lets-integration/plan.md`
+
 ## Active Technologies
+
+- Python 3.11; vanilla JavaScript; Python/PySide6; Kotlin/JVM 17; Swift 5.9-compatible sources; JSON Schema 2020-12; Git/PowerShell + FastAPI/ASGI, PostgreSQL, Keycloak/RFC 8693, Docker/Compose, AstralPrimitives, AstralProjection, AstralPlane, and pinned LETS v1.0.10 public client/executor contracts (074-multirepo-lets-integration)
+- Existing PostgreSQL and configured blob roots remain in place; LETS warden storage remains external; executor replay/authority and local manuscript/evidence state remain outside repositories (074-multirepo-lets-integration)
 
 - Python 3.11, vanilla JavaScript, Python/PySide6, Kotlin/JVM 17, and Swift 5.9-compatible sources + pinned self-hosted LiveKit server/direct-RTC/client SDKs, bounded WebSocket worker control, ONNX Runtime + exact Silero VAD, FastAPI, PostgreSQL, Keycloak, astralprims/ROTE (065-conversational-voice)
 - PostgreSQL additive `voice_session`/`voice_turn` metadata plus immutable execution-base commit anchors/digests and commit-scoped workspace-layout versioning; ephemeral LiveKit media and speech buffers with no audio retention (065-conversational-voice)
 
 ## Recent Changes
 
+- 074-multirepo-lets-integration: Planned independent Projection/Plane/Primitives/LETS submodules, a history-preserving content replacement, and fail-closed LETS enforcement without changing production during migration.
 - 065-conversational-voice: Planned an included exact-model conversational voice path across web, Windows, Android, macOS, iOS, and watchOS while preserving the normal authenticated agentic dispatcher.
 <!-- SPECKIT END -->
