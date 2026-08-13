@@ -23,6 +23,7 @@ from orchestrator.external_identity_links import (
     encode_signed_payload,
     linked_identity_from_preferences,
     parse_link_secrets,
+    public_user_preferences,
     store_verified_identity,
     verify_link_handoff,
 )
@@ -140,6 +141,7 @@ def test_saved_link_projects_only_through_internal_verified_identity_bucket():
     assert linked_identity_from_preferences(
         preferences, agent_id="another-agent", provider=PROVIDER
     ) is None
+    assert public_user_preferences(preferences) == {"theme": "dark"}
 
 
 class _Cursor:

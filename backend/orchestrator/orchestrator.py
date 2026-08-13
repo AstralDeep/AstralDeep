@@ -7604,15 +7604,17 @@ class Orchestrator:
                             prefs = await _prefs_task
                             from orchestrator.external_identity_links import (
                                 claims_with_identity_preferences,
+                                public_user_preferences,
                             )
                             user_data = claims_with_identity_preferences(
                                 prefs, user_data
                             )
                             self.ui_sessions[websocket] = user_data
-                            if prefs:
+                            public_prefs = public_user_preferences(prefs)
+                            if public_prefs:
                                 await self._safe_send(websocket, json.dumps({
                                     "type": "user_preferences",
-                                    "preferences": prefs,
+                                    "preferences": public_prefs,
                                 }))
                         except Exception as e:
                             logger.warning(f"Failed to load user preferences: {e}")

@@ -240,6 +240,13 @@ def claims_with_identity_preferences(preferences: Any, claims: Any) -> dict[str,
     return safe_claims
 
 
+def public_user_preferences(preferences: Any) -> dict[str, Any]:
+    """Remove server-verified authorization state from the client payload."""
+    public = _preferences_dict(preferences)
+    public.pop(PREFERENCES_KEY, None)
+    return public
+
+
 def store_verified_identity(
     db: Any,
     *,
@@ -341,6 +348,7 @@ __all__ = [
     "link_secret_for",
     "linked_identity_from_preferences",
     "parse_link_secrets",
+    "public_user_preferences",
     "store_verified_identity",
     "verify_link_handoff",
 ]
