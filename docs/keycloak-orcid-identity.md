@@ -1,112 +1,90 @@
-# Keycloak ORCID identity for restricted external agents
+# Direct ORCID identity for restricted external agents
 
-Astral accepts an ORCID iD for agent authorization only when it is a claim in a
-Keycloak access token that passed the normal issuer, signature, audience,
-authorized-party, and expiry checks. Tool arguments, browser state, request
-headers, and agent-supplied values are never identity evidence.
+Keycloak continues to authenticate the Astral account, but it does not need to
+store or emit an ORCID attribute. Restricted agents can declare a separate
+external-identity link. For PanAtlas, the user selects **Connect ORCID** in the
+agent detail, signs in through PanAtlas's existing WordPress ORCID integration,
+and returns to Astral with a short-lived signed assertion.
 
-The first deployment uses an **administrator-attested** account attribute. This
-does not perform an ORCID OAuth proof-of-control ceremony; it is appropriate for
-the current two-account allowlist because both accounts and identifiers are
-operator-approved. Add an ORCID identity provider and brokered account-link flow
-before allowing self-service linkage.
+Tool arguments, request headers, browser fields, and agent-supplied caller
+metadata are never identity evidence. Astral accepts the ORCID only from the
+signed handoff, stores it against the authenticated Astral user, and projects
+only that value into `caller_info.verified_identity.orcid`.
 
-On the Astral server, explicitly authorize PanAtlas to receive a projected
-identity claim (registration trust alone is intentionally insufficient):
+## 1. Configure the trust boundary
+
+Generate one independent high-entropy secret. Put the exact same value in these
+two root-owned deployment locations; do not reuse `AGENT_API_KEY`.
+
+On Astral (`sandbox.ai.uky.edu`):
 
 ```dotenv
 IDENTITY_CLAIM_TRUSTED_AGENTS=panatlas-1
+EXTERNAL_IDENTITY_LINK_SECRETS={"panatlas-1":"<at-least-32-random-characters>"}
 ```
 
-The default is empty and fail-closed. Restart/recreate the orchestrator after
-changing it because production environment is loaded at process start.
+On PanAtlas (`panatlas.net`), write only the secret value (no `KEY=` prefix) to:
 
-## 1. Create the protected user-profile attribute
+```text
+/etc/panatlas/astral-link.secret
+```
 
-In the `Astral` realm, open **Realm settings → User profile → Create attribute**:
+The file must be root-owned, group-readable only by the web-server group, and
+mode `0640`. The WordPress plugin also permits an operator-defined
+`PANATLAS_ASTRAL_LINK_SECRET` constant/environment value, but the dedicated file
+keeps the secret out of the repository and WordPress database.
 
-| Setting | Value |
-|---|---|
-| Attribute name | `orcid` |
-| Display name | `ORCID iD` |
-| Required | Off |
-| User can view | Off |
-| User can edit | Off |
-| Admin can view | On |
-| Admin can edit | On |
-| Validation | `pattern` |
-| Pattern | `^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$` |
+Both defaults are fail-closed. Restart/recreate Astral and reload the PanAtlas
+PHP runtime after changing them.
 
-Keeping user edit/view disabled prevents a principal from self-asserting or
-changing the authorization value. Astral and PanAtlas also perform the ORCID
-MOD 11-2 checksum validation, so a format-only match is insufficient.
+## 2. Browser link flow
 
-## 2. Emit the claim from every Astral login client
+The PanAtlas card advertises its HTTPS authorization endpoint. Astral renders
+the button only on that agent's detail surface and performs these checks:
 
-Create an OpenID Connect client scope named `orcid-identity`. Under its
-**Mappers** tab, add **User Attribute** with:
+1. Astral creates a five-minute signed state bound to the authenticated Astral
+   subject, `panatlas-1`, and provider `orcid`.
+2. PanAtlas validates the state, requires its normal WordPress ORCID login, and
+   refuses any iD outside `PANATLAS_ALLOWED_ORCIDS`.
+3. PanAtlas returns a two-minute signed assertion containing the canonical ORCID
+   iD and the exact state.
+4. Astral verifies both signatures and bindings, rejects expired/tampered/reused
+   state, prevents one ORCID from being linked to two Astral accounts, and stores
+   the result in the user's existing preferences row.
+5. Normal chat, parallel/chained calls, component re-execution, background work,
+   and Astral's external MCP endpoint all use the same identity gate.
 
-| Setting | Value |
-|---|---|
-| User Attribute | `orcid` |
-| Token Claim Name | `orcid` |
-| Claim JSON Type | `String` |
-| Add to access token | On |
-| Add to ID token | On |
-| Add to userinfo | Off |
-| Multivalued | Off |
+The signed values travel only over HTTPS, are removed from the address bar by an
+immediate redirect, and are never bearer credentials for either application.
 
-Assign `orcid-identity` as a **Default** client scope to:
+## 3. Approved identities
 
-- `astral-frontend` (web)
-- `astral-desktop` (Windows + macOS)
-- `astral-mobile` (Android + iOS)
-- `astral-watch` (watchOS)
-- `astral-agent-service` (background/offline delegated work)
-
-Default assignment is required: Astral does not request an optional ORCID scope
-during sign-in. Accounts without the attribute simply receive no `orcid` claim.
-
-## 3. Link the two approved accounts
-
-Under **Users**, set the administrator-managed `orcid` attribute on exactly the
-approved Cody and Sam accounts:
+PanAtlas is authoritative and independently enforces exactly:
 
 - Cody: `0000-0001-9588-3501`
 - Sam: `0009-0003-6606-0831`
 
-Do not add the attribute to another account unless the PanAtlas deployment's
-`PANATLAS_ALLOWED_ORCIDS` is deliberately changed too. PanAtlas remains the
-authoritative allowlist and independently rejects any other valid ORCID iD.
+Do not change the WordPress allowlist or `PANATLAS_ALLOWED_ORCIDS` on the agent
+service independently. A mismatch fails closed but creates confusing UI.
 
-Existing tokens do not gain a newly mapped claim. After the mapper or attribute
-changes, sign out of Astral on each device and sign back in. A refresh may work,
-but a full sign-out/sign-in is the deterministic verification path.
+## 4. Verify
 
-## 4. Verify without exposing a token
-
-Use the Keycloak Admin Console's **Client scopes → Evaluate** view for each
-approved user/client and confirm the generated access-token claims contain the
-exact canonical `orcid` value. Do not paste bearer tokens into tickets or logs.
-
-Then verify Astral behavior:
-
-1. An approved, freshly signed-in account sees PanAtlas tools and can call
-   `summarize_atlas_state`.
-2. A user with no ORCID attribute does not receive PanAtlas tools in chat or the
+1. Sign into Astral normally through Keycloak.
+2. Open **Agents & permissions**, select **PanAtlas**, and choose **Connect
+   ORCID**.
+3. Complete the PanAtlas ORCID login. Reopen the detail and confirm it says
+   `Connected: <ORCID iD>`.
+4. Call `summarize_atlas_state`; inspect the PanAtlas service log and confirm the
+   call succeeds without logging a token or link secret.
+5. Confirm an unlinked Astral account receives no PanAtlas tools in chat or the
    Astral MCP `tools/list` projection.
-3. Forced calls, parallel calls, chained agent hops, component re-execution, and
-   external MCP calls without the verified claim are refused by the shared gate.
-4. PanAtlas independently returns non-retryable MCP error `-32001` for a valid
-   but unlisted ORCID, or for a missing/malformed/spoofed identity envelope.
-
-For operator-approved agent IDs only, Astral forwards the card-declared claim as
-`caller_info.verified_identity.orcid`. It does not forward the access token,
-subject, username, email, roles, or unrelated claims.
+6. Confirm a valid but unlisted ORCID receives a PanAtlas 403 during linking and
+   a forced tool call still returns non-retryable MCP error `-32001`.
 
 ## 5. Rollback
 
-Remove `orcid-identity` from the clients or remove the two user attributes, then
-revoke active sessions. Astral immediately hides/refuses the tools on newly
-minted tokens; PanAtlas remains fail-closed behind its own allowlist. For an
-immediate PanAtlas-side stop, run `systemctl stop panatlas-astral` on its host.
+Remove `panatlas-1` from `IDENTITY_CLAIM_TRUSTED_AGENTS` and recreate Astral.
+That immediately hides and refuses the tools while retaining the user's link.
+For an immediate PanAtlas-side stop, run `systemctl stop panatlas-astral`.
+Removing `EXTERNAL_IDENTITY_LINK_SECRETS` additionally disables new links and
+callbacks; it does not weaken the agent's own ORCID allowlist.

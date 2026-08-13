@@ -584,6 +584,28 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                     origin,
                     base_url,
                 )
+            from orchestrator.external_identity_links import (
+                claims_with_saved_identities,
+            )
+            identity_db = getattr(
+                getattr(orchestrator, "history", None), "db", None
+            )
+            if identity_db is not None and hasattr(
+                identity_db, "get_user_preferences"
+            ):
+                try:
+                    claims = await asyncio.to_thread(
+                        claims_with_saved_identities,
+                        identity_db,
+                        user_id,
+                        claims,
+                    )
+                except Exception:
+                    # Identity-bound tools remain hidden from the unaugmented
+                    # claims. Discovery and unrelated agents stay available.
+                    logger.warning(
+                        "external identity lookup failed user=%s", user_id
+                    )
             if method not in _METHOD_PHASE:
                 result_code = "method_not_found"
                 return _with_origin(

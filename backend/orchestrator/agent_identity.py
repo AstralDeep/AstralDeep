@@ -17,6 +17,7 @@ _CLAIM_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _ORCID_PATTERN = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")
 _INVALID_REQUIREMENT = "__invalid_identity_requirement__"
 IDENTITY_TRUST_ENV = "IDENTITY_CLAIM_TRUSTED_AGENTS"
+INTERNAL_IDENTITIES_CLAIM = "_verified_external_identities"
 
 
 def normalize_orcid(value: Any) -> str | None:
@@ -73,6 +74,26 @@ def identity_projection_trusted(card: Any) -> bool:
     return agent_id in trusted
 
 
+def _orcid_from_verified_claims(
+    card: Any, token_claims: Mapping[str, Any]
+) -> str | None:
+    direct = normalize_orcid(token_claims.get(ORCID_CLAIM))
+    if direct is not None:
+        return direct
+
+    links = token_claims.get(INTERNAL_IDENTITIES_CLAIM)
+    if not isinstance(links, Mapping):
+        return None
+    entry = links.get(ORCID_CLAIM)
+    if not isinstance(entry, Mapping):
+        return None
+    if entry.get("verified_by_agent") != getattr(card, "agent_id", None):
+        return None
+    if entry.get("issuer") != "https://orcid.org":
+        return None
+    return normalize_orcid(entry.get("subject"))
+
+
 def verified_identity_for(card: Any, token_claims: Any) -> dict[str, str] | None:
     """Project required claims, or return ``None`` when any is unavailable."""
     required = required_identity_claims(card)
@@ -88,7 +109,7 @@ def verified_identity_for(card: Any, token_claims: Any) -> dict[str, str] | None
         if claim not in _SUPPORTED_IDENTITY_CLAIMS:
             return None
         if claim == ORCID_CLAIM:
-            value = normalize_orcid(token_claims.get(claim))
+            value = _orcid_from_verified_claims(card, token_claims)
         else:  # pragma: no cover - guarded by the supported set
             value = None
         if value is None:
@@ -107,8 +128,8 @@ def identity_access_message(card: Any) -> str:
     required = required_identity_claims(card)
     if required == (ORCID_CLAIM,):
         return (
-            f"{name} requires a linked ORCID iD. Sign out and back in after an "
-            "administrator links it to your Astral account."
+            f"{name} requires a linked ORCID iD. Open Agents & permissions, "
+            "select this agent, and choose Connect ORCID."
         )
     return f"{name} requires a verified external identity that is not available."
 

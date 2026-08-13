@@ -69,6 +69,35 @@ def test_projection_includes_only_declared_verified_claims():
     assert verified_identity_for(_card(), claims) == {"orcid": SAM_ORCID}
 
 
+def test_saved_external_identity_links_a_verified_astral_subject():
+    assert verified_identity_for(
+        _card(),
+        {
+            "sub": "sam-keycloak-subject",
+            "_verified_external_identities": {
+                "orcid": {
+                    "subject": SAM_ORCID,
+                    "issuer": "https://orcid.org",
+                    "verified_by_agent": PANATLAS_ID,
+                }
+            },
+        },
+    ) == {"orcid": SAM_ORCID}
+
+
+def test_saved_external_identity_is_scoped_to_the_verifying_agent():
+    claims = {
+        "_verified_external_identities": {
+            "orcid": {
+                "subject": SAM_ORCID,
+                "issuer": "https://orcid.org",
+                "verified_by_agent": "different-agent",
+            }
+        }
+    }
+    assert verified_identity_for(_card(), claims) is None
+
+
 def test_untrusted_agent_cannot_opt_itself_into_identity_disclosure(monkeypatch):
     monkeypatch.setenv("IDENTITY_CLAIM_TRUSTED_AGENTS", "some-other-agent")
     assert verified_identity_for(_card(), {"orcid": SAM_ORCID}) is None
@@ -158,8 +187,8 @@ def test_shared_dispatch_gate_denies_a_missing_identity_before_permissions():
     assert isinstance(result, GateRefusal)
     assert result.response.error == {
         "message": (
-            "PanAtlas requires a linked ORCID iD. Sign out and back in after an "
-            "administrator links it to your Astral account."
+            "PanAtlas requires a linked ORCID iD. Open Agents & permissions, "
+            "select this agent, and choose Connect ORCID."
         ),
         "retryable": False,
     }

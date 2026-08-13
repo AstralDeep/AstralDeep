@@ -7602,6 +7602,13 @@ class Orchestrator:
                     with perf_span("register_ui.reads", user=user_id):
                         try:
                             prefs = await _prefs_task
+                            from orchestrator.external_identity_links import (
+                                claims_with_identity_preferences,
+                            )
+                            user_data = claims_with_identity_preferences(
+                                prefs, user_data
+                            )
+                            self.ui_sessions[websocket] = user_data
                             if prefs:
                                 await self._safe_send(websocket, json.dumps({
                                     "type": "user_preferences",
@@ -15158,9 +15165,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_target="chat")
 
         # External-identity gate. The card opts in by declaring required claims;
-        # values come only from the verified Keycloak payload retained for this
-        # invocation. Every direct, parallel, MCP, component, and chained call
-        # reaches this shared gate before credentials or delegation are minted.
+        # values come only from the verified Keycloak payload or a persisted,
+        # signed external-identity link retained for this invocation. Every
+        # direct, parallel, MCP, component, and chained call reaches this shared
+        # gate before credentials or delegation are minted.
         _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
         identity_card = (
             getattr(self, "agent_cards", {}).get(agent_id)

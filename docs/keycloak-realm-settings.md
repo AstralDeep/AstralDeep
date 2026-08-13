@@ -10,10 +10,11 @@ The orchestrator drives a **server-side** OIDC Authorization Code + PKCE flow
 (`/auth/login` → Keycloak → `/auth/callback`); tokens never live in the
 browser beyond the short-lived access token used for the WS handshake.
 
-External agents may additionally require administrator-attested identity
-claims. Follow [Keycloak ORCID identity for restricted external
-agents](keycloak-orcid-identity.md) for the protected attribute, client-scope
-mapper, approved account linkage, verification, and rollback procedure.
+External agents may additionally require a separately verified identity.
+Follow [Direct ORCID identity for restricted external
+agents](keycloak-orcid-identity.md) for the PanAtlas login button, signed-link
+secret, verification, and rollback procedure. No Keycloak ORCID mapper is
+required.
 
 ## Realm
 
