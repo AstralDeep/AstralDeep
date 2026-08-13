@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import Any, Dict, Optional, Sequence
 
 logger = logging.getLogger("AgentTrust")
@@ -104,7 +105,11 @@ async def _emit_audit(actor: str, action: str, agent_id: str, prior: bool,
             user_id=actor or "system",
             action_type=action,
             description=f"agent {agent_id} {action} (prior_safe={bool(prior)} -> {bool(new)})",
-            correlation_id=f"safe:{agent_id}",
+            # audit_events.correlation_id is a PostgreSQL UUID. The previous
+            # human-readable ``safe:<agent>`` value passed Pydantic but failed
+            # at insertion time, leaving every trust transition in the retry
+            # queue instead of the append-only audit chain.
+            correlation_id=str(uuid.uuid4()),
             agent_id=agent_id,
             chat_id=chat_id,
             inputs_meta={"prior_state": bool(prior), "is_safe": bool(new)},
