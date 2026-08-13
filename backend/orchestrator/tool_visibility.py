@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from orchestrator.agent_identity import identity_requirement_satisfied
 
 ExclusionLogger = Callable[[str, str | None, str], None]
 
@@ -23,6 +24,7 @@ def eligible_tool_pairs(
     disabled_agents: Iterable[str] = (),
     draft_agent_id: str | None = None,
     selected_tools: set[str] | None = None,
+    identity_claims: dict[str, Any] | None = None,
     log_exclusion: ExclusionLogger | None = None,
 ) -> list[tuple[str, Any]]:
     """Return the live agent/skill pairs that chat may offer to ``user_id``.
@@ -37,6 +39,7 @@ def eligible_tool_pairs(
         disabled_agents: Agents the principal disabled in preferences.
         draft_agent_id: Optional draft under owner-isolated self-test.
         selected_tools: Optional chat picker restriction; it only subtracts.
+        identity_claims: Verified access-token claims for identity-bound agents.
         log_exclusion: Optional callback receiving agent, skill, and reason.
 
     Returns:
@@ -81,6 +84,10 @@ def eligible_tool_pairs(
             continue
         if agent_id in disabled:
             excluded(agent_id, None, "user_disabled_agent")
+            continue
+
+        if not identity_requirement_satisfied(card, identity_claims):
+            excluded(agent_id, None, "missing_required_identity")
             continue
 
         draft_self_test = draft_agent_id is not None and agent_id == draft_agent_id

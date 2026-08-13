@@ -603,7 +603,9 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                         result = _discover_result()
                         cache_control = "private, max-age=60"
                     elif method == "tools/list":
-                        tools = await asyncio.to_thread(project_tools, orchestrator, user_id)
+                        tools = await asyncio.to_thread(
+                            project_tools, orchestrator, user_id, claims
+                        )
                         result = {
                             "resultType": "complete",
                             "tools": [tool.descriptor for tool in tools],
@@ -625,6 +627,7 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             orchestrator,
                             user_id,
                             params["name"],
+                            claims,
                         )
                         if projected is None:
                             result = {
