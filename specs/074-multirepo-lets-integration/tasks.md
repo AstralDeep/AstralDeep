@@ -170,11 +170,11 @@
 
 **Independent Test**: Clone AstralDeep afresh, initialize the four exact submodules, build/start with representative existing data, and complete an authenticated interaction without source copying.
 
-- [ ] T108 [P] [US1] Add AstralProjection at the exact pushed extraction commit as `Y:/WORK/MCP/AstralDeep/components/AstralProjection` using canonical HTTPS URL `https://github.com/AstralDeep/AstralProjection.git`
-- [ ] T109 [P] [US1] Add AstralPlane at the exact pushed extraction commit as `Y:/WORK/MCP/AstralDeep/components/AstralPlane` using canonical HTTPS URL `https://github.com/AstralDeep/AstralPlane.git`
-- [ ] T110 [P] [US1] Add AstralPrimitives commit `c1feada40e104ff345c3a94348305dcf27870054` as `Y:/WORK/MCP/AstralDeep/components/AstralPrimitives` using canonical HTTPS URL `https://github.com/AstralDeep/AstralPrimitives.git`
-- [ ] T111 [P] [US1] Add LETS signed-v1.0.10 commit `82dbe4f5ddf410cc86778784bb612440725ec66d` as `Y:/WORK/MCP/AstralDeep/components/LETS` using canonical HTTPS URL `https://github.com/AstralDeep/LETS.git`
-- [ ] T112 [US1] Remove every `.gitmodules` floating branch selector and verify the four canonical component mappings in `Y:/WORK/MCP/AstralDeep/.gitmodules`
+- [X] T108 [P] [US1] Add AstralProjection at the exact pushed extraction commit as `Y:/WORK/MCP/AstralDeep/components/AstralProjection` using canonical HTTPS URL `https://github.com/AstralDeep/AstralProjection.git`
+- [X] T109 [P] [US1] Add AstralPlane at the exact pushed extraction commit as `Y:/WORK/MCP/AstralDeep/components/AstralPlane` using canonical HTTPS URL `https://github.com/AstralDeep/AstralPlane.git`
+- [X] T110 [P] [US1] Add canonical-identity AstralPrimitives commit `03870e55563f7522e95e298490e6a8638f2b8385` as `Y:/WORK/MCP/AstralDeep/components/AstralPrimitives` using canonical HTTPS URL `https://github.com/AstralDeep/AstralPrimitives.git`; runtime and vocabulary remain version 0.3.0
+- [X] T111 [P] [US1] Add LETS signed-v1.0.10 commit `82dbe4f5ddf410cc86778784bb612440725ec66d` as `Y:/WORK/MCP/AstralDeep/components/LETS` using canonical HTTPS URL `https://github.com/AstralDeep/LETS.git`
+- [X] T112 [US1] Remove every `.gitmodules` floating branch selector and verify the four canonical component mappings in `Y:/WORK/MCP/AstralDeep/.gitmodules`
 - [ ] T113 [US1] Create the authoritative compatible revision, contract version, protocol digest, Plane revision, LETS profile, and availability-mode declaration in `Y:/WORK/MCP/AstralDeep/config/astral-composition.json`
 - [ ] T114 [US1] Implement missing/uninitialized/dirty/wrong-SHA/wrong-URL/incompatible/private-access diagnostics in `Y:/WORK/MCP/AstralDeep/scripts/verify_composition.py`
 - [ ] T115 [P] [US1] Add composition tests for exact pins, canonical URLs, no floating branch, inaccessible private component, dirty component, stale gitlink, incompatible contracts, and LETS v1.0.10 public exports (`LETSClient`, `ReplicaAuthorizer`, `AstralDeepAuthorizer`, `Receipt`, `ReceiptVerifier`) in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_composition.py`
