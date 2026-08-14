@@ -40,7 +40,7 @@ The UI contract is:
 - `specs/`: numbered Spec Kit feature artifacts; the spec number is more reliable than historical branch naming.
 - `docs/`: operator documentation. Most of this tree is ignored; check `.gitignore` before assuming a new doc will be committed.
 
-The sibling `../Astral-Primitives` repository owns primitive definitions and Python serialization. It is a separate release train; do not edit or publish it as an incidental AstralDeep change.
+The sibling `../AstralPrimitives` repository owns primitive definitions and Python serialization. It is a separate release train; do not edit or publish it as an incidental AstralDeep change.
 
 ## Non-negotiable engineering rules
 
@@ -58,7 +58,7 @@ The sibling `../Astral-Primitives` repository owns primitive definitions and Pyt
 - Use `css`, not `style`. Escape and sanitize web output through the existing renderer helpers; never pass model/user text as raw HTML.
 - `Primitive.attributes` flattens last and can overwrite declared fields, including `type`; use it only with trusted, deliberate keys.
 - The installed `astralprims` wheel may lag the sibling repository's `main`. Before importing a newer class, bump the AstralDeep version floor, rebuild the environment/image, verify the import, and run parity tests. Until then, an already-approved manifest type may be emitted as a plain dict.
-- A new primitive requires constitution approval and a coordinated change: definition/exports/serialization tests/docs/version in Astral-Primitives; renderer and ROTE behavior; `ui_protocol.json`; all affected client dispositions/renderers; drift guards; and live client verification.
+- A new primitive requires constitution approval and a coordinated change: definition/exports/serialization tests/docs/version in AstralPrimitives; renderer and ROTE behavior; `ui_protocol.json`; all affected client dispositions/renderers; drift guards; and live client verification.
 - A protocol, frame, chrome, theme, component, or layout change must land across every in-scope client in the same feature. A web-only exception must be explicit in the spec and enforced by the server-owned definition, never hidden independently by clients.
 
 ## Security, identity, and data
@@ -141,7 +141,7 @@ Client gates:
 - Windows: set `QT_QPA_PLATFORM=offscreen`, then run `python -m pytest windows-client/tests -q` with the client requirements installed.
 - Android (from `android-client/`): run the committed wrapper for `ktlintCheck`, `:app:lintDebug`, `:core:test`, `:app:testDebugUnitTest`, `:core:koverVerify`, and `:app:assembleDebug`.
 - Apple (macOS only): run `swift test --package-path apple-clients/AstralCore` and the affected unsigned `xcodebuild` schemes from `apple-clients/README.md`.
-- Astral-Primitives changes (only when explicitly in scope): run its pytest suite before any version bump/publish. Its publish workflow does not run tests for you.
+- AstralPrimitives changes (only when explicitly in scope): run its pytest suite before any version bump/publish. Its publish workflow does not run tests for you.
 
 Tests are necessary, not sufficient. Exercise changed UI behavior against the live backend on every affected client/form factor. Verify authorization and security changes through the real dispatch path, including denial/failure cases. If an unrelated baseline failure exists, demonstrate and document the baseline rather than hiding it or weakening a gate.
 

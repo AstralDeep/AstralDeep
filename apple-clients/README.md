@@ -56,7 +56,7 @@ the macOS product carries no watch app at all. `WatchInfo.plist` sets
 ## AstralPrims — the Swift `astralprims` mirror
 
 `AstralCore/Sources/AstralCore/Primitives/` mirrors the first-party
-[`astralprims`](https://github.com/AstralDeep/Astral-Primitives) Python
+[`astralprims`](https://github.com/AstralDeep/AstralPrimitives) Python
 package (currently v0.3.0): the same 32 primitives (`AstralPrims.Text`,
 `.Card`, `.Table`, `.Hero`, …) with the same serialization semantics —
 `toDict()` ≙ `to_dict()`, `createUIResponse` ≙ `create_ui_response`,

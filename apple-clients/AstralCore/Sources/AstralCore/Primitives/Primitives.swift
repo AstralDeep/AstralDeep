@@ -1,5 +1,5 @@
 // AstralPrims — the Swift mirror of the first-party `astralprims` Python
-// package (github.com/AstralDeep/Astral-Primitives, mirrored at v0.3.0).
+// package (github.com/AstralDeep/AstralPrimitives, mirrored at v0.3.0).
 //
 // Same philosophy as the original: JSON stays the wire format; these classes
 // are the AUTHORING layer. Every primitive serializes with `toDict()` to the
