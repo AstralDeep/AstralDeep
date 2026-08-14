@@ -249,7 +249,7 @@
 - [ ] T167 [US2] Add the same verifier/replay/host-binding contract to `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/windows-client/win_agent/agent.py`, pin the exact LETS v1.0.10 protected-executor dependency in `windows-client/requirements.in`, and mechanically regenerate `windows-client/requirements-release.lock.txt`
 - [ ] T168 [US2] Label externally reachable agents without a conforming actuator as dispatch-mediated only and prevent protected-executor claims in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/external_agents.py`
 - [ ] T169 [US2] Correlate redacted Astral audit, Plane operation, LETS request, receipt digest, claim, denial, and effect outcome evidence in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_audit.py`
-- [ ] T170 [US2] Expose typed, redacted health/readiness and user-facing deny reason codes without secrets or raw receipts in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_health.py`
+- [X] T170 [US2] Expose typed, redacted health/readiness and user-facing deny reason codes without secrets or raw receipts in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_health.py`
 
 ### Conformance and rollout evidence
 
