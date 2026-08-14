@@ -104,7 +104,7 @@
 - [X] T062 [US3] Document the non-publishing dual-signature bridge procedure and stable product/store identities in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/docs/release-trust-transition.md`
 - [X] T063 [US3] Run the Projection package, renderer, adaptation, architecture, resource, shared-protocol, and exact-index sensitive-path checks and save command/output digests in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/provenance/checks.json`
 - [X] T064 [US3] Commit the exact paths under `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074` as an ordinary descendant with `Source-Repository`, `Source-Commit`, and `Source-Manifest-SHA256` trailers, push `codex/074-extract-projection`, and verify its remote SHA
-- [ ] T065 [US3] Record and push the exact Projection source/destination revisions, behavior, tests, Android continuity state, bridge status, and risks in `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
+- [X] T065 [US3] Record and push the exact Projection source/destination revisions, behavior, tests, Android continuity state, bridge status, and risks in `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
 
 ---
 
@@ -116,50 +116,50 @@
 
 ### Core library and known defect repairs
 
-- [ ] T066 [US4] Remove only legacy tracked files from `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074` after validating the exact worktree root, while leaving ignored database, logs, and environment state untouched
-- [ ] T067 [US4] Import only the immutable Deep revision's selected durable-state source and tests into `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/` and `tests/`, recording source blobs in `provenance/extraction.json`
-- [ ] T068 [US4] Define public transaction, query, command-result, schema, repository, blob, outbox, lifecycle, and recovery protocols in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/contracts/__init__.py`
-- [ ] T069 [US4] Implement explicit pool/connection scopes in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/pool.py` plus caller-owned transactions and detached immutable command metadata in `src/astralplane/database/transaction.py`
-- [ ] T070 [P] [US4] Add regression tests proving `execute()` never returns a cursor tied to a released pooled connection in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_command_result.py`
-- [ ] T071 [US4] Replace lexical `?`/`%` SQL rewriting with native psycopg parameter contracts in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/sql.py`
-- [ ] T072 [P] [US4] Add literal, comment, wildcard, JSON operator, percent, and placeholder regression tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_sql_parameters.py`
-- [ ] T073 [US4] Implement one explicit, concurrency-safe boot initializer instead of running schema initialization on every `Database()` construction in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/bootstrap.py`
-- [ ] T074 [P] [US4] Add multi-instance, concurrent-start, already-current, interrupted-start, and failure-state tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_bootstrap.py`
+- [X] T066 [US4] Remove only legacy tracked files from `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074` after validating the exact worktree root, while leaving ignored database, logs, and environment state untouched
+- [X] T067 [US4] Import only the immutable Deep revision's selected durable-state source and tests into `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/` and `tests/`, recording source blobs in `provenance/extraction.json`
+- [X] T068 [US4] Define public transaction, query, command-result, schema, repository, blob, outbox, lifecycle, and recovery protocols in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/contracts/__init__.py`
+- [X] T069 [US4] Implement explicit pool/connection scopes in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/pool.py` plus caller-owned transactions and detached immutable command metadata in `src/astralplane/database/transaction.py`
+- [X] T070 [P] [US4] Add regression tests proving `execute()` never returns a cursor tied to a released pooled connection in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_command_result.py`
+- [X] T071 [US4] Replace lexical `?`/`%` SQL rewriting with native psycopg parameter contracts in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/sql.py`
+- [X] T072 [P] [US4] Add literal, comment, wildcard, JSON operator, percent, and placeholder regression tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_sql_parameters.py`
+- [X] T073 [US4] Implement one explicit, concurrency-safe boot initializer instead of running schema initialization on every `Database()` construction in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/bootstrap.py`
+- [X] T074 [P] [US4] Add multi-instance, concurrent-start, already-current, interrupted-start, and failure-state tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_bootstrap.py`
 - [ ] T075 [US4] Implement one guarded repeat-safe schema runner in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/migrations.py` and declared `DataPlaneRevision` in `src/astralplane/database/revision.py`
-- [ ] T076 [US4] Remove agent/filesystem/UI reconciliation from schema DDL and expose explicit post-migration hooks in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/reconciliation.py`
-- [ ] T077 [P] [US4] Add empty, representative legacy, repeated, concurrent, partially applied, and incompatible-revision migration tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_schema_migrations.py`
+- [X] T076 [US4] Remove agent/filesystem/UI reconciliation from schema DDL and expose explicit post-migration hooks in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/reconciliation.py`
+- [X] T077 [P] [US4] Add empty, representative legacy, repeated, concurrent, partially applied, and incompatible-revision migration tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_schema_migrations.py`
 
 ### Durable domain clusters
 
-- [ ] T078 [P] [US4] Extract conversation, message, session, and history repositories behind public contracts in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/history.py`
-- [ ] T079 [P] [US4] Extract workspace, canvas, layout, and publication-state repositories in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/workspaces.py`
-- [ ] T080 [P] [US4] Extract attachment, artifact, materialization, and blob metadata repositories in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/artifacts.py`
-- [ ] T081 [P] [US4] Extract feedback, onboarding, and personalization persistence in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/preferences.py`
-- [ ] T082 [P] [US4] Extract scheduler, admission, scheduled-publication, and asynchronous effect state in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/scheduler.py`
-- [ ] T083 [P] [US4] Extract durable voice-session/turn metadata without real-time media logic in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/voice.py`
-- [ ] T084 [P] [US4] Extract durable remote-machine and execution metadata without SSH/transport execution in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/remote.py`
-- [ ] T085 [US4] Extract append-only audit persistence and hash-chain primitives in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/audit.py`
-- [ ] T086 [US4] Implement authenticated audit-retention anchors so prefix pruning verifies from the retained boundary in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/audit_retention.py`
-- [ ] T087 [P] [US4] Add genesis, retained-prefix, tampered-anchor, missing-anchor, and rollback tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_audit_retention.py`
-- [ ] T088 [US4] Implement a PostgreSQL transactional outbox with lease, retry, dead-letter, and idempotency state in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/outbox.py`
-- [ ] T089 [P] [US4] Add commit/rollback, duplicate-delivery, worker-crash, lease-expiry, ordering, and dead-letter tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_outbox.py`
-- [ ] T090 [US4] Route audit sink delivery through the transactional outbox and remove lossy JSONL retry behavior in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/audit_delivery.py`
-- [ ] T091 [P] [US4] Add restart and unavailable-sink tests proving audit events are neither dropped nor reported delivered early in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_audit_delivery.py`
-- [ ] T092 [US4] Implement durable purge tombstones and incomplete-purge visibility for attachment/blob deletion in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/purge.py`
-- [ ] T093 [P] [US4] Add database-success/blob-failure, blob-success/database-failure, retry, owner-isolation, and recovery tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_purge.py`
-- [ ] T094 [US4] Replace imports of Deep policy/lifecycle modules with neutral IDs, enums, callbacks, and supplied context in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/domain.py`
-- [ ] T095 [US4] Expose repository factories and one stable AstralPlane public façade in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/api.py`
+- [X] T078 [P] [US4] Extract conversation, message, session, and history repositories behind public contracts in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/history.py`
+- [X] T079 [P] [US4] Extract workspace, canvas, layout, and publication-state repositories in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/workspaces.py`
+- [X] T080 [P] [US4] Extract attachment, artifact, materialization, and blob metadata repositories in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/artifacts.py`
+- [X] T081 [P] [US4] Extract feedback, onboarding, and personalization persistence in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/preferences.py`
+- [X] T082 [P] [US4] Extract scheduler, admission, scheduled-publication, and asynchronous effect state in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/scheduler.py`
+- [X] T083 [P] [US4] Extract durable voice-session/turn metadata without real-time media logic in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/voice.py`
+- [X] T084 [P] [US4] Extract durable remote-machine and execution metadata without SSH/transport execution in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/remote.py`
+- [X] T085 [US4] Extract append-only audit persistence and hash-chain primitives in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/repositories/audit.py`
+- [X] T086 [US4] Implement authenticated audit-retention anchors so prefix pruning verifies from the retained boundary in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/audit_retention.py`
+- [X] T087 [P] [US4] Add genesis, retained-prefix, tampered-anchor, missing-anchor, and rollback tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_audit_retention.py`
+- [X] T088 [US4] Implement a PostgreSQL transactional outbox with lease, retry, dead-letter, and idempotency state in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/outbox.py`
+- [X] T089 [P] [US4] Add commit/rollback, duplicate-delivery, worker-crash, lease-expiry, ordering, and dead-letter tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_outbox.py`
+- [X] T090 [US4] Route audit sink delivery through the transactional outbox and remove lossy JSONL retry behavior in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/audit_delivery.py`
+- [X] T091 [P] [US4] Add restart and unavailable-sink tests proving audit events are neither dropped nor reported delivered early in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_audit_delivery.py`
+- [X] T092 [US4] Implement durable purge tombstones and incomplete-purge visibility for attachment/blob deletion in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/purge.py`
+- [X] T093 [P] [US4] Add database-success/blob-failure, blob-success/database-failure, retry, owner-isolation, and recovery tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_purge.py`
+- [X] T094 [US4] Replace imports of Deep policy/lifecycle modules with neutral IDs, enums, callbacks, and supplied context in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/domain.py`
+- [X] T095 [US4] Expose repository factories and one stable AstralPlane public façade in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/api.py`
 - [ ] T096 [P] [US4] Add owner-isolation, attribution, transaction rollback, concurrency, idempotency, and failure-visibility contract tests across all repositories in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/contract/`
-- [ ] T097 [US4] Define schema/API/minimum-consumer compatibility metadata and inspection in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/compatibility.py`
-- [ ] T098 [P] [US4] Add producer-side compatibility schema and semantic-version tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_compatibility.py`
-- [ ] T099 [US4] Document PostgreSQL plus blob/workspace state as one backup, upgrade, rollback, and recovery unit in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/docs/migration-and-recovery.md`
+- [X] T097 [US4] Define schema/API/minimum-consumer compatibility metadata and inspection in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/compatibility.py`
+- [X] T098 [P] [US4] Add producer-side compatibility schema and semantic-version tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_compatibility.py`
+- [X] T099 [US4] Document PostgreSQL plus blob/workspace state as one backup, upgrade, rollback, and recovery unit in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/docs/migration-and-recovery.md`
 - [ ] T100 [P] [US4] Create representative pre-split database/blob fixtures with synthetic non-PHI data in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/fixtures/pre_split/`
 - [ ] T101 [US4] Run upgrade, repeat-upgrade, transactional failure, blob failure, and documented recovery tests against the representative fixtures and save digests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/provenance/checks.json`
-- [ ] T102 [US4] Complete canonical extraction provenance, legacy default baseline, selected paths/blob IDs, and manifest SHA-256 in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/provenance/extraction.json`
-- [ ] T103 [US4] Run `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/architecture/test_dependency_direction.py` and prove the package imports no Deep, Projection, Primitives, LETS, UI, agent, media, or transport implementation
-- [ ] T104 [US4] Run `Y:/WORK/MCP/AstralDeep/scripts/migration/check_staged_paths_074.py` against the exact Plane index and prove `app/app.db`, logs, venv, credentials, and user state are absent
-- [ ] T105 [US4] Commit the exact paths under `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074` as an ordinary descendant with `Source-Repository`, `Source-Commit`, and `Source-Manifest-SHA256` trailers, push `codex/074-extract-data-plane`, and verify its remote SHA
-- [ ] T106 [US4] Verify with `merge-base --is-ancestor` that the pushed Plane replacement descends from the recorded legacy `master` tip and record the proof in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/plane-checkpoint.json`
+- [X] T102 [US4] Complete canonical extraction provenance, legacy default baseline, selected paths/blob IDs, and manifest SHA-256 in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/provenance/extraction.json`
+- [X] T103 [US4] Run `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/architecture/test_dependency_direction.py` and prove the package imports no Deep, Projection, Primitives, LETS, UI, agent, media, or transport implementation
+- [X] T104 [US4] Run `Y:/WORK/MCP/AstralDeep/scripts/migration/check_staged_paths_074.py` against the exact Plane index and prove `app/app.db`, logs, venv, credentials, and user state are absent
+- [X] T105 [US4] Commit the exact paths under `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074` as an ordinary descendant with `Source-Repository`, `Source-Commit`, and `Source-Manifest-SHA256` trailers, push `codex/074-extract-data-plane`, and verify its remote SHA
+- [X] T106 [US4] Verify with `merge-base --is-ancestor` that the pushed Plane replacement descends from the recorded legacy `master` tip and record the proof in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/plane-checkpoint.json`
 - [ ] T107 [US4] Record and push the exact Plane source/destination revisions, seven repaired defects, tests, migration/recovery behavior, and risks in `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
 
 ---
@@ -276,11 +276,11 @@
 
 **Independent Test**: Verify canonical URLs/default branches, ordinary descendant replacement commits, exact source blob provenance, retained legacy `master`, and an authenticated offline updater trust transition.
 
-- [ ] T185 [P] [US5] Replace current operational old/case-mismatched repository URLs and stale ownership/path guidance in `Y:/WORK/MCP/AstralDeep/AGENTS.md`, `.specify/memory/constitution.md`, maintained `docs/`, package metadata, and `.github/workflows/`, while preserving explicitly historical citations and the owner-authorized migration record
-- [ ] T186 [P] [US5] Replace current operational old/case-mismatched repository URLs and schema IDs in `Y:/WORK/MCP/LETS/pyproject.toml`, `Dockerfile`, `CHANGELOG.md`, `docs/`, and `protocol/`
-- [ ] T187 [P] [US5] Replace current operational old/case-mismatched repository URLs in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/pyproject.toml`, `README.md`, and `docs/`
-- [ ] T188 [P] [US5] Replace current operational old/case-mismatched repository URLs in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/pyproject.toml`, `README.md`, client metadata, and `docs/`
-- [ ] T189 [P] [US5] Replace current operational old/case-mismatched repository URLs in `Y:/WORK/MCP/AstralPrimitives/pyproject.toml`, `CLAUDE.md`, and maintained documentation
+- [X] T185 [P] [US5] Replace current operational old/case-mismatched repository URLs and stale ownership/path guidance in `Y:/WORK/MCP/AstralDeep/AGENTS.md`, `.specify/memory/constitution.md`, maintained `docs/`, package metadata, and `.github/workflows/`, while preserving explicitly historical citations and the owner-authorized migration record
+- [X] T186 [P] [US5] Replace current operational old/case-mismatched repository URLs and schema IDs in `Y:/WORK/MCP/LETS/pyproject.toml`, `Dockerfile`, `CHANGELOG.md`, `docs/`, and `protocol/`
+- [X] T187 [P] [US5] Replace current operational old/case-mismatched repository URLs in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/pyproject.toml`, `README.md`, and `docs/`
+- [X] T188 [P] [US5] Replace current operational old/case-mismatched repository URLs in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/pyproject.toml`, `README.md`, client metadata, and `docs/`
+- [X] T189 [P] [US5] Replace current operational old/case-mismatched repository URLs in `Y:/WORK/MCP/AstralPrimitives/pyproject.toml`, `CLAUDE.md`, and maintained documentation
 - [ ] T190 [US5] Implement canonical URL, redirect-dependence, exact gitlink, normal-ancestry, retained-master, provenance-schema, and source-blob verification in `Y:/WORK/MCP/AstralDeep/scripts/verify_migration_provenance.py`
 - [ ] T191 [P] [US5] Add wrong-case, redirect-only, orphan, force-divergence, missing blob, manifest tamper, changed legacy master, and archive-ref prohibition tests in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_migration_provenance.py`
 - [ ] T192 [US5] Create a machine-readable release trust transition with legacy repository/workflow fence, bridge maximum, new Projection identity, and identical artifact digest in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/contracts/windows-release-trust.json`
