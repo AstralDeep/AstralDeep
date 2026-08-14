@@ -39,8 +39,21 @@ PHP runtime after changing them.
 
 ## 2. Browser link flow
 
-The PanAtlas card advertises its HTTPS authorization endpoint. Astral renders
-the button only on that agent's detail surface and performs these checks:
+The PanAtlas card advertises this public HTTPS authorization endpoint:
+
+```text
+https://panatlas.net/?panatlas_astral_orcid_link=1
+```
+
+Keep this endpoint on the public WordPress front controller. Do not point the
+card at `/wp-admin/admin-post.php` or `wp-login.php`: PanAtlas production
+intentionally restricts those paths by client network, so an otherwise valid
+ORCID flow can fail with an Apache 403 before WordPress receives it. Astral
+preserves the endpoint's existing query parameter and appends the signed
+`state` parameter.
+
+Astral renders the button only on that agent's detail surface and performs
+these checks:
 
 1. Astral creates a five-minute signed state bound to the authenticated Astral
    subject, `panatlas-1`, and provider `orcid`.
