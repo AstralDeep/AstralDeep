@@ -168,6 +168,8 @@ This document resolves the technical choices required by the feature specificati
 
 **Rationale**: This honors the owner's CI-usage request while catching boundary errors close to the change that introduced them. Local qualification remains evidence, not a claim that unavailable platform checks passed.
 
+Until AstralPlane and AstralProjection visibility or a private checkout boundary changes, hosted composed-image jobs remain disabled. The public AstralDeep workflow must not upload, export a shared build cache for, or publish an image containing private component bytes; fork pull requests also cannot retrieve those submodules with the repository-scoped job token. Activation therefore requires an explicitly private runner/artifact/cache/publication path (or a deliberate component-visibility change), and must not use `pull_request_target` as a credential workaround.
+
 **Alternatives considered**:
 
 - Run the full matrix after every move: rejected as slow and wasteful during mechanical extraction.

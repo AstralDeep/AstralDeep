@@ -1,5 +1,9 @@
 # Core
-astralprims>=0.2.0  # first-party UI primitives package (feature 026); 0.2.0 adds the dashboard primitives (badge/hero/keyvalue/timeline/rating). Orchestrator renders, ROTE adapts.
+# Temporary compatibility input until the exact local-component installer and
+# Docker ordering replace it atomically (T116/T117). The root pyproject.toml is
+# now the intended first-party composition contract; do not add another
+# first-party package-index dependency here.
+astralprims>=0.2.0
 websockets>=12.0
 openai>=1.0.0
 python-dotenv>=1.0.0

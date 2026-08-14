@@ -1,0 +1,46 @@
+[project]
+name = "astraldeep-composition"
+version = "0.1.0"
+description = "Local composition contract for AstralDeep and its independent components"
+requires-python = ">=3.11,<3.15"
+dependencies = []
+
+[tool.astraldeep.local-components]
+format = "astraldeep.local-components/v1"
+manifest = "config/astral-composition.json"
+
+[tool.astraldeep.local-components.astral-projection]
+distribution = "astralprojection"
+version = "0.1.0"
+path = "components/AstralProjection"
+contract = "astralprojection.contract/v1"
+availability = "required-embedded"
+import = "astralprojection"
+extras = []
+
+[tool.astraldeep.local-components.astral-plane]
+distribution = "astralplane"
+version = "0.1.0"
+path = "components/AstralPlane"
+contract = "astralplane.contract/v1"
+availability = "required-embedded"
+import = "astralplane"
+extras = []
+
+[tool.astraldeep.local-components.astral-primitives]
+distribution = "astralprims"
+version = "0.3.0"
+path = "components/AstralPrimitives"
+contract = "0.3.0"
+availability = "required-embedded"
+import = "astralprims"
+extras = []
+
+[tool.astraldeep.local-components.lets]
+distribution = "lets-agent"
+version = "1.0.10"
+path = "components/LETS"
+contract = "1.0.10"
+availability = "external-feature-gated"
+import = "lets"
+extras = ["client"]

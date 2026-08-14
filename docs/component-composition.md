@@ -28,6 +28,13 @@ missing gitlink or incompatible component and must be reported as such. Fix repo
 rerun `git submodule sync --recursive` and `git submodule update --init --recursive`; do not delete a
 partially initialized component or overwrite a dirty component worktree.
 
+Hosted composed-image jobs remain disabled while those components are private. The public
+AstralDeep workflow must not upload a composed image, export a shared cache containing component
+layers, or publish that image to a public registry. Fork jobs also cannot initialize the private
+submodules with the repository-scoped job token. Activation requires an explicitly private
+checkout, runner, artifact, cache, and publication boundary (or an owner-approved visibility
+change); `pull_request_target` is not an acceptable credential workaround.
+
 The verifier must reject:
 
 - an absent or uninitialized submodule;
