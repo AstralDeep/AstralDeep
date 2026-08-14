@@ -211,18 +211,18 @@
 - [X] T135 [P] [US2] Add `AuthorityLifecycleOperation`, stable request fingerprint, retry state, and reconciliation metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/lifecycle.py`
 - [X] T136 [P] [US2] Add `ProtectedEffectOperation`, effect digest, nonce, audience, outcome/uncertainty, and audit correlation metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/effects.py`
 - [X] T137 [P] [US2] Add durable `ReceiptClaim` uniqueness, sequence watermark, and external-authority anchor metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/claims.py`
-- [ ] T138 [US2] Add guarded repeat-safe authority binding/operation/claim/outbox migrations in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/migrations.py` and bump `src/astralplane/database/revision.py`
+- [X] T138 [US2] Add guarded repeat-safe authority binding/operation/claim/outbox migrations in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/migrations.py` and bump `src/astralplane/database/revision.py`
 - [ ] T139 [US2] Expose neutral owner-isolated authority repositories and transactions through `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/repository.py`
 - [ ] T140 [P] [US2] Add migration repeatability, active-binding uniqueness, owner isolation, request-fingerprint conflict, claim replay, sequence, and rollback tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/authority/`
 
 ### Astral-owned configuration, lifecycle, and gateway
 
-- [ ] T141 [US2] Implement strict `off|shadow|enforce` configuration parsing, governed cohorts, authenticated trust-manifest loading, TLS/secret-file requirements, timeouts, and readiness posture in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_config.py`
-- [ ] T142 [P] [US2] Add invalid-mode, missing-secret, HTTP production URL, credential-in-URL, redirect, missing-anchor, and redaction tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_config.py`
+- [X] T141 [US2] Implement strict `off|shadow|enforce` configuration parsing, governed cohorts, authenticated trust-manifest loading, TLS/secret-file requirements, timeouts, and readiness posture in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_config.py`
+- [X] T142 [P] [US2] Add invalid-mode, missing-secret, HTTP production URL, credential-in-URL, redirect, missing-anchor, and redaction tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_config.py`
 - [X] T143 [US2] Implement the fixed six-scope capability/transition/resource-dimension profile and hard-deny unknown mappings in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_scope_profile.py`
 - [X] T144 [P] [US2] Add exact six-scope, incomplete allocation, unknown scope/tool, ambiguous audience, and changed digest tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_scope_profile.py`
-- [ ] T145 [US2] Implement the authenticated HTTPS adapter solely over LETS public `LETSClient`, `AstralDeepAuthorizer`, `Receipt`, and lifecycle contracts in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_client.py`
-- [ ] T146 [P] [US2] Add strict response parsing, response-size, total-timeout, no-redirect, TLS, same-ID retry, fingerprint-conflict, and redacted error tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_client.py`
+- [X] T145 [US2] Implement the authenticated HTTPS adapter solely over LETS public `LETSClient`, `AstralDeepAuthorizer`, `Receipt`, and lifecycle contracts in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_client.py`
+- [X] T146 [P] [US2] Add strict response parsing, response-size, total-timeout, no-redirect, TLS, same-ID retry, fingerprint-conflict, and redacted error tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_client.py`
 - [ ] T147 [US2] Implement canonical protected-effect context and digest generation after all argument/credential rewrites without sending raw arguments, credentials, PHI, or user content to LETS in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/protected_dispatch.py`
 - [ ] T148 [P] [US2] Add canonicalization, exclusion, semantic-change, nonce entropy, and deterministic digest tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_protected_dispatch.py`
 - [ ] T149 [US2] Implement dynamic/user-authored root/spawn/renew/quiesce/resume/close/revoke/expire lifecycle convergence using durable Plane operations in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_lifecycle.py`
