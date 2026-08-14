@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/AstralDeep/AstralDeep/specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json",
+  "$id": "https://github.com/AstralDeep/AstralDeep/contracts/system-composition.schema.json",
   "title": "Astral System Composition Manifest",
   "description": "Pins the four independent component revisions and their compatibility contracts. The containing AstralDeep commit is joined externally with the canonical manifest digest to avoid a self-reference.",
   "type": "object",
@@ -12,12 +12,8 @@
     "compatibility"
   ],
   "properties": {
-    "format": {
-      "const": "astral.composition/v1"
-    },
-    "astraldeep_contract_version": {
-      "const": "astraldeep.composition/v1"
-    },
+    "format": {"const": "astral.composition/v1"},
+    "astraldeep_contract_version": {"const": "astraldeep.composition/v1"},
     "components": {
       "type": "object",
       "additionalProperties": false,
@@ -28,18 +24,10 @@
         "lets"
       ],
       "properties": {
-        "astral-projection": {
-          "$ref": "#/$defs/projectionComponent"
-        },
-        "astral-plane": {
-          "$ref": "#/$defs/planeComponent"
-        },
-        "astral-primitives": {
-          "$ref": "#/$defs/primitivesComponent"
-        },
-        "lets": {
-          "$ref": "#/$defs/letsComponent"
-        }
+        "astral-projection": {"$ref": "#/$defs/projectionComponent"},
+        "astral-plane": {"$ref": "#/$defs/planeComponent"},
+        "astral-primitives": {"$ref": "#/$defs/primitivesComponent"},
+        "lets": {"$ref": "#/$defs/letsComponent"}
       }
     },
     "compatibility": {
@@ -105,14 +93,8 @@
     }
   },
   "$defs": {
-    "sha1": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{40}$"
-    },
-    "sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-    },
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "version": {
       "type": "string",
       "pattern": "^[0-9]+(?:\\.[0-9]+){0,3}(?:[-+][0-9A-Za-z.-]+)?$"
@@ -133,17 +115,10 @@
         "repository": {"type": "string"},
         "path": {"type": "string"},
         "commit": {"$ref": "#/$defs/sha1"},
-        "ref": {
-          "type": ["string", "null"],
-          "minLength": 1,
-          "maxLength": 200
-        },
+        "ref": {"type": ["string", "null"], "minLength": 1, "maxLength": 200},
         "contract_version": {"$ref": "#/$defs/contractVersion"},
         "artifact_sha256": {
-          "anyOf": [
-            {"$ref": "#/$defs/sha256"},
-            {"type": "null"}
-          ]
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
         }
       }
     },
@@ -153,9 +128,7 @@
         {
           "type": "object",
           "properties": {
-            "repository": {
-              "const": "https://github.com/AstralDeep/AstralProjection.git"
-            },
+            "repository": {"const": "https://github.com/AstralDeep/AstralProjection.git"},
             "path": {"const": "components/AstralProjection"},
             "contract_version": {"const": "astralprojection.contract/v1"}
           }
@@ -168,9 +141,7 @@
         {
           "type": "object",
           "properties": {
-            "repository": {
-              "const": "https://github.com/AstralDeep/AstralPlane.git"
-            },
+            "repository": {"const": "https://github.com/AstralDeep/AstralPlane.git"},
             "path": {"const": "components/AstralPlane"},
             "contract_version": {"const": "astralplane.contract/v1"}
           }
@@ -183,9 +154,7 @@
         {
           "type": "object",
           "properties": {
-            "repository": {
-              "const": "https://github.com/AstralDeep/AstralPrimitives.git"
-            },
+            "repository": {"const": "https://github.com/AstralDeep/AstralPrimitives.git"},
             "path": {"const": "components/AstralPrimitives"},
             "contract_version": {"const": "0.3.0"}
           }
@@ -199,9 +168,7 @@
           "type": "object",
           "required": ["ref"],
           "properties": {
-            "repository": {
-              "const": "https://github.com/AstralDeep/LETS.git"
-            },
+            "repository": {"const": "https://github.com/AstralDeep/LETS.git"},
             "path": {"const": "components/LETS"},
             "ref": {"const": "v1.0.10"},
             "contract_version": {"const": "1.0.10"}

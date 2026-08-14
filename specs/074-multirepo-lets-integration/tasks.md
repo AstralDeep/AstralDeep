@@ -32,7 +32,7 @@
 - [X] T011 Create `codex/074-extract-data-plane` from Plane `main` in the new exact path `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074` after proving that the branch and path do not already exist
 - [X] T012 Create `codex/074-extract-projection` from Projection `main` in the new exact path `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074` after proving that the branch and path do not already exist
 - [X] T013 Record the ignored status of `Y:/WORK/MCP/AstralDeep/android-client/keystore.properties` and `local.properties`, retain both originals in place, and prohibit removal of their source directory until the copies in Projection pass ignore and signed-build checks in `execution/local-state-continuity.md`
-- [ ] T014 Record and push the baseline/default-branch checkpoint in `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
+- [X] T014 Record and push the baseline/default-branch checkpoint in `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
 
 ---
 
@@ -42,23 +42,24 @@
 
 **Critical**: No story implementation starts until these tasks pass.
 
-- [ ] T015 Define the canonical mutable-source ownership map for Deep, Projection, Plane, Primitives, and LETS in `Y:/WORK/MCP/AstralDeep/contracts/component-ownership.json`
-- [ ] T016 [P] Add a schema for extraction provenance, selected tracked paths, source blob IDs, legacy baseline, and manifest digest in `Y:/WORK/MCP/AstralDeep/contracts/extraction-provenance.schema.json`
-- [ ] T017 [P] Add the runtime composition schema from the planning contract in `Y:/WORK/MCP/AstralDeep/contracts/system-composition.schema.json`
-- [ ] T018 [P] Promote the planned case-study evidence contract to the implementation-owned schema at `Y:/WORK/MCP/AstralDeep/contracts/case-study-evidence.schema.json` without mutating LETS before its case-study phase
-- [ ] T019 Implement deterministic tracked-blob inventory and provenance-manifest generation in `Y:/WORK/MCP/AstralDeep/scripts/migration/build_extraction_manifest.py`
-- [ ] T020 [P] Add unit tests for canonical ordering, blob-ID capture, digest stability, omitted ignored files, and source-revision mismatch in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_build_extraction_manifest.py`
-- [ ] T021 Implement machine-readable source-owner and duplicate-tree validation in `Y:/WORK/MCP/AstralDeep/scripts/verify_component_ownership.py`
-- [ ] T022 [P] Add owner-map, unmanaged-duplicate, generated-copy, and missing-owner tests in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_component_ownership.py`
-- [ ] T023 Create the independently installable AstralProjection package scaffold, package-data declarations, and inactive unprivileged CI definition in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/pyproject.toml`, `src/astralprojection/__init__.py`, and `workflows-disabled/ci.yml`
-- [ ] T024 Create the independently installable Python 3.11 AstralPlane package scaffold, public API boundary, and inactive unprivileged CI definition in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/pyproject.toml`, `src/astralplane/__init__.py`, and `workflows-disabled/ci.yml`
-- [ ] T025 [P] Add a Projection architecture test that forbids imports from AstralDeep orchestration, policy, persistence, and transport packages in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/tests/architecture/test_dependency_direction.py`
-- [ ] T026 [P] Add a Plane architecture test that forbids imports from AstralDeep, AstralProjection, AstralPrimitives, LETS, UI, agent, and transport packages in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/architecture/test_dependency_direction.py`
-- [ ] T027 Define Deep-owned typed ports for presentation queries/commands and durable-state services in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/component_ports.py`
-- [ ] T028 [P] Add contract tests proving Deep ports contain no component-private implementation types in `Y:/WORK/MCP/AstralDeep/backend/tests/test_component_ports_074.py`
-- [ ] T029 Add a primitive-vocabulary decision gate that inventories all extracted UI payload types against AstralPrimitives `0.3.0` in `Y:/WORK/MCP/AstralDeep/scripts/verify_primitive_coverage.py`
-- [ ] T030 [P] Add existing-vocabulary, unknown-primitive, and version-floor tests for the primitive decision gate in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_primitive_coverage.py`
-- [ ] T031 Run the foundational narrow tests, stage only the exact files above, and record their command/output digests in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/foundational-checks.json`
+- [X] T015 Define the canonical mutable-source ownership map for Deep, Projection, Plane, Primitives, and LETS in `Y:/WORK/MCP/AstralDeep/contracts/component-ownership.json`
+- [X] T016 [P] Add a schema for extraction provenance, selected tracked paths, source blob IDs, legacy baseline, and manifest digest in `Y:/WORK/MCP/AstralDeep/contracts/extraction-provenance.schema.json`
+- [X] T017 [P] Add the runtime composition schema from the planning contract in `Y:/WORK/MCP/AstralDeep/contracts/system-composition.schema.json`
+- [X] T018 [P] Promote the planned case-study evidence contract to the implementation-owned schema at `Y:/WORK/MCP/AstralDeep/contracts/case-study-evidence.schema.json` without mutating LETS before its case-study phase
+- [X] T019 Implement deterministic tracked-blob inventory and provenance-manifest generation in `Y:/WORK/MCP/AstralDeep/scripts/migration/build_extraction_manifest.py`
+- [X] T020 [P] Add unit tests for canonical ordering, blob-ID capture, digest stability, omitted ignored files, and source-revision mismatch in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_build_extraction_manifest.py`
+- [X] T021 Implement machine-readable source-owner and duplicate-tree validation in `Y:/WORK/MCP/AstralDeep/scripts/verify_component_ownership.py`
+- [X] T022 [P] Add owner-map, unmanaged-duplicate, generated-copy, and missing-owner tests in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_component_ownership.py`
+- [X] T023 Create the independently installable AstralProjection package scaffold, package-data declarations, and inactive unprivileged CI definition in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/pyproject.toml`, `src/astralprojection/__init__.py`, and `workflows-disabled/ci.yml`
+- [X] T024 Create the independently installable Python 3.11 AstralPlane package scaffold, public API boundary, and inactive unprivileged CI definition in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/pyproject.toml`, `src/astralplane/__init__.py`, and `workflows-disabled/ci.yml`
+- [X] T025 [P] Add a Projection architecture test that forbids imports from AstralDeep orchestration, policy, persistence, and transport packages in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/tests/architecture/test_dependency_direction.py`
+- [X] T026 [P] Add a Plane architecture test that forbids imports from AstralDeep, AstralProjection, AstralPrimitives, LETS, UI, agent, and transport packages in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/architecture/test_dependency_direction.py`
+- [X] T027 Define Deep-owned typed ports for presentation queries/commands and durable-state services in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/component_ports.py`
+- [X] T028 [P] Add contract and implementation-schema tests proving Deep ports contain no component-private implementation types and the promoted composition/evidence contracts enforce their schema-expressible canonical, digest-bound fields in `Y:/WORK/MCP/AstralDeep/backend/tests/test_component_ports_074.py` and `Y:/WORK/MCP/AstralDeep/scripts/tests/test_contract_schemas_074.py`; cross-record semantic validation remains T204
+- [X] T029 Add a primitive-vocabulary decision gate that inventories all extracted UI payload types against AstralPrimitives `0.3.0` in `Y:/WORK/MCP/AstralDeep/scripts/verify_primitive_coverage.py`
+- [X] T030 [P] Add existing-vocabulary, unknown-primitive, and version-floor tests for the primitive decision gate in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_primitive_coverage.py`
+- [X] T031 Run the foundational narrow tests, stage only the exact files above, and record their command/output digests in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/foundational-checks.json`
+- [X] T031A Raise changed-Python branch coverage for the foundational manifest, ownership, primitive-vocabulary, schema, and component-port gates to at least 90% and record the per-file report in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/foundational-checks.json`
 
 ---
 
@@ -70,13 +71,13 @@
 
 ### Extraction and package boundary
 
-- [ ] T032 [US3] Remove only legacy tracked files from `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074` after validating the exact worktree root, while leaving ignored local files untouched
+- [ ] T032 [US3] Remove only legacy tracked files from `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074` after validating the exact worktree root, leave local/generated files untouched, and immediately replace the removed legacy ignore file with a hardened cross-language `.gitignore` covering Python build/test artifacts before any further build or import
 - [ ] T033 [P] [US3] Import the immutable Deep revision's tracked `backend/webrender/**` source and pure tests into the initial import-compatible `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/backend/webrender/` and `tests/webrender/` paths, recording every source blob in `provenance/extraction.json`
 - [ ] T034 [P] [US3] Import the immutable Deep revision's tracked `backend/rote/**` source and pure tests into the initial import-compatible `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/backend/rote/` and `tests/rote/` paths, recording every source blob in `provenance/extraction.json`
 - [ ] T035 [P] [US3] Import `backend/shared/ui_protocol.json` and shared client conformance fixtures into `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/contracts/ui_protocol.json` and `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/contracts/fixtures/`
 - [ ] T036 [P] [US3] Import the complete tracked Windows client product into `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/windows-client/` with source blobs recorded in `provenance/extraction.json`
 - [ ] T037 [P] [US3] Import the complete tracked Android client product into `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/android-client/`, copy the two ignored local properties from Deep without reading/logging/staging them, verify their ignore disposition, and record tracked source blobs in `provenance/extraction.json`
-- [ ] T038 [P] [US3] Import the complete tracked Apple client products into `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/apple-clients/` with source blobs recorded in `provenance/extraction.json`
+- [ ] T038 [P] [US3] Import the complete tracked Apple client products into `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/apple-clients/` with source blobs recorded in `provenance/extraction.json`, preserve the single declared Git symlink without dereferencing it, and reject every undeclared or destination-escaping link target
 - [ ] T039 [P] [US3] Import Projection-owned web tooling, client scripts, notices, and client documentation into `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/tooling/`, `scripts/`, `docs/`, and `NOTICE`
 - [ ] T040 [US3] Complete canonical extraction provenance, legacy default baseline, selected paths/blob IDs, and manifest SHA-256 in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/provenance/extraction.json`
 - [ ] T041 [US3] Preserve `webrender` and `rote` import compatibility while adding the stable metadata/resource facade and public exports in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/src/astralprojection/__init__.py`
@@ -303,7 +304,7 @@
 **Independent Test**: Re-run the case study from the exact five-repository composition, validate all raw/result digests, rebuild named/anonymous manuscripts, and prove the anonymous artifact contains no prohibited identifying tokens.
 
 - [ ] T203 [P] [US6] Copy the canonical evidence schema from Deep into `Y:/WORK/MCP/LETS/benchmarks/astraldeep/case-study-evidence.schema.json` and implement the tracked off/shadow/enforce runner across six scopes, lifecycle, parallel/recursive dispatch, outage, replay, exhaustion, and revocation in `run_case_study.py`
-- [ ] T204 [P] [US6] Implement environment/machine/config/component revision capture with secret and PHI exclusion in `Y:/WORK/MCP/LETS/benchmarks/astraldeep/capture_environment.py`
+- [ ] T204 [P] [US6] Implement environment/machine/config/component revision capture plus semantic evidence validation for unique retained artifact paths, artifact-reference integrity, ordered timestamps, canonical digests, and secret/credential/PHI exclusion in `Y:/WORK/MCP/LETS/benchmarks/astraldeep/capture_environment.py`
 - [ ] T205 [P] [US6] Add tests for exact revision capture, schema validation, canonical digests, secret redaction, missing inputs, and refusal to mix baselines in `Y:/WORK/MCP/LETS/tests/benchmarks/test_astraldeep_case_study.py`
 - [ ] T206 [US6] Create an ignored local evidence root and run manifest in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/manifest.json` without staging any result or manuscript artifact
 - [ ] T207 [US6] Run flag-off baseline and v1.0.10 reference scenarios, retaining raw outputs and labeling them distinctly in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/baseline/`

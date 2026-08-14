@@ -1,0 +1,205 @@
+{
+  "format": "astral.component-ownership/v1",
+  "repositories": {
+    "astraldeep": {
+      "canonicalUrl": "https://github.com/AstralDeep/AstralDeep.git",
+      "compositionPath": ".",
+      "role": "composition, orchestration, policy, transport, and product integration",
+      "mutableRoots": [
+        ".github/",
+        ".specify/",
+        "backend/",
+        "config/",
+        "contracts/",
+        "deploy/",
+        "docs/",
+        "scripts/",
+        "specs/"
+      ]
+    },
+    "astralprojection": {
+      "canonicalUrl": "https://github.com/AstralDeep/AstralProjection.git",
+      "compositionPath": "components/AstralProjection",
+      "role": "presentation, rendering, adaptation, and complete client products",
+      "mutableRoots": [
+        "android-client/",
+        "apple-clients/",
+        "backend/rote/",
+        "backend/webrender/",
+        "contracts/",
+        "docs/",
+        "scripts/",
+        "src/astralprojection/",
+        "tests/",
+        "tooling/web-ci/",
+        "windows-client/",
+        "workflows-disabled/"
+      ]
+    },
+    "astralplane": {
+      "canonicalUrl": "https://github.com/AstralDeep/AstralPlane.git",
+      "compositionPath": "components/AstralPlane",
+      "role": "durable persistence, storage, migrations, recovery, and outbox",
+      "mutableRoots": [
+        "docs/",
+        "src/astralplane/",
+        "tests/",
+        "workflows-disabled/"
+      ]
+    },
+    "astralprimitives": {
+      "canonicalUrl": "https://github.com/AstralDeep/AstralPrimitives.git",
+      "compositionPath": "components/AstralPrimitives",
+      "role": "primitive definitions, serialization, documentation, and package release",
+      "mutableRoots": [
+        "docs/",
+        "src/astralprims/",
+        "tests/"
+      ]
+    },
+    "lets": {
+      "canonicalUrl": "https://github.com/AstralDeep/LETS.git",
+      "compositionPath": "components/LETS",
+      "role": "protocol-neutral finite authority, public clients, receipt verification, and research artifacts",
+      "mutableRoots": [
+        "benchmarks/",
+        "deploy/",
+        "docs/",
+        "formal/",
+        "paper/",
+        "protocol/",
+        "prototype/",
+        "src/lets/",
+        "tests/"
+      ]
+    }
+  },
+  "ownershipDomains": [
+    {
+      "id": "orchestration",
+      "owner": "astraldeep",
+      "ownedPaths": [
+        "backend/agents/**",
+        "backend/orchestrator/**",
+        "backend/shared/external_http.py",
+        "backend/shared/protocol.py",
+        "backend/voice_agent/**"
+      ],
+      "forbiddenCopies": [
+        {"repository": "astralprojection", "paths": ["**/orchestrator/**", "**/agents/**", "**/voice_agent/**"]},
+        {"repository": "astralplane", "paths": ["**/orchestrator/**", "**/agents/**", "**/voice_agent/**"]},
+        {"repository": "astralprimitives", "paths": ["**/orchestrator/**", "**/agents/**"]},
+        {"repository": "lets", "paths": ["**/orchestrator/**", "**/agents/**"]}
+      ]
+    },
+    {
+      "id": "presentation-and-clients",
+      "owner": "astralprojection",
+      "ownedPaths": [
+        "backend/rote/**",
+        "backend/webrender/**",
+        "contracts/ui_protocol.json",
+        "contracts/fixtures/**",
+        "windows-client/**",
+        "android-client/**",
+        "apple-clients/**",
+        "tooling/web-ci/**",
+        "src/astralprojection/**"
+      ],
+      "forbiddenCopies": [
+        {
+          "repository": "astraldeep",
+          "paths": [
+            "backend/rote/**",
+            "backend/webrender/**",
+            "backend/shared/ui_protocol.json",
+            "windows-client/**",
+            "android-client/**",
+            "apple-clients/**",
+            "tooling/web-ci/**"
+          ]
+        },
+        {"repository": "astralplane", "paths": ["**/webrender/**", "**/rote/**", "**/*-client/**", "**/*-clients/**"]},
+        {"repository": "astralprimitives", "paths": ["**/webrender/**", "**/rote/**"]},
+        {"repository": "lets", "paths": ["**/webrender/**", "**/rote/**"]}
+      ]
+    },
+    {
+      "id": "durable-data-plane",
+      "owner": "astralplane",
+      "ownedPaths": [
+        "src/astralplane/**"
+      ],
+      "forbiddenCopies": [
+        {
+          "repository": "astraldeep",
+          "paths": [
+            "backend/audit/repository.py",
+            "backend/feedback/repository.py",
+            "backend/onboarding/repository.py",
+            "backend/personalization/repository.py",
+            "backend/scheduler/store.py",
+            "backend/orchestrator/attachments/repository.py",
+            "backend/orchestrator/attachments/message_attachment_repo.py",
+            "backend/orchestrator/attachments/parser_repo.py",
+            "backend/orchestrator/attachments/store.py"
+          ]
+        },
+        {"repository": "astralprojection", "paths": ["**/database.py", "**/repositories/**", "**/migrations/**"]},
+        {"repository": "astralprimitives", "paths": ["**/database.py", "**/repositories/**", "**/migrations/**"]},
+        {"repository": "lets", "paths": ["**/astralplane/**"]}
+      ]
+    },
+    {
+      "id": "primitive-vocabulary",
+      "owner": "astralprimitives",
+      "ownedPaths": [
+        "src/astralprims/**"
+      ],
+      "forbiddenCopies": [
+        {"repository": "astraldeep", "paths": ["**/astralprims/**"]},
+        {"repository": "astralprojection", "paths": ["**/astralprims/**"]},
+        {"repository": "astralplane", "paths": ["**/astralprims/**"]},
+        {"repository": "lets", "paths": ["**/astralprims/**"]}
+      ]
+    },
+    {
+      "id": "finite-authority",
+      "owner": "lets",
+      "ownedPaths": [
+        "formal/**",
+        "protocol/**",
+        "src/lets/**"
+      ],
+      "forbiddenCopies": [
+        {"repository": "astraldeep", "paths": ["**/lets/core/**", "**/lets/warden/**"]},
+        {"repository": "astralprojection", "paths": ["**/lets/**"]},
+        {"repository": "astralplane", "paths": ["**/lets/**"]},
+        {"repository": "astralprimitives", "paths": ["**/lets/**"]}
+      ]
+    }
+  ],
+  "compatibilityAdapters": [
+    {
+      "repository": "astraldeep",
+      "path": "backend/shared/database.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Public-facade adapter only; no raw SQL, psycopg import, schema DDL, or repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/projection_controllers.py",
+      "upstreamOwner": "astralprojection",
+      "rule": "Deep-owned authorization/controller adapter; no copied Projection renderer implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/lets_integration/",
+      "upstreamOwner": "lets",
+      "rule": "Astral-owned policy and host binding over LETS public contracts; no LETS warden or cryptographic implementation copy."
+    }
+  ],
+  "generatedCopies": [],
+  "ignoredPathPolicy": "Ignored and untracked paths are never ownership inputs and may not be used to satisfy a missing owner.",
+  "duplicatePolicy": "A tracked mutable implementation path may match exactly one ownership domain. Identical tracked source outside its owner is forbidden unless declared in generatedCopies with an exact owner-source digest."
+}
