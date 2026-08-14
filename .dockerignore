@@ -2,14 +2,22 @@
 .gitignore
 .dockerignore
 Dockerfile*
+
+# Initialized component source is part of the composed build context. Keep this
+# exception ahead of every recursive exclusion so sensitive component-local
+# state below is still removed by the later, last-match-wins rules.
+!components/**
+
+**/.git
 .venv
 **/.venv
 backend/.venv
-backend/data
-backend/tmp
-backend/knowledge
-backend/agents/**/data
-backend/verification/.runs
+**/backend/data
+**/backend/tmp
+**/backend/knowledge
+**/backend/agents/**/data
+**/backend/agents/**/tmp
+**/backend/verification/.runs
 data
 build
 coverage
@@ -33,7 +41,10 @@ backend/.env
 backend/*.env
 **/.env
 **/.env.*
+**/*.env
+**/*.env.*
 !**/.env.example
+!**/*.env.example
 **/*.pem
 **/*.key
 **/*.p12

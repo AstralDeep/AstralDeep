@@ -180,7 +180,7 @@
 - [ ] T115 [P] [US1] Add composition tests for exact pins, canonical URLs, no floating branch, inaccessible private component, dirty component, stale gitlink, incompatible contracts, and LETS v1.0.10 public exports (`LETSClient`, `ReplicaAuthorizer`, `AstralDeepAuthorizer`, `Receipt`, `ReceiptVerifier`) in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_composition.py`
 - [ ] T116 [US1] Install Projection, Plane, Primitives, and LETS from exact local component paths with no dependency resolver substitution in `Y:/WORK/MCP/AstralDeep/pyproject.toml`
 - [ ] T117 [US1] Update container build ordering and package-data copying for initialized components in `Y:/WORK/MCP/AstralDeep/Dockerfile`
-- [ ] T118 [P] [US1] Include component sources while recursively excluding secrets/runtime state in `Y:/WORK/MCP/AstralDeep/.dockerignore`, and prove the exclusions with a synthetic nested-sentinel Docker-context test before any real image build
+- [X] T118 [P] [US1] Include component sources while recursively excluding secrets/runtime state in `Y:/WORK/MCP/AstralDeep/.dockerignore`, and prove the exclusions with a synthetic nested-sentinel Docker-context test before any real image build
 - [ ] T119 [US1] Update local bootstrap/sync/preflight targets and submodule-aware CI paths for composition validation in `Y:/WORK/MCP/AstralDeep/Makefile` and `Y:/WORK/MCP/AstralDeep/.github/workflows/ci.yml`
 - [ ] T120 [US1] Replace hard-coded shell, kiosk, and static paths with AstralProjection resource accessors in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/orchestrator.py` and `backend/orchestrator/web_auth.py`
 - [ ] T121 [US1] Replace Deep durable-state imports with the AstralPlane public façade in `Y:/WORK/MCP/AstralDeep/backend/shared/database.py` and all consumers listed by `contracts/component-ownership.json`
@@ -189,7 +189,7 @@
 - [ ] T124 [US1] Remove Projection-owned tracked source trees and mutable tooling from `Y:/WORK/MCP/AstralDeep/backend/webrender`, `backend/rote`, `windows-client`, `android-client`, `apple-clients`, and `tooling/web-ci` only after all runtime/build/test references use the submodule
 - [ ] T125 [US1] Remove Plane-owned tracked implementation from `Y:/WORK/MCP/AstralDeep/backend/shared/database.py` and extracted repositories only after all consumers use stable Plane contracts, retaining only deliberate compatibility adapters
 - [ ] T126 [US1] Update `Y:/WORK/MCP/AstralDeep/contracts/component-ownership.json` and generated-copy rules so the ownership checker reports zero unmanaged duplicate source trees
-- [ ] T127 [P] [US1] Add a clean-checkout bootstrap test using an isolated temporary clone in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_clean_composition_checkout.py`
+- [X] T127 [P] [US1] Add a clean-checkout bootstrap test using an isolated temporary clone in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_clean_composition_checkout.py`
 - [X] T128 [US1] Add composed product rollback ordering, component re-pin, schema compatibility, and private-submodule access recovery instructions in `Y:/WORK/MCP/AstralDeep/docs/component-composition.md`
 - [ ] T129 [US1] Build and start the composed system with representative existing data and save composition/startup evidence in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/composed-startup.json`
 - [ ] T130 [US1] Complete an authenticated golden orchestration/data/render interaction with LETS mode off and record redacted correlation IDs in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/composed-golden.json`
