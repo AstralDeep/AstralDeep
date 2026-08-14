@@ -619,6 +619,10 @@ def _plane_migration_digest(component_root: Path) -> str:
 
     if registry_names is None or not registry_names:
         raise CompositionError("Plane migration registry declaration is missing")
+    if len(registry_names) != len(set(registry_names)):
+        raise CompositionError(
+            "Plane migration registry contains duplicate declarations"
+        )
     if set(registry_names) != set(migrations):
         raise CompositionError("Plane migration registry and declarations disagree")
 

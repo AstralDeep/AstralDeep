@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -633,3 +634,515 @@ def test_cli_reports_success_json_and_actionable_failure(
     failure = capsys.readouterr().err
     assert "E_FLOATING_BRANCH" in failure
     assert "remediation:" in failure
+
+
+@pytest.mark.parametrize(
+    ("instance", "declared", "expected"),
+    [
+        (None, "null", True),
+        ({}, "object", True),
+        ([], "array", True),
+        ("value", "string", True),
+        (1, "integer", True),
+        (True, "integer", False),
+        (1.5, "number", True),
+        (True, "number", False),
+        (False, "boolean", True),
+        ("value", "unknown", False),
+    ],
+)
+def test_json_type_vocabulary_is_exact(
+    instance: object, declared: str, expected: bool
+) -> None:
+    assert composition._json_type_matches(instance, declared) is expected
+
+
+def test_json_reader_rejects_duplicate_nonfinite_and_missing_inputs(
+    tmp_path: Path,
+) -> None:
+    duplicate = tmp_path / "duplicate.json"
+    nonfinite = tmp_path / "nonfinite.json"
+    _write(duplicate, '{"key": 1, "key": 2}\n')
+    _write(nonfinite, '{"value": NaN}\n')
+
+    with pytest.raises(composition.CompositionError, match="duplicate JSON object key"):
+        composition._read_json(duplicate)
+    with pytest.raises(composition.CompositionError, match="non-finite JSON value"):
+        composition._read_json(nonfinite)
+    with pytest.raises(composition.CompositionError, match="could not read JSON"):
+        composition._read_json(tmp_path / "missing.json")
+
+
+def test_schema_reference_and_assertion_vocabulary() -> None:
+    root_schema = {
+        "defs": {
+            "slash/name": {"type": "string", "pattern": "^a"},
+        }
+    }
+    assert composition._resolve_local_ref(root_schema, "#/defs/slash~1name") == {
+        "type": "string",
+        "pattern": "^a",
+    }
+    with pytest.raises(composition.CompositionError, match="non-local reference"):
+        composition._resolve_local_ref(root_schema, "https://example.invalid/schema")
+    with pytest.raises(composition.CompositionError, match="cannot be resolved"):
+        composition._resolve_local_ref(root_schema, "#/defs/missing")
+
+    schema = {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": False,
+        "properties": {
+            "name": {
+                "allOf": [{"type": "string"}],
+                "anyOf": [{"const": "abc"}, {"const": "abd"}],
+                "minLength": 2,
+                "maxLength": 3,
+                "pattern": "^a",
+            }
+        },
+    }
+    assert composition._schema_errors({"name": "abc"}, schema, schema) == []
+    errors = composition._schema_errors({"name": "zzzz", "extra": 1}, schema, schema)
+    assert "$: additional property 'extra' is forbidden" in errors
+    assert "$.name: value does not match any permitted schema" in errors
+    assert "$.name: string is longer than maxLength" in errors
+    assert "$.name: string does not match the required pattern" in errors
+    assert composition._schema_errors({}, schema, schema) == [
+        "$: missing required property 'name'"
+    ]
+    assert composition._schema_errors(7, {"type": "string"}, {}) == [
+        "$: value has the wrong JSON type"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("instance", "schema", "message"),
+    [
+        ("x", [], "schema at"),
+        ("x", {"$ref": 7}, "reference at"),
+        ("x", {"allOf": {}}, "allOf at"),
+        ("x", {"anyOf": []}, "anyOf at"),
+        ("x", {"type": []}, "type at"),
+        ({}, {"properties": []}, "properties at"),
+        ({}, {"required": [7]}, "required at"),
+        ("x", {"pattern": 7}, "pattern at"),
+        ("x", {"pattern": "["}, "pattern at"),
+    ],
+)
+def test_invalid_schema_vocabulary_fails_closed(
+    instance: object, schema: object, message: str
+) -> None:
+    with pytest.raises(composition.CompositionError, match=message):
+        composition._schema_errors(instance, schema, {})
+
+
+def test_manifest_schema_requires_draft_2020_12_object() -> None:
+    with pytest.raises(composition.CompositionError, match="schema root"):
+        composition._validate_manifest_schema({}, [])
+    with pytest.raises(composition.CompositionError, match="Draft 2020-12"):
+        composition._validate_manifest_schema({}, {"$schema": "draft-07"})
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "[not-a-submodule]\npath = components/X\n",
+        '[submodule "MissingPath"]\nurl = https://example.invalid/X.git\n',
+        (
+            '[submodule "One"]\npath = components/X\nurl = https://example.invalid/1.git\n'
+            '[submodule "Two"]\npath = components/X\nurl = https://example.invalid/2.git\n'
+        ),
+        '[submodule "Duplicate"]\npath = components/X\n[submodule "Duplicate"]\npath = components/Y\n',
+    ],
+)
+def test_gitmodules_parser_rejects_ambiguous_or_incomplete_mappings(
+    tmp_path: Path, content: str
+) -> None:
+    path = tmp_path / ".gitmodules"
+    _write(path, content)
+    with pytest.raises(composition.CompositionError):
+        composition._parse_gitmodules(path)
+
+
+def test_git_execution_is_local_only_and_errors_are_redacted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for command in ("clone", "fetch", "ls-remote", "pull", "push", "remote-ext"):
+        with pytest.raises(composition.CompositionError, match="network-capable"):
+            composition._run_git(tmp_path, command)
+
+    def unavailable(*_args: object, **_kwargs: object) -> object:
+        raise OSError("sensitive executable path")
+
+    monkeypatch.setattr(composition.subprocess, "run", unavailable)
+    with pytest.raises(composition.CompositionError, match="local Git command failed"):
+        composition._run_git(tmp_path, "status")
+
+    monkeypatch.setattr(
+        composition,
+        "_run_git",
+        lambda *_args: subprocess.CompletedProcess([], 1, "", "private detail"),
+    )
+    with pytest.raises(
+        composition.CompositionError, match="metadata is unavailable"
+    ) as error:
+        composition._git_output(tmp_path, "status")
+    assert "private detail" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        ("160000 abc 0 components/X", "ambiguous index entry"),
+        ("160000 abc\tcomponents/X", "malformed index entry"),
+        ("160000 abc 0\tcomponents/Y", "malformed index entry"),
+        ("160000 abc 1\tcomponents/X", "unmerged index entry"),
+    ],
+)
+def test_gitlink_parser_rejects_ambiguous_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(composition, "_git_output", lambda *_args: output)
+    with pytest.raises(composition.CompositionError, match=message):
+        composition._gitlink(tmp_path, "components/X")
+    monkeypatch.setattr(composition, "_git_output", lambda *_args: "")
+    assert composition._gitlink(tmp_path, "components/X") is None
+
+
+def _expression(source: str) -> ast.AST:
+    return ast.parse(source, mode="eval").body
+
+
+def test_static_literal_reader_supports_only_reviewed_expression_forms() -> None:
+    values = {"BASE": " value "}
+    assert composition._safe_literal(_expression("BASE"), values) == " value "
+    assert composition._safe_literal(_expression("(1, -2)"), values) == (1, -2)
+    assert composition._safe_literal(_expression("[1, 2]"), values) == [1, 2]
+    assert composition._safe_literal(_expression("{1, 2}"), values) == {1, 2}
+    assert composition._safe_literal(_expression("{'a': 1}"), values) == {"a": 1}
+    assert composition._safe_literal(
+        _expression("frozenset({1, 2})"), values
+    ) == frozenset({1, 2})
+    assert composition._safe_literal(_expression("BASE.strip()"), values) == "value"
+    with pytest.raises(composition.CompositionError, match="non-literal"):
+        composition._safe_literal(_expression("factory()"), values)
+    with pytest.raises(composition.CompositionError, match="non-literal"):
+        composition._safe_literal(_expression("BASE.strip('x')"), values)
+
+
+def test_assignment_and_literal_resolution_are_bounded(tmp_path: Path) -> None:
+    tree = ast.parse("A: str\nB: int = 1\nC = 2\nD = E = 3\npass\n")
+    assert composition._assignment_target(tree.body[0]) is None
+    assert composition._assignment_target(tree.body[1])[0] == "B"
+    assert composition._assignment_target(tree.body[2])[0] == "C"
+    assert composition._assignment_target(tree.body[3]) is None
+    assert composition._assignment_target(tree.body[4]) is None
+
+    path = tmp_path / "constants.py"
+    _write(
+        path,
+        "FORWARD = BASE\n"
+        'BASE = " value ".strip()\n'
+        "SET = frozenset({1, 2})\n"
+        "UNRESOLVED = factory()\n",
+    )
+    assert composition._literal_assignments(path) == {
+        "BASE": "value",
+        "FORWARD": "value",
+        "SET": frozenset({1, 2}),
+    }
+
+
+def test_public_symbol_and_class_contract_parsing(tmp_path: Path) -> None:
+    source = tmp_path / "exports.py"
+    _write(
+        source,
+        "import json\n"
+        "import os.path as osp\n"
+        "from package import Imported as Alias\n"
+        "def function(): pass\n"
+        "async def async_function(): pass\n"
+        "class Public: pass\n"
+        "class _Private: pass\n"
+        '__all__ = ("Alias", "function", "async_function", "Public", "missing")\n',
+    )
+    assert composition._public_symbols(source) == {
+        "Alias",
+        "function",
+        "async_function",
+        "Public",
+    }
+
+    _write(source, "class Public: pass\nclass _Private: pass\n")
+    assert composition._public_symbols(source) == {"Public"}
+    _write(source, 'class Public: pass\n__all__ = {"Public"}\n')
+    with pytest.raises(composition.CompositionError, match="invalid __all__"):
+        composition._public_symbols(source)
+
+    _write(
+        source,
+        "class Contract:\n    dynamic = factory()\n    VALUE = -2\n",
+    )
+    assert composition._class_constant(source, "Contract", "VALUE") == -2
+    with pytest.raises(composition.CompositionError, match="literal public contract"):
+        composition._class_constant(source, "Contract", "dynamic")
+    with pytest.raises(composition.CompositionError, match="literal public contract"):
+        composition._class_constant(source, "Missing", "VALUE")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not = [valid toml",
+        '[project]\nname = "wrong"\nversion = "1"\n',
+        '[project]\nname = "expected"\nversion = ""\n',
+        'project = "not-a-table"\n',
+    ],
+)
+def test_project_metadata_fails_closed(tmp_path: Path, content: str) -> None:
+    root = tmp_path / "component"
+    _write(root / "pyproject.toml", content)
+    with pytest.raises(composition.CompositionError):
+        composition._project_metadata(root, "expected")
+
+
+@pytest.mark.parametrize("document", [{"bad": {1, 2}}, {"bad": float("nan")}, "\ud800"])
+def test_canonical_json_digest_rejects_non_json_values(document: object) -> None:
+    with pytest.raises(composition.CompositionError, match="canonicalize JSON"):
+        composition._canonical_json_sha256(document)
+
+
+def test_primitives_digest_requires_readable_contract_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "AstralPrimitives"
+    with pytest.raises(composition.CompositionError, match="has no"):
+        composition.compute_primitives_digest(root)
+
+    source = root / "src/astralprims/a.py"
+    _write(source, "value = 1\n")
+    original_read = Path.read_bytes
+
+    def unreadable(path: Path) -> bytes:
+        if path == source:
+            raise OSError("private path")
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    with pytest.raises(composition.CompositionError, match="could not frame"):
+        composition.compute_primitives_digest(root)
+
+
+def _write_migration(root: Path, source: str) -> Path:
+    path = root / "src/astralplane/database/migrations.py"
+    _write(path, source)
+    return root
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            'M = Migration(name="x")\nMIGRATION_REGISTRY = MigrationRegistry((M,))\n',
+            "declaration is incomplete",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", checksum="bad")\n'
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "checksum is not derived",
+        ),
+        (
+            'S = ["SELECT 1"]\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S))\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "statements are not a string tuple",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S))\n"
+            "MIGRATION_REGISTRY = MigrationRegistry([M])\n",
+            "registry is not an explicit tuple",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S))\n",
+            "registry declaration is missing",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S))\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M, M))\n",
+            "registry contains duplicate declarations",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S))\n"
+            'OTHER = Migration(name="y", source_revisions=(None,), target_revision="2", '
+            "checksum=_statements_checksum(S))\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "registry and declarations disagree",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(1,), target_revision="1", '
+            "checksum=_statements_checksum(S))\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "source revisions are invalid",
+        ),
+    ],
+)
+def test_plane_migration_digest_rejects_ambiguous_source(
+    tmp_path: Path, source: str, message: str
+) -> None:
+    root = _write_migration(tmp_path / "AstralPlane", source)
+    with pytest.raises(composition.CompositionError, match=message):
+        composition._plane_migration_digest(root)
+
+
+def test_component_contract_specific_malformed_inputs_are_fail_closed(
+    checkout: Path,
+) -> None:
+    manifest = json.loads(
+        (checkout / "config/astral-composition.json").read_text("utf-8")
+    )
+
+    projection = checkout / COMPONENT_PATHS["astral-projection"]
+    _write(projection / "contracts/ui_protocol.json", '{"version": true}\n')
+    with pytest.raises(composition.CompositionError, match="version is invalid"):
+        composition._verify_projection(
+            projection,
+            manifest["components"]["astral-projection"],
+            manifest["compatibility"],
+            [],
+        )
+
+    plane = checkout / COMPONENT_PATHS["astral-plane"]
+    _write(plane / "src/astralplane/__init__.py", '__all__ = ("CONTRACT_VERSION",)\n')
+    diagnostics: list[Any] = []
+    composition._verify_component_contract(
+        "astral-plane",
+        plane,
+        manifest["components"]["astral-plane"],
+        manifest["compatibility"],
+        diagnostics,
+    )
+    assert [item.code for item in diagnostics] == ["E_INCOMPATIBLE_CONTRACT"]
+
+    primitives = checkout / COMPONENT_PATHS["astral-primitives"]
+    with pytest.raises(
+        composition.CompositionError, match="primitives contract is missing"
+    ):
+        composition._verify_primitives(
+            primitives,
+            manifest["components"]["astral-primitives"],
+            {},
+            [],
+        )
+
+    lets = checkout / COMPONENT_PATHS["lets"]
+    _write(lets / "protocol/openapi.yaml", "[]\n")
+    with pytest.raises(composition.CompositionError, match="OpenAPI contract"):
+        composition._verify_lets(
+            lets,
+            manifest["components"]["lets"],
+            manifest["compatibility"],
+            [],
+        )
+
+
+def test_gitlink_mode_and_local_metadata_failures_are_attributed(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = checkout / "ordinary-file"
+    _write(marker, "ordinary\n")
+    blob = _git(checkout, "hash-object", "-w", str(marker))
+    _git(
+        checkout,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"100644,{blob},{COMPONENT_PATHS['astral-primitives']}",
+    )
+    mode_report = _verify(checkout)
+    assert "E_GITLINK_MODE" in _codes(mode_report, "astral-primitives")
+
+    original_gitlink = composition._gitlink
+
+    def invalid_gitlink(root: Path, relative_path: str) -> Any:
+        if relative_path == COMPONENT_PATHS["lets"]:
+            raise composition.CompositionError("redacted malformed index")
+        return original_gitlink(root, relative_path)
+
+    monkeypatch.setattr(composition, "_gitlink", invalid_gitlink)
+    invalid_report = _verify(checkout)
+    assert "E_GITLINK_INVALID" in _codes(invalid_report, "lets")
+
+
+def test_missing_origin_and_status_failure_fail_closed(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _git(checkout / COMPONENT_PATHS["lets"], "remote", "remove", "origin")
+    missing_origin = _verify(checkout)
+    assert "E_WRONG_URL" in _codes(missing_origin, "lets")
+
+    original_output = composition._git_output
+
+    def status_fails(cwd: Path, *arguments: str) -> str:
+        if cwd.name == "AstralPlane" and arguments and arguments[0] == "status":
+            raise composition.CompositionError("status unavailable")
+        return original_output(cwd, *arguments)
+
+    monkeypatch.setattr(composition, "_git_output", status_fails)
+    failed_status = _verify(checkout)
+    assert "E_DIRTY_COMPONENT" in _codes(failed_status, "astral-plane")
+
+
+def test_non_directory_component_and_false_git_worktree_are_unavailable(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lets = checkout / COMPONENT_PATHS["lets"]
+    lets.rename(checkout / "saved-lets")
+    _write(lets, "not a directory\n")
+    file_report = _verify(checkout)
+    assert "E_COMPONENT_MISSING" in _codes(file_report, "lets")
+
+    original_output = composition._git_output
+
+    def not_worktree(cwd: Path, *arguments: str) -> str:
+        if cwd.name == "AstralPlane" and arguments[-1:] == ("--is-inside-work-tree",):
+            return "false"
+        return original_output(cwd, *arguments)
+
+    monkeypatch.setattr(composition, "_git_output", not_worktree)
+    false_worktree = _verify(checkout)
+    assert "E_PRIVATE_ACCESS" in _codes(false_worktree, "astral-plane")
+
+
+def test_real_checkout_verification_executes_only_local_git_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_run = subprocess.run
+    commands: list[tuple[str, ...]] = []
+
+    def recording_run(arguments: list[str], *args: Any, **kwargs: Any) -> Any:
+        commands.append(tuple(arguments))
+        return original_run(arguments, *args, **kwargs)
+
+    monkeypatch.setattr(composition.subprocess, "run", recording_run)
+    report = composition.verify_composition(REPOSITORY_ROOT)
+
+    assert report.ok, report.to_dict()
+    assert commands
+    assert all(command[0] == "git" for command in commands)
+    forbidden = {"clone", "fetch", "ls-remote", "pull", "push", "remote-ext"}
+    assert all(not forbidden.intersection(command) for command in commands)

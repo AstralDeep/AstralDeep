@@ -176,8 +176,8 @@
 - [X] T111 [P] [US1] Add LETS signed-v1.0.10 commit `82dbe4f5ddf410cc86778784bb612440725ec66d` as `Y:/WORK/MCP/AstralDeep/components/LETS` using canonical HTTPS URL `https://github.com/AstralDeep/LETS.git`
 - [X] T112 [US1] Remove every `.gitmodules` floating branch selector and verify the four canonical component mappings in `Y:/WORK/MCP/AstralDeep/.gitmodules`
 - [X] T113 [US1] Create the authoritative compatible revision, contract version, protocol digest, Plane revision, LETS profile, and availability-mode declaration in `Y:/WORK/MCP/AstralDeep/config/astral-composition.json`
-- [ ] T114 [US1] Implement missing/uninitialized/dirty/wrong-SHA/wrong-URL/incompatible/private-access diagnostics in `Y:/WORK/MCP/AstralDeep/scripts/verify_composition.py`
-- [ ] T115 [P] [US1] Add composition tests for exact pins, canonical URLs, no floating branch, inaccessible private component, dirty component, stale gitlink, incompatible contracts, and LETS v1.0.10 public exports (`LETSClient`, `ReplicaAuthorizer`, `AstralDeepAuthorizer`, `Receipt`, `ReceiptVerifier`) in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_composition.py`
+- [X] T114 [US1] Implement missing/uninitialized/dirty/wrong-SHA/wrong-URL/incompatible/private-access diagnostics in `Y:/WORK/MCP/AstralDeep/scripts/verify_composition.py`
+- [X] T115 [P] [US1] Add composition tests for exact pins, canonical URLs, no floating branch, inaccessible private component, dirty component, stale gitlink, incompatible contracts, and LETS v1.0.10 public exports (`LETSClient`, `ReplicaAuthorizer`, `AstralDeepAuthorizer`, `Receipt`, `ReceiptVerifier`) in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_composition.py`
 - [ ] T116 [US1] Install Projection, Plane, Primitives, and LETS from exact local component paths with no dependency resolver substitution in `Y:/WORK/MCP/AstralDeep/pyproject.toml`
 - [ ] T117 [US1] Update container build ordering and package-data copying for initialized components in `Y:/WORK/MCP/AstralDeep/Dockerfile`
 - [X] T118 [P] [US1] Include component sources while recursively excluding secrets/runtime state in `Y:/WORK/MCP/AstralDeep/.dockerignore`, and prove the exclusions with a synthetic nested-sentinel Docker-context test before any real image build
@@ -212,7 +212,7 @@
 - [X] T136 [P] [US2] Add `ProtectedEffectOperation`, effect digest, nonce, audience, outcome/uncertainty, and audit correlation metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/effects.py`
 - [X] T137 [P] [US2] Add durable `ReceiptClaim` uniqueness, sequence watermark, and external-authority anchor metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/claims.py`
 - [X] T138 [US2] Add guarded repeat-safe authority binding/operation/claim/outbox migrations in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/migrations.py` and bump `src/astralplane/database/revision.py`
-- [ ] T139 [US2] Expose neutral owner-isolated authority repositories and transactions through `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/repository.py`
+- [X] T139 [US2] Expose neutral owner-isolated authority repositories and transactions through `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/repository.py`
 - [ ] T140 [P] [US2] Add migration repeatability, active-binding uniqueness, owner isolation, request-fingerprint conflict, claim replay, sequence, and rollback tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/authority/`
 
 ### Astral-owned configuration, lifecycle, and gateway
