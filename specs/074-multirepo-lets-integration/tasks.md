@@ -223,8 +223,8 @@
 - [X] T144 [P] [US2] Add exact six-scope, incomplete allocation, unknown scope/tool, ambiguous audience, and changed digest tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_scope_profile.py`
 - [X] T145 [US2] Implement the authenticated HTTPS adapter solely over LETS public `LETSClient`, `AstralDeepAuthorizer`, `Receipt`, and lifecycle contracts in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_client.py`
 - [X] T146 [P] [US2] Add strict response parsing, response-size, total-timeout, no-redirect, TLS, same-ID retry, fingerprint-conflict, and redacted error tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_client.py`
-- [ ] T147 [US2] Implement canonical protected-effect context and digest generation after all argument/credential rewrites without sending raw arguments, credentials, PHI, or user content to LETS in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/protected_dispatch.py`
-- [ ] T148 [P] [US2] Add canonicalization, exclusion, semantic-change, nonce entropy, and deterministic digest tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_protected_dispatch.py`
+- [X] T147 [US2] Implement canonical protected-effect context and digest generation after all argument/credential rewrites without sending raw arguments, credentials, PHI, or user content to LETS in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/protected_dispatch.py`
+- [X] T148 [P] [US2] Add canonicalization, exclusion, semantic-change, nonce entropy, and deterministic digest tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_protected_dispatch.py`
 - [ ] T149 [US2] Implement dynamic/user-authored root/spawn/renew/quiesce/resume/close/revoke/expire lifecycle convergence using durable Plane operations in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_lifecycle.py`
 - [ ] T150 [P] [US2] Wire governed dynamic-agent admission, revision supersession, runtime generation, pause, reconnect, deletion, and compromise events in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/agent_lifecycle.py`
 - [ ] T151 [P] [US2] Wire governed BYO runtime admission, host fencing, reconnect, retirement, and revocation in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/user_agents.py`
