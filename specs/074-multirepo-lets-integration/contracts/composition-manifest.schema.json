@@ -9,6 +9,7 @@
     "format",
     "astraldeep_contract_version",
     "components",
+    "availability",
     "compatibility"
   ],
   "properties": {
@@ -42,6 +43,22 @@
         }
       }
     },
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "astral-projection",
+        "astral-plane",
+        "astral-primitives",
+        "lets"
+      ],
+      "properties": {
+        "astral-projection": {"const": "required-embedded"},
+        "astral-plane": {"const": "required-embedded"},
+        "astral-primitives": {"const": "required-embedded"},
+        "lets": {"const": "external-feature-gated"}
+      }
+    },
     "compatibility": {
       "type": "object",
       "additionalProperties": false,
@@ -71,7 +88,7 @@
             "schema_revision": {"$ref": "#/$defs/revision"},
             "read_compatible_from": {"$ref": "#/$defs/revision"},
             "migration_sha256": {"$ref": "#/$defs/sha256"},
-            "blob_layout_version": {"$ref": "#/$defs/version"}
+            "blob_layout_version": {"const": "astralplane.blob-layout/v1"}
           }
         },
         "primitives": {
@@ -80,7 +97,10 @@
           "required": ["package_version", "contract_sha256"],
           "properties": {
             "package_version": {"$ref": "#/$defs/version"},
-            "contract_sha256": {"$ref": "#/$defs/sha256"}
+            "contract_sha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "SHA-256 over every src/astralprims/*.py file sorted by repository-relative path. Frame each file as uint32be UTF-8 path length, path bytes, uint64be content length, and raw content bytes."
+            }
           }
         },
         "lets": {

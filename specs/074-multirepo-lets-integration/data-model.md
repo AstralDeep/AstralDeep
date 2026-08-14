@@ -42,6 +42,7 @@ The exact join between one AstralDeep revision and its four components.
 | `format` | string | `astral.composition/v1` |
 | `astraldeep_contract_version` | string | Composition/host contract version; the containing AstralDeep commit is derived from Git or injected into the built artifact, never self-recorded |
 | `components` | map | Exactly one `ComponentRevision` for each required component |
+| `availability` | map | Projection, Plane, and Primitives are required embedded packages; the independent LETS warden is externally available only when its feature gate is enabled |
 | `ui_protocol` | object | Projection protocol version and SHA-256 |
 | `data_plane` | object | Plane contract version, schema revision/range, and migration-set digest |
 | `primitives` | object | Package version and primitive-contract digest |
