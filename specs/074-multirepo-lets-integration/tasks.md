@@ -184,13 +184,13 @@
 - [ ] T119 [US1] Update local bootstrap/sync/preflight targets and submodule-aware CI paths for composition validation in `Y:/WORK/MCP/AstralDeep/Makefile` and `Y:/WORK/MCP/AstralDeep/.github/workflows/ci.yml`
 - [ ] T120 [US1] Replace hard-coded shell, kiosk, and static paths with AstralProjection resource accessors in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/orchestrator.py` and `backend/orchestrator/web_auth.py`
 - [ ] T121 [US1] Replace Deep durable-state imports with the AstralPlane public façade in `Y:/WORK/MCP/AstralDeep/backend/shared/database.py` and all consumers listed by `contracts/component-ownership.json`
-- [ ] T122 [P] [US1] Add server UI protocol producer/consumer drift checks against the Projection submodule in `Y:/WORK/MCP/AstralDeep/backend/tests/test_projection_protocol_integration.py`
-- [ ] T123 [P] [US1] Add Plane revision/startup compatibility and failure-attribution tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_plane_integration.py`
+- [X] T122 [P] [US1] Add server UI protocol producer/consumer drift checks against the Projection submodule in `Y:/WORK/MCP/AstralDeep/backend/tests/test_projection_protocol_integration.py`
+- [X] T123 [P] [US1] Add Plane revision/startup compatibility and failure-attribution tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_plane_integration.py`
 - [ ] T124 [US1] Remove Projection-owned tracked source trees and mutable tooling from `Y:/WORK/MCP/AstralDeep/backend/webrender`, `backend/rote`, `windows-client`, `android-client`, `apple-clients`, and `tooling/web-ci` only after all runtime/build/test references use the submodule
 - [ ] T125 [US1] Remove Plane-owned tracked implementation from `Y:/WORK/MCP/AstralDeep/backend/shared/database.py` and extracted repositories only after all consumers use stable Plane contracts, retaining only deliberate compatibility adapters
 - [ ] T126 [US1] Update `Y:/WORK/MCP/AstralDeep/contracts/component-ownership.json` and generated-copy rules so the ownership checker reports zero unmanaged duplicate source trees
 - [ ] T127 [P] [US1] Add a clean-checkout bootstrap test using an isolated temporary clone in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_clean_composition_checkout.py`
-- [ ] T128 [US1] Add composed product rollback ordering, component re-pin, schema compatibility, and private-submodule access recovery instructions in `Y:/WORK/MCP/AstralDeep/docs/component-composition.md`
+- [X] T128 [US1] Add composed product rollback ordering, component re-pin, schema compatibility, and private-submodule access recovery instructions in `Y:/WORK/MCP/AstralDeep/docs/component-composition.md`
 - [ ] T129 [US1] Build and start the composed system with representative existing data and save composition/startup evidence in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/composed-startup.json`
 - [ ] T130 [US1] Complete an authenticated golden orchestration/data/render interaction with LETS mode off and record redacted correlation IDs in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/composed-golden.json`
 - [ ] T131 [US1] Run the ownership, composition, protocol, Plane compatibility, clean-checkout, and flag-off parity tests and record exact command/output digests in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/us1-checks.json`
@@ -219,8 +219,8 @@
 
 - [ ] T141 [US2] Implement strict `off|shadow|enforce` configuration parsing, governed cohorts, authenticated trust-manifest loading, TLS/secret-file requirements, timeouts, and readiness posture in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_config.py`
 - [ ] T142 [P] [US2] Add invalid-mode, missing-secret, HTTP production URL, credential-in-URL, redirect, missing-anchor, and redaction tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_config.py`
-- [ ] T143 [US2] Implement the fixed six-scope capability/transition/resource-dimension profile and hard-deny unknown mappings in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_scope_profile.py`
-- [ ] T144 [P] [US2] Add exact six-scope, incomplete allocation, unknown scope/tool, ambiguous audience, and changed digest tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_scope_profile.py`
+- [X] T143 [US2] Implement the fixed six-scope capability/transition/resource-dimension profile and hard-deny unknown mappings in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_scope_profile.py`
+- [X] T144 [P] [US2] Add exact six-scope, incomplete allocation, unknown scope/tool, ambiguous audience, and changed digest tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_scope_profile.py`
 - [ ] T145 [US2] Implement the authenticated HTTPS adapter solely over LETS public `LETSClient`, `AstralDeepAuthorizer`, `Receipt`, and lifecycle contracts in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_client.py`
 - [ ] T146 [P] [US2] Add strict response parsing, response-size, total-timeout, no-redirect, TLS, same-ID retry, fingerprint-conflict, and redacted error tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_client.py`
 - [ ] T147 [US2] Implement canonical protected-effect context and digest generation after all argument/credential rewrites without sending raw arguments, credentials, PHI, or user content to LETS in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/protected_dispatch.py`

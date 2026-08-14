@@ -84,14 +84,20 @@ def _composition() -> dict[str, object]:
             ),
             "lets": lets,
         },
+        "availability": {
+            "astral-projection": "required-embedded",
+            "astral-plane": "required-embedded",
+            "astral-primitives": "required-embedded",
+            "lets": "external-feature-gated",
+        },
         "compatibility": {
             "ui_protocol": {"version": "1", "sha256": SHA256},
             "data_plane": {
                 "contract_version": "astralplane.contract/v1",
-                "schema_revision": "66.001",
-                "read_compatible_from": "66.001",
+                "schema_revision": "067.001",
+                "read_compatible_from": "066.001",
                 "migration_sha256": SHA256,
-                "blob_layout_version": "1.0",
+                "blob_layout_version": "astralplane.blob-layout/v1",
             },
             "primitives": {"package_version": "0.3.0", "contract_sha256": SHA256},
             "lets": {
