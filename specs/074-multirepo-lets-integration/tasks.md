@@ -209,8 +209,8 @@
 
 - [X] T134 [P] [US2] Add `AgentAuthorityBinding`, lifecycle states, owner/runtime-generation uniqueness, policy/machine/config epochs, and lease metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/models.py`
 - [X] T135 [P] [US2] Add `AuthorityLifecycleOperation`, stable request fingerprint, retry state, and reconciliation metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/lifecycle.py`
-- [ ] T136 [P] [US2] Add `ProtectedEffectOperation`, effect digest, nonce, audience, outcome/uncertainty, and audit correlation metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/effects.py`
-- [ ] T137 [P] [US2] Add durable `ReceiptClaim` uniqueness, sequence watermark, and external-authority anchor metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/claims.py`
+- [X] T136 [P] [US2] Add `ProtectedEffectOperation`, effect digest, nonce, audience, outcome/uncertainty, and audit correlation metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/effects.py`
+- [X] T137 [P] [US2] Add durable `ReceiptClaim` uniqueness, sequence watermark, and external-authority anchor metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/claims.py`
 - [ ] T138 [US2] Add guarded repeat-safe authority binding/operation/claim/outbox migrations in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/migrations.py` and bump `src/astralplane/database/revision.py`
 - [ ] T139 [US2] Expose neutral owner-isolated authority repositories and transactions through `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/repository.py`
 - [ ] T140 [P] [US2] Add migration repeatability, active-binding uniqueness, owner isolation, request-fingerprint conflict, claim replay, sequence, and rollback tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/authority/`

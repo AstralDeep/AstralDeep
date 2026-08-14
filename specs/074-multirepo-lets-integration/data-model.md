@@ -201,7 +201,7 @@ Plane-persisted, Deep-interpreted association between an Astral agent and LETS a
 | `binding_id` | UUID/string | Unique |
 | `owner_id` | canonical owner key | Required in every lookup/update |
 | `agent_id` | string | Unique with owner and rollout profile |
-| `population` | enum | `dynamic`, `user_authored`, later explicitly approved values |
+| `population` | enum | `server_dynamic`, `byo_user`; later values require an explicit composition/profile revision and evidence |
 | `tenant_id` | string | Exact LETS tenant |
 | `envelope_id` | string | Exact LETS envelope |
 | `lease_id` | string | Current lease |
