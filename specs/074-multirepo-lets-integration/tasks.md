@@ -160,7 +160,7 @@
 - [X] T104 [US4] Run `Y:/WORK/MCP/AstralDeep/scripts/migration/check_staged_paths_074.py` against the exact Plane index and prove `app/app.db`, logs, venv, credentials, and user state are absent
 - [X] T105 [US4] Commit the exact paths under `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074` as an ordinary descendant with `Source-Repository`, `Source-Commit`, and `Source-Manifest-SHA256` trailers, push `codex/074-extract-data-plane`, and verify its remote SHA
 - [X] T106 [US4] Verify with `merge-base --is-ancestor` that the pushed Plane replacement descends from the recorded legacy `master` tip and record the proof in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/plane-checkpoint.json`
-- [ ] T107 [US4] Record and push the exact Plane source/destination revisions, seven repaired defects, tests, migration/recovery behavior, and risks in `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
+- [X] T107 [US4] Record and push the exact Plane source/destination revisions, seven repaired defects, tests, migration/recovery behavior, and risks in `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
 
 ---
 
