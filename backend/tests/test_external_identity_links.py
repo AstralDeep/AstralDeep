@@ -252,7 +252,9 @@ def _link_orchestrator(db=None):
         metadata={
             "external_identity": {
                 "provider": PROVIDER,
-                "authorization_url": "https://panatlas.net/link?flow=astral",
+                "authorization_url": (
+                    "https://panatlas.net/?panatlas_astral_orcid_link=1"
+                ),
             }
         },
     )
@@ -281,7 +283,13 @@ def test_api_start_and_callback_complete_the_direct_orcid_link(monkeypatch):
         user_id=USER_ID,
     ))
     assert start_response.status_code == 302
-    state = parse_qs(urlsplit(start_response.headers["location"]).query)["state"][0]
+    destination = urlsplit(start_response.headers["location"])
+    query = parse_qs(destination.query)
+    assert destination.scheme == "https"
+    assert destination.netloc == "panatlas.net"
+    assert destination.path == "/"
+    assert query["panatlas_astral_orcid_link"] == ["1"]
+    state = query["state"][0]
     state_payload = decode_signed_payload(
         state, SECRET, expected_type="identity-link-state"
     )
