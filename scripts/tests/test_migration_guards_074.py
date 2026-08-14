@@ -191,6 +191,10 @@ def test_preflight_refuses_reparse_point_as_root(
     [
         (".env", "credential or private-key path"),
         ("app/app.db", "database or database-dump path"),
+        ("app/app.db-wal", "database or database-dump path"),
+        ("app/app.db-shm", "database or database-dump path"),
+        ("app/app.sqlite-journal", "database or database-dump path"),
+        ("app/app.sqlite3-wal", "database or database-dump path"),
         ("logs/server.log", "log path"),
         ("tmp_uploads/payload.bin", "upload path"),
         ("paper/submission/main.tex", "local manuscript or submission path"),
@@ -232,3 +236,25 @@ def test_staged_guard_accepts_source_path(git_repo: Path) -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert "checked 1 staged path(s); no denied paths" in completed.stdout
+
+
+def test_staged_guard_accepts_gradle_dependency_verification_metadata(
+    git_repo: Path,
+) -> None:
+    _write_and_stage(git_repo, "android-client/gradle/verification-metadata.xml")
+
+    completed = _run_staged_guard(git_repo)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "checked 1 staged path(s); no denied paths" in completed.stdout
+
+
+def test_staged_guard_still_refuses_generated_verification_directory(
+    git_repo: Path,
+) -> None:
+    _write_and_stage(git_repo, "verification-run/result.json")
+
+    completed = _run_staged_guard(git_repo)
+
+    assert completed.returncode == 1
+    assert "generated evidence path" in completed.stderr

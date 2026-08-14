@@ -47,7 +47,23 @@ _CREDENTIAL_NAMES = {
 }
 _SAFE_ENV_TEMPLATE_SUFFIXES = (".dist", ".example", ".sample", ".template")
 _PRIVATE_KEY_SUFFIXES = {".jks", ".key", ".keystore", ".p12", ".pem", ".pfx"}
-_DATABASE_SUFFIXES = {".accdb", ".db", ".dump", ".mdb", ".sqlite", ".sqlite3"}
+_DATABASE_SUFFIXES = {
+    ".accdb",
+    ".db",
+    ".db-journal",
+    ".db-shm",
+    ".db-wal",
+    ".dump",
+    ".mdb",
+    ".sqlite",
+    ".sqlite-journal",
+    ".sqlite-shm",
+    ".sqlite-wal",
+    ".sqlite3",
+    ".sqlite3-journal",
+    ".sqlite3-shm",
+    ".sqlite3-wal",
+}
 _DATABASE_DIRECTORIES = {".postgres", "pgdata", "postgres-data", "postgres_data"}
 _LOG_DIRECTORIES = {"log", "logs"}
 _UPLOAD_DIRECTORIES = {
@@ -253,7 +269,7 @@ def violations_for_path(repo: Path, raw_path: str) -> list[Violation]:
 
     if (
         any(part in _GENERATED_EVIDENCE_DIRECTORIES for part in parts)
-        or any(part.startswith("verification-") for part in parts)
+        or any(part.startswith("verification-") for part in parts[:-1])
     ):
         reasons.append("generated evidence path")
 
