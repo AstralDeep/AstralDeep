@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import dis
 import hashlib
 import io
 import json
@@ -21,7 +20,6 @@ import stat
 import subprocess
 import sys
 import tokenize
-import types
 import urllib.parse
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
@@ -38,14 +36,16 @@ JAVASCRIPT_REPORT_KEYS = {
     "producer_version",
     "v8_to_istanbul_version",
     "espree_version",
+    "coverage_lane",
     "coverage",
 }
 JAVASCRIPT_REPORT_IDENTITY = {
     "schema_version": 1,
-    "producer": "astraldeep-playwright-executable-lines",
-    "producer_version": 1,
+    "producer": "astralprojection-node-browser-union",
+    "producer_version": 2,
     "v8_to_istanbul_version": "9.3.0",
     "espree_version": "11.2.0",
+    "coverage_lane": "node-browser-union",
 }
 MAX_REPORT_BYTES = 64 * 1024 * 1024
 MAX_CANDIDATE_WITNESS_PATHS = 10_000
@@ -1449,8 +1449,8 @@ def _parse_javascript(content: bytes, target: CoverageTarget) -> CoverageData:
     if not isinstance(document, Mapping) or set(document) != JAVASCRIPT_REPORT_KEYS:
         raise CoveragePolicyError(
             "unparseable_report",
-            "JavaScript coverage requires the exact lock-pinned AstralDeep "
-            "executable-line producer envelope",
+            "JavaScript coverage requires the exact lock-pinned AstralProjection "
+            "node/browser union envelope",
         )
     for key, expected in JAVASCRIPT_REPORT_IDENTITY.items():
         if document.get(key) != expected:
@@ -1784,21 +1784,20 @@ def _candidate_source_blobs(
 
 
 def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[int]:
-    """Derive a conservative coverage.py-compatible executable-line witness.
+    """Derive a conservative, interpreter-stable Python statement witness.
 
-    Bytecode line tables alone include continuation expressions and evaluated
-    annotations that coverage.py attributes to their owning statement. Intersecting
-    them with AST statement headers keeps comments, blank lines, docstrings, and
-    declaration continuations out of the completeness contract. TYPE_CHECKING,
-    ellipsis-only declarations, and explicit no-cover clauses remain non-runtime
-    declarations just as they are in the native Cobertura producer.
+    Coverage.py normalizes compiled line metadata back to logical statement headers.
+    The collector cannot import Coverage.py, so it uses filtered AST statement
+    headers directly. This deliberately permits over-approximation but never trusts
+    interpreter-version-specific bytecode line tables that can omit a native
+    Cobertura statement or yield ``None`` line numbers.
     """
 
     try:
         encoding, _lines = tokenize.detect_encoding(io.BytesIO(content).readline)
         source = content.decode(encoding)
         tree = ast.parse(source, filename=path, mode="exec")
-        code = compile(source, path, "exec", dont_inherit=True, optimize=0)
+        compile(source, path, "exec", dont_inherit=True, optimize=0)
         comments = {
             token.start[0]
             for token in tokenize.generate_tokens(io.StringIO(source).readline)
@@ -1840,22 +1839,69 @@ def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[i
     candidates: set[int] = set()
     excluded: set[int] = set(comments)
     definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    parents = {
+        id(child): parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+    def is_local_annotation(node: ast.AnnAssign) -> bool:
+        parent = parents.get(id(node))
+        while parent is not None:
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return True
+            if isinstance(parent, (ast.ClassDef, ast.Module)):
+                return False
+            parent = parents.get(id(parent))
+        return False
+
+    source_lines = source.splitlines()
+    ellipsis_declaration = re.compile(
+        r"^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.\.\s*(#|$)"
+    )
     docstring_nodes: set[int] = set()
     owners = [tree, *(node for node in ast.walk(tree) if isinstance(node, definitions))]
     for owner in owners:
         if owner.body and is_string_expression(owner.body[0]):
             docstring_nodes.add(id(owner.body[0]))
 
+    for comment_line in comments:
+        physical = source_lines[comment_line - 1]
+        code_before_comment = physical.split("#", 1)[0].rstrip()
+        if not code_before_comment.endswith(":"):
+            continue
+        clause_indent = len(physical) - len(physical.lstrip())
+        for line_number in range(comment_line + 1, len(source_lines) + 1):
+            candidate_line = source_lines[line_number - 1]
+            if not candidate_line.strip():
+                continue
+            indent = len(candidate_line) - len(candidate_line.lstrip())
+            if indent <= clause_indent:
+                break
+            excluded.add(line_number)
+
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            body = [item for item in node.body if id(item) not in docstring_nodes]
-            if body and all(is_ellipsis_expression(item) for item in body):
+            if (
+                node.body
+                and all(is_ellipsis_expression(item) for item in node.body)
+                and all(
+                    ellipsis_declaration.search(source_lines[item.lineno - 1])
+                    for item in node.body
+                )
+            ):
                 first = min(
                     [node.lineno, *(item.lineno for item in node.decorator_list)]
                 )
                 excluded.update(range(first, int(node.end_lineno or first) + 1))
         if isinstance(node, ast.stmt):
             if isinstance(node, (ast.Global, ast.Nonlocal)):
+                continue
+            if (
+                isinstance(node, ast.AnnAssign)
+                and node.value is None
+                and is_local_annotation(node)
+            ):
                 continue
             if id(node) in docstring_nodes or is_ellipsis_expression(node):
                 continue
@@ -1895,39 +1941,58 @@ def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[i
         if not isinstance(node, (ast.stmt, ast.ExceptHandler)):
             continue
         decorators = node.decorator_list if isinstance(node, definitions) else []
-        if node.lineno not in comments and not any(
+        body = getattr(node, "body", [])
+        first_body_line = min(
+            (item.lineno for item in body),
+            default=int(getattr(node, "end_lineno", node.lineno) or node.lineno) + 1,
+        )
+        header_end = max(node.lineno, first_body_line - 1)
+        header_has_comment = any(
+            node.lineno <= comment_line <= header_end for comment_line in comments
+        )
+        if not header_has_comment and not any(
             item.lineno in comments for item in decorators
         ):
             continue
         excluded.add(node.lineno)
         excluded.update(item.lineno for item in decorators)
-        excluded.update(candidate_headers(getattr(node, "body", [])))
+        excluded.update(candidate_headers(body))
 
-    bytecode_lines: set[int] = set()
-
-    def collect_code_lines(value: types.CodeType) -> None:
-        bytecode_lines.update(
-            line for _offset, line in dis.findlinestarts(value) if line > 0
-        )
-        for constant in value.co_consts:
-            if isinstance(constant, types.CodeType):
-                collect_code_lines(constant)
-
-    collect_code_lines(code)
-    return frozenset((candidates & bytecode_lines) - excluded)
+    return frozenset(candidates - excluded)
 
 
 def _candidate_source_witnesses(
     repo: Path,
     blobs: Mapping[str, CandidateBlob],
     paths: set[str],
+    *,
+    required_python_paths: set[str] | None = None,
 ) -> dict[str, CandidateSourceWitness]:
     """Batch-read bounded candidate blobs and derive source completeness facts."""
 
+    required = required_python_paths or set()
     if len(paths) > MAX_CANDIDATE_WITNESS_PATHS:
         raise CoveragePolicyError(
             "candidate_witness_limit",
             "coverage reports cite too many candidate source paths for witness validation",
+        )
+    missing = sorted(required - set(blobs))
+    if missing:
+        raise CoveragePolicyError(
+            "candidate_witness_unavailable",
+            "changed maintained Python source is not a regular candidate blob: "
+            f"{missing[0]!r}",
+        )
+    oversized = sorted(
+        path
+        for path in required
+        if blobs[path].size_bytes > MAX_CANDIDATE_WITNESS_BLOB_BYTES
+    )
+    if oversized:
+        raise CoveragePolicyError(
+            "candidate_witness_limit",
+            "changed maintained Python source exceeds the per-blob witness limit: "
+            f"{oversized[0]!r}",
         )
     selected = {
         path: blobs[path]
@@ -1988,7 +2053,17 @@ def _candidate_source_witnesses(
                 "invalid_candidate_tree", "candidate blob batch payload is truncated"
             )
         content = process.stdout[content_start:content_end]
-        if b"\0" not in content:
+        if b"\0" in content:
+            required_for_object = sorted(
+                path for path in required if blobs[path].object_id == object_id
+            )
+            if required_for_object:
+                raise CoveragePolicyError(
+                    "invalid_candidate_source",
+                    "changed maintained Python source contains a NUL byte: "
+                    f"{required_for_object[0]!r}",
+                )
+        else:
             contents_by_object[object_id] = content
         cursor = content_end + 1
     if cursor != len(process.stdout):
@@ -2010,6 +2085,13 @@ def _candidate_source_witnesses(
             else None
         )
         witnesses[path] = CandidateSourceWitness(line_count, executable)
+    unwitnessed = sorted(required - set(witnesses))
+    if unwitnessed:
+        raise CoveragePolicyError(
+            "candidate_witness_unavailable",
+            "changed maintained Python source has no candidate witness: "
+            f"{unwitnessed[0]!r}",
+        )
     return witnesses
 
 
@@ -2069,11 +2151,15 @@ def _strict_producer_contributions(
         for path, _line in artifact.coverage.executable
         if path in candidate_blobs and classify_path(path) is not None
     }
-    witness_paths.update(
+    required_python_paths = {
         path for path, target in maintained.items() if target.language == "python"
-    )
+    }
+    witness_paths.update(required_python_paths)
     candidate_witnesses = _candidate_source_witnesses(
-        repo, candidate_blobs, witness_paths
+        repo,
+        candidate_blobs,
+        witness_paths,
+        required_python_paths=required_python_paths,
     )
     contributions: dict[str, int] = {}
     artifacts_by_slot: dict[str, BoundCoverageReport] = {}
@@ -2218,7 +2304,13 @@ def _strict_producer_contributions(
                     f"{changed_path!r}",
                 )
             witness = candidate_witnesses.get(changed_path)
-            if witness is not None and witness.executable_lines is not None:
+            if target.language == "python":
+                if witness is None or witness.executable_lines is None:
+                    raise CoveragePolicyError(
+                        "candidate_witness_unavailable",
+                        "changed maintained Python source has no candidate witness: "
+                        f"{changed_path!r}",
+                    )
                 required_lines = changed[changed_path] & witness.executable_lines
                 observed_lines = {
                     line for path, line in coverage.executable if path == changed_path

@@ -12,6 +12,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from coverage import Coverage
+from coverage.parser import PythonParser
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +39,16 @@ def _load_collector() -> ModuleType:
 collector = _load_collector()
 
 
+def _native_python_statements(source: str, path: str) -> frozenset[int]:
+    parser = PythonParser(
+        text=source,
+        filename=path,
+        exclude="|".join(Coverage(config_file=False).config.exclude_list),
+    )
+    parser.parse_source()
+    return frozenset(parser.statements)
+
+
 def _load_xccov_exporter() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "export_xccov_line_coverage_060", XCCOV_EXPORT_SCRIPT
@@ -49,6 +61,26 @@ def _load_xccov_exporter() -> ModuleType:
 
 
 xccov_exporter = _load_xccov_exporter()
+
+
+def test_javascript_report_identity_matches_projection_v2_union() -> None:
+    assert collector.JAVASCRIPT_REPORT_KEYS == {
+        "schema_version",
+        "producer",
+        "producer_version",
+        "v8_to_istanbul_version",
+        "espree_version",
+        "coverage_lane",
+        "coverage",
+    }
+    assert collector.JAVASCRIPT_REPORT_IDENTITY == {
+        "schema_version": 1,
+        "producer": "astralprojection-node-browser-union",
+        "producer_version": 2,
+        "v8_to_istanbul_version": "9.3.0",
+        "espree_version": "11.2.0",
+        "coverage_lane": "node-browser-union",
+    }
 
 
 def test_report_reader_preserves_physical_crlf_bytes(tmp_path: Path) -> None:
@@ -571,6 +603,125 @@ else:
     ) == frozenset({4, 9, 11})
 
 
+def test_python_candidate_witness_has_no_coverage_parser_underapproximation() -> None:
+    missing_by_path: dict[str, list[int]] = {}
+    extra_by_path: dict[str, list[int]] = {}
+    statement_count = 0
+    source_paths = (
+        REPO_ROOT / relative
+        for relative in _git(
+            REPO_ROOT, "ls-files", "--", "backend", "scripts"
+        ).splitlines()
+        if relative.endswith(".py")
+    )
+    for source_path in source_paths:
+        relative = source_path.relative_to(REPO_ROOT).as_posix()
+        target = collector.classify_path(relative)
+        if target is None or target.language != "python":
+            continue
+        source = source_path.read_text(encoding="utf-8")
+        native = _native_python_statements(source, relative)
+        statement_count += len(native)
+        witness = collector._python_candidate_executable_lines(
+            source.encode("utf-8"), relative
+        )
+        missing = sorted(native - witness)
+        if missing:
+            missing_by_path[relative] = missing
+        extra = sorted(witness - native)
+        if extra:
+            extra_by_path[relative] = extra
+
+    assert statement_count > 400
+    assert missing_by_path == {}
+    assert extra_by_path == {}
+
+
+def test_python_314_candidate_witness_matches_locked_coverage_parser() -> None:
+    python = shutil.which("python3")
+    assert python is not None
+    version = subprocess.run(
+        [
+            python,
+            "-c",
+            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    if tuple(int(part) for part in version.split(".")) < (3, 14):
+        pytest.skip("system Python 3.14 is not available on this runner")
+
+    relative_paths = [
+        relative
+        for relative in _git(
+            REPO_ROOT, "ls-files", "--", "backend", "scripts"
+        ).splitlines()
+        if relative.endswith(".py")
+        and (target := collector.classify_path(relative)) is not None
+        and target.language == "python"
+    ]
+    program = r"""
+import importlib.util
+import json
+import pathlib
+import sys
+
+root = pathlib.Path.cwd()
+spec = importlib.util.spec_from_file_location(
+    "changed_coverage_python_314", root / "scripts/check_changed_coverage.py"
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+paths = json.loads(sys.stdin.read())
+print(json.dumps({
+    path: sorted(module._python_candidate_executable_lines(
+        (root / path).read_bytes(), path
+    ))
+    for path in paths
+}, sort_keys=True))
+"""
+    process = subprocess.run(
+        [python, "-c", program],
+        cwd=REPO_ROOT,
+        input=json.dumps(relative_paths),
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    system_witnesses = json.loads(process.stdout)
+    mismatches: dict[str, dict[str, list[int]]] = {}
+    for relative in relative_paths:
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        native = _native_python_statements(source, relative)
+        witness = frozenset(system_witnesses[relative])
+        if native != witness:
+            mismatches[relative] = {
+                "missing": sorted(native - witness),
+                "extra": sorted(witness - native),
+            }
+
+    assert mismatches == {}
+
+
+def test_python_candidate_witness_covers_real_multiline_probe_statement() -> None:
+    relative = "backend/llm_config/probe.py"
+    source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    native = _native_python_statements(source, relative)
+
+    assert 32 in native
+    assert 32 in collector._python_candidate_executable_lines(
+        source.encode("utf-8"), relative
+    )
+
+
+def test_python_candidate_witness_does_not_use_nullable_dis_line_tables() -> None:
+    assert "dis.findlinestarts" not in SCRIPT.read_text(encoding="utf-8")
+
+
 def test_projection_python_slot_binds_raw_and_semantic_report_digests(
     tmp_path: Path,
 ) -> None:
@@ -749,6 +900,71 @@ def test_candidate_source_inventory_rejects_negative_regular_blob_size(
         collector._candidate_source_blobs(tmp_path, "2" * 40)
 
     assert failure.value.code == "invalid_candidate_tree"
+
+
+def test_required_python_witness_rejects_nonregular_candidate_path(
+    tmp_path: Path,
+) -> None:
+    path = "backend/linked.py"
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_witnesses(
+            tmp_path,
+            {},
+            {path},
+            required_python_paths={path},
+        )
+
+    assert failure.value.code == "candidate_witness_unavailable"
+    assert "regular candidate blob" in failure.value.message
+
+
+def test_required_python_witness_rejects_oversized_candidate_blob(
+    tmp_path: Path,
+) -> None:
+    path = "backend/oversized.py"
+    blobs = {
+        path: collector.CandidateBlob(
+            "1" * 40,
+            collector.MAX_CANDIDATE_WITNESS_BLOB_BYTES + 1,
+        )
+    }
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_witnesses(
+            tmp_path,
+            blobs,
+            {path},
+            required_python_paths={path},
+        )
+
+    assert failure.value.code == "candidate_witness_limit"
+    assert "per-blob" in failure.value.message
+
+
+def test_required_python_witness_rejects_nul_candidate_blob(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    path = "backend/nul.py"
+    source = repo / path
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"first = 1\n\0second = 2\n")
+    candidate = _commit(repo, "candidate")
+    blobs = collector._candidate_source_blobs(repo, candidate)
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_witnesses(
+            repo,
+            blobs,
+            {path},
+            required_python_paths={path},
+        )
+
+    assert failure.value.code == "invalid_candidate_source"
+    assert "NUL" in failure.value.message
 
 
 def test_event_selection_is_authoritative_for_pr_main_and_manual() -> None:
@@ -2089,7 +2305,7 @@ def test_real_playwright_v8_comment_vector_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(collector.CoveragePolicyError) as failure:
         collector.parse_coverage_report(report, "javascript")
     assert failure.value.code == "unparseable_report"
-    assert "executable-line producer envelope" in failure.value.message
+    assert "node/browser union envelope" in failure.value.message
 
 
 def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
@@ -2553,7 +2769,7 @@ def test_bare_unfiltered_istanbul_output_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(collector.CoveragePolicyError) as failure:
         collector.parse_coverage_report(report, "javascript")
     assert failure.value.code == "unparseable_report"
-    assert "producer envelope" in failure.value.message
+    assert "node/browser union envelope" in failure.value.message
 
 
 def test_cli_writes_repeatable_exact_identity_json(

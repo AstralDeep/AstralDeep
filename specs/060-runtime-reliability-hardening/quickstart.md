@@ -127,9 +127,11 @@ CI reports the JavaScript command separately from Ruff and runs it on pull reque
 The package cache is keyed to `components/AstralProjection/tooling/web-ci/package-lock.json`; CI records both the Playwright
 version, container digest, and pinned Chromium revision, and never falls back to a system browser.
 Each platform emits its native coverage format and the final merge gate maps an immutable event-aware
-base-to-candidate diff to backend, root-tooling, and Windows Python XML, Playwright V8 coverage
-converted and executable-syntax-filtered by the lock-pinned producer to canonical Istanbul statement
-JSON, counter-validated Android app/core Kover XML, and line-complete Apple app/core/Watch coverage.
+base-to-candidate diff to repository-owned Python XML, Projection's lock-pinned v2 Node/browser V8
+union converted and executable-syntax-filtered to canonical Istanbul statement JSON,
+counter-validated Android app/core Kover XML, and line-complete Apple app/core/Watch coverage. The
+JavaScript input must carry the exact `astralprojection-node-browser-union` producer and
+`node-browser-union` lane identity; a browser-only or legacy producer envelope fails closed.
 The protected collector rejects raw or unfiltered V8 ranges and forces text hunks for maintained
 paths, so comments and candidate `.gitattributes` cannot inflate or hide coverage.
 Every changed maintained language and the combined executable lines must each be at least 90%; a
@@ -669,10 +671,13 @@ AstralCore file and all of its changed physical lines must map completely throug
 or macOS because a real iOS UI archive can omit Core; Watch archive Core observations do not substitute
 for that group. Every other applicable Apple report must observe every changed physical line. Each
 Cobertura-backed Python producer must observe every candidate-executable changed line in its owned
-files. That candidate-bound witness intersects Python statement headers with compiled line tables,
-so comments, blanks, docstrings, declaration continuations, `TYPE_CHECKING`/ellipsis-only
-declarations, and explicit no-cover clauses are not invented as executable work. Overlapping Python
-producers must also agree on executable changed lines. No producer is required to cover a line merely
+files. That candidate-bound witness uses filtered AST statement headers rather than
+interpreter-version-specific bytecode line tables; the locked Coverage parser is checked against all
+tracked maintained Deep Python sources to prevent under-approximation. Comments, blanks, docstrings,
+declaration continuations, `TYPE_CHECKING`/ellipsis-only declarations, and explicit no-cover clauses
+are not invented as executable work. Every changed maintained Python path must yield a bounded,
+NUL-free regular-blob witness; missing, non-regular, oversized, or binary sources fail explicitly.
+Overlapping Python producers must also agree on executable changed lines. No producer is required to cover a line merely
 to prove its native contribution—a valid zero-hit macOS archive remains valid input to the ordinary
 threshold decision. The protected collector
 invocation independently pins the same strict mode and complete matrix. Local shape rules cannot prove
