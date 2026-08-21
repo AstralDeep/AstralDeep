@@ -102,8 +102,6 @@ LOCAL_COVERAGE_BY_HOST = {
     },
 }
 REQUIRED_PR_WORKFLOWS = {
-    ".github/workflows/android-ci.yml",
-    ".github/workflows/apple-ci.yml",
     ".github/workflows/ci.yml",
 }
 INVENTORY_KEYS = {

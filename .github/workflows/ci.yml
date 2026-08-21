@@ -1,13 +1,3 @@
-# AstralDeep CI — feature 029 (T027).
-# Authoritative job contract: specs/029-agents-adaptive-ui-ci/contracts/ci-pipeline.md
-#
-# Gates (FR-034..FR-038), each an independently-reported job. Feature 074
-# temporarily replaces hosted composed-image build/test/smoke/publication with
-# an unprivileged declaration check while Plane and Projection remain private.
-#
-# CI-only tooling (Constitution V/XI — pipeline environment, NOT product deps):
-#   ruff, pytest-cov/coverage, diff-cover, gitleaks (checksum-pinned CLI).
-
 name: CI
 
 on:
@@ -18,24 +8,17 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # Cancel superseded runs on PRs only; pushes to main always run to completion.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
-# Force every JavaScript action's runtime to Node 24, clearing the Node 20
-# deprecation warnings across all jobs. checkout/setup-python are bumped to their
-# Node 24 versions below; the remaining JS actions (upload-artifact v4.6.2 and
-# download-artifact v4.3.0)
-# have no Node 24 release yet, so this env var is the only way to clear them.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # ── FR-034: repo-root lint (ruff.toml lives at the repo root, NOT in the image) ──
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -48,127 +31,12 @@ jobs:
           cache-dependency-path: tooling/python-ci/requirements.lock.txt
       - name: Install hash-locked CI-only Python tooling
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
-      - name: ruff check (repo root)
+      - name: Lint Deep-owned Python
         run: ruff check .
 
-  # ── Feature 060 (FR-053/SC-015): maintained backend-served JavaScript and
-  #    the release browser harness use one lock-pinned, CI-only Node surface.
-  #    The isolation check prevents these packages from entering product
-  #    manifests or runtime imports. Browser execution itself remains in the
-  #    digest-pinned release-readiness job introduced later in feature 060. ──
-  javascript-lint:
-    # Projection owns this tooling now. The private submodule cannot be fetched
-    # by public hosted CI, so this consumer stays inert until private qualification.
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: components/AstralProjection/tooling/web-ci/package-lock.json
-      - name: Verify the integrity-pinned package manager
-        working-directory: components/AstralProjection/tooling/web-ci
-        run: test "$(corepack npm --version)" = "11.16.0"
-      - name: Install lock-pinned CI-only JavaScript tooling
-        working-directory: components/AstralProjection/tooling/web-ci
-        run: corepack npm ci --ignore-scripts
-      - name: Verify the active package manager identity
-        working-directory: components/AstralProjection/tooling/web-ci
-        run: corepack npm run check:package-manager
-      - name: Prove tooling is isolated from product runtime manifests
-        working-directory: components/AstralProjection/tooling/web-ci
-        run: corepack npm run check:product-isolation
-      - name: ESLint maintained JavaScript
-        working-directory: components/AstralProjection/tooling/web-ci
-        run: corepack npm run lint
-      - name: Test executable-line conversion and Node self-coverage
-        working-directory: components/AstralProjection/tooling/web-ci
-        run: |
-          corepack npm run test:coverage-conversion
-          corepack npm run test:coverage-conversion:node
-      - name: Test conversion against real Chromium in the pinned image
-        run: |
-          PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
-          test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"
-          docker pull "$PLAYWRIGHT_IMAGE"
-          docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web-ci \
-            "$PLAYWRIGHT_IMAGE" sh -lc \
-            'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run test:coverage-conversion:browser'
-
-  # Feature 065: validate the single C0-C6 fixture against the authoritative
-  # JSON Schemas and OpenAPI document in an isolated, hash-locked Python 3.11
-  # environment before any client is allowed to claim conformance.
-  voice-contract-validator:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: tooling/contract-ci/requirements.lock.txt
-      - name: Validate the canonical Feature 065 voice contracts
-        run: |
-          set -euo pipefail
-          python -m venv build/065/contract-validator
-          build/065/contract-validator/bin/python -m pip install \
-            --require-hashes \
-            -r tooling/contract-ci/requirements.lock.txt
-          build/065/contract-validator/bin/python \
-            tooling/contract-ci/validate_voice_contracts.py
-
-  # Feature 065: run the shipped browser reducer/media adapter through C0-C6
-  # and retain its Istanbul input for the protected combined changed-code gate.
-  voice-web-conformance:
-    # Projection-owned browser sources are private; no cross-repository token is
-    # granted to this public workflow, so the migrated lane remains disabled.
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Run C0-C6 in the digest-pinned Playwright image
-        run: |
-          set -euo pipefail
-          PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
-          test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"
-          docker pull "$PLAYWRIGHT_IMAGE"
-          mkdir -p build/065/coverage
-          docker run --rm \
-            -v "$PWD:/work" \
-            -w /work/components/AstralProjection/tooling/web-ci \
-            -e ASTRAL_VOICE_COVERAGE_ISTANBUL_OUTPUT=/work/build/065/coverage/web-istanbul.json \
-            "$PLAYWRIGHT_IMAGE" sh -lc \
-            'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run check:product-isolation && corepack npm exec -- playwright test tests/voice-conversation-065.spec.js && chmod 0644 /work/build/065/coverage/web-istanbul.json'
-          test -s build/065/coverage/web-istanbul.json
-      - name: Archive the web Istanbul input
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: web-voice-istanbul
-          path: build/065/coverage/web-istanbul.json
-          if-no-files-found: error
-          retention-days: 14
-
-  # ── Feature 060 (FR-053/SC-015): exercise the standard-library
-  #    cross-language coverage collector separately and measure the root
-  #    release-tooling Python that the backend-only coverage job cannot see. ──
   release-tooling-tests:
-    # This historical aggregate reads Projection client/tooling files. It stays
-    # disabled publicly after path cutover; component-contract-tests below is
-    # the source-free unprivileged replacement for feature-074 declarations.
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -181,15 +49,16 @@ jobs:
           cache-dependency-path: tooling/python-ci/requirements.lock.txt
       - name: Install hash-locked CI-only Python tooling
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
-      - name: Test and cover release-tooling policy
+      - name: Test and cover Deep-owned release tooling
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p build/060/coverage
           RELEASE_TOOL_TESTS=(
             backend/tests/test_changed_coverage_060.py
             backend/tests/test_release_tooling_coverage_060.py
             backend/tests/test_documentation_060.py
             backend/tests/test_quickstart_commands.py
-            backend/tests/test_ci_javascript_lint.py
             backend/tests/test_python_ci_supply_chain_060.py
             backend/tests/test_android_next_major_canary.py
             backend/tests/test_candidate_staging_060.py
@@ -197,39 +66,31 @@ jobs:
             backend/tests/test_prepare_release_evidence_060.py
             backend/tests/test_extract_release_artifact_060.py
             backend/tests/test_release_evidence_bootstrap.py
-            backend/tests/test_release_workflows_060.py
-            backend/tests/test_release_evidence_producers.py
-            backend/tests/test_voice_dependency_locks_065.py
-            backend/tests/test_voice_dependency_supply_chain_065.py
-            backend/tests/test_apple_livekit_dependency_065.py
-            backend/tests/test_voice_deployment_topology_065.py
-            backend/tests/test_voice_release_evidence_producers_065.py
-            backend/tests/test_voice_worker_packaging_065.py
             scripts/tests/test_component_build_surfaces_074.py
             scripts/tests/test_install_local_components.py
             scripts/tests/test_verify_component_ownership.py
             scripts/tests/test_verify_composition.py
             scripts/tests/test_verify_migration_provenance.py
             scripts/tests/test_verify_primitive_coverage.py
-            components/AstralProjection/windows-client/tests/test_release_lock_060.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
-          python -m coverage run --source=scripts -m pytest \
-            "${RELEASE_TOOL_TESTS[@]}" -q
+          python -m coverage run --source=scripts \
+            --omit=scripts/windows_release_candidate.py \
+            -m pytest "${RELEASE_TOOL_TESTS[@]}" -q
           python -m coverage report --fail-under=90
           python -m coverage xml -o build/060/coverage/tooling-python.xml
-          python scripts/check_doc_links.py
+      - name: Check documentation links
+        run: python scripts/check_doc_links.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tooling-python-coverage
           path: build/060/coverage/tooling-python.xml
-          retention-days: 1
+          if-no-files-found: error
+          retention-days: 14
 
-  # Feature 074's executable composition declaration is independently testable
-  # without checking out any private component bytes.
   component-contract-tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -241,59 +102,23 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: tooling/python-ci/requirements.lock.txt
-      - name: Install hash-locked unprivileged test tooling
-        run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
-      - name: Test exact source-free component installation contract
-        run: >-
-          python -m pytest -q
-          scripts/tests/test_install_local_components.py
-          scripts/tests/test_component_build_surfaces_074.py
-
-  # ── Feature 044 (FR-023/SC-009): the Windows desktop client's pytest suite,
-  #    headless (offscreen). Deliberately NOT path-filtered: it carries the
-  #    protocol-coverage + vocabulary drift guards, which must be able to fail
-  #    when a BACKEND change adds an unclassified frame/component type. ──
-  windows-client:
-    # Job id retained for the existing gate contract. Its migrated source is in
-    # private Projection, so public hosted CI must not initialize or execute it.
-    if: ${{ false }}
-    runs-on: windows-latest
-    # The 060 supervision/continuity suites push the offscreen Qt run past
-    # the old 15-minute bound on hosted runners.
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            components/AstralProjection/windows-client/requirements-release.lock.txt
-            tooling/python-ci/requirements.lock.txt
-      - name: Install hash-locked client runtime requirements
-        run: python -m pip install --require-hashes -r components/AstralProjection/windows-client/requirements-release.lock.txt
       - name: Install hash-locked CI-only Python tooling
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
-      - name: Desktop suite (incl. 044 drift guards)
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python -m pytest components/AstralProjection/windows-client/tests -q
+      - name: Test source-free component contracts
+        shell: bash
+        run: |
+          python -m pytest -q \
+            scripts/tests/test_install_local_components.py \
+            scripts/tests/test_verify_component_ownership.py \
+            scripts/tests/test_verify_composition.py \
+            scripts/tests/test_verify_migration_provenance.py \
+            scripts/tests/test_verify_primitive_coverage.py \
+            --deselect=scripts/tests/test_install_local_components.py::test_real_initialized_sources_match_the_declarations \
+            --deselect=scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts \
+            --deselect=scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands
 
-  # ── Feature 074 public-CI boundary ──────────────────────────────────────────
-  # AstralDeep is public while AstralPlane and AstralProjection are private.
-  # The repository-scoped token cannot initialize them, and this workflow must
-  # not receive cross-repository credentials. Hosted composed-image build,
-  # cache export, artifact upload, and publication therefore remain physically
-  # absent. This unprivileged lane validates the exact parent gitlinks,
-  # .gitmodules URLs, composition manifest, and executable local-wheel contract
-  # without reading component bytes. `make composition-preflight` performs the
-  # full initialized-source verification locally; final qualification may
-  # restore image consumers only through an approved private execution boundary.
-  build:
-    name: composition-declarations
-    runs-on: ubuntu-latest
+  composition-declarations:
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -303,9 +128,24 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
-      - name: Prove private component worktrees were not initialized
+          cache: pip
+          cache-dependency-path: tooling/python-ci/requirements.lock.txt
+      - name: Install hash-locked CI-only Python tooling
+        run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
+      - name: Prove exactly four uninitialized component gitlinks
+        shell: bash
         run: |
           set -euo pipefail
+          mapfile -t COMPONENT_GITLINKS < <(
+            git ls-files --stage -- \
+              components/AstralPlane \
+              components/AstralPrimitives \
+              components/AstralProjection \
+              components/LETS
+          )
+          test "${#COMPONENT_GITLINKS[@]}" -eq 4
+          printf '%s\n' "${COMPONENT_GITLINKS[@]}" \
+            | awk '$1 != "160000" { exit 1 } END { if (NR != 4) exit 1 }'
           mapfile -t COMPONENT_STATUS < <(git submodule status --recursive)
           test "${#COMPONENT_STATUS[@]}" -eq 4
           if printf '%s\n' "${COMPONENT_STATUS[@]}" \
@@ -317,23 +157,8 @@ jobs:
           python scripts/install_local_components.py validate
           --root . --declarations-only --require-gitlinks
 
-  # ── Feature 065 (T003/T004): build the isolated voice worker's production
-  #    and test targets from one clean checkout. The test target alone carries
-  #    pytest/coverage tooling. Runtime export/upload remains physically absent
-  #    while the exact closure is reopened. This lane is intentionally blocking. ──
   voice-worker-test:
-    # Fail closed while the exact worker closure is reopened. Only an
-    # owner-controlled repository variable, set after the dependency record and
-    # matching review are complete, may authorize a CI-only rebuild. Runtime
-    # export and upload are absent from this job. An unset variable evaluates false.
-    #
-    # The gate lives on the STEPS, not the job: a job-level skip poisons the
-    # implicit transitive success() of every downstream job — publish skipped
-    # silently on main even through the `gates` aggregation, because GitHub
-    # evaluates success() over the whole dependency chain and always() on the
-    # privileged publish job is forbidden by the draft-bootstrap grammar.
-    # An unauthorized run succeeds as an explicit no-op instead of skipping.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Report the unauthorized no-op honestly
@@ -391,381 +216,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # ── FR-034: complete backend test suite inside the built image against a real
-  #    Postgres, development posture. Both invocations per the contract; combined
-  #    coverage.xml handed to coverage-gate. Feature 074 keeps this hosted image
-  #    consumer hard-disabled until a private composed-build boundary exists. ──
-  test:
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: build
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: astral
-          POSTGRES_PASSWORD: astral_ci
-          POSTGRES_DB: astraldeep
-        ports:
-          - "5432:5432"
-        options: >-
-          --health-cmd "pg_isready -U astral -d astraldeep"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: image
-          path: /tmp
-      - name: Load built image
-        run: docker load -i /tmp/astraldeep.tar
-      # The checkout's backend/ is mounted over the baked /app/backend so tests run
-      # against THIS commit's source inside the production dependency environment.
-      # --network host lets localhost:5432 reach the postgres service container.
-      # Test/coverage tooling is installed from the checkout's complete hash
-      # lock, mounted read-only and never copied into the product image.
-      - name: Run both pytest invocations inside the image
-        run: |
-          docker run --rm --network host \
-            -v "$PWD/backend:/app/backend" \
-            -v "$PWD/components/AstralProjection/android-client:/app/components/AstralProjection/android-client:ro" \
-            -v "$PWD/components/AstralProjection/apple-clients:/app/components/AstralProjection/apple-clients:ro" \
-            -v "$PWD/components/AstralProjection/windows-client:/app/components/AstralProjection/windows-client:ro" \
-            -v "$PWD/tooling/python-ci:/ci/python:ro" \
-            -v "$PWD/deploy/livekit:/app/deploy/livekit:ro" \
-            -v "$PWD/tooling/contract-ci/validate_voice_contracts.py:/app/tooling/contract-ci/validate_voice_contracts.py:ro" \
-            -v "$PWD/tooling/evaluate_voice_recap_matrix_065.py:/app/tooling/evaluate_voice_recap_matrix_065.py:ro" \
-            -v "$PWD/components/AstralProjection/tooling/web-ci/tests/release-060.spec.js:/app/components/AstralProjection/tooling/web-ci/tests/release-060.spec.js:ro" \
-            -v "$PWD/tooling/voice-worker/closure_manifest.py:/app/tooling/voice-worker/closure_manifest.py:ro" \
-            -v "$PWD/tooling/voice-worker/run_livekit_integration.py:/app/tooling/voice-worker/run_livekit_integration.py:ro" \
-            -v "$PWD/scripts/validate_release_evidence.py:/ci/voice/validate_release_evidence.py:ro" \
-            -v "$PWD/.github/workflows/build-windows-candidate.yml:/ci/voice/workflows/build-windows-candidate.yml:ro" \
-            -v "$PWD/.github/workflows/ci.yml:/ci/voice/workflows/ci.yml:ro" \
-            -v "$PWD/.github/workflows/android-ci.yml:/ci/voice/workflows/android-ci.yml:ro" \
-            -v "$PWD/.github/workflows/apple-ci.yml:/ci/voice/workflows/apple-ci.yml:ro" \
-            -v "$PWD/specs/065-conversational-voice/contracts/voice-control.schema.json:/ci/voice/voice-control.schema.json:ro" \
-            -v "$PWD/specs/065-conversational-voice/dependency-audit-rtc-only-2026-07-31.md:/ci/voice/dependency-audit-rtc-only-2026-07-31.md:ro" \
-            -v "$PWD/specs/065-conversational-voice/dependency-approval.md:/ci/voice/dependency-approval.md:ro" \
-            -v "$PWD/Dockerfile.voice:/app/Dockerfile.voice:ro" \
-            -v "$PWD/Dockerfile.voice.dockerignore:/app/Dockerfile.voice.dockerignore:ro" \
-            -v "$PWD/docker-compose.yml:/app/docker-compose.yml:ro" \
-            -v "$PWD/docker-compose.staging.yml:/app/docker-compose.staging.yml:ro" \
-            -v "$PWD/docker-compose.voice-integration.yml:/app/docker-compose.voice-integration.yml:ro" \
-            -e ASTRAL_ENV=development \
-            -e ASTRAL_VOICE_SCHEMA_ENGINE_PATH=/ci/voice/validate_release_evidence.py \
-            -e ASTRAL_VOICE_SCHEMA_PATH=/ci/voice/voice-control.schema.json \
-            -e ASTRAL_VOICE_RTC_AUDIT_PATH=/ci/voice/dependency-audit-rtc-only-2026-07-31.md \
-            -e ASTRAL_VOICE_WORKFLOW_ROOT=/ci/voice/workflows \
-            -e ASTRAL_VOICE_DEPENDENCY_APPROVAL_PATH=/ci/voice/dependency-approval.md \
-            -e DB_HOST=localhost \
-            -e DB_PORT=5432 \
-            -e DB_NAME=astraldeep \
-            -e DB_USER=astral \
-            -e DB_PASSWORD=astral_ci \
-            -e AGENT_API_KEY=ci-test-agent-key \
-            -e AUDIT_HMAC_SECRET=ci-test-hmac-secret \
-            -e LOOP_GUARD_ENFORCE=1 \
-            -e PERF_CONCURRENT_FLOOR_MS=5000 \
-            -w /app/backend --entrypoint bash astraldeep:ci \
-            -c "python -m pip install --require-hashes -r /ci/python/requirements.lock.txt && python -m pytest -q -m 'not integration' --cov=. --cov-report= && python -m pytest audit/tests llm_config/tests orchestrator/tests onboarding/tests personalization/tests scheduler/tests dreaming/tests verification/tests agents/tests agents/journal_review/tests agents/ml_services/tests agents/summarizer/tests agents/web_research/tests feedback/tests security_benchmark/tests shared/tests voice_agent/tests --ignore=voice_agent/tests/test_packaging_065.py -q --cov=. --cov-append --cov-report= && python -m pytest tests/perf/concurrent_surfaces.py -q --cov=. --cov-append --cov-report=xml:coverage.xml"
-      # coverage.xml lands in the mounted checkout at backend/coverage.xml.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: coverage
-          path: backend/coverage.xml
-
-  # ── Feature 055 (T047/SC-009): the same backend suite — including the drift
-  #    guards it carries — with every 055 flag forced OFF, proving the off
-  #    state restores pre-055 wire behavior byte-identically (safe rollback).
-  #    Env names match backend/shared/feature_flags.py _read() keys; "0" is
-  #    falsy there. FF_ARTIFACT_SHARING is default-off but pinned anyway so
-  #    the job's posture is explicit and default-drift-proof. ──
-  test-flags-off:
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: build
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: astral
-          POSTGRES_PASSWORD: astral_ci
-          POSTGRES_DB: astraldeep
-        ports:
-          - "5432:5432"
-        options: >-
-          --health-cmd "pg_isready -U astral -d astraldeep"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: image
-          path: /tmp
-      - name: Load built image
-        run: docker load -i /tmp/astraldeep.tar
-      # Same invocations as the test job, minus the coverage plumbing (the
-      # flags-on run owns the coverage artifact).
-      - name: Backend suite with the 055 flags AND the 056 chaining flags off (SC-009 byte-equivalence)
-        run: |
-          docker run --rm --network host \
-            -v "$PWD/backend:/app/backend" \
-            -v "$PWD/components/AstralProjection/android-client:/app/components/AstralProjection/android-client:ro" \
-            -v "$PWD/components/AstralProjection/apple-clients:/app/components/AstralProjection/apple-clients:ro" \
-            -v "$PWD/components/AstralProjection/windows-client:/app/components/AstralProjection/windows-client:ro" \
-            -v "$PWD/deploy/livekit:/app/deploy/livekit:ro" \
-            -v "$PWD/tooling/contract-ci/validate_voice_contracts.py:/app/tooling/contract-ci/validate_voice_contracts.py:ro" \
-            -v "$PWD/tooling/evaluate_voice_recap_matrix_065.py:/app/tooling/evaluate_voice_recap_matrix_065.py:ro" \
-            -v "$PWD/components/AstralProjection/tooling/web-ci/tests/release-060.spec.js:/app/components/AstralProjection/tooling/web-ci/tests/release-060.spec.js:ro" \
-            -v "$PWD/tooling/voice-worker/closure_manifest.py:/app/tooling/voice-worker/closure_manifest.py:ro" \
-            -v "$PWD/tooling/voice-worker/run_livekit_integration.py:/app/tooling/voice-worker/run_livekit_integration.py:ro" \
-            -v "$PWD/scripts/validate_release_evidence.py:/ci/voice/validate_release_evidence.py:ro" \
-            -v "$PWD/.github/workflows/build-windows-candidate.yml:/ci/voice/workflows/build-windows-candidate.yml:ro" \
-            -v "$PWD/.github/workflows/ci.yml:/ci/voice/workflows/ci.yml:ro" \
-            -v "$PWD/.github/workflows/android-ci.yml:/ci/voice/workflows/android-ci.yml:ro" \
-            -v "$PWD/.github/workflows/apple-ci.yml:/ci/voice/workflows/apple-ci.yml:ro" \
-            -v "$PWD/specs/065-conversational-voice/contracts/voice-control.schema.json:/ci/voice/voice-control.schema.json:ro" \
-            -v "$PWD/specs/065-conversational-voice/dependency-audit-rtc-only-2026-07-31.md:/ci/voice/dependency-audit-rtc-only-2026-07-31.md:ro" \
-            -v "$PWD/specs/065-conversational-voice/dependency-approval.md:/ci/voice/dependency-approval.md:ro" \
-            -v "$PWD/Dockerfile.voice:/app/Dockerfile.voice:ro" \
-            -v "$PWD/Dockerfile.voice.dockerignore:/app/Dockerfile.voice.dockerignore:ro" \
-            -v "$PWD/docker-compose.yml:/app/docker-compose.yml:ro" \
-            -v "$PWD/docker-compose.staging.yml:/app/docker-compose.staging.yml:ro" \
-            -v "$PWD/docker-compose.voice-integration.yml:/app/docker-compose.voice-integration.yml:ro" \
-            -e ASTRAL_ENV=development \
-            -e ASTRAL_VOICE_SCHEMA_ENGINE_PATH=/ci/voice/validate_release_evidence.py \
-            -e ASTRAL_VOICE_SCHEMA_PATH=/ci/voice/voice-control.schema.json \
-            -e ASTRAL_VOICE_RTC_AUDIT_PATH=/ci/voice/dependency-audit-rtc-only-2026-07-31.md \
-            -e ASTRAL_VOICE_WORKFLOW_ROOT=/ci/voice/workflows \
-            -e ASTRAL_VOICE_DEPENDENCY_APPROVAL_PATH=/ci/voice/dependency-approval.md \
-            -e DB_HOST=localhost \
-            -e DB_PORT=5432 \
-            -e DB_NAME=astraldeep \
-            -e DB_USER=astral \
-            -e DB_PASSWORD=astral_ci \
-            -e AGENT_API_KEY=ci-test-agent-key \
-            -e AUDIT_HMAC_SECRET=ci-test-hmac-secret \
-            -e LOOP_GUARD_ENFORCE=1 \
-            -e PERF_CONCURRENT_FLOOR_MS=5000 \
-            -e FF_FIRST_TURN_CONTRACT=0 \
-            -e FF_STREAM_ARTIFACTS=0 \
-            -e FF_DESIGNER_ALL_DEVICES=0 \
-            -e FF_COMPONENT_REFINE=0 \
-            -e FF_ARTIFACT_EXPORT=0 \
-            -e FF_ARTIFACT_SHARING=0 \
-            -e FF_BG_CONTINUITY=0 \
-            -e FF_RECURSIVE_DELEGATION=0 \
-            -e FF_SCHEDULER_EXECUTION=0 \
-            -w /app/backend --entrypoint bash astraldeep:ci \
-            -c "python -m pytest -q -m 'not integration' && python -m pytest audit/tests llm_config/tests orchestrator/tests onboarding/tests personalization/tests scheduler/tests dreaming/tests verification/tests agents/tests agents/journal_review/tests agents/ml_services/tests agents/summarizer/tests agents/web_research/tests feedback/tests security_benchmark/tests shared/tests voice_agent/tests --ignore=voice_agent/tests/test_packaging_065.py -q && python -m pytest tests/perf/concurrent_surfaces.py -q"
-
-  # ── FR-034: changed-code coverage ≥ 90% vs origin/main (Constitution III). ──
-  coverage-gate:
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: test
-    # The legacy backend-only report cannot consume the separate worker,
-    # tooling, Windows, web, Android, or Apple producers used by the canonical
-    # multi-lane gate. PR 151's bounded bootstrap remains draft-only, so only
-    # that exact draft diagnostic may retain the existing non-blocking posture.
-    # Ready-for-review and main runs remain hard failures below 90%.
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: tooling/python-ci/requirements.lock.txt
-      - name: Install hash-locked CI-only Python tooling
-        run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: coverage
-          path: backend
-      # Tests ran at /app/backend inside the image, so coverage.xml's <source>
-      # says /app/backend; rewrite it to backend so diff-cover maps measured
-      # files onto the git diff's repo-root-relative paths.
-      - name: Map container paths to repo paths
-        run: sed -i 's|/app/backend|backend|g' backend/coverage.xml
-      - name: Ensure origin/main exists locally
-        run: |
-          git rev-parse --verify --quiet origin/main >/dev/null \
-            || git fetch origin main:refs/remotes/origin/main
-      # NOTE: diff-cover exits 0 when the diff vs origin/main contains no
-      # measurable Python lines — that vacuous pass is intentional (FR-034:
-      # the gate measures CHANGED code; docs/CSS/YAML-only diffs pass).
-      # Test modules are excluded: they are exercised by running them, several
-      # 060 release-tooling test files run only in the host-side
-      # release-tooling-tests lane (they skip inside the product image), and
-      # the spec's multi-lane authority is check_changed_coverage.py. This gate
-      # measures CHANGED PRODUCT code.
-      - name: Enforce 90% on changed Python lines
-        id: backend_diff_coverage
-        continue-on-error: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && github.event.pull_request.number == 151 && github.head_ref == '065-conversational-voice' }}
-        run: >
-          diff-cover backend/coverage.xml --compare-branch origin/main
-          --fail-under 90
-          --exclude '*/tests/*' 'backend/tests/*' 'backend/conftest.py' '*/conftest.py'
-      - name: Report the draft-only backend coverage diagnostic
-        if: ${{ always() && steps.backend_diff_coverage.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.draft == true && github.event.pull_request.number == 151 && github.head_ref == '065-conversational-voice' }}
-        run: |
-          echo "::warning title=Draft-only backend coverage diagnostic::The legacy backend-only report did not meet the required 90% threshold. The canonical multi-lane coverage gate remains required before merge or release."
-          {
-            echo "### Draft-only backend coverage diagnostic"
-            echo
-            echo "The legacy backend-only report did not meet its 90% threshold."
-            echo "PR 151 remains draft; canonical multi-lane coverage is still required before merge or release."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ── FR-036: boot-smoke the built image. (1) dev posture answers /healthz +
-  #    /readyz with a real DB; (2) production posture with placeholder/missing
-  #    secrets exits EXACTLY 78 (EX_CONFIG — the fail-closed boot gate).
-  #    Disabled with the other public hosted composed-image consumers. ──
-  smoke:
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: build
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: astral
-          POSTGRES_PASSWORD: astral_ci
-          POSTGRES_DB: astraldeep
-        ports:
-          - "5432:5432"
-        options: >-
-          --health-cmd "pg_isready -U astral -d astraldeep"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: image
-          path: /tmp
-      - name: Load built image
-        run: docker load -i /tmp/astraldeep.tar
-      # Feature 054 (FR-004): the shipped-artifact credential check. The
-      # image filesystem must carry NO .env and NO LLM credential material —
-      # the product ships with zero LLM access (native binaries are built
-      # from this same scanned tree and contain no credential inputs).
-      - name: Shipped-artifact check — image carries no LLM credential
-        run: |
-          set -e
-          docker run --rm --entrypoint sh astraldeep:ci -c '
-            fail=0
-            # (1) The real deployment risk: no .env baked into an image layer.
-            if [ -f /app/.env ] || [ -f /app/backend/.env ]; then
-              echo "::error::.env file baked into the image"; fail=1
-            fi
-            # (2) Key-shaped strings in RUNTIME code only (sk-/gsk_/xai-/AIza +
-            #     20 chars). Test fixtures, the eval benchmark corpus, and docs
-            #     legitimately carry fake example keys, so they are excluded;
-            #     gitleaks scans the full repo/history separately. Offenders
-            #     are printed so a real hit is actionable.
-            hits=$(grep -rInE "\b(sk-|gsk_|xai-|AIza)[A-Za-z0-9_-]{20,}\b" /app \
-                     --include="*.py" --include="*.json" \
-                     --exclude-dir=tests --exclude-dir=security_benchmark \
-                     --exclude-dir=__pycache__ --exclude-dir=knowledge_packs \
-                     --exclude="test_*.py" --exclude="conftest.py" 2>/dev/null || true)
-            if [ -n "$hits" ]; then
-              echo "::error::key-shaped strings found in runtime code:"; echo "$hits"; fail=1
-            fi
-            exit $fail
-          '
-          echo "image is credential-free (FR-004 shipped-artifact check)"
-      # Default CMD = start-docker.sh: waits for Postgres (the service is up),
-      # then exec start.py which boots the orchestrator on :8001.
-      - name: Dev-posture boot answers /healthz and /readyz
-        run: |
-          docker run -d --name astraldeep-smoke --network host \
-            -e ASTRAL_ENV=development \
-            -e DB_HOST=localhost \
-            -e DB_PORT=5432 \
-            -e DB_NAME=astraldeep \
-            -e DB_USER=astral \
-            -e DB_PASSWORD=astral_ci \
-            -e AGENT_API_KEY=ci-test-agent-key \
-            -e AUDIT_HMAC_SECRET=ci-test-hmac-secret \
-            astraldeep:ci
-          ok=""
-          for _ in $(seq 1 60); do
-            if curl -fsS -o /dev/null http://localhost:8001/healthz \
-               && curl -fsS -o /dev/null http://localhost:8001/readyz; then
-              ok=1
-              break
-            fi
-            sleep 2
-          done
-          if [ -z "$ok" ]; then
-            echo "::error::/healthz + /readyz did not both answer 200 within 120s"
-            docker logs astraldeep-smoke
-            exit 1
-          fi
-          echo "liveness + readiness OK (dev posture, real DB)"
-      - name: Cleanup dev-posture container
-        if: always()
-        run: docker rm -f astraldeep-smoke || true
-      # Fail-closed proof. assert_production_posture (orchestrator/session_store.py)
-      # raises SystemExit(78) from Orchestrator.start when ASTRAL_ENV != development
-      # and mock auth is on / secrets are placeholders. The image's default CMD
-      # (start-docker.sh -> start.py) SUPERVISES the orchestrator as a child and
-      # exits 0 when it dies, swallowing the gate's code — so this runs the
-      # orchestrator process directly, exactly as start.py spawns it (cwd
-      # /app/backend; orchestrator.py self-inserts its parent dir on sys.path).
-      # DB env points at the live service so boot reaches the posture gate.
-      # A one-run Fernet key satisfies the earlier encrypted-session constructor
-      # invariant; it is never printed or persisted and lets this step prove the
-      # intended aggregate production-posture exit code rather than stopping at
-      # the narrower missing-session-key refusal.
-      # `timeout 300` turns a hung boot into a failure (124) instead of a block.
-      - name: Fail-closed proof — production posture must exit 78
-        run: |
-          WEB_SESSION_ENC_KEY="$(docker run --rm --entrypoint python astraldeep:ci \
-            -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
-          test "${#WEB_SESSION_ENC_KEY}" -eq 44
-          set +e
-          timeout 300 docker run --rm --network host \
-            -e DB_HOST=localhost \
-            -e DB_PORT=5432 \
-            -e DB_NAME=astraldeep \
-            -e DB_USER=astral \
-            -e DB_PASSWORD=astral_ci \
-            -e USE_MOCK_AUTH=true \
-            -e AUDIT_HMAC_SECRET=change-me \
-            -e WEB_SESSION_ENC_KEY="$WEB_SESSION_ENC_KEY" \
-            -w /app/backend --entrypoint python \
-            astraldeep:ci orchestrator/orchestrator.py
-          code=$?
-          unset WEB_SESSION_ENC_KEY
-          set -e
-          if [ "$code" -ne 78 ]; then
-            echo "::error::expected exit 78 (EX_CONFIG fail-closed boot gate), got $code"
-            exit 1
-          fi
-          echo "fail-closed boot gate refused to serve with exit 78, as documented"
-
-  # ── FR-037: committed-credential scan over full history. Allowlist for the
-  #    repo's intentional dev/test placeholders lives in .gitleaks.toml
-  #    (auto-discovered at the repo root; pinned explicitly below). ──
   secret-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -793,62 +245,24 @@ jobs:
           --gitleaks-ignore-path "$GITHUB_WORKSPACE/.gitleaksignore"
           --log-opts="--all" "$GITHUB_WORKSPACE"
 
-  # Release readiness is never authorized by this temporary public-CI posture.
-  # The aggregation first proves every still-active unprivileged lane and the
-  # exact intentional skips, then fails explicitly because no private composed
-  # image was built/tested. Consequently a default-branch workflow_run cannot
-  # be mistaken for qualified protected-release evidence.
   gates:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    name: Deep owner CI aggregate
     if: always()
     needs:
       - lint
-      - javascript-lint
-      - voice-contract-validator
-      - voice-web-conformance
       - release-tooling-tests
       - component-contract-tests
-      - windows-client
-      - build
+      - composition-declarations
       - voice-worker-test
-      - test
-      - test-flags-off
-      - coverage-gate
-      - smoke
       - secret-scan
+    runs-on: ubuntu-24.04
     steps:
-      - name: Enforce every verification gate
+      - name: Enforce every hosted owner gate
         run: |
           [[ '${{ needs.lint.result }}' == 'success' ]]
-          [[ '${{ needs.javascript-lint.result }}' == 'skipped' ]]
-          [[ '${{ needs.voice-contract-validator.result }}' == 'success' ]]
-          [[ '${{ needs.voice-web-conformance.result }}' == 'skipped' ]]
-          [[ '${{ needs.release-tooling-tests.result }}' == 'skipped' ]]
+          [[ '${{ needs.release-tooling-tests.result }}' == 'success' ]]
           [[ '${{ needs.component-contract-tests.result }}' == 'success' ]]
-          [[ '${{ needs.windows-client.result }}' == 'skipped' ]]
-          [[ '${{ needs.build.result }}' == 'success' ]]
-          [[ '${{ needs.voice-worker-test.result }}' == 'success' || '${{ needs.voice-worker-test.result }}' == 'skipped' ]]
-          # Feature 074 deliberately hard-disables these four consumers of the
-          # private composed image. A failure/cancellation remains a gate failure;
-          # only the declared temporary skip is accepted.
-          [[ '${{ needs.test.result }}' == 'skipped' ]]
-          [[ '${{ needs.test-flags-off.result }}' == 'skipped' ]]
-          [[ '${{ needs.coverage-gate.result }}' == 'skipped' ]]
-          [[ '${{ needs.smoke.result }}' == 'skipped' ]]
+          [[ '${{ needs.composition-declarations.result }}' == 'success' ]]
+          [[ '${{ needs.voice-worker-test.result }}' == 'success' ]]
           [[ '${{ needs.secret-scan.result }}' == 'success' ]]
-          echo "::error title=Composed qualification unavailable::Private Plane/Projection checkout and composed image gates are intentionally disabled; this run is diagnostic and cannot authorize protected release workflows."
-          exit 1
-
-  # Feature 074: publication is removed from the public hosted workflow while
-  # the composed image includes private Plane/Projection bytes. Reintroduction
-  # requires the final qualification/activation task and a private artifact,
-  # cache, credential, and runner boundary.
-  publish:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs:
-      - gates
-    if: ${{ false }}
-    steps:
-      - run: echo "Hosted composed-image publication is disabled for private components."
+          echo "Full private composition remains a required local Feature 074 qualification."

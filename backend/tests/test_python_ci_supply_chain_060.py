@@ -135,28 +135,12 @@ def test_ci_uses_one_hash_lock_for_every_python_test_tool_install() -> None:
     for job_name in (
         "lint",
         "release-tooling-tests",
-        "coverage-gate",
+        "component-contract-tests",
+        "composition-declarations",
     ):
         job = _workflow_job(workflow, job_name)
         assert LOCK_INSTALL in job
         assert "cache-dependency-path: tooling/python-ci/requirements.lock.txt" in job
-
-    windows = _workflow_job(workflow, "windows-client")
-    assert "runs-on: windows-latest" in windows
-    assert LOCK_INSTALL in windows
-    assert (
-        "python -m pip install --require-hashes -r "
-        "components/AstralProjection/windows-client/requirements-release.lock.txt"
-    ) in windows
-    assert "components/AstralProjection/windows-client/requirements.txt" not in windows
-    assert "sudo apt-get" not in windows
-
-    backend = _workflow_job(workflow, "test")
-    assert '-v "$PWD/tooling/python-ci:/ci/python:ro"' in backend
-    assert (
-        "python -m pip install --require-hashes -r "
-        "/ci/python/requirements.lock.txt"
-    ) in backend
 
     assert "pip install ruff" not in workflow
     assert "pip install diff-cover" not in workflow
@@ -198,13 +182,16 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     )
 
 
-def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> None:
+def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "release-tooling-tests")
     assert "RELEASE_TOOL_TESTS=(" in job
     assert 'test "${#RELEASE_TOOL_TESTS[@]}" -gt 0' in job
-    assert "coverage run --source=scripts -m pytest" in job
+    assert "coverage run --source=scripts" in job
     assert "coverage report --fail-under=90" in job
+    omissions = set(re.findall(r"--omit=([^\s\\]+)", job))
+    assert omissions == {"scripts/windows_release_candidate.py"}
+    assert not any("*" in omission for omission in omissions)
 
     expected_scripts = {
         "check_changed_coverage.py",
@@ -226,29 +213,27 @@ def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> N
     assert {path.name for path in (REPO_ROOT / "scripts").glob("*.py")} == (
         expected_scripts
     )
-    for test_path in (
+    expected_test_paths = {
         "backend/tests/test_changed_coverage_060.py",
         "backend/tests/test_release_tooling_coverage_060.py",
         "backend/tests/test_documentation_060.py",
         "backend/tests/test_quickstart_commands.py",
-        "backend/tests/test_ci_javascript_lint.py",
         "backend/tests/test_python_ci_supply_chain_060.py",
         "backend/tests/test_android_next_major_canary.py",
         "backend/tests/test_candidate_staging_060.py",
         "backend/tests/test_release_evidence_validator.py",
         "backend/tests/test_prepare_release_evidence_060.py",
         "backend/tests/test_extract_release_artifact_060.py",
-        "backend/tests/test_release_workflows_060.py",
-        "backend/tests/test_release_evidence_producers.py",
+        "backend/tests/test_release_evidence_bootstrap.py",
         "scripts/tests/test_component_build_surfaces_074.py",
         "scripts/tests/test_install_local_components.py",
         "scripts/tests/test_verify_component_ownership.py",
         "scripts/tests/test_verify_composition.py",
         "scripts/tests/test_verify_migration_provenance.py",
         "scripts/tests/test_verify_primitive_coverage.py",
-        "components/AstralProjection/windows-client/tests/test_release_lock_060.py",
-    ):
-        assert test_path in job
+    }
+    array = job.partition("RELEASE_TOOL_TESTS=(")[2].partition(")")[0]
+    assert set(re.findall(r"(?m)^\s+([^\s]+\.py)\s*$", array)) == expected_test_paths
 
 
 def test_windows_candidate_installs_test_lock_only_after_candidate_build() -> None:

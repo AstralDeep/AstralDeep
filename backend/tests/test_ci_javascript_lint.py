@@ -19,7 +19,7 @@ LOCK_PATH = TOOLING_ROOT / "package-lock.json"
 ESLINT_CONFIG_PATH = TOOLING_ROOT / "eslint.config.mjs"
 PLAYWRIGHT_IMAGE_PATH = TOOLING_ROOT / "playwright-image.txt"
 RELEASE_RUNNER_PATH = TOOLING_ROOT / "release-runner.mjs"
-WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOW_PATH = PROJECTION_ROOT / ".github" / "workflows" / "ci.yml"
 
 if not (TOOLING_ROOT.is_dir() and (REPO_ROOT / ".github").is_dir()):
     pytest.skip(
@@ -168,15 +168,15 @@ def test_eslint_flat_config_covers_maintained_web_js_and_excludes_vendor() -> No
     assert "globals.node" in config
 
 
-def test_ci_retains_migrated_lint_definition_but_disables_public_job() -> None:
+def test_projection_ci_owns_an_active_lock_pinned_web_gate() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    job = _workflow_job(workflow, "javascript-lint")
+    job = _workflow_job(workflow, "web")
 
-    assert "if: ${{ false }}" in job
+    assert "if: ${{ false }}" not in job
     assert "actions/setup-node@" in job
     assert re.search(r'node-version:\s*["\']?24["\']?', job)
     assert re.search(r"cache:\s*[\"']?npm[\"']?", job)
-    assert "cache-dependency-path: components/AstralProjection/tooling/web-ci/package-lock.json" in job
+    assert "cache-dependency-path: tooling/web-ci/package-lock.json" in job
 
     version = job.index("corepack npm --version")
     assert '"11.16.0"' in job or "'11.16.0'" in job
@@ -185,22 +185,11 @@ def test_ci_retains_migrated_lint_definition_but_disables_public_job() -> None:
     isolation = job.index("corepack npm run check:product-isolation")
     lint = job.index("corepack npm run lint")
     assert version < install < manager < isolation < lint
-    assert (
-        job.count(
-            "working-directory: components/AstralProjection/tooling/web-ci"
-        )
-        >= 3
-    )
+    assert job.count("working-directory: tooling/web-ci") >= 2
 
-    # Transitive through the unprivileged `gates` aggregation (see
-    # test_release_workflows_060 for the publish/gates chain rationale).
-    publish = _workflow_job(workflow, "publish")
-    assert "- gates" in publish
-    gates = _workflow_job(workflow, "gates")
-    assert "- javascript-lint" in gates
-    assert "needs.javascript-lint.result }}' == 'skipped'" in gates
-    assert "- release-tooling-tests" in gates
-    assert "needs.release-tooling-tests.result }}' == 'skipped'" in gates
+    required = _workflow_job(workflow, "required")
+    assert "web" in required
+    assert "needs.web.result }}' == 'success'" in required
 
 
 def test_web_ci_packages_cannot_enter_product_manifests_or_image() -> None:

@@ -343,13 +343,19 @@ clients):
 
 ### Apple release runbook
 
-The Apple release pipeline is `.github/workflows/apple-release.yml` — a separate
-workflow from `ci.yml` (the six backend gates are untouched; `apple-ci.yml`
-gains only a `generate_app_icons.py --check` step). It runs on `macos-15` and
-does **archive → sign → export → validate → upload**. It does **not** submit for
-review (see below).
+AstralProjection owns active native pull-request evidence. Its own
+`.github/workflows/android-ci.yml` and `.github/workflows/apple-ci.yml` qualify
+the Android, iOS, macOS, and watchOS sources; AstralDeep does not duplicate
+those workflows or fetch private Projection source in hosted pull-request jobs.
 
-**Trigger.** Three ways in:
+Release activation remains parked during Feature 074. The retained Deep
+`.github/workflows/apple-release.yml` describes the separately protected
+archive/sign/export/validate/upload path, but Deep owner CI neither activates it
+nor treats Projection pull-request evidence as release authorization. The
+pipeline does not submit for review (see below).
+
+**Activation contract.** If a later, separately approved release task reopens
+this path, its three trigger forms are:
 1. **Merge to `main` that changes `components/AstralProjection/apple-clients/**`** — auto-releases. A cheap
    `gate` job checks the push's diff; if `components/AstralProjection/apple-clients/**` changed it runs the
    full archive → upload, building the project's current `MARKETING_VERSION`.
@@ -454,13 +460,17 @@ provisioning profiles / ASC API key, and the on-device verification evidence.
   `GET /api/audit` (per-user) and verifiable server-side:
   `python -m audit.cli verify-chain --user-id <id>`.
 
-## Deploying to sandbox.ai.uky.edu (GHCR pull)
+## Deploying to sandbox.ai.uky.edu (parked GHCR path)
 
-CI (feature 029, `.github/workflows/ci.yml`) publishes the production image
-to GitHub Container Registry on every push to `main` that passes all gates:
-an immutable `ghcr.io/<owner>/<repo>:sha-<commit>` tag plus a moving
-`:latest`. The sandbox host **pulls the verified image** instead of building
-locally — the bytes that passed CI are the bytes that serve.
+During Feature 074, AstralDeep hosted CI validates only Deep-owned source and
+the four exact composition declarations. It does not initialize the private
+composition, build or upload a composed product image, publish to GitHub
+Container Registry, or authorize release. Full private composition remains a
+mandatory local qualification, and release activation remains parked.
+
+The GHCR procedure below applies only after a separately approved release task
+has produced and published an immutable, fully qualified composed image. A
+green Deep owner-CI run alone is not such an artifact.
 
 ### 1. Pull the image
 
@@ -469,7 +479,8 @@ docker login ghcr.io -u <github-username>        # PAT with read:packages
 docker pull ghcr.io/<owner>/<repo>:sha-<commit>  # always pin the immutable tag
 ```
 
-Deploy by `sha-<commit>` (the tag CI stamped on the exact verified build);
+Deploy by `sha-<commit>` (the tag the protected publisher stamped on the exact
+verified build);
 treat `:latest` as a convenience pointer only — never as the deployed ref.
 
 ### 2. Compose override — `image:` instead of `build:`

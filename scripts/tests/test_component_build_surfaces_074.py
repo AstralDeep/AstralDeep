@@ -75,54 +75,97 @@ def test_make_bootstrap_and_lifecycle_require_full_composition_preflight() -> No
     assert "sync: sync-components" in makefile
 
 
-def test_public_ci_validates_declarations_without_private_bytes_or_image_export() -> None:
+def test_public_ci_contains_only_repository_owned_qualification() -> None:
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(
         encoding="utf-8"
     )
-    build = _workflow_job(workflow, "build")
-    publish = _workflow_job(workflow, "publish")
-    assert "submodules: false" in build
-    assert "--declarations-only --require-gitlinks" in build
-    assert "docker/build-push-action" not in build
-    assert "docker/setup-buildx-action" not in build
-    assert "cache-to:" not in build
-    assert "outputs: type=docker" not in build
-    assert "name: image" not in build
-    assert "submodules: recursive" not in workflow
-    for projection_path in (
-        "tooling/web-ci",
-        "windows-client",
-        "android-client",
-        "apple-clients",
-    ):
-        assert f"components/AstralProjection/{projection_path}" in workflow
-    assert "working-directory: tooling/web-ci" not in workflow
-    assert '$PWD/windows-client' not in workflow
-    assert '$PWD/android-client' not in workflow
-    assert '$PWD/apple-clients' not in workflow
-    gates = _workflow_job(workflow, "gates")
-    assert "Composed qualification unavailable" in gates
-    assert "exit 1" in gates
-    assert "packages: write" not in publish
-    assert "docker push" not in publish
-    assert "docker/login-action" not in publish
-    assert "if: ${{ false }}" in publish
-    for job in (
-        "javascript-lint",
-        "voice-web-conformance",
+    job_ids = set(
+        re.findall(
+            r"(?m)^  ([A-Za-z0-9_-]+):\s*$",
+            workflow.partition("\njobs:\n")[2],
+        )
+    )
+    assert job_ids == {
+        "lint",
         "release-tooling-tests",
+        "component-contract-tests",
+        "composition-declarations",
+        "voice-worker-test",
+        "secret-scan",
+        "gates",
+    }
+    assert not (REPOSITORY_ROOT / ".github/workflows/android-ci.yml").exists()
+    assert not (REPOSITORY_ROOT / ".github/workflows/apple-ci.yml").exists()
+    for stale in (
+        "javascript-lint",
+        "voice-contract-validator",
+        "voice-web-conformance",
         "windows-client",
+        "build",
         "test",
         "test-flags-off",
         "coverage-gate",
         "smoke",
+        "publish",
     ):
-        job_body = _workflow_job(workflow, job)
-        assert "if: ${{ false }}" in job_body
-    smoke = _workflow_job(workflow, "smoke")
-    assert "Fernet.generate_key" in smoke
-    assert '-e WEB_SESSION_ENC_KEY="$WEB_SESSION_ENC_KEY"' in smoke
+        assert stale not in job_ids
+
+    composition = _workflow_job(workflow, "composition-declarations")
+    assert "submodules: false" in composition
+    assert 'test "${#COMPONENT_STATUS[@]}" -eq 4' in composition
+    assert "--declarations-only --require-gitlinks" in composition
+    assert "submodules: recursive" not in workflow
+    assert "components/AstralProjection/" not in workflow
+
+    gates = _workflow_job(workflow, "gates")
+    assert "if: always()" in gates
+    for owner_job in job_ids - {"gates"}:
+        assert f"- {owner_job}" in gates
+        assert f"needs.{owner_job}.result }}}}' == 'success'" in gates
+    assert (
+        "Full private composition remains a required local Feature 074 "
+        "qualification."
+    ) in gates
+    assert "Composed qualification unavailable" not in gates
+    assert "exit 1" not in gates
+
+    assert "packages: write" not in workflow
+    assert "id-token: write" not in workflow
+    assert "secrets." not in workflow
+    assert "actions/download-artifact" not in workflow
+    assert "docker save" not in workflow
+    assert "docker push" not in workflow
+    assert "docker/login-action" not in workflow
+    assert "name: image" not in workflow
+    assert "name: voice-worker-image" not in workflow
+
+    external_actions = {
+        value.split(" #", 1)[0]
+        for value in re.findall(r"(?m)^\s*(?:-\s+)?uses:\s*(.+?)\s*$", workflow)
+        if not value.startswith("./")
+    }
+    assert external_actions == {
+        "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
+        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    }
+    assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", value) for value in external_actions)
+
     component_tests = _workflow_job(workflow, "component-contract-tests")
     assert "submodules: false" in component_tests
-    assert "test_install_local_components.py" in component_tests
-    assert "test_component_build_surfaces_074.py" in component_tests
+    for test_path in (
+        "scripts/tests/test_install_local_components.py",
+        "scripts/tests/test_verify_component_ownership.py",
+        "scripts/tests/test_verify_composition.py",
+        "scripts/tests/test_verify_migration_provenance.py",
+        "scripts/tests/test_verify_primitive_coverage.py",
+    ):
+        assert test_path in component_tests
+    deselections = set(re.findall(r"--deselect=([^\s\\]+)", component_tests))
+    assert deselections == {
+        "scripts/tests/test_install_local_components.py::test_real_initialized_sources_match_the_declarations",
+        "scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts",
+        "scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands",
+    }
+    assert " -k " not in component_tests
+    assert "--ignore" not in component_tests

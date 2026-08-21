@@ -46,8 +46,6 @@ def _state(**updates: Any) -> Any:
         "changed_paths": ("one.txt", "two.txt"),
         "provider_now": NOW,
         "workflow_files": {
-            ".github/workflows/android-ci.yml": "1" * 64,
-            ".github/workflows/apple-ci.yml": "2" * 64,
             ".github/workflows/ci.yml": "3" * 64,
         },
         "pull": _pull(),
@@ -547,6 +545,7 @@ def test_workflow_policy_accepts_safe_jobs_and_guarded_privilege(tmp_path: Path)
 
 
 def test_repository_pull_request_workflows_are_draft_bootstrap_safe() -> None:
+    assert bootstrap.REQUIRED_PR_WORKFLOWS == {".github/workflows/ci.yml"}
     result = bootstrap._validate_bootstrap_workflows(REPO_ROOT, BRANCH)
     assert bootstrap.REQUIRED_PR_WORKFLOWS.issubset(result)
 
@@ -586,8 +585,8 @@ def test_workflow_policy_rejects_draft_authority(
             bootstrap._validate_bootstrap_workflows(tmp_path, BRANCH)
 
 
-def test_workflow_policy_requires_all_client_workflows(tmp_path: Path) -> None:
-    path = tmp_path / ".github" / "workflows" / "ci.yml"
+def test_workflow_policy_requires_the_deep_pull_request_workflow(tmp_path: Path) -> None:
+    path = tmp_path / ".github" / "workflows" / "other.yml"
     path.parent.mkdir(parents=True)
     path.write_text(_workflow(), encoding="utf-8")
     with pytest.raises(bootstrap.BootstrapError, match="required pull-request"):
