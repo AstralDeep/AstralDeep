@@ -473,11 +473,15 @@ ci = [
   "pytest==8.4.2",
   "pytest-asyncio==1.3.0",
   "pytest-cov==7.0.0",
+  "pyyaml==6.0.3",
   "ruff==0.15.21",
 ]
 ```
 
 Create a test asserting the four job IDs, read-only permissions, SHA-pinned actions, no hard-false/continue-on-error/stale component paths, mandatory DSN, digest-pinned PostgreSQL, the measured 88.75% combined branch-coverage non-regression floor, 90% changed-line coverage, a hash-constrained build backend, and the all-success aggregate. Pin `setuptools==80.10.2` and generate a hash-locked build constraint without adding it to runtime dependencies.
+Parse workflow action steps through the locked PyYAML node tree so quoted,
+flow-mapping, alternate-whitespace, and split-line `uses` keys cannot evade the
+exact approved action multiset; regex shape checks alone are insufficient.
 
 ```bash
 uv lock
@@ -727,6 +731,18 @@ git commit -m "security: disposition reviewed CI history findings"
 - Produces active jobs `lint`, `release-tooling-tests`, `component-contract-tests`, `composition-declarations`, `voice-worker-test`, `secret-scan`, and `gates`.
 - `gates` succeeds only when every active job succeeds; it explicitly records that composed qualification is local and never authorizes release.
 
+- [ ] **Step 0: Advance the three component pins before ownership tests**
+
+Task 7's local-only policy tests inspect Projection's newly active workflows,
+which do not exist at Deep's starting Projection gitlink. Perform Task 8 Step 1
+now, after the three leaf-repository reviews are clean, and commit the exact
+Projection, Plane, and Primitives gitlinks plus composition declarations before
+writing Task 7. Because the leaf commits are intentionally not pushed yet,
+fetch each exact object from its sibling checkout rather than `origin`; verify
+`FETCH_HEAD` equals the sibling `HEAD` before detaching. LETS remains pinned to
+signed v1.0.10. Task 8 re-verifies these pins and refreshes them only if a later
+review changes a leaf head.
+
 - [ ] **Step 1: Write ownership assertions first and verify RED**
 
 In `scripts/tests/test_component_build_surfaces_074.py`, assert:
@@ -771,6 +787,7 @@ backend/tests/test_release_tooling_coverage_060.py
 backend/tests/test_documentation_060.py
 backend/tests/test_quickstart_commands.py
 backend/tests/test_python_ci_supply_chain_060.py
+backend/tests/test_android_next_major_canary.py
 backend/tests/test_candidate_staging_060.py
 backend/tests/test_release_evidence_validator.py
 backend/tests/test_prepare_release_evidence_060.py
@@ -778,13 +795,40 @@ backend/tests/test_extract_release_artifact_060.py
 backend/tests/test_release_evidence_bootstrap.py
 scripts/tests/test_component_build_surfaces_074.py
 scripts/tests/test_install_local_components.py
+scripts/tests/test_verify_component_ownership.py
 scripts/tests/test_verify_composition.py
 scripts/tests/test_verify_migration_provenance.py
 scripts/tests/test_verify_primitive_coverage.py
 ```
 
-`component-contract-tests` runs the five `scripts/tests/*074.py` and verifier
-test modules above against temporary repositories; `composition-declarations`
+Measure the broad `scripts` tree with one exact, activation-gated release-only
+exclusion:
+
+```text
+python -m coverage run --source=scripts \
+  --omit=scripts/windows_release_candidate.py -m pytest ...
+python -m coverage report --fail-under=90
+```
+
+The current resolved set is 91%. Add a structural assertion that the omit set
+is exactly `{scripts/windows_release_candidate.py}` and contains no wildcard.
+That entrypoint is used only by the parked, default-branch-gated Windows release
+candidate workflow; this PR does not claim coverage for it or all production
+scripts. Do not lower the 90% threshold or replace the one-file omission with a
+broad pattern.
+
+`component-contract-tests` runs the five listed component/verifier test modules
+above against temporary repositories. Run the complete five-module
+set with exactly these initialized-composition nodes deselected:
+
+```text
+scripts/tests/test_install_local_components.py::test_real_initialized_sources_match_the_declarations
+scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts
+scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands
+```
+
+Bind that exact three-node set in the workflow contract; do not use a broad
+`-k` expression. `composition-declarations`
 performs `--declarations-only --require-gitlinks`; `voice-worker-test` retains
 its current closure-variable no-op contract; `secret-scan` retains
 checksum-pinned Gitleaks.
@@ -874,22 +918,32 @@ git commit -m "ci: enforce repository-owned qualification"
 - Consumes all five local candidate commits and exact Deep submodule pins.
 - Produces evidence only; `mergeAuthorization` and `releaseAuthorization` remain `false` until hosted owner checks are observed and the user merges manually.
 
-- [ ] **Step 1: Refresh Deep's component pins to the final owner commits**
+- [ ] **Step 1: Re-verify Deep's component pins at the final owner commits**
 
-Keep LETS on immutable signed `v1.0.10`. Fetch and detach the other three
-submodules at the final local PR heads:
+Keep LETS on immutable signed `v1.0.10`. Task 7 Step 0 already fetched and
+detached the other three submodules at reviewed local PR heads. Verify each
+gitlink and declaration still equals its sibling repository `HEAD`. If a later
+review changed a leaf head, repeat the local-sibling fetch, equality check,
+detach, declaration/digest update, and pin commit before qualification. Do not
+fetch the unpushed candidate commits from `origin`.
 
 ```bash
 cd /Users/sam/Desktop/Work/AstralDeep
-git -C components/AstralProjection fetch origin codex/074-extract-projection
-git -C components/AstralProjection checkout --detach \
+git -C components/AstralProjection fetch /Users/sam/Desktop/Work/AstralProjection HEAD
+test "$(git -C components/AstralProjection rev-parse FETCH_HEAD)" = \
   "$(git -C /Users/sam/Desktop/Work/AstralProjection rev-parse HEAD)"
-git -C components/AstralPlane fetch origin codex/074-extract-data-plane
-git -C components/AstralPlane checkout --detach \
+git -C components/AstralProjection checkout --detach \
+  "$(git -C components/AstralProjection rev-parse FETCH_HEAD)"
+git -C components/AstralPlane fetch /Users/sam/Desktop/Work/AstralPlane HEAD
+test "$(git -C components/AstralPlane rev-parse FETCH_HEAD)" = \
   "$(git -C /Users/sam/Desktop/Work/AstralPlane rev-parse HEAD)"
-git -C components/AstralPrimitives fetch origin codex/074-canonical-identity
-git -C components/AstralPrimitives checkout --detach \
+git -C components/AstralPlane checkout --detach \
+  "$(git -C components/AstralPlane rev-parse FETCH_HEAD)"
+git -C components/AstralPrimitives fetch /Users/sam/Desktop/Work/AstralPrimitives HEAD
+test "$(git -C components/AstralPrimitives rev-parse FETCH_HEAD)" = \
   "$(git -C /Users/sam/Desktop/Work/AstralPrimitives rev-parse HEAD)"
+git -C components/AstralPrimitives checkout --detach \
+  "$(git -C components/AstralPrimitives rev-parse FETCH_HEAD)"
 ```
 
 Update the three `components.*.commit` values in
