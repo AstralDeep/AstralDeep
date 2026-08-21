@@ -1,0 +1,30 @@
+{
+  "format": "astral.us5-checks/v1",
+  "recordedAtUtc": "2026-08-21T09:07:01Z",
+  "status": "passed-with-release-gates-inactive",
+  "provenance": "all five repositories verified by astral.migration-provenance-verification/v1",
+  "ownership": "zero violations",
+  "canonicalUrls": "verified",
+  "ancestry": {
+    "astralPlane": {
+      "legacyBaseline": "2cd12602e361a0dfb3e74655070720be405c09a3",
+      "featureCommit": "3516dd52e1b49d078e12d90b965fa0f304a3f1ca",
+      "ordinaryDescendant": true,
+      "mainAndMasterRemainAtBaseline": true
+    },
+    "astralProjection": {
+      "legacyBaseline": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+      "featureCommit": "46b8173239a94ee55d5226c077ddd78a304e4d94",
+      "ordinaryDescendant": true,
+      "mainAndMasterRemainAtBaseline": true
+    }
+  },
+  "remoteDefaults": {
+    "astralPlane": "main",
+    "astralProjection": "main"
+  },
+  "feature074ArchiveRefCount": 0,
+  "releaseTrust": "Projection release-trust and bridge tests passed; release workflows remain inactive",
+  "sensitivePathReceipt": "execution/final-sensitive-path-check.json",
+  "remoteMutation": "none"
+}

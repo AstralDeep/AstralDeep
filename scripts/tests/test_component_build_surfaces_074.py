@@ -119,6 +119,9 @@ def test_public_ci_validates_declarations_without_private_bytes_or_image_export(
     ):
         job_body = _workflow_job(workflow, job)
         assert "if: ${{ false }}" in job_body
+    smoke = _workflow_job(workflow, "smoke")
+    assert "Fernet.generate_key" in smoke
+    assert '-e WEB_SESSION_ENC_KEY="$WEB_SESSION_ENC_KEY"' in smoke
     component_tests = _workflow_job(workflow, "component-contract-tests")
     assert "submodules: false" in component_tests
     assert "test_install_local_components.py" in component_tests

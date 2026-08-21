@@ -1,0 +1,21 @@
+{
+  "format": "astral.us2-checks/v1",
+  "recordedAtUtc": "2026-08-21T09:07:01Z",
+  "status": "passed",
+  "composition": {
+    "astraldeep": "0ae58e04f9d7b868933fa9cf26094defbdeaed9b",
+    "astralPlane": "3516dd52e1b49d078e12d90b965fa0f304a3f1ca",
+    "astralProjection": "46b8173239a94ee55d5226c077ddd78a304e4d94",
+    "letsRuntime": "82dbe4f5ddf410cc86778784bb612440725ec66d"
+  },
+  "evidence": [
+    "AstralPlane Linux: 2016 passed, 9 skipped",
+    "AstralPlane Windows: 2022 passed, 3 skipped",
+    "AstralProjection Python: 536 passed",
+    "AstralProjection focused Windows/LETS: 80 passed, 1 soak deselected",
+    "AstralProjection protocol/provenance: 17 passed, 1 expected skip",
+    "LETS Astral aggregate tests: 61 passed",
+    "Deep final flags-on and flags-off primary/nested matrices passed"
+  ],
+  "runtimeDisposition": "signed LETS v1.0.10 remains unchanged"
+}

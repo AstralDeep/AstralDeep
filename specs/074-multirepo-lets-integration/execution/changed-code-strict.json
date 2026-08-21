@@ -1,0 +1,17 @@
+{
+  "base_sha": "dbb9c8f391e30c5a396b887ed7edcac179259545",
+  "candidate_sha": "0ae58e04f9d7b868933fa9cf26094defbdeaed9b",
+  "error": {
+    "code": "incomplete_report_matrix",
+    "message": "strict coverage requires the exact ten producer slots: missing android_app, android_core, ios, javascript, macos, tooling, voice_worker, watchos, windows"
+  },
+  "fail_under": 90.0,
+  "revisions_validated": true,
+  "schema_version": 1,
+  "selection": {
+    "base_source": "manual.base_sha",
+    "candidate_source": "manual.candidate_sha",
+    "event_name": "manual"
+  },
+  "status": "error"
+}

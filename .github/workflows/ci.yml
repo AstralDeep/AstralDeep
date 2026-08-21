@@ -730,9 +730,16 @@ jobs:
       # orchestrator process directly, exactly as start.py spawns it (cwd
       # /app/backend; orchestrator.py self-inserts its parent dir on sys.path).
       # DB env points at the live service so boot reaches the posture gate.
+      # A one-run Fernet key satisfies the earlier encrypted-session constructor
+      # invariant; it is never printed or persisted and lets this step prove the
+      # intended aggregate production-posture exit code rather than stopping at
+      # the narrower missing-session-key refusal.
       # `timeout 300` turns a hung boot into a failure (124) instead of a block.
       - name: Fail-closed proof — production posture must exit 78
         run: |
+          WEB_SESSION_ENC_KEY="$(docker run --rm --entrypoint python astraldeep:ci \
+            -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          test "${#WEB_SESSION_ENC_KEY}" -eq 44
           set +e
           timeout 300 docker run --rm --network host \
             -e DB_HOST=localhost \
@@ -742,9 +749,11 @@ jobs:
             -e DB_PASSWORD=astral_ci \
             -e USE_MOCK_AUTH=true \
             -e AUDIT_HMAC_SECRET=change-me \
+            -e WEB_SESSION_ENC_KEY="$WEB_SESSION_ENC_KEY" \
             -w /app/backend --entrypoint python \
             astraldeep:ci orchestrator/orchestrator.py
           code=$?
+          unset WEB_SESSION_ENC_KEY
           set -e
           if [ "$code" -ne 78 ]; then
             echo "::error::expected exit 78 (EX_CONFIG fail-closed boot gate), got $code"

@@ -1,0 +1,16 @@
+{
+  "format": "astral.us1-checks/v1",
+  "recordedAtUtc": "2026-08-21T09:07:01Z",
+  "status": "passed",
+  "candidateCommit": "0ae58e04f9d7b868933fa9cf26094defbdeaed9b",
+  "checks": {
+    "componentOwnership": "zero violations across 2744 managed paths",
+    "composition": "passed at SHA-256 8c3646306818ddac7d06ec1b47f71b8f34ddcde5fde230de68dcb6016c979425",
+    "migrationProvenance": "passed for all five repositories",
+    "protocol": "voice C0-C6 contract validator passed",
+    "planeCompatibility": "final backend flags-on and flags-off matrices passed against PostgreSQL 17",
+    "cleanCheckoutContracts": "300 passed, 6 skipped in the expanded feature-074 contract suite",
+    "flagOffParity": "7513 primary and 2424 nested tests passed; performance gate passed"
+  },
+  "remainingLiveGate": "authenticated golden interaction is recorded separately as blocked"
+}

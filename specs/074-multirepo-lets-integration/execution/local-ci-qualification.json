@@ -1,0 +1,91 @@
+{
+  "format": "astral.local-ci-qualification/v1",
+  "recordedAtUtc": "2026-08-21T09:07:01Z",
+  "status": "tests-green-coverage-blocked",
+  "candidateCommit": "0ae58e04f9d7b868933fa9cf26094defbdeaed9b",
+  "compositionSha256": "8c3646306818ddac7d06ec1b47f71b8f34ddcde5fde230de68dcb6016c979425",
+  "image": {
+    "tag": "astraldeep:074-local",
+    "id": "sha256:9a698b8366b4a50e70bf73bf8903727f103e9bad0d3cb006881db67a8ec33ec7"
+  },
+  "checks": [
+    {
+      "id": "ruff",
+      "result": "passed"
+    },
+    {
+      "id": "flags-on-primary",
+      "result": "7517 passed, 13 skipped, 2 deselected in 629.04s"
+    },
+    {
+      "id": "flags-on-nested",
+      "result": "2424 passed, 12 skipped in 159.53s"
+    },
+    {
+      "id": "flags-on-performance",
+      "result": "1 passed in 46.06s"
+    },
+    {
+      "id": "flags-off-primary",
+      "result": "7513 passed, 17 skipped, 2 deselected in 547.72s"
+    },
+    {
+      "id": "flags-off-nested",
+      "result": "2424 passed, 12 skipped in 140.02s"
+    },
+    {
+      "id": "flags-off-performance",
+      "result": "1 passed in 5.16s"
+    },
+    {
+      "id": "component-ownership",
+      "result": "passed with 2744 managed paths, zero violations, and zero generated mutable copies"
+    },
+    {
+      "id": "composition",
+      "result": "passed at manifest SHA-256 8c3646306818ddac7d06ec1b47f71b8f34ddcde5fde230de68dcb6016c979425"
+    },
+    {
+      "id": "migration-provenance",
+      "result": "passed for Deep, Projection, Plane, Primitives, and LETS"
+    },
+    {
+      "id": "voice-contract-validator",
+      "result": "passed C0-C6; 40 negative, 23 voice-positive, 25 worker-positive, 6 proof, and 2 OpenAPI-positive vectors"
+    }
+  ],
+  "coverage": {
+    "backendXmlSha256": "c5891050657c7424846c1476e0de0eda93bfd15bf6861f1f4ba70308699e3d4b",
+    "legacyBackendChangedCoverage": {
+      "tool": "diff-cover 10.3.0",
+      "changedProductLines": 15078,
+      "missingLines": 2673,
+      "percent": 82,
+      "requiredPercent": 90,
+      "status": "failed"
+    },
+    "canonicalStrict": {
+      "status": "error",
+      "errorCode": "incomplete_report_matrix",
+      "receipt": "execution/changed-code-strict.json",
+      "missingSlots": [
+        "android_app",
+        "android_core",
+        "ios",
+        "javascript",
+        "macos",
+        "tooling",
+        "voice_worker",
+        "watchos",
+        "windows"
+      ]
+    }
+  },
+  "repairsDiscoveredDuringQualification": [
+    "removed 17 unchanged Projection-owned pure-test blobs from the Deep index and added a regression guard",
+    "made the background-task bind test assert both enabled persistence and disabled no-write behavior",
+    "supplied an ephemeral encrypted-session prerequisite to the disabled CI exit-78 smoke proof"
+  ],
+  "mergeAuthorization": false,
+  "releaseAuthorization": false
+}

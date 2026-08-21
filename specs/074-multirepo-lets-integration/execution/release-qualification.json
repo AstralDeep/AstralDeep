@@ -1,0 +1,30 @@
+{
+  "format": "astral.release-qualification/v1",
+  "recordedAtUtc": "2026-08-21T09:07:01Z",
+  "status": "partial-blocked",
+  "windows": {
+    "status": "passed",
+    "evidence": "80 focused Windows/LETS tests; runtime-v3 protected executor and dual-identity bridge guards"
+  },
+  "android": {
+    "status": "passed",
+    "evidence": "ktlint, lint, core/app unit coverage, and assemble gates passed"
+  },
+  "apple": {
+    "status": "blocked",
+    "reason": "no qualified macOS/Xcode host is available",
+    "portableStaticEvidence": "17 protocol/provenance checks passed with one expected platform skip"
+  },
+  "workflowActivation": {
+    "status": "inactive",
+    "publicComposedImageConsumers": "deliberately disabled",
+    "releaseAndPublishJobs": "inactive",
+    "activationAuthorized": false
+  },
+  "taskDisposition": {
+    "T226": "unavailable-host blocker recorded; T236 and T237 must stop",
+    "T232": "partial"
+  },
+  "mergeAuthorization": false,
+  "releaseAuthorization": false
+}
