@@ -632,13 +632,7 @@ python3 scripts/prepare_release_evidence.py --base-sha "$(git rev-parse origin/m
   --backend-python build/060/coverage/backend.xml \
   --voice-worker-python build/065/coverage/voice-worker.xml \
   --tooling-python build/060/coverage/tooling-python.xml \
-  --windows-python build/060/coverage/windows.xml \
-  --javascript build/060/coverage/web-istanbul.json \
-  --android-app build/060/coverage/android-app.xml \
-  --android-core build/060/coverage/android-core.xml \
-  --ios build/060/coverage/apple-ios-xccov.json \
-  --macos build/060/coverage/apple-macos-xccov.json \
-  --watchos build/060/coverage/apple-watchos-xccov.json \
+  --repository-profile deep \
   --coverage-mode strict
 ```
 
@@ -646,9 +640,12 @@ The wrapper collects, normalizes, and parses canonical evidence and digests loca
 `build/060/release-evidence`, canonicalizes and SHA-256-digests every recognized document, assembles
 one deterministic `release_evidence_set` (content-derived UUIDv5 identity) when the directory holds
 only platform reports, and delegates schema plus same-candidate policy validation to
-`scripts/validate_release_evidence.py`. Standard strict mode requires exactly one independently
-named report from backend, voice worker, tooling, Windows, JavaScript, Android app, Android core,
-iOS, macOS, and watchOS. `--coverage-mode partial` exists only for focused programmatic diagnostics;
+`scripts/validate_release_evidence.py`. Under the repository-owner topology, Deep strict mode
+requires exactly three independently named reports: backend, voice worker, and tooling. Projection
+strict mode runs separately in the AstralProjection repository with exactly eight reports:
+Projection Python, Windows, JavaScript, Android app, Android core, iOS, macOS, and watchOS. The
+legacy composed-monorepo profile is an exact eleven-slot compatibility diagnostic, not Deep's
+normative owner lane. `--coverage-mode partial` exists only for focused programmatic diagnostics;
 the Make wrapper pins strict mode after any report-path override, so an empty or incomplete override
 fails closed. Before invoking the changed-code collector, the wrapper binds each report's raw and
 canonical semantic identities, rejects path/inode/content aliases globally, and then requires the
@@ -657,9 +654,10 @@ binding and policy phases. Semantic identity is derived only from the native par
 files plus observed/executable/covered source-line sets, so whitespace, timestamps, generator labels,
 and other irrelevant XML/JSON metadata cannot disguise a copied report. A second target-independent
 native-observation identity closes copies that target path filtering would otherwise make look
-different. Strict mode parses all ten reports even when their evaluator target is unchanged, requires
-a nonempty executable contribution from a file that exists in the exact candidate tree, and enforces
-producer source scopes: non-voice backend; isolated voice worker; `client.js`; separate Android
+different. Strict mode parses every report in the selected exact owner profile even when its
+evaluator target is unchanged, requires a nonempty executable contribution from a file that exists
+in the exact candidate tree, and enforces producer source scopes: non-voice backend; isolated voice
+worker; Projection package/ROTE/web-renderer Python; `client.js`; separate Android
 app/core; iOS App plus AstralCore with Watch rejected; macOS App with no Watch; and watchOS with a required tracked Watch
 witness, allowed AstralCore output, and no App output. The voice worker's
 runtime-renamed `streaming_egress.py`, `voice_transcript.py`, and `watch_ticket.py` observations are
@@ -669,10 +667,14 @@ shims remain backend-producer owned and are excluded from worker ownership becau
 those runtime paths. Every applicable producer must map its own scoped changed files. A changed
 AstralCore file and all of its changed physical lines must map completely through at least one of iOS
 or macOS because a real iOS UI archive can omit Core; Watch archive Core observations do not substitute
-for that group. Every other applicable Apple report must observe every changed physical line, while
-overlapping Python producers must agree on executable changed lines. No producer is required to cover
-a line merely to prove its native contribution—a valid zero-hit macOS archive remains valid input to
-the ordinary threshold decision. The protected collector
+for that group. Every other applicable Apple report must observe every changed physical line. Each
+Cobertura-backed Python producer must observe every candidate-executable changed line in its owned
+files. That candidate-bound witness intersects Python statement headers with compiled line tables,
+so comments, blanks, docstrings, declaration continuations, `TYPE_CHECKING`/ellipsis-only
+declarations, and explicit no-cover clauses are not invented as executable work. Overlapping Python
+producers must also agree on executable changed lines. No producer is required to cover a line merely
+to prove its native contribution—a valid zero-hit macOS archive remains valid input to the ordinary
+threshold decision. The protected collector
 invocation independently pins the same strict mode and complete matrix. Local shape rules cannot prove
 that an iOS- versus macOS-shaped archive came from a particular job; producer origin comes from
 protected, attempt-scoped artifact and job identities rather than self-asserted xccov metadata. It writes
@@ -852,7 +854,7 @@ The candidate-tree command below is diagnostic only; reproduce it locally with t
 base/candidate and downloaded artifacts:
 
 ```bash
-python3 scripts/check_changed_coverage.py --base-sha "$BASE_SHA" --candidate-sha "$SHA" --backend-python build/060/coverage/backend.xml --voice-worker-python build/065/coverage/voice-worker.xml --tooling-python build/060/coverage/tooling-python.xml --windows-python build/060/coverage/windows.xml --javascript build/060/coverage/web-istanbul.json --android-app build/060/coverage/android-app.xml --android-core build/060/coverage/android-core.xml --ios build/060/coverage/apple-ios-xccov.json --macos build/060/coverage/apple-macos-xccov.json --watchos build/060/coverage/apple-watchos-xccov.json --coverage-mode strict --fail-under 90 --output build/060/coverage/changed-code.json
+python3 scripts/check_changed_coverage.py --base-sha "$BASE_SHA" --candidate-sha "$SHA" --backend-python build/060/coverage/backend.xml --voice-worker-python build/065/coverage/voice-worker.xml --tooling-python build/060/coverage/tooling-python.xml --repository-profile deep --coverage-mode strict --fail-under 90 --output build/060/coverage/changed-code.json
 ```
 
 </details>

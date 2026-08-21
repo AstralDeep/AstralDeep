@@ -131,6 +131,35 @@ def _cobertura(path: Path, filename: str, lines: dict[int, int]) -> Path:
     return path
 
 
+def _cobertura_many(path: Path, files: dict[str, dict[int, int]]) -> Path:
+    classes: list[str] = []
+    total = 0
+    covered = 0
+    for filename, lines in files.items():
+        rendered = "".join(
+            f'<line number="{line}" hits="{hits}"/>' for line, hits in lines.items()
+        )
+        class_covered = sum(hits > 0 for hits in lines.values())
+        class_total = len(lines)
+        rate = class_covered / class_total if class_total else 1
+        classes.append(
+            f'<class filename="{filename}" line-rate="{rate}">'
+            f"<lines>{rendered}</lines></class>"
+        )
+        total += class_total
+        covered += class_covered
+    rate = covered / total if total else 1
+    path.write_text(
+        f'<coverage lines-valid="{total}" lines-covered="{covered}" '
+        f'line-rate="{rate}"><sources><source>/work</source></sources>'
+        "<packages><package><classes>"
+        f"{''.join(classes)}"
+        "</classes></package></packages></coverage>\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def _javascript_envelope(coverage: dict[str, object]) -> dict[str, object]:
     return {
         **collector.JAVASCRIPT_REPORT_IDENTITY,
@@ -193,7 +222,12 @@ def _projection_strict_case(
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
     sources = {
-        "src/astralprojection/runtime.py": "value = 0\n",
+        "src/astralprojection/runtime.py": "first = 0\nsecond = 0\n",
+        "backend/rote/adaptation.py": "adapted = 0\n",
+        "src/astralprojection/declarations.py": (
+            "# old comment\n    \ndef declaration(\n"
+            "    value: int,\n) -> int:\n    return value\n"
+        ),
         "windows-client/runtime.py": "value = 0\n",
         "backend/webrender/static/client.js": "const value = 0;\n",
         "android-client/app/src/main/kotlin/com/example/App.kt": "val value = 0\n",
@@ -207,14 +241,23 @@ def _projection_strict_case(
         source.write_text(content, encoding="utf-8")
     base = _commit(repo, "base")
     (repo / "src/astralprojection/runtime.py").write_text(
-        "value = 0\nchanged = 1\n", encoding="utf-8"
+        "first = 1\nsecond = 1\n", encoding="utf-8"
+    )
+    (repo / "backend/rote/adaptation.py").write_text("adapted = 1\n", encoding="utf-8")
+    (repo / "src/astralprojection/declarations.py").write_text(
+        "# new comment\n\ndef declaration(\n"
+        "    value: str,\n) -> int:\n    return value\n",
+        encoding="utf-8",
     )
     candidate = _commit(repo, "candidate")
 
-    projection = _cobertura(
+    projection = _cobertura_many(
         tmp_path / "projection-python.xml",
-        "src/astralprojection/runtime.py",
-        {1: 1, 2: 1},
+        {
+            "src/astralprojection/runtime.py": {1: 1, 2: 1},
+            "backend/rote/adaptation.py": {1: 1},
+            "src/astralprojection/declarations.py": {3: 1, 6: 1},
+        },
     )
     windows = _cobertura(tmp_path / "windows.xml", "windows-client/runtime.py", {1: 1})
     javascript = tmp_path / "javascript.json"
@@ -443,14 +486,17 @@ def test_projection_python_slot_rejects_non_candidate_source(tmp_path: Path) -> 
     assert "projection_python" in failure.value.message
 
 
-def test_projection_python_unobserved_changed_line_cannot_pass(
+def test_projection_python_report_cannot_omit_one_of_multiple_executable_changes(
     tmp_path: Path,
 ) -> None:
     repo, selection, reports, slots = _projection_strict_case(tmp_path)
-    projection = _cobertura(
+    projection = _cobertura_many(
         tmp_path / "projection-unobserved.xml",
-        "src/astralprojection/runtime.py",
-        {1: 1},
+        {
+            "src/astralprojection/runtime.py": {1: 1},
+            "backend/rote/adaptation.py": {1: 1},
+            "src/astralprojection/declarations.py": {3: 1, 6: 1},
+        },
     )
     reports["projection_python"] = [projection]
     slots["projection_python"] = projection
@@ -458,7 +504,71 @@ def test_projection_python_unobserved_changed_line_cannot_pass(
     with pytest.raises(collector.CoveragePolicyError) as failure:
         _evaluate_projection_strict(repo, selection, reports, slots)
 
-    assert failure.value.code == "unexpected_empty_executable_diff"
+    assert failure.value.code == "producer_unmapped_changed_line"
+    assert "runtime.py':2" in failure.value.message
+
+
+def test_python_candidate_executable_witness_excludes_non_statements() -> None:
+    source = b'''# comment
+"""module doc"""
+
+@decorate(
+    1,
+)
+def declared(
+    value: int,
+) -> int:
+    """function doc"""
+    try:
+        first = value + 1
+        return first
+    except ValueError:
+        return 0
+
+if TYPE_CHECKING:
+    from missing import thing
+
+blank = 1
+
+if unavailable:  # pragma: no cover - platform declaration
+    hidden = 1
+'''
+
+    assert collector._python_candidate_executable_lines(
+        source, "components/AstralProjection/src/astralprojection/runtime.py"
+    ) == frozenset({4, 7, 11, 12, 13, 14, 15, 20})
+
+
+def test_python_candidate_executable_witness_includes_match_case_headers() -> None:
+    source = b"""match value:
+    case 1:
+        result = 1
+    case _:
+        result = 0
+"""
+
+    assert collector._python_candidate_executable_lines(
+        source, "components/AstralProjection/backend/rote/match.py"
+    ) == frozenset({1, 2, 3, 4, 5})
+
+
+def test_python_candidate_executable_witness_keeps_runtime_else_clauses() -> None:
+    source = b"""if TYPE_CHECKING:
+    from missing import thing
+else:
+    runtime = 1
+
+if unavailable:  # pragma no cover
+    hidden = 1
+else:
+    visible = 1
+
+"runtime marker"
+"""
+
+    assert collector._python_candidate_executable_lines(
+        source, "components/AstralProjection/backend/rote/runtime.py"
+    ) == frozenset({4, 9, 11})
 
 
 def test_projection_python_slot_binds_raw_and_semantic_report_digests(
@@ -596,6 +706,42 @@ def test_candidate_source_inventory_rejects_malformed_regular_blob_size(
         lambda *_args, **_kwargs: (
             b"100644 blob 1111111111111111111111111111111111111111 -"
             b"\tbackend/service.py\0"
+        ),
+    )
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_blobs(tmp_path, "2" * 40)
+
+    assert failure.value.code == "invalid_candidate_tree"
+
+
+def test_candidate_source_inventory_rejects_regular_mode_non_blob_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        collector,
+        "_git",
+        lambda *_args, **_kwargs: (
+            b"100644 commit 1111111111111111111111111111111111111111 1"
+            b"\tbackend/service.py\0"
+        ),
+    )
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_blobs(tmp_path, "2" * 40)
+
+    assert failure.value.code == "invalid_candidate_tree"
+
+
+def test_candidate_source_inventory_rejects_negative_regular_blob_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        collector,
+        "_git",
+        lambda *_args, **_kwargs: (
+            b"100755 blob 1111111111111111111111111111111111111111 -1"
+            b"\tscripts/tool.py\0"
         ),
     )
 

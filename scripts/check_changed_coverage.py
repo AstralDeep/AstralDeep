@@ -10,13 +10,18 @@ and emits one deterministic JSON decision.
 from __future__ import annotations
 
 import argparse
+import ast
+import dis
 import hashlib
+import io
 import json
 import os
 import re
 import stat
 import subprocess
 import sys
+import tokenize
+import types
 import urllib.parse
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
@@ -108,6 +113,14 @@ class CandidateBlob:
 
     object_id: str
     size_bytes: int
+
+
+@dataclass(frozen=True)
+class CandidateSourceWitness:
+    """Candidate-bound physical and Python-executable source facts."""
+
+    line_count: int
+    executable_lines: frozenset[int] | None = None
 
 
 @dataclass(frozen=True)
@@ -1744,7 +1757,13 @@ def _candidate_source_blobs(
             raise CoveragePolicyError(
                 "invalid_candidate_tree", "candidate tree has malformed blob metadata"
             ) from exc
-        if kind != b"blob" or mode not in {b"100644", b"100755"}:
+        regular_mode = mode in {b"100644", b"100755"}
+        if regular_mode and kind != b"blob":
+            raise CoveragePolicyError(
+                "invalid_candidate_tree",
+                "candidate regular file has non-blob object metadata",
+            )
+        if not regular_mode:
             continue
         try:
             path = raw_path.decode("utf-8", "strict")
@@ -1764,12 +1783,146 @@ def _candidate_source_blobs(
     return blobs
 
 
-def _candidate_source_line_counts(
+def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[int]:
+    """Derive a conservative coverage.py-compatible executable-line witness.
+
+    Bytecode line tables alone include continuation expressions and evaluated
+    annotations that coverage.py attributes to their owning statement. Intersecting
+    them with AST statement headers keeps comments, blank lines, docstrings, and
+    declaration continuations out of the completeness contract. TYPE_CHECKING,
+    ellipsis-only declarations, and explicit no-cover clauses remain non-runtime
+    declarations just as they are in the native Cobertura producer.
+    """
+
+    try:
+        encoding, _lines = tokenize.detect_encoding(io.BytesIO(content).readline)
+        source = content.decode(encoding)
+        tree = ast.parse(source, filename=path, mode="exec")
+        code = compile(source, path, "exec", dont_inherit=True, optimize=0)
+        comments = {
+            token.start[0]
+            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            if token.type == tokenize.COMMENT
+            and re.search(
+                r"\bpragma(?::|\s)\s*no\s+cover\b",
+                token.string,
+                re.IGNORECASE,
+            )
+        }
+    except (LookupError, SyntaxError, UnicodeDecodeError, ValueError) as exc:
+        raise CoveragePolicyError(
+            "invalid_candidate_source",
+            f"candidate Python source is not parseable: {path!r}",
+        ) from exc
+
+    def is_string_expression(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        )
+
+    def is_ellipsis_expression(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value is Ellipsis
+        )
+
+    def is_type_checking_test(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Name) and node.id == "TYPE_CHECKING") or (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "typing"
+            and node.attr == "TYPE_CHECKING"
+        )
+
+    candidates: set[int] = set()
+    excluded: set[int] = set(comments)
+    definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    docstring_nodes: set[int] = set()
+    owners = [tree, *(node for node in ast.walk(tree) if isinstance(node, definitions))]
+    for owner in owners:
+        if owner.body and is_string_expression(owner.body[0]):
+            docstring_nodes.add(id(owner.body[0]))
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = [item for item in node.body if id(item) not in docstring_nodes]
+            if body and all(is_ellipsis_expression(item) for item in body):
+                first = min(
+                    [node.lineno, *(item.lineno for item in node.decorator_list)]
+                )
+                excluded.update(range(first, int(node.end_lineno or first) + 1))
+        if isinstance(node, ast.stmt):
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                continue
+            if id(node) in docstring_nodes or is_ellipsis_expression(node):
+                continue
+            candidates.add(node.lineno)
+            if isinstance(node, definitions):
+                candidates.update(item.lineno for item in node.decorator_list)
+        elif isinstance(node, ast.ExceptHandler):
+            candidates.add(node.lineno)
+        if isinstance(node, ast.Match):
+            candidates.update(case.pattern.lineno for case in node.cases)
+
+    def candidate_headers(nodes: Sequence[ast.AST]) -> set[int]:
+        headers: set[int] = set()
+        for root in nodes:
+            for node in ast.walk(root):
+                line = getattr(node, "lineno", None)
+                if isinstance(line, int) and line in candidates:
+                    headers.add(line)
+                if isinstance(node, definitions):
+                    headers.update(
+                        item.lineno
+                        for item in node.decorator_list
+                        if item.lineno in candidates
+                    )
+                if isinstance(node, ast.Match):
+                    headers.update(
+                        case.pattern.lineno
+                        for case in node.cases
+                        if case.pattern.lineno in candidates
+                    )
+        return headers
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and is_type_checking_test(node.test):
+            excluded.add(node.lineno)
+            excluded.update(candidate_headers(node.body))
+        if not isinstance(node, (ast.stmt, ast.ExceptHandler)):
+            continue
+        decorators = node.decorator_list if isinstance(node, definitions) else []
+        if node.lineno not in comments and not any(
+            item.lineno in comments for item in decorators
+        ):
+            continue
+        excluded.add(node.lineno)
+        excluded.update(item.lineno for item in decorators)
+        excluded.update(candidate_headers(getattr(node, "body", [])))
+
+    bytecode_lines: set[int] = set()
+
+    def collect_code_lines(value: types.CodeType) -> None:
+        bytecode_lines.update(
+            line for _offset, line in dis.findlinestarts(value) if line > 0
+        )
+        for constant in value.co_consts:
+            if isinstance(constant, types.CodeType):
+                collect_code_lines(constant)
+
+    collect_code_lines(code)
+    return frozenset((candidates & bytecode_lines) - excluded)
+
+
+def _candidate_source_witnesses(
     repo: Path,
     blobs: Mapping[str, CandidateBlob],
     paths: set[str],
-) -> dict[str, int]:
-    """Batch-read bounded candidate blobs and count their physical source lines."""
+) -> dict[str, CandidateSourceWitness]:
+    """Batch-read bounded candidate blobs and derive source completeness facts."""
 
     if len(paths) > MAX_CANDIDATE_WITNESS_PATHS:
         raise CoveragePolicyError(
@@ -1803,7 +1956,7 @@ def _candidate_source_line_counts(
             "git cat-file --batch failed during candidate witness validation",
         )
     cursor = 0
-    line_counts_by_object: dict[str, int] = {}
+    contents_by_object: dict[str, bytes] = {}
     for object_id in object_ids:
         header_end = process.stdout.find(b"\n", cursor)
         if header_end < 0:
@@ -1836,19 +1989,28 @@ def _candidate_source_line_counts(
             )
         content = process.stdout[content_start:content_end]
         if b"\0" not in content:
-            line_counts_by_object[object_id] = content.count(b"\n") + int(
-                bool(content) and not content.endswith(b"\n")
-            )
+            contents_by_object[object_id] = content
         cursor = content_end + 1
     if cursor != len(process.stdout):
         raise CoveragePolicyError(
             "invalid_candidate_tree", "candidate blob batch output has trailing data"
         )
-    return {
-        path: line_counts_by_object[blob.object_id]
-        for path, blob in selected.items()
-        if blob.object_id in line_counts_by_object
-    }
+    witnesses: dict[str, CandidateSourceWitness] = {}
+    for path, blob in selected.items():
+        content = contents_by_object.get(blob.object_id)
+        if content is None:
+            continue
+        line_count = content.count(b"\n") + int(
+            bool(content) and not content.endswith(b"\n")
+        )
+        target = classify_path(path)
+        executable = (
+            _python_candidate_executable_lines(content, path)
+            if target is not None and target.language == "python"
+            else None
+        )
+        witnesses[path] = CandidateSourceWitness(line_count, executable)
+    return witnesses
 
 
 def _strict_producer_contributions(
@@ -1907,7 +2069,10 @@ def _strict_producer_contributions(
         for path, _line in artifact.coverage.executable
         if path in candidate_blobs and classify_path(path) is not None
     }
-    candidate_line_counts = _candidate_source_line_counts(
+    witness_paths.update(
+        path for path, target in maintained.items() if target.language == "python"
+    )
+    candidate_witnesses = _candidate_source_witnesses(
         repo, candidate_blobs, witness_paths
     )
     contributions: dict[str, int] = {}
@@ -1930,7 +2095,10 @@ def _strict_producer_contributions(
             and observation[0] in candidate_paths
             and classify_path(observation[0]) is not None
             and classify_path(observation[0]).key == producer.target_key
-            and observation[1] <= candidate_line_counts.get(observation[0], 0)
+            and observation[1]
+            <= candidate_witnesses.get(
+                observation[0], CandidateSourceWitness(0)
+            ).line_count
         }
         if not useful:
             roots = ", ".join(producer.required_roots)
@@ -2049,6 +2217,20 @@ def _strict_producer_contributions(
                     f"producer slot {slot_key!r} does not map changed file "
                     f"{changed_path!r}",
                 )
+            witness = candidate_witnesses.get(changed_path)
+            if witness is not None and witness.executable_lines is not None:
+                required_lines = changed[changed_path] & witness.executable_lines
+                observed_lines = {
+                    line for path, line in coverage.executable if path == changed_path
+                }
+                missing = sorted(required_lines - observed_lines)
+                if missing:
+                    raise CoveragePolicyError(
+                        "producer_unmapped_changed_line",
+                        f"producer slot {slot_key!r} does not observe "
+                        "candidate-executable changed line "
+                        f"{changed_path!r}:{missing[0]}",
+                    )
             if target.key == "apple":
                 observed = {
                     line for path, line in coverage.observed if path == changed_path

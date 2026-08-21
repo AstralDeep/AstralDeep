@@ -761,7 +761,7 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
         tmp_path / "voice-worker.xml",
         {
             "backend/voice_agent/voice_transcript.py": {2: 1},
-            "backend/voice_agent/main.py": {1: 1},
+            "backend/voice_agent/main.py": {1: 1, 2: 1},
         },
     )
     coverage = tmp_path / "voice-worker.xml"
@@ -816,8 +816,11 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
         prepare.COVERAGE_INPUT_SLOTS
     )
     assert all(decision["producer_contributions"].values())
-    assert not any(
-        line["path"] == "backend/voice_agent/main.py" for line in decision["lines"]
+    assert any(
+        line["path"] == "backend/voice_agent/main.py"
+        and line["line"] == 2
+        and line["covered"] is True
+        for line in decision["lines"]
     )
     capsys.readouterr()
 
