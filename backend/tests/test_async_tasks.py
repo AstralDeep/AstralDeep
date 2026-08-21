@@ -1489,8 +1489,12 @@ class TestBackgroundTaskManager:
         async def dummy(vws):
             return None
 
-        await manager.submit("c1", "u1", dummy)
-        await _wait_until(lambda: bool(background_repository.records))
+        submitted = await manager.submit("c1", "u1", dummy)
+        assert submitted.asyncio_task is not None
+        if flags.is_enabled("bg_continuity"):
+            await _wait_until(lambda: bool(background_repository.records))
+        else:
+            assert background_repository.records == []
         with pytest.raises(RuntimeError, match="cannot replace"):
             manager.bind(coordinator=replacement)
         await _collect(manager)

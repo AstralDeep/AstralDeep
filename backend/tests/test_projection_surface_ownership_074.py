@@ -39,6 +39,64 @@ PROJECTION_OWNED_ROOTS = (
     "apple-clients",
     "tooling/web-ci",
 )
+EXTRACTED_PURE_TESTS = (
+    ("backend/tests/test_rote_dashboard_text.py", "tests/rote/test_rote_dashboard_text.py"),
+    ("backend/tests/test_rote_lod_adapt.py", "tests/rote/test_rote_lod_adapt.py"),
+    (
+        "backend/tests/test_voice_rote_capabilities_065.py",
+        "tests/rote/test_voice_rote_capabilities_065.py",
+    ),
+    ("backend/tests/webrender/test_a11y.py", "tests/webrender/test_a11y.py"),
+    ("backend/tests/webrender/test_aom.py", "tests/webrender/test_aom.py"),
+    (
+        "backend/tests/webrender/test_component_chrome.py",
+        "tests/webrender/test_component_chrome.py",
+    ),
+    (
+        "backend/tests/webrender/test_dashboard_primitives.py",
+        "tests/webrender/test_dashboard_primitives.py",
+    ),
+    (
+        "backend/tests/webrender/test_escaping.py",
+        "tests/webrender/test_escaping.py",
+    ),
+    (
+        "backend/tests/webrender/test_export_document.py",
+        "tests/webrender/test_export_document.py",
+    ),
+    (
+        "backend/tests/webrender/test_generative.py",
+        "tests/webrender/test_generative.py",
+    ),
+    (
+        "backend/tests/webrender/test_markdown_blocks.py",
+        "tests/webrender/test_markdown_blocks.py",
+    ),
+    (
+        "backend/tests/webrender/test_markdown_headings.py",
+        "tests/webrender/test_markdown_headings.py",
+    ),
+    (
+        "backend/tests/webrender/test_provenance.py",
+        "tests/webrender/test_provenance.py",
+    ),
+    (
+        "backend/tests/webrender/test_render_golden.py",
+        "tests/webrender/test_render_golden.py",
+    ),
+    (
+        "backend/tests/webrender/test_renderer_seam.py",
+        "tests/webrender/test_renderer_seam.py",
+    ),
+    (
+        "backend/tests/webrender/test_unsupported.py",
+        "tests/webrender/test_unsupported.py",
+    ),
+    (
+        "backend/tests/webrender/test_voice_renderer.py",
+        "tests/webrender/test_voice_renderer.py",
+    ),
+)
 PLANE_SEMANTIC_ADAPTERS = frozenset(
     {
         "backend/audit/repository.py",
@@ -82,6 +140,12 @@ def test_projection_owned_sources_exist_only_in_component() -> None:
 
     assert not (BACKEND / "shared" / "ui_protocol.json").exists()
     assert (PROJECTION / "contracts" / "ui_protocol.json").is_file()
+
+
+def test_extracted_pure_tests_exist_only_in_projection() -> None:
+    for deep_relative, projection_relative in EXTRACTED_PURE_TESTS:
+        assert not (ROOT / deep_relative).exists(), deep_relative
+        assert (PROJECTION / projection_relative).is_file(), projection_relative
 
 
 def test_deep_host_surface_registry_owns_only_orchestrator_adapters() -> None:
