@@ -593,7 +593,7 @@ Use:
 ```toml
 [dependency-groups]
 ci = [
-  "diff-cover==10.3.0",
+  "diff-cover==10.3.0; python_version >= '3.10'",
   "pytest==8.4.2",
   "pytest-cov==7.0.0",
   "ruff==0.15.21",
