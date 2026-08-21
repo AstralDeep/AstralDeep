@@ -169,7 +169,7 @@ For `quality` and matrix `test`, make checkout and preflight structurally identi
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   with:
     fetch-depth: 0
-- uses: astral-sh/setup-uv@ae6289f6599a82fc94e0c245b5663c4733dc3351 # v10.0.0
+- uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
   with:
     python-version: ${{ matrix.python }}
     enable-cache: true
