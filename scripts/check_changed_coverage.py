@@ -53,6 +53,12 @@ MAX_REPORT_BYTES = 64 * 1024 * 1024
 MAX_CANDIDATE_WITNESS_PATHS = 10_000
 MAX_CANDIDATE_WITNESS_BLOB_BYTES = 16 * 1024 * 1024
 MAX_CANDIDATE_WITNESS_TOTAL_BYTES = 128 * 1024 * 1024
+PYTHON_COVERAGE_DEFAULT_EXCLUDE = re.compile(
+    r"#\s*(pragma|PRAGMA)[:\s]?\s*(no|NO)\s*(cover|COVER)"
+    r"|^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.\.\s*(#|$)"
+    r"|if (typing\.)?TYPE_CHECKING:",
+    re.MULTILINE,
+)
 VOICE_WORKER_SOURCE_ALIASES = {
     "backend/voice_agent/streaming_egress.py": "backend/shared/streaming_egress.py",
     "backend/voice_agent/voice_transcript.py": "backend/shared/voice_transcript.py",
@@ -1785,6 +1791,29 @@ def _candidate_source_blobs(
     return blobs
 
 
+def _matching_source_lines(
+    source: str,
+    pattern: re.Pattern[str],
+    multiline_map: Mapping[int, int],
+) -> set[int]:
+    """Map regex matches to source lines with linear incremental scanning."""
+
+    lines: set[int] = set()
+    last_start = 0
+    last_start_line = 0
+    for match in pattern.finditer(source):
+        start, end = match.span()
+        start_line = last_start_line + source.count("\n", last_start, start)
+        end_line = last_start_line + source.count("\n", last_start, end)
+        lines.update(
+            multiline_map.get(line_number, line_number)
+            for line_number in range(start_line + 1, end_line + 2)
+        )
+        last_start = start
+        last_start_line = start_line
+    return lines
+
+
 def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[int]:
     """Derive the pinned native producer's interpreter-stable statement witness.
 
@@ -1823,20 +1852,11 @@ def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[i
         if token.string.strip() and token.type != tokenize.COMMENT and not first_line:
             first_line = token.start[0]
 
-    default_exclude = re.compile(
-        r"#\s*(pragma|PRAGMA)[:\s]?\s*(no|NO)\s*(cover|COVER)"
-        r"|^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.\.\s*(#|$)"
-        r"|if (typing\.)?TYPE_CHECKING:",
-        re.MULTILINE,
+    excluded = _matching_source_lines(
+        source,
+        PYTHON_COVERAGE_DEFAULT_EXCLUDE,
+        multiline_map,
     )
-    excluded: set[int] = set()
-    for match in default_exclude.finditer(source):
-        start_line = source.count("\n", 0, match.start()) + 1
-        end_line = source.count("\n", 0, match.end()) + 1
-        excluded.update(
-            multiline_map.get(line_number, line_number)
-            for line_number in range(start_line, end_line + 1)
-        )
 
     indent = 0
     exclude_indent = 0

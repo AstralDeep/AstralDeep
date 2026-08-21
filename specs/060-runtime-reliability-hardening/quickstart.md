@@ -674,7 +674,8 @@ Cobertura-backed Python producer must observe every candidate-executable changed
 files. That candidate-bound witness normalizes recursive `co_lines()` metadata through Python's
 tokenized logical-statement map, ignores nullable line entries, and applies the exact default
 exclusions and docstring rules from locked Coverage 7.15.2. It is checked in both directions against
-all tracked maintained Deep Python sources under Python 3.11 and 3.14. Comments, blanks, docstrings,
+all tracked maintained Deep Python sources under Python 3.11 and 3.14; exclusion matches are mapped
+with one incremental linear scan rather than rescanning the candidate prefix per match. Comments, blanks, docstrings,
 declaration continuations, exact `TYPE_CHECKING`/ellipsis-only declarations, and exact no-cover
 clauses are not invented as executable work. Every changed maintained Python path must yield a bounded,
 NUL-free regular-blob witness; missing, non-regular, oversized, or binary sources fail explicitly.

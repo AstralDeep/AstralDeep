@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -47,6 +48,20 @@ def _native_python_statements(source: str, path: str) -> frozenset[int]:
     )
     parser.parse_source()
     return frozenset(parser.statements)
+
+
+class _CountingText(str):
+    scanned_characters = 0
+
+    def count(
+        self,
+        sub: str,
+        start: int = 0,
+        end: int | None = None,
+    ) -> int:
+        selected_end = len(self) if end is None else end
+        type(self).scanned_characters += max(0, selected_end - start)
+        return super().count(sub, start, selected_end)
 
 
 def _load_xccov_exporter() -> ModuleType:
@@ -639,6 +654,36 @@ def test_python_candidate_witness_matches_locked_parser_edge_fixtures(
         collector._python_candidate_executable_lines(source.encode("utf-8"), path)
         == expected
     )
+
+
+def test_python_exclusion_line_mapping_scans_source_linearly() -> None:
+    source = _CountingText("value = 1  # pragma: no cover\n" * 5_000)
+    _CountingText.scanned_characters = 0
+
+    lines = collector._matching_source_lines(
+        source,
+        collector.PYTHON_COVERAGE_DEFAULT_EXCLUDE,
+        {},
+    )
+
+    assert len(lines) == 5_000
+    assert _CountingText.scanned_characters <= len(source) * 4
+
+
+def test_python_exclusion_line_mapping_large_input_smoke() -> None:
+    source = "value = 1  # pragma: no cover\n" * 60_000
+
+    started = time.perf_counter()
+    lines = collector._matching_source_lines(
+        source,
+        collector.PYTHON_COVERAGE_DEFAULT_EXCLUDE,
+        {},
+    )
+    elapsed = time.perf_counter() - started
+
+    assert len(source) > 1_000_000
+    assert len(lines) == 60_000
+    assert elapsed < 5.0
 
 
 def test_python_candidate_witness_has_no_coverage_parser_underapproximation() -> None:
