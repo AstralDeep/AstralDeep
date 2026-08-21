@@ -99,6 +99,14 @@ class _Repository:
         self.owner_values: dict[str, object] | None = None
         self.abandon_values: dict[str, object] | None = None
         self.reconcile_limits: list[int] = []
+        self.loaded_tombstone: PurgeTombstone | None = None
+        self.load_values: dict[str, str] | None = None
+
+    def load(self, _transaction, **values):
+        assert self.runtime.depth == 1
+        self.events.append("repository.load")
+        self.load_values = values
+        return self.loaded_tombstone
 
     def schedule_attachment_prefix(self, _transaction, **values):
         assert self.runtime.depth >= 1
@@ -752,6 +760,35 @@ async def test_reserved_owner_cleanup_acceptance_is_schedule_only() -> None:
     assert "executor.execute" not in events
     assert coordinator._wake.is_set()
     assert coordinator.ready is False
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_owner_cleanup_status_is_owner_scoped_and_redacted() -> None:
+    coordinator, _runtime, repository, _executor, events = _coordinator()
+    repository.loaded_tombstone = _tombstone(
+        owner_id="owner-1",
+        attachment_id="owner-namespace",
+    )
+
+    observed = await coordinator.aowner_cleanup_status(
+        owner_id="owner-1",
+        cleanup_id="purge-owner-namespace",
+    )
+
+    assert observed is not None
+    assert observed.cleanup_id == "purge-owner-namespace"
+    assert observed.status == "pending"
+    assert observed.attempt_count == 0
+    assert repository.load_values == {
+        "owner_id": "owner-1",
+        "tombstone_id": "purge-owner-namespace",
+    }
+    assert events[-3:] == [
+        "transaction.enter",
+        "repository.load",
+        "transaction.exit",
+    ]
     await coordinator.close()
 
 

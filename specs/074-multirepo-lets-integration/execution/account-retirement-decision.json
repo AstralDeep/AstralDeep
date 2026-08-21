@@ -1,0 +1,33 @@
+{
+  "format": "astral.account-retirement-decision/v1",
+  "recordedAtUtc": "2026-08-21T15:30:00Z",
+  "status": "authorized-and-mounted",
+  "authority": "Owner direction in the Feature 074 implementation task",
+  "request": {
+    "method": "POST",
+    "path": "/api/account/retirement",
+    "confirmation": "retire-my-account",
+    "identity": "verified Keycloak sub",
+    "response": "202 cleanup_pending with opaque replay-stable cleanup_id"
+  },
+  "statusRead": {
+    "method": "GET",
+    "path": "/api/account/retirement/{cleanup_id}",
+    "ownerIsolation": "lookup binds cleanup_id to the same verified Keycloak sub",
+    "cacheControl": "no-store"
+  },
+  "semantics": {
+    "logoutSchedulesRetirement": false,
+    "logicalDeletionCommitsBeforeResponse": true,
+    "physicalDeletionIsAsynchronous": true,
+    "keycloakRemovalBeforePurgeCompletion": false,
+    "manualReviewIsUserResolvable": false,
+    "manualReviewRecovery": "Plane evidence-bound operator procedure"
+  },
+  "verification": {
+    "python": "3.11 container",
+    "tests": "70 passed across account lifecycle, attachment router, and purge coordinator suites",
+    "ruff": "passed"
+  },
+  "productionChanged": false
+}

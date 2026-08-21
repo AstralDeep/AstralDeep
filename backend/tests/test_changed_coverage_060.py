@@ -138,6 +138,126 @@ def _javascript_envelope(coverage: dict[str, object]) -> dict[str, object]:
     }
 
 
+def test_repository_profiles_partition_owned_producers() -> None:
+    assert collector.REPOSITORY_PROFILES["deep"].producer_keys == (
+        "backend",
+        "voice_worker",
+        "tooling",
+    )
+    assert collector.REPOSITORY_PROFILES["projection"].producer_keys == (
+        "windows",
+        "javascript",
+        "android_app",
+        "android_core",
+        "ios",
+        "macos",
+        "watchos",
+    )
+    assert set(collector.REPOSITORY_PROFILES["monorepo"].producer_keys) == set(
+        collector.PRODUCER_BY_KEY
+    )
+
+
+def test_projection_profile_maps_child_git_paths_to_composed_paths(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "projection"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    source = repo / "windows-client" / "runtime.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("first = 1\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    candidate = _commit(repo, "candidate")
+
+    prefix = collector.REPOSITORY_PROFILES["projection"].source_prefix
+    changed = collector.read_changed_lines(
+        repo,
+        base,
+        candidate,
+        source_prefix=prefix,
+    )
+    blobs = collector._candidate_source_blobs(
+        repo,
+        candidate,
+        source_prefix=prefix,
+    )
+
+    composed_path = "components/AstralProjection/windows-client/runtime.py"
+    assert changed == {composed_path: {2}}
+    assert composed_path in blobs
+
+
+def test_deep_repository_profile_accepts_its_exact_three_native_slots(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "deep"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    sources = {
+        "backend/service.py": "service",
+        "backend/voice_agent/worker.py": "worker",
+        "scripts/tool.py": "tool",
+    }
+    for relative in sources:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("first = 1\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    for relative in sources:
+        (repo / relative).write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    candidate = _commit(repo, "candidate")
+
+    reports = {
+        relative: _cobertura(
+            tmp_path / f"{label}.xml",
+            relative,
+            {1: 1, 2: 1},
+        )
+        for relative, label in zip(
+            sources,
+            ("backend", "voice", "tooling"),
+        )
+    }
+    output = tmp_path / "decision.json"
+    assert (
+        collector.main(
+            [
+                "--repo",
+                str(repo),
+                "--event-name",
+                "manual",
+                "--base-sha",
+                base,
+                "--candidate-sha",
+                candidate,
+                "--backend-python",
+                str(reports["backend/service.py"]),
+                "--voice-worker-python",
+                str(reports["backend/voice_agent/worker.py"]),
+                "--tooling-python",
+                str(reports["scripts/tool.py"]),
+                "--repository-profile",
+                "deep",
+                "--coverage-mode",
+                "strict",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    decision = json.loads(output.read_text(encoding="utf-8"))
+    assert decision["status"] == "pass"
+    assert decision["repository_profile"] == "deep"
+    assert set(decision["producer_slots"]) == {"backend", "voice_worker", "tooling"}
+
+
 def test_event_selection_is_authoritative_for_pr_main_and_manual() -> None:
     base = "1" * 40
     candidate = "2" * 40

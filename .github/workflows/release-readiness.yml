@@ -1752,8 +1752,6 @@ jobs:
           set -euo pipefail
           sed -i 's|/app/backend|backend|g' build/060/coverage-inputs/backend/coverage.xml
           sed -i 's|/app/backend|backend|g' build/060/coverage-inputs/voice-worker/voice-worker.xml
-          WINDOWS_COVERAGE="$(find build/060/coverage-inputs/windows -name windows-coverage.xml -print -quit)"
-          test -n "$WINDOWS_COVERAGE"
           python3 -I build/060/protected-policy/scripts/check_changed_coverage.py \
             --repo . \
             --event-name "${GITHUB_EVENT_NAME/workflow_dispatch/manual}" \
@@ -1762,13 +1760,7 @@ jobs:
             --backend-python build/060/coverage-inputs/backend/coverage.xml \
             --voice-worker-python build/060/coverage-inputs/voice-worker/voice-worker.xml \
             --tooling-python build/060/coverage-inputs/tooling/tooling-python.xml \
-            --windows-python "$WINDOWS_COVERAGE" \
-            --javascript build/060/release-evidence/coverage/web-istanbul.json \
-            --android-app build/060/release-evidence/coverage/android-app.xml \
-            --android-core build/060/release-evidence/coverage/android-core.xml \
-            --ios build/060/release-evidence/coverage/apple-ios-xccov.json \
-            --macos build/060/release-evidence/coverage/apple-macos-xccov.json \
-            --watchos build/060/release-evidence/coverage/apple-watchos-xccov.json \
+            --repository-profile deep \
             --coverage-mode strict \
             --fail-under 90 \
             --output build/060/release-evidence/coverage/changed-code.json

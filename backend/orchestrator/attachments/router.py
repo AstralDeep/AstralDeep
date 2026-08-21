@@ -18,10 +18,11 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from astralplane import BlobSizeLimitError
 from astralplane.errors import PlaneError
 
@@ -55,6 +56,12 @@ def _format_cap_mb(cap_bytes: int) -> str:
     return f"{cap_bytes // (1024 * 1024)} MB"
 
 attachments_router = APIRouter(tags=["Files"])
+
+
+class AccountRetirementRequest(BaseModel):
+    """Deliberate confirmation for the destructive self-service event."""
+
+    confirmation: Literal["retire-my-account"]
 
 
 def _get_orchestrator(request: Request):
@@ -358,4 +365,95 @@ async def delete_attachment(
     )
 
 
-__all__ = ["attachments_router", "MAX_UPLOAD_BYTES"]
+@attachments_router.post(
+    "/api/account/retirement",
+    tags=["Account"],
+    summary="Begin authenticated account retirement",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def begin_account_retirement(
+    request: Request,
+    retirement: AccountRetirementRequest,
+    user_id: str = Depends(require_user_id),
+):
+    """Fence new owner blobs and begin durable namespace cleanup.
+
+    This event is intentionally distinct from logout.  It accepts only the
+    immutable subject of the verified access token and never an owner supplied
+    in the request body.
+    """
+
+    del retirement
+    coordinator = _get_purge_coordinator(request)
+    try:
+        from orchestrator.attachments.account_lifecycle import (
+            initiate_account_retirement,
+        )
+
+        acceptance = await initiate_account_retirement(coordinator, user_id)
+    except Exception as exc:
+        logger.warning(
+            "Account retirement cleanup could not be accepted for owner=%s",
+            user_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Account retirement could not be accepted; please retry.",
+        ) from exc
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        headers={"Cache-Control": "no-store"},
+        content={
+            "status": "cleanup_pending",
+            "cleanup_id": acceptance.cleanup_id,
+        },
+    )
+
+
+@attachments_router.get(
+    "/api/account/retirement/{cleanup_id}",
+    tags=["Account"],
+    summary="Read authenticated account-retirement cleanup status",
+)
+async def read_account_retirement(
+    request: Request,
+    cleanup_id: str,
+    user_id: str = Depends(require_user_id),
+):
+    coordinator = _get_purge_coordinator(request)
+    try:
+        from orchestrator.attachments.account_lifecycle import (
+            account_retirement_status,
+        )
+
+        cleanup = await account_retirement_status(coordinator, user_id, cleanup_id)
+    except Exception as exc:
+        logger.warning(
+            "Account retirement status failed for owner=%s cleanup=%s",
+            user_id,
+            cleanup_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Account retirement status is temporarily unavailable.",
+        ) from exc
+    if cleanup is None:
+        raise HTTPException(status_code=404, detail="Retirement cleanup not found")
+    content = {
+        "status": cleanup.status,
+        "cleanup_id": cleanup.cleanup_id,
+        "attempt_count": cleanup.attempt_count,
+        "requested_at": cleanup.requested_at.isoformat(),
+        "verified_absent_at": (
+            cleanup.verified_absent_at.isoformat()
+            if cleanup.verified_absent_at is not None
+            else None
+        ),
+        "operator_action_required": cleanup.status == "manual_review",
+    }
+    return JSONResponse(headers={"Cache-Control": "no-store"}, content=content)
+
+
+__all__ = ["AccountRetirementRequest", "attachments_router", "MAX_UPLOAD_BYTES"]

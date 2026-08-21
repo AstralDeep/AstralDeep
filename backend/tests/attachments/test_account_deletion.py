@@ -1,11 +1,17 @@
-"""Account-retirement boundary stays durable, explicit, and unmounted."""
+"""Account-retirement boundary stays durable and distinct from logout."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
 
-from orchestrator.attachments.account_lifecycle import purge_user_attachments
+import pytest
+
+from orchestrator.attachments.account_lifecycle import (
+    account_retirement_status,
+    initiate_account_retirement,
+    purge_user_attachments,
+)
 
 
 class _Coordinator:
@@ -15,6 +21,14 @@ class _Coordinator:
 
     def schedule_owner(self, *, owner_id: str):
         self.owners.append(owner_id)
+        return self.outcome
+
+    async def aschedule_owner(self, *, owner_id: str):
+        self.owners.append(owner_id)
+        return self.outcome
+
+    async def aowner_cleanup_status(self, *, owner_id: str, cleanup_id: str):
+        self.owners.append(f"{owner_id}:{cleanup_id}")
         return self.outcome
 
 
@@ -37,7 +51,21 @@ def test_incomplete_physical_purge_is_returned_without_false_success() -> None:
     assert observed.completed is False
 
 
-def test_account_purge_is_not_mapped_to_logout_or_an_unapproved_route() -> None:
+@pytest.mark.asyncio
+async def test_async_retirement_and_status_use_verified_owner_identity() -> None:
+    outcome = SimpleNamespace(cleanup_id="cleanup-1")
+    coordinator = _Coordinator(outcome)
+
+    assert await initiate_account_retirement(coordinator, "owner-1") is outcome  # type: ignore[arg-type]
+    assert await account_retirement_status(  # type: ignore[arg-type]
+        coordinator,
+        "owner-1",
+        "cleanup-1",
+    ) is outcome
+    assert coordinator.owners == ["owner-1", "owner-1:cleanup-1"]
+
+
+def test_account_purge_is_not_mapped_to_logout() -> None:
     backend = Path(__file__).resolve().parents[2]
     mounted_sources = (
         backend / "orchestrator" / "api.py",
@@ -47,4 +75,6 @@ def test_account_purge_is_not_mapped_to_logout_or_an_unapproved_route() -> None:
     )
 
     for source in mounted_sources:
-        assert "purge_user_attachments" not in source.read_text(encoding="utf-8")
+        text = source.read_text(encoding="utf-8")
+        assert "purge_user_attachments" not in text
+        assert "initiate_account_retirement" not in text

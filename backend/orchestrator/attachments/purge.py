@@ -96,6 +96,18 @@ class AttachmentPurgeAcceptance:
         return self.schedule.metadata_rows_soft_deleted
 
 
+@dataclass(frozen=True, slots=True)
+class AttachmentPurgeStatus:
+    """Owner-safe view of one durable cleanup tombstone."""
+
+    cleanup_id: str
+    status: str
+    requested_at: datetime
+    attempt_count: int
+    verified_absent_at: datetime | None
+    last_error_code: str | None
+
+
 class AttachmentPurgeCoordinator:
     """Compose atomic logical deletion with bounded physical reconciliation."""
 
@@ -351,9 +363,8 @@ class AttachmentPurgeCoordinator:
     ) -> AttachmentPurgeOutcome:
         """Atomically hide all owner metadata and schedule namespace deletion.
 
-        This is intentionally a service boundary only.  It is not mounted on
-        logout, an HTTP endpoint, or an identity-provider event until the host
-        product explicitly chooses and authorizes an account-retirement flow.
+        The authenticated account-retirement endpoint is its only product
+        caller.  Logout and identity-provider session events never invoke it.
         """
 
         with self._admitted_operation():
@@ -367,9 +378,8 @@ class AttachmentPurgeCoordinator:
     ) -> AttachmentPurgeAcceptance:
         """Durably accept one owner cleanup without request-time filesystem work.
 
-        This supports reserved verification namespace teardown.  It does not
-        make account retirement reachable from logout, HTTP, or IAM events;
-        that remains an explicitly unmounted product boundary.
+        This supports authenticated retirement and reserved verification
+        teardown.  It is never reachable from logout or an IAM session event.
         """
 
         self._begin_operation()
@@ -390,6 +400,51 @@ class AttachmentPurgeCoordinator:
             return AttachmentPurgeAcceptance(schedule=scheduled)
         finally:
             self._end_operation()
+
+    def owner_cleanup_status(
+        self,
+        *,
+        owner_id: str,
+        cleanup_id: str,
+    ) -> AttachmentPurgeStatus | None:
+        """Read one owner-bound cleanup without exposing blob locators."""
+
+        with self._admitted_operation():
+            with self._runtime.transaction() as transaction:
+                tombstone = self._repository.load(
+                    transaction,
+                    owner_id=owner_id,
+                    tombstone_id=cleanup_id,
+                )
+        if tombstone is None:
+            return None
+        return AttachmentPurgeStatus(
+            cleanup_id=str(tombstone.tombstone_id),
+            status=str(tombstone.status),
+            requested_at=tombstone.requested_at,
+            attempt_count=tombstone.attempt_count,
+            verified_absent_at=tombstone.verified_absent_at,
+            last_error_code=tombstone.last_error_code,
+        )
+
+    async def aowner_cleanup_status(
+        self,
+        *,
+        owner_id: str,
+        cleanup_id: str,
+    ) -> AttachmentPurgeStatus | None:
+        """Read cleanup state off the request event loop."""
+
+        loop = asyncio.get_running_loop()
+        worker = loop.run_in_executor(
+            self._schedule_executor,
+            partial(
+                self.owner_cleanup_status,
+                owner_id=owner_id,
+                cleanup_id=cleanup_id,
+            ),
+        )
+        return await _join_worker_through_cancellation(worker)
 
     def _schedule_owner_only(
         self,
@@ -918,6 +973,7 @@ __all__ = (
     "AttachmentPurgeAcceptance",
     "AttachmentPurgeCoordinator",
     "AttachmentPurgeOutcome",
+    "AttachmentPurgeStatus",
     "AttachmentPurgeReadinessError",
     "purge_coordinator_from_orchestrator",
 )

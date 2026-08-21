@@ -95,6 +95,14 @@ class CoverageProducer:
 
 
 @dataclass(frozen=True)
+class CoverageRepositoryProfile:
+    """One repository's owned producer set and composed path namespace."""
+
+    producer_keys: tuple[str, ...]
+    source_prefix: str = ""
+
+
+@dataclass(frozen=True)
 class CandidateBlob:
     """One regular source blob anchored to the immutable candidate tree."""
 
@@ -263,6 +271,22 @@ COVERAGE_PRODUCERS = (
     ),
 )
 PRODUCER_BY_KEY = {producer.key: producer for producer in COVERAGE_PRODUCERS}
+REPOSITORY_PROFILES = {
+    "monorepo": CoverageRepositoryProfile(tuple(PRODUCER_BY_KEY)),
+    "deep": CoverageRepositoryProfile(("backend", "voice_worker", "tooling")),
+    "projection": CoverageRepositoryProfile(
+        (
+            "windows",
+            "javascript",
+            "android_app",
+            "android_core",
+            "ios",
+            "macos",
+            "watchos",
+        ),
+        "components/AstralProjection",
+    ),
+}
 REPORT_FLAGS = {
     "backend_python": "backend-python",
     "tooling_python": "tooling-python",
@@ -532,7 +556,11 @@ def validate_revisions(repo: Path, selection: RevisionSelection) -> RevisionSele
 
 
 def read_changed_lines(
-    repo: Path, base_sha: str, candidate_sha: str
+    repo: Path,
+    base_sha: str,
+    candidate_sha: str,
+    *,
+    source_prefix: str = "",
 ) -> dict[str, set[int]]:
     """Read added/modified candidate lines from a NUL-delimited immutable Git diff."""
 
@@ -561,9 +589,11 @@ def read_changed_lines(
         raise CoveragePolicyError(
             "invalid_git_diff", "Git diff contains a non-UTF-8 path"
         ) from exc
+    prefix = _repo_path(source_prefix) if source_prefix else ""
     changed: dict[str, set[int]] = {}
     for raw_path in sorted(set(decoded)):
-        path = _repo_path(raw_path)
+        git_path = _repo_path(raw_path)
+        path = _repo_path(f"{prefix}/{git_path}") if prefix else git_path
         maintained = classify_path(path) is not None
         text_override = ["--text"] if maintained else []
         patch = _git(
@@ -578,7 +608,7 @@ def read_changed_lines(
                 base_sha,
                 candidate_sha,
                 "--",
-                path,
+                git_path,
             ],
         ).decode("utf-8", "strict")
         lines: set[int] = set()
@@ -1630,10 +1660,16 @@ def _producer_owned_coverage(
     )
 
 
-def _candidate_source_blobs(repo: Path, candidate_sha: str) -> dict[str, CandidateBlob]:
+def _candidate_source_blobs(
+    repo: Path,
+    candidate_sha: str,
+    *,
+    source_prefix: str = "",
+) -> dict[str, CandidateBlob]:
     """Inventory regular blobs from one immutable candidate tree."""
 
     output = _git(repo, ["ls-tree", "-r", "-z", "-l", "--full-tree", candidate_sha])
+    prefix = _repo_path(source_prefix) if source_prefix else ""
     blobs: dict[str, CandidateBlob] = {}
     for record in output.split(b"\0"):
         if not record:
@@ -1650,7 +1686,9 @@ def _candidate_source_blobs(repo: Path, candidate_sha: str) -> dict[str, Candida
             ) from exc
         if kind != b"blob" or mode not in {b"100644", b"100755"}:
             continue
-        blobs[_repo_path(path)] = CandidateBlob(object_id, size_bytes)
+        git_path = _repo_path(path)
+        canonical_path = _repo_path(f"{prefix}/{git_path}") if prefix else git_path
+        blobs[canonical_path] = CandidateBlob(object_id, size_bytes)
     return blobs
 
 
@@ -1748,10 +1786,19 @@ def _strict_producer_contributions(
     maintained: Mapping[str, CoverageTarget],
     report_inputs: Mapping[str, Sequence[BoundCoverageReport]],
     producer_slots: Mapping[str, Path] | None,
+    *,
+    required_producer_keys: Sequence[str] | None = None,
+    source_prefix: str = "",
 ) -> dict[str, int]:
-    """Require one useful, producer-scoped native report in every release slot."""
+    """Require one useful native report in every repository-owned slot."""
 
-    expected_slots = set(PRODUCER_BY_KEY)
+    expected_slots = set(required_producer_keys or PRODUCER_BY_KEY)
+    unknown_slots = expected_slots - set(PRODUCER_BY_KEY)
+    if unknown_slots:
+        raise CoveragePolicyError(
+            "invalid_report_slot",
+            f"unknown required producer slot {sorted(unknown_slots)[0]!r}",
+        )
     actual_slots = set(producer_slots or {})
     if actual_slots != expected_slots:
         missing = sorted(expected_slots - actual_slots)
@@ -1761,10 +1808,14 @@ def _strict_producer_contributions(
             details.append(f"missing {', '.join(missing)}")
         if unexpected:
             details.append(f"unexpected {', '.join(unexpected)}")
+        requirement = (
+            "strict coverage requires the exact ten producer slots"
+            if expected_slots == set(PRODUCER_BY_KEY)
+            else "strict repository coverage requires its exact producer slots"
+        )
         raise CoveragePolicyError(
             "incomplete_report_matrix",
-            "strict coverage requires the exact ten producer slots: "
-            + "; ".join(details),
+            requirement + ": " + "; ".join(details),
         )
 
     artifacts_by_path = {
@@ -1772,7 +1823,11 @@ def _strict_producer_contributions(
         for artifacts in report_inputs.values()
         for artifact in artifacts
     }
-    candidate_blobs = _candidate_source_blobs(repo, candidate_sha)
+    candidate_blobs = _candidate_source_blobs(
+        repo,
+        candidate_sha,
+        source_prefix=source_prefix,
+    )
     candidate_paths = set(candidate_blobs)
     witness_paths = {
         path
@@ -1968,6 +2023,9 @@ def evaluate_changed_coverage(
     fail_under: float | int | str = 90,
     producer_slots: Mapping[str, Path] | None = None,
     strict_producers: bool = False,
+    repository_profile: str = "monorepo",
+    required_producer_keys: Sequence[str] | None = None,
+    source_prefix: str = "",
 ) -> dict[str, Any]:
     """Evaluate changed executable lines and return a deterministic decision.
 
@@ -2029,7 +2087,12 @@ def evaluate_changed_coverage(
                 "native_semantic_size_bytes": artifact.native_semantic_size_bytes,
                 "producer_slot": slot_key,
             }
-    changed = read_changed_lines(repo, selection.base_sha, selection.candidate_sha)
+    changed = read_changed_lines(
+        repo,
+        selection.base_sha,
+        selection.candidate_sha,
+        source_prefix=source_prefix,
+    )
     maintained: dict[str, CoverageTarget] = {}
     for path in sorted(changed):
         target = classify_path(path)
@@ -2048,6 +2111,8 @@ def evaluate_changed_coverage(
             maintained,
             report_inputs,
             producer_slots,
+            required_producer_keys=required_producer_keys,
+            source_prefix=source_prefix,
         )
         if strict_producers
         else {}
@@ -2186,6 +2251,8 @@ def evaluate_changed_coverage(
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "fail" if failures else "pass",
+        "repository_profile": repository_profile,
+        "source_prefix": source_prefix,
         "base_sha": selection.base_sha,
         "candidate_sha": selection.candidate_sha,
         "revisions_validated": True,
@@ -2277,7 +2344,16 @@ def _parser() -> argparse.ArgumentParser:
         "--coverage-mode",
         choices=("strict", "partial"),
         default="strict",
-        help="strict requires useful native reports in all ten producer slots",
+        help="strict requires useful native reports in every profile-owned slot",
+    )
+    parser.add_argument(
+        "--repository-profile",
+        choices=tuple(REPOSITORY_PROFILES),
+        default="monorepo",
+        help=(
+            "select the repository-owned producer matrix; projection maps its "
+            "child paths into the composed components/AstralProjection namespace"
+        ),
     )
     parser.add_argument("--fail-under", default="90")
     parser.add_argument("--output", required=True)
@@ -2305,6 +2381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         selected = validate_revisions(Path(args.repo), selected)
         revisions_validated = True
+        profile = REPOSITORY_PROFILES[args.repository_profile]
         reports = {target.key: [] for target in TARGETS}
         producer_slots: dict[str, Path] = {}
         for producer in COVERAGE_PRODUCERS:
@@ -2321,6 +2398,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             fail_under=args.fail_under,
             producer_slots=producer_slots,
             strict_producers=args.coverage_mode == "strict",
+            repository_profile=args.repository_profile,
+            required_producer_keys=profile.producer_keys,
+            source_prefix=profile.source_prefix,
         )
     except CoveragePolicyError as exc:
         decision = {

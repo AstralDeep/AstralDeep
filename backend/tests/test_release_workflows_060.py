@@ -585,15 +585,14 @@ def test_release_readiness_protected_coverage_includes_voice_worker_report() -> 
         r"\s*--voice-worker-python\s+build/060/coverage-inputs/voice-worker/voice-worker\.xml",
         decision,
     )
-    assert "--ios build/060/release-evidence/coverage/apple-ios-xccov.json" in decision
-    assert (
-        "--macos build/060/release-evidence/coverage/apple-macos-xccov.json"
-        in decision
-    )
-    assert (
-        "--watchos build/060/release-evidence/coverage/apple-watchos-xccov.json"
-        in decision
-    )
+    coverage_step = decision.partition(
+        "- name: Run the protected changed-code coverage gate"
+    )[2].partition("- name: Assemble the canonical evidence set")[0]
+    assert "--repository-profile deep" in coverage_step
+    assert "--windows-python" not in coverage_step
+    assert "--ios" not in coverage_step
+    assert "--macos" not in coverage_step
+    assert "--watchos" not in coverage_step
     assert "--apple " not in decision
     assert "--coverage-mode strict" in decision
     assert (

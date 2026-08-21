@@ -104,7 +104,12 @@ def _parser() -> argparse.ArgumentParser:
         "--coverage-mode",
         choices=("strict", "partial"),
         default="strict",
-        help="strict requires all ten producer slots; partial is diagnostic-only",
+        help="strict requires every repository-profile slot; partial is diagnostic-only",
+    )
+    parser.add_argument(
+        "--repository-profile",
+        choices=tuple(COVERAGE.REPOSITORY_PROFILES),
+        default="monorepo",
     )
     parser.add_argument("--fail-under", default="90")
     parser.add_argument("--coverage-decision-output")
@@ -284,20 +289,21 @@ def _coverage_input_summary(
             if path_text is not None
             else None
         )
-    missing = [
-        slot for slot, identity in inputs.items() if identity is None
-    ]
+    repository_profile = getattr(args, "repository_profile", "monorepo")
+    required_slots = COVERAGE.REPOSITORY_PROFILES[repository_profile].producer_keys
+    missing = [slot for slot in required_slots if inputs[slot] is None]
     if require_complete and missing:
         flags = ", ".join(
             f"--{COVERAGE_INPUT_SLOTS[slot].flag}" for slot in missing
         )
         raise VALIDATOR.PolicyError(
-            f"strict coverage mode requires all ten producer slots; missing: {flags}"
+            "strict coverage mode requires every repository-profile slot; "
+            f"missing: {flags}"
         )
     return {
         "complete": not missing,
         "inputs": inputs,
-        "required_slots": list(COVERAGE_INPUT_SLOTS),
+        "required_slots": list(required_slots),
         "missing_slots": missing,
     }
 
@@ -419,6 +425,8 @@ def _changed_coverage_summary(
         args.fail_under,
         "--coverage-mode",
         args.coverage_mode,
+        "--repository-profile",
+        getattr(args, "repository_profile", "monorepo"),
         "--output",
         str(output),
     ]

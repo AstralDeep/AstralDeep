@@ -32,8 +32,7 @@
   ],
   "blockers": [
     "no authorized authenticated user/session flow was supplied for live golden verification",
-    "Apple clients require a qualified macOS host",
-    "account-retirement product authority and asynchronous status/recovery semantics remain undecided"
+    "Apple clients require a qualified macOS host"
   ],
   "taskDisposition": {
     "T129": "partial",

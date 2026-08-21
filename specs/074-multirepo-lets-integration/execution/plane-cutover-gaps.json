@@ -1,9 +1,9 @@
 {
   "format": "astral.plane-cutover-gaps/v1",
-  "status": "deep-product-choice-blocked",
-  "statusReason": "AstralPlane 074.004 supplies the stable pending-first attachment materialization, durable prefix/owner purge, generated-agent immutable publication, bounded recovery, global-incomplete readiness, and validation-policy reconciliation contracts. Deep starts one initialized Plane runtime, publishes and deletes attachments only through typed Plane coordinators, and has deleted both the shared database facade and duplicate attachment and generated-agent bundle-store mechanics. The existing draft_artifact_publication journal now has replay-stable begin/finalize/recovery operations, exact operation/fence validation, bounded recurring reconciliation, commit-uncertainty reselection, process-kill recovery, and multi-replica fencing. Production scans contain no direct psycopg, raw SQL, schema DDL, connection borrowing, or unfenced blob mutation. The exact pushed Plane evidence commit is staged in Deep together with its matching composition declaration, and the offline composition and five-repository provenance verifiers pass. One product decision remains deliberately unresolved: the typed owner-retirement service is not mounted to any account-deletion workflow until product authority defines the account-removal trigger; logout remains explicitly out of scope. plane_repository_context.py remains only a declared SQL-free runtime/catalog semantic adapter.",
+  "status": "ready-for-final-qualification",
+  "statusReason": "AstralPlane 074.004 supplies the stable pending-first attachment materialization, durable prefix/owner purge, generated-agent immutable publication, bounded recovery, global-incomplete readiness, and validation-policy reconciliation contracts. Deep starts one initialized Plane runtime, publishes and deletes attachments only through typed Plane coordinators, and has deleted both the shared database facade and duplicate attachment and generated-agent bundle-store mechanics. The authenticated self-service account-retirement event now uses the verified Keycloak sub, returns durable asynchronous acceptance and owner-scoped status, leaves logout unrelated, and reserves manual-review recovery for evidence-bound Plane administration. Production scans contain no direct psycopg, raw SQL, schema DDL, connection borrowing, or unfenced blob mutation. plane_repository_context.py remains only a declared SQL-free runtime/catalog semantic adapter.",
   "blockingPlaneCapabilityCount": 0,
-  "remainingBlockingProductDecisionCount": 1,
+  "remainingBlockingProductDecisionCount": 0,
   "blockingCompositionPinCount": 0,
   "deepCompatibilityBoundary": "backend/orchestrator/plane_composition.py",
   "observedPlanePublicSurface": {
@@ -69,18 +69,16 @@
   },
   "blockingPlaneCapabilities": [],
   "blockingCompositionPins": [],
-  "blockingProductDecisions": [
+  "blockingProductDecisions": [],
+  "resolvedProductDecisions": [
     {
       "id": "account-deletion-reachability",
-      "requiredProductDecision": [
-        "the authoritative account-retirement event and owner identity",
-        "the user-visible asynchronous deletion status contract",
-        "the operator recovery and manual-review disposition"
-      ],
-      "reason": "The owner-scoped purge service is implemented and tested but intentionally unmounted. Mapping logout or inventing a new account-deletion route would expand product authority without user approval; until an authoritative account-retirement workflow is chosen, no production caller may retire the whole attachment namespace.",
-      "blocks": [
-        "account-attachment-retirement"
-      ]
+      "authority": "Owner direction recorded 2026-08-21",
+      "event": "Authenticated POST /api/account/retirement with deliberate confirmation",
+      "ownerIdentity": "Immutable sub from the verified Keycloak access token",
+      "statusContract": "Durable 202 acceptance followed by owner-scoped GET status",
+      "operatorRecovery": "manual_review remains evidence-bound Plane administration only",
+      "logoutDisposition": "Logout never schedules account retirement"
     }
   ],
   "resolvedPlaneCapabilities": [

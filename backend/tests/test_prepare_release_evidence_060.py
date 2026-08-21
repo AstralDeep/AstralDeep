@@ -1064,7 +1064,7 @@ def test_standard_mode_rejects_an_empty_coverage_matrix(
         == 2
     )
     error = capsys.readouterr().err
-    assert "strict coverage mode requires all ten producer slots" in error
+    assert "strict coverage mode requires every repository-profile slot" in error
     assert "--voice-worker-python" in error
     assert "--watchos" in error
     assert not output.exists()
@@ -1410,10 +1410,11 @@ def test_make_wrapper_passes_every_required_coverage_partition() -> None:
     assert flags.count("--backend-python") == 1
     assert flags.count("--voice-worker-python") == 1
     assert flags.count("--tooling-python") == 1
-    assert flags.count("--windows-python") == 1
-    assert flags.count("--javascript") == 1
-    assert flags.count("--android-app") == 1
-    assert flags.count("--android-core") == 1
-    assert flags.count("--ios") == 1
-    assert flags.count("--macos") == 1
-    assert flags.count("--watchos") == 1
+    assert "--repository-profile deep" in target
+    assert flags.count("--windows-python") == 0
+    assert flags.count("--javascript") == 0
+    assert flags.count("--android-app") == 0
+    assert flags.count("--android-core") == 0
+    assert flags.count("--ios") == 0
+    assert flags.count("--macos") == 0
+    assert flags.count("--watchos") == 0

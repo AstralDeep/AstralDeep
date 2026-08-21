@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -48,6 +49,7 @@ class _ImmediatePurgeCoordinator:
         self.repo = repo
         self.blob_store = blob_store
         self.scheduled: set[tuple[str, str]] = set()
+        self.owner_cleanups: dict[tuple[str, str], object] = {}
 
     async def aschedule_attachment(self, *, owner_id, attachment_id):
         identity = (owner_id, attachment_id)
@@ -61,6 +63,21 @@ class _ImmediatePurgeCoordinator:
             )
             self.scheduled.add(identity)
         return SimpleNamespace(cleanup_id=f"purge-{owner_id}-{attachment_id}")
+
+    async def aschedule_owner(self, *, owner_id):
+        cleanup_id = f"purge-owner-{owner_id}"
+        self.owner_cleanups[(owner_id, cleanup_id)] = SimpleNamespace(
+            cleanup_id=cleanup_id,
+            status="pending",
+            requested_at=datetime(2026, 8, 21, tzinfo=UTC),
+            attempt_count=0,
+            verified_absent_at=None,
+            last_error_code=None,
+        )
+        return SimpleNamespace(cleanup_id=cleanup_id)
+
+    async def aowner_cleanup_status(self, *, owner_id, cleanup_id):
+        return self.owner_cleanups.get((owner_id, cleanup_id))
 
 
 class _MaterializationService:
@@ -237,6 +254,39 @@ def test_upload_then_list_then_get_then_delete(app):
     }
     assert client.get(f"/api/attachments/{aid}").status_code == 404
     assert client.get("/api/attachments").json()["attachments"] == []
+
+
+def test_account_retirement_requires_deliberate_confirmation(app):
+    response = _client(app).post(
+        "/api/account/retirement",
+        json={"confirmation": "logout"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_account_retirement_is_async_owner_bound_and_not_cached(app):
+    client = _client(app)
+    accepted = client.post(
+        "/api/account/retirement",
+        json={"confirmation": "retire-my-account"},
+    )
+
+    assert accepted.status_code == 202
+    assert accepted.headers["cache-control"] == "no-store"
+    assert accepted.json() == {
+        "status": "cleanup_pending",
+        "cleanup_id": "purge-owner-user-A",
+    }
+
+    cleanup = client.get("/api/account/retirement/purge-owner-user-A")
+    assert cleanup.status_code == 200
+    assert cleanup.headers["cache-control"] == "no-store"
+    assert cleanup.json()["status"] == "pending"
+    assert cleanup.json()["operator_action_required"] is False
+
+    app.dependency_overrides[require_user_id] = lambda: "user-B"
+    assert client.get("/api/account/retirement/purge-owner-user-A").status_code == 404
 
 
 def test_upload_reports_parser_status_from_coverage_check(app, monkeypatch):
