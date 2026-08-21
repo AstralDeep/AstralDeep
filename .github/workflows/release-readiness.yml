@@ -541,7 +541,10 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
           persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
@@ -557,6 +560,7 @@ jobs:
           mkdir -p build/060/release-evidence
           docker run --rm --network host \
             -v "$PWD/backend:/app/backend" \
+            -v "$PWD/components/AstralPlane:/app/components/AstralPlane:ro" \
             -v "$PWD/scripts:/app/scripts:ro" \
             -v "$PWD/specs:/app/specs:ro" \
             -v "$PWD/tooling/python-ci:/ci/python:ro" \
@@ -608,7 +612,10 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
           persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
@@ -630,7 +637,28 @@ jobs:
             -e GITHUB_JOB -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT -e GITHUB_WORKFLOW \
             -e RUNNER_ARCH -e RUNNER_NAME -e RUNNER_OS \
             "$PLAYWRIGHT_IMAGE" sh -lc \
-            'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run browser:release -- --base-url "${{ needs.stage-deploy.outputs.endpoint }}" --candidate-sha "${{ inputs.candidate_sha }}" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/release-evidence/coverage/web-v8.json --coverage-istanbul-output /work/build/060/release-evidence/coverage/web-istanbul.json'
+            'set -eu
+            NODE_V8_DIRECTORY=/tmp/astral-node-v8
+            NODE_INTERIM=/tmp/astral-node-interim.json
+            NODE_COVERAGE=/tmp/astral-node.json
+            BROWSER_COVERAGE=/tmp/astral-browser.json
+            test ! -e "$NODE_V8_DIRECTORY"
+            mkdir "$NODE_V8_DIRECTORY"
+            test "$(corepack npm --version)" = "11.16.0"
+            corepack npm ci --ignore-scripts
+            corepack npm run check:package-manager
+            export NODE_V8_COVERAGE="$NODE_V8_DIRECTORY"
+            corepack npm run check:product-isolation
+            corepack npm run lint
+            corepack npm run test:coverage-conversion
+            corepack npm run test:coverage-conversion:node
+            corepack npm run test:coverage-union
+            corepack npm run test:coverage-conversion:browser
+            corepack npm run browser:release -- --base-url "${{ needs.stage-deploy.outputs.endpoint }}" --candidate-sha "${{ inputs.candidate_sha }}" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/release-evidence/coverage/web-v8.json --coverage-istanbul-output "$BROWSER_COVERAGE"
+            corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_INTERIM"
+            unset NODE_V8_COVERAGE
+            corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_COVERAGE"
+            corepack npm run coverage:union -- --node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" --repo-root ../.. --output /work/build/060/release-evidence/coverage/web-istanbul.json'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: evidence-web-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
@@ -660,7 +688,11 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
           persist-credentials: false
+      - name: Verify the exact initialized component composition
+        shell: pwsh
+        run: python -I scripts/verify_composition.py --root .
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
@@ -728,7 +760,10 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
           persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
         with:
           distribution: temurin
@@ -837,7 +872,10 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
           persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
       - name: Record the raw archive checkout root before candidate execution
         id: raw-archive-root
         shell: bash
@@ -956,7 +994,10 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
           persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
       - name: Record the raw archive checkout root before candidate execution
         id: raw-archive-root
         shell: bash
@@ -1067,7 +1108,10 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
           persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
       - name: Record the raw archive checkout root before candidate execution
         id: raw-archive-root
         shell: bash

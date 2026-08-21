@@ -103,19 +103,22 @@ build/060/tooling-venv/bin/python -m pip install pytest 'coverage[toml]'
 build/060/tooling-venv/bin/python -m coverage run --source=scripts -m pytest backend/tests/test_changed_coverage_060.py backend/tests/test_release_evidence_validator.py backend/tests/test_staging_fixtures_060.py backend/tests/test_documentation_060.py backend/tests/test_android_next_major_canary.py backend/tests/test_release_tooling_coverage_060.py -q
 build/060/tooling-venv/bin/python -m coverage xml -o build/060/coverage/tooling-python.xml
 ruff check .
-test "$(cd tooling/web-ci && corepack npm --version)" = "11.16.0"
-(cd tooling/web-ci && corepack npm ci --ignore-scripts)
-(cd tooling/web-ci && corepack npm run check:package-manager)
-(cd tooling/web-ci && corepack npm run check:product-isolation)
-(cd tooling/web-ci && corepack npm run lint)
+test "$(cd components/AstralProjection/tooling/web-ci && corepack npm --version)" = "11.16.0"
+(cd components/AstralProjection/tooling/web-ci && corepack npm ci --ignore-scripts)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run check:package-manager)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run check:product-isolation)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run lint)
 (cd components/AstralProjection/tooling/web-ci && corepack npm run test:coverage-conversion)
 (cd components/AstralProjection/tooling/web-ci && corepack npm run test:coverage-conversion:node)
 NODE_V8_DIR="$PWD/build/060/coverage/node-v8"
 mkdir -p "$NODE_V8_DIR"
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run check:product-isolation)
 (cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run lint)
 (cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run test:coverage-conversion)
-(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../../../.. --output "$NODE_V8_DIR/interim.json")
-(cd components/AstralProjection/tooling/web-ci && corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../../../.. --output "$NODE_V8_DIR/tooling-javascript.json")
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run test:coverage-conversion:node)
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run test:coverage-union)
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../.. --output "$NODE_V8_DIR/interim.json")
+(cd components/AstralProjection/tooling/web-ci && corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../.. --output "$NODE_V8_DIR/tooling-javascript.json")
 PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
 test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"
 docker pull "$PLAYWRIGHT_IMAGE"
@@ -227,6 +230,7 @@ evidence. Until then the protected readiness caller remains fail-closed:
 
 ```bash
 PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
+mkdir -p build/060/coverage build/060/release-evidence
 docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web-ci \
   -e ASTRAL_PLAYWRIGHT_IMAGE="$PLAYWRIGHT_IMAGE" \
   -e STAGING_URL -e SHA \
@@ -237,7 +241,30 @@ docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web
   -e ASTRAL_RUNNER_ENVIRONMENT \
   -e GITHUB_WORKFLOW -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT -e GITHUB_JOB \
   -e RUNNER_OS -e RUNNER_ARCH -e RUNNER_NAME \
-  "$PLAYWRIGHT_IMAGE" sh -lc 'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run browser:release -- --base-url "$STAGING_URL" --candidate-sha "$SHA" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/coverage/web-v8.json'
+  "$PLAYWRIGHT_IMAGE" sh -lc '
+    set -eu
+    NODE_V8_DIRECTORY=/tmp/astral-node-v8
+    NODE_INTERIM=/tmp/astral-node-interim.json
+    NODE_COVERAGE=/tmp/astral-node.json
+    BROWSER_COVERAGE=/tmp/astral-browser-istanbul.json
+    test ! -e "$NODE_V8_DIRECTORY"
+    mkdir "$NODE_V8_DIRECTORY"
+    test "$(corepack npm --version)" = "11.16.0"
+    corepack npm ci --ignore-scripts
+    corepack npm run check:package-manager
+    export NODE_V8_COVERAGE="$NODE_V8_DIRECTORY"
+    corepack npm run check:product-isolation
+    corepack npm run lint
+    corepack npm run test:coverage-conversion
+    corepack npm run test:coverage-conversion:node
+    corepack npm run test:coverage-union
+    corepack npm run test:coverage-conversion:browser
+    corepack npm run browser:release -- --base-url "$STAGING_URL" --candidate-sha "$SHA" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/coverage/web-v8.json --coverage-istanbul-output "$BROWSER_COVERAGE"
+    corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_INTERIM"
+    unset NODE_V8_COVERAGE
+    corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_COVERAGE"
+    corepack npm run coverage:union -- --node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" --repo-root ../.. --output /work/build/060/coverage/web-istanbul.json
+  '
 ```
 
 After that activation, the protected producer supplies those identities and the request-scoped
@@ -697,6 +724,13 @@ approve an exception.
 Release publication and protected exception/debt transitions remain environment-approved GitHub
 Actions jobs using the built-in short-lived `GITHUB_TOKEN` with job-scoped permissions. Do not
 create a repository-scoped GitHub App, installation token, publisher App, or custom token broker.
+
+Candidate jobs initialize the pinned component gitlinks recursively and verify the exact local
+composition before consuming component-owned sources. AstralProjection and AstralPlane are private
+sibling repositories, and separately authorized cross-repository read access is not currently
+available to these jobs. Do not add a token to the workflows or activate the readiness variables to
+work around that boundary. Until a lead approves and installs least-privilege source-read access,
+the recursive checkout must fail closed and release readiness remains unavailable.
 
 The readiness matrix is called only by the protected default-branch
 `release-readiness-protected.yml` workflow after both

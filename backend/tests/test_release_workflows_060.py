@@ -56,6 +56,7 @@ PROJECTION_WORKFLOWS = (
 APPLE_CI = PROJECTION_WORKFLOWS / "apple-ci.yml"
 READINESS = WORKFLOWS / "release-readiness.yml"
 APPLE_NORMALIZER = WORKFLOWS / "release-apple-evidence-normalizer.yml"
+WINDOWS_CANDIDATE = WORKFLOWS / "build-windows-candidate.yml"
 PROTECTED_TRIGGER = WORKFLOWS / "release-readiness-protected.yml"
 TRUSTED_BUILDER = WORKFLOWS / "release-trusted-builder.yml"
 EXCEPTION = WORKFLOWS / "release-evidence-exception.yml"
@@ -88,6 +89,13 @@ RAW_APPLE_PRODUCER_JOBS = (
     "macos-raw-producer",
     "ios-raw-producer",
     "watchos-raw-producer",
+)
+COMPONENT_CONSUMER_JOBS = (
+    "backend-producer",
+    "web-producer",
+    "windows-producer",
+    "android-producer",
+    *RAW_APPLE_PRODUCER_JOBS,
 )
 PRODUCER_JOBS = (
     *EVIDENCE_PRODUCER_JOBS,
@@ -160,6 +168,27 @@ def _job_ids(workflow: str) -> list[str]:
     jobs = workflow.partition("\njobs:\n")[2]
     assert jobs, "workflow does not define jobs"
     return re.findall(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", jobs)
+
+
+def _assert_immediate_exact_component_checkout(
+    job: str,
+    *,
+    checkout_name: str = "Check out the exact candidate",
+    expected_ref: str = "ref: ${{ inputs.candidate_sha }}",
+) -> None:
+    """Require an exact recursive checkout followed immediately by verification."""
+
+    marker = f"- name: {checkout_name}"
+    assert marker in job
+    checkout_and_tail = job.partition(marker)[2]
+    checkout, separator, tail = checkout_and_tail.partition("\n      - ")
+    assert separator, f"{checkout_name} is the final workflow step"
+    assert expected_ref in checkout
+    assert "submodules: recursive" in checkout
+    assert "persist-credentials: false" in checkout
+    assert tail.startswith("name: Verify the exact initialized component composition\n")
+    verification, _separator, _remaining = tail.partition("\n      - ")
+    assert "scripts/verify_composition.py --root ." in verification
 
 
 def _permission_lines(scope: str) -> set[str]:
@@ -359,6 +388,15 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
     web = _workflow_job(workflow, "web-producer")
     assert "playwright-image.txt" in web
     assert "browser:release" in web
+    assert "NODE_V8_COVERAGE" in web
+    assert "test:coverage-conversion:node" in web
+    assert "test:coverage-union" in web
+    assert web.count("corepack npm run coverage:node") == 2
+    assert "corepack npm run coverage:union" in web
+    assert "--coverage-istanbul-output \"$BROWSER_COVERAGE\"" in web
+    assert "--node \"$NODE_COVERAGE\"" in web
+    assert "--browser \"$BROWSER_COVERAGE\"" in web
+    assert "--repo-root ../.." in web
     assert "web-istanbul.json" in web
     windows = _workflow_job(workflow, "windows-producer")
     assert "windows-candidate" in windows
@@ -400,6 +438,42 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
     assert "environment:" not in cleanup
     assert "runner_name_pattern='^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$'" in cleanup
     assert 'test "$RUNNER_NAME" = "$ASTRAL_STAGING_EXPECTED_RUNNER_NAME"' in cleanup
+
+
+@pytest.mark.parametrize("job_id", COMPONENT_CONSUMER_JOBS)
+def test_release_readiness_component_consumers_verify_exact_initialized_gitlinks(
+    job_id: str,
+) -> None:
+    """A component consumer must not execute against an empty gitlink directory."""
+
+    workflow = _workflow_text(READINESS)
+    _assert_immediate_exact_component_checkout(_workflow_job(workflow, job_id))
+
+
+def test_release_readiness_backend_producer_mounts_plane_source_read_only() -> None:
+    """The replayed Plane-owned migration test must exist inside the container."""
+
+    backend = _workflow_job(_workflow_text(READINESS), "backend-producer")
+    assert (
+        '-v "$PWD/components/AstralPlane:/app/components/AstralPlane:ro"'
+        in backend
+    )
+
+
+def test_delegated_component_consumers_verify_exact_initialized_gitlinks() -> None:
+    """Reusable Windows and Apple jobs must enforce the same candidate composition."""
+
+    windows = _workflow_job(_workflow_text(WINDOWS_CANDIDATE), "windows-candidate")
+    _assert_immediate_exact_component_checkout(
+        windows,
+        expected_ref="ref: ${{ env.CANDIDATE_SHA }}",
+    )
+
+    apple = _workflow_job(_workflow_text(APPLE_NORMALIZER), "normalize")
+    _assert_immediate_exact_component_checkout(
+        apple,
+        checkout_name="Check out the exact candidate as normalization data",
+    )
 
 
 def test_release_readiness_candidate_jobs_never_carry_write_authority() -> None:

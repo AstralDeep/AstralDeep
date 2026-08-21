@@ -84,10 +84,12 @@ def test_web_ci_manifest_is_private_exact_and_ci_only() -> None:
         "check:package-manager",
         "check:product-isolation",
         "coverage:node",
+        "coverage:union",
         "lint",
         "test:coverage-conversion",
         "test:coverage-conversion:browser",
         "test:coverage-conversion:node",
+        "test:coverage-union",
         "test:product-isolation",
     }
     assert "eslint" in scripts["lint"]
@@ -105,6 +107,9 @@ def test_web_ci_manifest_is_private_exact_and_ci_only() -> None:
     )
     assert "node-v8-cli.test.mjs" in scripts["test:coverage-conversion:node"]
     assert "coverage-conversion-cli.mjs" in scripts["coverage:node"]
+    assert scripts["coverage:union"] == "node coverage-union-cli.mjs"
+    assert "coverage-union.test.mjs" in scripts["test:coverage-union"]
+    assert "coverage-union-cli.test.mjs" in scripts["test:coverage-union"]
     assert "npm 11.16.0" in scripts["check:package-manager"]
     assert scripts["check:product-isolation"] == "node product-isolation.mjs"
 

@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 
 import pytest
@@ -1668,24 +1668,80 @@ def test_realistic_xccov_report_summary_is_not_misused_as_line_proof(
 
 
 def _apple_export_repo(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "coverage@example.invalid")
-    _git(repo, "config", "user.name", "Coverage Fixture")
+    projection = tmp_path / "projection"
+    projection.mkdir()
+    _git(projection, "init", "-q")
+    _git(projection, "config", "user.email", "coverage@example.invalid")
+    _git(projection, "config", "user.name", "Coverage Fixture")
+
+    projection_root = PurePosixPath("components/AstralProjection")
     sources = {
         "app": "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift",
         "core": "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
         "watch": "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift",
     }
-    for relative_path in sources.values():
-        path = repo / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("let first = 1\nlet second = 2\n", encoding="utf-8")
-    _commit(repo, "tracked Apple sources")
+    for composed_path in sources.values():
+        relative_path = PurePosixPath(composed_path).relative_to(projection_root)
+        source = projection.joinpath(*relative_path.parts)
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("let first = 1\nlet second = 2\n", encoding="utf-8")
+    _commit(projection, "tracked Projection Apple sources")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    _git(
+        repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "--name",
+        "AstralProjection",
+        str(projection),
+        projection_root.as_posix(),
+    )
+    _commit(repo, "pin Projection Apple sources")
     bundle = repo / "build" / "fixture.xcresult"
     bundle.mkdir(parents=True)
     return repo, bundle, sources
+
+
+def test_xccov_exporter_rejects_missing_projection_checkout(tmp_path: Path) -> None:
+    repo, _bundle, _sources = _apple_export_repo(tmp_path)
+    _git(
+        repo,
+        "submodule",
+        "deinit",
+        "-f",
+        "--",
+        "components/AstralProjection",
+    )
+
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter._tracked_swift_sources(repo, "ios")
+
+    assert failure.value.code == "missing_component_checkout"
+
+
+def test_xccov_exporter_rejects_projection_head_beyond_gitlink(tmp_path: Path) -> None:
+    repo, _bundle, sources = _apple_export_repo(tmp_path)
+    projection = repo / "components" / "AstralProjection"
+    _git(projection, "config", "user.email", "coverage@example.invalid")
+    _git(projection, "config", "user.name", "Coverage Fixture")
+    source = repo / sources["app"]
+    source.write_text(
+        source.read_text(encoding="utf-8") + "let third = 3\n",
+        encoding="utf-8",
+    )
+    _commit(projection, "unapproved Projection descendant")
+
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter._tracked_swift_sources(repo, "ios")
+
+    assert failure.value.code == "component_revision_mismatch"
 
 
 def _local_archive_source(repo: Path, relative_path: str) -> str:
@@ -2158,6 +2214,8 @@ def test_xccov_exporter_inventory_path_and_observation_edge_contracts(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
+    projection = repo / "components" / "AstralProjection"
+    projection.mkdir(parents=True)
     bundle = repo / "fixture.xcresult"
     bundle.mkdir()
 
@@ -2183,6 +2241,11 @@ def test_xccov_exporter_inventory_path_and_observation_edge_contracts(
         xccov_exporter,
         "_bounded_command",
         lambda *_args, **_kwargs: next(inventory_outputs),
+    )
+    monkeypatch.setattr(
+        xccov_exporter,
+        "_projection_checkout",
+        lambda *_args, **_kwargs: projection,
     )
     for expected in (
         "invalid_git_inventory",

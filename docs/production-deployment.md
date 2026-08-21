@@ -354,25 +354,18 @@ archive/sign/export/validate/upload path, but Deep owner CI neither activates it
 nor treats Projection pull-request evidence as release authorization. The
 pipeline does not submit for review (see below).
 
-**Activation contract.** If a later, separately approved release task reopens
-this path, its three trigger forms are:
-1. **Merge to `main` that changes `components/AstralProjection/apple-clients/**`** — auto-releases. A cheap
-   `gate` job checks the push's diff; if `components/AstralProjection/apple-clients/**` changed it runs the
-   full archive → upload, building the project's current `MARKETING_VERSION`.
-   Ordinary backend-only merges do NOT upload. This is the everyday path — bump
-   `MARKETING_VERSION` in the Xcode project as part of the client change and the
-   new build uploads on merge.
-2. **Push a tag `apple-v*`** that equals `apple-v$MARKETING_VERSION` exactly
+**Activation contract.** A merge never activates this release path. A later,
+separately approved release task must use one of two explicit events:
+1. **Push a tag `apple-v*`** that equals `apple-v$MARKETING_VERSION` exactly
    (a mismatched tag fails the guard) — a versioned release of record.
-3. **`workflow_dispatch`** — manual release from the `main`/default ref only
+2. **`workflow_dispatch`** — manual release from the `main`/default ref only
    (e.g. to re-upload a build for an already-merged version).
 
 The `apple-v*` namespace is deliberately disjoint from the Windows release's
 `v*` trigger — a `v-apple-*` tag would double-fire that workflow — so do not
-rename it. A `paths:` filter is intentionally NOT used (it interacts unreliably
-with tag pushes); the `components/AstralProjection/apple-clients/**` check lives in the `gate` job so tag
-and dispatch runs are never path-filtered. The tag-vs-`MARKETING_VERSION` guard
-runs only on tag pushes. The build number is `$GITHUB_RUN_NUMBER`, passed to
+rename it. A `paths:` filter is intentionally not used because tag pushes can
+be silently skipped by path filters. The tag-vs-`MARKETING_VERSION` guard runs
+only on tag pushes. The build number is `$GITHUB_RUN_NUMBER`, passed to
 `xcodebuild` as `CURRENT_PROJECT_VERSION` (both Info.plists already read it — no
 agvtool rewrite), so every run gets a unique, monotonic build number.
 

@@ -107,6 +107,19 @@ def _embedded_plane_parents(commit: str) -> tuple[str, ...]:
     return tuple(commits[1:])
 
 
+def _embedded_plane_is_ancestor(ancestor: str, descendant: str) -> bool:
+    completed = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=ROOT / "components" / "AstralPlane",
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode in {0, 1}, completed.stderr
+    return completed.returncode == 0
+
+
 def _embedded_plane_changed_paths(source: str, evidence: str) -> tuple[str, ...]:
     completed = subprocess.run(
         ["git", "diff", "--name-only", f"{source}..{evidence}", "--"],
@@ -211,23 +224,53 @@ def _matching_expectation() -> PlaneContractExpectation:
 def test_gap_inventory_is_exact_for_the_observed_deep_tree() -> None:
     gaps = _gaps()
     assert gaps["format"] == "astral.plane-cutover-gaps/v1"
-    assert gaps["status"] == "deep-product-choice-blocked"
+    assert gaps["status"] == "ready-for-final-qualification"
     plane_blockers = gaps["blockingPlaneCapabilities"]
     assert gaps["blockingPlaneCapabilityCount"] == len(plane_blockers) == 0
     blockers = gaps["blockingProductDecisions"]
     assert isinstance(blockers, list)
-    assert gaps["remainingBlockingProductDecisionCount"] == len(blockers) == 1
-    assert blockers[0]["id"] == "account-deletion-reachability"
+    assert gaps["remainingBlockingProductDecisionCount"] == len(blockers) == 0
+    resolved_decisions = gaps["resolvedProductDecisions"]
+    assert resolved_decisions == [
+        {
+            "id": "account-deletion-reachability",
+            "authority": "Owner direction recorded 2026-08-21",
+            "event": (
+                "Authenticated POST /api/account/retirement with deliberate "
+                "confirmation"
+            ),
+            "ownerIdentity": "Immutable sub from the verified Keycloak access token",
+            "statusContract": (
+                "Durable 202 acceptance followed by owner-scoped GET status"
+            ),
+            "operatorRecovery": (
+                "manual_review remains evidence-bound Plane administration only"
+            ),
+            "logoutDisposition": "Logout never schedules account retirement",
+        }
+    ]
     composition_pins = gaps["blockingCompositionPins"]
     assert gaps["blockingCompositionPinCount"] == len(composition_pins) == 0
     observed = gaps["observedPlanePublicSurface"]
-    assert (
-        observed["evidenceCommit"]
-        == _declared_plane_commit()
-        == _embedded_plane_gitlink()
-    )
+    declared_commit = _declared_plane_commit()
+    embedded_commit = _embedded_plane_gitlink()
+    assert declared_commit == embedded_commit
     source_commit = observed["sourceCommit"]
     evidence_commit = observed["evidenceCommit"]
+    assert _embedded_plane_is_ancestor(evidence_commit, embedded_commit)
+    # The retained migration receipt predates the final owner-CI qualification
+    # commits.  Bind that descendant delta exactly so ancestry cannot hide a
+    # later Plane runtime or schema change behind older migration evidence.
+    assert _embedded_plane_changed_paths(evidence_commit, embedded_commit) == (
+        ".github/workflows/ci.yml",
+        "README.md",
+        "pyproject.toml",
+        "tests/architecture/test_ci_workflow.py",
+        "tests/test_blob_store.py",
+        "tooling/python-ci/build-requirements.lock.txt",
+        "uv.lock",
+        "workflows-disabled/ci.yml",
+    )
     assert _embedded_plane_parents(evidence_commit) == (source_commit,)
     assert _embedded_plane_changed_paths(source_commit, evidence_commit) == (
         "provenance/checks.json",

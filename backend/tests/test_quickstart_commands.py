@@ -114,9 +114,13 @@ def test_quickstart_uses_only_the_isolated_lock_and_digest_pinned_browser() -> N
     assert "corepack npm run lint" in quickstart
     assert "corepack npm run test:coverage-conversion" in quickstart
     assert "corepack npm run test:coverage-conversion:node" in quickstart
+    assert "corepack npm run test:coverage-union" in quickstart
     assert "NODE_V8_COVERAGE" in quickstart
     assert quickstart.count("corepack npm run coverage:node") >= 2
     assert "tooling-javascript.json" in quickstart
+    assert "corepack npm run coverage:union" in quickstart
+    assert "browser-istanbul.json" in quickstart
+    assert "web-istanbul.json" in quickstart
     assert (
         "PLAYWRIGHT_IMAGE=\"$(tr -d '\\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)\""
         in quickstart

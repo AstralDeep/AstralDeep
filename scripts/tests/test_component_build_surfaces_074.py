@@ -139,6 +139,7 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "name: image" not in workflow
     assert "name: voice-worker-image" not in workflow
 
+
     external_actions = {
         value.split(" #", 1)[0]
         for value in re.findall(r"(?m)^\s*(?:-\s+)?uses:\s*(.+?)\s*$", workflow)
@@ -169,3 +170,25 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     }
     assert " -k " not in component_tests
     assert "--ignore" not in component_tests
+
+
+def test_store_and_signing_workflows_require_explicit_release_events() -> None:
+    """Merging the composition must never publish a client implicitly."""
+
+    apple = (REPOSITORY_ROOT / ".github/workflows/apple-release.yml").read_text(
+        encoding="utf-8"
+    )
+    apple_triggers = apple.partition("\npermissions:\n")[0]
+    assert 'tags: ["apple-v*"]' in apple_triggers
+    assert "workflow_dispatch:" in apple_triggers
+    assert "branches:" not in apple_triggers
+    assert "pull_request:" not in apple_triggers
+
+    windows = (REPOSITORY_ROOT / ".github/workflows/release-windows.yml").read_text(
+        encoding="utf-8"
+    )
+    windows_triggers = windows.partition("\npermissions:\n")[0]
+    assert 'tags: ["v*"]' in windows_triggers
+    assert "workflow_dispatch:" in windows_triggers
+    assert "branches:" not in windows_triggers
+    assert "pull_request:" not in windows_triggers

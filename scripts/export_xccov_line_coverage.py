@@ -39,6 +39,7 @@ COMMAND_STOP_TIMEOUT_SECONDS = 2
 EXPORT_TIMEOUT_SECONDS = 15 * 60
 
 APPLE_ROOT = "components/AstralProjection/apple-clients/"
+PROJECTION_COMPONENT = PurePosixPath("components/AstralProjection")
 PLATFORM_ROOTS = {
     "ios": (
         "components/AstralProjection/apple-clients/AstralApp/AstralApp",
@@ -332,13 +333,135 @@ def _path_under_roots(path: str, roots: Sequence[str]) -> bool:
     return any(path == root or path.startswith(f"{root}/") for root in roots)
 
 
+def _decode_git_object_id(output: bytes, *, code: str, message: str) -> str:
+    if output.count(b"\n") != 1 or not output.endswith(b"\n"):
+        raise ExportError(code, message)
+    try:
+        object_id = output[:-1].decode("ascii", "strict")
+    except UnicodeDecodeError as exc:
+        raise ExportError(code, message) from exc
+    if len(object_id) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in object_id
+    ):
+        raise ExportError(code, message)
+    return object_id
+
+
+def _projection_checkout(
+    repo: Path, *, export_deadline: float | None = None
+) -> Path:
+    """Return the initialized Projection checkout pinned by the parent gitlink."""
+
+    component = repo.joinpath(*PROJECTION_COMPONENT.parts)
+    try:
+        component_stat = component.lstat()
+    except OSError as exc:
+        raise ExportError(
+            "missing_component_checkout",
+            "AstralProjection component checkout is unavailable",
+        ) from exc
+    if stat.S_ISLNK(component_stat.st_mode) or not stat.S_ISDIR(
+        component_stat.st_mode
+    ):
+        raise ExportError(
+            "missing_component_checkout",
+            "AstralProjection component checkout is unavailable",
+        )
+
+    gitlink_message = "AstralProjection is not an exact parent-repository gitlink"
+    try:
+        tree_entry = _bounded_command(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "ls-tree",
+                "-z",
+                "--full-tree",
+                "HEAD",
+                "--",
+                PROJECTION_COMPONENT.as_posix(),
+            ],
+            cwd=repo,
+            max_stdout_bytes=512,
+            export_deadline=export_deadline,
+        )
+    except ExportError as exc:
+        if exc.code in {"producer_failed", "producer_output_too_large"}:
+            raise ExportError("invalid_component_gitlink", gitlink_message) from exc
+        raise
+    if tree_entry.count(b"\x00") != 1 or not tree_entry.endswith(b"\x00"):
+        raise ExportError("invalid_component_gitlink", gitlink_message)
+    metadata, separator, raw_path = tree_entry[:-1].partition(b"\t")
+    fields = metadata.split(b" ")
+    if (
+        not separator
+        or raw_path != PROJECTION_COMPONENT.as_posix().encode("ascii")
+        or len(fields) != 3
+        or fields[0] != b"160000"
+        or fields[1] != b"commit"
+    ):
+        raise ExportError("invalid_component_gitlink", gitlink_message)
+    expected = _decode_git_object_id(
+        fields[2] + b"\n",
+        code="invalid_component_gitlink",
+        message=gitlink_message,
+    )
+
+    missing_message = "AstralProjection component checkout is not initialized"
+    try:
+        top_level_output = _bounded_command(
+            ["git", "-C", str(component), "rev-parse", "--show-toplevel"],
+            cwd=repo,
+            max_stdout_bytes=MAX_PATH_BYTES,
+            export_deadline=export_deadline,
+        )
+        top_level_text = top_level_output.decode("utf-8", "strict")
+        if (
+            top_level_text.count("\n") != 1
+            or not top_level_text.endswith("\n")
+            or not Path(top_level_text[:-1]).samefile(component)
+        ):
+            raise ExportError("missing_component_checkout", missing_message)
+    except (OSError, UnicodeDecodeError, ExportError) as exc:
+        if isinstance(exc, ExportError) and exc.code not in {
+            "producer_failed",
+            "producer_output_too_large",
+            "missing_component_checkout",
+        }:
+            raise
+        raise ExportError("missing_component_checkout", missing_message) from exc
+
+    actual = _decode_git_object_id(
+        _bounded_command(
+            ["git", "-C", str(component), "rev-parse", "--verify", "HEAD^{commit}"],
+            cwd=repo,
+            max_stdout_bytes=128,
+            export_deadline=export_deadline,
+        ),
+        code="invalid_component_revision",
+        message="AstralProjection checkout revision is invalid",
+    )
+    if actual != expected:
+        raise ExportError(
+            "component_revision_mismatch",
+            "AstralProjection checkout does not match the parent gitlink",
+        )
+    return component
+
+
 def _tracked_swift_sources(
     repo: Path, platform: str, *, export_deadline: float | None = None
 ) -> set[str]:
     roots = PLATFORM_ROOTS[platform]
+    component = _projection_checkout(repo, export_deadline=export_deadline)
+    component_roots = tuple(
+        PurePosixPath(root).relative_to(PROJECTION_COMPONENT).as_posix()
+        for root in roots
+    )
     output = _bounded_command(
-        ["git", "-C", str(repo), "ls-files", "-z", "--", *roots],
-        cwd=repo,
+        ["git", "-C", str(component), "ls-files", "-z", "--", *component_roots],
+        cwd=component,
         max_stdout_bytes=MAX_FILE_LIST_BYTES,
         export_deadline=export_deadline,
     )
@@ -350,9 +473,15 @@ def _tracked_swift_sources(
         raise ExportError("invalid_git_inventory", "tracked source path is not UTF-8") from exc
     sources: set[str] = set()
     for raw_path in raw_paths:
-        path = _safe_repo_path(raw_path)
-        if path.endswith(".swift") and _path_under_roots(path, roots):
-            sources.add(path)
+        component_path = _safe_repo_path(raw_path)
+        if component_path.endswith(".swift") and _path_under_roots(
+            component_path, component_roots
+        ):
+            sources.add(
+                _safe_repo_path(
+                    (PROJECTION_COMPONENT / PurePosixPath(component_path)).as_posix()
+                )
+            )
     if not sources:
         raise ExportError("empty_source_inventory", "platform has no tracked Swift sources")
     return sources

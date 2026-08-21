@@ -21,16 +21,11 @@ name: Release Apple clients
 
 # Triggers:
 #   * apple-v* tag push       — versioned release (guard asserts tag==MARKETING_VERSION)
-#   * push to main            — auto-release ONLY when the AstralProjection Gitlink changed (the
-#                               `gate` job below decides); build number = run number,
-#                               version = the project's MARKETING_VERSION
 #   * workflow_dispatch       — manual release from the main/default ref only
-# A `paths:` filter is deliberately NOT used: on GitHub it interacts unreliably with
-# tag pushes (they can be silently skipped), so the Projection Gitlink check lives
-# in the `gate` job instead — the tag/dispatch paths are never path-filtered.
+# Merging a composition never submits to the App Store. A tag or a guarded manual
+# dispatch is a separate, explicit release decision.
 on:
   push:
-    branches: ["main"]
     tags: ["apple-v*"]
   workflow_dispatch:
 
@@ -42,9 +37,8 @@ env:
   SCHEME: AstralApp
 
 jobs:
-  # Cheap Linux gate: a tag push or main-ref manual dispatch always releases; a push to
-  # main releases only when the AstralProjection Gitlink changed on that push (so ordinary
-  # backend merges don't upload a redundant TestFlight build).
+  # Cheap Linux gate: a tag push or main-ref manual dispatch is the only release
+  # activation surface. Ordinary main merges cannot reach this workflow.
   gate:
     name: Decide whether to release
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
@@ -52,22 +46,10 @@ jobs:
     outputs:
       release: ${{ steps.decide.outputs.release }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          fetch-depth: 2
       - id: decide
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
-             || [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "release: event=${{ github.event_name }} ref=${{ github.ref }}"
-          elif git diff --name-only HEAD^ HEAD | grep -qx 'components/AstralProjection'; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "release: components/AstralProjection Gitlink changed on this main push"
-          else
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "skip: no components/AstralProjection Gitlink change on this main push"
-          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "release: explicit event=${{ github.event_name }} ref=${{ github.ref }}"
 
   release:
     name: Archive, sign, upload and submit
@@ -77,6 +59,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       - name: Select the latest stable Xcode
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
