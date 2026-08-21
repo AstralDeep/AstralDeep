@@ -54,7 +54,7 @@
 
 - Create `.github/workflows/ci.yml`: quality/package, Python compatibility, and aggregate gates.
 - Create `tests/test_ci_workflow.py`: pull-request and publication authority contract.
-- Create `uv.lock` and modify `pyproject.toml`: locked CI-only dependencies.
+- Create `uv.lock` and `tooling/python-ci/build-requirements.lock.txt`, and modify `pyproject.toml`: locked CI-only dependencies plus a hash-locked isolated build backend.
 - Modify `src/astralprims/base.py`: remove the two imports rejected by the new Ruff gate without changing runtime behavior.
 - Modify `.github/workflows/python-publish.yml`: pin actions and split unprivileged verification/build from OIDC publication.
 - Modify `CLAUDE.md`: document CI and unchanged release/version semantics.
@@ -488,7 +488,7 @@ Expected: `.github/workflows/ci.yml` is missing.
 
 - [ ] **Step 2: Implement quality and package compatibility jobs**
 
-Use full-history checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9`, `ubuntu-24.04`, and:
+Use full-history checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9` with exact `uv` version `0.11.26`, `ubuntu-24.04`, and:
 
 ```yaml
 - run: uv lock --check
@@ -576,6 +576,7 @@ git commit -m "ci: qualify Plane with PostgreSQL owner gates"
 - Create: `/Users/sam/Desktop/Work/AstralPrimitives/tests/test_ci_workflow.py`
 - Create: `/Users/sam/Desktop/Work/AstralPrimitives/.github/workflows/ci.yml`
 - Create: `/Users/sam/Desktop/Work/AstralPrimitives/uv.lock`
+- Create: `/Users/sam/Desktop/Work/AstralPrimitives/tooling/python-ci/build-requirements.lock.txt`
 - Modify: `/Users/sam/Desktop/Work/AstralPrimitives/pyproject.toml`
 - Modify: `/Users/sam/Desktop/Work/AstralPrimitives/src/astralprims/base.py`
 - Modify: `/Users/sam/Desktop/Work/AstralPrimitives/.github/workflows/python-publish.yml`
@@ -600,7 +601,7 @@ ci = [
 ]
 ```
 
-The new test asserts PR jobs `{quality-package, compatibility, gates}`, Python `3.9`, `3.11`, `3.14`, both distribution formats, clean-install import/serialization smoke, `py.typed`, all 40-character action SHAs, no PR OIDC, and a publish workflow whose OIDC job depends on unprivileged verification.
+The new test asserts PR jobs `{quality-package, compatibility, gates}`, Python `3.9`, `3.11`, `3.14`, both distribution formats, clean-install import/serialization smoke, `py.typed`, all 40-character action SHAs, exact `uv` `0.11.26`, no PR OIDC, and a publish workflow whose OIDC job depends on unprivileged verification. Exact-pin `hatchling==1.27.0` and generate a Python-3.9-compatible hash-locked build constraint for Hatchling and all of its isolated-build dependencies.
 
 ```bash
 uv lock
@@ -612,7 +613,7 @@ Expected: `.github/workflows/ci.yml` is missing and the current publish workflow
 
 - [ ] **Step 2: Implement PR quality/package and compatibility**
 
-Use checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9`, upload-artifact `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`, and:
+Use checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9` with exact `uv` version `0.11.26`, upload-artifact `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`, and:
 
 ```bash
 uv lock --check
@@ -621,7 +622,7 @@ uv run --frozen --group ci ruff check .
 uv run --frozen --group ci pytest -q -p no:cacheprovider \
   --cov=astralprims --cov-branch --cov-report=xml --cov-fail-under=90
 uv run --frozen --group ci diff-cover coverage.xml --compare-branch origin/main --fail-under=90
-uv build --frozen
+uv build --build-constraints tooling/python-ci/build-requirements.lock.txt --require-hashes
 uv run --frozen --group ci twine check dist/*
 ```
 
@@ -645,7 +646,7 @@ No runtime or serialization code changes.
 
 - [ ] **Step 4: Pin and separate publication authority**
 
-Use checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-python `ece7cb06caefa5fff74198d8649806c4678c61a1`, upload `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`, download `3e5f45b5eea1f12f8d447405e9c5ef416f0a38d4`, and publisher `dc37677b2e1c63e2034f94d8a5b11f265b73ba33`. Build/test without OIDC, upload distributions, then give only the environment-protected publisher `id-token: write`. Treat a PyPI lookup result of `error` as a hard failure.
+Use checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-python `ece7cb06caefa5fff74198d8649806c4678c61a1`, setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9` with exact `uv` `0.11.26`, upload `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`, download `3e5f45b5eea1f12f8d447405e9c5ef416f0a38d4`, and publisher `dc37677b2e1c63e2034f94d8a5b11f265b73ba33`. Build/test with the same frozen CI group and hash-constrained backend without OIDC, upload distributions, then give only the environment-protected publisher `id-token: write`. Treat a PyPI lookup result of `error` as a hard failure.
 
 - [ ] **Step 5: Run Primitives local gates**
 
@@ -658,7 +659,7 @@ uv run --isolated --frozen --python 3.11 --group ci \
   diff-cover coverage.xml --compare-branch origin/main --fail-under=90
 uv run --isolated --frozen --python 3.9 --group ci pytest -q -p no:cacheprovider
 uv run --isolated --frozen --python 3.14 --group ci pytest -q -p no:cacheprovider
-uv build --frozen
+uv build --build-constraints tooling/python-ci/build-requirements.lock.txt --require-hashes
 uv run --isolated --frozen --python 3.11 --group ci twine check dist/*
 actionlint .github/workflows/ci.yml .github/workflows/python-publish.yml
 ```
@@ -667,7 +668,8 @@ actionlint .github/workflows/ci.yml .github/workflows/python-publish.yml
 
 ```bash
 git add .github/workflows/ci.yml .github/workflows/python-publish.yml \
-  tests/test_ci_workflow.py pyproject.toml uv.lock src/astralprims/base.py CLAUDE.md
+  tests/test_ci_workflow.py tooling/python-ci/build-requirements.lock.txt \
+  pyproject.toml uv.lock src/astralprims/base.py CLAUDE.md
 git commit -m "ci: add Primitives pull-request qualification"
 ```
 
