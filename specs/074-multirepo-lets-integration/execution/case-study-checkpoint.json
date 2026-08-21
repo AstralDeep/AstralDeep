@@ -1,0 +1,110 @@
+{
+  "format": "astral.lets-case-study-checkpoint/v1",
+  "recordedAtUtc": "2026-08-21T07:59:20.4543716Z",
+  "status": "validated-with-explicit-evidence-gaps",
+  "composition": {
+    "astraldeep": "488065f8cd948202c174bbcc4ae7dc4ab8e7f247",
+    "astralProjection": "46b8173239a94ee55d5226c077ddd78a304e4d94",
+    "astralPlane": "3516dd52e1b49d078e12d90b965fa0f304a3f1ca",
+    "astralPrimitives": "03870e55563f7522e95e298490e6a8638f2b8385",
+    "letsRuntime": "82dbe4f5ddf410cc86778784bb612440725ec66d",
+    "compositionSha256": "8c3646306818ddac7d06ec1b47f71b8f34ddcde5fde230de68dcb6016c979425"
+  },
+  "lets": {
+    "runtimeRelease": "v1.0.10",
+    "caseStudyExecutionCommit": "4a8dc8bca2c45e7b4f370736a51ef8d2160b9c7a",
+    "aggregateToolingCommit": "126b494c0676af7c216f5caa9367d127ebc9078f",
+    "versionDisposition": "unchanged-runtime",
+    "versionDispositionSha256": "418e96b61e4188a07b724f9c3824161d67598fd188294547c124a26b521cb1d4",
+    "aggregateToolSha256": "42e012ecb93aef6ce2fa3228e48c00b43e60be7950539332110a395886e5760a",
+    "aggregateSchemaSha256": "367a062ca642510091b292f36a5b4f284f1a0b3f29495088a5b6c5384dab4161"
+  },
+  "ignoredEvidence": {
+    "root": "LETS/results/astraldeep-case-study",
+    "studyId": "sha256:0340344d192b7d79658789464a1fd3de68428bb691aaf9598c1b5cd84741f749",
+    "generatedAtUtc": "2026-08-21T07:53:15.032561Z",
+    "manifestSha256": "c91d958779fa90fc04d42025149342aab5e3c4e291c1d410ff7ad99071fd4dba",
+    "summarySha256": "3ad0929929916ac1a11101b4edc66570460dd46aafa627a2c812b8e0fbc015b5",
+    "runtimeIdentitiesSha256": "be32710107967be28a7c7c482e7f66c9b1b1fc4247361ba7200667e803156a66",
+    "modeManifests": {
+      "off": "9ad4a9cac207d6fa2f47d369cfba302816d45bfe342b3e5df945fef8500c057d",
+      "shadow": "f80a113453c9001ce8a7a91dc1c606df38901aa66408aad6c709be7bc4c1cb29",
+      "enforce": "16b5b08af1627b00debb9d351f54a4151ded06a4c03f58d43ea5a922cd4f6c1b"
+    },
+    "successorVersionGateSha256": "d65fed78b16e0958e6199a65dd31326fe4e94b25dccdee553516db106b37a0a8",
+    "totals": {
+      "modes": 3,
+      "scenarios": 57,
+      "commands": 57,
+      "retainedArtifacts": 183,
+      "measurements": 151,
+      "samples": 163,
+      "cohortMetrics": 15,
+      "sanitizationFindings": 0
+    }
+  },
+  "observedBehavior": {
+    "allCommandsPassed": true,
+    "budgetConservationPassed": true,
+    "sequenceMonotonicityPassed": true,
+    "lifecycleCasesConvergedPerMode": 8,
+    "unreceiptedGovernedEffects": 0,
+    "off": {
+      "letsRequests": 0,
+      "receiptClaims": 0
+    },
+    "shadow": {
+      "letsRequests": 33,
+      "receiptClaims": 0
+    },
+    "enforce": {
+      "letsRequests": 33,
+      "receiptsIssued": 15,
+      "receiptsClaimed": 15,
+      "physicalEffects": 14,
+      "denials": [
+        "warden_unavailable",
+        "receipt_replayed",
+        "budget_exhausted",
+        "binding_unavailable"
+      ]
+    }
+  },
+  "taskDisposition": {
+    "complete": [
+      "T206",
+      "T208",
+      "T210",
+      "T211",
+      "T212",
+      "T220"
+    ],
+    "partial": {
+      "T207": "The current flag-off control is retained, but no distinct historical v1.0.10 result bundle is present.",
+      "T209": "Descriptive aggregates exist, but no recovery-time measurement or inferential/tail-performance support exists."
+    },
+    "blocked": {
+      "T213-T218": "The original ignored paper/submission tree is absent; no manuscript was reconstructed or changed.",
+      "T219": "No manuscript/reproduction checks ran and no reproduction.json was created."
+    }
+  },
+  "limitations": {
+    "singleSampleMeasurements": 147,
+    "totalMeasurements": 151,
+    "maximumSamplesPerMeasurement": 4,
+    "p95TailResolutionMeasurementCount": 0,
+    "p99TailResolutionMeasurementCount": 0,
+    "inferentialStatisticsPresent": false,
+    "recoveryTimeIncluded": false,
+    "distinctHistoricalReleaseReferenceIncluded": false,
+    "authenticatedRuntimeIdentitySupported": false,
+    "runtimeIdentityReason": "Retained policy and machine digests match placeholder patterns and bind replay only; they do not establish deployment trust.",
+    "successorVersionGateInterpretation": "The retained paper-readiness input authorizes only the unchanged-runtime/successor decision. It is not whole-paper or reproduction readiness."
+  },
+  "publicationPosture": {
+    "manuscriptModified": false,
+    "paperSubmitted": false,
+    "releasePublished": false,
+    "productionChanged": false
+  }
+}

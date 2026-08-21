@@ -36,25 +36,37 @@ def _logical_requirements(path: Path) -> list[str]:
     ]
 
 
+def _pin(requirement: str) -> tuple[str, str]:
+    match = re.match(r"^([A-Za-z0-9_.-]+)==([^ ;\\]+)", requirement)
+    if match:
+        return _normalized(match.group(1)), match.group(2)
+    direct = re.match(
+        r"^lets-agent @ https://github\.com/AstralDeep/LETS/releases/download/"
+        r"v([0-9]+\.[0-9]+\.[0-9]+)/lets_agent-"
+        r"([0-9]+\.[0-9]+\.[0-9]+)-py3-none-any\.whl(?:\s|$)",
+        requirement,
+    )
+    assert direct, f"requirement is not an exact approved pin: {requirement}"
+    assert direct.group(1) == direct.group(2)
+    return "lets-agent", direct.group(2)
+
+
 def _pins(path: Path) -> dict[str, str]:
     pins: dict[str, str] = {}
     for requirement in _logical_requirements(path):
-        match = re.match(r"^([A-Za-z0-9_.-]+)==([^ ;\\]+)", requirement)
-        assert match, f"requirement is not an exact pin: {requirement}"
-        name = _normalized(match.group(1))
+        name, version = _pin(requirement)
         assert name not in pins, f"duplicate requirement: {name}"
-        pins[name] = match.group(2)
+        pins[name] = version
     return pins
 
 
 def _hashes(path: Path) -> dict[str, set[str]]:
     result: dict[str, set[str]] = {}
     for requirement in _logical_requirements(path):
-        match = re.match(r"^([A-Za-z0-9_.-]+)==([^ ;\\]+)", requirement)
-        assert match
+        name, _version = _pin(requirement)
         values = set(re.findall(r"--hash=sha256:([0-9a-f]{64})(?:\s|$)", requirement))
         assert values, f"requirement has no SHA-256 hash: {requirement}"
-        result[_normalized(match.group(1))] = values
+        result[name] = values
     return result
 
 
@@ -62,8 +74,8 @@ def test_windows_livekit_direct_pin_and_win_amd64_wheel_are_exact() -> None:
     assert _pins(WINDOWS_INPUT)["livekit"] == "1.1.14"
     locked = _pins(WINDOWS_LOCK)
     hashes = _hashes(WINDOWS_LOCK)
-    assert len(locked) == 67
-    assert len(set(locked) - {"macholib"}) == 66
+    assert len(locked) == 69
+    assert len(set(locked) - {"macholib"}) == 68
     assert locked["livekit"] == "1.1.14"
     assert {
         name: (locked[name], hashes[name])

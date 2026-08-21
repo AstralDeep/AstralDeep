@@ -802,6 +802,7 @@ async def test_published_retry_reopens_exact_bundle_without_llm_or_new_claim(
 
 async def test_authoring_no_host_retry_redelivers_exact_publication_without_regeneration(
     real_lifecycle,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """A fresh rendered Generate action must reopen the durable publication.
 
@@ -812,6 +813,7 @@ async def test_authoring_no_host_retry_redelivers_exact_publication_without_rege
     """
 
     owner_id = "u-byo-authoring-replay"
+    monkeypatch.setattr(aa, "byo_enabled", lambda: True)
     orch = MagicMock()
     orch.lifecycle_manager = real_lifecycle
     orch.user_agent_registry = real_lifecycle.user_agent_registry

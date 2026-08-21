@@ -306,12 +306,12 @@
 - [X] T203 [P] [US6] Copy the canonical evidence schema from Deep into `Y:/WORK/MCP/LETS/benchmarks/astraldeep/case-study-evidence.schema.json` and implement the tracked off/shadow/enforce runner across six scopes, lifecycle, parallel/recursive dispatch, outage, replay, exhaustion, and revocation in `run_case_study.py`
 - [X] T204 [P] [US6] Implement environment/machine/config/component revision capture plus semantic evidence validation for unique retained artifact paths, artifact-reference integrity, ordered timestamps, canonical digests, and secret/credential/PHI exclusion in `Y:/WORK/MCP/LETS/benchmarks/astraldeep/capture_environment.py`
 - [X] T205 [P] [US6] Add tests for exact revision capture, schema validation, canonical digests, secret redaction, missing inputs, and refusal to mix baselines in `Y:/WORK/MCP/LETS/tests/benchmarks/test_astraldeep_case_study.py`
-- [ ] T206 [US6] Create an ignored local evidence root and run manifest in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/manifest.json` without staging any result or manuscript artifact
+- [X] T206 [US6] Create an ignored local evidence root and run manifest in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/manifest.json` without staging any result or manuscript artifact
 - [ ] T207 [US6] Run flag-off baseline and v1.0.10 reference scenarios, retaining raw outputs and labeling them distinctly in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/baseline/`
-- [ ] T208 [US6] Run shadow and enforce Astral integration scenarios from exact component commits, retaining raw outputs in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/integration/`
+- [X] T208 [US6] Run shadow and enforce Astral integration scenarios from exact component commits, retaining raw outputs in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/integration/`
 - [ ] T209 [US6] Measure p50/p95/p99 authorization/end-to-end latency, throughput, refusal reasons, lifecycle convergence, recovery, storage growth, budget conservation, and unreceipted effects in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/summary.json`
-- [ ] T210 [US6] Validate the complete evidence bundle against `Y:/WORK/MCP/LETS/benchmarks/astraldeep/case-study-evidence.schema.json` and record every file digest in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/manifest.json`
-- [ ] T211 [US6] Compare used LETS runtime/API behavior to the signed v1.0.10 source and record an evidence-backed unchanged-runtime or successor-required disposition in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/version-disposition.json`
+- [X] T210 [US6] Validate the complete evidence bundle against `Y:/WORK/MCP/LETS/benchmarks/astraldeep/case-study-evidence.schema.json` and record every file digest in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/manifest.json`
+- [X] T211 [US6] Compare used LETS runtime/API behavior to the signed v1.0.10 source and record an evidence-backed unchanged-runtime or successor-required disposition in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/version-disposition.json`
 - [X] T212 [US6] Implement a fail-closed successor-release gate that blocks paper result finalization and emits a separately reviewable LETS defect/release handoff whenever `version-disposition.json` requires runtime or wire-semantic changes in `Y:/WORK/MCP/LETS/benchmarks/astraldeep/check_version_disposition.py`; never alter `v1.0.10`
 - [ ] T213 [US6] Add the accurate Armstrong, Klusty, Logan, Leach, and Bumgardner AMIA 2026 Astral citation with PMCID `PMC13274365` to `Y:/WORK/MCP/LETS/paper/submission/references.bib`
 - [ ] T214 [US6] Add the exact-revision Astral use-case method, architecture distinction, finite-authority profile, rollout posture, and limitations to the named manuscript in `Y:/WORK/MCP/LETS/paper/submission/main.tex`
@@ -320,8 +320,10 @@
 - [ ] T217 [P] [US6] Add named-citation, version-label, result-manifest, and anonymous-token checks in `Y:/WORK/MCP/LETS/paper/submission/check_submission.py`
 - [ ] T218 [US6] Build and visually verify the local named and anonymous PDFs, retaining build logs and renders under `Y:/WORK/MCP/LETS/paper/submission/build/` without staging them
 - [ ] T219 [US6] Run case-study reproducibility and manuscript checks from the exact composition and record their digests in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/reproduction.json`
-- [ ] T220 [US6] Commit and push only tracked changes under `Y:/WORK/MCP/LETS/benchmarks/astraldeep` and `Y:/WORK/MCP/LETS/tests/benchmarks` to the LETS feature branch; do not stage or push `paper/` or `results/`
+- [X] T220 [US6] Commit and push only tracked changes under `Y:/WORK/MCP/LETS/benchmarks/astraldeep` and `Y:/WORK/MCP/LETS/tests/benchmarks` to the LETS feature branch; do not stage or push `paper/` or `results/`
 - [ ] T221 [US6] Record and push exact evidence revisions/digests, LETS version disposition, measured-result changes, AMIA citation status, paper locality, and risks in `Y:/WORK/kos-wiki/wiki/project-lets.md`, `Y:/WORK/kos-wiki/wiki/project-astral.md`, `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
+
+> Case-study checkpoint (2026-08-21): execution/case-study-checkpoint.json records the validated 57-scenario aggregate and exact digests. T207 remains partial because no distinct historical v1.0.10 result bundle is present. T209 remains partial because recovery time was not measured and 147 of 151 measurements have one sample. T213-T219 remain blocked by the absent original ignored manuscript tree; no manuscript or reproduction artifact was reconstructed.
 
 ---
 

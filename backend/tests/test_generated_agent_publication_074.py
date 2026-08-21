@@ -2221,11 +2221,15 @@ async def test_prejournal_cancelled_joiner_cannot_revoke_survivor_claim(
     survivor = asyncio.create_task(service.publish(_request()))
     await admission_entered.wait()
     cancelled = asyncio.create_task(service.publish(_request()))
-    for _ in range(100):
-        attempt = next(iter(service._attempts.values()))
-        if attempt.waiters == 2:
-            break
-        await asyncio.sleep(0)
+
+    async def joined_attempt():
+        while True:
+            attempt = next(iter(service._attempts.values()))
+            if attempt.waiters == 2:
+                return attempt
+            await asyncio.sleep(0)
+
+    attempt = await asyncio.wait_for(joined_attempt(), timeout=5.0)
     assert attempt.publication is None and attempt.waiters == 2
 
     cancelled.cancel()

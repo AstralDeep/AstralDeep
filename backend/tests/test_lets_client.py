@@ -286,18 +286,21 @@ def _problem(status: int, detail: str = "synthetic-sensitive-marker") -> Problem
 
 
 def test_factory_settings_and_provision_contract_are_exact() -> None:
+    ca_bundle = _reference("ca.pem")
+    client_cert_file = _reference("client.pem")
+    client_key_file = _reference("client.key")
     config = _config(
-        ca_bundle=_reference("ca.pem"),
-        client_cert_file=_reference("client.pem"),
-        client_key_file=_reference("client.key"),
+        ca_bundle=ca_bundle,
+        client_cert_file=client_cert_file,
+        client_key_file=client_key_file,
     )
     boundary, stub, factory = _boundary({"issue_root": _grant()}, config=config)
 
     assert factory.base_url == "https://warden.example"
     assert factory.keywords == {
         "token": SYNTHETIC_TOKEN,
-        "verify": "C:\\synthetic\\ca.pem",
-        "cert": ("C:\\synthetic\\client.pem", "C:\\synthetic\\client.key"),
+        "verify": str(ca_bundle.path),
+        "cert": (str(client_cert_file.path), str(client_key_file.path)),
         "timeout": 2.5,
         "total_timeout_s": 2.5,
         "max_response_bytes": MAX_LETS_RESPONSE_BYTES,
