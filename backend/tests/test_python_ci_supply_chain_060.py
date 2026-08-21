@@ -21,6 +21,15 @@ INPUT = TOOLING_ROOT / "requirements.in"
 LOCK = TOOLING_ROOT / "requirements.lock.txt"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 GITLEAKS_IGNORE = REPO_ROOT / ".gitleaksignore"
+REVIEWED_074_FINGERPRINTS = {
+    "7bc9d1f683c535863b5426ab3053db3bdefc6a1a:config/astral-composition.json:generic-api-key:56",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_startup_gate.py:generic-api-key:121",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_startup_gate.py:generic-api-key:133",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_startup_gate.py:generic-api-key:201",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_inbound_auth.py:generic-api-key:124",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_inbound_auth.py:generic-api-key:267",
+    "40cc17aba0c6bd4d7ca3e22b76829b7b657e5b90:windows-client/tests/test_remote_machines_surface.py:private-key:42",
+}
 WINDOWS_CANDIDATE = (
     REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 )
@@ -177,11 +186,13 @@ def test_ci_secret_scan_uses_checksum_pinned_secret_free_cli() -> None:
 
 def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     fingerprints = GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
-    assert len(fingerprints) == 12
+    assert len(fingerprints) == 19
     assert len(fingerprints) == len(set(fingerprints))
+    assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert all(
         re.fullmatch(
-            r"[0-9a-f]{40}:[^:]+:generic-api-key:[1-9][0-9]*", fingerprint
+            r"[0-9a-f]{40}:[^:]+:(?:generic-api-key|private-key):[1-9][0-9]*",
+            fingerprint,
         )
         for fingerprint in fingerprints
     )
