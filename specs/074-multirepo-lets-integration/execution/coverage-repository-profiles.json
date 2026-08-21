@@ -1,6 +1,6 @@
 {
   "format": "astral.changed-coverage-repository-profiles/v1",
-  "recordedAtUtc": "2026-08-21T15:30:00Z",
+  "recordedAtUtc": "2026-08-21T20:14:10Z",
   "status": "implemented-and-tested",
   "thresholdPercent": 90,
   "profiles": {
@@ -10,6 +10,7 @@
       "tooling"
     ],
     "projection": [
+      "projection_python",
       "windows",
       "javascript",
       "android_app",
@@ -22,10 +23,12 @@
   "projectionPathPrefix": "components/AstralProjection",
   "reason": "Gitlink entries are not source blobs in the parent candidate tree. Each repository must prove its own changed executable lines from native reports.",
   "deepWorkflow": "release-readiness now selects the deep profile and its exact three owned reports",
-  "projectionGate": "Run the protected collector against the AstralProjection repository with the projection profile and its exact seven native reports",
+  "projectionGate": "Run the protected collector against the AstralProjection repository with the projection profile and its exact eight native reports, including Cobertura for package, ROTE, and web-renderer Python",
   "verification": {
-    "coverageCollectorTests": "83 passed",
-    "releaseToolingAndWorkflowTests": "141 passed with 3 skips",
+    "coverageCollectorTests": "94 passed",
+    "releaseToolingTests": "675 passed, 1 skipped, and 2 composition-state tests deselected while sibling closure commits were in progress",
+    "releaseToolingScriptsCoverage": "91 percent",
+    "changedScriptsDiffCoverage": "92 percent against origin/main",
     "ruff": "passed"
   }
 }

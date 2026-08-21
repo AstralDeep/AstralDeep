@@ -164,9 +164,21 @@ class CoverageData:
         self.covered.update(other.covered)
 
 
+PROJECTION_PYTHON_ROOTS = (
+    "components/AstralProjection/src/astralprojection",
+    "components/AstralProjection/backend/rote",
+    "components/AstralProjection/backend/webrender",
+)
+
 TARGETS = (
     CoverageTarget("backend_python", "python", ("backend",), "cobertura"),
     CoverageTarget("tooling_python", "python", ("scripts",), "cobertura"),
+    CoverageTarget(
+        "projection_python",
+        "python",
+        PROJECTION_PYTHON_ROOTS,
+        "cobertura",
+    ),
     CoverageTarget(
         "windows_python",
         "python",
@@ -231,6 +243,12 @@ COVERAGE_PRODUCERS = (
     ),
     CoverageProducer("tooling", "tooling_python", "tooling-python", ("scripts",)),
     CoverageProducer(
+        "projection_python",
+        "projection_python",
+        "projection-python",
+        PROJECTION_PYTHON_ROOTS,
+    ),
+    CoverageProducer(
         "windows",
         "windows_python",
         "windows-python",
@@ -261,13 +279,22 @@ COVERAGE_PRODUCERS = (
         ),
     ),
     CoverageProducer(
-        "ios", "apple", "ios", ("components/AstralProjection/apple-clients/AstralApp/AstralApp",)
+        "ios",
+        "apple",
+        "ios",
+        ("components/AstralProjection/apple-clients/AstralApp/AstralApp",),
     ),
     CoverageProducer(
-        "macos", "apple", "macos", ("components/AstralProjection/apple-clients/AstralApp/AstralApp",)
+        "macos",
+        "apple",
+        "macos",
+        ("components/AstralProjection/apple-clients/AstralApp/AstralApp",),
     ),
     CoverageProducer(
-        "watchos", "apple", "watchos", ("components/AstralProjection/apple-clients/AstralWatch",)
+        "watchos",
+        "apple",
+        "watchos",
+        ("components/AstralProjection/apple-clients/AstralWatch",),
     ),
 )
 PRODUCER_BY_KEY = {producer.key: producer for producer in COVERAGE_PRODUCERS}
@@ -276,6 +303,7 @@ REPOSITORY_PROFILES = {
     "deep": CoverageRepositoryProfile(("backend", "voice_worker", "tooling")),
     "projection": CoverageRepositoryProfile(
         (
+            "projection_python",
             "windows",
             "javascript",
             "android_app",
@@ -290,6 +318,7 @@ REPOSITORY_PROFILES = {
 REPORT_FLAGS = {
     "backend_python": "backend-python",
     "tooling_python": "tooling-python",
+    "projection_python": "projection-python",
     "windows_python": "windows-python",
     "javascript": "javascript",
     "android_app": "android-app",
@@ -299,6 +328,8 @@ REPORT_FLAGS = {
 ANCHORS = (
     "backend/",
     "scripts/",
+    "components/AstralProjection/src/astralprojection/",
+    "components/AstralProjection/backend/rote/",
     "components/AstralProjection/backend/webrender/",
     "components/AstralProjection/windows-client/",
     "components/AstralProjection/android-client/",
@@ -347,6 +378,8 @@ def classify_path(path: str) -> CoverageTarget | None:
     if _is_test_or_generated(path):
         return None
     if path.endswith(".py"):
+        if any(_path_matches_root(path, root) for root in PROJECTION_PYTHON_ROOTS):
+            return TARGET_BY_KEY["projection_python"]
         if path.startswith("backend/"):
             return TARGET_BY_KEY["backend_python"]
         if path.startswith("scripts/"):
@@ -354,7 +387,10 @@ def classify_path(path: str) -> CoverageTarget | None:
         if path.startswith("components/AstralProjection/windows-client/"):
             return TARGET_BY_KEY["windows_python"]
     if path.endswith((".js", ".mjs")):
-        if path.startswith("components/AstralProjection/backend/webrender/") and "/static/vendor/" not in path:
+        if (
+            path.startswith("components/AstralProjection/backend/webrender/")
+            and "/static/vendor/" not in path
+        ):
             return TARGET_BY_KEY["javascript"]
         if path.startswith("components/AstralProjection/tooling/web-ci/"):
             return TARGET_BY_KEY["javascript"]
@@ -683,7 +719,10 @@ def _read_report(path: Path) -> bytes:
         ) from exc
     stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
     if (
-        any(getattr(before_read, field) != getattr(after_read, field) for field in stable_fields)
+        any(
+            getattr(before_read, field) != getattr(after_read, field)
+            for field in stable_fields
+        )
         or before_path.st_dev != before_read.st_dev
         or before_path.st_ino != before_read.st_ino
         or after_path.st_dev != before_read.st_dev
@@ -693,7 +732,11 @@ def _read_report(path: Path) -> bytes:
             "report_changed", f"coverage report changed while being read: {path}"
         )
     content = b"".join(chunks)
-    if not content or len(content) > MAX_REPORT_BYTES or len(content) != after_read.st_size:
+    if (
+        not content
+        or len(content) > MAX_REPORT_BYTES
+        or len(content) != after_read.st_size
+    ):
         raise CoveragePolicyError(
             "unparseable_report", f"coverage report has invalid size: {path}"
         )
@@ -884,9 +927,10 @@ def coverage_report_identity(
 def _normalized_report_path(raw: str, target: CoverageTarget) -> str | None:
     """Map a producer path from its first repository anchor only.
 
-    The first anchor is authoritative.  Looking for a later anchor that happens to
-    match ``target`` would let an absolute ``backend/scripts/...`` path masquerade
-    as a repository-root ``scripts/...`` path.
+    Projection-native targets first map a child-checkout owner root into the
+    composed namespace. Otherwise the first repository anchor is authoritative;
+    looking for a later generic anchor that happens to match ``target`` would let
+    an absolute ``backend/scripts/...`` path masquerade as root ``scripts/...``.
     """
 
     value = raw.strip().replace("\\", "/")
@@ -894,28 +938,49 @@ def _normalized_report_path(raw: str, target: CoverageTarget) -> str | None:
     if parsed.scheme in {"file", "http", "https"}:
         value = urllib.parse.unquote(parsed.path)
     value = value.replace("\\", "/")
-    anchored: list[tuple[int, str]] = []
-    for anchor in ANCHORS:
-        if value.startswith(anchor):
-            anchored.append((0, value))
-        marker = f"/{anchor}"
-        start = 0
-        while (index := value.find(marker, start)) >= 0:
-            anchored.append((index + 1, value[index + 1 :]))
-            start = index + 1
-    if anchored:
-        candidate = min(anchored, key=lambda item: item[0])[1]
+    relative = value.lstrip("/")
+    projection_owner_roots = (
+        "src/astralprojection/",
+        "backend/rote/",
+        "backend/webrender/",
+        "tooling/web-ci/",
+        "windows-client/",
+        "android-client/",
+        "apple-clients/",
+    )
+    projection_targets = {
+        "projection_python",
+        "windows_python",
+        "javascript",
+        "android_app",
+        "android_core",
+        "apple",
+    }
+    projection_anchors: list[tuple[int, str]] = []
+    if target.key in projection_targets:
+        for root in projection_owner_roots:
+            if relative.startswith(root):
+                projection_anchors.append((0, relative))
+            marker = f"/{root}"
+            start = 0
+            while (index := value.find(marker, start)) >= 0:
+                projection_anchors.append((index + 1, value[index + 1 :]))
+                start = index + 1
+    if projection_anchors:
+        child_path = min(projection_anchors, key=lambda item: item[0])[1]
+        candidate = f"components/AstralProjection/{child_path}"
     else:
-        relative = value.lstrip("/")
-        projection_owner_roots = (
-            "backend/webrender/",
-            "tooling/web-ci/",
-            "windows-client/",
-            "android-client/",
-            "apple-clients/",
-        )
-        if not value.startswith("/") and relative.startswith(projection_owner_roots):
-            candidate = f"components/AstralProjection/{relative}"
+        anchored: list[tuple[int, str]] = []
+        for anchor in ANCHORS:
+            if value.startswith(anchor):
+                anchored.append((0, value))
+            marker = f"/{anchor}"
+            start = 0
+            while (index := value.find(marker, start)) >= 0:
+                anchored.append((index + 1, value[index + 1 :]))
+                start = index + 1
+        if anchored:
+            candidate = min(anchored, key=lambda item: item[0])[1]
         elif target.key == "javascript" and relative.startswith("static/"):
             candidate = f"components/AstralProjection/backend/webrender/{relative}"
         else:
@@ -1229,9 +1294,10 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
                 "unparseable_report",
                 f"Kover package {package_name!r} LINE counter disagrees with sourcefiles",
             )
-        if _instruction_counter(
-            package, label=f"Kover package {package_name!r}"
-        ) != (package_instruction_missed, package_instruction_covered):
+        if _instruction_counter(package, label=f"Kover package {package_name!r}") != (
+            package_instruction_missed,
+            package_instruction_covered,
+        ):
             raise CoveragePolicyError(
                 "unparseable_report",
                 f"Kover package {package_name!r} INSTRUCTION counter "
@@ -1593,9 +1659,7 @@ def _unique_report_inputs(
                     size_bytes=artifact_identity["size_bytes"],
                     semantic_sha256=artifact_identity["semantic_sha256"],
                     semantic_size_bytes=artifact_identity["semantic_size_bytes"],
-                    native_semantic_sha256=artifact_identity[
-                        "native_semantic_sha256"
-                    ],
+                    native_semantic_sha256=artifact_identity["native_semantic_sha256"],
                     native_semantic_size_bytes=artifact_identity[
                         "native_semantic_size_bytes"
                     ],
@@ -1614,8 +1678,7 @@ def _producer_applies_to_path(slot_key: str, path: str) -> bool:
 
     if slot_key == "backend":
         return path in VOICE_WORKER_OVERWRITTEN_SHIMS or (
-            path.startswith("backend/")
-            and not path.startswith("backend/voice_agent/")
+            path.startswith("backend/") and not path.startswith("backend/voice_agent/")
         )
     if slot_key == "voice_worker":
         return (
@@ -1639,14 +1702,14 @@ def _producer_applies_to_path(slot_key: str, path: str) -> bool:
             )
         )
     if slot_key == "watchos":
-        return _path_matches_root(path, "components/AstralProjection/apple-clients/AstralWatch")
+        return _path_matches_root(
+            path, "components/AstralProjection/apple-clients/AstralWatch"
+        )
     target = TARGET_BY_KEY[PRODUCER_BY_KEY[slot_key].target_key]
     return any(_path_matches_root(path, root) for root in target.roots)
 
 
-def _producer_owned_coverage(
-    coverage: CoverageData, slot_key: str
-) -> CoverageData:
+def _producer_owned_coverage(coverage: CoverageData, slot_key: str) -> CoverageData:
     """Exclude observations outside a strict producer's owned source partition."""
 
     def owned(path: str) -> bool:
@@ -1677,6 +1740,13 @@ def _candidate_source_blobs(
         try:
             metadata, raw_path = record.split(b"\t", 1)
             mode, kind, raw_object_id, raw_size = metadata.split()
+        except ValueError as exc:
+            raise CoveragePolicyError(
+                "invalid_candidate_tree", "candidate tree has malformed blob metadata"
+            ) from exc
+        if kind != b"blob" or mode not in {b"100644", b"100755"}:
+            continue
+        try:
             path = raw_path.decode("utf-8", "strict")
             object_id = raw_object_id.decode("ascii", "strict")
             size_bytes = int(raw_size)
@@ -1684,8 +1754,10 @@ def _candidate_source_blobs(
             raise CoveragePolicyError(
                 "invalid_candidate_tree", "candidate tree has malformed blob metadata"
             ) from exc
-        if kind != b"blob" or mode not in {b"100644", b"100755"}:
-            continue
+        if size_bytes < 0:
+            raise CoveragePolicyError(
+                "invalid_candidate_tree", "candidate tree has malformed blob metadata"
+            )
         git_path = _repo_path(path)
         canonical_path = _repo_path(f"{prefix}/{git_path}") if prefix else git_path
         blobs[canonical_path] = CandidateBlob(object_id, size_bytes)
@@ -1707,8 +1779,7 @@ def _candidate_source_line_counts(
     selected = {
         path: blobs[path]
         for path in sorted(paths)
-        if path in blobs
-        and blobs[path].size_bytes <= MAX_CANDIDATE_WITNESS_BLOB_BYTES
+        if path in blobs and blobs[path].size_bytes <= MAX_CANDIDATE_WITNESS_BLOB_BYTES
     }
     by_object = {blob.object_id: blob.size_bytes for blob in selected.values()}
     if sum(by_object.values()) > MAX_CANDIDATE_WITNESS_TOTAL_BYTES:
@@ -1728,7 +1799,8 @@ def _candidate_source_line_counts(
     )
     if process.returncode != 0:
         raise CoveragePolicyError(
-            "git_error", "git cat-file --batch failed during candidate witness validation"
+            "git_error",
+            "git cat-file --batch failed during candidate witness validation",
         )
     cursor = 0
     line_counts_by_object: dict[str, int] = {}
@@ -1809,7 +1881,7 @@ def _strict_producer_contributions(
         if unexpected:
             details.append(f"unexpected {', '.join(unexpected)}")
         requirement = (
-            "strict coverage requires the exact ten producer slots"
+            f"strict coverage requires the exact {len(PRODUCER_BY_KEY)} producer slots"
             if expected_slots == set(PRODUCER_BY_KEY)
             else "strict repository coverage requires its exact producer slots"
         )
@@ -1880,14 +1952,18 @@ def _strict_producer_contributions(
                 "backend/voice_agent and its audited backend/shared source aliases",
             )
         if slot_key == "ios" and any(
-            _path_matches_root(path, "components/AstralProjection/apple-clients/AstralWatch")
+            _path_matches_root(
+                path, "components/AstralProjection/apple-clients/AstralWatch"
+            )
             for path in artifact.coverage.files
         ):
             raise CoveragePolicyError(
                 "producer_scope_mismatch", "ios coverage contains Watch sources"
             )
         if slot_key == "macos" and any(
-            _path_matches_root(path, "components/AstralProjection/apple-clients/AstralWatch")
+            _path_matches_root(
+                path, "components/AstralProjection/apple-clients/AstralWatch"
+            )
             for path in artifact.coverage.files
         ):
             raise CoveragePolicyError(
@@ -1919,9 +1995,7 @@ def _strict_producer_contributions(
             changed_path, "components/AstralProjection/apple-clients/AstralCore/Sources"
         ):
             core_slots = [
-                slot_key
-                for slot_key in applicable
-                if slot_key in {"ios", "macos"}
+                slot_key for slot_key in applicable if slot_key in {"ios", "macos"}
             ]
             mapped_slots = [
                 slot_key
@@ -1977,9 +2051,7 @@ def _strict_producer_contributions(
                 )
             if target.key == "apple":
                 observed = {
-                    line
-                    for path, line in coverage.observed
-                    if path == changed_path
+                    line for path, line in coverage.observed if path == changed_path
                 }
                 missing = sorted(changed[changed_path] - observed)
                 if missing:
@@ -1993,7 +2065,9 @@ def _strict_producer_contributions(
                 *(
                     {
                         line
-                        for path, line in artifacts_by_slot[slot_key].coverage.executable
+                        for path, line in artifacts_by_slot[
+                            slot_key
+                        ].coverage.executable
                         if path == changed_path and line in changed[changed_path]
                     }
                     for slot_key in applicable
@@ -2177,9 +2251,7 @@ def evaluate_changed_coverage(
                     )
         target_data[target_key] = merged
         report_summary[target_key] = {
-            "artifacts": [
-                str(report.path).replace("\\", "/") for report in artifacts
-            ],
+            "artifacts": [str(report.path).replace("\\", "/") for report in artifacts],
             "artifact_identities": artifact_identities,
             "changed_files": changed_files,
             "mapped_files": sorted(set(changed_files) & merged.files),

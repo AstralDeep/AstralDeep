@@ -138,6 +138,162 @@ def _javascript_envelope(coverage: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _kover(path: Path, source_name: str, *, covered: bool = True) -> Path:
+    missed = int(not covered)
+    hit = int(covered)
+    path.write_text(
+        '<report><package name="com/example">'
+        f'<sourcefile name="{source_name}">'
+        f'<line nr="1" mi="{missed}" ci="{hit}" mb="0" cb="0"/>'
+        f'<counter type="INSTRUCTION" missed="{missed}" covered="{hit}"/>'
+        f'<counter type="LINE" missed="{missed}" covered="{hit}"/>'
+        "</sourcefile>"
+        f'<counter type="INSTRUCTION" missed="{missed}" covered="{hit}"/>'
+        f'<counter type="LINE" missed="{missed}" covered="{hit}"/>'
+        "</package>"
+        f'<counter type="INSTRUCTION" missed="{missed}" covered="{hit}"/>'
+        f'<counter type="LINE" missed="{missed}" covered="{hit}"/>'
+        "</report>\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _xccov(path: Path, source: str, *, execution_count: int) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                source: [
+                    {
+                        "line": 1,
+                        "isExecutable": True,
+                        "executionCount": execution_count,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _projection_strict_case(
+    tmp_path: Path,
+) -> tuple[
+    Path,
+    object,
+    dict[str, list[Path]],
+    dict[str, Path],
+]:
+    """Build one real child-repository candidate and its eight native reports."""
+
+    repo = tmp_path / "projection"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    sources = {
+        "src/astralprojection/runtime.py": "value = 0\n",
+        "windows-client/runtime.py": "value = 0\n",
+        "backend/webrender/static/client.js": "const value = 0;\n",
+        "android-client/app/src/main/kotlin/com/example/App.kt": "val value = 0\n",
+        "android-client/core/src/main/kotlin/com/example/Core.kt": "val value = 0\n",
+        "apple-clients/AstralApp/AstralApp/App.swift": "let value = 0\n",
+        "apple-clients/AstralWatch/Watch.swift": "let value = 0\n",
+    }
+    for relative, content in sources.items():
+        source = repo / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(content, encoding="utf-8")
+    base = _commit(repo, "base")
+    (repo / "src/astralprojection/runtime.py").write_text(
+        "value = 0\nchanged = 1\n", encoding="utf-8"
+    )
+    candidate = _commit(repo, "candidate")
+
+    projection = _cobertura(
+        tmp_path / "projection-python.xml",
+        "src/astralprojection/runtime.py",
+        {1: 1, 2: 1},
+    )
+    windows = _cobertura(tmp_path / "windows.xml", "windows-client/runtime.py", {1: 1})
+    javascript = tmp_path / "javascript.json"
+    javascript.write_text(
+        json.dumps(
+            _javascript_envelope(
+                {
+                    "backend/webrender/static/client.js": {
+                        "path": "backend/webrender/static/client.js",
+                        "statementMap": {
+                            "0": {
+                                "start": {"line": 1, "column": 0},
+                                "end": {"line": 1, "column": 16},
+                            }
+                        },
+                        "s": {"0": 1},
+                    }
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+    android_app = _kover(tmp_path / "android-app.xml", "App.kt")
+    android_core = _kover(tmp_path / "android-core.xml", "Core.kt")
+    ios = _xccov(
+        tmp_path / "ios.json",
+        "apple-clients/AstralApp/AstralApp/App.swift",
+        execution_count=1,
+    )
+    macos = _xccov(
+        tmp_path / "macos.json",
+        "apple-clients/AstralApp/AstralApp/App.swift",
+        execution_count=0,
+    )
+    watchos = _xccov(
+        tmp_path / "watchos.json",
+        "apple-clients/AstralWatch/Watch.swift",
+        execution_count=1,
+    )
+    slots = {
+        "projection_python": projection,
+        "windows": windows,
+        "javascript": javascript,
+        "android_app": android_app,
+        "android_core": android_core,
+        "ios": ios,
+        "macos": macos,
+        "watchos": watchos,
+    }
+    reports = {
+        "projection_python": [projection],
+        "windows_python": [windows],
+        "javascript": [javascript],
+        "android_app": [android_app],
+        "android_core": [android_core],
+        "apple": [ios, macos, watchos],
+    }
+    return repo, _selection(repo, base, candidate), reports, slots
+
+
+def _evaluate_projection_strict(
+    repo: Path,
+    selection: object,
+    reports: dict[str, list[Path]],
+    slots: dict[str, Path],
+) -> dict[str, object]:
+    profile = collector.REPOSITORY_PROFILES["projection"]
+    return collector.evaluate_changed_coverage(
+        repo,
+        selection,
+        reports,
+        producer_slots=slots,
+        strict_producers=True,
+        repository_profile="projection",
+        required_producer_keys=profile.producer_keys,
+        source_prefix=profile.source_prefix,
+    )
+
+
 def test_repository_profiles_partition_owned_producers() -> None:
     assert collector.REPOSITORY_PROFILES["deep"].producer_keys == (
         "backend",
@@ -145,6 +301,7 @@ def test_repository_profiles_partition_owned_producers() -> None:
         "tooling",
     )
     assert collector.REPOSITORY_PROFILES["projection"].producer_keys == (
+        "projection_python",
         "windows",
         "javascript",
         "android_app",
@@ -156,6 +313,7 @@ def test_repository_profiles_partition_owned_producers() -> None:
     assert set(collector.REPOSITORY_PROFILES["monorepo"].producer_keys) == set(
         collector.PRODUCER_BY_KEY
     )
+    assert collector.REPORT_FLAGS["projection_python"] == "projection-python"
 
 
 def test_projection_profile_maps_child_git_paths_to_composed_paths(
@@ -167,10 +325,14 @@ def test_projection_profile_maps_child_git_paths_to_composed_paths(
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
     source = repo / "windows-client" / "runtime.py"
+    projection_source = repo / "src" / "astralprojection" / "runtime.py"
     source.parent.mkdir(parents=True)
+    projection_source.parent.mkdir(parents=True)
     source.write_text("first = 1\n", encoding="utf-8")
+    projection_source.write_text("first = 1\n", encoding="utf-8")
     base = _commit(repo, "base")
     source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    projection_source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
     candidate = _commit(repo, "candidate")
 
     prefix = collector.REPOSITORY_PROFILES["projection"].source_prefix
@@ -187,11 +349,141 @@ def test_projection_profile_maps_child_git_paths_to_composed_paths(
     )
 
     composed_path = "components/AstralProjection/windows-client/runtime.py"
-    assert changed == {composed_path: {2}}
+    projection_path = "components/AstralProjection/src/astralprojection/runtime.py"
+    assert changed == {composed_path: {2}, projection_path: {2}}
     assert composed_path in blobs
+    assert projection_path in blobs
 
 
-def test_deep_repository_profile_accepts_its_exact_three_native_slots(
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "src/astralprojection/runtime.py",
+        "backend/rote/adaptation.py",
+        "backend/webrender/renderer.py",
+    ),
+)
+def test_projection_python_cobertura_maps_each_composed_owner_root(
+    tmp_path: Path, relative: str
+) -> None:
+    report = _cobertura(tmp_path / "projection.xml", relative, {1: 1, 2: 0})
+
+    parsed = collector.parse_coverage_report(report, "projection_python")
+
+    composed = f"components/AstralProjection/{relative}"
+    assert parsed.files == {composed}
+    assert parsed.executable == {(composed, 1), (composed, 2)}
+    assert parsed.covered == {(composed, 1)}
+
+
+def test_projection_profile_requires_projection_python_slot(tmp_path: Path) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    reports.pop("projection_python")
+    slots.pop("projection_python")
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert failure.value.code == "incomplete_report_matrix"
+    assert "projection_python" in failure.value.message
+
+
+def test_projection_python_cli_rejects_duplicate_slot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = _cobertura(
+        tmp_path / "projection.xml", "src/astralprojection/runtime.py", {1: 1}
+    )
+
+    with pytest.raises(SystemExit) as failure:
+        collector._parser().parse_args(
+            [
+                "--projection-python",
+                str(report),
+                "--projection-python",
+                str(report),
+                "--output",
+                str(tmp_path / "decision.json"),
+            ]
+        )
+
+    assert failure.value.code == 2
+    assert "--projection-python may be supplied exactly once" in capsys.readouterr().err
+
+
+def test_projection_python_slot_rejects_wrong_owner_report(tmp_path: Path) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    wrong_owner = _cobertura(
+        tmp_path / "wrong-owner.xml", "windows-client/runtime.py", {1: 2}
+    )
+    reports["projection_python"] = [wrong_owner]
+    slots["projection_python"] = wrong_owner
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert failure.value.code == "unproductive_report"
+    assert "projection_python" in failure.value.message
+
+
+def test_projection_python_slot_rejects_non_candidate_source(tmp_path: Path) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    non_candidate = _cobertura(
+        tmp_path / "non-candidate.xml",
+        "src/astralprojection/not-in-candidate.py",
+        {1: 1},
+    )
+    reports["projection_python"] = [non_candidate]
+    slots["projection_python"] = non_candidate
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert failure.value.code == "unproductive_report"
+    assert "projection_python" in failure.value.message
+
+
+def test_projection_python_unobserved_changed_line_cannot_pass(
+    tmp_path: Path,
+) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    projection = _cobertura(
+        tmp_path / "projection-unobserved.xml",
+        "src/astralprojection/runtime.py",
+        {1: 1},
+    )
+    reports["projection_python"] = [projection]
+    slots["projection_python"] = projection
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert failure.value.code == "unexpected_empty_executable_diff"
+
+
+def test_projection_python_slot_binds_raw_and_semantic_report_digests(
+    tmp_path: Path,
+) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+
+    decision = _evaluate_projection_strict(repo, selection, reports, slots)
+
+    projection = slots["projection_python"]
+    expected = {
+        "path": projection.as_posix(),
+        **collector.coverage_report_identity(
+            projection.read_bytes(),
+            "projection_python",
+            producer_key="projection_python",
+        ),
+        "producer_slot": "projection_python",
+    }
+    assert decision["status"] == "pass"
+    assert decision["producer_slots"]["projection_python"] == expected
+    assert decision["reports"]["projection_python"]["artifact_identities"] == [expected]
+
+
+def test_deep_repository_profile_accepts_exact_three_slots_with_gitlink(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "deep"
@@ -211,7 +503,16 @@ def test_deep_repository_profile_accepts_its_exact_three_native_slots(
     base = _commit(repo, "base")
     for relative in sources:
         (repo / relative).write_text("first = 1\nsecond = 2\n", encoding="utf-8")
-    candidate = _commit(repo, "candidate")
+    _git(repo, "add", "-A")
+    _git(
+        repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{base},components/AstralPrimitives",
+    )
+    _git(repo, "commit", "-m", "candidate")
+    candidate = _git(repo, "rev-parse", "HEAD")
 
     reports = {
         relative: _cobertura(
@@ -256,6 +557,52 @@ def test_deep_repository_profile_accepts_its_exact_three_native_slots(
     assert decision["status"] == "pass"
     assert decision["repository_profile"] == "deep"
     assert set(decision["producer_slots"]) == {"backend", "voice_worker", "tooling"}
+
+
+def test_candidate_source_inventory_ignores_gitlinks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    source = repo / "backend" / "service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("value = 0\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    source.write_text("value = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(
+        repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{base},components/AstralProjection",
+    )
+    _git(repo, "commit", "-m", "candidate")
+    candidate = _git(repo, "rev-parse", "HEAD")
+
+    blobs = collector._candidate_source_blobs(repo, candidate)
+
+    assert "backend/service.py" in blobs
+    assert "components/AstralProjection" not in blobs
+
+
+def test_candidate_source_inventory_rejects_malformed_regular_blob_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        collector,
+        "_git",
+        lambda *_args, **_kwargs: (
+            b"100644 blob 1111111111111111111111111111111111111111 -"
+            b"\tbackend/service.py\0"
+        ),
+    )
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_blobs(tmp_path, "2" * 40)
+
+    assert failure.value.code == "invalid_candidate_tree"
 
 
 def test_event_selection_is_authoritative_for_pr_main_and_manual() -> None:
@@ -392,6 +739,9 @@ def test_null_delimited_diff_and_explicit_path_mapping(
         "backend/orchestrator/a.py": "backend_python",
         "backend/voice_agent/main.py": "backend_python",
         "scripts/release.py": "tooling_python",
+        "components/AstralProjection/src/astralprojection/runtime.py": "projection_python",
+        "components/AstralProjection/backend/rote/adaptation.py": "projection_python",
+        "components/AstralProjection/backend/webrender/renderer.py": "projection_python",
         "components/AstralProjection/windows-client/win_agent/host.py": "windows_python",
         "components/AstralProjection/backend/webrender/static/client.js": "javascript",
         "components/AstralProjection/tooling/web-ci/eslint.config.mjs": "javascript",
@@ -512,10 +862,10 @@ def test_report_inputs_reject_global_path_inode_and_content_aliases(
 
 
 def test_semantic_identity_ignores_irrelevant_json_metadata(tmp_path: Path) -> None:
-    swift_path = "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift"
-    observations = [
-        {"line": 1, "isExecutable": True, "executionCount": 1}
-    ]
+    swift_path = (
+        "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift"
+    )
+    observations = [{"line": 1, "isExecutable": True, "executionCount": 1}]
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
     first.write_text(
@@ -538,9 +888,7 @@ def test_semantic_identity_ignores_irrelevant_json_metadata(tmp_path: Path) -> N
 def test_native_identity_rejects_metadata_copy_across_target_filters(
     tmp_path: Path,
 ) -> None:
-    first = _cobertura(
-        tmp_path / "backend.xml", "backend/service.py", {1: 1}
-    )
+    first = _cobertura(tmp_path / "backend.xml", "backend/service.py", {1: 1})
     second = tmp_path / "windows.xml"
     second.write_text(
         first.read_text(encoding="utf-8").replace(
@@ -585,7 +933,9 @@ def test_overwritten_voice_shims_have_explicit_backend_ownership() -> None:
         assert collector._producer_applies_to_path("voice_worker", shim) is False
     for shared_source in collector.VOICE_WORKER_SOURCE_ALIASES.values():
         assert collector._producer_applies_to_path("backend", shared_source) is True
-        assert collector._producer_applies_to_path("voice_worker", shared_source) is True
+        assert (
+            collector._producer_applies_to_path("voice_worker", shared_source) is True
+        )
     assert (
         collector._producer_applies_to_path(
             "voice_worker", "backend/voice_agent/main.py"
@@ -593,9 +943,7 @@ def test_overwritten_voice_shims_have_explicit_backend_ownership() -> None:
         is True
     )
     assert (
-        collector._producer_applies_to_path(
-            "backend", "backend/voice_agent/main.py"
-        )
+        collector._producer_applies_to_path("backend", "backend/voice_agent/main.py")
         is False
     )
 
@@ -776,7 +1124,9 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
     assert javascript.covered == {(js_path, 2)}
 
     xccov = tmp_path / "apple.json"
-    swift_path = "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift"
+    swift_path = (
+        "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift"
+    )
     xccov.write_text(
         json.dumps(
             {
@@ -915,11 +1265,7 @@ def _install_fake_xcrun(
     # script at the first argument (``xccov``) and expose a hard-linked Python
     # launcher as xcrun.exe; CreateProcess does not execute extensionless
     # shebang files.
-    xcrun = (
-        tmp_path / "repo" / "xccov"
-        if os.name == "nt"
-        else binary_dir / "xcrun"
-    )
+    xcrun = tmp_path / "repo" / "xccov" if os.name == "nt" else binary_dir / "xcrun"
     xcrun.write_text(
         """#!/usr/bin/env python3
 import json
@@ -974,10 +1320,7 @@ def test_xccov_exporter_uses_real_per_file_subprocess_contract_and_platform_filt
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = {
-        name: _local_archive_source(repo, path)
-        for name, path in sources.items()
-    }
+    raw = {name: _local_archive_source(repo, path) for name, path in sources.items()}
     dependency = "/tmp/checkouts/LiveKit/Sources/LiveKit/Room.swift"
     calls_path = _install_fake_xcrun(
         tmp_path,
@@ -1027,7 +1370,9 @@ def test_xccov_exporter_uses_real_per_file_subprocess_contract_and_platform_filt
     assert list(watch_report) == [sources["core"], sources["watch"]]
     assert sources["app"] not in watch_output.read_text(encoding="utf-8")
 
-    calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    calls = [
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
     assert ["xccov", "view", "--archive", "--file-list", str(bundle)] in calls
     assert not any(raw["watch"] in call for call in calls[:3])
     assert any(raw["watch"] in call for call in calls)
@@ -1060,10 +1405,7 @@ def test_xccov_exporter_binds_a_historical_raw_job_checkout_root(
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
     archive_root = "/Users/runner/work/AstralDeep/AstralDeep"
-    raw = {
-        name: f"{archive_root}/{relative}"
-        for name, relative in sources.items()
-    }
+    raw = {name: f"{archive_root}/{relative}" for name, relative in sources.items()}
     _install_fake_xcrun(
         tmp_path,
         monkeypatch,
@@ -1223,10 +1565,7 @@ def test_xccov_exporter_observation_budget_aborts_before_all_selected_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = {
-        name: _local_archive_source(repo, path)
-        for name, path in sources.items()
-    }
+    raw = {name: _local_archive_source(repo, path) for name, path in sources.items()}
     calls_path = _install_fake_xcrun(
         tmp_path,
         monkeypatch,
@@ -1241,8 +1580,7 @@ def test_xccov_exporter_observation_budget_aborts_before_all_selected_files(
         )
     assert failure.value.code == "observation_budget_exceeded"
     calls = [
-        json.loads(line)
-        for line in calls_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
     ]
     per_file_calls = [call for call in calls if "--file" in call]
     assert len(per_file_calls) <= 1
@@ -1253,10 +1591,7 @@ def test_xccov_exporter_cumulative_input_budget_stops_before_second_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = {
-        name: _local_archive_source(repo, path)
-        for name, path in sources.items()
-    }
+    raw = {name: _local_archive_source(repo, path) for name, path in sources.items()}
     files = {path: {path: _xccov_lines()} for path in raw.values()}
     calls_path = _install_fake_xcrun(
         tmp_path,
@@ -1265,9 +1600,7 @@ def test_xccov_exporter_cumulative_input_budget_stops_before_second_file(
         files=files,
     )
     first_payload_bytes = len(json.dumps(files[raw["app"]]).encode("utf-8"))
-    monkeypatch.setattr(
-        xccov_exporter, "MAX_TOTAL_XCCOV_BYTES", first_payload_bytes
-    )
+    monkeypatch.setattr(xccov_exporter, "MAX_TOTAL_XCCOV_BYTES", first_payload_bytes)
     output = repo / "build" / "bounded-input.json"
     with pytest.raises(xccov_exporter.ExportError) as failure:
         xccov_exporter.export_xccov(
@@ -1275,8 +1608,7 @@ def test_xccov_exporter_cumulative_input_budget_stops_before_second_file(
         )
     assert failure.value.code == "input_budget_exceeded"
     calls = [
-        json.loads(line)
-        for line in calls_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
     ]
     assert len([call for call in calls if "--file" in call]) == 1
     assert not output.exists()
@@ -1959,7 +2291,11 @@ def test_xccov_empty_partial_and_duplicate_physical_lines_fail_closed(
 ) -> None:
     report = tmp_path / "invalid-archive.json"
     report.write_text(
-        json.dumps({"/work/components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift": observations}),
+        json.dumps(
+            {
+                "/work/components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift": observations
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(collector.CoveragePolicyError) as failure:
@@ -2169,7 +2505,7 @@ def test_cli_missing_report_error_retains_validated_revision_audit_fields(
     assert document["fail_under"] == 91.0
 
 
-def test_cli_strict_mode_requires_the_exact_ten_slot_matrix(
+def test_cli_strict_mode_requires_the_exact_eleven_slot_matrix(
     git_repo: tuple[Path, str], tmp_path: Path
 ) -> None:
     repo, base = git_repo

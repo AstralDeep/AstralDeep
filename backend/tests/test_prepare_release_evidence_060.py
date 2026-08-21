@@ -192,6 +192,12 @@ def _native_coverage_report(prepare: Any, root: Path, slot: str) -> Path:
         )
     if slot == "tooling":
         return _cobertura(root / "tooling.xml", "scripts/release.py", hits=1)
+    if slot == "projection_python":
+        return _cobertura(
+            root / "projection-python.xml",
+            "components/AstralProjection/src/astralprojection/runtime.py",
+            hits=1,
+        )
     if slot == "windows":
         return _cobertura(root / "windows.xml", "components/AstralProjection/windows-client/app.py", hits=1)
     if slot == "javascript":
@@ -708,6 +714,7 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
         "backend/voice_agent/main.py",
         "backend/voice_agent/voice_transcript.py",
         "scripts/release.py",
+        "components/AstralProjection/src/astralprojection/runtime.py",
         "components/AstralProjection/windows-client/app.py",
         "components/AstralProjection/backend/webrender/static/client.js",
         "components/AstralProjection/android-client/app/src/main/kotlin/com/example/App.kt",
@@ -1110,6 +1117,7 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
         "backend/service.py",
         "backend/voice_agent/main.py",
         "scripts/release.py",
+        "components/AstralProjection/src/astralprojection/runtime.py",
         "components/AstralProjection/windows-client/app.py",
         "components/AstralProjection/backend/webrender/static/client.js",
         "components/AstralProjection/android-client/app/src/main/kotlin/com/example/App.kt",

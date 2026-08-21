@@ -62,6 +62,7 @@ def test_changed_coverage_cli_exposes_every_platform_report_partition() -> None:
         "--backend-python",
         "--voice-worker-python",
         "--tooling-python",
+        "--projection-python",
         "--windows-python",
         "--javascript",
         "--android-app",
