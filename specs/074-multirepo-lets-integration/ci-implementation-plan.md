@@ -166,7 +166,7 @@ if arguments.command == "verify-anchor":
 For `quality` and matrix `test`, make checkout and preflight structurally identical to:
 
 ```yaml
-- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.2
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   with:
     fetch-depth: 0
 - uses: astral-sh/setup-uv@ae6289f6599a82fc94e0c245b5663c4733dc3351 # v10.0.0
@@ -488,7 +488,7 @@ Expected: `.github/workflows/ci.yml` is missing.
 
 - [ ] **Step 2: Implement quality and package compatibility jobs**
 
-Use full-history checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9` with exact `uv` version `0.11.26`, `ubuntu-24.04`, and:
+Use full-history checkout `3d3c42e5aac5ba805825da76410c181273ba90b1` (v7.0.1), setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9` (v9.0.0) with exact `uv` version `0.11.26`, `ubuntu-24.04`, and:
 
 ```yaml
 - run: uv lock --check
@@ -613,7 +613,7 @@ Expected: `.github/workflows/ci.yml` is missing and the current publish workflow
 
 - [ ] **Step 2: Implement PR quality/package and compatibility**
 
-Use checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9` with exact `uv` version `0.11.26`, upload-artifact `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`, and:
+Use checkout `3d3c42e5aac5ba805825da76410c181273ba90b1` (v7.0.1), setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9` (v9.0.0) with exact `uv` version `0.11.26`, upload-artifact `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` (v7.0.1), and:
 
 ```bash
 uv lock --check
@@ -646,7 +646,7 @@ No runtime or serialization code changes.
 
 - [ ] **Step 4: Pin and separate publication authority**
 
-Use checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-python `ece7cb06caefa5fff74198d8649806c4678c61a1`, setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9` with exact `uv` `0.11.26`, upload `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`, download `3e5f45b5eea1f12f8d447405e9c5ef416f0a38d4`, and publisher `dc37677b2e1c63e2034f94d8a5b11f265b73ba33`. Build/test with the same frozen CI group and hash-constrained backend without OIDC, upload distributions, then give only the environment-protected publisher `id-token: write`. Treat a PyPI lookup result of `error` as a hard failure.
+Use checkout `3d3c42e5aac5ba805825da76410c181273ba90b1` (v7.0.1), setup-python `ece7cb06caefa5fff74198d8649806c4678c61a1` (v6.3.0), setup-uv `c771a70e6277c0a99b617c7a806ffedaca235ff9` (v9.0.0) with exact `uv` `0.11.26`, upload `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` (v7.0.1), download `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` (v8.0.1), and publisher `dc37677b2e1c63e2034f94d8a5b11f265b73ba33` (`release/v1`). Build/test with the same frozen CI group and hash-constrained backend without OIDC, upload distributions, then give only the environment-protected publisher `id-token: write`. Treat a PyPI lookup result of `error` as a hard failure.
 
 - [ ] **Step 5: Run Primitives local gates**
 
