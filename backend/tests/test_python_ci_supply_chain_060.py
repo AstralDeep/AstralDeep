@@ -21,6 +21,15 @@ INPUT = TOOLING_ROOT / "requirements.in"
 LOCK = TOOLING_ROOT / "requirements.lock.txt"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 GITLEAKS_IGNORE = REPO_ROOT / ".gitleaksignore"
+REVIEWED_074_FINGERPRINTS = {
+    "7bc9d1f683c535863b5426ab3053db3bdefc6a1a:config/astral-composition.json:generic-api-key:56",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_startup_gate.py:generic-api-key:121",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_startup_gate.py:generic-api-key:133",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_startup_gate.py:generic-api-key:201",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_inbound_auth.py:generic-api-key:124",
+    "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_inbound_auth.py:generic-api-key:267",
+    "40cc17aba0c6bd4d7ca3e22b76829b7b657e5b90:windows-client/tests/test_remote_machines_surface.py:private-key:42",
+}
 WINDOWS_CANDIDATE = (
     REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 )
@@ -126,28 +135,12 @@ def test_ci_uses_one_hash_lock_for_every_python_test_tool_install() -> None:
     for job_name in (
         "lint",
         "release-tooling-tests",
-        "coverage-gate",
+        "component-contract-tests",
+        "composition-declarations",
     ):
         job = _workflow_job(workflow, job_name)
         assert LOCK_INSTALL in job
         assert "cache-dependency-path: tooling/python-ci/requirements.lock.txt" in job
-
-    windows = _workflow_job(workflow, "windows-client")
-    assert "runs-on: windows-latest" in windows
-    assert LOCK_INSTALL in windows
-    assert (
-        "python -m pip install --require-hashes -r "
-        "windows-client/requirements-release.lock.txt"
-    ) in windows
-    assert "windows-client/requirements.txt" not in windows
-    assert "sudo apt-get" not in windows
-
-    backend = _workflow_job(workflow, "test")
-    assert '-v "$PWD/tooling/python-ci:/ci/python:ro"' in backend
-    assert (
-        "python -m pip install --require-hashes -r "
-        "/ci/python/requirements.lock.txt"
-    ) in backend
 
     assert "pip install ruff" not in workflow
     assert "pip install diff-cover" not in workflow
@@ -177,56 +170,70 @@ def test_ci_secret_scan_uses_checksum_pinned_secret_free_cli() -> None:
 
 def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     fingerprints = GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
-    assert len(fingerprints) == 12
+    assert len(fingerprints) == 19
     assert len(fingerprints) == len(set(fingerprints))
+    assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert all(
         re.fullmatch(
-            r"[0-9a-f]{40}:[^:]+:generic-api-key:[1-9][0-9]*", fingerprint
+            r"[0-9a-f]{40}:[^:]+:(?:generic-api-key|private-key):[1-9][0-9]*",
+            fingerprint,
         )
         for fingerprint in fingerprints
     )
 
 
-def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> None:
+def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "release-tooling-tests")
     assert "RELEASE_TOOL_TESTS=(" in job
     assert 'test "${#RELEASE_TOOL_TESTS[@]}" -gt 0' in job
-    assert "coverage run --source=scripts -m pytest" in job
+    assert "coverage run --source=scripts" in job
     assert "coverage report --fail-under=90" in job
+    omissions = set(re.findall(r"--omit=([^\s\\]+)", job))
+    assert omissions == {"scripts/windows_release_candidate.py"}
+    assert not any("*" in omission for omission in omissions)
 
     expected_scripts = {
         "check_changed_coverage.py",
         "check_doc_links.py",
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",
+        "install_local_components.py",
         "prepare_release_evidence.py",
         "run_android_next_major_canary.py",
         "run_candidate_staging.py",
         "validate_release_evidence.py",
+        "verify_component_ownership.py",
+        "verify_composition.py",
+        "verify_migration_provenance.py",
+        "verify_primitive_coverage.py",
         "verify_release_evidence_bootstrap.py",
         "windows_release_candidate.py",
     }
     assert {path.name for path in (REPO_ROOT / "scripts").glob("*.py")} == (
         expected_scripts
     )
-    for test_path in (
+    expected_test_paths = {
         "backend/tests/test_changed_coverage_060.py",
         "backend/tests/test_release_tooling_coverage_060.py",
         "backend/tests/test_documentation_060.py",
         "backend/tests/test_quickstart_commands.py",
-        "backend/tests/test_ci_javascript_lint.py",
         "backend/tests/test_python_ci_supply_chain_060.py",
         "backend/tests/test_android_next_major_canary.py",
         "backend/tests/test_candidate_staging_060.py",
         "backend/tests/test_release_evidence_validator.py",
         "backend/tests/test_prepare_release_evidence_060.py",
         "backend/tests/test_extract_release_artifact_060.py",
-        "backend/tests/test_release_workflows_060.py",
-        "backend/tests/test_release_evidence_producers.py",
-        "windows-client/tests/test_release_lock_060.py",
-    ):
-        assert test_path in job
+        "backend/tests/test_release_evidence_bootstrap.py",
+        "scripts/tests/test_component_build_surfaces_074.py",
+        "scripts/tests/test_install_local_components.py",
+        "scripts/tests/test_verify_component_ownership.py",
+        "scripts/tests/test_verify_composition.py",
+        "scripts/tests/test_verify_migration_provenance.py",
+        "scripts/tests/test_verify_primitive_coverage.py",
+    }
+    array = job.partition("RELEASE_TOOL_TESTS=(")[2].partition(")")[0]
+    assert set(re.findall(r"(?m)^\s+([^\s]+\.py)\s*$", array)) == expected_test_paths
 
 
 def test_windows_candidate_installs_test_lock_only_after_candidate_build() -> None:
@@ -282,10 +289,10 @@ def test_ci_only_python_manifest_cannot_enter_product_artifacts() -> None:
     product_inputs = (
         REPO_ROOT / "Dockerfile",
         REPO_ROOT / "backend" / "requirements.txt",
-        REPO_ROOT / "windows-client" / "AstralDeep.spec",
-        REPO_ROOT / "windows-client" / "requirements.in",
-        REPO_ROOT / "apple-clients" / "AstralCore" / "Package.swift",
-        REPO_ROOT / "android-client" / "settings.gradle.kts",
+        REPO_ROOT / "components/AstralProjection/windows-client/AstralDeep.spec",
+        REPO_ROOT / "components/AstralProjection/windows-client/requirements.in",
+        REPO_ROOT / "components/AstralProjection/apple-clients/AstralCore/Package.swift",
+        REPO_ROOT / "components/AstralProjection/android-client/settings.gradle.kts",
     )
     for path in product_inputs:
         assert "tooling/python-ci" not in path.read_text(encoding="utf-8"), path
@@ -316,9 +323,9 @@ def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> N
     for line in installs:
         assert "--require-hashes" in line, f"unhashed pip install: {line}"
         assert (
-            "windows-client/requirements-release.lock.txt" in line
+            "components/AstralProjection/windows-client/requirements-release.lock.txt" in line
         ), f"install is not from the release lock: {line}"
     assert "pip install --upgrade" not in workflow
     assert "sigstore>=" not in workflow
     # The lock's own exactness (every line hashed, sigstore/pyinstaller present)
-    # is enforced by windows-client/tests/test_release_lock_060.py.
+    # is enforced by components/AstralProjection/windows-client/tests/test_release_lock_060.py.

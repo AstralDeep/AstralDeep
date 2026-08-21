@@ -22,10 +22,10 @@ from agents.remote_control import mcp_tools as _control
 from agents.remote_observe import mcp_tools as _observe
 
 
-def register_deps(db, credmgr) -> None:
-    """Wire the shared Database + CredentialManager into BOTH verb libraries."""
-    _observe.register_deps(db, credmgr)
-    _control.register_deps(db, credmgr)
+def register_deps(plane_source, credmgr, blob_store) -> None:
+    """Wire one application Plane source, credentials, and blob store."""
+    _observe.register_deps(plane_source, credmgr)
+    _control.register_deps(plane_source, credmgr, blob_store)
 
 
 # Union of the two risk-tiered registries. The verb names are disjoint (9 read +

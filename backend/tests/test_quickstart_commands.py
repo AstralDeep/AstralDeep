@@ -114,17 +114,21 @@ def test_quickstart_uses_only_the_isolated_lock_and_digest_pinned_browser() -> N
     assert "corepack npm run lint" in quickstart
     assert "corepack npm run test:coverage-conversion" in quickstart
     assert "corepack npm run test:coverage-conversion:node" in quickstart
+    assert "corepack npm run test:coverage-union" in quickstart
     assert "NODE_V8_COVERAGE" in quickstart
     assert quickstart.count("corepack npm run coverage:node") >= 2
     assert "tooling-javascript.json" in quickstart
-    assert 'PLAYWRIGHT_IMAGE="$(tr -d \'\\n\' < tooling/web-ci/playwright-image.txt)"' in quickstart
+    assert "corepack npm run coverage:union" in quickstart
+    assert "browser-istanbul.json" in quickstart
+    assert "web-istanbul.json" in quickstart
+    assert (
+        "PLAYWRIGHT_IMAGE=\"$(tr -d '\\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)\""
+        in quickstart
+    )
     assert 'test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"' in quickstart
     assert 'docker pull "$PLAYWRIGHT_IMAGE"' in quickstart
     assert '"$PLAYWRIGHT_IMAGE" sh -lc \'test "$(corepack npm --version)"' in quickstart
     assert "corepack npm run test:coverage-conversion:browser" in quickstart
-    assert "--javascript build/060/coverage/web-istanbul.json" in quickstart
-    assert "--javascript build/060/coverage/node-v8/tooling-javascript.json" not in quickstart
-    assert quickstart.count("--javascript build/060/coverage/") >= 2
 
 
 def test_quickstart_exports_bounded_per_file_xccov_observations() -> None:
@@ -136,3 +140,40 @@ def test_quickstart_exports_bounded_per_file_xccov_observations() -> None:
         assert f"--platform {platform}" in quickstart
         assert f"apple-{platform}-xccov.json" in quickstart
     assert "owner-pinned protected-policy" in quickstart
+
+
+def test_normative_strict_commands_use_the_deep_owner_profile() -> None:
+    quickstart = _read(QUICKSTART_PATH)
+    prepare = re.search(
+        r"# equivalent direct invocation\n(?P<command>python3 "
+        r"scripts/prepare_release_evidence\.py .*?)\n```",
+        quickstart,
+        re.DOTALL,
+    )
+    collector = re.search(
+        r"(?P<command>python3 scripts/check_changed_coverage\.py .*?)\n```",
+        quickstart,
+        re.DOTALL,
+    )
+    assert prepare is not None
+    assert collector is not None
+
+    owner_reports = {
+        "--backend-python",
+        "--voice-worker-python",
+        "--tooling-python",
+    }
+    external_reports = {
+        "--projection-python",
+        "--windows-python",
+        "--javascript",
+        "--android-app",
+        "--android-core",
+        "--ios",
+        "--macos",
+        "--watchos",
+    }
+    for command in (prepare.group("command"), collector.group("command")):
+        assert "--repository-profile deep" in command
+        assert {flag for flag in owner_reports if flag in command} == owner_reports
+        assert not any(flag in command for flag in external_reports)

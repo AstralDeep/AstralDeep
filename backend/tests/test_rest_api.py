@@ -10,19 +10,25 @@ Verifies:
 """
 import os
 import sys
+import time
+from types import SimpleNamespace
+
 import pytest
-
-# Ensure backend is in path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-# Enable mock auth for testing
-os.environ["USE_MOCK_AUTH"] = "true"
-
-from fastapi.testclient import TestClient
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.testclient import TestClient
 
-from orchestrator.api import (
+# Ensure backend is in path
+_BACKEND_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+_BACKEND_PATH_ADDED = _BACKEND_PATH not in sys.path
+if _BACKEND_PATH_ADDED:
+    sys.path.insert(0, _BACKEND_PATH)
+
+# Enable mock auth for testing
+_ORIGINAL_USE_MOCK_AUTH = os.environ.get("USE_MOCK_AUTH")
+os.environ["USE_MOCK_AUTH"] = "true"
+
+from orchestrator.api import (  # noqa: E402
     chat_router,
     component_router,
     agent_router,
@@ -30,7 +36,8 @@ from orchestrator.api import (
     draft_router,
     user_router,
 )
-from orchestrator.auth import auth_router
+from orchestrator.auth import auth_router  # noqa: E402
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 # Mock JWT token (same as test_mock_auth.py)
@@ -73,12 +80,13 @@ class _FakeCard:
         self.metadata = {}
 
 
-def _create_test_app():
+def _create_test_app(plane_runtime, *, data_dir: str):
     """Create a minimal FastAPI app for testing with a mock orchestrator."""
     from unittest.mock import AsyncMock, MagicMock
+    from orchestrator.draft_plane_store import PlaneDraftStore
     from orchestrator.history import HistoryManager
+    from orchestrator.user_agents import UserAgentRegistry
     from orchestrator.workspace import WorkspaceManager
-    import tempfile
 
     app = FastAPI(title="Test App")
     app.add_middleware(
@@ -89,13 +97,72 @@ def _create_test_app():
         allow_headers=["*"],
     )
 
-    # Create real HistoryManager with a temp dir
-    tmp_dir = tempfile.mkdtemp()
-    history = HistoryManager(data_dir=tmp_dir)
+    repositories = plane_runtime.repositories
+    history = HistoryManager(
+        data_dir=data_dir,
+        plane_runtime=plane_runtime,
+        plane_repositories=repositories,
+    )
+    user_agent_registry = UserAgentRegistry(
+        plane_runtime=plane_runtime,
+        plane_repositories=repositories,
+    )
+    draft_store = PlaneDraftStore(
+        plane_runtime=plane_runtime,
+        plane_repositories=repositories,
+    )
+
+    def _get_tool_selection(user_id, agent_id):
+        with plane_runtime.transaction() as transaction:
+            selected = repositories.tool_policy_state.get_tool_selection(
+                transaction,
+                owner_id=user_id,
+                agent_id=agent_id,
+            )
+        return None if selected is None else list(selected)
+
+    def _set_tool_selection(user_id, agent_id, selected_tools):
+        with plane_runtime.transaction() as transaction:
+            selected = repositories.tool_policy_state.set_tool_selection(
+                transaction,
+                owner_id=user_id,
+                agent_id=agent_id,
+                tool_names=selected_tools,
+                updated_at=int(time.time() * 1000),
+            )
+        return list(selected)
+
+    def _clear_tool_selection(user_id, agent_id):
+        with plane_runtime.transaction() as transaction:
+            return repositories.tool_policy_state.clear_tool_selection(
+                transaction,
+                owner_id=user_id,
+                agent_id=agent_id,
+                updated_at=int(time.time() * 1000),
+            )
+
+    def _set_agent_disabled(user_id, agent_id, disabled):
+        with plane_runtime.transaction() as transaction:
+            return repositories.tool_policy_state.set_agent_disabled(
+                transaction,
+                owner_id=user_id,
+                agent_id=agent_id,
+                disabled=disabled,
+                updated_at=int(time.time() * 1000),
+            )
 
     # Create a mock orchestrator with real history
     mock_orch = MagicMock()
     mock_orch.history = history
+    mock_orch.plane_runtime = plane_runtime
+    mock_orch.plane_repositories = repositories
+    mock_orch.runtime_composition = SimpleNamespace(
+        plane=SimpleNamespace(
+            runtime=plane_runtime,
+            repositories=repositories,
+        )
+    )
+    mock_orch.user_agent_registry = user_agent_registry
     mock_orch.agent_cards = {}
     mock_orch.agent_capabilities = {}
     from shared.protocol import CandidateCapabilityMap
@@ -111,7 +178,11 @@ def _create_test_app():
     # mock omits the detached publication runner; api.py's unit-test seam runs
     # the mutation directly, while production Orchestrator instances always
     # use the revisioned atomic boundary.
-    mock_orch.workspace = WorkspaceManager(history)
+    mock_orch.workspace = WorkspaceManager(
+        history,
+        plane_runtime=plane_runtime,
+        plane_repositories=repositories,
+    )
     mock_orch.send_ui_upsert = AsyncMock()
     mock_orch._reconcile_legacy_replacement = AsyncMock()
     # Draft listings hide draft agents via a to_thread call — a bare
@@ -127,11 +198,16 @@ def _create_test_app():
     tp.get_tool_overrides.return_value = {}
     tp.is_scope_enabled.return_value = True
     tp.is_tool_allowed.return_value = True
+    tp.get_tool_selection.side_effect = _get_tool_selection
+    tp.set_tool_selection.side_effect = _set_tool_selection
+    tp.clear_tool_selection.side_effect = _clear_tool_selection
+    tp.set_agent_disabled.side_effect = _set_agent_disabled
     mock_orch.tool_permissions = tp
     mock_orch.credential_manager = MagicMock()
     mock_orch.credential_manager.list_credential_keys.return_value = ["API_KEY"]
     lifecycle = MagicMock()
     lifecycle.stop_draft_agent = AsyncMock()
+    lifecycle.draft_store = draft_store
     mock_orch.lifecycle_manager = lifecycle
 
     app.state.orchestrator = mock_orch
@@ -152,14 +228,46 @@ def _create_test_app():
 # =========================================================================
 
 @pytest.fixture
-def app_and_orch():
-    return _create_test_app()
+def app_and_orch(plane_runtime, tmp_path):
+    app, mock_orch = _create_test_app(
+        plane_runtime,
+        data_dir=str(tmp_path),
+    )
+    try:
+        yield app, mock_orch
+    finally:
+        app.state.orchestrator = None
+
+
+@pytest.fixture(scope="module")
+def plane_runtime():
+    """Own one isolated migrated Plane database for this REST module."""
+
+    with isolated_plane_runtime("rest_api") as runtime:
+        yield runtime
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_process_globals():
+    """Restore the environment and import path mutated during collection."""
+
+    yield
+    if _ORIGINAL_USE_MOCK_AUTH is None:
+        os.environ.pop("USE_MOCK_AUTH", None)
+    else:
+        os.environ["USE_MOCK_AUTH"] = _ORIGINAL_USE_MOCK_AUTH
+    if _BACKEND_PATH_ADDED:
+        try:
+            sys.path.remove(_BACKEND_PATH)
+        except ValueError:
+            pass
 
 
 @pytest.fixture
 def client(app_and_orch):
     app, _ = app_and_orch
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 @pytest.fixture
@@ -495,14 +603,14 @@ class TestToolSelectionEndpoints:
             "/api/users/me/agent-enabled", headers=AUTH_HEADER,
             json={"agent_id": "ghost", "enabled": True})
         assert resp.status_code == 404
-        orch.history.db.set_user_agent_disabled("dev-user-id", "agent-x", False)
+        orch.tool_permissions.set_agent_disabled("dev-user-id", "agent-x", False)
 
 
 class TestAgentVisibilityAndCredentials:
     def test_visibility_owner_only(self, client, orch):
         import uuid
         agent_id = f"vis-test-{uuid.uuid4().hex[:8]}"
-        orch.history.db.set_agent_ownership(agent_id, "owner@example.com")
+        orch.user_agent_registry.set_agent_ownership(agent_id, "owner@example.com")
         owner_token = _make_mock_token(
             {"sub": "dev-user-id", "email": "owner@example.com"})
         try:
@@ -523,8 +631,12 @@ class TestAgentVisibilityAndCredentials:
                 headers=AUTH_HEADER, json={"is_public": True})
             assert resp.status_code == 404
         finally:
-            orch.history.db.execute(
-                "DELETE FROM agent_ownership WHERE agent_id = ?", (agent_id,))
+            with orch.plane_runtime.transaction() as transaction:
+                orch.plane_repositories.agents.remove_ownership(
+                    transaction,
+                    agent_id=agent_id,
+                    owner_email="owner@example.com",
+                )
 
     def test_list_and_delete_agent_credentials(self, client, orch):
         orch.agent_cards = {"agent-x": _FakeCard("agent-x")}
@@ -542,15 +654,14 @@ class TestAgentVisibilityAndCredentials:
 class TestDraftEndpoints:
     def _make_draft(self, orch):
         import uuid
-        draft_id = f"draft-{uuid.uuid4().hex[:12]}"
-        orch.history.db.create_draft_agent(
+        draft_id = str(uuid.uuid4())
+        orch.lifecycle_manager.draft_store.create_draft_agent(
             draft_id, "dev-user-id", "Coverage Draft",
             f"cov_{uuid.uuid4().hex[:8]}", "coverage test draft")
         return draft_id
 
     def _delete_draft(self, orch, draft_id):
-        orch.history.db.execute(
-            "DELETE FROM draft_agents WHERE id = ?", (draft_id,))
+        assert orch.lifecycle_manager.draft_store.delete_draft_agent(draft_id)
 
     def test_list_drafts(self, client):
         resp = client.get("/api/agents/drafts", headers=AUTH_HEADER)
@@ -621,21 +732,20 @@ class TestDraftEndpoints:
 
 
 class TestA2AAuth:
-    def test_validate_agent_key_empty(self):
+    def test_validate_agent_key_empty(self, monkeypatch):
         """When no key configured, all connections allowed."""
         from orchestrator.auth import validate_agent_api_key
-        os.environ["AGENT_API_KEY"] = ""
+        monkeypatch.setenv("AGENT_API_KEY", "")
         assert validate_agent_api_key("anything") is True
 
-    def test_validate_agent_key_correct(self):
+    def test_validate_agent_key_correct(self, monkeypatch):
         """Correct key passes."""
         from orchestrator.auth import validate_agent_api_key
-        os.environ["AGENT_API_KEY"] = "test-secret-key"
+        monkeypatch.setenv("AGENT_API_KEY", "test-secret-key")
         assert validate_agent_api_key("test-secret-key") is True
 
-    def test_validate_agent_key_wrong(self):
+    def test_validate_agent_key_wrong(self, monkeypatch):
         """Wrong key fails."""
         from orchestrator.auth import validate_agent_api_key
-        os.environ["AGENT_API_KEY"] = "test-secret-key"
+        monkeypatch.setenv("AGENT_API_KEY", "test-secret-key")
         assert validate_agent_api_key("wrong-key") is False
-        os.environ["AGENT_API_KEY"] = ""  # cleanup

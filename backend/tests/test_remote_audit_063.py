@@ -25,7 +25,8 @@ from audit.schemas import AuditEventCreate
 from orchestrator import remote_machines
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.remote_transport import FakeTransport, Verdict, set_transport
-from webrender.chrome.surfaces import remote_machines as surface
+from orchestrator.projection_surfaces import remote_machines as surface
+from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 USER = "user-1"
 OTHER = "user-2"
@@ -146,9 +147,23 @@ def env(monkeypatch):
     rec = _AuditRecorder()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: rec)
     db = _MemDB()
-    credmgr = CredentialManager(db=db)
-    orch = SimpleNamespace(history=SimpleNamespace(db=db), credential_manager=credmgr)
-    yield SimpleNamespace(db=db, credmgr=credmgr, orch=orch, audit=rec)
+    source = make_remote_plane_source(db)
+    credmgr = CredentialManager(
+        plane_runtime=source.plane_runtime,
+        plane_repositories=source.plane_repositories,
+    )
+    orch = SimpleNamespace(
+        history=SimpleNamespace(db=db),
+        plane_repository_source=source,
+        credential_manager=credmgr,
+    )
+    yield SimpleNamespace(
+        db=db,
+        source=source,
+        credmgr=credmgr,
+        orch=orch,
+        audit=rec,
+    )
     set_transport(None)
 
 
@@ -224,7 +239,7 @@ async def test_verb_level_connections_audit_through_the_record_probe_seam(env):
     set_transport(FakeTransport())
     mid = await _register(env)
     env.audit.events.clear()
-    remote_machines.record_probe(env.db, USER, mid, Verdict.TIMEOUT.value)
+    remote_machines.record_probe(env.source, USER, mid, Verdict.TIMEOUT.value)
     (conn,) = _rows(env, "remote_machine.connection")
     _assert_actor_label_outcome(conn, outcome="failure")
     assert conn.inputs_meta.get("verdict") == "timeout"
@@ -245,7 +260,7 @@ async def test_credential_set_emits_row_and_reprobes(env):
     _assert_actor_label_outcome(ev)
     assert ev.inputs_meta.get("cred_type") == "password"
     # the replace really landed, and the immediate probe audited its verdict
-    assert env.credmgr.get_machine_credential(mid)["secret"] == SENTINEL_PASSWORD
+    assert env.credmgr.get_machine_credential(mid, USER)["secret"] == SENTINEL_PASSWORD
     (conn,) = _rows(env, "remote_machine.connection")
     assert conn.inputs_meta.get("verdict") == "ok"
 
@@ -310,7 +325,7 @@ async def test_foreign_user_ops_refused_and_emit_no_rows(env):
     assert env.audit.events == []  # nothing happened, nothing recorded
     assert mid in env.db.machines and mid in env.db.credentials
     # record_probe for a non-owner is a no-op (owner-scoped lookup) — no row
-    remote_machines.record_probe(env.db, OTHER, mid, "ok")
+    remote_machines.record_probe(env.source, OTHER, mid, "ok")
     assert env.audit.events == []
 
 

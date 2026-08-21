@@ -184,7 +184,7 @@ Every leg is wired and destroys the stored secret rows:
 | Machine deleted | FK cascade from `remote_machine`, plus an explicit `delete_machine_credential` in the surface handler |
 | Sign-out (web and native) | `web_auth._destroy_machine_credentials` on both logout legs, riding the same revocation flow as the refresh token and offline grants |
 | Account removal | `remote_machines.purge_user_remote_compute` — the account-removal hook (sibling of the attachments purge): credentials, then inventory and tracked jobs |
-| Agent retirement | the guarded retirement migration in `shared/database.py` destroys permission/credential rows for the retired ids |
+| Agent retirement | AstralPlane's guarded reconciliation/migration boundary destroys permission and credential rows for retired ids |
 
 ## Slurm notes (from live DGX verification)
 

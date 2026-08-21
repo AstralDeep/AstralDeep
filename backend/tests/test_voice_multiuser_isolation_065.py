@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Iterator, Mapping
 
-import psycopg2
 import pytest
-from psycopg2 import sql
 
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.runtime_observability import RuntimeObservability
@@ -38,7 +35,6 @@ from orchestrator.voice_sessions import (
     TranscriptSubmission,
     TranscriptSubmissionRejected,
     VoiceSessionNotFound,
-    VoiceSessionRepository,
     VoiceSessionRepositoryError,
 )
 from orchestrator.work_admission import (
@@ -49,11 +45,15 @@ from orchestrator.work_admission import (
     OperationRequest,
     OperationState,
     OwnerScope,
-    PostgresWorkAdmissionRepository,
     RefusedAdmission,
     WorkAdmissionCoordinator,
 )
-from shared.database import Database, _build_database_url
+from tests.helpers.voice_plane_runtime import (
+    VoicePlaneTestRuntime,
+    isolated_voice_plane_runtime,
+    plane_work_admission_repository,
+    voice_session_repository,
+)
 from shared.protocol import RegisterUI
 from shared.voice_transcript import TranscriptProofBinding, issue_transcript_proof
 
@@ -92,45 +92,9 @@ CLOSURE_SHA256 = "a" * 64
 
 
 @pytest.fixture(scope="module")
-def database() -> Iterator[Database]:
-    params = psycopg2.extensions.parse_dsn(_build_database_url())
-    name = f"astraldeep_voice_isolation_{uuid.uuid4().hex}"
-    try:
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(psycopg2.extensions.make_dsn(**database_params))
-    finally:
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        Database.close()
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name))
-                )
-            admin.close()
-        except Exception:
-            pass
+def database() -> Iterator[VoicePlaneTestRuntime]:
+    with isolated_voice_plane_runtime("voice_isolation_065") as runtime:
+        yield runtime
 
 
 class _ReadyValue:
@@ -650,7 +614,7 @@ async def test_five_control_bindings_reject_cross_user_device_and_connection() -
 
 @pytest.mark.asyncio
 async def test_five_runtime_users_keep_rooms_turns_and_takeovers_isolated(
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     for user_id, chat_id in zip(USERS, CHATS, strict=True):
         await asyncio.to_thread(
@@ -659,7 +623,7 @@ async def test_five_runtime_users_keep_rooms_turns_and_takeovers_isolated(
             "VALUES (?, ?, 'Five-user isolation', 1, 1)",
             (chat_id, user_id),
         )
-    repository = VoiceSessionRepository(database)
+    repository = voice_session_repository(database)
     pool = WorkerPool(
         _worker_policy(),
         utcnow=lambda: NOW,
@@ -1042,11 +1006,11 @@ def _admission_request(user_index: int, request_index: int) -> OperationRequest:
 
 
 def test_postgres_capacity_race_is_bounded_per_each_of_five_users(
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     coordinator = WorkAdmissionCoordinator(
         admission_classes=_admission_classes(),
-        repository=PostgresWorkAdmissionRepository(database),
+        repository=plane_work_admission_repository(database),
         operation_retention=timedelta(hours=24),
     )
     requests = tuple(

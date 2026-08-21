@@ -1,6 +1,6 @@
 """Feature 067 — source-level regression pins for the web voice client's hot paths.
 
-``backend/webrender/static/client.js`` has no build step and no JS test runner,
+``components/AstralProjection/backend/webrender/static/client.js`` has no build step and no JS test runner,
 so its runtime obligations are pinned here as text assertions over the shipped
 source, in the same style as ``test_client_js_contract.py``.
 
@@ -21,14 +21,13 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 import pytest
+from astralprojection.resources import static_path, template_path, vendor_path
 
-BACKEND = Path(__file__).resolve().parent.parent
-CLIENT_JS = BACKEND / "webrender" / "static" / "client.js"
-SHELL_HTML = BACKEND / "webrender" / "templates" / "shell.html"
-LIVEKIT_BUNDLE = BACKEND / "webrender" / "static" / "vendor" / "livekit-client.umd.min.js"
+CLIENT_JS = static_path("client.js")
+SHELL_HTML = template_path("shell.html")
+LIVEKIT_BUNDLE = vendor_path("livekit-client.umd.min.js")
 
 
 def _js_function(src: str, name: str) -> str:
@@ -183,7 +182,7 @@ def test_submission_byte_estimate_is_an_upper_bound(client_js):
 
 def test_livekit_bundle_is_not_loaded_from_the_shell(shell_html):
     """No page load may pay for the SDK before the user asks for voice."""
-    assert LIVEKIT_BUNDLE.stat().st_size > 500_000, "sanity: the bundle is still large"
+    assert len(LIVEKIT_BUNDLE.read_bytes()) > 500_000, "sanity: the bundle is still large"
     assert not re.search(
         r"<script[^>]+src=\"[^\"]*livekit", shell_html, re.IGNORECASE
     ), "the eager LiveKit <script> tag is back in the shell"

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from astralplane import create_repository_catalog
 from fastapi import APIRouter, FastAPI
 
 from orchestrator.voice_bootstrap import (
@@ -40,8 +41,11 @@ from orchestrator.voice_worker_endpoint import (
 )
 
 
-class _Database:
-    def _get_connection(self):  # pragma: no cover - construction never opens DB.
+class _PlaneRuntime:
+    def __init__(self) -> None:
+        self.repositories = create_repository_catalog()
+
+    def transaction(self):  # pragma: no cover - construction never opens DB.
         raise AssertionError("unexpected database access")
 
 
@@ -362,7 +366,9 @@ def test_sensitive_recap_is_split_into_at_most_seven_four_second_quanta() -> Non
 
 
 def test_development_bootstrap_builds_isolated_runtime_without_opening_network() -> None:
-    services = build_voice_services(_Database(), environ=_environment())
+    services = build_voice_services(
+        plane_runtime=_PlaneRuntime(), environ=_environment()
+    )
     assert services.runtime is not None
     assert services.worker_pool.readiness().reason == "worker_unavailable"
     assert "api-secret" not in repr(services)
@@ -370,7 +376,9 @@ def test_development_bootstrap_builds_isolated_runtime_without_opening_network()
 
 def test_worker_control_route_is_present_once_only_for_built_services() -> None:
     app = FastAPI()
-    services = build_voice_services(_Database(), environ=_environment())
+    services = build_voice_services(
+        plane_runtime=_PlaneRuntime(), environ=_environment()
+    )
 
     first = install_voice_worker_control(app, services, environ=_environment())
     second = install_voice_worker_control(app, services, environ=_environment())
@@ -476,7 +484,9 @@ def test_worker_control_route_stays_absent_without_built_services() -> None:
 
 
 def test_production_startup_contains_one_root_app_worker_mount() -> None:
-    source = (Path(__file__).resolve().parents[1] / "orchestrator.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "orchestrator.py").read_text(
+        encoding="utf-8"
+    )
     assert source.count("self.voice_worker_endpoint = install_voice_worker_control(") == 1
     assert "app,\n                self.voice_services," in source
 
@@ -488,7 +498,9 @@ def test_worker_control_route_collision_fails_closed() -> None:
     async def conflicting_route(_websocket):
         return None
 
-    services = build_voice_services(_Database(), environ=_environment())
+    services = build_voice_services(
+        plane_runtime=_PlaneRuntime(), environ=_environment()
+    )
     with pytest.raises(WorkerControlConfigError, match="worker_control_route_conflict"):
         install_voice_worker_control(app, services, environ=_environment())
 
@@ -502,7 +514,9 @@ def test_included_router_worker_control_collision_fails_closed() -> None:
         return None
 
     app.include_router(router)
-    services = build_voice_services(_Database(), environ=_environment())
+    services = build_voice_services(
+        plane_runtime=_PlaneRuntime(), environ=_environment()
+    )
     with pytest.raises(WorkerControlConfigError, match="worker_control_route_conflict"):
         install_voice_worker_control(app, services, environ=_environment())
 
@@ -2087,12 +2101,12 @@ async def test_sensitive_consent_is_terminal_result_bound_and_consumed_once() ->
 def test_production_rejects_unapproved_closure_and_missing_replica() -> None:
     with pytest.raises(VoiceBootstrapError, match="unapproved_voice_worker_closure"):
         build_voice_services(
-            _Database(),
+            plane_runtime=_PlaneRuntime(),
             environ=_environment(ASTRAL_ENV="production"),
         )
     with pytest.raises(VoiceBootstrapError, match="missing_voice_replica_id"):
         build_voice_services(
-            _Database(),
+            plane_runtime=_PlaneRuntime(),
             environ=_environment(
                 ASTRAL_ENV="production",
                 LIVEKIT_PUBLIC_URL="wss://voice.example.test",
@@ -2112,6 +2126,6 @@ def test_production_rejects_unapproved_closure_and_missing_replica() -> None:
 def test_capacity_configuration_is_bounded(name: str, value: str) -> None:
     with pytest.raises(VoiceBootstrapError, match="invalid_voice_capacity"):
         build_voice_services(
-            _Database(),
+            plane_runtime=_PlaneRuntime(),
             environ=_environment(**{name: value}),
         )

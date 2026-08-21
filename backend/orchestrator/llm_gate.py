@@ -84,7 +84,7 @@ async def push_setup_dialog(orch, websocket, user_id: str) -> None:
     ``chrome_surface {mode:"mandatory"}`` with the first-run composition.
     The watch is skipped (chrome-free by design).
     """
-    from webrender.chrome.surfaces import llm as llm_surface
+    from orchestrator.projection_surfaces import llm as llm_surface
 
     dtype = _device_type(orch, websocket)
     if dtype == _WATCH:

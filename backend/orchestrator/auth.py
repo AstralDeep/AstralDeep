@@ -264,6 +264,17 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Retain the already-extracted subject token only in request-local state so
+    # REST tool dispatch can run the same RFC 8693 delegation gate as the
+    # WebSocket path.  It is deliberately not inserted into the claims/audit
+    # mapping, responses, logs, or tool arguments.  Cookie-backed REST routes
+    # also reach this function with a synthetic bearer credential, so they get
+    # the identical short-lived internal handoff.
+    try:
+        request.state.delegation_subject_token = token
+    except Exception:
+        pass
     if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
         # Accept any token for mock auth (for testing)
         if token == "dev-token":
@@ -450,8 +461,8 @@ async def native_logout(request: Request,
 
     # Feature-025 offline grants die with the sign-out, matching web logout.
     try:
-        from orchestrator.offline_grant import OfflineGrantStore
-        await asyncio.to_thread(lambda: OfflineGrantStore().revoke_for_user(user_id))
+        from orchestrator.offline_grant import get_offline_grant_store
+        await asyncio.to_thread(get_offline_grant_store().revoke_for_user, user_id)
     except Exception:
         logger.debug("native logout: offline-grant revocation failed", exc_info=True)
 

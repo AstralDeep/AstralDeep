@@ -25,24 +25,7 @@ if str(BACKEND_DIR) not in sys.path:
 from orchestrator import ui_designer  # noqa: E402
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from orchestrator.workspace import WorkspaceManager, layout_key_for  # noqa: E402
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
-)
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 class _FakeWS:
@@ -51,15 +34,24 @@ class _FakeWS:
 
 
 @pytest.fixture
-def chat_env(tmp_path):
+def chat_env(plane_runtime):
     from orchestrator.history import HistoryManager
 
-    history = HistoryManager(data_dir=str(tmp_path))
+    history = HistoryManager(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
     user_id = f"pytest-uid-{uuid.uuid4().hex[:12]}"
     chat_id = history.create_chat(user_id=user_id)
     history.add_message(chat_id, "user", "compare things", user_id=user_id)
     yield history, user_id, chat_id
     history.delete_chat(chat_id, user_id=user_id)
+
+
+@pytest.fixture(scope="module")
+def plane_runtime():
+    with isolated_plane_runtime("ui_designer") as runtime:
+        yield runtime
 
 
 @pytest.fixture

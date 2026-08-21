@@ -1,0 +1,43 @@
+{
+  "format": "astral.final-live-verification/v1",
+  "recordedAtUtc": "2026-08-21T09:07:01Z",
+  "status": "partial-blocked",
+  "candidateCommit": "0ae58e04f9d7b868933fa9cf26094defbdeaed9b",
+  "image": {
+    "tag": "astraldeep:074-local",
+    "id": "sha256:9a698b8366b4a50e70bf73bf8903727f103e9bad0d3cb006881db67a8ec33ec7",
+    "compositionSha256": "8c3646306818ddac7d06ec1b47f71b8f34ddcde5fde230de68dcb6016c979425",
+    "credentialScan": "passed; no .env or runtime key-shaped string"
+  },
+  "database": {
+    "engine": "PostgreSQL 17 Alpine",
+    "state": "fresh isolated database migrated and exercised by the final flags-on suite",
+    "representativePreSplitFixtureLoaded": false
+  },
+  "developmentSmoke": {
+    "healthz": 200,
+    "readyz": 200,
+    "result": "passed"
+  },
+  "productionPosture": {
+    "literalHistoricalWorkflowCommand": "refused earlier with exit 1 because WEB_SESSION_ENC_KEY was absent",
+    "correctedPrerequisite": "one-run random Fernet key generated inside the composed image; value not printed or retained",
+    "aggregateGateExitCode": 78,
+    "result": "passed after satisfying the independent encrypted-session constructor invariant"
+  },
+  "notRun": [
+    "representative 066.001 pre-split fixture through the composed application boot path",
+    "authenticated web golden orchestration/data/render interaction",
+    "authenticated native-client golden interactions"
+  ],
+  "blockers": [
+    "no authorized authenticated user/session flow was supplied for live golden verification",
+    "Apple clients require a qualified macOS host"
+  ],
+  "taskDisposition": {
+    "T129": "partial",
+    "T130": "blocked",
+    "T230": "partial"
+  },
+  "productionChanged": false
+}

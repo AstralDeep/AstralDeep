@@ -1,201 +1,125 @@
-"""Tests for shared.attachment_materializer.materialize_text_attachment.
+"""Inline attachment policy over the application materialization service."""
 
-Follows the conventions of ``test_attachment_resolver.py``: the DB layer is
-mocked (``_open_db`` + ``AttachmentRepository``); the blob store writes to a
-real ``tmp_path`` via the ``ATTACHMENT_UPLOAD_ROOT`` override so the on-disk
-layout (``{root}/{user}/{attachment_id}/{filename}``) is exercised for real.
-"""
+from __future__ import annotations
+
+import csv
 import hashlib
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import shared.attachment_materializer as materializer
 from shared.attachment_materializer import (
     MAX_INLINE_BYTES,
     materialize_text_attachment,
     strip_code_fences,
 )
 
-
 CSV_TEXT = "Week,Enrollment\n1,40\n2,42\n3,45\n"
 
 
-@pytest.fixture
-def upload_root(tmp_path, monkeypatch):
-    """Point the attachments store at a throwaway root."""
-    monkeypatch.setenv("ATTACHMENT_UPLOAD_ROOT", str(tmp_path))
-    return tmp_path
+@pytest.fixture(autouse=True)
+def materialization_binding(monkeypatch):
+    service = MagicMock()
+
+    def _materialize(**values):
+        payload = b"".join(values["chunks"])
+        return SimpleNamespace(
+            attachment_id=values["attachment_id"],
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+        )
+
+    service.materialize_bytes.side_effect = _materialize
+    monkeypatch.setattr(materializer, "_MATERIALIZATION_SERVICE", service)
+    return service
 
 
-@pytest.fixture
-def fake_repo():
-    """Patch the repository + DB so no Postgres is needed."""
-    repo = MagicMock()
-    with patch("orchestrator.attachments.repository.AttachmentRepository", return_value=repo), \
-         patch("shared.attachment_materializer._open_db", return_value=MagicMock()):
-        yield repo
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (f"```csv\n{CSV_TEXT}```", CSV_TEXT.strip()),
+        (f"```\n{CSV_TEXT}\n```", CSV_TEXT.strip()),
+        (f"```text\n{CSV_TEXT}\n```", CSV_TEXT.strip()),
+        (f"  {CSV_TEXT}  ", CSV_TEXT.strip()),
+        ("```csv", ""),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_strip_code_fences(source, expected) -> None:
+    assert strip_code_fences(source) == expected
 
 
-# ---------------------------------------------------------------------------
-# strip_code_fences
-# ---------------------------------------------------------------------------
-
-
-def test_strip_fences_csv_info_string() -> None:
-    assert strip_code_fences(f"```csv\n{CSV_TEXT}```") == CSV_TEXT.strip()
-
-
-def test_strip_fences_bare() -> None:
-    assert strip_code_fences(f"```\n{CSV_TEXT}\n```") == CSV_TEXT.strip()
-
-
-def test_strip_fences_other_info_string() -> None:
-    """Any info string (```text, ```data, …) is tolerated, not just ```csv."""
-    assert strip_code_fences(f"```text\n{CSV_TEXT}\n```") == CSV_TEXT.strip()
-
-
-def test_strip_fences_passthrough_when_unfenced() -> None:
-    assert strip_code_fences(f"  {CSV_TEXT}  ") == CSV_TEXT.strip()
-
-
-def test_strip_fences_single_line_fence_yields_empty() -> None:
-    assert strip_code_fences("```csv") == ""
-    assert strip_code_fences("") == ""
-    assert strip_code_fences(None) == ""
-
-
-# ---------------------------------------------------------------------------
-# materialize_text_attachment — validation failures
-# ---------------------------------------------------------------------------
-
-
-def test_requires_user_id() -> None:
+def test_validation_failures_happen_before_publication() -> None:
     with pytest.raises(ValueError, match="user_id is required"):
         materialize_text_attachment(CSV_TEXT, "")
-
-
-def test_empty_text_rejected() -> None:
     with pytest.raises(ValueError, match="empty"):
         materialize_text_attachment("```\n```", "alice")
-
-
-def test_header_without_rows_rejected() -> None:
     with pytest.raises(ValueError, match="no data rows"):
         materialize_text_attachment("Week,Enrollment\n", "alice")
-
-
-def test_unparseable_csv_rejected() -> None:
-    """A field over csv.field_size_limit() makes the stdlib csv reader
-    raise csv.Error (still under the 1 MB cap, so the size gate passes)."""
-    import csv as _csv
-    huge_field = "x" * (_csv.field_size_limit() + 1)
+    huge_field = "x" * (csv.field_size_limit() + 1)
     with pytest.raises(ValueError, match="not valid CSV"):
         materialize_text_attachment(f"Week,Notes\n1,{huge_field}\n", "alice")
-
-
-def test_over_1mb_rejected() -> None:
     big = "a,b\n" + ("1,2\n" * ((MAX_INLINE_BYTES // 4) + 1))
     with pytest.raises(ValueError, match="inline limit"):
         materialize_text_attachment(big, "alice")
-
-
-def test_unsupported_extension_rejected(upload_root, fake_repo) -> None:
     with pytest.raises(ValueError, match="Unsupported"):
-        materialize_text_attachment("anything at all", "alice", extension="exe")
-
-
-def test_validate_csv_missing_header_rejected() -> None:
-    from shared.attachment_materializer import _validate_csv
-    with pytest.raises(ValueError, match="no header row"):
-        _validate_csv("")
+        materialize_text_attachment("anything", "alice", extension="exe")
 
 
 def test_attachments_subsystem_unavailable_surfaces_value_error() -> None:
-    """If the orchestrator attachments package can't import (broken sidecar
-    deployment), the caller gets an actionable ValueError, not ImportError."""
     import sys
+
     with patch.dict(sys.modules, {"orchestrator.attachments": None}):
         with pytest.raises(ValueError, match="Attachments subsystem unavailable"):
             materialize_text_attachment(CSV_TEXT, "alice")
 
 
-def test_db_open_failure_surfaces_value_error(upload_root) -> None:
-    with patch("shared.attachment_materializer._open_db", side_effect=RuntimeError("no pg")):
-        with pytest.raises(ValueError, match="Could not open attachments database"):
-            materialize_text_attachment(CSV_TEXT, "alice")
+def test_missing_service_binding_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(materializer, "_MATERIALIZATION_SERVICE", None)
+    with pytest.raises(ValueError, match="no durable publisher"):
+        materialize_text_attachment(CSV_TEXT, "alice")
 
 
-def test_open_db_constructs_and_caches(monkeypatch) -> None:
-    """_open_db builds one Database per process and caches it (same pattern
-    as shared.attachment_resolver)."""
-    import shared.attachment_materializer as mat
-    import shared.database as shared_database
-    sentinel = MagicMock()
-    monkeypatch.setattr(mat, "_MATERIALIZER_DB", None)
-    monkeypatch.setattr(shared_database, "Database", MagicMock(return_value=sentinel))
-    try:
-        assert mat._open_db() is sentinel
-        assert mat._open_db() is sentinel  # cached: constructor called once
-        shared_database.Database.assert_called_once()
-    finally:
-        mat._MATERIALIZER_DB = None
+def test_register_service_is_idempotent_and_rejects_rebinding(monkeypatch) -> None:
+    first = MagicMock(materialize_bytes=MagicMock())
+    second = MagicMock(materialize_bytes=MagicMock())
+    monkeypatch.setattr(materializer, "_MATERIALIZATION_SERVICE", None)
+    materializer.register_materialization_service(first)
+    materializer.register_materialization_service(first)
+    with pytest.raises(RuntimeError, match="already bound"):
+        materializer.register_materialization_service(second)
+    with pytest.raises(ValueError, match="service is required"):
+        materializer.register_materialization_service(object())
 
 
-# ---------------------------------------------------------------------------
-# materialize_text_attachment — happy paths
-# ---------------------------------------------------------------------------
-
-
-def test_happy_path_writes_blob_and_inserts_row(upload_root, fake_repo) -> None:
+def test_csv_publication_uses_central_durable_service(materialization_binding) -> None:
     attachment_id = materialize_text_attachment(f"```csv\n{CSV_TEXT}```", "alice")
 
-    fake_repo.insert.assert_called_once()
-    kwargs = fake_repo.insert.call_args.kwargs
-    assert kwargs["attachment_id"] == attachment_id
-    assert kwargs["user_id"] == "alice"
-    assert kwargs["extension"] == "csv"
-    assert kwargs["category"] == "spreadsheet"
-    assert kwargs["content_type"] == "text/csv"
-    expected_bytes = CSV_TEXT.strip().encode("utf-8")
-    assert kwargs["size_bytes"] == len(expected_bytes)
-    assert kwargs["sha256"] == hashlib.sha256(expected_bytes).hexdigest()
-
-    # Blob exists under the canonical layout and matches the fence-stripped text.
-    blob = upload_root / kwargs["storage_path"]
-    assert blob.read_text(encoding="utf-8") == CSV_TEXT.strip()
-    # storage_path is RELATIVE to the upload root (resolver joins it back).
-    assert kwargs["storage_path"] == f"alice/{attachment_id}/{kwargs['filename']}"
+    values = materialization_binding.materialize_bytes.call_args.kwargs
+    assert values["attachment_id"] == attachment_id
+    assert values["owner_id"] == "alice"
+    assert values["extension"] == "csv"
+    assert values["category"] == "spreadsheet"
+    assert b"".join(values["chunks"]) == CSV_TEXT.strip().encode()
+    assert values["resolve_content_type"](b"irrelevant") == "text/csv"
 
 
-def test_returned_id_resolves_via_attachment_resolver(upload_root, fake_repo) -> None:
-    """End-to-end with the resolver: the row the materializer inserts is
-    exactly what resolve_attachment_path needs to find the blob again."""
-    from shared.attachment_resolver import resolve_attachment_path
-
-    attachment_id = materialize_text_attachment(CSV_TEXT, "alice")
-    storage_path = fake_repo.insert.call_args.kwargs["storage_path"]
-    fake_repo.get_by_id.return_value = MagicMock(storage_path=storage_path)
-    with patch("orchestrator.attachments.repository.AttachmentRepository", return_value=fake_repo), \
-         patch("shared.attachment_resolver._open_db", return_value=MagicMock()):
-        path = resolve_attachment_path(attachment_id, "alice")
-    fake_repo.get_by_id.assert_called_with(attachment_id, "alice")
-    with open(path, encoding="utf-8") as fh:
-        assert fh.read() == CSV_TEXT.strip()
+def test_non_csv_publication_skips_csv_validation(materialization_binding) -> None:
+    attachment_id = materialize_text_attachment(
+        "just some prose",
+        "alice",
+        extension="txt",
+    )
+    values = materialization_binding.materialize_bytes.call_args.kwargs
+    assert values["attachment_id"] == attachment_id
+    assert values["category"] == "text"
+    assert values["resolve_content_type"](b"irrelevant") == "text/plain"
 
 
-def test_non_csv_extension_skips_csv_validation(upload_root, fake_repo) -> None:
-    attachment_id = materialize_text_attachment("just some prose", "alice", extension="txt")
-    kwargs = fake_repo.insert.call_args.kwargs
-    assert kwargs["attachment_id"] == attachment_id
-    assert kwargs["extension"] == "txt"
-    assert kwargs["category"] == "text"
-    assert kwargs["content_type"] == "text/plain"
-
-
-def test_db_insert_failure_rolls_back_blob(upload_root, fake_repo) -> None:
-    fake_repo.insert.side_effect = RuntimeError("db down")
+def test_service_failure_surfaces_without_direct_blob_cleanup(materialization_binding) -> None:
+    materialization_binding.materialize_bytes.side_effect = RuntimeError("publication failed")
     with pytest.raises(ValueError, match="Could not record"):
         materialize_text_attachment(CSV_TEXT, "alice")
-    # Mirror of the upload router: no orphaned blob directory is left behind.
-    user_dir = upload_root / "alice"
-    assert not user_dir.exists() or not any(user_dir.iterdir())

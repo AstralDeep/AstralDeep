@@ -16,6 +16,21 @@ from orchestrator.auth import (
 )
 
 
+def _onboarding_repository(database):
+    return OnboardingRepository(
+        None,
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
+
+
+def _audit_repository(database):
+    return AuditRepository(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
+
+
 def _build_app(database, *, user_id: str, roles=("user",)):
     """Build a FastAPI app wired to the user router with overridden auth."""
     app = FastAPI()
@@ -24,7 +39,7 @@ def _build_app(database, *, user_id: str, roles=("user",)):
         pass
 
     orch = _Orch()
-    orch.onboarding_repo = OnboardingRepository(database)
+    orch.onboarding_repo = _onboarding_repository(database)
     app.state.orchestrator = orch
 
     payload = {
@@ -48,7 +63,7 @@ def _build_app(database, *, user_id: str, roles=("user",)):
 @pytest.fixture
 def wire_audit(database):
     """Wire the audit recorder so endpoint calls don't silently drop events."""
-    rec = Recorder(AuditRepository(database))
+    rec = Recorder(_audit_repository(database))
     set_recorder(rec)
     yield rec
     set_recorder(None)
@@ -91,16 +106,14 @@ def test_put_state_in_progress_records_started(database, unique_user, wire_audit
     assert r.json()["status"] == "in_progress"
 
     # Verify audit row
-    conn = database._get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT count(*) FROM audit_events WHERE actor_user_id = %s AND event_class = 'onboarding_started'",
-        (unique_user,),
-    )
-    rows = cur.fetchone()
-    conn.close()
-    # RealDictCursor returns a dict like {'count': N}
-    assert (rows.get("count") if isinstance(rows, dict) else rows[0]) == 1
+    with database.transaction() as transaction:
+        row = transaction.fetch_one(
+            "SELECT count(*) AS count FROM audit_events "
+            "WHERE actor_user_id = %s "
+            "AND event_class = 'onboarding_started'",
+            (unique_user,),
+        )
+    assert row["count"] == 1
 
 
 def test_put_state_completed_sets_completed_at(database, unique_user, wire_audit):
@@ -153,7 +166,7 @@ def test_put_state_rejects_not_started(database, unique_user, wire_audit):
 def test_put_state_rejects_admin_step_for_non_admin(database, unique_user, wire_audit):
     app, _ = _build_app(database, user_id=unique_user, roles=("user",))
     client = TestClient(app)
-    repo = OnboardingRepository(database)
+    repo = _onboarding_repository(database)
     admin_step = repo.create_step(
         editor_user_id=unique_user,
         slug=f"pytest-{unique_user}-admin",
@@ -201,14 +214,14 @@ def test_replay_records_event_without_mutating_state(database, unique_user, wire
     assert post["completed_at"] == pre["completed_at"]
 
     # Verify audit row was written with prior_status='completed'
-    conn = database._get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT inputs_meta FROM audit_events WHERE actor_user_id = %s AND event_class = 'onboarding_replayed' ORDER BY recorded_at DESC LIMIT 1",
-        (unique_user,),
-    )
-    row = cur.fetchone()
-    conn.close()
+    with database.transaction() as transaction:
+        row = transaction.fetch_one(
+            "SELECT inputs_meta FROM audit_events "
+            "WHERE actor_user_id = %s "
+            "AND event_class = 'onboarding_replayed' "
+            "ORDER BY recorded_at DESC LIMIT 1",
+            (unique_user,),
+        )
     assert row is not None
     assert row["inputs_meta"]["prior_status"] == "completed"
 
@@ -225,7 +238,7 @@ def test_replay_works_for_user_with_no_row(database, unique_user, wire_audit):
 # ---------------------------------------------------------------------------
 
 def test_steps_user_excludes_admin(database, unique_user, wire_audit):
-    repo = OnboardingRepository(database)
+    repo = _onboarding_repository(database)
     repo.create_step(
         editor_user_id=unique_user, slug=f"pytest-{unique_user}-u",
         audience="user", display_order=100, target_kind="none",
@@ -246,7 +259,7 @@ def test_steps_user_excludes_admin(database, unique_user, wire_audit):
 
 
 def test_steps_admin_includes_both_audiences(database, unique_user, wire_audit):
-    repo = OnboardingRepository(database)
+    repo = _onboarding_repository(database)
     repo.create_step(
         editor_user_id=unique_user, slug=f"pytest-{unique_user}-u2",
         audience="user", display_order=300, target_kind="none",
@@ -266,7 +279,7 @@ def test_steps_admin_includes_both_audiences(database, unique_user, wire_audit):
 
 
 def test_steps_user_view_omits_admin_only_fields(database, unique_user, wire_audit):
-    repo = OnboardingRepository(database)
+    repo = _onboarding_repository(database)
     repo.create_step(
         editor_user_id=unique_user, slug=f"pytest-{unique_user}-vw",
         audience="user", display_order=500, target_kind="none",

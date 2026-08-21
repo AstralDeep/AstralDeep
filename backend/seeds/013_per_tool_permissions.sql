@@ -1,13 +1,11 @@
 -- Feature 013 — Agent Visibility, Active-Agent Clarity, Per-Tool Permissions, and In-Chat Tool Picker
 --
--- This file documents the schema delta. The project's actual schema is
--- managed by `backend/shared/database.py::Database._init_db()`, which uses
--- idempotent `CREATE TABLE IF NOT EXISTS` and `_column_exists`-guarded
--- ALTERs and runs on every backend startup. The statements below mirror
--- exactly what `_init_db()` applies for this feature; they are kept here
--- as a portable reference and as a documented down path.
+-- This file is a historical reference for the feature-013 delta. The current
+-- schema and guarded lineage are owned by AstralPlane; AstralDeep never executes
+-- these statements during startup. Use AstralPlane's documented recovery path,
+-- not this reference file, for a current deployment.
 --
--- Forward (applied by _init_db on next backend start):
+-- Historical forward delta:
 --
 -- 1. Bind a chat session to its active agent (Story 2 / FR-006, FR-009).
 ALTER TABLE chats ADD COLUMN IF NOT EXISTS agent_id TEXT NULL;

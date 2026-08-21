@@ -62,6 +62,12 @@ class Recorder:
         self._retry_path = retry_queue or _retry_queue_path()
         self._retry_lock = threading.Lock()
         self._drain_task: Optional[asyncio.Task] = None
+        self._drain_stop: Optional[asyncio.Event] = None
+        self._close_task: Optional[asyncio.Task] = None
+        self._operation_condition = threading.Condition()
+        self._active_operations = 0
+        self._closing = False
+        self._closed = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -83,24 +89,29 @@ class Recorder:
         errors. Raises ``pydantic.ValidationError`` if ``event`` itself
         is malformed (callers should construct a valid model).
         """
-        # Lazy-start the drain loop so plain unit tests pay nothing.
-        self._ensure_drain_task()
+        self._begin_operation()
         try:
-            dto = await asyncio.to_thread(self._repo.insert, event)
-        except Exception as exc:
-            logger.warning(
-                "Audit insert failed (%s) — queuing for retry. event=%s/%s user=%s",
-                exc.__class__.__name__, event.event_class, event.action_type, event.actor_user_id,
-            )
-            self._enqueue_retry(event)
-            return None
-
-        if self._publisher is not None:
             try:
-                await self._publisher(dto, event.actor_user_id)
-            except Exception as exc:  # pragma: no cover — never block
-                logger.warning("Audit publisher failed: %s", exc)
-        return dto
+                # Lazy-start the drain loop so plain unit tests pay nothing.
+                self._ensure_drain_task()
+                dto = await asyncio.to_thread(self._repo.insert, event)
+            except Exception as exc:
+                logger.warning(
+                    "Audit insert failed (%s) — queuing for retry. event=%s/%s user=%s",
+                    exc.__class__.__name__, event.event_class, event.action_type,
+                    event.actor_user_id,
+                )
+                self._enqueue_retry(event)
+                return None
+
+            if self._publisher is not None:
+                try:
+                    await self._publisher(dto, event.actor_user_id)
+                except Exception as exc:  # pragma: no cover — never block
+                    logger.warning("Audit publisher failed: %s", exc)
+            return dto
+        finally:
+            self._end_operation()
 
     def record_blocking(self, event: AuditEventCreate) -> Optional[AuditEventDTO]:
         """Synchronous variant for callers that aren't on the event loop.
@@ -109,15 +120,64 @@ class Recorder:
         run inside ``asyncio``. Skips publisher fan-out (the caller is
         outside the event loop, so we cannot safely schedule a coroutine).
         """
+        self._begin_operation()
         try:
-            return self._repo.insert(event)
-        except Exception as exc:
-            logger.warning(
-                "Audit insert failed (%s) — queuing for retry. event=%s/%s user=%s",
-                exc.__class__.__name__, event.event_class, event.action_type, event.actor_user_id,
+            try:
+                return self._repo.insert(event)
+            except Exception as exc:
+                logger.warning(
+                    "Audit insert failed (%s) — queuing for retry. event=%s/%s user=%s",
+                    exc.__class__.__name__, event.event_class, event.action_type,
+                    event.actor_user_id,
+                )
+                self._enqueue_retry(event)
+                return None
+        finally:
+            self._end_operation()
+
+    async def close(self) -> None:
+        """Stop retry work and join every in-flight repository operation."""
+
+        task = self._close_task
+        if task is None:
+            if self._closed:
+                return
+            task = asyncio.create_task(
+                self._close_once(),
+                name="audit-recorder-close",
             )
-            self._enqueue_retry(event)
-            return None
+            self._close_task = task
+        await _join_task_through_cancellation(task)
+
+    async def _close_once(self) -> None:
+        with self._operation_condition:
+            self._closing = True
+        stop = self._drain_stop
+        if stop is not None:
+            stop.set()
+        drain = self._drain_task
+        if drain is not None:
+            await drain
+        await asyncio.to_thread(self._wait_for_active_operations)
+        self._publisher = None
+        self._closed = True
+
+    def _begin_operation(self) -> None:
+        with self._operation_condition:
+            if self._closing or self._closed:
+                raise RuntimeError("audit recorder is closing")
+            self._active_operations += 1
+
+    def _end_operation(self) -> None:
+        with self._operation_condition:
+            self._active_operations -= 1
+            if self._active_operations == 0:
+                self._operation_condition.notify_all()
+
+    def _wait_for_active_operations(self) -> None:
+        with self._operation_condition:
+            while self._active_operations:
+                self._operation_condition.wait()
 
     # ------------------------------------------------------------------
     # Retry queue (disk-backed, JSONL)
@@ -133,21 +193,32 @@ class Recorder:
                 logger.error("Audit retry-queue write failed: %s — event lost", exc)
 
     def _ensure_drain_task(self) -> None:
+        if self._closing or self._closed:
+            return
         if self._drain_task is not None and not self._drain_task.done():
             return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        self._drain_stop = asyncio.Event()
         self._drain_task = loop.create_task(self._drain_loop())
 
     async def _drain_loop(self) -> None:
-        while True:
+        stop = self._drain_stop
+        if stop is None:
+            return
+        while not stop.is_set():
             try:
                 await self._drain_once()
             except Exception as exc:  # pragma: no cover
                 logger.warning("Audit drain loop iteration failed: %s", exc)
-            await asyncio.sleep(30)
+            if stop.is_set():
+                return
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=30)
+            except TimeoutError:
+                pass
 
     async def _drain_once(self) -> None:
         """Replay the retry queue. Lossy on parse errors (logged + skipped)."""
@@ -207,6 +278,20 @@ def get_recorder() -> Optional[Recorder]:
 def set_recorder(recorder: Optional[Recorder]) -> None:
     global _RECORDER
     _RECORDER = recorder
+
+
+async def _join_task_through_cancellation(task: asyncio.Task) -> None:
+    """Observe one shared close task before propagating cancellation."""
+
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    task.result()
+    if cancellation is not None:
+        raise cancellation
 
 
 # ---------------------------------------------------------------------------

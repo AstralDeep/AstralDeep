@@ -25,23 +25,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
-)
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 # ----------------------------------------------------------------------
@@ -51,8 +35,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def db():
-    from shared.database import Database
-    return Database()
+    with isolated_plane_runtime("chat_steps") as runtime:
+        yield runtime
 
 
 @pytest.fixture
@@ -102,7 +86,8 @@ def recorder(db, chat_and_message, emitted):
     chat_id, user_id, msg_id = chat_and_message
     _sent, safe_send = emitted
     return ChatStepRecorder(
-        db=db,
+        plane_runtime=db,
+        plane_repositories=db.repositories,
         websocket=FakeWebSocket(),
         safe_send=safe_send,
         chat_id=chat_id,
@@ -248,7 +233,8 @@ class TestNoWebSocket:
 
         chat_id, user_id, msg_id = chat_and_message
         rec = ChatStepRecorder(
-            db=db,
+            plane_runtime=db,
+            plane_repositories=db.repositories,
             websocket=None,
             safe_send=None,
             chat_id=chat_id,

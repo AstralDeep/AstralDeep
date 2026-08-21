@@ -35,6 +35,10 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    repository_from,
+)
 from shared.phi_redactor import redact
 
 logger = logging.getLogger("Orchestrator.ChatSteps")
@@ -61,22 +65,22 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _row_to_step(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalise a DB row into the wire shape consumers expect."""
+def _record_to_step(record: Any) -> Dict[str, Any]:
+    """Normalise a detached Plane record into the wire shape consumers expect."""
     return {
-        "id": row["id"],
-        "chat_id": row["chat_id"],
-        "turn_message_id": row.get("turn_message_id"),
-        "kind": row["kind"],
-        "name": row["name"],
-        "status": row["status"],
-        "args_truncated": row.get("args_truncated"),
-        "args_was_truncated": bool(row.get("args_was_truncated", False)),
-        "result_summary": row.get("result_summary"),
-        "result_was_truncated": bool(row.get("result_was_truncated", False)),
-        "error_message": row.get("error_message"),
-        "started_at": row["started_at"],
-        "ended_at": row.get("ended_at"),
+        "id": record.step_id,
+        "chat_id": record.conversation_id,
+        "turn_message_id": record.turn_message_id,
+        "kind": record.kind,
+        "name": record.name,
+        "status": record.status.value,
+        "args_truncated": record.args_truncated,
+        "args_was_truncated": record.args_was_truncated,
+        "result_summary": record.result_summary,
+        "result_was_truncated": record.result_was_truncated,
+        "error_message": record.error_message,
+        "started_at": record.started_at,
+        "ended_at": record.ended_at,
     }
 
 
@@ -93,14 +97,16 @@ class ChatStepRecorder:
     def __init__(
         self,
         *,
-        db,
+        db=None,
         websocket=None,
         safe_send=None,
         chat_id: str,
         user_id: str,
         turn_message_id: Optional[int] = None,
+        plane_runtime=None,
+        plane_repositories=None,
+        plane_repository=None,
     ):
-        self.db = db
         self.websocket = websocket
         self.safe_send = safe_send
         self.chat_id = chat_id
@@ -109,6 +115,17 @@ class ChatStepRecorder:
         self._in_flight: Dict[str, str] = {}
         # Cache the terminal status for late-arriving result discard checks.
         self._statuses: Dict[str, str] = {}
+        repository, runtime = repository_from(
+            "chat_steps",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._steps = PlaneRepositoryContext(
+            repository=plane_repository or repository,
+            plane_runtime=runtime,
+            legacy_database=db,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle entry points
@@ -118,30 +135,20 @@ class ChatStepRecorder:
         step_id = uuid.uuid4().hex
         args_text, args_trunc = redact(args, kind="args")
         started = _now_ms()
+        record = None
         try:
-            await self.db.aexecute(
-                """
-                INSERT INTO chat_steps (
-                    id, chat_id, user_id, turn_message_id,
-                    kind, name, status,
-                    args_truncated, args_was_truncated,
-                    started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    step_id,
-                    self.chat_id,
-                    self.user_id,
-                    self.turn_message_id,
-                    kind,
-                    name,
-                    STATUS_IN_PROGRESS,
-                    args_text,
-                    args_trunc,
-                    started,
-                ),
+            record = await self._steps.call_async(
+                self._steps.repository.create_step,
+                step_id=step_id,
+                owner_id=self.user_id,
+                conversation_id=self.chat_id,
+                turn_message_id=self.turn_message_id,
+                kind=kind,
+                name=name,
+                args_truncated=args_text,
+                args_was_truncated=args_trunc,
+                started_at=started,
             )
-            await self._bump_step_count()
         except Exception as exc:  # pragma: no cover — defensive
             # "step_name", not "name": `name` is a reserved LogRecord attribute
             # and putting it in `extra` makes the logging call itself raise.
@@ -153,21 +160,25 @@ class ChatStepRecorder:
         self._in_flight[step_id] = name
         self._statuses[step_id] = STATUS_IN_PROGRESS
 
-        await self._emit({
-            "id": step_id,
-            "chat_id": self.chat_id,
-            "turn_message_id": self.turn_message_id,
-            "kind": kind,
-            "name": name,
-            "status": STATUS_IN_PROGRESS,
-            "args_truncated": args_text,
-            "args_was_truncated": args_trunc,
-            "result_summary": None,
-            "result_was_truncated": False,
-            "error_message": None,
-            "started_at": started,
-            "ended_at": None,
-        })
+        await self._emit(
+            _record_to_step(record)
+            if record is not None
+            else {
+                "id": step_id,
+                "chat_id": self.chat_id,
+                "turn_message_id": self.turn_message_id,
+                "kind": kind,
+                "name": name,
+                "status": STATUS_IN_PROGRESS,
+                "args_truncated": args_text,
+                "args_was_truncated": args_trunc,
+                "result_summary": None,
+                "result_was_truncated": False,
+                "error_message": None,
+                "started_at": started,
+                "ended_at": None,
+            }
+        )
         # "step_name", not "name": `name` is a reserved LogRecord attribute and
         # `extra` may not overwrite it — logging raises KeyError at INFO level,
         # which the caller's defensive except turned into step_id=None, leaving
@@ -230,15 +241,18 @@ class ChatStepRecorder:
             # respect that and clear the in-memory entry without emitting
             # a contradictory cancelled event.
             try:
-                row = await self.db.afetch_one(
-                    "SELECT status FROM chat_steps WHERE id = ?", (step_id,)
+                record = await self._steps.call_async(
+                    self._steps.repository.get_step,
+                    owner_id=self.user_id,
+                    step_id=step_id,
                 )
-                if row is not None and row.get("status") in _TERMINAL_STATUSES:
+                status = None if record is None else record.status.value
+                if status in _TERMINAL_STATUSES:
                     self._in_flight.pop(step_id, None)
-                    self._statuses[step_id] = row["status"]
+                    self._statuses[step_id] = status
                     logger.info(
                         "chat_steps.cancel_skipped_already_terminal",
-                        extra={"step_id": step_id, "status": row["status"]},
+                        extra={"step_id": step_id, "status": status},
                     )
                     continue
             except Exception:  # pragma: no cover — defensive
@@ -272,23 +286,19 @@ class ChatStepRecorder:
         error_message: Optional[str],
     ) -> None:
         ended = _now_ms()
+        record = None
+        step_name = self._in_flight.get(step_id, "unknown")
         try:
-            await self.db.aexecute(
-                """
-                UPDATE chat_steps
-                   SET status = ?, ended_at = ?,
-                       result_summary = ?, result_was_truncated = ?,
-                       error_message = ?
-                 WHERE id = ?
-                """,
-                (
-                    status,
-                    ended,
-                    result_summary,
-                    result_was_truncated,
-                    error_message,
-                    step_id,
-                ),
+            record = await self._steps.call_async(
+                self._steps.repository.finish_step,
+                owner_id=self.user_id,
+                step_id=step_id,
+                expected_status=STATUS_IN_PROGRESS,
+                status=status,
+                ended_at=ended,
+                result_summary=result_summary,
+                result_was_truncated=result_was_truncated,
+                error_message=error_message,
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.error(
@@ -299,19 +309,18 @@ class ChatStepRecorder:
         self._in_flight.pop(step_id, None)
         self._statuses[step_id] = status
 
-        # Re-fetch the row so the emit carries the canonical persisted state
-        # (and matches what the REST endpoint would return on rehydrate).
-        try:
-            row = await self.db.afetch_one(
-                "SELECT * FROM chat_steps WHERE id = ?",
-                (step_id,),
-            )
-            payload = _row_to_step(dict(row)) if row else {
+        # The Plane mutation returns the canonical detached state.  Persistence
+        # failures remain non-fatal to the caller and emit the bounded fallback
+        # shape retained by the original progress-notification contract.
+        payload = (
+            _record_to_step(record)
+            if record is not None
+            else {
                 "id": step_id,
                 "chat_id": self.chat_id,
                 "turn_message_id": self.turn_message_id,
                 "kind": KIND_TOOL_CALL,
-                "name": self._in_flight.get(step_id, "unknown"),
+                "name": step_name,
                 "status": status,
                 "args_truncated": None,
                 "args_was_truncated": False,
@@ -321,42 +330,13 @@ class ChatStepRecorder:
                 "started_at": ended,
                 "ended_at": ended,
             }
-        except Exception:  # pragma: no cover — defensive
-            payload = {
-                "id": step_id,
-                "chat_id": self.chat_id,
-                "turn_message_id": self.turn_message_id,
-                "kind": KIND_TOOL_CALL,
-                "name": "unknown",
-                "status": status,
-                "args_truncated": None,
-                "args_was_truncated": False,
-                "result_summary": result_summary,
-                "result_was_truncated": result_was_truncated,
-                "error_message": error_message,
-                "started_at": ended,
-                "ended_at": ended,
-            }
+        )
 
         await self._emit(payload)
         logger.info(
             "chat_steps.terminated",
             extra={"step_id": step_id, "status": status, "chat_id": self.chat_id},
         )
-
-    async def _bump_step_count(self) -> None:
-        if self.turn_message_id is None:
-            return
-        try:
-            await self.db.aexecute(
-                "UPDATE messages SET step_count = step_count + 1 WHERE id = ?",
-                (self.turn_message_id,),
-            )
-        except Exception as exc:  # pragma: no cover — defensive
-            logger.warning(
-                "chat_steps.step_count_bump_failed",
-                extra={"turn_message_id": self.turn_message_id, "error": str(exc)},
-            )
 
     async def _emit(self, step_payload: Dict[str, Any]) -> None:
         if self.websocket is None or self.safe_send is None:

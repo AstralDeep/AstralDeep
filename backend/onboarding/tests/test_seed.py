@@ -1,11 +1,8 @@
 """Tests for the canonical tutorial-step seed (rewritten by feature 030).
 
-These run the real ``seed_tutorial_steps`` loader against the live
-``tutorial_step`` table. Steps are seeded with ``ON CONFLICT (slug)
-DO NOTHING`` so the assertions can rely on canonical rows being
-present without truncating admin edits. The pre-030 steps are archived
-by ``Database._migrate_tutorial_steps_030`` (runs inside ``_init_db``,
-i.e. when the session ``database`` fixture is built).
+These run the real ``seed_tutorial_steps`` loader against an isolated Plane
+``tutorial_step`` table. Missing defaults are inserted without overwriting
+admin edits; fresh Plane baselines contain no retired pre-030 product content.
 """
 from __future__ import annotations
 
@@ -15,7 +12,6 @@ from pathlib import Path
 import pytest
 
 from onboarding.seed import seed_tutorial_steps
-from shared.database import Database
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
@@ -40,33 +36,44 @@ ADMIN_FLOW = {
     "admin-edit-this-tour": (220, "static", "sidebar.tutorial-admin"),
 }
 
+LEGACY_TUTORIAL_SLUGS = (
+    "welcome",
+    "chat-with-agent",
+    "personalize-profession",
+    "personalize-skills",
+    "personalize-personality",
+    "open-agents-panel",
+    "enable-agents",
+    "open-audit-log",
+    "give-feedback",
+    "finish",
+    "admin-feedback-flagged",
+    "admin-feedback-proposals",
+    "admin-feedback-quarantine",
+    "admin-tutorial-editor",
+)
+
 
 @pytest.fixture
 def fresh_seed(database):
     """Apply (or re-apply, idempotently) the canonical seed before assertions."""
-    seed_tutorial_steps(database)
+    seed_tutorial_steps(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
     yield database
 
 
 def _fetch_step(database, slug: str) -> dict | None:
-    conn = database._get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
+    with database.transaction() as transaction:
+        row = transaction.fetch_one(
             "SELECT slug, audience, display_order, target_kind, target_key, "
             "title, body, archived_at FROM tutorial_step WHERE slug = %s",
             (slug,),
         )
-        row = cur.fetchone()
-    finally:
-        conn.close()
     if row is None:
         return None
-    if isinstance(row, dict):
-        return row
-    keys = ["slug", "audience", "display_order", "target_kind", "target_key",
-            "title", "body", "archived_at"]
-    return dict(zip(keys, row))
+    return dict(row)
 
 
 def test_seed_creates_the_canonical_user_flow(fresh_seed):
@@ -138,10 +145,11 @@ def test_every_static_target_resolves_to_a_real_anchor(fresh_seed):
     admin roles) or the shell template. This is the regression that broke the
     old tour: 'give-feedback' targeted feedback.control, which feature 026
     removed, leaving a permanent "(target isn't available yet)" step."""
+    from astralprojection.resources import template_path
     from webrender.chrome.topbar import render_topbar
 
     dom = render_topbar(roles=["admin", "user"])
-    dom += (BACKEND_DIR / "webrender" / "templates" / "shell.html").read_text(encoding="utf-8")
+    dom += template_path("shell.html").read_text(encoding="utf-8")
     anchors = set(re.findall(r'data-tour-target="([^"]+)"', dom))
     for slug, (_, kind, key) in {**USER_FLOW, **ADMIN_FLOW}.items():
         if kind != "static":
@@ -156,7 +164,7 @@ def test_legacy_steps_are_no_longer_active(fresh_seed):
     """The pre-030 steps must not appear in the tour: on an upgraded database
     ``_migrate_tutorial_steps_030`` archives them (restorable from Tutorial
     admin); on a fresh database they are never seeded at all."""
-    for slug in Database._LEGACY_TUTORIAL_SLUGS_030:
+    for slug in LEGACY_TUTORIAL_SLUGS:
         row = _fetch_step(fresh_seed, slug)
         assert row is None or row["archived_at"] is not None, (
             f"legacy step {slug!r} is still active — the 030 tour refresh "

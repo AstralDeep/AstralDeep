@@ -37,26 +37,23 @@ def orch():
 
 
 @pytest.fixture
-def captured(monkeypatch):
+def captured(monkeypatch, orch):
     """Stub the offline-grant + session stores; record what capture receives."""
     seen = {}
 
     grants = MagicMock()
     grants.capture = MagicMock(side_effect=lambda u, t, a: seen.update(
         user=u, token=t, agent=a) or "grant-new-1")
-    monkeypatch.setattr("orchestrator.offline_grant.OfflineGrantStore",
-                        MagicMock(return_value=grants))
+    orch.offline_grants = grants
 
     sessions = MagicMock()
     sessions.latest_refresh_token_for = MagicMock(return_value="refresh-abc")
-    monkeypatch.setattr("orchestrator.session_store.WebSessionStore",
-                        MagicMock(return_value=sessions))
+    orch.web_sessions = sessions
 
     store = MagicMock()
     store.create_job = MagicMock(side_effect=lambda *a, **k: seen.update(
         job_kwargs=k) or {"id": "job-1"})
-    monkeypatch.setattr("scheduler.store.ScheduledJobStore",
-                        MagicMock(return_value=store))
+    orch.scheduled_job_store = store
 
     monkeypatch.setattr(scheduling_chat, "_audit", AsyncMock())
     seen["grants"] = grants

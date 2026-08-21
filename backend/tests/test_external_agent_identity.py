@@ -119,6 +119,9 @@ class _AllowAllPermissions:
     def is_tool_allowed(self, *_args):
         return True
 
+    def list_disabled_agents(self, _user_id):
+        return ()
+
 
 def _visibility_orchestrator(card: AgentCard):
     return SimpleNamespace(
@@ -128,9 +131,7 @@ def _visibility_orchestrator(card: AgentCard):
         security_flags={},
         tool_permissions=_AllowAllPermissions(),
         _is_draft_agent=lambda _agent_id: False,
-        history=SimpleNamespace(
-            db=SimpleNamespace(get_user_disabled_agents=lambda _user_id: [])
-        ),
+        history=SimpleNamespace(db=SimpleNamespace()),
     )
 
 

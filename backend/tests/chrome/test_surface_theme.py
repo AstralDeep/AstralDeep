@@ -1,40 +1,50 @@
 """Feature 027 — T016: Theme surface structural/behavioral tests.
 
-Runs without Postgres: a minimal fake ``orch`` exposes only
-``orch.history.db.{get,set}_user_preferences`` (the only internals the
-surface touches — same calls as the ``save_theme`` WS handler).
+Runs without Postgres: a minimal fake Plane theme-preference context exercises
+the same typed boundary used by the surface.
 """
 import asyncio
+from types import SimpleNamespace
 
-from webrender.chrome.surfaces import theme as theme_surface
-
-
-class FakeDB:
-    """In-memory stand-in for the user_preferences DB helpers."""
-
-    def __init__(self, prefs=None, fail_on_set=False):
-        self.prefs = dict(prefs or {})
-        self.fail_on_set = fail_on_set
-        self.set_calls = []
-
-    def get_user_preferences(self, user_id):
-        return dict(self.prefs)
-
-    def set_user_preferences(self, user_id, preferences):
-        if self.fail_on_set:
-            raise RuntimeError("db down")
-        self.set_calls.append((user_id, preferences))
-        self.prefs = {**self.prefs, **preferences}  # same top-level merge as shared.database
+from orchestrator.projection_surfaces import theme as theme_surface
 
 
-class FakeHistory:
-    def __init__(self, db):
-        self.db = db
+class FakeThemeRepository:
+    """In-memory stand-in for Plane's theme-preference repository."""
+
+    def __init__(self, prefs=None, fail_on_put=False, fail_on_get=False):
+        self.theme = (prefs or {}).get("theme")
+        self.fail_on_put = fail_on_put
+        self.fail_on_get = fail_on_get
+        self.put_calls = []
+
+    def get(self, _transaction, *, owner_id):
+        if self.fail_on_get:
+            raise RuntimeError("plane down")
+        if self.theme is None:
+            return None
+        return SimpleNamespace(owner_id=owner_id, theme=self.theme, updated_at=1)
+
+    def put(self, _transaction, *, owner_id, theme):
+        if self.fail_on_put:
+            raise RuntimeError("plane down")
+        self.put_calls.append((owner_id, theme))
+        self.theme = dict(theme)
+        return SimpleNamespace(owner_id=owner_id, theme=self.theme, updated_at=1)
+
+
+class FakeThemeContext:
+    def __init__(self, repository):
+        self.repository = repository
+
+    def call(self, operation, **kwargs):
+        return operation(object(), **kwargs)
 
 
 class FakeOrch:
-    def __init__(self, prefs=None, fail_on_set=False):
-        self.history = FakeHistory(FakeDB(prefs, fail_on_set))
+    def __init__(self, prefs=None, fail_on_put=False, fail_on_get=False):
+        repository = FakeThemeRepository(prefs, fail_on_put, fail_on_get)
+        self.theme_preference_context = FakeThemeContext(repository)
 
 
 def render(orch, params=None):
@@ -107,13 +117,7 @@ def test_render_overlays_colors_map_and_ignores_invalid_hex():
 
 
 def test_render_tolerates_db_failure_and_bad_theme_shape():
-    class BoomDB(FakeDB):
-        def get_user_preferences(self, user_id):
-            raise RuntimeError("db down")
-
-    orch = FakeOrch()
-    orch.history.db = BoomDB()
-    html = render(orch)  # must not raise — defaults shown
+    html = render(FakeOrch(fail_on_get=True))  # must not raise — defaults shown
     assert "Current theme: default (Midnight)." in html
 
     html2 = render(FakeOrch(prefs={"theme": "not-a-dict"}))
@@ -128,7 +132,9 @@ def test_preset_save_persists_like_save_theme_and_applies_instantly():
     orch = FakeOrch()
     surface, params, notice = handle(orch, {"preset": "ocean"})
     assert surface == "theme" and params == {}
-    assert orch.history.db.set_calls == [("user-1", {"theme": {"preset": "ocean"}})]
+    assert orch.theme_preference_context.repository.put_calls == [
+        ("user-1", {"preset": "ocean"})
+    ]
     # success notice (explicit-save contract) ...
     assert "astral-chrome-notice" in notice and "Ocean theme saved." in notice
     # ... plus a rendered theme_apply block so processSideEffects sets CSS vars
@@ -141,7 +147,7 @@ def test_unknown_preset_is_error_notice_without_save():
     orch = FakeOrch()
     surface, params, notice = handle(orch, {"preset": "<neon>"})
     assert surface == "theme"
-    assert orch.history.db.set_calls == []
+    assert orch.theme_preference_context.repository.put_calls == []
     assert "bg-red-500/10" in notice
     assert "&lt;neon&gt;" in notice and "<neon>" not in notice  # escaped
     assert "astral-theme-apply" not in notice
@@ -152,11 +158,11 @@ def test_missing_preset_is_error_notice():
     surface, _params, notice = handle(orch, {})
     assert surface == "theme"
     assert "Unknown theme preset" in notice
-    assert orch.history.db.set_calls == []
+    assert orch.theme_preference_context.repository.put_calls == []
 
 
 def test_db_failure_returns_error_notice_not_exception():
-    orch = FakeOrch(fail_on_set=True)
+    orch = FakeOrch(fail_on_put=True)
     surface, _params, notice = handle(orch, {"preset": "forest"})
     assert surface == "theme"
     assert "Failed to save theme" in notice and "bg-red-500/10" in notice

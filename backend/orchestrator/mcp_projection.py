@@ -46,7 +46,7 @@ def _eligible_pairs(
 ) -> list[tuple[str, Any]]:
     """Mirror the normal-chat visibility and permission gates, fail closed."""
 
-    disabled = set(orchestrator.history.db.get_user_disabled_agents(user_id))
+    disabled = set(orchestrator.tool_permissions.list_disabled_agents(user_id))
     return eligible_tool_pairs(
         orchestrator,
         user_id,

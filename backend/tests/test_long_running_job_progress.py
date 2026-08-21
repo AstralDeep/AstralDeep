@@ -14,44 +14,41 @@ the completed UI, AND narrates the comparison via the model into the chat rail.
 Uses the established "real unbound Orchestrator methods bound onto a fake self
 over a real Postgres-backed WorkspaceManager" pattern.
 """
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import json
-import sys
 import types
 import uuid
-from pathlib import Path
 
 import pytest
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+from orchestrator.history import ConversationCommitRepository
+from orchestrator.orchestrator import Orchestrator
+from orchestrator.workspace import WorkspaceManager
+from shared.protocol import ToolProgress
+from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
 
-from orchestrator.orchestrator import Orchestrator  # noqa: E402
-from orchestrator.history import ConversationCommitRepository  # noqa: E402
-from orchestrator.workspace import WorkspaceManager  # noqa: E402
-from shared.protocol import ToolProgress  # noqa: E402
-
-NARRATION = ("Random Forest performed best at 71.8% accuracy (AUC 0.739), "
-             "beating Gradient Boosting's 61.5% (AUC 0.655).")
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
+NARRATION = (
+    "Random Forest performed best at 71.8% accuracy (AUC 0.739), "
+    "beating Gradient Boosting's 61.5% (AUC 0.655)."
+)
 
 
-pytestmark = pytest.mark.skipif(not _can_connect_to_db(), reason="Postgres unavailable")
+def _json_mapping_default(value: object) -> dict[str, object]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(f"unsupported detached value: {type(value).__name__}")
+
+
+@pytest.fixture(scope="module")
+def plane_runtime():
+    """Create one isolated current Plane runtime for job progress tests."""
+
+    with isolated_plane_runtime("long_job_progress") as runtime:
+        yield runtime
 
 
 class _FakeWS:
@@ -68,10 +65,14 @@ class _FakeCap:
 
 
 @pytest.fixture
-def chat_env(tmp_path):
+def chat_env(tmp_path, plane_runtime: PlaneTestRuntime):
     from orchestrator.history import HistoryManager
 
-    history = HistoryManager(data_dir=str(tmp_path))
+    history = HistoryManager(
+        data_dir=str(tmp_path),
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
     user_id = f"pytest-job-{uuid.uuid4().hex[:10]}"
     chat_id = history.create_chat(user_id=user_id)
     history.add_message(chat_id, "user", "train a model", user_id=user_id)
@@ -101,8 +102,9 @@ def _make_fake(history, user_id, llm_content=NARRATION):
         sent.append((ws, json.loads(payload) if isinstance(payload, str) else payload))
         return True
 
-    async def _call_llm(websocket, messages, tools_desc=None, temperature=None,
-                        feature="tool_dispatch"):
+    async def _call_llm(
+        websocket, messages, tools_desc=None, temperature=None, feature="tool_dispatch"
+    ):
         if llm_content is None:
             return None, None
         return types.SimpleNamespace(content=llm_content), {}
@@ -111,7 +113,10 @@ def _make_fake(history, user_id, llm_content=NARRATION):
     fake = types.SimpleNamespace(
         workspace=WorkspaceManager(history),
         history=history,
-        conversation_commits=ConversationCommitRepository(history.db),
+        conversation_commits=ConversationCommitRepository(
+            plane_runtime=history.plane_runtime,
+            plane_repositories=history.plane_repositories,
+        ),
         rote=ROTE(),
         ui_clients=[],
         ui_sessions=ui_sessions,
@@ -128,24 +133,39 @@ def _make_fake(history, user_id, llm_content=NARRATION):
         _chat_narrative=lambda content: [{"type": "text", "content": content}],
         _get_user_id=lambda ws: (ui_sessions.get(ws) or {}).get("sub"),
     )
-    for name in ("_handle_tool_progress", "_finalize_long_running_job",
-                 "_build_job_result_component", "_narrate_job_result",
-                 "_sockets_on_chat", "send_ui_upsert", "send_ui_render",
-                 "_release_hop_cap_slot", "_begin_detached_conversation_publication",
-                 "_append_conversation_message", "_publish_conversation_snapshot",
-                 "_deliver_committed_conversation_snapshot",
-                 "_conversation_snapshot_candidate", "_adapt_conversation_snapshot",
-                 "_bind_conversation_scope", "_broadcast_user_history",
-                 "_refresh_history_after_commit", "_push_history_surface"):
+    for name in (
+        "_handle_tool_progress",
+        "_finalize_long_running_job",
+        "_build_job_result_component",
+        "_narrate_job_result",
+        "_sockets_on_chat",
+        "send_ui_upsert",
+        "send_ui_render",
+        "_release_hop_cap_slot",
+        "_begin_detached_conversation_publication",
+        "_append_conversation_message",
+        "_publish_conversation_snapshot",
+        "_deliver_committed_conversation_snapshot",
+        "_conversation_snapshot_candidate",
+        "_adapt_conversation_snapshot",
+        "_bind_conversation_scope",
+        "_broadcast_user_history",
+        "_refresh_history_after_commit",
+        "_push_history_surface",
+    ):
         setattr(fake, name, types.MethodType(getattr(Orchestrator, name), fake))
     fake._sent = sent
     return fake
 
 
 def _seed_job(fake, user_id, chat_id, cap):
-    fake._job_context[cap] = {"user_id": user_id, "agent_id": "ml-services-1",
-                              "chat_id": chat_id, "tool_name": "classify_start_training_job",
-                              "publication_request_generation": str(uuid.uuid4())}
+    fake._job_context[cap] = {
+        "user_id": user_id,
+        "agent_id": "ml-services-1",
+        "chat_id": chat_id,
+        "tool_name": "classify_start_training_job",
+        "publication_request_generation": str(uuid.uuid4()),
+    }
     fake._pending_cap_entries[cap] = (user_id, "ml-services-1")
 
 
@@ -169,8 +189,13 @@ def _terminal(cap, result=None, phase="completed", message="Training complete.")
     md = {"request_id": "req1", "phase": phase, "terminal": True, "cap_job_id": cap}
     if result is not None:
         md["result"] = result
-    return ToolProgress(tool_name="classify_start_training_job", agent_id="ml-services-1",
-                        message=message, percentage=100, metadata=md)
+    return ToolProgress(
+        tool_name="classify_start_training_job",
+        agent_id="ml-services-1",
+        message=message,
+        percentage=100,
+        metadata=md,
+    )
 
 
 def test_terminal_result_persists_fans_out_and_narrates(chat_env):
@@ -180,8 +205,10 @@ def test_terminal_result_persists_fans_out_and_narrates(chat_env):
     _seed_job(fake, user_id, chat_id, cap)
     _register_socket(fake, user_id, chat_id)
 
-    result = {"random_forest": {"accuracy": 0.718, "auc": 0.739},
-              "gradient_boosting": {"accuracy": 0.615, "auc": 0.655}}
+    result = {
+        "random_forest": {"accuracy": 0.718, "auc": 0.739},
+        "gradient_boosting": {"accuracy": 0.615, "auc": 0.655},
+    }
     _run(fake._handle_tool_progress(_terminal(cap, result)))
 
     # Result Table persisted into the workspace (what load_chat re-hydrates).
@@ -198,11 +225,17 @@ def test_terminal_result_persists_fans_out_and_narrates(chat_env):
     assert snapshots[0]["snapshot_purpose"] == "commit"
     assert snapshots[0]["render_revision"] == 1
     # Model-written comparison narrated into the chat rail (live)...
-    assert any(m.get("type") == "ui_render" and m.get("target") == "chat"
-               and NARRATION in json.dumps(m) for _, m in fake._sent)
+    assert any(
+        m.get("type") == "ui_render"
+        and m.get("target") == "chat"
+        and NARRATION in json.dumps(m)
+        for _, m in fake._sent
+    )
     # ...and persisted in the transcript (so reload shows it).
     chat = history.get_chat(chat_id, user_id)
-    assert NARRATION in json.dumps(chat.get("messages", []))
+    assert NARRATION in json.dumps(
+        chat.get("messages", []), default=_json_mapping_default
+    )
     # Cap released + job context cleaned up.
     assert fake.concurrency_cap.released == [(user_id, "ml-services-1", cap)]
     assert cap not in fake._job_context and cap not in fake._pending_cap_entries
@@ -221,11 +254,13 @@ def test_completed_result_and_narration_available_after_refresh(chat_env):
     _run(fake._handle_tool_progress(_terminal(cap, {"accuracy": 0.9})))
 
     comps = fake.workspace.live_components(chat_id, user_id)
-    assert any("0.9" in json.dumps(c) for c in comps), \
+    assert any("0.9" in json.dumps(c) for c in comps), (
         "result must persist even when nobody is connected"
+    )
     chat = history.get_chat(chat_id, user_id)
-    assert NARRATION in json.dumps(chat.get("messages", [])), \
-        "narration must persist for a returning client"
+    assert NARRATION in json.dumps(
+        chat.get("messages", []), default=_json_mapping_default
+    ), "narration must persist for a returning client"
     assert fake.concurrency_cap.released == [(user_id, "ml-services-1", cap)]
 
 
@@ -239,10 +274,15 @@ def test_narration_falls_back_to_note_when_no_llm(chat_env):
     _run(fake._handle_tool_progress(_terminal(cap, {"accuracy": 0.7})))
 
     chat = history.get_chat(chat_id, user_id)
-    blob = json.dumps(chat.get("messages", []))
-    assert "Training complete" in blob, "a deterministic completion note must still post"
+    blob = json.dumps(chat.get("messages", []), default=_json_mapping_default)
+    assert "Training complete" in blob, (
+        "a deterministic completion note must still post"
+    )
     # A chat-rail render still went out live.
-    assert any(m.get("type") == "ui_render" and m.get("target") == "chat" for _, m in fake._sent)
+    assert any(
+        m.get("type") == "ui_render" and m.get("target") == "chat"
+        for _, m in fake._sent
+    )
 
 
 def test_works_with_progress_streaming_flag_off(chat_env, monkeypatch):
@@ -256,8 +296,9 @@ def test_works_with_progress_streaming_flag_off(chat_env, monkeypatch):
     _run(fake._handle_tool_progress(_terminal(cap, {"accuracy": 0.5})))
 
     comps = fake.workspace.live_components(chat_id, user_id)
-    assert any("0.5" in json.dumps(c) for c in comps), \
+    assert any("0.5" in json.dumps(c) for c in comps), (
         "auto-post must not depend on the progress_streaming flag"
+    )
 
 
 def test_live_progress_fans_out_without_persisting(chat_env):
@@ -267,14 +308,20 @@ def test_live_progress_fans_out_without_persisting(chat_env):
     _seed_job(fake, user_id, chat_id, cap)
     _register_socket(fake, user_id, chat_id)
 
-    msg = ToolProgress(tool_name="classify_start_training_job", agent_id="ml-services-1",
-                       message="Training... 50%", percentage=50,
-                       metadata={"request_id": "r", "phase": "training", "cap_job_id": cap})
+    msg = ToolProgress(
+        tool_name="classify_start_training_job",
+        agent_id="ml-services-1",
+        message="Training... 50%",
+        percentage=50,
+        metadata={"request_id": "r", "phase": "training", "cap_job_id": cap},
+    )
     _run(fake._handle_tool_progress(msg))
 
     # A live tool_progress was delivered to the connected socket...
-    assert any(m.get("type") == "tool_progress" and m.get("percentage") == 50
-               for _, m in fake._sent)
+    assert any(
+        m.get("type") == "tool_progress" and m.get("percentage") == 50
+        for _, m in fake._sent
+    )
     # ...nothing persisted yet (not terminal); the cap is still held.
     assert fake.workspace.live_components(chat_id, user_id) == []
     assert cap in fake._pending_cap_entries

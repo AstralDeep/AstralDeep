@@ -14,35 +14,70 @@ Runs against the live test Postgres like the other HistoryManager suites.
 import os
 import sys
 import uuid
+from contextlib import contextmanager
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from orchestrator.history import HistoryManager, PREVIEW_MAX_CHARS
+from orchestrator.history import PREVIEW_MAX_CHARS
 from orchestrator.tool_permissions import ToolPermissionManager
-from tests.helpers.query_count import count_queries
+from tests.helpers.query_count import QueryCounter, count_queries
+from tests.helpers.voice_plane_runtime import (
+    history_manager,
+    isolated_plane_runtime,
+)
 
 
 @pytest.fixture(scope="module")
-def hm(tmp_path_factory):
-    """A HistoryManager backed by the live test Postgres."""
-    return HistoryManager(data_dir=str(tmp_path_factory.mktemp("query-budget-data")))
+def plane_runtime():
+    """One managed application Plane runtime for this integration module."""
+    with isolated_plane_runtime("query_budgets") as runtime:
+        yield runtime
+
+
+@pytest.fixture(scope="module")
+def hm(plane_runtime):
+    """A HistoryManager bound to the module's application Plane runtime."""
+    return history_manager(plane_runtime)
+
+
+@contextmanager
+def _count_plane_queries(plane_runtime):
+    """Count real Plane transaction statements without a legacy DB facade."""
+    counter = QueryCounter()
+    original_transaction = plane_runtime.transaction
+
+    @contextmanager
+    def counted_transaction(*, isolation=None):
+        with original_transaction(isolation=isolation) as transaction:
+            with count_queries(transaction) as transaction_counter:
+                try:
+                    yield transaction
+                finally:
+                    counter.count += transaction_counter.count
+                    counter.queries.extend(transaction_counter.queries)
+
+    plane_runtime.transaction = counted_transaction
+    try:
+        yield counter
+    finally:
+        plane_runtime.transaction = original_transaction
 
 
 @pytest.fixture
-def user_id(hm):
+def user_id(plane_runtime):
     """A unique per-test user id; rows are cleaned up on teardown."""
     uid = f"qbudget-{uuid.uuid4().hex[:12]}"
     yield uid
-    hm.db.execute("DELETE FROM saved_components WHERE user_id = ?", (uid,))
-    hm.db.execute("DELETE FROM messages WHERE user_id = ?", (uid,))
-    hm.db.execute("DELETE FROM chats WHERE user_id = ?", (uid,))
-    hm.db.execute("DELETE FROM tool_overrides WHERE user_id = ?", (uid,))
-    hm.db.execute("DELETE FROM agent_scopes WHERE user_id = ?", (uid,))
+    plane_runtime.execute("DELETE FROM saved_components WHERE user_id = ?", (uid,))
+    plane_runtime.execute("DELETE FROM messages WHERE user_id = ?", (uid,))
+    plane_runtime.execute("DELETE FROM chats WHERE user_id = ?", (uid,))
+    plane_runtime.execute("DELETE FROM tool_overrides WHERE user_id = ?", (uid,))
+    plane_runtime.execute("DELETE FROM agent_scopes WHERE user_id = ?", (uid,))
 
 
-def _seed_three_chats(hm, user_id):
+def _seed_three_chats(hm, plane_runtime, user_id):
     """Seed 3 chats with deterministic recency and message ordering."""
     c1 = hm.create_chat(user_id=user_id)
     hm.add_message(c1, "user", "first question", user_id=user_id)
@@ -64,20 +99,22 @@ def _seed_three_chats(hm, user_id):
 
     # Same-millisecond inserts would make "latest message" and the listing
     # order nondeterministic; pin both to insertion order.
-    hm.db.execute("UPDATE messages SET timestamp = id WHERE user_id = ?", (user_id,))
+    plane_runtime.execute(
+        "UPDATE messages SET timestamp = id WHERE user_id = ?", (user_id,)
+    )
     for rank, chat_id in enumerate((c1, c2, c3), start=1):
-        hm.db.execute(
+        plane_runtime.execute(
             "UPDATE chats SET updated_at = ? WHERE id = ? AND user_id = ?",
             (rank * 1000, chat_id, user_id),
         )
     return c1, c2, c3
 
 
-def test_recent_chats_single_query(hm, user_id):
+def test_recent_chats_single_query(hm, plane_runtime, user_id):
     """3 chats with messages list in ONE round trip with correct previews."""
-    c1, c2, c3 = _seed_three_chats(hm, user_id)
+    c1, c2, c3 = _seed_three_chats(hm, plane_runtime, user_id)
 
-    with count_queries(hm.db) as counter:
+    with _count_plane_queries(plane_runtime) as counter:
         chats = hm.get_recent_chats(user_id=user_id)
 
     assert counter.count == 1
@@ -94,12 +131,14 @@ def test_recent_chats_single_query(hm, user_id):
         assert entry["has_saved_components"] is False
 
 
-def test_recent_chats_saved_component_flag_still_one_query(hm, user_id):
+def test_recent_chats_saved_component_flag_still_one_query(
+    hm, plane_runtime, user_id
+):
     """The saved-components flag comes from the chats row, not extra lookups."""
-    c1, c2, c3 = _seed_three_chats(hm, user_id)
+    c1, c2, c3 = _seed_three_chats(hm, plane_runtime, user_id)
     hm.save_component(c2, {"type": "table", "rows": []}, "table", user_id=user_id)
 
-    with count_queries(hm.db) as counter:
+    with _count_plane_queries(plane_runtime) as counter:
         chats = hm.get_recent_chats(user_id=user_id)
 
     assert counter.count == 1
@@ -110,9 +149,12 @@ def test_recent_chats_saved_component_flag_still_one_query(hm, user_id):
 
 
 @pytest.fixture
-def perms(hm, user_id):
+def perms(plane_runtime, user_id):
     """A db-backed ToolPermissionManager with a unique registered agent."""
-    manager = ToolPermissionManager(db=hm.db)
+    manager = ToolPermissionManager(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
     agent_id = f"qbudget-agent-{uuid.uuid4().hex[:8]}"
     manager.register_tool_scopes(agent_id, {
         "gen_chart": "tools:read",
@@ -123,11 +165,13 @@ def perms(hm, user_id):
         "legacy_true_tool": "tools:read",
     })
     yield manager, agent_id
-    hm.db.execute("DELETE FROM tool_overrides WHERE agent_id = ?", (agent_id,))
-    hm.db.execute("DELETE FROM agent_scopes WHERE agent_id = ?", (agent_id,))
+    plane_runtime.execute("DELETE FROM tool_overrides WHERE agent_id = ?", (agent_id,))
+    plane_runtime.execute("DELETE FROM agent_scopes WHERE agent_id = ?", (agent_id,))
 
 
-def test_effective_tool_permissions_merged_query_parity(perms, user_id):
+def test_effective_tool_permissions_merged_query_parity(
+    perms, plane_runtime, user_id
+):
     """Mixed per-kind/legacy rows resolve identically to the old two-query logic."""
     manager, agent_id = perms
     manager.set_agent_scopes(user_id, agent_id, {
@@ -141,14 +185,14 @@ def test_effective_tool_permissions_merged_query_parity(perms, user_id):
     manager.set_tool_overrides(user_id, agent_id, {"search_web": False})
     manager.set_tool_overrides(user_id, agent_id, {"both_tool": False})
     manager.set_tool_permission(user_id, agent_id, "both_tool", "tools:write", True)
-    manager.db.execute(
+    plane_runtime.execute(
         """INSERT INTO tool_overrides
            (user_id, agent_id, tool_name, permission_kind, enabled, updated_at)
            VALUES (?, ?, ?, NULL, ?, ?)""",
         (user_id, agent_id, "legacy_true_tool", True, 0),
     )
 
-    with count_queries(manager.db) as counter:
+    with _count_plane_queries(plane_runtime) as counter:
         result = manager.get_effective_tool_permissions(
             user_id, agent_id, safe_default=False)
 
@@ -163,12 +207,14 @@ def test_effective_tool_permissions_merged_query_parity(perms, user_id):
     }
 
 
-def test_effective_tool_permissions_no_rows_scope_fallback(perms, user_id):
+def test_effective_tool_permissions_no_rows_scope_fallback(
+    perms, plane_runtime, user_id
+):
     """With zero override rows every tool falls back to its agent-wide scope."""
     manager, agent_id = perms
     manager.set_agent_scopes(user_id, agent_id, {"tools:read": True})
 
-    with count_queries(manager.db) as counter:
+    with _count_plane_queries(plane_runtime) as counter:
         result = manager.get_effective_tool_permissions(
             user_id, agent_id, safe_default=False)
 
@@ -180,14 +226,16 @@ def test_effective_tool_permissions_no_rows_scope_fallback(perms, user_id):
     assert result["sys_tool"] == {"tools:system": False}
 
 
-def test_effective_tool_permissions_safe_default_flips_absent_scopes(perms, user_id):
+def test_effective_tool_permissions_safe_default_flips_absent_scopes(
+    perms, plane_runtime, user_id
+):
     """Feature 040: with safe_default=True (a safe + public agent) a tool with no
     explicit row shows ON, matching is_tool_allowed's deny→allow flip, while an
     explicit opt-out still shows OFF. Still two reads (safe_default is passed)."""
     manager, agent_id = perms
     manager.set_agent_scopes(user_id, agent_id, {"tools:read": False})
 
-    with count_queries(manager.db) as counter:
+    with _count_plane_queries(plane_runtime) as counter:
         result = manager.get_effective_tool_permissions(
             user_id, agent_id, safe_default=True)
 

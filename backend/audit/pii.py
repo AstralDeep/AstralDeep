@@ -158,3 +158,25 @@ def chain_hmac(prev_hash: bytes, canonical_row_bytes: bytes, key_id: Optional[st
     secret = _load_secret_for_key_id(kid)
     mac = hmac.new(secret, prev_hash + canonical_row_bytes, hashlib.sha256).digest()
     return mac, kid
+
+
+class AuditAnchorAuthenticator:
+    """Authenticate retention anchors without exposing configured key bytes."""
+
+    def sign(self, key_id: str, payload: bytes) -> bytes:
+        return hmac.new(
+            _load_secret_for_key_id(key_id),
+            payload,
+            hashlib.sha256,
+        ).digest()
+
+    def verify(
+        self,
+        key_id: str,
+        payload: bytes,
+        authentication: bytes,
+    ) -> bool:
+        return hmac.compare_digest(
+            self.sign(key_id, payload),
+            bytes(authentication),
+        )

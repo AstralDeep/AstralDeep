@@ -11,7 +11,6 @@ from __future__ import annotations
 import base64
 import io
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
@@ -20,16 +19,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger("FileTools.PDFImages")
 
 
-def rasterize_pdf(pdf_path: Path, *, dpi: int = 200, max_pages: int = 50) -> List["Image.Image"]:
+def rasterize_pdf(pdf_bytes: bytes, *, dpi: int = 200, max_pages: int = 50) -> List["Image.Image"]:
     """Return one PIL.Image per page (capped at *max_pages*).
 
     Raises :class:`RuntimeError` if poppler / pdf2image are unavailable.
     """
     try:
-        from pdf2image import convert_from_path  # type: ignore
+        from pdf2image import convert_from_bytes  # type: ignore
     except Exception as exc:
         raise RuntimeError(f"pdf2image unavailable: {exc}")
-    images = convert_from_path(str(pdf_path), dpi=dpi, last_page=max_pages)
+    images = convert_from_bytes(pdf_bytes, dpi=dpi, last_page=max_pages)
     return list(images)
 
 
@@ -49,14 +48,14 @@ def encode_images_for_vision(images: List["Image.Image"], *, fmt: str = "PNG") -
     return out
 
 
-def pdf_to_vision_images(pdf_path: Path) -> List[dict]:
-    """Rasterize *pdf_path* and return base64-encoded page images.
+def pdf_to_vision_images(pdf_bytes: bytes) -> List[dict]:
+    """Rasterize *pdf_bytes* and return base64-encoded page images.
 
     Returns an empty list if rasterization fails (e.g., poppler missing). The
     caller decides how to surface that to the user.
     """
     try:
-        images = rasterize_pdf(pdf_path)
+        images = rasterize_pdf(pdf_bytes)
     except RuntimeError as exc:
         logger.warning(f"PDF rasterization failed: {exc}")
         return []

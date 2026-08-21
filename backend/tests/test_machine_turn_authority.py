@@ -84,7 +84,10 @@ async def test_scheduled_run_threads_consent_derived_authority():
     orch, store, grants = _orch(), _store(), _grants()
     outcome = await JobRunner(orch, store, grants).run_job(_job())
     assert outcome == "success"
-    grants.mint_access_token.assert_awaited_once_with("grant-1")  # fresh per run
+    grants.mint_access_token.assert_awaited_once_with(
+        "grant-1",
+        user_id="u1",
+    )  # fresh per run and owner-bound
     kwargs = orch.run_scheduled_turn.await_args.kwargs
     authority = kwargs["authority"]
     assert isinstance(authority, MachineAuthority)
@@ -200,10 +203,8 @@ async def test_revocation_pauses_with_one_notification():
 # --------------------------------------------------------------------------- #
 
 @pytest.fixture
-def real_orch():
-    from orchestrator.orchestrator import Orchestrator
-
-    o = Orchestrator()
+def real_orch(orchestrator_factory):
+    o = orchestrator_factory()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o._map_file_paths = lambda cid, a, **k: a
@@ -243,7 +244,7 @@ async def test_bound_machine_turn_dispatches_delegated(real_orch, monkeypatch):
 
     dispatched = {}
 
-    async def _cap(ws, agent_id, tool_name, args, max_retries=None):
+    async def _cap(ws, agent_id, tool_name, args, **_dispatch_context):
         dispatched.update(args=dict(args))
         return MCPResponse(result="ok")
 

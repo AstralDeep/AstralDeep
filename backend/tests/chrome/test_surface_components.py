@@ -7,7 +7,7 @@ filtering matches render(). The web render() HTML path is untouched (D6).
 import asyncio
 import types
 
-from webrender.chrome.surfaces import collect_handlers
+from orchestrator.projection_surfaces import collect_handlers
 from webrender.renderer import allowed_primitive_types
 
 ALLOWED = set(allowed_primitive_types()) | {"color_picker", "theme_apply"}
@@ -52,22 +52,32 @@ def _actions(components):
     return acts
 
 
-class _PrefsDB:
+class _ThemeRepository:
     def __init__(self, prefs=None):
-        self._p = prefs or {}
+        self._theme = (prefs or {}).get("theme")
 
-    def get_user_preferences(self, user_id):
-        return dict(self._p)
+    def get(self, _transaction, *, owner_id):
+        if self._theme is None:
+            return None
+        return types.SimpleNamespace(owner_id=owner_id, theme=self._theme, updated_at=1)
+
+
+class _ThemeContext:
+    def __init__(self, prefs=None):
+        self.repository = _ThemeRepository(prefs)
+
+    def call(self, operation, **kwargs):
+        return operation(object(), **kwargs)
 
 
 def _orch(prefs=None):
-    return types.SimpleNamespace(history=types.SimpleNamespace(db=_PrefsDB(prefs)))
+    return types.SimpleNamespace(theme_preference_context=_ThemeContext(prefs))
 
 
 # --- theme (T020) ------------------------------------------------------------
 
 def test_theme_components_valid_and_actionable():
-    from webrender.chrome.surfaces import theme
+    from orchestrator.projection_surfaces import theme
     comps = run(theme.components(_orch(), "u1", ["user"], {}))
     assert set(_types(comps)) <= ALLOWED
     assert _types(comps).count("color_picker") == 7
@@ -76,7 +86,7 @@ def test_theme_components_valid_and_actionable():
 
 
 def test_theme_components_marks_active_preset():
-    from webrender.chrome.surfaces import theme
+    from orchestrator.projection_surfaces import theme
     comps = run(theme.components(_orch({"theme": {"preset": "ocean"}}), "u1", ["user"], {}))
     labels = [c.get("label") for c in _flat(comps)]
     assert "Applied" in labels  # the ocean preset card is marked active
@@ -86,7 +96,7 @@ def test_theme_components_ship_theme_apply_for_live_restyle():
     # A saved preset rides as a leading theme_apply side-effect component, so a
     # native client restyles the RUNNING app on open AND right after a preset
     # apply (the re-render) — not only on the next restart.
-    from webrender.chrome.surfaces import theme
+    from orchestrator.projection_surfaces import theme
     comps = run(theme.components(_orch({"theme": {"preset": "ocean"}}), "u1", ["user"], {}))
     assert comps[0]["type"] == "theme_apply"
     assert comps[0]["preset"] == "ocean"
@@ -96,7 +106,7 @@ def test_theme_components_ship_theme_apply_for_live_restyle():
 
 
 def test_theme_components_theme_apply_colors_when_no_preset():
-    from webrender.chrome.surfaces import theme
+    from orchestrator.projection_surfaces import theme
     comps = run(theme.components(
         _orch({"theme": {"colors": {"primary": "#22C55E"}}}), "u1", ["user"], {}))
     assert comps[0]["type"] == "theme_apply"
@@ -107,7 +117,7 @@ def test_theme_components_theme_apply_colors_when_no_preset():
 
 def test_theme_components_no_theme_apply_when_nothing_saved():
     # Never fight the client's default palette when the user never saved one.
-    from webrender.chrome.surfaces import theme
+    from orchestrator.projection_surfaces import theme
     comps = run(theme.components(_orch(), "u1", ["user"], {}))
     assert "theme_apply" not in _types(comps)
 
@@ -152,7 +162,7 @@ def test_guide_components_lead_with_section_content_not_toc():
 # --- llm (T022) --------------------------------------------------------------
 
 def test_llm_components_form_multi_action():
-    from webrender.chrome.surfaces import llm
+    from orchestrator.projection_surfaces import llm
     # Feature 054: the surface reads the persisted store (orch._llm_store);
     # None renders the not-configured state.
     orch = types.SimpleNamespace(_llm_store=None, ui_sessions={})
@@ -204,7 +214,7 @@ def _porch():
 
 
 def test_personalization_soul_tab_and_bar():
-    from webrender.chrome.surfaces import personalization
+    from orchestrator.projection_surfaces import personalization
     comps = run(personalization.components(_porch(), "u1", ["user"], {"tab": "soul"}))
     assert set(_types(comps)) <= ALLOWED
     # 5 tab-bar buttons re-open the surface on a tab
@@ -217,7 +227,7 @@ def test_personalization_soul_tab_and_bar():
 
 
 def test_personalization_skills_and_dreaming_actions():
-    from webrender.chrome.surfaces import personalization
+    from orchestrator.projection_surfaces import personalization
     skills = run(personalization.components(_porch(), "u1", ["user"], {"tab": "skills"}))
     assert "chrome_skill_toggle" in _actions(skills)
     dreaming = run(personalization.components(_porch(), "u1", ["user"], {"tab": "dreaming"}))
@@ -228,7 +238,7 @@ def test_personalization_skills_and_dreaming_actions():
 
 
 def test_personalization_memory_actions_and_types():
-    from webrender.chrome.surfaces import personalization
+    from orchestrator.projection_surfaces import personalization
     comps = run(personalization.components(_porch(), "u1", ["user"], {"tab": "memory"}))
     assert set(_types(comps)) <= ALLOWED
     assert {"chrome_memory_update", "chrome_memory_delete"} <= set(_actions(comps))

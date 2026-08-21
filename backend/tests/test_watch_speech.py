@@ -21,7 +21,15 @@ from rote.adapter import ComponentAdapter  # noqa: E402
 from rote.capabilities import DeviceProfile  # noqa: E402
 from shared.protocol import UIRender, UIUpsert  # noqa: E402
 
-MANIFEST = json.loads((BACKEND_DIR / "shared" / "ui_protocol.json").read_text())
+MANIFEST = json.loads(
+    (
+        BACKEND_DIR.parent
+        / "components"
+        / "AstralProjection"
+        / "contracts"
+        / "ui_protocol.json"
+    ).read_text()
+)
 
 WATCH = DeviceProfile.from_dict({"device_type": "watch"})
 IOS = DeviceProfile.from_dict({"device_type": "ios"})

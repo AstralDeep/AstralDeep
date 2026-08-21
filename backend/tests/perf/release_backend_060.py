@@ -20,7 +20,7 @@ Metric floors are replayed with the EXISTING reliability machinery:
 * ``scheduler_exactly_once`` — the SC-002 10,000-interleaving effect-ledger
   trial (``scheduler/tests/test_occurrence_claims_060.py``);
 * ``migration_multi_instance`` — the SC-017 50-trial two-starter convergence
-  test (``tests/test_migrations_060.py``);
+  test owned by the pinned AstralPlane component;
 * ``process_supervision_stress`` — 100 fresh SC-020 high-output/descendant/
   cancel/quit/failure trials on the production
   ``shared.process_supervision.ProcessSupervisor``.
@@ -209,13 +209,15 @@ REPLAYED_SUITES = (
         check_id="migration_multi_instance",
         junit_environment="ASTRAL_RELEASE_MIGRATION_JUNIT",
         pytest_arguments=(
-            "tests/test_migrations_060.py"
-            "::test_fifty_two_starter_schema_and_policy_trials_converge_once",
+            "../components/AstralPlane/tests/integration/"
+            "test_empty_database_startup.py"
+            "::test_fifty_two_starter_migration_trials_converge_once",
         ),
-        required_test=(
-            "test_fifty_two_starter_schema_and_policy_trials_converge_once"
+        required_test="test_fifty_two_starter_migration_trials_converge_once",
+        source=(
+            "../components/AstralPlane/tests/integration/"
+            "test_empty_database_startup.py"
         ),
-        source="tests/test_migrations_060.py",
         counter_pattern=r"^    trial_count = 50$",
         measurements=(
             ("trial_count", 50, 50),

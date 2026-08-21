@@ -23,6 +23,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+from functools import wraps
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 
 import websockets
@@ -64,6 +65,7 @@ from orchestrator.work_admission import (
     OwnerScope,
     SafeOperationProjection,
     StaleExecutionFenceError,
+    WorkAdmissionConflictError,
     WorkAdmissionCoordinator,
 )
 from orchestrator.runtime_observability import RuntimeObservability
@@ -102,6 +104,7 @@ from shared.feature_flags import flags
 from shared.llm_text import strip_reasoning_markup
 from shared.perf import perf_span
 from orchestrator.stream_manager import StreamManager, markdown_safe_prefix_len
+from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
 
 load_dotenv(override=False)
 
@@ -168,6 +171,11 @@ class _LLMMalformedResponseError(RuntimeError):
 LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
 PERSONAL_AGENT_STARTUP_TIMEOUT_SECONDS = 5.0
 PERSONAL_AGENT_HEARTBEAT_TIMEOUT_SECONDS = 5.0
+# The host may use the full five-second supervisor escalation budget before it
+# emits the post-termination exit frame.  Keep a bounded transport/event-loop
+# margin so a conformant worst-case stop is not misclassified as unacknowledged.
+PERSONAL_AGENT_STOP_TIMEOUT_SECONDS = 7.0
+PERSONAL_AGENT_STOP_RETRY_SECONDS = 1.0
 PERSONAL_AGENT_WATCHDOG_INTERVAL_SECONDS = 1.0
 # Feature 063 US4: how often the always-on background poller checks each open
 # remote Slurm job's status over SSH (read-only). Env-overridable.
@@ -189,6 +197,26 @@ _PERSONAL_AGENT_HOST_FRAME_TYPES = frozenset(
         "agent_runtime_exit",
     }
 )
+
+
+@dataclass(frozen=True)
+class _PersonalAgentExitWaiter:
+    """One exact process-exit acknowledgement retained through DB finalization."""
+
+    fence: RuntimeFence
+    acknowledged: asyncio.Future[RuntimeFence]
+    failure_code: str | None = None
+    terminalize_on_ack: bool = False
+    settlement: asyncio.Future[Any] | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
+    projection_steps: set[str] = field(
+        default_factory=set,
+        compare=False,
+        repr=False,
+    )
 _LLM_CREDENTIAL_SAVE_ACTIONS = frozenset(
     {"chrome_llm_save", "llm_config_set"}
 )
@@ -322,6 +350,27 @@ class _VoiceOperationTerminalIntent:
     retry_after_ms: int | None = None
 
 
+class _PersonalAgentOperationIdentityConflict(WorkAdmissionConflictError):
+    """One stable personal-agent retry identity described different work."""
+
+
+class _PersonalAgentOperationRetryPending(RuntimeError):
+    """The bounded durable child-attempt chain could not be advanced safely."""
+
+
+class _PersonalAgentOperationTerminal(RuntimeError):
+    """An exact delivery operation already has a non-retryable terminal result."""
+
+    def __init__(
+        self,
+        state: OperationState,
+        terminal_code: str | None,
+    ) -> None:
+        self.state = state
+        self.terminal_code = terminal_code
+        super().__init__(terminal_code or state.value)
+
+
 @dataclass
 class ConnectionContext:
     """Finite, tracked lifetime scope for one accepted UI socket."""
@@ -363,17 +412,6 @@ class EndpointFilter(logging.Filter):
 
 # Filter uvicorn access logs if they exist
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
-
-
-#: Boot relaunch (027): live server-hosted generated agents are re-Popen'd here.
-#: BYO agents (058, origin ``byo_client``) are EXCLUDED — their code is the user's
-#: and runs on the user's desktop host; relaunching one would put a user agent
-#: process on the orchestrator host (SC-002). ``start_draft_agent`` refuses them
-#: too; this filter keeps us from even asking.
-LIVE_DRAFT_RELAUNCH_QUERY = (
-    "SELECT id, agent_name FROM draft_agents WHERE status = 'live' "
-    "AND (origin IS NULL OR origin <> 'byo_client')"
-)
 
 
 # Module-level singleton handle, set by Orchestrator.__init__. Used by
@@ -819,6 +857,32 @@ def _apply_asset_versions(shell: str, static_dir: str) -> str:
     return _ASSET_TOKEN_RE.sub(lambda m: versions.get(m.group(1), "dev"), shell)
 
 
+def _projection_static_filesystem_root() -> str:
+    """Resolve Projection's packaged static directory for Starlette.
+
+    ``StaticFiles`` requires a real filesystem directory for the lifetime of
+    the application.  Normal wheel and editable installs expose package data
+    that way; an exotic archive importer is refused explicitly instead of
+    falling back to the removed in-repository copy.
+    """
+
+    import os as _o
+    from pathlib import Path as _Path
+
+    from astralprojection import static_root
+
+    resource = static_root()
+    try:
+        candidate = _Path(_o.fspath(resource)).resolve(strict=True)
+    except (OSError, TypeError, ValueError):
+        raise RuntimeError(
+            "AstralProjection static resources are not filesystem-backed"
+        ) from None
+    if not candidate.is_dir():
+        raise RuntimeError("AstralProjection static resource root is unavailable")
+    return str(candidate)
+
+
 def csp_connect_src() -> str:
     """The shell CSP's ``connect-src`` value.
 
@@ -968,7 +1032,70 @@ class GateRefusal(NamedTuple):
     hop_audited: bool = False
 
 
+def _unbind_orchestrator_process_consumers(orchestrator) -> None:
+    """Unpublish exact process bindings before their Plane graph is closed."""
+
+    from orchestrator.offline_grant import unbind_offline_grant_store
+    from orchestrator.web_auth import (
+        unbind_credential_manager,
+        unbind_session_store,
+    )
+
+    errors: list[BaseException] = []
+    for callback, attribute in (
+        (unbind_offline_grant_store, "offline_grants"),
+        (unbind_session_store, "web_sessions"),
+        (unbind_credential_manager, "credential_manager"),
+    ):
+        if not hasattr(orchestrator, attribute):
+            continue
+        try:
+            callback(getattr(orchestrator, attribute))
+        except BaseException as exc:
+            errors.append(exc)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup(
+            "orchestrator process consumer unbind failed",
+            errors,
+        )
+
+
+def _transactional_runtime_construction(initializer):
+    """Release every partially published application seam if construction fails."""
+
+    @wraps(initializer)
+    def guarded(self, *args, **kwargs):
+        try:
+            return initializer(self, *args, **kwargs)
+        except BaseException as construction_error:
+            cleanup_errors: list[BaseException] = []
+            try:
+                _unbind_orchestrator_process_consumers(self)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+            runtime_composition = getattr(self, "runtime_composition", None)
+            if runtime_composition is not None:
+                try:
+                    runtime_composition.abort()
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+            global _ORCH_INSTANCE
+            if _ORCH_INSTANCE is self:
+                _ORCH_INSTANCE = None
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "orchestrator construction and rollback both failed",
+                    [construction_error, *cleanup_errors],
+                ) from construction_error
+            raise
+
+    return guarded
+
+
 class Orchestrator:
+    @_transactional_runtime_construction
     def __init__(self):
         # 020-async-queries: background task manager for async chat processing
         from orchestrator.async_tasks import BackgroundTaskManager
@@ -1170,7 +1297,22 @@ class Orchestrator:
         # History Manager
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         data_dir = os.path.join(backend_dir, 'data')
-        self.history = HistoryManager(data_dir=data_dir)
+        composition_manifest = os.path.join(
+            os.path.dirname(backend_dir),
+            "config",
+            "astral-composition.json",
+        )
+        from orchestrator.runtime_composition import compose_astral_runtime
+
+        self.runtime_composition = compose_astral_runtime(composition_manifest)
+        # Plane has already established the exact 074 baseline/revision.
+        # History consumes only the application runtime and typed catalog;
+        # it does not construct or borrow a second connection pool.
+        self.history = HistoryManager(
+            data_dir=data_dir,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
         # Feature 065: voice is an included server-owned capability, but its
         # isolated media/control plane fails closed without affecting typed
         # chat. Speech endpoint credentials are never present in this process.
@@ -1178,23 +1320,6 @@ class Orchestrator:
         self.voice_runtime = None
         self.voice_worker_pool = None
         self.voice_worker_endpoint = None
-        try:
-            from orchestrator.voice_bootstrap import build_voice_services
-
-            self.voice_services = build_voice_services(self.history.db)
-            self.voice_runtime = self.voice_services.runtime
-            self.voice_worker_pool = self.voice_services.worker_pool
-            self.voice_services.bind_terminal_turn_notifier(
-                self._notify_reconciled_voice_terminal_turn
-            )
-            self.voice_runtime.bind_session_state_publisher(
-                self.publish_voice_session_state
-            )
-        except Exception as exc:
-            logger.warning(
-                "conversational_voice_unavailable",
-                extra={"reason": getattr(exc, "code", type(exc).__name__)},
-            )
 
         # Feature 060: one PostgreSQL operation/admission authority shared by
         # every compatibility manager.  The migration has already established
@@ -1205,11 +1330,12 @@ class Orchestrator:
         )
         if operation_retention_seconds <= 0:
             raise ValueError("OPERATION_RETENTION_SECONDS must be positive")
-        self.work_admission = WorkAdmissionCoordinator.from_database(
-            database=self.history.db,
+        self.work_admission = WorkAdmissionCoordinator.from_plane(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
             operation_retention=timedelta(seconds=operation_retention_seconds),
         )
-        # Feature 060: PostgreSQL is the sole authority for personal-agent
+        # Feature 060: Plane is the sole authority for personal-agent
         # host selection, immutable revisions, runtime generations, and calls.
         # The process-local maps below are wake-up/routing projections only;
         # every transition validates the durable fence before using them.
@@ -1218,33 +1344,61 @@ class Orchestrator:
             BYO_RUNTIME_LOCK_SHA256,
         )
         from orchestrator.agent_lifecycle import PostgresPersonalAgentRevisionStore
-        from orchestrator.artifact_publication import ImmutableAgentArtifactStore
         from orchestrator.user_agents import (
             PersonalAgentRuntimeRepository,
             RuntimeCompatibilityPolicy,
+            UserAgentRegistry,
         )
 
         personal_agent_policy = RuntimeCompatibilityPolicy(
             runtime_contract_version=BYO_RUNTIME_CONTRACT_VERSION,
             runtime_lock_sha256=BYO_RUNTIME_LOCK_SHA256,
         )
+        self.user_agent_registry = UserAgentRegistry(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
         self.personal_agent_runtime = PersonalAgentRuntimeRepository(
-            self.history.db,
             compatibility_policy=personal_agent_policy,
             operation_repository=self.work_admission.repository,
             operation_retention=timedelta(seconds=operation_retention_seconds),
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
         )
         self.personal_agent_revisions = PostgresPersonalAgentRevisionStore(
             self.personal_agent_runtime
         )
-        self.personal_agent_artifacts = ImmutableAgentArtifactStore()
+        # Plane owns the one application-scoped immutable generated-bundle
+        # store.  Keep this long-standing attribute as a semantic alias for
+        # delivery/recovery callers while eliminating Deep's duplicate
+        # filesystem implementation and lazy constructor.
+        self.personal_agent_artifacts = (
+            self.runtime_composition.plane.generated_agent_bundles
+        )
+        from orchestrator.generated_agent_publication import (
+            GeneratedAgentPublicationService,
+        )
+
+        self.generated_agent_publication_service = (
+            GeneratedAgentPublicationService(
+                plane_runtime=self.runtime_composition.plane.runtime,
+                plane_repositories=self.runtime_composition.plane.repositories,
+                bundle_store=self.personal_agent_artifacts,
+                work_admission=self.work_admission,
+            )
+        )
         self.personal_agent_capabilities = CandidateCapabilityMap()
         self._personal_agent_host_sessions: Dict[int, Any] = {}
         self._personal_agent_session_sockets: Dict[str, Any] = {}
         self._personal_agent_ready_waiters: Dict[str, asyncio.Future[str]] = {}
         self._personal_agent_request_waiters: Dict[str, asyncio.Future[Any]] = {}
+        self._personal_agent_request_runtime_fences: Dict[str, RuntimeFence] = {}
+        self._personal_agent_exit_waiters: Dict[
+            str, _PersonalAgentExitWaiter
+        ] = {}
         self._personal_agent_runtime_sockets: Dict[str, Any] = {}
         self._personal_agent_candidate_cards: Dict[str, AgentCard] = {}
+        self._personal_agent_runtime_authorities: Dict[str, Any] = {}
         self._personal_agent_activation_locks: Dict[
             tuple[str, str, str], asyncio.Lock
         ] = {}
@@ -1264,7 +1418,8 @@ class Orchestrator:
         )
         self.task_manager = TaskManager(self.work_admission)
         self.conversation_commits = ConversationCommitRepository(
-            self.history.db,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
             operation_coordinator=self.work_admission,
         )
 
@@ -1273,7 +1428,8 @@ class Orchestrator:
         # manager itself is constructed above, before the DB exists.
         self.async_task_manager.bind(
             coordinator=self.work_admission,
-            db=self.history.db,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
             on_complete=self._fan_task_completed,
             observability=self.runtime_observability,
         )
@@ -1282,27 +1438,70 @@ class Orchestrator:
         # (user_llm_config / system_llm_config tables; Fernet under
         # CREDENTIAL_ENCRYPTION_KEY with the shared dev key-file fallback).
         from llm_config.user_store import UserLLMConfigStore
-        self._llm_store = UserLLMConfigStore(self.history.db, data_dir=data_dir)
+        self._llm_store = UserLLMConfigStore(
+            data_dir=data_dir,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
 
         # Feature 028 — per-chat persistent workspace (identity, upserts,
         # snapshots/timeline). Owns the saved_components store.
         from orchestrator.workspace import WorkspaceManager
         self.workspace = WorkspaceManager(self.history)
 
-        # File-tool DB wiring (feature 002-file-uploads). Lets the
-        # in-process tool functions resolve attachments without going
-        # through HTTP.
-        try:
-            from agents.general.file_tools import register_database as _register_file_tools_db
-            _register_file_tools_db(self.history.db)
-        except Exception as _exc:  # pragma: no cover - non-fatal
-            logger.warning(f"file_tools DB wiring skipped: {_exc}")
+        # In-process file tools share the exact application Plane runtime,
+        # repository catalog, and streaming blob boundary. Missing persistence
+        # is a startup failure, never a silently degraded tool surface.
+        from agents.general.file_tools import register_plane_dependencies
 
-        # Tool Permission Manager (RFC 8693 delegation) — backed by same PostgreSQL DB
-        self.tool_permissions = ToolPermissionManager(db=self.history.db, data_dir=data_dir)
+        register_plane_dependencies(
+            self.runtime_composition.plane.runtime,
+            self.runtime_composition.plane.repositories,
+            self.runtime_composition.plane.blobs,
+        )
+
+        # Tool Permission Manager (RFC 8693 delegation) — backed by the same
+        # application Plane runtime/catalog.
+        self.tool_permissions = ToolPermissionManager(
+            data_dir=data_dir,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+            user_agent_registry=self.user_agent_registry,
+        )
 
         # Per-user credential storage (encrypted API keys for agents)
-        self.credential_manager = CredentialManager(db=self.history.db, data_dir=data_dir)
+        self.credential_manager = CredentialManager(
+            data_dir=data_dir,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
+        from orchestrator.session_store import WebSessionStore
+        from orchestrator.web_auth import bind_credential_manager, bind_session_store
+
+        bind_credential_manager(self.credential_manager)
+        self.web_sessions = WebSessionStore(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
+        bind_session_store(self.web_sessions)
+        from orchestrator.offline_grant import (
+            OfflineGrantStore,
+            bind_offline_grant_store,
+        )
+
+        self.offline_grants = OfflineGrantStore(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
+        bind_offline_grant_store(self.offline_grants)
+        from orchestrator.artifact_share import ShareGrantStore, set_share_store
+
+        set_share_store(
+            ShareGrantStore(
+                plane_runtime=self.runtime_composition.plane.runtime,
+                plane_repositories=self.runtime_composition.plane.repositories,
+            )
+        )
 
         # Delegation Service (RFC 8693 token exchange)
         self.delegation = DelegationService()
@@ -1310,6 +1509,24 @@ class Orchestrator:
         # Tool Security Analyzer — proactive security review of agent tools
         self.security_analyzer = ToolSecurityAnalyzer()
         self.security_flags: Dict[str, Dict[str, Any]] = {}  # agent_id -> {tool_name: flag_dict}
+
+        # 074 LETS: every physical tool attempt enters one final adapter after
+        # the existing Astral gate stack has finished rewriting arguments.  The
+        # Plane runtime/gateway are injected by startup composition when ready;
+        # enforce mode is fail-closed while that composition is unavailable,
+        # shadow is observational, and off is an exact no-LETS bypass.
+        from orchestrator.governed_dispatch import GovernedFinalDispatch
+
+        _lets_mode = (os.getenv("LETS_MODE", "off").strip().lower() or "off")
+        self.governed_final_dispatch = (
+            GovernedFinalDispatch.off()
+            if _lets_mode == "off"
+            else GovernedFinalDispatch.unavailable(_lets_mode)
+        )
+        # Host-owned lifecycle code registers exact runtime generations here.
+        # Agent cards are intentionally never trusted as authority for these
+        # values.
+        self._governed_dispatch_runtimes: Dict[str, Any] = {}
 
         # LLM Token Usage Tracking — per-conversation accumulation
         self.token_usage: Dict[str, Dict[str, int]] = {}  # chat_id -> {prompt_tokens, completion_tokens, total_tokens}
@@ -1343,28 +1560,47 @@ class Orchestrator:
         from audit.repository import AuditRepository
         from audit.recorder import Recorder, set_recorder
         from audit.ws_publisher import make_publish_callable
-        self.audit_repo = AuditRepository(self.history.db)
+        self.audit_repo = AuditRepository(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
         self.audit_recorder = Recorder(self.audit_repo)
+        self._owned_audit_recorder = self.audit_recorder
         self.audit_recorder.set_publisher(make_publish_callable(self))
         set_recorder(self.audit_recorder)
 
         # Feature 004 — component feedback & tool-improvement loop
         from feedback.repository import FeedbackRepository
         from feedback.recorder import Recorder as FeedbackRecorder
-        self.feedback_repo = FeedbackRepository(self.history.db)
+        self.feedback_repo = FeedbackRepository(
+            None,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
         self.feedback_recorder = FeedbackRecorder(self.feedback_repo)
 
         # Feature 005 — tool tips and getting started tutorial
         from onboarding.repository import OnboardingRepository
         from onboarding.seed import seed_tutorial_steps
-        self.onboarding_repo = OnboardingRepository(self.history.db)
+        self.onboarding_repo = OnboardingRepository(
+            None,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
         try:
-            seed_tutorial_steps(self.history.db)
+            seed_tutorial_steps(
+                plane_runtime=self.runtime_composition.plane.runtime,
+                plane_repositories=self.runtime_composition.plane.repositories,
+            )
         except Exception as exc:  # pragma: no cover — never block startup
             logger.warning(f"Tutorial seed loader failed (non-fatal): {exc}")
         # Feature 025 — per-user personalization (profile, personality, memory)
         from personalization.service import PersonalizationService
-        self.personalization_service = PersonalizationService(self.history.db)
+        self.personalization_service = PersonalizationService(
+            None,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
         # Publish self as the module-level singleton so the feedback CLI
         # and the pre-pass entrypoint can find the synthesizer without
         # going through FastAPI app.state.
@@ -1373,10 +1609,17 @@ class Orchestrator:
 
         # Agent Lifecycle Manager — handles user-created draft agents
         from orchestrator.agent_lifecycle import AgentLifecycleManager
-        self.lifecycle_manager = AgentLifecycleManager(db=self.history.db, orchestrator=self)
+        self.lifecycle_manager = AgentLifecycleManager(
+            orchestrator=self,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+            work_admission=self.work_admission,
+            generated_agent_publication_service=(
+                self.generated_agent_publication_service
+            ),
+        )
         self.lifecycle_manager.personal_agent_runtime = self.personal_agent_runtime
         self.lifecycle_manager.personal_agent_revisions = self.personal_agent_revisions
-
         # Knowledge Synthesis ("Dreamer") — learns from tool interactions
         if flags.is_enabled("knowledge_synthesis"):
             from orchestrator.knowledge_synthesis import (
@@ -1387,11 +1630,17 @@ class Orchestrator:
                 "knowledge",
             )
             self.knowledge_index = KnowledgeIndex(knowledge_dir)
-            self._interaction_collector = InteractionCollector(db=self.history.db)
+            plane = self.runtime_composition.plane
+            self._interaction_collector = InteractionCollector(
+                plane_runtime=plane.runtime,
+                plane_repositories=plane.repositories,
+            )
             self._knowledge_synthesizer = KnowledgeSynthesizer(
-                db=self.history.db,
                 knowledge_dir=knowledge_dir,
                 knowledge_index=self.knowledge_index,
+                coordinator=self.work_admission,
+                plane_runtime=plane.runtime,
+                plane_repositories=plane.repositories,
                 # Feature 054: cross-user system flow — runs on the admin-
                 # managed system credential, re-resolved per cycle.
                 config_resolver=self._llm_store.get_system_sync,
@@ -1400,9 +1649,197 @@ class Orchestrator:
             self.hooks.register(HookEvent.POST_TOOL_FAILURE, self._interaction_collector.on_tool_use)
             logger.info("Knowledge synthesis system initialized")
 
+        # Publish the complete Plane/LETS graph only after every required
+        # constructor dependency is ready.  The construction decorator owns
+        # exact rollback, including process-global dependency registrations.
+        self.runtime_composition.bind(self)
+
+        # Voice is optional for typed chat and is constructed last so no later
+        # constructor failure can strand its async-only resources.
+        try:
+            from orchestrator.voice_bootstrap import build_voice_services
+
+            self.voice_services = build_voice_services(
+                plane_runtime=self.runtime_composition.plane.runtime,
+                plane_repositories=self.runtime_composition.plane.repositories,
+            )
+            self.voice_runtime = self.voice_services.runtime
+            self.voice_worker_pool = self.voice_services.worker_pool
+            self.voice_services.bind_terminal_turn_notifier(
+                self._notify_reconciled_voice_terminal_turn
+            )
+            self.voice_runtime.bind_session_state_publisher(
+                self.publish_voice_session_state
+            )
+        except Exception as exc:
+            logger.warning(
+                "conversational_voice_unavailable",
+                extra={"reason": getattr(exc, "code", type(exc).__name__)},
+            )
+
     # =========================================================================
     # AGENT MANAGEMENT
     # =========================================================================
+
+    def bind_governed_final_dispatch(
+        self,
+        *,
+        gateway,
+        plane,
+        authority_repository,
+    ) -> None:
+        """Bind the independently composed Plane/LETS runtime atomically."""
+
+        from orchestrator.governed_dispatch import GovernedFinalDispatch
+
+        self.governed_final_dispatch = GovernedFinalDispatch.active(
+            gateway=gateway,
+            plane=plane,
+            authority_repository=authority_repository,
+            runtime_resolver=self._resolve_governed_dispatch_runtime,
+        )
+
+    def register_governed_dispatch_runtime(self, runtime) -> None:
+        """Publish one host-owned exact runtime identity to final dispatch.
+
+        Lifecycle code calls this only after its normal durable admission and
+        Plane binding convergence.  Self-declared agent-card metadata is never
+        accepted by this seam.
+        """
+
+        from orchestrator.governed_dispatch import DispatchRuntime
+
+        if not isinstance(runtime, DispatchRuntime):
+            raise TypeError("dispatch runtime must be a DispatchRuntime")
+        runtimes = getattr(self, "_governed_dispatch_runtimes", None)
+        if runtimes is None:
+            runtimes = {}
+            self._governed_dispatch_runtimes = runtimes
+        runtimes[runtime.agent_id] = runtime
+        card = self.agent_cards.get(runtime.agent_id)
+        if card is not None:
+            card.metadata = dict(getattr(card, "metadata", {}) or {})
+            card.metadata["astral_dispatch_posture"] = runtime.dispatch_posture
+            card.metadata["protected_executor"] = bool(runtime.executor_conformant)
+
+    def unregister_governed_dispatch_runtime(
+        self,
+        agent_id: str,
+        *,
+        runtime_id: Optional[str] = None,
+    ) -> None:
+        current = getattr(self, "_governed_dispatch_runtimes", {}).get(agent_id)
+        if current is None:
+            return
+        if runtime_id is not None and current.runtime_id != runtime_id:
+            return
+        self._governed_dispatch_runtimes.pop(agent_id, None)
+        card = self.agent_cards.get(agent_id)
+        if card is not None and agent_id not in getattr(self, "local_agents", {}):
+            card.metadata = dict(getattr(card, "metadata", {}) or {})
+            card.metadata["astral_dispatch_posture"] = "dispatch_mediated_only"
+            card.metadata["protected_executor"] = False
+
+    async def _resolve_governed_dispatch_runtime(
+        self,
+        agent_id: str,
+        owner_hint: Optional[str],
+    ):
+        """Resolve host-owned population/runtime identity for one route."""
+
+        from orchestrator.governed_dispatch import DispatchRuntime
+
+        registered = getattr(self, "_governed_dispatch_runtimes", {}).get(agent_id)
+        if registered is not None:
+            return registered
+
+        projected = self.agents.get(agent_id)
+        fence = getattr(projected, "runtime_fence", None)
+        if bool(getattr(projected, "is_fenced_user_agent_tunnel", False)):
+            # A v3 BYO bundle is protected only after lifecycle code registers
+            # its exact server-issued authority descriptor.  A projected
+            # socket alone is never evidence of executor conformance.
+            return DispatchRuntime(
+                owner_id=getattr(projected, "owner_sub", None),
+                agent_id=agent_id,
+                population="byo_user",
+                runtime_id=getattr(fence, "runtime_instance_id", None),
+                runtime_generation=getattr(fence, "lifecycle_generation", None),
+                executor_audience=None,
+                executor_conformant=False,
+                dispatch_posture="dispatch_mediated_only",
+            )
+
+        # Server-generated draft agents are host-owned governed population.
+        # Their exact runtime identity is deliberately NOT inferred from a
+        # socket/port.  Until lifecycle publishes its durable descriptor,
+        # enforce refuses and shadow preserves existing behavior.
+        draft = None
+        manager = getattr(self, "lifecycle_manager", None)
+        lookup = getattr(manager, "_get_draft_by_agent_id", None)
+        if callable(lookup):
+            try:
+                draft = await asyncio.to_thread(lookup, agent_id)
+            except Exception:
+                logger.debug("governed draft lookup failed", exc_info=True)
+        if isinstance(draft, dict):
+            return DispatchRuntime(
+                owner_id=str(draft.get("user_id") or owner_hint or "") or None,
+                agent_id=agent_id,
+                population="server_dynamic",
+                runtime_id=None,
+                runtime_generation=None,
+                executor_audience=None,
+                executor_conformant=True,
+                dispatch_posture="protected_executor",
+            )
+
+        if agent_id in self.local_agents:
+            return DispatchRuntime(
+                owner_id=owner_hint,
+                agent_id=agent_id,
+                population="builtin",
+                runtime_id=None,
+                runtime_generation=None,
+                executor_audience=None,
+                executor_conformant=True,
+                dispatch_posture="protected_executor",
+            )
+
+        # Operator-discovered, remote, and other externally reachable agents
+        # lack a conforming Astral-controlled actuator by default.  They remain
+        # mediated by Astral's complete gate stack but make no protected-
+        # executor claim.
+        return DispatchRuntime(
+            owner_id=owner_hint,
+            agent_id=agent_id,
+            population="external",
+            runtime_id=None,
+            runtime_generation=None,
+            executor_audience=None,
+            executor_conformant=False,
+            dispatch_posture="dispatch_mediated_only",
+        )
+
+    def _protected_dispatch_channel(
+        self,
+        websocket,
+        *,
+        explicit: Optional[str] = None,
+    ) -> str:
+        if explicit is not None:
+            return explicit
+        claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+        if isinstance(claims, dict) and claims.get("_invocation_channel") == "mcp":
+            return "mcp"
+        try:
+            from orchestrator.async_tasks import VirtualWebSocket
+
+            if isinstance(websocket, VirtualWebSocket):
+                return "scheduled" if websocket.task.kind == "scheduled" else "background"
+        except Exception:
+            pass
+        return "websocket"
 
     async def _handle_agent_tunnel(self, ui_ws, msg):
         """058 (Mode 1 transport): unwrap a user agent's frame tunneled over its
@@ -1507,7 +1944,7 @@ class Orchestrator:
         code: str,
         details: Dict[str, Any],
     ) -> None:
-        """Send the exact non-disclosing v2 host-registration refusal."""
+        """Send the exact non-disclosing v3 host-registration refusal."""
 
         await self._safe_send(
             websocket,
@@ -1709,17 +2146,12 @@ class Orchestrator:
             raise ProtocolValidationError("host runtime fence is stale")
 
     async def _personal_agent_revision_metadata(
-        self, revision_id: str
-    ) -> Dict[str, Any]:
-        row = await asyncio.to_thread(
-            self.history.db.fetch_one,
-            "SELECT artifact_digest, runtime_contract_version, "
-            "release_lock_digest FROM user_agent_revision WHERE revision_id = ?",
-            (revision_id,),
+        self, fence: RuntimeFence
+    ) -> Any:
+        return await asyncio.to_thread(
+            self.personal_agent_runtime.get_runtime_revision,
+            fence,
         )
-        if row is None:
-            raise ProtocolValidationError("runtime revision is unknown")
-        return dict(row)
 
     async def _fail_personal_agent_waiters(
         self, request_ids: Any, *, code: str
@@ -1734,6 +2166,128 @@ class Orchestrator:
                         error={"message": code, "retryable": True, "code": code},
                     )
                 )
+
+    @staticmethod
+    def _complete_personal_agent_exit_settlement(
+        stop_waiter: _PersonalAgentExitWaiter,
+        settlement: Any,
+    ) -> None:
+        """Publish one committed settlement before its exact exit acknowledgement."""
+
+        future = stop_waiter.settlement
+        if future is not None and not future.done():
+            future.set_result(settlement)
+
+    @staticmethod
+    def _cancel_personal_agent_exit_waiter(
+        stop_waiter: _PersonalAgentExitWaiter,
+    ) -> None:
+        if not stop_waiter.acknowledged.done():
+            stop_waiter.acknowledged.cancel()
+        if stop_waiter.settlement is not None and not stop_waiter.settlement.done():
+            stop_waiter.settlement.cancel()
+
+    def _personal_agent_request_ids_for_runtime(
+        self,
+        fence: RuntimeFence,
+    ) -> tuple[str, ...]:
+        """Return only process-local callers bound to this exact runtime fence."""
+
+        assignments = (
+            getattr(self, "_personal_agent_request_runtime_fences", None) or {}
+        )
+        return tuple(
+            sorted(
+                str(request_id)
+                for request_id, runtime_fence in assignments.items()
+                if runtime_fence == fence
+            )
+        )
+
+    async def _project_personal_agent_runtime_settlement(
+        self,
+        fence: RuntimeFence,
+        settlement: Any,
+        *,
+        failure_code: str | None,
+        owner_user_id: str | None,
+        retire_authority: bool,
+        completed_steps: set[str] | None = None,
+    ) -> None:
+        """Idempotently project one exact, already-committed Plane settlement."""
+
+        instance = getattr(settlement, "instance", None)
+        if instance is None or getattr(instance, "fence", None) != fence:
+            raise RuntimeError("personal-agent runtime settlement fence is stale")
+        steps = completed_steps if completed_steps is not None else set()
+        raw_code = (
+            getattr(settlement, "settlement_code", None)
+            or failure_code
+            or getattr(instance, "failure_code", None)
+            or "agent_offline"
+        )
+        settlement_code = self._canonical_personal_agent_failure_code(raw_code)
+
+        lifecycle_error: Exception | None = None
+        if retire_authority and "authority_retired" not in steps:
+            try:
+                await self._retire_personal_agent_runtime_authority(
+                    owner_user_id=owner_user_id,
+                    fence=fence,
+                )
+            except Exception as exc:
+                # Plane is already terminal. Continue fail-closed local cleanup,
+                # then retain the exact receipt while the driver retries LETS.
+                lifecycle_error = exc
+            else:
+                steps.add("authority_retired")
+
+        if "ready_waiter" not in steps:
+            ready = (
+                getattr(self, "_personal_agent_ready_waiters", None) or {}
+            ).get(fence.runtime_instance_id)
+            if ready is not None and not ready.done():
+                ready.set_exception(RuntimeError(settlement_code))
+            steps.add("ready_waiter")
+
+        if "request_waiters" not in steps:
+            request_ids = tuple(
+                dict.fromkeys(
+                    (
+                        *tuple(getattr(settlement, "settled_request_ids", ()) or ()),
+                        *self._personal_agent_request_ids_for_runtime(fence),
+                    )
+                )
+            )
+            await self._fail_personal_agent_waiters(
+                request_ids,
+                code=settlement_code,
+            )
+            steps.add("request_waiters")
+
+        if "runtime_route" not in steps:
+            socket = (
+                getattr(self, "_personal_agent_runtime_sockets", None) or {}
+            ).pop(fence.runtime_instance_id, None)
+            if socket is not None and self.agents.get(fence.agent_id) is socket:
+                self.agents.pop(fence.agent_id, None)
+            steps.add("runtime_route")
+
+        if "authority_forgotten" not in steps:
+            self._forget_personal_agent_runtime_authority(fence)
+            steps.add("authority_forgotten")
+
+        if "lifecycle" not in steps:
+            await self._emit_personal_agent_lifecycle(
+                owner_user_id,
+                instance,
+                state=self._personal_agent_terminal_lifecycle_state(settlement_code),
+                reason_code=settlement_code,
+            )
+            steps.add("lifecycle")
+
+        if lifecycle_error is not None:
+            raise lifecycle_error
 
     def _personal_agent_owner_for_fence(
         self, fence: RuntimeFence
@@ -1889,38 +2443,333 @@ class Orchestrator:
                 delivered += 1
         return delivered
 
+    def _personal_agent_lets_mode(self) -> str:
+        runtime = getattr(self, "lets_runtime", None)
+        config = getattr(runtime, "config", None)
+        mode = getattr(config, "mode", None)
+        if mode is None:
+            mode = getattr(getattr(runtime, "loaded", None), "readiness", None)
+            mode = getattr(mode, "mode", None)
+        return mode if mode in {"off", "shadow", "enforce"} else "off"
+
+    async def _personal_agent_declared_scopes(
+        self,
+        *,
+        owner_user_id: str,
+        agent_id: str,
+    ) -> tuple[str, ...]:
+        """Load only the server-owned durable scope declaration for LETS."""
+
+        from orchestrator import user_agents as _ua
+        from orchestrator.lets_lifecycle import LetsLifecycleError
+        from orchestrator.lets_scope_profile import binding_for_scope
+
+        row = await asyncio.to_thread(
+            _ua.get_user_agent,
+            self.user_agent_registry,
+            agent_id,
+        )
+        if row is None or row.get("owner_user_id") != owner_user_id:
+            raise LetsLifecycleError("personal_agent_scope_owner_mismatch")
+        raw = row.get("declared_scopes")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raise LetsLifecycleError("invalid_declared_scopes") from None
+        if not isinstance(raw, (list, tuple)):
+            raise LetsLifecycleError("invalid_declared_scopes")
+        scopes = tuple(raw)
+        if any(
+            not isinstance(scope, str)
+            or not scope
+            or scope != scope.strip()
+            for scope in scopes
+        ) or len(set(scopes)) != len(scopes):
+            raise LetsLifecycleError("invalid_declared_scopes")
+        try:
+            for scope in scopes:
+                binding_for_scope(scope)
+        except (TypeError, ValueError):
+            raise LetsLifecycleError("invalid_declared_scopes") from None
+        return tuple(sorted(scopes))
+
+    async def _admit_personal_agent_runtime_authority(
+        self,
+        *,
+        owner_user_id: str,
+        runtime: Any,
+        executor_conformant: bool,
+        declared_scopes: tuple[str, ...] | None = None,
+    ):
+        """Converge LETS before one v3 delivery can expose a runtime."""
+
+        from orchestrator.byo_authority import (
+            ByoRuntimeAuthority,
+            ByoRuntimeAuthorityError,
+        )
+        from orchestrator.lets_lifecycle import LetsLifecycleError
+        from orchestrator.lets_scope_profile import binding_for_scope
+
+        mode = self._personal_agent_lets_mode()
+        if mode == "off":
+            return None
+        lifecycle = getattr(self, "governed_byo_lifecycle", None)
+        if lifecycle is None:
+            if mode == "enforce":
+                raise LetsLifecycleError(
+                    "byo_lifecycle_unavailable",
+                    retryable=True,
+                )
+            return None
+        try:
+            if declared_scopes is None:
+                declared_scopes = await self._personal_agent_declared_scopes(
+                    owner_user_id=owner_user_id,
+                    agent_id=runtime.fence.agent_id,
+                )
+            else:
+                if (
+                    not isinstance(declared_scopes, tuple)
+                    or any(
+                        not isinstance(scope, str)
+                        or not scope
+                        or scope != scope.strip()
+                        for scope in declared_scopes
+                    )
+                    or len(set(declared_scopes)) != len(declared_scopes)
+                ):
+                    raise LetsLifecycleError("invalid_declared_scopes")
+                for scope in declared_scopes:
+                    binding_for_scope(scope)
+                declared_scopes = tuple(sorted(declared_scopes))
+            convergence = await lifecycle.admit_or_resume(
+                owner_user_id=owner_user_id,
+                runtime=runtime,
+                declared_scopes=declared_scopes,
+                executor_conformant=executor_conformant,
+            )
+            binding = convergence.binding
+            if binding is None:
+                if mode == "enforce":
+                    raise LetsLifecycleError(
+                        convergence.error_code or "active_authority_unavailable",
+                        retryable=True,
+                    )
+                return None
+            authority = ByoRuntimeAuthority.from_active_binding(
+                binding,
+                fence=runtime.fence,
+                owner_id=owner_user_id,
+            )
+        except (LetsLifecycleError, ByoRuntimeAuthorityError):
+            if mode == "enforce":
+                raise
+            logger.info(
+                "BYO LETS shadow admission would deny agent=%s",
+                runtime.fence.agent_id,
+            )
+            return None
+        except Exception:
+            if mode == "enforce":
+                raise LetsLifecycleError(
+                    "byo_lifecycle_failure",
+                    retryable=True,
+                ) from None
+            logger.info(
+                "BYO LETS shadow admission unavailable agent=%s",
+                runtime.fence.agent_id,
+                exc_info=True,
+            )
+            return None
+        authorities = getattr(self, "_personal_agent_runtime_authorities", None)
+        if authorities is None:
+            authorities = self._personal_agent_runtime_authorities = {}
+        authorities[runtime.fence.runtime_instance_id] = authority
+        return authority
+
+    def _forget_personal_agent_runtime_authority(self, fence: RuntimeFence) -> None:
+        authorities = getattr(self, "_personal_agent_runtime_authorities", None)
+        if authorities is not None:
+            authorities.pop(fence.runtime_instance_id, None)
+        unregister = getattr(self, "unregister_governed_dispatch_runtime", None)
+        if callable(unregister):
+            unregister(fence.agent_id, runtime_id=fence.runtime_instance_id)
+
+    async def _retire_personal_agent_runtime_authority(
+        self,
+        *,
+        owner_user_id: str,
+        fence: RuntimeFence,
+    ) -> Any | None:
+        lifecycle = getattr(self, "governed_byo_lifecycle", None)
+        mode = self._personal_agent_lets_mode()
+        if lifecycle is None:
+            if mode == "enforce":
+                from orchestrator.lets_lifecycle import LetsLifecycleError
+
+                raise LetsLifecycleError("byo_lifecycle_unavailable", retryable=True)
+            return None
+        try:
+            return await lifecycle.retire_runtime(
+                owner_user_id=owner_user_id,
+                agent_id=fence.agent_id,
+                runtime_id=fence.runtime_instance_id,
+                runtime_generation=fence.lifecycle_generation,
+            )
+        except Exception:
+            if mode == "enforce":
+                raise
+            logger.info(
+                "BYO LETS shadow retirement would deny agent=%s",
+                fence.agent_id,
+                exc_info=True,
+            )
+            return None
+
+    async def _quiesce_personal_agent_authority(
+        self,
+        *,
+        owner_user_id: str,
+        agent_id: str,
+    ) -> Any | None:
+        lifecycle = getattr(self, "governed_byo_lifecycle", None)
+        mode = self._personal_agent_lets_mode()
+        if lifecycle is None:
+            if mode == "enforce":
+                from orchestrator.lets_lifecycle import LetsLifecycleError
+
+                raise LetsLifecycleError("byo_lifecycle_unavailable", retryable=True)
+            return None
+        try:
+            return await lifecycle.host_lost(
+                owner_user_id=owner_user_id,
+                agent_id=agent_id,
+            )
+        except Exception:
+            if mode == "enforce":
+                raise
+            logger.info(
+                "BYO LETS shadow quiesce would deny agent=%s",
+                agent_id,
+                exc_info=True,
+            )
+            return None
+
+    async def _revoke_personal_agent_authority(
+        self,
+        *,
+        owner_user_id: str,
+        agent_id: str,
+        reason_code: str,
+    ) -> Any | None:
+        lifecycle = getattr(self, "governed_byo_lifecycle", None)
+        mode = self._personal_agent_lets_mode()
+        if lifecycle is None:
+            if mode == "enforce":
+                from orchestrator.lets_lifecycle import LetsLifecycleError
+
+                raise LetsLifecycleError("byo_lifecycle_unavailable", retryable=True)
+            return None
+        try:
+            return await lifecycle.revoke_agent(
+                owner_user_id=owner_user_id,
+                agent_id=agent_id,
+                reason_code=reason_code,
+            )
+        except Exception:
+            if mode == "enforce":
+                raise
+            logger.info(
+                "BYO LETS shadow revocation would deny agent=%s",
+                agent_id,
+                exc_info=True,
+            )
+            return None
+
+    async def _renew_personal_agent_authorities(self) -> int:
+        lifecycle = getattr(self, "governed_byo_lifecycle", None)
+        authorities = tuple(
+            (getattr(self, "_personal_agent_runtime_authorities", None) or {}).values()
+        )
+        if lifecycle is None or not authorities:
+            return 0
+        latest_by_agent = {}
+        for authority in authorities:
+            previous = latest_by_agent.get(authority.agent_id)
+            if (
+                previous is None
+                or authority.lifecycle_generation > previous.lifecycle_generation
+            ):
+                latest_by_agent[authority.agent_id] = authority
+        config = getattr(getattr(self, "lets_runtime", None), "config", None)
+        ttl_seconds = getattr(config, "default_ttl_seconds", None) or 60
+        renewal_window_ns = max(1, int(ttl_seconds) // 3) * 1_000_000_000
+        renewed = 0
+        for authority in latest_by_agent.values():
+            try:
+                convergence = await lifecycle.renew_if_due(
+                    owner_user_id=authority.owner_id,
+                    agent_id=authority.agent_id,
+                    now_ns=time.time_ns(),
+                    renewal_window_ns=renewal_window_ns,
+                )
+                binding = convergence.binding
+                if binding is not None and (
+                    binding.binding_id != authority.binding_id
+                    or binding.lease_id != authority.lease_id
+                    or binding.lineage_id != authority.lineage_id
+                    or binding.runtime_id != authority.runtime_instance_id
+                    or binding.runtime_generation != authority.lifecycle_generation
+                ):
+                    raise RuntimeError("BYO renewal changed immutable authority identity")
+                renewed += 1
+            except Exception:
+                logger.warning(
+                    "BYO LETS lease renewal failed agent=%s",
+                    authority.agent_id,
+                    exc_info=True,
+                )
+        return renewed
+
     async def _terminalize_personal_agent_runtime(
         self,
         fence: RuntimeFence,
         *,
         failure_code: str,
+        physical_exit_proof: bool = False,
     ) -> Any:
         failure_code = self._canonical_personal_agent_failure_code(failure_code)
         owner_user_id = self._personal_agent_owner_for_fence(fence)
-        result = await asyncio.to_thread(
-            self.personal_agent_runtime.terminalize_runtime,
+        lifecycle_error: Exception | None = None
+        try:
+            await self._retire_personal_agent_runtime_authority(
+                owner_user_id=owner_user_id,
+                fence=fence,
+            )
+        except Exception as exc:
+            lifecycle_error = exc
+        if physical_exit_proof:
+            result = await asyncio.to_thread(
+                self.personal_agent_runtime.record_runtime_physical_exit,
+                fence,
+                proof_code=failure_code,
+            )
+        else:
+            result = await asyncio.to_thread(
+                self.personal_agent_runtime.terminalize_runtime,
+                fence,
+                failure_code=failure_code,
+            )
+        await self._project_personal_agent_runtime_settlement(
             fence,
+            result,
             failure_code=failure_code,
+            owner_user_id=owner_user_id,
+            retire_authority=False,
         )
-        ready = (getattr(self, "_personal_agent_ready_waiters", None) or {}).get(
-            fence.runtime_instance_id
-        )
-        if ready is not None and not ready.done():
-            ready.set_exception(RuntimeError(failure_code))
-        await self._fail_personal_agent_waiters(
-            result.settled_request_ids, code=failure_code
-        )
-        socket = (getattr(self, "_personal_agent_runtime_sockets", None) or {}).pop(
-            fence.runtime_instance_id, None
-        )
-        if socket is not None and self.agents.get(fence.agent_id) is socket:
-            self.agents.pop(fence.agent_id, None)
-        await self._emit_personal_agent_lifecycle(
-            owner_user_id,
-            result.instance,
-            state=self._personal_agent_terminal_lifecycle_state(failure_code),
-            reason_code=failure_code,
-        )
+        if lifecycle_error is not None:
+            raise lifecycle_error
         return result
 
     async def _disconnect_personal_agent_host(self, websocket: Any) -> Any | None:
@@ -1937,6 +2786,32 @@ class Orchestrator:
         except Exception:
             logger.warning("Personal-agent host disconnect failed closed", exc_info=True)
             return None
+
+        # The durable host fence is already committed.  Before any successor
+        # delivery is selected, quiesce each affected LETS branch.  An enforce
+        # outage still permits local socket cleanup, but it suppresses recovery
+        # so a successor can never overlap an authority that was not fenced.
+        lets_recovery_blocked = False
+        affected_agents = sorted(
+            set(result.selected_sessions)
+            | {
+                settlement.instance.fence.agent_id
+                for settlement in getattr(result, "settlements", ())
+            }
+        )
+        for agent_id in affected_agents:
+            try:
+                await self._quiesce_personal_agent_authority(
+                    owner_user_id=record.owner_user_id,
+                    agent_id=agent_id,
+                )
+            except Exception:
+                lets_recovery_blocked = True
+                logger.warning(
+                    "Personal-agent LETS quiesce failed closed agent=%s",
+                    agent_id,
+                    exc_info=True,
+                )
 
         # PostgreSQL loss/settlement is the authority boundary.  Only after it
         # commits may the process-local socket projections disappear; otherwise
@@ -1956,6 +2831,9 @@ class Orchestrator:
             result.settled_request_ids, code="host_lost"
         )
         for settlement in getattr(result, "settlements", ()):
+            self._forget_personal_agent_runtime_authority(
+                settlement.instance.fence
+            )
             await self._emit_personal_agent_lifecycle(
                 record.owner_user_id,
                 settlement.instance,
@@ -1978,7 +2856,7 @@ class Orchestrator:
         selected_recoveries = [
             (agent_id, selected_session_id)
             for agent_id, selected_session_id in result.selected_sessions.items()
-            if selected_session_id is not None
+            if selected_session_id is not None and not lets_recovery_blocked
         ]
         if selected_recoveries:
             recovery_limit = asyncio.Semaphore(8)
@@ -2062,19 +2940,20 @@ class Orchestrator:
             if recovery.host.host_session_id != selected_host_session_id:
                 raise RuntimeError("selected standby changed before recovery")
 
-            artifact_store = getattr(self, "personal_agent_artifacts", None)
-            if artifact_store is None:
-                from orchestrator.artifact_publication import (
-                    ImmutableAgentArtifactStore,
-                )
+            artifact_store = self.personal_agent_artifacts
+            from astralplane import canonical_generated_agent_manifest_digest
 
-                artifact_store = self.personal_agent_artifacts = (
-                    ImmutableAgentArtifactStore()
-                )
+            if recovery.revision.manifest is None:
+                raise RuntimeError("standby artifact manifest is unavailable")
             artifact = await asyncio.to_thread(
                 artifact_store.load,
                 recovery.revision.artifact_relative_path,
                 expected_digest=recovery.revision.artifact_digest,
+                expected_manifest_digest=(
+                    canonical_generated_agent_manifest_digest(
+                        recovery.revision.manifest
+                    )
+                ),
             )
             if not (
                 artifact.manifest.get("runtime_contract_version")
@@ -2088,12 +2967,25 @@ class Orchestrator:
             ).get(selected_host_session_id)
             if selected_socket is None:
                 raise RuntimeError("selected standby socket is unavailable")
+            from orchestrator.agent_generator import BYO_RUNTIME_CONTRACT_VERSION
+
+            authority = await self._admit_personal_agent_runtime_authority(
+                owner_user_id=owner_user_id,
+                runtime=recovery.instance,
+                executor_conformant=(
+                    recovery.revision.runtime_contract_version
+                    == BYO_RUNTIME_CONTRACT_VERSION
+                ),
+            )
             if not await self._safe_send(
                 selected_socket,
                 json.dumps(
                     {
                         "type": "agent_bundle_deliver",
                         "fence": recovery.instance.fence.to_dict(),
+                        "authority": (
+                            None if authority is None else authority.to_dict()
+                        ),
                         "runtime_contract_version": (
                             recovery.revision.runtime_contract_version
                         ),
@@ -2160,6 +3052,7 @@ class Orchestrator:
         parent_operation_id: _uuid.UUID | None = None,
         request_generation: _uuid.UUID | None = None,
         wait_seconds: float = 2.0,
+        retry_terminal: bool = False,
     ) -> tuple[OperationOwner, Any] | None:
         owner = OperationOwner(
             owner_scope=OwnerScope.USER,
@@ -2175,55 +3068,123 @@ class Orchestrator:
                 allow_nan=False,
             ).encode("utf-8")
         ).hexdigest()
-        request = OperationRequest(
-            operation_kind=operation_kind,
-            admission_class=admission_class,
-            owner=owner,
-            submission_id=_uuid.uuid4(),
-            idempotency_namespace=idempotency_namespace,
-            idempotency_key=idempotency_key,
-            normalized_input_digest=digest,
-            chat_id=None,
-            parent_operation_id=parent_operation_id,
-            connection_generation=None,
-            request_generation=request_generation,
-        )
-        admitted = await self._call_work_admission(
-            self.work_admission.submit, request
-        )
-        if not admitted.accepted:
-            return None
-        deadline = time.monotonic() + wait_seconds
-        while True:
-            claim = await self._call_work_admission(
-                self.work_admission.claim_operation,
-                admission_class,
-                admitted.operation_id,
+        attempt_key = idempotency_key
+        attempt_parent = parent_operation_id
+        # A retryable operation is terminal by contract.  An explicit retry must
+        # allocate a fresh child operation, while reusing a stable child key so a
+        # lost response to that retry cannot allocate a second physical attempt.
+        for _attempt_depth in range(64):
+            request = OperationRequest(
+                operation_kind=operation_kind,
+                admission_class=admission_class,
+                owner=owner,
+                submission_id=_uuid.uuid4(),
+                idempotency_namespace=idempotency_namespace,
+                idempotency_key=attempt_key,
+                normalized_input_digest=digest,
+                chat_id=None,
+                parent_operation_id=attempt_parent,
+                connection_generation=None,
+                request_generation=request_generation,
             )
-            if claim is not None:
-                return owner, claim
+            admitted = await self._call_work_admission(
+                self.work_admission.submit, request
+            )
+            if not admitted.accepted:
+                if admitted.code == "idempotency_conflict":
+                    raise _PersonalAgentOperationIdentityConflict(
+                        "personal-agent operation retry identity changed semantics"
+                    )
+                return None
             projection = await self._call_work_admission(
                 self.work_admission.query_operation,
                 owner=owner,
                 operation_id=admitted.operation_id,
             )
+            if projection.parent_operation_id != attempt_parent:
+                raise _PersonalAgentOperationIdentityConflict(
+                    "personal-agent operation retry lineage changed semantics"
+                )
+            if projection.state is OperationState.RETRYABLE and retry_terminal:
+                attempt_parent = admitted.operation_id
+                attempt_key = f"retry:{admitted.operation_id}"
+                continue
             if projection.state in {
                 OperationState.COMPLETED,
                 OperationState.FAILED,
                 OperationState.CANCELLED,
                 OperationState.RETRYABLE,
             }:
+                if retry_terminal and projection.state is not OperationState.RETRYABLE:
+                    raise _PersonalAgentOperationTerminal(
+                        projection.state,
+                        projection.terminal_code,
+                    )
                 return None
-            if time.monotonic() >= deadline:
-                await self._call_work_admission(
-                    self.work_admission.terminalize_unselected,
+            deadline = time.monotonic() + wait_seconds
+            while True:
+                claim = await self._call_work_admission(
+                    self.work_admission.claim_operation,
+                    admission_class,
                     admitted.operation_id,
-                    terminal_code="capacity_exceeded",
-                    safe_summary="Personal-agent operation was not selected",
-                    retry_after_ms=1000,
                 )
-                return None
-            await asyncio.sleep(0.05)
+                if claim is not None:
+                    if claim.operation.parent_operation_id != attempt_parent:
+                        raise _PersonalAgentOperationIdentityConflict(
+                            "personal-agent operation retry lineage changed semantics"
+                        )
+                    return owner, claim
+                projection = await self._call_work_admission(
+                    self.work_admission.query_operation,
+                    owner=owner,
+                    operation_id=admitted.operation_id,
+                )
+                if projection.state is OperationState.RETRYABLE and retry_terminal:
+                    attempt_parent = admitted.operation_id
+                    attempt_key = f"retry:{admitted.operation_id}"
+                    break
+                if projection.state in {
+                    OperationState.COMPLETED,
+                    OperationState.FAILED,
+                    OperationState.CANCELLED,
+                    OperationState.RETRYABLE,
+                }:
+                    if retry_terminal and projection.state is not OperationState.RETRYABLE:
+                        raise _PersonalAgentOperationTerminal(
+                            projection.state,
+                            projection.terminal_code,
+                        )
+                    return None
+                if time.monotonic() >= deadline:
+                    terminalized = await self._call_work_admission(
+                        self.work_admission.terminalize_unselected,
+                        admitted.operation_id,
+                        terminal_code="capacity_exceeded",
+                        safe_summary="Personal-agent operation was not selected",
+                        retry_after_ms=1000,
+                    )
+                    if terminalized is None:
+                        raise _PersonalAgentOperationRetryPending(
+                            "personal-agent operation is already running"
+                        )
+                    if terminalized.state in {
+                        OperationState.COMPLETED,
+                        OperationState.FAILED,
+                        OperationState.CANCELLED,
+                    }:
+                        raise _PersonalAgentOperationTerminal(
+                            terminalized.state,
+                            terminalized.terminal_code,
+                        )
+                    if terminalized.state is not OperationState.RETRYABLE:
+                        raise _PersonalAgentOperationRetryPending(
+                            "personal-agent operation settlement is ambiguous"
+                        )
+                    return None
+                await asyncio.sleep(0.05)
+        raise _PersonalAgentOperationRetryPending(
+            "personal-agent operation retry chain exceeded its bound"
+        )
 
     async def _renew_personal_agent_operation_lease(
         self,
@@ -2383,6 +3344,44 @@ class Orchestrator:
                     logger.debug("inventory operation cleanup failed", exc_info=True)
             raise
 
+        from orchestrator.agent_generator import BYO_RUNTIME_CONTRACT_VERSION
+
+        delivery_authorities: Dict[str, Any] = {}
+        starting_runtimes: Dict[str, Any] = {}
+        try:
+            for action in reconciliation.actions:
+                selected = action.selected_delivery
+                if selected is None or action.action != "start":
+                    continue
+                runtime = await asyncio.to_thread(
+                    self.personal_agent_runtime.get_runtime_instance,
+                    selected.runtime_instance_id,
+                )
+                starting_runtimes[selected.runtime_instance_id] = runtime
+                delivery_authorities[selected.runtime_instance_id] = (
+                    await self._admit_personal_agent_runtime_authority(
+                        owner_user_id=record.owner_user_id,
+                        runtime=runtime,
+                        executor_conformant=(
+                            selected.runtime_contract_version
+                            == BYO_RUNTIME_CONTRACT_VERSION
+                        ),
+                    )
+                )
+        except Exception:
+            for runtime in starting_runtimes.values():
+                try:
+                    await self._terminalize_personal_agent_runtime(
+                        runtime.fence,
+                        failure_code="child_start_failed",
+                    )
+                except Exception:
+                    logger.debug(
+                        "Inventory LETS admission cleanup was already terminal",
+                        exc_info=True,
+                    )
+            raise
+
         actions = []
         for action in reconciliation.actions:
             selected = action.selected_delivery
@@ -2399,6 +3398,15 @@ class Orchestrator:
                             "delivery_id": selected.delivery_id,
                             "runtime_instance_id": selected.runtime_instance_id,
                             "lifecycle_generation": selected.lifecycle_generation,
+                            "authority": (
+                                None
+                                if delivery_authorities.get(
+                                    selected.runtime_instance_id
+                                ) is None
+                                else delivery_authorities[
+                                    selected.runtime_instance_id
+                                ].to_dict()
+                            ),
                             "runtime_contract_version": (
                                 selected.runtime_contract_version
                             ),
@@ -2424,22 +3432,24 @@ class Orchestrator:
                 separators=(",", ":"),
             ),
         )
-        if inventory_sent:
+        if not inventory_sent:
+            for runtime in starting_runtimes.values():
+                try:
+                    await self._terminalize_personal_agent_runtime(
+                        runtime.fence,
+                        failure_code="child_start_failed",
+                    )
+                except Exception:
+                    logger.debug(
+                        "Inventory send cleanup was already terminal",
+                        exc_info=True,
+                    )
+        else:
             for action in reconciliation.actions:
                 selected = action.selected_delivery
                 if selected is None or action.action != "start":
                     continue
-                try:
-                    starting_runtime = await asyncio.to_thread(
-                        self.personal_agent_runtime.get_runtime_instance,
-                        selected.runtime_instance_id,
-                    )
-                except Exception:
-                    logger.debug(
-                        "Inventory lifecycle runtime lookup failed",
-                        exc_info=True,
-                    )
-                    continue
+                starting_runtime = starting_runtimes[selected.runtime_instance_id]
                 await self._emit_personal_agent_lifecycle(
                     record.owner_user_id,
                     starting_runtime,
@@ -2449,37 +3459,44 @@ class Orchestrator:
     async def _personal_agent_watchdog_once(self) -> int:
         """Fence runtimes whose PostgreSQL receipt-time liveness expired."""
 
-        rows = await asyncio.to_thread(
-            self.history.db.fetch_all,
-            """
-            SELECT runtime_instance_id,
-                   state
-            FROM agent_runtime_instance
-            WHERE (
-                state IN ('delivering', 'starting')
-                AND COALESCE(started_at, created_at) <
-                    clock_timestamp() - (? * interval '1 second')
-            ) OR (
-                state IN ('ready', 'online', 'updating')
-                AND last_liveness_at IS NOT NULL
-                AND last_liveness_at <
-                    clock_timestamp() - (? * interval '1 second')
-            )
-            ORDER BY runtime_instance_id
-            """,
-            (
-                PERSONAL_AGENT_STARTUP_TIMEOUT_SECONDS,
-                PERSONAL_AGENT_HEARTBEAT_TIMEOUT_SECONDS,
-            ),
+        await self._renew_personal_agent_authorities()
+        candidates = await asyncio.to_thread(
+            self.personal_agent_runtime.list_expired_runtime_candidates,
+            startup_timeout_seconds=PERSONAL_AGENT_STARTUP_TIMEOUT_SECONDS,
+            liveness_timeout_seconds=PERSONAL_AGENT_HEARTBEAT_TIMEOUT_SECONDS,
         )
         fenced = 0
-        for row in rows:
+        for candidate in candidates:
             try:
                 runtime = await asyncio.to_thread(
                     self.personal_agent_runtime.get_runtime_instance,
-                    str(row["runtime_instance_id"]),
+                    candidate.runtime_instance_id,
                 )
-                if str(row["state"]) in {"delivering", "starting"}:
+                local_owner_user_id = self._personal_agent_owner_for_fence(
+                    runtime.fence
+                )
+                if (
+                    local_owner_user_id is not None
+                    and local_owner_user_id != candidate.owner_id
+                ):
+                    raise RuntimeError(
+                        "runtime expiry candidate owner changed before settlement"
+                    )
+                owner_user_id = candidate.owner_id
+                try:
+                    await self._retire_personal_agent_runtime_authority(
+                        owner_user_id=owner_user_id,
+                        fence=runtime.fence,
+                    )
+                except Exception:
+                    # Local liveness is already lost. Remove the local route
+                    # below even when the enforce close is left to the durable
+                    # lifecycle reconciler.
+                    logger.warning(
+                        "Personal-agent LETS watchdog close failed closed",
+                        exc_info=True,
+                    )
+                if candidate.reason == "startup":
                     settlement = await asyncio.to_thread(
                         self.personal_agent_runtime.terminalize_expired_startup,
                         runtime.fence,
@@ -2491,14 +3508,11 @@ class Orchestrator:
                         runtime.fence,
                         timeout_seconds=PERSONAL_AGENT_HEARTBEAT_TIMEOUT_SECONDS,
                     )
-                owner_user_id = self._personal_agent_owner_for_fence(
-                    runtime.fence
-                )
                 await self._fail_personal_agent_waiters(
                     settlement.settled_request_ids,
                     code=(
                         "child_registration_timeout"
-                        if str(row["state"]) in {"delivering", "starting"}
+                        if candidate.reason == "startup"
                         else "child_hung"
                     ),
                 )
@@ -2517,6 +3531,7 @@ class Orchestrator:
                     and self.agents.get(runtime.fence.agent_id) is projected
                 ):
                     self.agents.pop(runtime.fence.agent_id, None)
+                self._forget_personal_agent_runtime_authority(runtime.fence)
                 host_socket = (
                     getattr(self, "_personal_agent_session_sockets", None) or {}
                 ).get(runtime.fence.host_session_id)
@@ -2668,6 +3683,26 @@ class Orchestrator:
         ).get(fence.runtime_instance_id)
         if card is None:
             raise RuntimeError("personal-agent runtime has no accepted card")
+        authority = (
+            getattr(self, "_personal_agent_runtime_authorities", None) or {}
+        ).get(fence.runtime_instance_id)
+        if authority is None and self._personal_agent_lets_mode() == "enforce":
+            raise RuntimeError("personal-agent runtime has no active LETS authority")
+        dispatch_runtime = None
+        if authority is not None:
+            from orchestrator.governed_dispatch import DispatchRuntime
+
+            dispatch_runtime = DispatchRuntime(
+                owner_id=authority.owner_id,
+                agent_id=authority.agent_id,
+                population=authority.population,
+                runtime_id=authority.runtime_instance_id,
+                runtime_generation=authority.lifecycle_generation,
+                executor_audience=authority.executor_audience,
+                executor_conformant=True,
+                dispatch_posture="protected_executor",
+            )
+            self.register_governed_dispatch_runtime(dispatch_runtime)
         socket = FencedTunnelSocket(
             websocket,
             host.owner_user_id,
@@ -2675,7 +3710,19 @@ class Orchestrator:
             self._safe_send,
         )
         self._personal_agent_runtime_sockets[fence.runtime_instance_id] = socket
-        await self.register_agent(socket, RegisterAgent(agent_card=card))
+        try:
+            await self.register_agent(socket, RegisterAgent(agent_card=card))
+        except BaseException:
+            self._personal_agent_runtime_sockets.pop(
+                fence.runtime_instance_id,
+                None,
+            )
+            if dispatch_runtime is not None:
+                self.unregister_governed_dispatch_runtime(
+                    fence.agent_id,
+                    runtime_id=fence.runtime_instance_id,
+                )
+            raise
         await self._emit_personal_agent_lifecycle(
             host.owner_user_id,
             runtime,
@@ -2688,7 +3735,7 @@ class Orchestrator:
         websocket: Any,
         frame: Dict[str, Any],
     ) -> None:
-        """Reduce one exact v2 host frame through the durable repository."""
+        """Reduce one exact v3 host frame through the durable repository."""
 
         try:
             frame_type = frame.get("type")
@@ -2727,12 +3774,12 @@ class Orchestrator:
                 ):
                     raise ProtocolValidationError("runtime reason is invalid")
                 revision = await self._personal_agent_revision_metadata(
-                    fence.revision_id
+                    fence
                 )
                 if not (
                     frame["runtime_contract_version"]
-                    == int(revision["runtime_contract_version"])
-                    and frame["bundle_sha256"] == revision["artifact_digest"]
+                    == revision.runtime_contract_version
+                    and frame["bundle_sha256"] == revision.artifact_digest
                 ):
                     raise ProtocolValidationError("runtime compatibility fence is stale")
                 if state == "starting":
@@ -2770,11 +3817,74 @@ class Orchestrator:
                         )
                         await self._publish_personal_agent_runtime(online)
                     return
+                current = await asyncio.to_thread(
+                    self.personal_agent_runtime.get_runtime_instance,
+                    fence.runtime_instance_id,
+                )
+                if current.fence != fence:
+                    raise ProtocolValidationError("runtime-state fence is stale")
+                exit_waiters = getattr(
+                    self, "_personal_agent_exit_waiters", None
+                )
+                if exit_waiters is None:
+                    exit_waiters = self._personal_agent_exit_waiters = {}
+                stop_waiter = exit_waiters.get(fence.runtime_instance_id)
+                if stop_waiter is not None and stop_waiter.fence != fence:
+                    raise ProtocolValidationError(
+                        "runtime-state stop disposition is stale"
+                    )
+                if current.state == "stopping" or stop_waiter is not None:
+                    # A failed/offline state frame is not proof that the process
+                    # tree has exited.  Preserve the staged lifecycle
+                    # disposition until an exact full-fence exit frame resolves
+                    # the registered stop waiter.
+                    if (
+                        current.state == "stopping"
+                        and stop_waiter is None
+                        and fence.process_id is not None
+                    ):
+                        self._ensure_personal_agent_runtime_stop_driver(
+                            fence.runtime_instance_id,
+                            # After a coordinator restart no in-memory ready
+                            # waiter can prove whether revision recovery owns
+                            # finalization. Retain the exact receipt
+                            # conservatively; the durable recovery owner can
+                            # join and release it after its Plane transaction.
+                            lifecycle_owned=True,
+                        )
+                    return
+                failure_code = reason or (
+                    "child_exited" if state == "failed" else "agent_offline"
+                )
+                if fence.process_id is not None:
+                    ready_waiter = (
+                        getattr(self, "_personal_agent_ready_waiters", None) or {}
+                    ).get(fence.runtime_instance_id)
+                    lifecycle_owned = (
+                        ready_waiter is not None
+                        and not bool(getattr(current, "is_authoritative", False))
+                    )
+                    await asyncio.to_thread(
+                        self.personal_agent_runtime.stage_runtime_failure,
+                        fence,
+                        failure_code=failure_code,
+                    )
+                    # Do not wait for process exit on the host receive loop: the
+                    # exact exit frame is delivered by that same loop.  The
+                    # tracked driver owns the initial stop send and retries if
+                    # the socket or acknowledgement is lost. A concurrent
+                    # activation finalizer joins its full-fence waiter, so only
+                    # one physical stop is sent per attempt.
+                    if ready_waiter is not None and not ready_waiter.done():
+                        ready_waiter.set_exception(RuntimeError(failure_code))
+                    self._ensure_personal_agent_runtime_stop_driver(
+                        fence.runtime_instance_id,
+                        lifecycle_owned=lifecycle_owned,
+                    )
+                    return
                 await self._terminalize_personal_agent_runtime(
                     fence,
-                    failure_code=reason or (
-                        "child_exited" if state == "failed" else "agent_offline"
-                    ),
+                    failure_code=failure_code,
                 )
                 return
 
@@ -2828,15 +3938,115 @@ class Orchestrator:
                 exit_code = frame["exit_code"]
                 if exit_kind not in {"process_exit", "protocol_eof", "explicit_stop"}:
                     raise ProtocolValidationError("runtime exit kind is invalid")
-                if (exit_kind == "process_exit") != (type(exit_code) is int):
+                if (
+                    exit_kind == "process_exit"
+                    and type(exit_code) is not int
+                ) or (exit_kind != "process_exit" and exit_code is not None):
                     raise ProtocolValidationError("runtime exit code is invalid")
+                runtime = await asyncio.to_thread(
+                    self.personal_agent_runtime.get_runtime_instance,
+                    fence.runtime_instance_id,
+                )
+                if runtime.fence != fence:
+                    raise ProtocolValidationError("runtime-exit fence is stale")
+                exit_waiters = getattr(
+                    self, "_personal_agent_exit_waiters", None
+                )
+                if exit_waiters is None:
+                    exit_waiters = self._personal_agent_exit_waiters = {}
+                stop_waiter = exit_waiters.get(fence.runtime_instance_id)
+                if stop_waiter is not None and stop_waiter.fence != fence:
+                    raise ProtocolValidationError(
+                        "runtime-exit stop acknowledgement is stale"
+                    )
+                terminal_runtime = runtime.state in {
+                    "stopped",
+                    "failed",
+                    "offline",
+                    "superseded",
+                }
+                stopping_runtime = runtime.state == "stopping"
+                if stop_waiter is not None and stop_waiter.acknowledged.done():
+                    # The first exact frame already persisted physical-exit
+                    # proof.  A duplicate must not overwrite a lifecycle
+                    # finalizer that may have committed before releasing its
+                    # retained receipt.
+                    return
+                proof_code = {
+                    "process_exit": "child_exited",
+                    "protocol_eof": "child_exited",
+                    "explicit_stop": "agent_offline",
+                }[exit_kind]
+                settlement = None
+                if (
+                    stop_waiter is not None
+                    or stopping_runtime
+                    or (
+                        terminal_runtime
+                        and runtime.fence.process_id is not None
+                    )
+                ):
+                    # Persist the full-fence proof before waking any lifecycle
+                    # owner.  The owner may only finalize its staged revision
+                    # after this transaction is durable.
+                    settlement = await asyncio.to_thread(
+                        self.personal_agent_runtime.record_runtime_physical_exit,
+                        fence,
+                        proof_code=proof_code,
+                    )
+                    # A lifecycle caller can register its waiter while the Plane
+                    # transaction is in flight. Re-read after durability so that
+                    # caller is acknowledged instead of being overwritten by a
+                    # stale pre-transaction snapshot.
+                    stop_waiter = exit_waiters.get(fence.runtime_instance_id)
+                    if stop_waiter is not None and stop_waiter.fence != fence:
+                        raise ProtocolValidationError(
+                            "runtime-exit stop acknowledgement is stale"
+                        )
+                if stop_waiter is not None:
+                    if settlement is not None:
+                        self._complete_personal_agent_exit_settlement(
+                            stop_waiter,
+                            settlement,
+                        )
+                    if stop_waiter.terminalize_on_ack:
+                        if not stop_waiter.acknowledged.done():
+                            stop_waiter.acknowledged.set_result(fence)
+                        if exit_waiters.get(fence.runtime_instance_id) is stop_waiter:
+                            exit_waiters.pop(fence.runtime_instance_id, None)
+                        return
+                    # Every exact exit disposition is authoritative proof that
+                    # this full-fence process is gone.  Keep the durable staged
+                    # failure/promotion disposition intact; its lifecycle owner
+                    # finalizes the runtime and operation before releasing this
+                    # receipt.  In particular, do not rewrite it to RETRYABLE.
+                    if not stop_waiter.acknowledged.done():
+                        stop_waiter.acknowledged.set_result(fence)
+                    return
+                if stopping_runtime:
+                    if stop_waiter is None:
+                        stop_waiter = _PersonalAgentExitWaiter(
+                            fence=fence,
+                            acknowledged=asyncio.get_running_loop().create_future(),
+                            settlement=asyncio.get_running_loop().create_future(),
+                        )
+                        exit_waiters[fence.runtime_instance_id] = stop_waiter
+                    if settlement is not None:
+                        self._complete_personal_agent_exit_settlement(
+                            stop_waiter,
+                            settlement,
+                        )
+                    if not stop_waiter.acknowledged.done():
+                        stop_waiter.acknowledged.set_result(fence)
+                    return
+                if terminal_runtime:
+                    # Duplicate exact exit frames are idempotent after the
+                    # lifecycle owner has already committed terminal state.
+                    return
                 await self._terminalize_personal_agent_runtime(
                     fence,
-                    failure_code={
-                        "process_exit": "child_exited",
-                        "protocol_eof": "child_exited",
-                        "explicit_stop": "agent_offline",
-                    }[exit_kind],
+                    failure_code=proof_code,
+                    physical_exit_proof=True,
                 )
                 return
             raise ProtocolValidationError("unknown personal-agent host frame")
@@ -2867,7 +4077,7 @@ class Orchestrator:
             return False
         try:
             from orchestrator.user_agents import get_user_agent
-            return get_user_agent(self.history.db, agent_id) is not None
+            return get_user_agent(self.user_agent_registry, agent_id) is not None
         except Exception:
             return False
 
@@ -2916,14 +4126,24 @@ class Orchestrator:
         artifact_relative_path=None,
         runtime_contract_version=None,
         required_runtime_lock_sha256=None,
+        draft_id=None,
+        draft_state_revision=None,
+        display_name=None,
+        declared_tools=None,
+        declared_scopes=None,
+        declared_egress=None,
+        validated_policy_revision=None,
     ):
         """Prepare, deliver, and promote one immutable personal-agent revision.
 
-        A legacy feature-058 bundle without v2 metadata keeps its compatibility
+        A legacy feature-058 bundle without v3 metadata keeps its compatibility
         behavior. Production generation always supplies the finalized manifest
         and follows the durable prepare/start/ready/promote boundary below.
         """
-        from orchestrator.agent_generator import BYO_BUNDLE_FILENAMES
+        from orchestrator.agent_generator import (
+            BYO_BUNDLE_FILENAMES,
+            BYO_RUNTIME_CONTRACT_VERSION,
+        )
 
         if runtime_manifest is None and isinstance(files, dict):
             manifest_text = files.get("manifest.json")
@@ -2934,11 +4154,11 @@ class Orchestrator:
                     parsed_manifest = None
                 # Feature-058 compatibility bundles also contain a
                 # ``manifest.json`` file, and some fixtures intentionally use
-                # an empty object.  Only infer the durable v2 path when the
-                # embedded manifest actually carries the complete v2 runtime
+                # an empty object.  Only infer the durable v3 path when the
+                # embedded manifest actually carries the complete v3 runtime
                 # identity.  An explicitly supplied ``runtime_manifest`` still
-                # enters the v2 validator and fails closed if malformed.
-                v2_identity = {
+                # enters the v3 validator and fails closed if malformed.
+                runtime_identity = {
                     "runtime_contract_version",
                     "revision_id",
                     "bundle_sha256",
@@ -2946,11 +4166,21 @@ class Orchestrator:
                 }
                 if (
                     isinstance(parsed_manifest, dict)
-                    and parsed_manifest.get("runtime_contract_version") == 2
-                    and v2_identity.issubset(parsed_manifest)
+                    and parsed_manifest.get("runtime_contract_version")
+                    == BYO_RUNTIME_CONTRACT_VERSION
+                    and runtime_identity.issubset(parsed_manifest)
                 ):
                     runtime_manifest = parsed_manifest
         if runtime_manifest is not None:
+            from orchestrator.agent_lifecycle import CandidateAgentMetadata
+
+            def _metadata_sequence(value: Any, field: str) -> tuple[str, ...]:
+                if value is None:
+                    return ()
+                if not isinstance(value, (list, tuple)):
+                    raise TypeError(f"{field} must be a list or tuple")
+                return tuple(value)
+
             manifest = dict(runtime_manifest)
             bundle_sha256 = bundle_sha256 or manifest.get("bundle_sha256")
             revision_id = revision_id or manifest.get("revision_id")
@@ -2969,7 +4199,19 @@ class Orchestrator:
                 if isinstance(files, dict) and name in files
             }
             if set(executable_files) != set(BYO_BUNDLE_FILENAMES):
-                raise ValueError("v2 personal-agent delivery requires exactly three files")
+                raise ValueError(
+                    "v3 personal-agent delivery requires the exact bundle file set"
+                )
+            metadata = CandidateAgentMetadata(
+                draft_id=draft_id,
+                draft_state_revision=draft_state_revision,
+                display_name=display_name,
+                constitution_version=constitution_version,
+                validated_policy_revision=validated_policy_revision,
+                declared_tools=_metadata_sequence(declared_tools, "declared_tools"),
+                declared_scopes=_metadata_sequence(declared_scopes, "declared_scopes"),
+                declared_egress=_metadata_sequence(declared_egress, "declared_egress"),
+            )
             return await self._deliver_personal_agent_revision(
                 owner_sub=owner_sub,
                 agent_id=agent_id,
@@ -2980,10 +4222,11 @@ class Orchestrator:
                 artifact_relative_path=artifact_relative_path,
                 runtime_contract_version=runtime_contract_version,
                 required_runtime_lock_sha256=required_runtime_lock_sha256,
+                agent_metadata=metadata,
             )
 
         # Explicit compatibility path for old clients/tests. It never treats an
-        # implicit v1 bundle as v2 and never enters the durable v2 host maps.
+        # implicit v1 bundle as v3 and never enters the durable v3 host maps.
         frame = json.dumps({
             "type": "agent_bundle_deliver",
             "agent_id": agent_id,
@@ -3007,6 +4250,319 @@ class Orchestrator:
             agent_id, outcome=("success" if delivered else "failure"))
         return delivered
 
+    async def _stop_personal_agent_revision_process(
+        self,
+        runtime_instance_id: str,
+    ) -> Any:
+        """Join one exact full-fence process-exit acknowledgement.
+
+        Durable lifecycle code stages the runtime as ``stopping`` before this
+        method runs.  The returned receipt owns the in-memory acknowledgement
+        until the caller has committed its exact Plane finalizer; releasing it
+        earlier would let a duplicate host frame apply the generic RETRYABLE
+        reducer and overwrite that staged disposition.
+        """
+
+        from orchestrator.agent_lifecycle import PhysicalStopReceipt
+
+        runtime = await asyncio.to_thread(
+            self.personal_agent_runtime.get_runtime_instance,
+            runtime_instance_id,
+        )
+        if runtime.fence.runtime_instance_id != runtime_instance_id:
+            raise RuntimeError("candidate runtime stop identity is stale")
+        if runtime.fence.process_id is None:
+            return None
+
+        exit_waiters = getattr(self, "_personal_agent_exit_waiters", None)
+        if exit_waiters is None:
+            exit_waiters = self._personal_agent_exit_waiters = {}
+        stop_waiter = exit_waiters.get(runtime_instance_id)
+        if stop_waiter is not None and stop_waiter.fence != runtime.fence:
+            raise RuntimeError("candidate runtime stop acknowledgement is stale")
+
+        terminal_runtime = runtime.state in {
+            "stopped",
+            "failed",
+            "offline",
+            "superseded",
+        }
+        if (
+            terminal_runtime
+            and getattr(runtime, "failure_code", None)
+            in {"child_exited", "agent_offline"}
+        ):
+            # Only the exact runtime-exit reducer writes these terminal proof
+            # codes.  A replay after process/server restart may therefore
+            # finalize durable cleanup without demanding an impossible second
+            # exit frame.  Host-loss and state-only terminal rows do not qualify.
+            if stop_waiter is None:
+                return None
+            if not stop_waiter.acknowledged.done():
+                stop_waiter.acknowledged.set_result(runtime.fence)
+        if not terminal_runtime and runtime.state != "stopping":
+            raise RuntimeError("candidate runtime stop was not durably staged")
+        owns_waiter = stop_waiter is None
+        if stop_waiter is None:
+            stop_waiter = _PersonalAgentExitWaiter(
+                fence=runtime.fence,
+                acknowledged=asyncio.get_running_loop().create_future(),
+                settlement=asyncio.get_running_loop().create_future(),
+            )
+            exit_waiters[runtime_instance_id] = stop_waiter
+
+        def _release() -> None:
+            current = exit_waiters.get(runtime_instance_id)
+            if current is not stop_waiter:
+                raise RuntimeError("candidate runtime stop receipt is stale")
+            if not stop_waiter.acknowledged.done():
+                raise RuntimeError("candidate runtime stop was not acknowledged")
+            exit_waiters.pop(runtime_instance_id, None)
+
+        def _receipt() -> PhysicalStopReceipt:
+            acknowledged = stop_waiter.acknowledged.result()
+            if acknowledged != runtime.fence:
+                raise RuntimeError("candidate runtime stop acknowledgement changed")
+            return PhysicalStopReceipt(
+                runtime_instance_id=runtime_instance_id,
+                release=_release,
+            )
+
+        if stop_waiter.acknowledged.done():
+            return _receipt()
+
+        if not owns_waiter:
+            try:
+                async with asyncio.timeout(PERSONAL_AGENT_STOP_TIMEOUT_SECONDS):
+                    await asyncio.shield(stop_waiter.acknowledged)
+            except TimeoutError:
+                if stop_waiter.acknowledged.done():
+                    return _receipt()
+                raise RuntimeError(
+                    "candidate runtime stop acknowledgement timed out"
+                ) from None
+            return _receipt()
+
+        selected_socket = (
+            getattr(self, "_personal_agent_session_sockets", None) or {}
+        ).get(runtime.fence.host_session_id)
+        if selected_socket is None:
+            if not stop_waiter.acknowledged.done():
+                if exit_waiters.get(runtime_instance_id) is stop_waiter:
+                    exit_waiters.pop(runtime_instance_id, None)
+                self._cancel_personal_agent_exit_waiter(stop_waiter)
+            raise RuntimeError("candidate runtime host socket is unavailable")
+        try:
+            stopped = await self._safe_send(
+                selected_socket,
+                json.dumps(
+                    {"type": "agent_stop", "fence": runtime.fence.to_dict()},
+                    separators=(",", ":"),
+                ),
+            )
+        except asyncio.CancelledError:
+            if not stop_waiter.acknowledged.done():
+                if exit_waiters.get(runtime_instance_id) is stop_waiter:
+                    exit_waiters.pop(runtime_instance_id, None)
+                self._cancel_personal_agent_exit_waiter(stop_waiter)
+            raise
+        except Exception:
+            if stop_waiter.acknowledged.done():
+                return _receipt()
+            if exit_waiters.get(runtime_instance_id) is stop_waiter:
+                exit_waiters.pop(runtime_instance_id, None)
+            self._cancel_personal_agent_exit_waiter(stop_waiter)
+            raise
+        if not stopped and not stop_waiter.acknowledged.done():
+            if exit_waiters.get(runtime_instance_id) is stop_waiter:
+                exit_waiters.pop(runtime_instance_id, None)
+            self._cancel_personal_agent_exit_waiter(stop_waiter)
+            raise RuntimeError("candidate runtime stop delivery failed")
+        if stop_waiter.acknowledged.done():
+            return _receipt()
+        try:
+            async with asyncio.timeout(PERSONAL_AGENT_STOP_TIMEOUT_SECONDS):
+                await asyncio.shield(stop_waiter.acknowledged)
+        except asyncio.CancelledError:
+            # This invocation created and sent the stop.  If cancellation wins
+            # before the exact acknowledgement, remove only its waiter so a
+            # replay can resend instead of joining abandoned in-memory state.
+            if not stop_waiter.acknowledged.done():
+                if exit_waiters.get(runtime_instance_id) is stop_waiter:
+                    exit_waiters.pop(runtime_instance_id, None)
+                self._cancel_personal_agent_exit_waiter(stop_waiter)
+            raise
+        except TimeoutError:
+            if stop_waiter.acknowledged.done():
+                return _receipt()
+            if exit_waiters.get(runtime_instance_id) is stop_waiter:
+                exit_waiters.pop(runtime_instance_id, None)
+            self._cancel_personal_agent_exit_waiter(stop_waiter)
+            raise RuntimeError("candidate runtime stop acknowledgement timed out") from None
+        return _receipt()
+
+    async def _resolve_personal_agent_stop_settlement(
+        self,
+        runtime_instance_id: str,
+        stop_waiter: _PersonalAgentExitWaiter | None,
+    ) -> Any | None:
+        """Recover the exact durable exit settlement after a lost commit ack."""
+
+        if stop_waiter is not None:
+            current = (
+                getattr(self, "_personal_agent_exit_waiters", None) or {}
+            ).get(runtime_instance_id)
+            if current is not stop_waiter:
+                raise RuntimeError("personal-agent stop settlement waiter is stale")
+            future = stop_waiter.settlement
+            if future is not None and future.done() and not future.cancelled():
+                return future.result()
+
+        runtime = await asyncio.to_thread(
+            self.personal_agent_runtime.get_runtime_instance,
+            runtime_instance_id,
+        )
+        if runtime.fence.runtime_instance_id != runtime_instance_id:
+            raise RuntimeError("personal-agent stop settlement identity is stale")
+        proof_code = getattr(runtime, "failure_code", None)
+        if not (
+            runtime.state in {"stopped", "failed", "offline", "superseded"}
+            and proof_code in {"child_exited", "agent_offline"}
+        ):
+            return None
+        settlement = await asyncio.to_thread(
+            self.personal_agent_runtime.record_runtime_physical_exit,
+            runtime.fence,
+            proof_code=proof_code,
+        )
+        if stop_waiter is not None:
+            current = (
+                getattr(self, "_personal_agent_exit_waiters", None) or {}
+            ).get(runtime_instance_id)
+            if current is not stop_waiter:
+                raise RuntimeError("personal-agent stop settlement waiter changed")
+            self._complete_personal_agent_exit_settlement(
+                stop_waiter,
+                settlement,
+            )
+        return settlement
+
+    async def _drive_personal_agent_runtime_stop(
+        self,
+        runtime_instance_id: str,
+        *,
+        lifecycle_owned: bool,
+    ) -> None:
+        """Send/retry one staged stop without blocking the host receive loop."""
+
+        while True:
+            try:
+                receipt = await self._stop_personal_agent_revision_process(
+                    runtime_instance_id
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Personal-agent staged stop remains pending runtime=%s",
+                    runtime_instance_id,
+                    exc_info=True,
+                )
+                await asyncio.sleep(PERSONAL_AGENT_STOP_RETRY_SECONDS)
+                continue
+            if lifecycle_owned:
+                return
+
+            stop_waiter = None
+            if receipt is not None:
+                stop_waiter = (
+                    getattr(self, "_personal_agent_exit_waiters", None) or {}
+                ).get(runtime_instance_id)
+                if stop_waiter is None:
+                    logger.warning(
+                        "Personal-agent stop receipt lost its waiter runtime=%s",
+                        runtime_instance_id,
+                    )
+                    return
+            completed_steps = (
+                stop_waiter.projection_steps if stop_waiter is not None else set()
+            )
+            owner_user_id: str | None = None
+            while True:
+                try:
+                    settlement = await self._resolve_personal_agent_stop_settlement(
+                        runtime_instance_id,
+                        stop_waiter,
+                    )
+                    if settlement is None:
+                        return
+                    fence = settlement.instance.fence
+                    if owner_user_id is None:
+                        owner_user_id = self._personal_agent_owner_for_fence(fence)
+                    await self._project_personal_agent_runtime_settlement(
+                        fence,
+                        settlement,
+                        failure_code=getattr(settlement.instance, "failure_code", None),
+                        owner_user_id=owner_user_id,
+                        retire_authority=True,
+                        completed_steps=completed_steps,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "Personal-agent committed stop projection remains pending "
+                        "runtime=%s",
+                        runtime_instance_id,
+                        exc_info=True,
+                    )
+                    await asyncio.sleep(PERSONAL_AGENT_STOP_RETRY_SECONDS)
+                    continue
+                break
+            if receipt is None:
+                return
+            try:
+                released = receipt.release()
+                if asyncio.iscoroutine(released):
+                    await released
+            except Exception:
+                logger.warning(
+                    "Personal-agent staged stop receipt release failed runtime=%s",
+                    runtime_instance_id,
+                    exc_info=True,
+                )
+            return
+
+    def _ensure_personal_agent_runtime_stop_driver(
+        self,
+        runtime_instance_id: str,
+        *,
+        lifecycle_owned: bool,
+    ) -> asyncio.Task[Any]:
+        """Create at most one tracked stop driver for an exact runtime."""
+
+        drivers = getattr(self, "_personal_agent_stop_driver_tasks", None)
+        if drivers is None:
+            drivers = self._personal_agent_stop_driver_tasks = {}
+        existing = drivers.get(runtime_instance_id)
+        if existing is not None and not existing.done():
+            return existing
+        task = self._track_startup_background_task(
+            self._drive_personal_agent_runtime_stop(
+                runtime_instance_id,
+                lifecycle_owned=lifecycle_owned,
+            ),
+            name=f"personal-agent-runtime-stop-{runtime_instance_id}",
+        )
+        drivers[runtime_instance_id] = task
+
+        def _forget(completed: asyncio.Task[Any]) -> None:
+            if drivers.get(runtime_instance_id) is completed:
+                drivers.pop(runtime_instance_id, None)
+
+        task.add_done_callback(_forget)
+        return task
+
     async def _deliver_personal_agent_revision(
         self,
         *,
@@ -3019,14 +4575,24 @@ class Orchestrator:
         artifact_relative_path: str,
         runtime_contract_version: int,
         required_runtime_lock_sha256: str,
+        agent_metadata: Any,
         _activation_locked: bool = False,
     ) -> int:
         from orchestrator.agent_lifecycle import (
+            ActiveRevisionReplay,
             AgentRevisionActivator,
             CandidatePreparation,
+            CandidateAgentMetadata,
+            RevisionActivationError,
+            RevisionActivationRecoveryPendingError,
+            _join_task_outcome_through_cancellation,
         )
+        from orchestrator.agent_generator import BYO_RUNTIME_CONTRACT_VERSION
+        from orchestrator.user_agents import StaleRuntimeGenerationError
 
         revision_id = self._strict_uuid4(revision_id, "revision_id")
+        if not isinstance(agent_metadata, CandidateAgentMetadata):
+            raise TypeError("candidate agent metadata is required")
         if runtime_manifest.get("revision_id") != revision_id:
             raise ValueError("runtime manifest revision identity is stale")
         if runtime_manifest.get("agent_id") != agent_id:
@@ -3042,6 +4608,18 @@ class Orchestrator:
             or not artifact_relative_path
         ):
             raise ValueError("immutable artifact path is required")
+        try:
+            runtime_manifest_sha256 = hashlib.sha256(
+                json.dumps(
+                    runtime_manifest,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ).encode("utf-8")
+            ).hexdigest()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("runtime manifest must be canonical JSON") from exc
 
         # Duplicate authoring requests for the same immutable revision share one
         # activation in this process. The durable submission/revision fences are
@@ -3068,6 +4646,7 @@ class Orchestrator:
                         required_runtime_lock_sha256=(
                             required_runtime_lock_sha256
                         ),
+                        agent_metadata=agent_metadata,
                         _activation_locked=True,
                     )
             finally:
@@ -3077,30 +4656,427 @@ class Orchestrator:
                 ):
                     locks.pop(activation_key, None)
 
+        async def _assert_exact_active(online_runtime: Any) -> None:
+            try:
+                await asyncio.to_thread(
+                    self.personal_agent_revisions.assert_active_replay,
+                    ActiveRevisionReplay(
+                        owner_user_id=owner_sub,
+                        agent_id=agent_id,
+                        revision_id=revision_id,
+                        bundle_sha256=bundle_sha256,
+                        runtime_manifest=runtime_manifest,
+                        artifact_relative_path=artifact_relative_path,
+                        runtime_contract_version=runtime_contract_version,
+                        required_runtime_lock_sha256=(
+                            required_runtime_lock_sha256
+                        ),
+                        runtime_instance_id=(
+                            online_runtime.fence.runtime_instance_id
+                        ),
+                        agent_metadata=agent_metadata,
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            except (StaleRuntimeGenerationError, ValueError) as exc:
+                raise RevisionActivationError(
+                    "revision_replay_identity_conflict"
+                ) from exc
+            except Exception as exc:
+                raise RevisionActivationRecoveryPendingError(
+                    "revision_authority_lookup_pending"
+                ) from exc
+
+        async def _project_active_runtime(online_runtime: Any) -> int:
+            try:
+                await self._admit_personal_agent_runtime_authority(
+                    owner_user_id=owner_sub,
+                    runtime=online_runtime,
+                    executor_conformant=(
+                        runtime_contract_version == BYO_RUNTIME_CONTRACT_VERSION
+                    ),
+                    declared_scopes=agent_metadata.declared_scopes,
+                )
+                projected = self.agents.get(agent_id)
+                if getattr(projected, "runtime_fence", None) != online_runtime.fence:
+                    await self._publish_personal_agent_runtime(online_runtime)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                raise RevisionActivationRecoveryPendingError(
+                    "revision_projection_recovery_pending"
+                ) from exc
+            return 1
+
+        def _recovery_activator() -> Any:
+            async def _unused_candidate_callback(_candidate: Any) -> str:
+                raise RuntimeError(
+                    "candidate callback is unavailable during recovery"
+                )
+
+            return AgentRevisionActivator(
+                store=self.personal_agent_revisions,
+                start_candidate=_unused_candidate_callback,
+                await_candidate_ready=_unused_candidate_callback,
+                stop_runtime=self._stop_personal_agent_revision_process,
+            )
+
+        async def _reconcile_activation_cleanup() -> None:
+            await _recovery_activator().reconcile_after_crash(owner_sub, agent_id)
+
+        async def _project_completed_delivery_authority() -> int:
+            """Project the exact authority behind an observed COMPLETED attempt."""
+
+            try:
+                completed_runtime = await asyncio.to_thread(
+                    self.personal_agent_runtime.get_current_online_authority_if_present,
+                    owner_user_id=owner_sub,
+                    agent_id=agent_id,
+                )
+                if (
+                    completed_runtime is None
+                    or completed_runtime.fence.revision_id != revision_id
+                ):
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_completed_authority_pending"
+                    )
+                await _assert_exact_active(completed_runtime)
+                await _reconcile_activation_cleanup()
+                return await _project_active_runtime(completed_runtime)
+            except asyncio.CancelledError:
+                raise
+            except RevisionActivationError:
+                raise
+            except Exception as exc:
+                raise RevisionActivationRecoveryPendingError(
+                    "revision_completed_authority_pending"
+                ) from exc
+
         # A same-process replay after commit is already successful. Re-publish
         # only if its exact durable route projection is absent; never create a
         # second delivery/runtime generation for the active revision.
         try:
             online = await asyncio.to_thread(
-                self.personal_agent_runtime.get_current_online_authority,
+                self.personal_agent_runtime.get_current_online_authority_if_present,
                 owner_user_id=owner_sub,
                 agent_id=agent_id,
             )
-        except Exception:
-            online = None
+        except Exception as exc:
+            raise RevisionActivationRecoveryPendingError(
+                "revision_authority_lookup_pending"
+            ) from exc
         if online is not None and online.fence.revision_id == revision_id:
-            projected = self.agents.get(agent_id)
-            if getattr(projected, "runtime_fence", None) != online.fence:
-                await self._publish_personal_agent_runtime(online)
-            return 1
+            await _assert_exact_active(online)
+            try:
+                await _reconcile_activation_cleanup()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                raise RevisionActivationRecoveryPendingError(
+                    "revision_runtime_cleanup_pending"
+                ) from exc
+            return await _project_active_runtime(online)
 
-        selection = await asyncio.to_thread(
-            self.personal_agent_runtime.select_host_for_agent,
-            owner_user_id=owner_sub,
-            agent_id=agent_id,
+        try:
+            recovery_status = await asyncio.to_thread(
+                self.personal_agent_revisions.inspect_recovery_status,
+                owner_sub,
+                agent_id,
+                revision_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except RevisionActivationError:
+            raise
+        except Exception as exc:
+            raise RevisionActivationRecoveryPendingError(
+                "revision_recovery_lookup_pending"
+            ) from exc
+        if recovery_status is not None and recovery_status.revision_state == "active":
+            raise RevisionActivationRecoveryPendingError(
+                "revision_authority_offline"
+            )
+        if recovery_status is not None and recovery_status.revision_state in {
+            "failed",
+            "retired",
+        }:
+            raise RevisionActivationError(
+                recovery_status.runtime_failure_code
+                or recovery_status.operation_terminal_code
+                or "revision_delivery_terminal"
+            )
+        attempted_candidate = (
+            recovery_status is not None
+            and recovery_status.runtime_instance_id is not None
         )
+        if attempted_candidate and recovery_status is not None:
+            if recovery_status.runtime_failure_code is not None:
+                try:
+                    await _reconcile_activation_cleanup()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_runtime_cleanup_pending"
+                    ) from exc
+                raise RevisionActivationError(
+                    recovery_status.runtime_failure_code
+                )
+            if recovery_status.operation_state is OperationState.RUNNING:
+                try:
+                    await self._call_work_admission(
+                        self.work_admission.expire_execution_leases
+                    )
+                    recovery_status = await asyncio.to_thread(
+                        self.personal_agent_revisions.inspect_recovery_status,
+                        owner_sub,
+                        agent_id,
+                        revision_id,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except RevisionActivationError:
+                    raise
+                except Exception as exc:
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_recovery_lookup_pending"
+                    ) from exc
+            if (
+                recovery_status is not None
+                and recovery_status.operation_state is OperationState.RUNNING
+            ):
+                raise RevisionActivationRecoveryPendingError(
+                    "revision_activation_in_progress"
+                )
+            if recovery_status.operation_state is OperationState.RETRYABLE:
+                try:
+                    await _recovery_activator().reset_retryable_candidate(
+                        owner_sub,
+                        agent_id,
+                        revision_id,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_runtime_cleanup_pending"
+                    ) from exc
+                try:
+                    recovery_status = await asyncio.to_thread(
+                        self.personal_agent_revisions.inspect_recovery_status,
+                        owner_sub,
+                        agent_id,
+                        revision_id,
+                    )
+                except Exception as exc:
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_recovery_lookup_pending"
+                    ) from exc
+                if (
+                    recovery_status is not None
+                    and recovery_status.runtime_instance_id is not None
+                ):
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_runtime_cleanup_pending"
+                    )
+            elif recovery_status.operation_state in {
+                OperationState.FAILED,
+                OperationState.CANCELLED,
+            }:
+                try:
+                    await _reconcile_activation_cleanup()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_promotion_recovery_pending"
+                    ) from exc
+                raise RevisionActivationError(
+                    recovery_status.operation_terminal_code
+                    or recovery_status.runtime_failure_code
+                    or "revision_promotion_failed"
+                )
+            else:
+                raise RevisionActivationRecoveryPendingError(
+                    "revision_operation_recovery_pending"
+                )
+
+        try:
+            claimed = await self._claim_personal_agent_operation(
+                owner_user_id=owner_sub,
+                operation_kind="agent_runtime_delivery",
+                idempotency_namespace="personal_agent_revision_delivery",
+                idempotency_key=f"{agent_id}:{revision_id}",
+                normalized_identity={
+                    "agent_id": agent_id,
+                    "revision_id": revision_id,
+                    "bundle_sha256": bundle_sha256,
+                    "runtime_manifest_sha256": runtime_manifest_sha256,
+                    "artifact_relative_path": artifact_relative_path,
+                    "runtime_contract_version": runtime_contract_version,
+                    "required_runtime_lock_sha256": (
+                        required_runtime_lock_sha256
+                    ),
+                    "agent_metadata_sha256": agent_metadata.canonical_digest,
+                },
+                wait_seconds=5.0,
+                retry_terminal=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except _PersonalAgentOperationIdentityConflict as exc:
+            raise RevisionActivationError(
+                "revision_delivery_identity_conflict"
+            ) from exc
+        except _PersonalAgentOperationRetryPending as exc:
+            raise RevisionActivationRecoveryPendingError(
+                "revision_delivery_in_progress"
+            ) from exc
+        except _PersonalAgentOperationTerminal as exc:
+            if exc.state in {OperationState.FAILED, OperationState.CANCELLED}:
+                raise RevisionActivationError(
+                    exc.terminal_code or "revision_delivery_terminal"
+                ) from exc
+            if exc.state is OperationState.COMPLETED:
+                return await _project_completed_delivery_authority()
+            raise RevisionActivationRecoveryPendingError(
+                "revision_delivery_in_progress"
+            ) from exc
+        except Exception as exc:
+            raise RevisionActivationRecoveryPendingError(
+                "revision_delivery_admission_pending"
+            ) from exc
+        if claimed is None:
+            raise RevisionActivationRecoveryPendingError(
+                "revision_delivery_capacity_pending"
+            )
+        operation_owner, operation_claim = claimed
+
+        async def _terminalize_and_observe(
+            *,
+            state: OperationState,
+            terminal_code: str | None,
+            safe_summary: str,
+            retry_after_ms: int | None,
+        ) -> Any:
+            """Return the first durable terminal result for this exact fence."""
+
+            observed = None
+            try:
+                observed = await self._call_work_admission(
+                    self.work_admission.terminalize,
+                    operation_claim.fence,
+                    state=state,
+                    terminal_code=terminal_code,
+                    safe_summary=safe_summary,
+                    retry_after_ms=retry_after_ms,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The write may have committed before its acknowledgement was
+                # lost. Resolve that ambiguity through the exact owner-scoped
+                # projection instead of issuing a contradictory outcome.
+                observed = None
+            if observed is None:
+                try:
+                    observed = await self._call_work_admission(
+                        self.work_admission.query_operation,
+                        owner=operation_owner,
+                        operation_id=operation_claim.fence.operation_id,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_delivery_settlement_pending"
+                    ) from exc
+            if (
+                observed.operation_id != operation_claim.fence.operation_id
+                or observed.state
+                not in {
+                    OperationState.COMPLETED,
+                    OperationState.FAILED,
+                    OperationState.CANCELLED,
+                    OperationState.RETRYABLE,
+                }
+            ):
+                raise RevisionActivationRecoveryPendingError(
+                    "revision_delivery_settlement_pending"
+                )
+            return observed
+
+        async def _resolve_retryable_settlement(
+            observed: Any,
+            *,
+            expected_terminal_code: str,
+        ) -> int | None:
+            if observed.state in {
+                OperationState.FAILED,
+                OperationState.CANCELLED,
+            }:
+                raise RevisionActivationError(
+                    observed.terminal_code or "revision_delivery_terminal"
+                )
+            if observed.state is OperationState.COMPLETED:
+                return await _project_completed_delivery_authority()
+            if (
+                observed.state is not OperationState.RETRYABLE
+                or observed.terminal_code != expected_terminal_code
+            ):
+                raise RevisionActivationRecoveryPendingError(
+                    "revision_delivery_settlement_pending"
+                )
+            return None
+
+        async def _settle_pre_host_retryable(
+            *,
+            terminal_code: str,
+            safe_summary: str,
+        ) -> int | None:
+            observed = await _terminalize_and_observe(
+                state=OperationState.RETRYABLE,
+                terminal_code=terminal_code,
+                safe_summary=safe_summary,
+                retry_after_ms=1000,
+            )
+            return await _resolve_retryable_settlement(
+                observed,
+                expected_terminal_code=terminal_code,
+            )
+
+        try:
+            selection = await asyncio.to_thread(
+                self.personal_agent_runtime.select_host_for_agent,
+                owner_user_id=owner_sub,
+                agent_id=agent_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            completed = await _settle_pre_host_retryable(
+                terminal_code="revision_host_selection_pending",
+                safe_summary="Personal-agent host selection requires recovery",
+            )
+            if completed is not None:
+                return completed
+            raise RevisionActivationRecoveryPendingError(
+                "revision_host_selection_pending"
+            ) from exc
         host = selection.session
-        if host is None or host.inventory_state != "reconciled":
+        websocket = None
+        if host is not None and host.inventory_state == "reconciled":
+            websocket = (
+                getattr(self, "_personal_agent_session_sockets", None) or {}
+            ).get(host.host_session_id)
+        if websocket is None:
+            completed = await _settle_pre_host_retryable(
+                terminal_code="revision_host_unavailable",
+                safe_summary="No reconciled personal-agent host was available",
+            )
+            if completed is not None:
+                return completed
             await self._audit_user_agent(
                 owner_sub,
                 "agent.bundle_delivered",
@@ -3109,28 +5085,7 @@ class Orchestrator:
                 outcome="failure",
             )
             return 0
-        websocket = (
-            getattr(self, "_personal_agent_session_sockets", None) or {}
-        ).get(host.host_session_id)
-        if websocket is None:
-            return 0
 
-        claimed = await self._claim_personal_agent_operation(
-            owner_user_id=owner_sub,
-            operation_kind="agent_runtime_delivery",
-            idempotency_namespace="personal_agent_revision_delivery",
-            idempotency_key=f"{agent_id}:{revision_id}",
-            normalized_identity={
-                "agent_id": agent_id,
-                "revision_id": revision_id,
-                "bundle_sha256": bundle_sha256,
-                "host_session_id": host.host_session_id,
-            },
-            wait_seconds=5.0,
-        )
-        if claimed is None:
-            return 0
-        _operation_owner, operation_claim = claimed
         preparation = CandidatePreparation(
             owner_user_id=owner_sub,
             agent_id=agent_id,
@@ -3142,6 +5097,7 @@ class Orchestrator:
             required_runtime_lock_sha256=required_runtime_lock_sha256,
             host_session_id=host.host_session_id,
             operation_fence=operation_claim.fence,
+            agent_metadata=agent_metadata,
         )
         activation_runtime_id: str | None = None
 
@@ -3158,6 +5114,10 @@ class Orchestrator:
             ).get(runtime.fence.host_session_id)
             if selected_socket is not websocket:
                 raise RuntimeError("candidate selected host session is stale")
+            # Startup is non-authoritative. LETS admission closes the previous
+            # generation, so it must follow the Plane promotion commit or a
+            # failed candidate would destroy the last-known-good authority.
+            authority = None
             loop = asyncio.get_running_loop()
             waiter = loop.create_future()
             self._personal_agent_ready_waiters[
@@ -3170,6 +5130,9 @@ class Orchestrator:
                     {
                         "type": "agent_bundle_deliver",
                         "fence": runtime.fence.to_dict(),
+                        "authority": (
+                            None if authority is None else authority.to_dict()
+                        ),
                         "runtime_contract_version": runtime_contract_version,
                         "required_runtime_lock_sha256": (
                             required_runtime_lock_sha256
@@ -3202,103 +5165,247 @@ class Orchestrator:
             async with asyncio.timeout(PERSONAL_AGENT_STARTUP_TIMEOUT_SECONDS):
                 return await asyncio.shield(waiter)
 
-        async def _stop_runtime(runtime_instance_id: str) -> None:
-            try:
-                runtime = await asyncio.to_thread(
-                    self.personal_agent_runtime.get_runtime_instance,
-                    runtime_instance_id,
-                )
-            except Exception:
-                return
-            if runtime.fence.process_id is not None:
-                selected_socket = (
-                    getattr(self, "_personal_agent_session_sockets", None) or {}
-                ).get(runtime.fence.host_session_id)
-                if selected_socket is not None:
-                    await self._safe_send(
-                        selected_socket,
-                        json.dumps(
-                            {"type": "agent_stop", "fence": runtime.fence.to_dict()},
-                            separators=(",", ":"),
-                        ),
-                    )
-            try:
-                await self._terminalize_personal_agent_runtime(
-                    runtime.fence,
-                    failure_code="revision_promotion_failed",
-                )
-            except Exception:
-                logger.debug("candidate runtime was already terminal", exc_info=True)
-
         activator = AgentRevisionActivator(
             store=self.personal_agent_revisions,
             start_candidate=_start_candidate,
             await_candidate_ready=_await_candidate_ready,
-            stop_runtime=_stop_runtime,
+            stop_runtime=self._stop_personal_agent_revision_process,
         )
-        try:
-            activation = await activator.activate(preparation)
-            online = await asyncio.to_thread(
-                self.personal_agent_runtime.get_runtime_instance,
-                activation.commit.runtime_instance_id,
-            )
-            await self._call_work_admission(
-                self.work_admission.terminalize,
-                operation_claim.fence,
-                state=OperationState.COMPLETED,
-                terminal_code=None,
-                safe_summary="Personal-agent revision is online",
-                retry_after_ms=None,
-            )
-            await self._publish_personal_agent_runtime(online)
-        except Exception:
-            try:
-                await self._call_work_admission(
-                    self.work_admission.terminalize,
-                    operation_claim.fence,
+
+        async def _activate_and_settle() -> int:
+            async def _settle_retryable() -> int | None:
+                terminal_code = "revision_promotion_recovery_pending"
+                observed = await _terminalize_and_observe(
+                    state=OperationState.RETRYABLE,
+                    terminal_code=terminal_code,
+                    safe_summary=(
+                        "Personal-agent revision promotion requires recovery"
+                    ),
+                    retry_after_ms=1000,
+                )
+                return await _resolve_retryable_settlement(
+                    observed,
+                    expected_terminal_code=terminal_code,
+                )
+
+            async def _settle_failed() -> int | None:
+                terminal_code = "revision_promotion_failed"
+                observed = await _terminalize_and_observe(
                     state=OperationState.FAILED,
-                    terminal_code="revision_promotion_failed",
+                    terminal_code=terminal_code,
                     safe_summary="Personal-agent revision activation failed",
                     retry_after_ms=None,
                 )
+                if observed.state is OperationState.COMPLETED:
+                    return await _project_completed_delivery_authority()
+                if observed.state is OperationState.RETRYABLE:
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_delivery_settlement_pending"
+                    )
+                if (
+                    observed.state is not OperationState.FAILED
+                    or observed.terminal_code != terminal_code
+                ):
+                    raise RevisionActivationError(
+                        observed.terminal_code or "revision_delivery_terminal"
+                    )
+                logger.warning(
+                    "Personal-agent revision activation failed agent=%s revision=%s",
+                    agent_id,
+                    revision_id,
+                    exc_info=True,
+                )
+                try:
+                    await self._audit_user_agent(
+                        owner_sub,
+                        "agent.bundle_delivered",
+                        "Personal-agent revision failed before durable promotion.",
+                        agent_id,
+                        outcome="failure",
+                    )
+                except Exception:
+                    logger.debug(
+                        "candidate activation failure audit was unavailable",
+                        exc_info=True,
+                    )
+                return None
+
+            try:
+                activation = await activator.activate(preparation)
+                committed_runtime_instance_id = (
+                    activation.commit.runtime_instance_id
+                )
+                if activation.cleanup_pending:
+                    cleanup = await activator.reconcile_after_crash(
+                        owner_sub,
+                        agent_id,
+                    )
+                    if (
+                        cleanup.active_revision_id != revision_id
+                        or cleanup.authoritative_runtime_instance_id
+                        != committed_runtime_instance_id
+                    ):
+                        raise RevisionActivationRecoveryPendingError(
+                            "revision_cleanup_recovery_pending"
+                        )
+            except RevisionActivationRecoveryPendingError as pending:
+                # A promotion acknowledgement may be lost on either side of the
+                # commit.  Keep an uncommitted immutable revision retryable and
+                # let an explicit child attempt retire its old runtime; if the
+                # transaction committed, its atomic COMPLETED operation and
+                # active pointers win and exact replay projects that authority.
+                completed = await _settle_retryable()
+                if completed is not None:
+                    return completed
+                raise pending
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logger.debug("delivery operation already terminal", exc_info=True)
-            logger.warning(
-                "Personal-agent revision activation failed agent=%s revision=%s",
-                agent_id,
-                revision_id,
-                exc_info=True,
+                completed = await _settle_failed()
+                if completed is not None:
+                    return completed
+                raise
+
+            # Promotion is the durable authority boundary. Everything below is
+            # a replayable projection of that committed state and must never
+            # relabel or stop the now-authoritative candidate on failure.
+            try:
+                online = await asyncio.to_thread(
+                    self.personal_agent_runtime.get_runtime_instance,
+                    committed_runtime_instance_id,
+                )
+                await self._admit_personal_agent_runtime_authority(
+                    owner_user_id=owner_sub,
+                    runtime=online,
+                    executor_conformant=(
+                        runtime_contract_version == BYO_RUNTIME_CONTRACT_VERSION
+                    ),
+                    declared_scopes=preparation.agent_metadata.declared_scopes,
+                )
+                observed_completion = await _terminalize_and_observe(
+                    state=OperationState.COMPLETED,
+                    terminal_code=None,
+                    safe_summary="Personal-agent revision is online",
+                    retry_after_ms=None,
+                )
+                if observed_completion.state in {
+                    OperationState.FAILED,
+                    OperationState.CANCELLED,
+                }:
+                    raise RevisionActivationError(
+                        observed_completion.terminal_code
+                        or "revision_delivery_terminal"
+                    )
+                if observed_completion.state is not OperationState.COMPLETED:
+                    raise RevisionActivationRecoveryPendingError(
+                        "revision_delivery_settlement_pending"
+                    )
+                await self._publish_personal_agent_runtime(online)
+            except (
+                RevisionActivationError,
+                RevisionActivationRecoveryPendingError,
+            ):
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Personal-agent revision is active but route projection is pending "
+                    "agent=%s revision=%s",
+                    agent_id,
+                    revision_id,
+                    exc_info=True,
+                )
+                raise RevisionActivationRecoveryPendingError(
+                    "revision_projection_recovery_pending"
+                ) from exc
+
+            try:
+                await self._audit_user_agent(
+                    owner_sub,
+                    "agent.bundle_delivered",
+                    "Delivered and durably promoted one immutable personal-agent revision.",
+                    agent_id,
+                    outcome="success",
+                )
+            except Exception:
+                logger.debug(
+                    "candidate activation success audit was unavailable",
+                    exc_info=True,
+                )
+            return 1
+
+        # Keep the exact delivery operation selected while candidate startup,
+        # promotion, durable first-winner settlement, and route projection run.
+        # A concurrent retention/replay pass may otherwise expire the default
+        # slot lease and begin a child attempt while this activation is still
+        # using its original execution fence.  Promotion still validates that
+        # fence transactionally; renewal preserves liveness, not authority.
+        stop_activation_renewal = asyncio.Event()
+        activation_renewal_task = asyncio.create_task(
+            self._renew_personal_agent_operation_lease(
+                operation_claim.fence,
+                stop_activation_renewal,
+            ),
+            name=(
+                "personal-agent-revision-lease-"
+                f"{operation_claim.fence.operation_id}"
+            ),
+        )
+        activation_task = asyncio.create_task(
+            _activate_and_settle(),
+            name=f"personal-agent-revision-activation-{revision_id}",
+        )
+        try:
+            return await asyncio.shield(activation_task)
+        except asyncio.CancelledError as cancellation:
+            _result, activation_error, _repeated_cancellation = (
+                await _join_task_outcome_through_cancellation(activation_task)
             )
-            await self._audit_user_agent(
-                owner_sub,
-                "agent.bundle_delivered",
-                "Personal-agent revision failed before durable promotion.",
-                agent_id,
-                outcome="failure",
-            )
-            return 0
+            if activation_error is not None:
+                raise cancellation from activation_error
+            raise
         finally:
+            stop_activation_renewal.set()
+            activation_renewal_task.cancel()
+            (
+                _renewal_result,
+                renewal_error,
+                _renewal_cancellation,
+            ) = await _join_task_outcome_through_cancellation(
+                activation_renewal_task
+            )
+            if renewal_error is not None and not isinstance(
+                renewal_error,
+                asyncio.CancelledError,
+            ):
+                logger.warning(
+                    "Personal-agent revision lease task failed operation_id=%s reason=%s",
+                    operation_claim.fence.operation_id,
+                    type(renewal_error).__name__,
+                )
             if activation_runtime_id is not None:
                 self._personal_agent_ready_waiters.pop(
                     activation_runtime_id, None
                 )
 
-        await self._audit_user_agent(
-            owner_sub,
-            "agent.bundle_delivered",
-            "Delivered and durably promoted one immutable personal-agent revision.",
-            agent_id,
-            outcome="success",
-        )
-        return 1
-
     async def delete_user_agent(self, owner_sub, agent_id):
         """Commit the durable tombstone generation before any host cleanup."""
         from shared.local_transport import TunnelSocket
         from orchestrator import user_agents as _ua
-        row = await asyncio.to_thread(_ua.get_user_agent, self.history.db, agent_id)
+        row = await asyncio.to_thread(
+            _ua.get_user_agent,
+            self.user_agent_registry,
+            agent_id,
+        )
         if row is None or row.get("owner_user_id") != owner_sub:
             return False
+        # Revocation is the destructive authority boundary.  In enforce mode
+        # the durable tombstone cannot commit until the current LETS branch is
+        # terminal; shadow records a would-deny without blocking deletion.
+        await self._revoke_personal_agent_authority(
+            owner_user_id=owner_sub,
+            agent_id=agent_id,
+            reason_code="agent_deleted",
+        )
         try:
             tombstone = await asyncio.to_thread(
                 self.personal_agent_runtime.tombstone_agent,
@@ -3367,6 +5474,14 @@ class Orchestrator:
         ):
             self.agents.pop(agent_id, None)
         self.agent_cards.pop(agent_id, None)
+        authorities = getattr(self, "_personal_agent_runtime_authorities", None) or {}
+        for runtime_id, authority in list(authorities.items()):
+            if authority.agent_id == agent_id and authority.owner_id == owner_sub:
+                authorities.pop(runtime_id, None)
+                self.unregister_governed_dispatch_runtime(
+                    agent_id,
+                    runtime_id=runtime_id,
+                )
         sent_runtime_ids: set[str] = set()
         for runtime_id, socket in fenced_sockets:
             fence = socket.runtime_fence
@@ -3408,7 +5523,7 @@ class Orchestrator:
                 except Exception:
                     logger.debug("fenced agent_stop send failed", exc_info=True)
         if legacy_socket is not None:
-            # Explicit feature-058 compatibility only. V2 cleanup is never
+            # Explicit feature-058 compatibility only. Legacy cleanup is never
             # broadcast to unrelated owner sockets or unselected standbys.
             try:
                 await self._safe_send(
@@ -3449,9 +5564,12 @@ class Orchestrator:
         if is_tunnel:
             from orchestrator.user_agents import authorize_registration
             owner_sub = getattr(websocket, "owner_sub", None)
-            reserved = frozenset(getattr(self.history.db, "_FIRST_PARTY_PUBLIC_AGENT_IDS", ()) or ())
+            reserved = frozenset(FIRST_PARTY_PUBLIC_AGENT_IDS)
             ok, reason = await asyncio.to_thread(
-                authorize_registration, self.history.db, owner_sub, card.agent_id,
+                authorize_registration,
+                self.user_agent_registry,
+                owner_sub,
+                card.agent_id,
                 reserved_ids=reserved)
             if not ok:
                 logger.warning(
@@ -3522,6 +5640,23 @@ class Orchestrator:
 
         if websocket is not None:
             self.agents[card.agent_id] = websocket
+        # Executor posture is host-owned.  Ignore any self-declared claim on
+        # the card: externally reachable agents remain dispatch-mediated-only
+        # until lifecycle publishes an exact conforming runtime descriptor.
+        card.metadata = dict(getattr(card, "metadata", {}) or {})
+        _dispatch_runtime = getattr(self, "_governed_dispatch_runtimes", {}).get(
+            card.agent_id
+        )
+        if _dispatch_runtime is not None:
+            card.metadata["astral_dispatch_posture"] = (
+                _dispatch_runtime.dispatch_posture
+            )
+            card.metadata["protected_executor"] = bool(
+                _dispatch_runtime.executor_conformant
+            )
+        elif card.agent_id not in getattr(self, "local_agents", {}):
+            card.metadata["astral_dispatch_posture"] = "dispatch_mediated_only"
+            card.metadata["protected_executor"] = False
         self.agent_cards[card.agent_id] = card
 
         # 058: a tunnel registration is the delivered, validated user agent
@@ -3538,7 +5673,9 @@ class Orchestrator:
                 ] = websocket
                 try:
                     await asyncio.to_thread(
-                        _ua.go_live, self.history.db, card.agent_id,
+                        _ua.go_live,
+                        self.user_agent_registry,
+                        card.agent_id,
                         host_session_id=getattr(websocket, "host_session_id", None))
                 except Exception:
                     logger.warning(
@@ -3670,8 +5807,8 @@ class Orchestrator:
         tool_names = [c["name"] for c in caps]
 
         def _resolve_ownership():
-            """Ownership read/auto-assign off the event loop (sync DB reads)."""
-            ownership = self.history.db.get_agent_ownership(card.agent_id)
+            """Ownership read/auto-assign through the typed Plane registry."""
+            ownership = self.user_agent_registry.get_agent_ownership(card.agent_id)
             if not ownership:
                 default_owner = os.environ.get("DEFAULT_AGENT_OWNER", "")
                 if default_owner:
@@ -3682,12 +5819,13 @@ class Orchestrator:
                     # admin turns it on. User-created agents already carry
                     # explicit private ownership from agent_lifecycle before they
                     # register, so they never reach this branch (drafts likewise).
-                    is_builtin = (
-                        card.agent_id in self.history.db._FIRST_PARTY_PUBLIC_AGENT_IDS
-                    )
-                    self.history.db.set_agent_ownership(
+                    is_builtin = card.agent_id in FIRST_PARTY_PUBLIC_AGENT_IDS
+                    self.user_agent_registry.set_agent_ownership(
                         card.agent_id, default_owner, is_public=is_builtin)
-                    ownership = self.history.db.get_agent_ownership(card.agent_id) or {}
+                    ownership = (
+                        self.user_agent_registry.get_agent_ownership(card.agent_id)
+                        or {}
+                    )
                     logger.info(
                         "Auto-assigned agent '%s' to %s (public=%s)",
                         card.agent_id, default_owner, is_builtin)
@@ -6102,7 +8240,7 @@ class Orchestrator:
         from llm_config.ws_handlers import handle_llm_config_set
 
         if work.frame.action == "chrome_llm_save":
-            from webrender.chrome.surfaces.llm import (
+            from orchestrator.projection_surfaces.llm import (
                 _fields,
                 _provider_key,
                 _resolve_api_key,
@@ -7427,7 +9565,7 @@ class Orchestrator:
                 msg = Message.from_json(message)
             except ProtocolValidationError:
                 # Authenticate/register the UI normally, but refuse only its
-                # malformed optional host capability with the exact safe v2
+                # malformed optional host capability with the exact safe v3
                 # envelope. This preserves the existing non-disclosing auth
                 # path while ensuring malformed host data never gains a session.
                 if not (
@@ -7457,11 +9595,11 @@ class Orchestrator:
                     logger.info(f"UI registered: {user_data.get('preferred_username', 'unknown')}")
                     user_data["_raw_token"] = token  # Store raw token for RFC 8693 delegation
                     self.ui_sessions[websocket] = user_data
-                    # A structured v2 advertisement is validated against the
+                    # A structured v3 advertisement is validated against the
                     # packaged runtime contract and receives a server-owned host
                     # session before it becomes eligible. The legacy boolean is
                     # retained only for feature-058 compatibility tests/clients;
-                    # it never participates in v2 selection or delivery.
+                    # it never participates in v3 selection or delivery.
                     _hosts = getattr(self, "_agent_host_sockets", None)
                     if _hosts is not None:
                         if invalid_host_field is not None:
@@ -7542,7 +9680,7 @@ class Orchestrator:
                     # Feature 052 (FR-012): the handshake's independent reads
                     # run concurrently while the frames below go out.
                     _prefs_task = asyncio.create_task(asyncio.to_thread(
-                        self.history.db.get_user_preferences, user_id))
+                        self._load_user_preferences, user_id))
                     _tools_task = asyncio.create_task(asyncio.to_thread(
                         self.compute_tools_available_for_user, user_id))
 
@@ -7579,6 +9717,9 @@ class Orchestrator:
                         # Feature 051: iOS/macOS are chrome-model natives too
                         # (the watch stays chrome-free by design).
                         if _dt in ("windows", "android", "ios", "macos"):
+                            from orchestrator.chrome_availability import (
+                                projection_chrome_availability,
+                            )
                             from shared.protocol import ChromeMenu
                             from webrender.chrome.menu_model import menu_model_dict
                             _roles = list((user_data.get("realm_access") or {}).get("roles") or [])
@@ -7589,7 +9730,11 @@ class Orchestrator:
                             await self._safe_send(
                                 websocket,
                                 ChromeMenu(model=menu_model_dict(
-                                    _roles, include_admin=False, include_tour=False)).to_json(),
+                                    _roles,
+                                    include_admin=False,
+                                    include_tour=False,
+                                    **projection_chrome_availability(),
+                                )).to_json(),
                             )
                     except Exception as _e:  # pragma: no cover — non-fatal push
                         logger.debug(f"chrome_menu push failed (non-fatal): {_e}")
@@ -7754,9 +9899,11 @@ class Orchestrator:
                         and flags.is_enabled("bg_continuity")
                     ):
                         try:
-                            owned = await self.history.db.afetch_one(
-                                "SELECT id FROM chats WHERE id = ? AND user_id = ?",
-                                (msg.session_id, user_id))
+                            owned = await asyncio.to_thread(
+                                self.history.get_conversation_record,
+                                msg.session_id,
+                                user_id,
+                            )
                             if owned:
                                 self._ws_active_chat[id(websocket)] = msg.session_id
                                 await self._resume_chat_streams(
@@ -8396,8 +10543,17 @@ class Orchestrator:
                             try:
                                 from orchestrator.attachments.message_attachment_repo import MessageAttachmentRepository
                                 from orchestrator.attachments.repository import AttachmentRepository
-                                _link_repo = MessageAttachmentRepository(self.history.db)
-                                _att_repo = AttachmentRepository(self.history.db)
+                                from orchestrator.plane_repository_context import (
+                                    plane_source_from_orchestrator,
+                                )
+
+                                _source = plane_source_from_orchestrator(self)
+                                _link_repo = MessageAttachmentRepository.from_plane_source(
+                                    _source
+                                )
+                                _att_repo = AttachmentRepository.from_plane_source(
+                                    _source
+                                )
                                 for m in chat.get("messages", []):
                                     if m.get("role") != "user" or not m.get("id"):
                                         continue
@@ -8917,8 +11073,10 @@ class Orchestrator:
                     if theme_data:
                         try:
                             await asyncio.to_thread(
-                                self.history.db.set_user_preferences,
-                                user_id, {"theme": theme_data})
+                                self._save_theme_preference,
+                                user_id,
+                                theme_data,
+                            )
                         except Exception as e:
                             logger.warning(f"Failed to save theme for {user_id}: {e}")
 
@@ -9053,16 +11211,38 @@ class Orchestrator:
                         }))
                         return
 
-                    # Inject per-user credentials (E2E encrypted — only agent can decrypt)
-                    args = dict(params)
-                    if user_id and agent_id:
-                        creds = self.credential_manager.get_agent_credentials_encrypted(user_id, agent_id)
-                        if creds:
-                            args["_credentials"] = creds
-                            args["_credentials_encrypted"] = True
-
                     try:
-                        result = await self._execute_with_retry(websocket, agent_id, tool_name, args)
+                        # Legacy clients lack component identity, but they do
+                        # not get a legacy authorization bypass: run the same
+                        # complete Astral gate/rewrite stack before entering
+                        # the governed final adapter.
+                        chat_id = (msg.payload or {}).get("chat_id")
+                        auth = await self._authorize_and_prepare(
+                            websocket,
+                            agent_id,
+                            tool_name,
+                            dict(params),
+                            chat_id,
+                            user_id,
+                            stream_params=dict(params),
+                        )
+                        if isinstance(auth, GateRefusal):
+                            if auth.render_components:
+                                await self.send_ui_render(
+                                    websocket,
+                                    auth.render_components,
+                                    target=auth.render_target or "chat",
+                                )
+                            return
+                        result = await self._execute_with_retry_audited(
+                            websocket,
+                            agent_id,
+                            tool_name,
+                            auth.args,
+                            chat_id,
+                            user_id,
+                            channel="websocket",
+                        )
                         if result and result.ui_components:
                             await self.send_ui_render(websocket, result.ui_components)
                         elif result and result.error:
@@ -9849,7 +12029,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 result_commit_id=correlation["result_commit_id"],
                 operation_id=str(operation.operation_id),
                 now=datetime.now(UTC),
-                transaction=correlation["cursor"],
+                transaction=correlation["transaction"],
             )
 
         accepted = await asyncio.to_thread(
@@ -10507,11 +12687,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             operation, _owner, _fence = authority
             connection_generation = operation.connection_generation
             request_generation = operation.request_generation
-            chat_row = await self.history.db.afetch_one(
-                "SELECT render_revision FROM chats WHERE id = ? AND user_id = ?",
-                (chat_id, uid),
+            chat_record = await asyncio.to_thread(
+                self.history.get_conversation_record,
+                chat_id,
+                uid,
             )
-            if chat_row is None:
+            if chat_record is None:
                 raise ConversationNotFound("conversation not found")
             self._bind_conversation_scope(
                 websocket,
@@ -10519,7 +12700,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 connection_generation=connection_generation,
                 request_generation=request_generation,
                 purpose="commit",
-                base_render_revision=int(chat_row.get("render_revision") or 0),
+                base_render_revision=int(chat_record.render_revision or 0),
             )
         # Short user-facing label for cross-device task frames (055).
         title = " ".join((display_message or message or "").split())[:60]
@@ -10580,8 +12761,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ``AuthoritySkip``; callers bind the former with
         :meth:`_bind_machine_turn` and honor the latter fail-closed."""
         from orchestrator.chain_authority import MachineTurnAuthority
-        from orchestrator.offline_grant import OfflineGrantStore
-        grants = getattr(self, "offline_grants", None) or OfflineGrantStore(self.history.db)
+        grants = self.offline_grants
         return await MachineTurnAuthority(self, grants).derive(
             user_id=user_id, agent_id=agent_id,
             consented_scopes=consented_scopes, grant_id=grant_id,
@@ -10745,6 +12925,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             task_id=(correlation_id or "sched")[:8],
             chat_id=target_chat,
             user_id=user_id,
+            kind="scheduled",
         )
         vws = VirtualWebSocket(bg)
         if authority is not None:
@@ -10965,32 +13146,32 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 ):
                     continue
                 await self._safe_send(websocket, json.dumps(self._task_started_frame(t)))
-            rows = await self.history.db.afetch_all(
-                "SELECT task_id, chat_id, status, summary, completed_at "
-                "FROM background_task WHERE user_id = ? AND notified = FALSE "
-                "AND status IN ('completed', 'failed', 'cancelled', 'retryable') "
-                "ORDER BY created_at DESC LIMIT 20", (user_id,))
+            rows = await asyncio.to_thread(
+                self._background_tasks_for_replay,
+                user_id,
+            )
             delivered = []
             for r in rows:
-                completed_at = r.get("completed_at")
+                completed_at = r.completed_at
                 sent = await self._safe_send(websocket, json.dumps({
                     "type": "task_completed",
                     "payload": {
-                        "task_id": r["task_id"],
-                        "chat_id": r["chat_id"],
-                        "status": r["status"],
+                        "task_id": r.task_id,
+                        "chat_id": r.conversation_id,
+                        "status": r.status.value,
                         "completed_at": completed_at.isoformat() if completed_at else None,
-                        "summary": r.get("summary") or "",
+                        "summary": r.summary or "",
                         "replay": True,
                     },
                 }))
                 if sent:
-                    delivered.append(r["task_id"])
+                    delivered.append(r.task_id)
             if delivered:
-                ph = ", ".join(["?"] * len(delivered))
-                await self.history.db.aexecute(
-                    f"UPDATE background_task SET notified = TRUE WHERE task_id IN ({ph})",
-                    tuple(delivered))
+                await asyncio.to_thread(
+                    self._mark_background_tasks_notified,
+                    user_id,
+                    tuple(delivered),
+                )
         except Exception:
             logger.debug("background-task replay failed (non-fatal)", exc_info=True)
 
@@ -11102,10 +13283,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.warning("attachment wiring imports failed (non-fatal)", exc_info=True)
             return message
 
-        db = self.history.db
-        att_repo = AttachmentRepository(db)
-        link_repo = MessageAttachmentRepository(db)
-        parser_repo = AttachmentParserRepository(db)
+        from orchestrator.plane_repository_context import (
+            plane_source_from_orchestrator,
+        )
+
+        source = plane_source_from_orchestrator(self)
+        att_repo = AttachmentRepository.from_plane_source(source)
+        link_repo = MessageAttachmentRepository.from_plane_source(source)
+        parser_repo = AttachmentParserRepository.from_plane_source(source)
 
         async def _audit_drop(aid):
             try:
@@ -11146,7 +13331,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             seen.add(aid)
             att = None
             try:
-                att = att_repo.get_by_id(aid, user_id)
+                att = await att_repo.aget_by_id(aid, user_id)
             except Exception:
                 logger.debug("attachment lookup failed", exc_info=True)
             if att is None:
@@ -11154,12 +13339,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await _audit_drop(aid)
                 continue
             try:
-                link_repo.insert(chat_id=chat_id, attachment_id=aid,
-                                 user_id=user_id, message_id=turn_message_id)
+                await link_repo.ainsert(
+                    chat_id=chat_id,
+                    attachment_id=aid,
+                    user_id=user_id,
+                    message_id=turn_message_id,
+                )
             except Exception:
                 logger.debug("message_attachment insert failed", exc_info=True)
             try:
-                cov = parser_registry.coverage(att.extension, att.category, parser_repo=parser_repo)
+                cov = await asyncio.to_thread(
+                    parser_registry.coverage,
+                    att.extension,
+                    att.category,
+                    parser_repo=parser_repo,
+                )
                 readable = cov["tool"] if cov.get("covered") else "pending parser"
             except Exception:
                 readable = "unknown"
@@ -12097,10 +14291,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # uses its full default.
                 def _saved_tool_selection():
                     """Bound-agent saved tool selection, read off the event loop."""
-                    bound_agent_id = self.history.db.get_chat_agent(chat_id) if chat_id else None
+                    bound_agent_id = (
+                        self.history.get_chat_agent(chat_id, user_id=user_id)
+                        if chat_id
+                        else None
+                    )
                     if bound_agent_id is None:
                         return None
-                    return self.history.db.get_user_tool_selection(user_id, bound_agent_id)
+                    return self.tool_permissions.get_tool_selection(
+                        user_id,
+                        bound_agent_id,
+                    )
 
                 saved = await asyncio.to_thread(_saved_tool_selection)
                 if saved is not None and len(saved) > 0:
@@ -12283,7 +14484,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 from orchestrator.chat_steps import ChatStepRecorder
 
                 recorder = ChatStepRecorder(
-                    db=self.history.db,
+                    plane_runtime=self.runtime_composition.plane.runtime,
+                    plane_repositories=self.runtime_composition.plane.repositories,
                     websocket=websocket,
                     safe_send=self._safe_send,
                     chat_id=chat_id,
@@ -12378,7 +14580,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # always work even if you've disabled the live version.
         try:
             disabled_agents = (
-                set(await asyncio.to_thread(self.history.db.get_user_disabled_agents, user_id))
+                set(
+                    await asyncio.to_thread(
+                        self.tool_permissions.list_disabled_agents,
+                        user_id,
+                    )
+                )
                 if user_id and not draft_agent_id
                 else set()
             )
@@ -14796,7 +17003,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # 1) User has disabled the whole agent.
         if user_id:
             try:
-                disabled = set(self.history.db.get_user_disabled_agents(user_id))
+                disabled = set(self.tool_permissions.list_disabled_agents(user_id))
             except Exception:  # pragma: no cover — defensive
                 disabled = set()
             if agent_id in disabled:
@@ -14823,10 +17030,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # transcript can still tempt the model into re-emitting one).
         if user_id and agent_id == "remote-compute-1" and tool_name != "list_machines":
             from orchestrator import remote_machines
+            from orchestrator.plane_repository_context import (
+                plane_source_from_orchestrator,
+            )
 
             try:
                 machineless = not remote_machines.owns_any_machine(
-                    self.history.db, user_id
+                    plane_source_from_orchestrator(self), user_id
                 )
             except Exception:  # pragma: no cover — defensive
                 machineless = False
@@ -14857,12 +17067,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # 4) Per-chat tool picker.
         if user_id and chat_id:
             try:
-                bound_agent_id = self.history.db.get_chat_agent(chat_id)
+                bound_agent_id = self.history.get_chat_agent(
+                    chat_id,
+                    user_id=user_id,
+                )
             except Exception:  # pragma: no cover — defensive
                 bound_agent_id = None
             if bound_agent_id is not None:
                 try:
-                    saved = self.history.db.get_user_tool_selection(user_id, bound_agent_id)
+                    saved = self.tool_permissions.get_tool_selection(
+                        user_id,
+                        bound_agent_id,
+                    )
                 except Exception:  # pragma: no cover — defensive
                     saved = None
                 if saved is not None and len(saved) > 0 and tool_name not in saved:
@@ -15095,6 +17311,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         stream_params: Optional[Dict] = None,
         parent_token: Optional[Dict[str, Any]] = None,
         initiating_agent_id: Optional[str] = None,
+        auto_subscribe_stream: bool = True,
     ):
         """Run the gate stack, auditing a HOP's refusal (056 SC-002).
 
@@ -15108,7 +17325,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         outcome = await self._run_gate_stack(
             websocket, agent_id, tool_name, args, chat_id, user_id,
             stream_params=stream_params, parent_token=parent_token,
-            initiating_agent_id=initiating_agent_id)
+            initiating_agent_id=initiating_agent_id,
+            auto_subscribe_stream=auto_subscribe_stream)
         if parent_token is not None and isinstance(outcome, GateRefusal) \
                 and not outcome.hop_audited:
             from audit.recorder import make_correlation_id
@@ -15125,6 +17343,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         stream_params: Optional[Dict] = None,
         parent_token: Optional[Dict[str, Any]] = None,
         initiating_agent_id: Optional[str] = None,
+        auto_subscribe_stream: bool = True,
     ):
         """Run the FULL single-path gate stack once (056 US3, FR-017/SC-006).
 
@@ -15617,8 +17836,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         # 055 US2: a push-streamable tool also streams — subscribe this
         # user's sockets on the chat before the one-shot dispatch (fail-open).
-        await self._auto_subscribe_stream_artifacts(
-            websocket, chat_id, user_id, tool_name, stream_params)
+        if auto_subscribe_stream:
+            await self._auto_subscribe_stream_artifacts(
+                websocket, chat_id, user_id, tool_name, stream_params)
 
         return PreparedDispatch(
             args=args,
@@ -15777,7 +17997,28 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             correlation_id=auth.hop_correlation_id,
             args_meta={k: v for k, v in args.items() if not (isinstance(k, str) and k.startswith("_"))},
         ) as _audit_ctx:
-            result = await self._execute_with_retry(websocket, agent_id, tool_name, args)
+            result = await self._execute_with_retry(
+                websocket,
+                agent_id,
+                tool_name,
+                args,
+                user_id=user_id,
+                channel=(
+                    "chained"
+                    if parent_token is not None
+                    else self._protected_dispatch_channel(websocket)
+                ),
+                audit_correlation_id=_audit_ctx.correlation_id,
+                audit_actor_user_id=getattr(
+                    _audit_ctx, "actor_user_id", user_id
+                ),
+                audit_auth_principal=getattr(
+                    _audit_ctx, "auth_principal", user_id
+                ),
+                audit_conversation_id=getattr(
+                    _audit_ctx, "conversation_id", chat_id
+                ),
+            )
             if result and result.error:
                 _audit_ctx.set_outcome("failure", str(result.error.get("message", ""))[:1000])
             elif result is None:
@@ -16340,7 +18581,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             )
         return swept
 
-    async def _execute_with_retry_audited(self, websocket, agent_id, tool_name, args, chat_id=None, user_id=None):
+    async def _execute_with_retry_audited(
+        self,
+        websocket,
+        agent_id,
+        tool_name,
+        args,
+        chat_id=None,
+        user_id=None,
+        *,
+        channel: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ):
         """Dispatch a tool with the SAME ToolDispatchAudit start/end events,
         taint output-recording, and POST-tool hooks as the single-tool path
         (feature 040 / FR-032; 056 US3 gate-parity).
@@ -16365,7 +18617,28 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             args_meta={k: v for k, v in (args or {}).items() if not (isinstance(k, str) and k.startswith("_"))},
             invocation_channel=(claims or {}).get("_invocation_channel"),
         ) as _audit_ctx:
-            result = await self._execute_with_retry(websocket, agent_id, tool_name, args)
+            result = await self._execute_with_retry(
+                websocket,
+                agent_id,
+                tool_name,
+                args,
+                user_id=user_id,
+                channel=self._protected_dispatch_channel(
+                    websocket,
+                    explicit=channel,
+                ),
+                audit_correlation_id=_audit_ctx.correlation_id,
+                audit_actor_user_id=getattr(
+                    _audit_ctx, "actor_user_id", user_id
+                ),
+                audit_auth_principal=getattr(
+                    _audit_ctx, "auth_principal", user_id
+                ),
+                audit_conversation_id=getattr(
+                    _audit_ctx, "conversation_id", chat_id
+                ),
+                timeout=timeout,
+            )
             if result and result.error:
                 _audit_ctx.set_outcome("failure", str(result.error.get("message", ""))[:1000])
             elif result is None:
@@ -16406,25 +18679,46 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ))
         return result
 
-    async def execute_mcp_tool(
+    async def execute_authorized_tool(
         self,
         *,
-        claims: Dict[str, Any],
-        user_id: str,
+        claims: Optional[Dict[str, Any]],
+        user_id: Optional[str],
         agent_id: str,
         tool_name: str,
         arguments: Dict[str, Any],
+        channel: str,
+        chat_id: Optional[str] = None,
+        websocket=None,
+        delegation_subject_token: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> MCPResponse:
-        """Execute one MCP call through the complete shared authorization stack."""
+        """Execute one non-chat invocation through every Astral/final gate.
 
-        # This hashable sentinel supplies verified claims to policy, LLM-context,
-        # delegation, and audit seams without creating a UI transport or retaining
-        # the inbound bearer. It is removed in all outcomes.
-        invocation = object()
-        safe_claims = dict(claims)
-        safe_claims.pop("_raw_token", None)
-        safe_claims["_invocation_channel"] = "mcp"
-        self.ui_sessions[invocation] = safe_claims
+        ``claims`` and ``delegation_subject_token`` must already have been
+        authenticated by the transport.  The bearer is retained only in a
+        request-local synthetic session long enough for the existing RFC 8693
+        exchange and is never copied into audit claims or caller capabilities.
+        Supplying a real ``websocket`` reuses its already-verified session.
+        """
+
+        if channel not in {
+            "rest", "websocket", "a2a", "mcp", "background", "scheduled",
+            "chained", "stream",
+        }:
+            raise ValueError("invalid protected dispatch channel")
+
+        # A hashable sentinel supplies verified transport identity to policy,
+        # delegation, and audit seams without fabricating a UI connection.
+        invocation = websocket if websocket is not None else object()
+        owns_invocation = websocket is None
+        if owns_invocation:
+            safe_claims = dict(claims or {})
+            safe_claims.pop("_raw_token", None)
+            if delegation_subject_token:
+                safe_claims["_raw_token"] = delegation_subject_token
+            safe_claims["_invocation_channel"] = channel
+            self.ui_sessions[invocation] = safe_claims
         auth = None
         result: Optional[MCPResponse] = None
         try:
@@ -16433,7 +18727,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 agent_id,
                 tool_name,
                 dict(arguments),
-                None,
+                chat_id,
                 user_id,
                 stream_params=dict(arguments),
             )
@@ -16444,8 +18738,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 agent_id,
                 tool_name,
                 auth.args,
-                chat_id=None,
+                chat_id=chat_id,
                 user_id=user_id,
+                channel=channel,
+                timeout=timeout,
             )
             if result is None:
                 return MCPResponse(
@@ -16460,7 +18756,31 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 finally:
                     self._pending_cap_entries.pop(cap_job_id, None)
                 await self._release_hop_cap_slot(cap_job_id)
-            self.ui_sessions.pop(invocation, None)
+            if owns_invocation:
+                self.ui_sessions.pop(invocation, None)
+
+    async def execute_mcp_tool(
+        self,
+        *,
+        claims: Dict[str, Any],
+        user_id: str,
+        agent_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> MCPResponse:
+        """Execute one MCP call through the complete shared authorization stack."""
+
+        # MCP authentication has already exchanged the inbound bearer at the
+        # endpoint.  The existing MCP delegation seam mints from verified
+        # claims, so the raw token is intentionally not retained here.
+        return await self.execute_authorized_tool(
+            claims=claims,
+            user_id=user_id,
+            agent_id=agent_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            channel="mcp",
+        )
 
     async def execute_parallel_tools(self, websocket, tool_calls, tool_to_agent: Dict, chat_id: str = None, user_id: str = None, tool_to_unqualified: Optional[Dict[str, str]] = None) -> List[Optional[MCPResponse]]:
         """Execute multiple tool calls with concurrency safety.
@@ -16727,9 +19047,98 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         return final_results
 
+    def _governed_dispatch_adapter(self):
+        """Return the bound adapter, with an exact-off fallback for test stubs."""
+
+        adapter = getattr(self, "governed_final_dispatch", None)
+        if adapter is not None:
+            return adapter
+        from orchestrator.governed_dispatch import GovernedFinalDispatch
+
+        return GovernedFinalDispatch.off()
+
+    async def _execute_governed_attempt(
+        self,
+        websocket,
+        agent_id: str,
+        tool_name: str,
+        args: Dict,
+        *,
+        user_id: Optional[str],
+        channel: str,
+        audit_correlation_id: Optional[str],
+        actor_user_id: Optional[str],
+        auth_principal: Optional[str],
+        conversation_id: Optional[str],
+        invoke,
+    ) -> Optional[MCPResponse]:
+        """Enter the final adapter around exactly one physical actuator call."""
+
+        from orchestrator.governed_dispatch import GovernedDispatchError
+
+        adapter = self._governed_dispatch_adapter()
+        scope = self.tool_permissions.get_tool_scope(agent_id, tool_name) or ""
+        correlation = audit_correlation_id
+        if correlation is None:
+            correlation = (
+                "lets-off"
+                if adapter.mode == "off"
+                else f"dispatch-{_uuid.uuid4()}"
+            )
+
+        try:
+            result = await adapter.execute(
+                owner_id=user_id,
+                agent_id=agent_id,
+                tool_id=tool_name,
+                scope=scope,
+                channel=channel,
+                audit_correlation_id=correlation,
+                final_arguments=args,
+                invoke=invoke,
+                actor_user_id=actor_user_id,
+                auth_principal=auth_principal,
+                conversation_id=conversation_id,
+            )
+        except GovernedDispatchError as exc:
+            # Gateway transport has already performed its bounded same-ID
+            # retries.  Never feed an authorization uncertainty back into the
+            # legacy physical retry loop under a new operation identity.
+            return MCPResponse(
+                error={
+                    "code": exc.code,
+                    "message": "Governed tool authorization was refused",
+                    "retryable": False,
+                }
+            )
+
+        # A legacy transport timeout has no proof that the physical effect did
+        # not run.  Enforce mode therefore reports uncertainty instead of
+        # blindly authorizing a second non-idempotent attempt.  Structured
+        # agent/tool errors retain the historical known-result retry behavior.
+        if (
+            adapter.mode == "enforce"
+            and result is not None
+            and isinstance(result.error, dict)
+            and result.error.get("retryable") is True
+            and result.error.get("code") is None
+        ):
+            result.error = {
+                **result.error,
+                "code": "outcome_uncertain",
+                "retryable": False,
+            }
+        return result
+
     async def _execute_with_retry(
         self, websocket, agent_id: str, tool_name: str, args: Dict,
-        max_retries: int = None
+        max_retries: int = None, *, user_id: Optional[str] = None,
+        channel: Optional[str] = None,
+        audit_correlation_id: Optional[str] = None,
+        audit_actor_user_id: Optional[str] = None,
+        audit_auth_principal: Optional[str] = None,
+        audit_conversation_id: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> Optional[MCPResponse]:
         """Execute a tool call with up to max_retries attempts.
 
@@ -16743,9 +19152,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         for attempt in range(1, max_retries + 1):
             result = await self.execute_tool_and_wait(
-                agent_id, tool_name, args,
-                timeout=TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0),
-                ui_websocket=websocket)
+                agent_id,
+                tool_name,
+                args,
+                timeout=(
+                    timeout
+                    if timeout is not None
+                    else TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
+                ),
+                ui_websocket=websocket,
+                protected_owner_id=user_id,
+                protected_channel=self._protected_dispatch_channel(
+                    websocket,
+                    explicit=channel,
+                ),
+                protected_audit_correlation_id=audit_correlation_id,
+                protected_actor_user_id=audit_actor_user_id,
+                protected_auth_principal=audit_auth_principal,
+                protected_conversation_id=audit_conversation_id,
+            )
             last_result = result
 
             # Success: no error at all
@@ -16795,7 +19220,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         return last_result
 
-    async def execute_tool_and_wait(self, agent_id: str, tool_name: str, args: Dict, timeout: float = 30.0, ui_websocket=None) -> Optional[MCPResponse]:
+    async def execute_tool_and_wait(
+        self,
+        agent_id: str,
+        tool_name: str,
+        args: Dict,
+        timeout: float = 30.0,
+        ui_websocket=None,
+        protected_owner_id: Optional[str] = None,
+        protected_channel: Optional[str] = None,
+        protected_audit_correlation_id: Optional[str] = None,
+        protected_actor_user_id: Optional[str] = None,
+        protected_auth_principal: Optional[str] = None,
+        protected_conversation_id: Optional[str] = None,
+    ) -> Optional[MCPResponse]:
         """Send an MCP tool call to an agent and wait for the response.
 
         Strategy: Always try WebSocket first (fastest, bidirectional), then
@@ -16818,7 +19256,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 step_id = None
 
         try:
-            result = await self._dispatch_tool_call(agent_id, tool_name, args, timeout, ui_websocket)
+            result = await self._dispatch_tool_call(
+                agent_id,
+                tool_name,
+                args,
+                timeout,
+                ui_websocket,
+                protected_owner_id=protected_owner_id,
+                protected_channel=protected_channel,
+                protected_audit_correlation_id=protected_audit_correlation_id,
+                protected_actor_user_id=protected_actor_user_id,
+                protected_auth_principal=protected_auth_principal,
+                protected_conversation_id=protected_conversation_id,
+            )
             if recorder is not None and step_id is not None:
                 # R6: if the step was cancelled mid-flight, drop the result
                 # silently so the assistant reply does not include it.
@@ -16843,9 +19293,40 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     pass
             raise
 
-    async def _dispatch_tool_call(self, agent_id: str, tool_name: str, args: Dict, timeout: float, ui_websocket) -> Optional[MCPResponse]:
-        """Internal: actually dispatch the tool call (in-process → WebSocket → A2A)."""
+    async def _dispatch_tool_call(
+        self,
+        agent_id: str,
+        tool_name: str,
+        args: Dict,
+        timeout: float,
+        ui_websocket,
+        *,
+        protected_owner_id: Optional[str] = None,
+        protected_channel: Optional[str] = None,
+        protected_audit_correlation_id: Optional[str] = None,
+        protected_actor_user_id: Optional[str] = None,
+        protected_auth_principal: Optional[str] = None,
+        protected_conversation_id: Optional[str] = None,
+    ) -> Optional[MCPResponse]:
+        """Dispatch through one protected adapter entry per physical send."""
         from orchestrator.agent_identity import required_identity_claims
+
+        channel = protected_channel or self._protected_dispatch_channel(ui_websocket)
+
+        async def guarded(final_arguments, physical_invoke):
+            return await self._execute_governed_attempt(
+                ui_websocket,
+                agent_id,
+                tool_name,
+                final_arguments,
+                user_id=protected_owner_id,
+                channel=channel,
+                audit_correlation_id=protected_audit_correlation_id,
+                actor_user_id=protected_actor_user_id,
+                auth_principal=protected_auth_principal,
+                conversation_id=protected_conversation_id,
+                invoke=physical_invoke,
+            )
 
         identity_card = getattr(self, "agent_cards", {}).get(agent_id)
         identity_bound = bool(required_identity_claims(identity_card))
@@ -16871,7 +19352,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if agent_id not in self.agents and agent_id not in self.local_agents:
             try:
                 from orchestrator import user_agents as _ua
-                if await asyncio.to_thread(_ua.is_user_agent, self.history.db, agent_id):
+                if await asyncio.to_thread(
+                    _ua.is_user_agent,
+                    self.user_agent_registry,
+                    agent_id,
+                ):
                     return MCPResponse(
                         request_id=f"req_{tool_name}_{_uuid.uuid4().hex}",
                         error={"message": (
@@ -16885,11 +19370,30 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # network hop. Selected by a positive registry check; external A2A
         # agents and draft subprocesses fall through to the paths below.
         if agent_id in self.local_agents:
-            return await self._execute_in_process(
-                agent_id, tool_name, args, timeout, ui_websocket=ui_websocket)
+            return await guarded(
+                args,
+                lambda capabilities: self._execute_in_process(
+                    agent_id,
+                    tool_name,
+                    args,
+                    timeout,
+                    ui_websocket=ui_websocket,
+                    caller_capabilities=capabilities,
+                ),
+            )
         # Try WebSocket first
         if agent_id in self.agents:
-            result = await self._execute_via_websocket(agent_id, tool_name, args, timeout, ui_websocket=ui_websocket)
+            result = await guarded(
+                args,
+                lambda capabilities: self._execute_via_websocket(
+                    agent_id,
+                    tool_name,
+                    args,
+                    timeout,
+                    ui_websocket=ui_websocket,
+                    caller_capabilities=capabilities,
+                ),
+            )
             if result and not (result.error and result.error.get("retryable")):
                 return result
             # WebSocket failed with a retryable error — fall back to A2A if available
@@ -16897,14 +19401,36 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if identity_bound:
                     return result or identity_transport_unavailable()
                 logger.info(f"WebSocket call failed for {agent_id}, falling back to A2A")
-                return await self._execute_via_a2a(agent_id, tool_name, args, timeout)
+                a2a_arguments = self._a2a_wire_arguments(args)
+                return await guarded(
+                    a2a_arguments,
+                    lambda capabilities: self._execute_via_a2a(
+                        agent_id,
+                        tool_name,
+                        args,
+                        timeout,
+                        caller_capabilities=capabilities,
+                        wire_arguments=a2a_arguments,
+                    ),
+                )
             return result
 
         # No WebSocket connection — try A2A
         if agent_id in self.a2a_clients:
             if identity_bound:
                 return identity_transport_unavailable()
-            return await self._execute_via_a2a(agent_id, tool_name, args, timeout)
+            a2a_arguments = self._a2a_wire_arguments(args)
+            return await guarded(
+                a2a_arguments,
+                lambda capabilities: self._execute_via_a2a(
+                    agent_id,
+                    tool_name,
+                    args,
+                    timeout,
+                    caller_capabilities=capabilities,
+                    wire_arguments=a2a_arguments,
+                ),
+            )
 
         # Agent has a known URL but no active connection — attempt WebSocket reconnect then A2A
         if agent_id in self.agent_urls:
@@ -16913,7 +19439,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 await self.discover_agent(base_url)
                 if agent_id in self.agents:
-                    return await self._execute_via_websocket(agent_id, tool_name, args, timeout, ui_websocket=ui_websocket)
+                    return await guarded(
+                        args,
+                        lambda capabilities: self._execute_via_websocket(
+                            agent_id,
+                            tool_name,
+                            args,
+                            timeout,
+                            ui_websocket=ui_websocket,
+                            caller_capabilities=capabilities,
+                        ),
+                    )
             except Exception as e:
                 logger.debug(f"WebSocket reconnect failed for {agent_id}: {e}")
 
@@ -16924,7 +19460,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 await self.discover_a2a_agent(base_url, notify_ui=False)
                 if agent_id in self.a2a_clients:
-                    return await self._execute_via_a2a(agent_id, tool_name, args, timeout)
+                    a2a_arguments = self._a2a_wire_arguments(args)
+                    return await guarded(
+                        a2a_arguments,
+                        lambda capabilities: self._execute_via_a2a(
+                            agent_id,
+                            tool_name,
+                            args,
+                            timeout,
+                            caller_capabilities=capabilities,
+                            wire_arguments=a2a_arguments,
+                        ),
+                    )
             except Exception as e:
                 logger.debug(f"A2A fallback discovery failed for {agent_id}: {e}")
 
@@ -16933,7 +19480,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             error={"message": f"Agent {agent_id} not connected via WebSocket or A2A", "retryable": False},
         )
 
-    async def _execute_via_websocket(self, agent_id: str, tool_name: str, args: Dict, timeout: float = 30.0, ui_websocket=None) -> Optional[MCPResponse]:
+    async def _execute_via_websocket(
+        self,
+        agent_id: str,
+        tool_name: str,
+        args: Dict,
+        timeout: float = 30.0,
+        ui_websocket=None,
+        caller_capabilities: Optional[Dict[str, object]] = None,
+    ) -> Optional[MCPResponse]:
         """Execute a tool call via WebSocket (internal agents)."""
         projected_socket = self.agents.get(agent_id)
         if bool(
@@ -16945,6 +19500,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 args,
                 timeout=timeout,
                 ui_websocket=ui_websocket,
+                caller_capabilities=caller_capabilities,
             )
 
         from orchestrator.agent_identity import (
@@ -16986,7 +19542,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             method="tools/call",
             params={"name": tool_name, "arguments": args},
             protocol_version=MCP_PROTOCOL_VERSION,
-            caller_capabilities={},
+            caller_capabilities=dict(caller_capabilities or {}),
             caller_info=caller_info,
         )
 
@@ -17037,6 +19593,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         *,
         timeout: float,
         ui_websocket: Any,
+        caller_capabilities: Optional[Dict[str, object]] = None,
     ) -> MCPResponse:
         """Assign, send, and settle one exact personal-agent runtime call."""
 
@@ -17122,6 +19679,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             name=f"personal-agent-lease-{request_id}",
         )
         self._personal_agent_request_waiters[request_id] = waiter
+        request_runtime_fences = getattr(
+            self,
+            "_personal_agent_request_runtime_fences",
+            None,
+        )
+        if request_runtime_fences is None:
+            request_runtime_fences = self._personal_agent_request_runtime_fences = {}
+        request_runtime_fences[request_id] = authority.fence
         self._register_dispatch_context(
             request_id, agent_id, args, ui_websocket
         )
@@ -17136,12 +19701,50 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             "fence": authority.fence.to_dict(),
             "method": "tools/call",
             "params": {"name": tool_name, "arguments": args},
+            "protocol_version": MCP_PROTOCOL_VERSION,
+            "caller_capabilities": dict(caller_capabilities or {}),
+            "caller_info": {
+                "name": "AstralDeep Orchestrator",
+                "version": "1.0.0",
+            },
         }
         try:
+            # Assignment commits before this process-local waiter exists.  An
+            # exact exit can therefore settle the durable request in that small
+            # gap and project before seeing the waiter.  Recheck only after the
+            # waiter's full runtime fence is registered: if exit already won we
+            # wake it here; if exit wins after this read, the projector sees it.
+            current_runtime = await asyncio.to_thread(
+                self.personal_agent_runtime.get_runtime_instance,
+                authority.fence.runtime_instance_id,
+            )
+            if not (
+                current_runtime.fence == authority.fence
+                and current_runtime.state == "online"
+                and bool(getattr(current_runtime, "is_authoritative", False))
+            ):
+                code = self._canonical_personal_agent_failure_code(
+                    getattr(current_runtime, "failure_code", None)
+                    or "agent_offline"
+                )
+                if not waiter.done():
+                    waiter.set_result(
+                        MCPResponse(
+                            request_id=request_id,
+                            error={
+                                "message": code,
+                                "retryable": True,
+                                "code": code,
+                            },
+                        )
+                    )
+                return await asyncio.shield(waiter)
             await socket.send_fenced(inner)
             async with asyncio.timeout(timeout):
                 return await asyncio.shield(waiter)
         except TimeoutError:
+            if waiter.done() and not waiter.cancelled():
+                return waiter.result()
             try:
                 await asyncio.to_thread(
                     self.personal_agent_runtime.settle_request,
@@ -17157,6 +19760,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 error={"message": "Tool call timed out", "retryable": True},
             )
         except Exception as exc:
+            if waiter.done() and not waiter.cancelled():
+                # A concurrent exact-exit projection is the committed first
+                # terminal result; a later transport error cannot replace it.
+                return waiter.result()
             try:
                 await asyncio.to_thread(
                     self.personal_agent_runtime.settle_request,
@@ -17176,12 +19783,24 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             renewal_task.cancel()
             await asyncio.gather(renewal_task, return_exceptions=True)
             self._personal_agent_request_waiters.pop(request_id, None)
+            (
+                getattr(self, "_personal_agent_request_runtime_fences", None)
+                or {}
+            ).pop(request_id, None)
             (getattr(self, "_pending_request_agent", None) or {}).pop(
                 request_id, None
             )
             self._dispatch_context.pop(request_id, None)
 
-    async def _execute_in_process(self, agent_id: str, tool_name: str, args: Dict, timeout: float = 30.0, ui_websocket=None) -> Optional[MCPResponse]:
+    async def _execute_in_process(
+        self,
+        agent_id: str,
+        tool_name: str,
+        args: Dict,
+        timeout: float = 30.0,
+        ui_websocket=None,
+        caller_capabilities: Optional[Dict[str, object]] = None,
+    ) -> Optional[MCPResponse]:
         """Execute a tool call against a built-in agent running IN-PROCESS (feature 040).
 
         Runs the agent's own ``handle_mcp_request`` with a
@@ -17241,7 +19860,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             method="tools/call",
             params={"name": tool_name, "arguments": call_args},
             protocol_version=MCP_PROTOCOL_VERSION,
-            caller_capabilities={},
+            caller_capabilities=dict(caller_capabilities or {}),
             caller_info=caller_info,
         )
         future = asyncio.get_event_loop().create_future()
@@ -17299,7 +19918,39 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self.pending_ui_sockets.pop(request_id, None)
             self._dispatch_context.pop(request_id, None)
 
-    async def _execute_via_a2a(self, agent_id: str, tool_name: str, args: Dict, timeout: float = 30.0) -> Optional[MCPResponse]:
+    @staticmethod
+    def _a2a_wire_arguments(args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the exact tool argument mapping serialized over A2A.
+
+        Orchestrator-only underscore metadata is used to build transport
+        headers and must not become tool input.  Encrypted credentials are the
+        one existing wire-level exception because only the target executor can
+        decrypt them.  This normalization runs before protected authorization
+        so the permit digest and executor mutation fence cover identical bytes.
+        """
+
+        clean_args = {
+            key: value
+            for key, value in args.items()
+            if not (isinstance(key, str) and key.startswith("_"))
+        }
+        if args.get("_credentials_encrypted"):
+            clean_args["_credentials"] = args["_credentials"]
+            clean_args["_credentials_encrypted"] = args[
+                "_credentials_encrypted"
+            ]
+        return clean_args
+
+    async def _execute_via_a2a(
+        self,
+        agent_id: str,
+        tool_name: str,
+        args: Dict,
+        timeout: float = 30.0,
+        *,
+        caller_capabilities: Optional[Dict[str, object]] = None,
+        wire_arguments: Optional[Dict[str, Any]] = None,
+    ) -> Optional[MCPResponse]:
         """Execute a tool call via A2A JSON-RPC (external agents).
 
         Posts a hand-rolled JSON-RPC `message/send` request to the agent's /a2a
@@ -17323,10 +19974,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             )
         a2a_url = base_url if base_url.rstrip("/").endswith("/a2a") else f"{base_url.rstrip('/')}/a2a"
 
-        clean_args = {k: v for k, v in args.items() if not k.startswith("_")}
-        if args.get("_credentials_encrypted"):
-            clean_args["_credentials"] = args["_credentials"]
-            clean_args["_credentials_encrypted"] = args["_credentials_encrypted"]
+        clean_args = (
+            dict(wire_arguments)
+            if wire_arguments is not None
+            else self._a2a_wire_arguments(args)
+        )
 
         msg = A2AMessage(
             message_id=str(uuid.uuid4()),
@@ -17335,6 +19987,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "method": "tools/call",
                 "name": tool_name,
                 "arguments": clean_args,
+                # Typed MCP-equivalent metadata lives alongside arguments,
+                # never inside the tool schema or model-controlled mapping.
+                "protocol_version": MCP_PROTOCOL_VERSION,
+                "caller_capabilities": dict(caller_capabilities or {}),
             })],
         )
 
@@ -17596,21 +20252,33 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         args: Dict[str, Any],
         stream_id: str,
         user_id: Optional[str],
+        websocket,
+        chat_id: str,
     ) -> str:
-        """Dispatch a streaming tool call to an agent. Returns the
-        ``request_id`` so StreamManager can populate ``_request_to_key``.
+        """Authorize and dispatch one physical push-stream open attempt.
 
-        Unlike ``_execute_via_websocket`` (the synchronous response path),
-        this fire-and-forgets the request. The chunks arrive asynchronously
-        as ``ToolStreamData`` messages and are routed back via
-        ``handle_agent_message`` → ``stream_manager.handle_agent_chunk``.
-
-        Per RFC 8693 (constitution VII), if user credentials are stored for
-        this user/agent pair we inject them encrypted alongside the args
-        before sending — exactly like the polling path.
+        Every initial open, dormant resume, and upstream retry re-enters the
+        complete Astral gate/rewrite stack and then obtains fresh protected
+        authority.  The permit is bound to the exact stream ID but remains in
+        typed caller capabilities, never tool arguments.
         """
         if agent_id not in self.agents and agent_id not in self.local_agents:
             raise RuntimeError(f"agent {agent_id!r} is not connected")
+
+        auth = await self._authorize_and_prepare(
+            websocket,
+            agent_id,
+            tool_name,
+            dict(args),
+            chat_id,
+            user_id,
+            stream_params=dict(args),
+            auto_subscribe_stream=False,
+        )
+        if isinstance(auth, GateRefusal):
+            message = str((auth.response.error or {}).get("message", "stream refused"))
+            raise PermissionError(message)
+        full_args = auth.args
 
         from orchestrator.agent_identity import (
             identity_access_message,
@@ -17621,14 +20289,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         identity_card = getattr(self, "agent_cards", {}).get(agent_id)
         verified_identity: Optional[Dict[str, str]] = {}
         if required_identity_claims(identity_card):
-            verified_identity = None
-            for session_claims in getattr(self, "ui_sessions", {}).values():
-                if (session_claims or {}).get("sub") != user_id:
-                    continue
-                candidate = verified_identity_for(identity_card, session_claims)
-                if candidate is not None:
-                    verified_identity = candidate
-                    break
+            verified_identity = verified_identity_for(
+                identity_card,
+                self.ui_sessions.get(websocket, {}) or {},
+            )
         if verified_identity is None:
             raise PermissionError(identity_access_message(identity_card))
         caller_info: Dict[str, Any] = {
@@ -17639,53 +20303,106 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             caller_info["verified_identity"] = verified_identity
 
         request_id = f"stream_{tool_name}_{_uuid.uuid4().hex}_{stream_id[-6:]}"
+        protected_wire_arguments = {
+            "arguments": full_args,
+            "_stream": True,
+            "_stream_id": stream_id,
+        }
+        adapter = self._governed_dispatch_adapter()
+        scope = self.tool_permissions.get_tool_scope(agent_id, tool_name) or ""
 
-        # Inject per-user credentials (E2E encrypted — only the agent can decrypt)
-        full_args = dict(args)
-        if user_id and agent_id:
-            try:
-                creds = self.credential_manager.get_agent_credentials_encrypted(user_id, agent_id)
-                if creds:
-                    full_args["_credentials"] = creds
-                    full_args["_credentials_encrypted"] = True
-            except Exception as e:
-                logger.debug(f"credential injection skipped for {agent_id}: {e}")
-
-        request = MCPRequest(
-            request_id=request_id,
-            method="tools/call",
-            params={
-                "name": tool_name,
-                "arguments": full_args,
-                "_stream": True,
-                "_stream_id": stream_id,
-            },
-            protocol_version=MCP_PROTOCOL_VERSION,
-            caller_capabilities={},
-            caller_info=caller_info,
-        )
-        if agent_id in self.local_agents:
-            # Feature 040 built-ins run in-process with no agent WS — the
-            # loopback routes their ToolStreamData/End frames back through
-            # handle_agent_message exactly like the networked path (this
-            # dispatch had predated 040 and knew only self.agents, leaving
-            # push streaming dead for every built-in).
-            from shared.local_transport import LoopbackSocket
-            agent = self.local_agents[agent_id]
-            loopback = LoopbackSocket(self, agent_id)
-            asyncio.create_task(agent.handle_mcp_request(loopback, request))
-            logger.info(
-                f"Dispatched streaming tool call (in-process): {tool_name} → "
-                f"{agent_id} (stream_id={stream_id}, request_id={request_id})"
+        async def _invoke(caller_capabilities: Dict[str, object]) -> str:
+            request = MCPRequest(
+                request_id=request_id,
+                method="tools/call",
+                params={
+                    "name": tool_name,
+                    "arguments": full_args,
+                    "_stream": True,
+                    "_stream_id": stream_id,
+                },
+                protocol_version=MCP_PROTOCOL_VERSION,
+                caller_capabilities=dict(caller_capabilities),
+                caller_info=caller_info,
             )
+            if agent_id in self.local_agents:
+                from shared.local_transport import LoopbackSocket
+
+                agent = self.local_agents[agent_id]
+                loopback = LoopbackSocket(self, agent_id)
+                asyncio.create_task(agent.handle_mcp_request(loopback, request))
+            else:
+                await self.agents[agent_id].send(request.to_json())
             return request_id
-        agent_ws = self.agents[agent_id]
-        await agent_ws.send(request.to_json())
+
+        from audit.hooks import ToolDispatchAudit
+        from orchestrator.governed_dispatch import GovernedDispatchError
+
+        claims = self.ui_sessions.get(websocket, {}) or {}
+        try:
+            async with ToolDispatchAudit(
+                claims=claims,
+                agent_id=agent_id,
+                tool_name=tool_name,
+                chat_id=chat_id,
+                args_meta={
+                    key: value
+                    for key, value in full_args.items()
+                    if not (isinstance(key, str) and key.startswith("_"))
+                },
+                invocation_channel="stream",
+            ) as audit_context:
+                opened_request_id = await adapter.execute(
+                    owner_id=user_id,
+                    agent_id=agent_id,
+                    tool_id=tool_name,
+                    scope=scope,
+                    channel="stream",
+                    audit_correlation_id=audit_context.correlation_id,
+                    actor_user_id=getattr(
+                        audit_context, "actor_user_id", user_id
+                    ),
+                    auth_principal=getattr(
+                        audit_context, "auth_principal", user_id
+                    ),
+                    conversation_id=getattr(
+                        audit_context, "conversation_id", chat_id
+                    ),
+                    final_arguments=protected_wire_arguments,
+                    authorized_effect={
+                        "effect_class": scope.removeprefix("tools:"),
+                        "target_class": "stream",
+                        "target_binding_sha256": hashlib.sha256(
+                            stream_id.encode("utf-8")
+                        ).hexdigest(),
+                        "external_actuator": agent_id not in self.local_agents,
+                    },
+                    invoke=_invoke,
+                )
+                audit_context.set_outputs_meta(
+                    {"stream_opened": True, "request_id": opened_request_id}
+                )
+        except GovernedDispatchError as exc:
+            raise RuntimeError(exc.code) from None
+        except Exception:
+            cap_job_id = getattr(auth, "cap_job_id", None)
+            if cap_job_id and user_id:
+                try:
+                    await self.concurrency_cap.release(user_id, agent_id, cap_job_id)
+                finally:
+                    self._pending_cap_entries.pop(cap_job_id, None)
+                await self._release_hop_cap_slot(cap_job_id)
+            raise
+
         logger.info(
-            f"Dispatched streaming tool call: {tool_name} → {agent_id} "
-            f"(stream_id={stream_id}, request_id={request_id})"
+            "Dispatched protected stream open: %s -> %s "
+            "(stream_id=%s, request_id=%s)",
+            tool_name,
+            agent_id,
+            stream_id,
+            opened_request_id,
         )
-        return request_id
+        return opened_request_id
 
     async def _cancel_stream_request(
         self, agent_id: str, request_id: str, stream_id: str,
@@ -18069,22 +20786,24 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         tool_cfg = self._streamable_tools[tool_name]
         agent_id = tool_cfg["agent_id"]
-
-        # Hard security-flag block (mirror the dispatch gate).
-        if self._tool_security_blocked(agent_id, tool_name):
-            await self._safe_send(websocket, json.dumps({
-                "type": "stream_error", "tool_name": tool_name,
-                "error": "Tool is system-blocked by security review"
-            }))
-            return
-
-        # Permission check
         user_id = self._get_user_id(websocket)
-        if not await asyncio.to_thread(
-                self.tool_permissions.is_tool_allowed, user_id, agent_id, tool_name):
+        chat_id = payload.get("chat_id") or self._ws_active_chat.get(id(websocket))
+        auth = await self._authorize_and_prepare(
+            websocket,
+            agent_id,
+            tool_name,
+            dict(params),
+            chat_id,
+            user_id,
+            stream_params=dict(params),
+            auto_subscribe_stream=False,
+        )
+        if isinstance(auth, GateRefusal):
             await self._safe_send(websocket, json.dumps({
                 "type": "stream_error", "tool_name": tool_name,
-                "error": "Permission denied for this tool"
+                "error": str(
+                    (auth.response.error or {}).get("message", "Stream refused")
+                ),
             }))
             return
 
@@ -18116,7 +20835,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         # Create streaming task
         task = asyncio.create_task(
-            self._stream_loop(websocket, tool_name, agent_id, interval, params)
+            self._stream_loop(
+                websocket,
+                tool_name,
+                agent_id,
+                interval,
+                params,
+                initial_args=auth.args,
+                chat_id=chat_id,
+            )
         )
         self._stream_tasks.setdefault(ws_id, {})[tool_name] = task
 
@@ -18153,30 +20880,64 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             "type": "stream_list", "subscriptions": items,
         }))
 
-    async def _stream_loop(self, websocket, tool_name: str, agent_id: str, interval: float, params: Dict):
-        """Core streaming loop — periodically executes a tool and pushes results to the UI client."""
+    async def _stream_loop(
+        self,
+        websocket,
+        tool_name: str,
+        agent_id: str,
+        interval: float,
+        params: Dict,
+        *,
+        initial_args: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
+    ):
+        """Poll with fresh Astral and protected authorization per actuator."""
         user_id = self._get_user_id(websocket)
+        prepared_args = initial_args
         while True:
             try:
-                # A tool blocked mid-stream by security review must stop the loop.
-                if self._tool_security_blocked(agent_id, tool_name):
+                if prepared_args is None:
+                    auth = await self._authorize_and_prepare(
+                        websocket,
+                        agent_id,
+                        tool_name,
+                        dict(params),
+                        chat_id,
+                        user_id,
+                        stream_params=dict(params),
+                        auto_subscribe_stream=False,
+                    )
+                    if isinstance(auth, GateRefusal):
+                        message = str(
+                            (auth.response.error or {}).get(
+                                "message", "Stream authorization was revoked"
+                            )
+                        )
+                        await self._safe_send(websocket, json.dumps({
+                            "type": "stream_error",
+                            "tool_name": tool_name,
+                            "error": message,
+                        }))
+                        break
+                    prepared_args = auth.args
+
+                result = await self._execute_with_retry_audited(
+                    websocket,
+                    agent_id,
+                    tool_name,
+                    prepared_args,
+                    chat_id,
+                    user_id,
+                    channel="stream",
+                    timeout=interval + 5,
+                )
+                prepared_args = None
+
+                if result is None:
                     await self._safe_send(websocket, json.dumps({
                         "type": "stream_error", "tool_name": tool_name,
-                        "error": "Tool is system-blocked by security review"
+                        "error": "Stream tool returned no response",
                     }))
-                    break
-
-                # Re-check permission each iteration (user may revoke mid-stream)
-                if not await asyncio.to_thread(
-                        self.tool_permissions.is_tool_allowed, user_id, agent_id, tool_name):
-                    await self._safe_send(websocket, json.dumps({
-                        "type": "stream_error", "tool_name": tool_name,
-                        "error": "Permission revoked"
-                    }))
-                    break
-
-                # Execute tool via existing agent WebSocket channel
-                result = await self._execute_via_websocket(agent_id, tool_name, dict(params), timeout=interval + 5)
 
                 if result and not result.error:
                     # Tag components with source metadata (same as regular tool flow)
@@ -19223,7 +21984,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             websocket, auth.render_components,
                             target=auth.render_target or "chat")
                     return
-                result = await self._execute_with_retry(websocket, agent_id, tool_name, auth.args)
+                result = await self._execute_with_retry_audited(
+                    websocket,
+                    agent_id,
+                    tool_name,
+                    auth.args,
+                    chat_id,
+                    user_id,
+                    channel="websocket",
+                )
                 if result and result.ui_components and not result.error:
                     for comp in result.ui_components:
                         if isinstance(comp, dict):
@@ -19372,6 +22141,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return
 
         from orchestrator import artifact_versions
+        from orchestrator.plane_repository_context import (
+            plane_source_from_orchestrator,
+        )
+
+        plane_source = plane_source_from_orchestrator(self)
         try:
             async with Orchestrator._workspace_mutation_lock(self, chat_id):
                 # Re-read inside the lock: the archived "current" must be the
@@ -19394,11 +22168,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     ], target="chat")
                     return
                 version_no = await artifact_versions.aarchive(
-                    self.history.db, chat_id, user_id, component_id, current, "refine")
+                    plane_source, chat_id, user_id, component_id, current, "refine")
                 # Hydrate the history affordance (web data-versions popover) —
                 # without this the restore path is unreachable from the UI.
                 refined["versions"] = await artifact_versions.alist_versions(
-                    self.history.db, chat_id, user_id, component_id)
+                    plane_source, chat_id, user_id, component_id)
                 ops = await self.workspace.aupsert(
                     chat_id, user_id, [refined], force_component_id=component_id)
                 await self.send_ui_upsert(websocket, chat_id, user_id, ops)
@@ -19435,8 +22209,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return
         chat_id, component_id, _row = gate
         from orchestrator import artifact_versions
+        from orchestrator.plane_repository_context import (
+            plane_source_from_orchestrator,
+        )
+
+        plane_source = plane_source_from_orchestrator(self)
         version = await artifact_versions.aget_version(
-            self.history.db, chat_id, user_id, component_id, payload.get("version_no"))
+            plane_source, chat_id, user_id, component_id, payload.get("version_no"))
         if version is None or not isinstance(version.get("component"), dict):
             await self.send_ui_render(websocket, [
                 Alert(message="That version is no longer available.",
@@ -19456,9 +22235,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 restored = dict(version["component"])
                 restored["component_id"] = component_id
                 archived_no = await artifact_versions.aarchive(
-                    self.history.db, chat_id, user_id, component_id, current, "restore")
+                    plane_source, chat_id, user_id, component_id, current, "restore")
                 restored["versions"] = await artifact_versions.alist_versions(
-                    self.history.db, chat_id, user_id, component_id)
+                    plane_source, chat_id, user_id, component_id)
                 ops = await self.workspace.aupsert(
                     chat_id, user_id, [restored], force_component_id=component_id)
                 await self.send_ui_upsert(websocket, chat_id, user_id, ops)
@@ -19555,49 +22334,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             refined["component_id"] = component["component_id"]
         _stamp_provenance(refined, kind="estimated")
         return refined
-
-    async def _reconcile_legacy_replacement(self, websocket, chat_id: str, user_id: str,
-                                            *, cause: str):
-        """Feature 028 (D18): after a legacy combine/condense replace, stamp
-        workspace identities onto the fresh rows, snapshot, and push the full
-        live workspace so the mutation is visible (pre-028 the thin client
-        silently dropped components_combined/condensed)."""
-        if not chat_id:
-            return
-        try:
-            def _stamp_and_snapshot():
-                """Stamp identities, snapshot, and materialize off the event loop."""
-                now_ms = int(time.time() * 1000)
-                for row in self.workspace.live_rows(chat_id, user_id):
-                    if row.get("component_id"):
-                        continue
-                    data = row.get("component_data")
-                    if not isinstance(data, dict):
-                        continue
-                    cid = self.workspace.resolve_identity(data)
-                    self.history.db.execute(
-                        "UPDATE saved_components SET component_id = ?, component_data = ?, updated_at = ? "
-                        "WHERE id = ? AND user_id = ?",
-                        (cid, json.dumps(data), now_ms, row["id"], user_id),
-                    )
-                self.workspace.snapshot(chat_id, user_id, cause=cause)
-                return self._canvas_components(chat_id, user_id)
-
-            ws_components = await asyncio.to_thread(_stamp_and_snapshot)
-            # FR-040: the replacement is a workspace change — every socket of
-            # this user on this chat gets the re-render, not just the
-            # originator (REST-initiated calls pass websocket=None).
-            targets = [
-                ws for ws in self.ui_clients
-                if self._get_user_id(ws) == user_id
-                and self._ws_active_chat.get(id(ws)) == chat_id
-            ]
-            if websocket is not None and websocket not in targets:
-                targets.append(websocket)
-            for ws in targets:
-                await self.send_ui_render(ws, ws_components)
-        except Exception:
-            logger.exception("legacy replacement reconciliation failed (%s)", cause)
 
     async def _audit_workspace_denial(self, user_id: str, chat_id: str,
                                       component_id: str, reason: str):
@@ -20100,7 +22836,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             draft = self.lifecycle_manager._find_draft_by_agent_id(agent_id)
             if draft and draft["status"] != "live":
                 try:
-                    ownership = self.history.db.get_agent_ownership(agent_id) or {}
+                    ownership = (
+                        self.user_agent_registry.get_agent_ownership(agent_id)
+                        or {}
+                    )
                 except Exception:
                     ownership = {}
                 if bool(ownership.get("is_public", False)):
@@ -20111,7 +22850,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     def _build_dashboard_agent_list(self, user_id: str) -> List[Dict[str, Any]]:
         """Assemble the per-user dashboard agent entries (sync DB reads —
         callers on the event loop run this via ``asyncio.to_thread``)."""
-        ownership_map = {o["agent_id"]: o for o in self.history.db.get_all_agent_ownership()}
+        ownership_map = {
+            o["agent_id"]: o
+            for o in self.user_agent_registry.get_all_agent_ownership()
+        }
         agent_list = []
         for agent_id, card in self.agent_cards.items():
             # Hide draft agents that aren't live yet — they only appear in the Drafts tab
@@ -20248,7 +22990,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         click as the grant). Unknown, private, or draft ids are silently
         ignored. Returns the agent ids that were enabled.
         """
-        ownership_map = {o["agent_id"]: o for o in self.history.db.get_all_agent_ownership()}
+        ownership_map = {
+            o["agent_id"]: o
+            for o in self.user_agent_registry.get_all_agent_ownership()
+        }
         enabled: List[str] = []
         for agent_id in list(self.agent_cards.keys()):
             if requested_agent_ids is not None and agent_id not in requested_agent_ids:
@@ -20399,7 +23144,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         def _build_agent_list():
             """Assemble the per-user agent entries off the event loop."""
-            ownership_map = {o["agent_id"]: o for o in self.history.db.get_all_agent_ownership()}
+            ownership_map = {
+                o["agent_id"]: o
+                for o in self.user_agent_registry.get_all_agent_ownership()
+            }
             latest_runtime_by_agent: dict[str, Any] = {}
             loader = getattr(
                 getattr(self, "personal_agent_runtime", None),
@@ -20620,7 +23368,40 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self.rote.cleanup(websocket)
             logger.info(f"UI client session cleaned up (total: {len(self.ui_clients)})")
 
+    def _track_startup_background_task(self, coroutine, *, name: str):
+        """Own one startup-created task until completion or graph shutdown."""
+
+        tasks = getattr(self, "_startup_background_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._startup_background_tasks = tasks
+        task = asyncio.create_task(coroutine, name=name)
+        tasks.add(task)
+
+        def _settled(completed: asyncio.Task) -> None:
+            tasks.discard(completed)
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is not None:
+                logger.error(
+                    "orchestrator_background_task_failed task=%s reason=%s",
+                    name,
+                    type(error).__name__,
+                )
+
+        task.add_done_callback(_settled)
+        return task
+
     async def start(self):
+        """Run the server under one cancellation-safe application-graph owner."""
+
+        try:
+            await self._run_started_server()
+        finally:
+            await self._close_started_services()
+
+    async def _run_started_server(self):
         logger.info(f"Orchestrator starting on port {PORT}")
 
         # Feature 028 (FR-015): production posture is fail-closed. Mock auth
@@ -20629,6 +23410,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.session_store import assert_production_posture
         assert_production_posture()
 
+        # Plane is already initialized and all final-dispatch/lifecycle seams
+        # are locally bound. Start bounded recovery before any agent is
+        # registered or any background work can reach a physical actuator.
+        self.runtime_composition.start()
+        publication_recovery = (
+            await self.generated_agent_publication_service.recover_once()
+        )
+        if publication_recovery.degraded_publication_ids:
+            logger.error(
+                "generated_agent_publication_startup_recovery_degraded count=%d",
+                len(publication_recovery.degraded_publication_ids),
+            )
+        self.generated_agent_publication_service.start()
+
         # Feature 040 (US2): mark the bundled first-party fleet owner-safe so
         # their tools are usable out of the box (audited; idempotent — already-
         # safe agents are skipped on re-boot). Gated by FF_SAFE_AGENTS.
@@ -20636,7 +23431,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from shared.feature_flags import flags
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
-                seed_ids = self.history.db._FIRST_PARTY_PUBLIC_AGENT_IDS
+                seed_ids = FIRST_PARTY_PUBLIC_AGENT_IDS
                 # Feature 063 (FR-002/FR-004/FR-005): the unified remote-compute-1 is
                 # safe-seeded ONLY when the remote-compute feature is enabled — so with
                 # the flag off the seed set is byte-identical to the pre-063 fleet (no
@@ -20645,7 +23440,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # confirmation mechanism (remote_confirmation) no matter the baseline.
                 if not flags.is_enabled("remote_compute"):
                     seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
-                await agent_trust.seed_safe(self.history.db, seed_ids)
+                await agent_trust.seed_safe(self.user_agent_registry, seed_ids)
         except Exception:
             logger.debug("Feature 040 safe seed failed (non-fatal)", exc_info=True)
 
@@ -20673,12 +23468,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.debug("auth: revocation queue pass failed", exc_info=True)
                 await asyncio.sleep(interval)
 
-        asyncio.create_task(_revocation_queue_loop())
+        self._track_startup_background_task(
+            _revocation_queue_loop(),
+            name="auth-revocation-queue",
+        )
 
         # Feature 052 (FR-011): warm the IdP signing keys at boot and keep
         # them fresh in the background so interactive token validation never
         # pays a cold JWKS fetch. Never blocks boot or /readyz.
-        asyncio.create_task(self._jwks_warm_loop())
+        self._track_startup_background_task(
+            self._jwks_warm_loop(),
+            name="jwks-warm-loop",
+        )
 
         if (
             self._personal_agent_watchdog_task is None
@@ -20718,11 +23519,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # Auto-discover agents (continuous monitor)
         agent_port = int(os.getenv("AGENT_PORT", 8003))
         max_agents = int(os.getenv("MAX_AGENTS", 10))
-        asyncio.create_task(self._monitor_agents(agent_port, max_agents))
+        self._track_startup_background_task(
+            self._monitor_agents(agent_port, max_agents),
+            name="local-agent-monitor",
+        )
 
         # Start knowledge synthesis background loop
         if flags.is_enabled("knowledge_synthesis") and hasattr(self, '_knowledge_synthesizer'):
-            asyncio.create_task(self._knowledge_synthesizer.run_loop())
+            self._track_startup_background_task(
+                self._knowledge_synthesizer.run_loop(),
+                name="knowledge-synthesis-loop",
+            )
 
         # Feature 004 — daily quality-signal job + proposal generation
         async def _feedback_quality_loop():
@@ -20743,7 +23550,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.warning("feedback quality loop iteration failed: %s", exc)
                 await asyncio.sleep(interval_seconds)
 
-        asyncio.create_task(_feedback_quality_loop())
+        self._track_startup_background_task(
+            _feedback_quality_loop(),
+            name="feedback-quality-loop",
+        )
 
         # Feature 025 wiring (027 click-through finding): the scheduler loop
         # was never instantiated anywhere, so cron jobs and "Run now" silently
@@ -20759,15 +23569,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # unattended execution as unavailable.
         if flags.is_enabled("scheduler_execution"):
             try:
-                from orchestrator.offline_grant import OfflineGrantStore
                 from scheduler.loop import SchedulerLoop
                 from scheduler.runner import JobRunner
                 from scheduler.store import ScheduledJobStore
-                _job_store = ScheduledJobStore(
-                    self.history.db,
-                    coordinator=self.work_admission,
+                from orchestrator.plane_repository_context import (
+                    plane_source_from_orchestrator,
                 )
-                _job_runner = JobRunner(self, _job_store, OfflineGrantStore(self.history.db))
+                _plane_source = plane_source_from_orchestrator(self)
+                _job_store = ScheduledJobStore(
+                    coordinator=self.work_admission,
+                    plane_runtime=_plane_source.plane_runtime,
+                    plane_repositories=_plane_source.plane_repositories,
+                )
+                _job_runner = JobRunner(self, _job_store, self.offline_grants)
                 self._scheduler_loop = SchedulerLoop(
                     _job_store,
                     _job_runner,
@@ -20794,7 +23608,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         async def _relaunch_generated_agents():
             await asyncio.sleep(5)  # let the static-fleet monitor settle first
             try:
-                rows = await self.history.db.afetch_all(LIVE_DRAFT_RELAUNCH_QUERY)
+                rows = await asyncio.to_thread(
+                    self.lifecycle_manager.draft_store.list_relaunchable_drafts
+                )
             except Exception:
                 logger.exception("relaunch: could not list live generated agents")
                 return
@@ -20807,7 +23623,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.warning("relaunch: %s (%s) failed: %s",
                                    row["agent_name"], row["id"], exc)
 
-        asyncio.create_task(_relaunch_generated_agents())
+        self._track_startup_background_task(
+            _relaunch_generated_agents(),
+            name="generated-agent-relaunch",
+        )
 
         # Import WebSocket protocol docs for OpenAPI description
         from orchestrator.models import WS_PROTOCOL_DOCS
@@ -20915,13 +23734,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         async def readyz():
             from fastapi.responses import JSONResponse as _JSON
             try:
-                row = await asyncio.to_thread(self.history.db.fetch_one, "SELECT 1 AS ok")
-                if not row:
-                    raise RuntimeError("empty health-probe result")
+                await self._probe_application_readiness()
             except Exception as exc:
-                logger.warning("readyz: database probe failed: %s", exc)
-                return _JSON({"status": "degraded", "db": "unreachable"}, status_code=503)
-            return {"status": "ok", "db": "ok", "agents": len(self.agent_cards)}
+                logger.warning("readyz: persistence probe failed: %s", exc)
+                return _JSON(
+                    {"status": "degraded", "persistence": "unready"},
+                    status_code=503,
+                )
+            return {
+                "status": "ok",
+                "db": "ok",
+                "generated_agent_publication": "ok",
+                "agents": len(self.agent_cards),
+            }
 
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
@@ -20931,11 +23756,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # The shell page + static assets replace the former separate React SPA
         # (no separate :5173 frontend). astralprims defines primitives, the
         # orchestrator renders them (webrender), ROTE adapts per device.
-        import os as _os
         import secrets as _secrets
+        from astralprojection import template_path as _projection_template_path
         from fastapi.responses import HTMLResponse as _HTMLResponse
-        _webrender_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "webrender")
-        _shell_path = _os.path.join(_webrender_dir, "templates", "shell.html")
+        _projection_static_dir = _projection_static_filesystem_root()
+        _shell_resource = _projection_template_path("shell.html")
 
         @app.get("/", response_class=_HTMLResponse)
         async def serve_shell(request: Request):
@@ -20952,10 +23777,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.exception("web_auth: shell gate check failed — failing closed")
                 return _HTMLResponse("<h1>AstralDeep</h1><p>Sign-in unavailable.</p>", status_code=503)
             try:
-                with open(_shell_path, "r", encoding="utf-8") as fh:
-                    shell = fh.read()
+                shell = _shell_resource.read_text(encoding="utf-8")
             except Exception:
-                logger.exception("webrender: shell template missing")
+                logger.exception("astralprojection: shell template missing")
                 return _HTMLResponse("<h1>AstralDeep</h1><p>UI shell unavailable.</p>", status_code=500)
             # Inject a session token for the WS handshake. In mock-auth/dev the
             # client falls back to 'dev-token'; with server-side OIDC the auth
@@ -20970,9 +23794,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # FR-014 UX gating; handlers re-check server-side).
             topbar = ""
             try:
+                from orchestrator.chrome_availability import projection_chrome_availability
                 from orchestrator.web_auth import session_roles
                 from webrender.chrome import render_topbar
-                topbar = render_topbar(roles=await asyncio.to_thread(session_roles, request))
+                topbar = render_topbar(
+                    roles=await asyncio.to_thread(session_roles, request),
+                    **projection_chrome_availability(),
+                )
             except Exception:
                 logger.exception("chrome: topbar render failed — serving bare shell")
             shell = shell.replace("%%ASTRAL_TOKEN%%", token or "")
@@ -20998,7 +23826,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             shell = shell.replace("%%ASTRAL_ACCEPT%%", accept_attr)
             # Feature 052: per-file content-hash asset URLs — a changed file is
             # fetched under a new URL, unchanged files stay immutable-cached.
-            shell = _apply_asset_versions(shell, _os.path.join(_webrender_dir, "static"))
+            shell = _apply_asset_versions(shell, _projection_static_dir)
             # The shell hands the access token to page JS, so an injected script
             # would be a full impersonation. Both inline blocks are
             # server-substituted here, so they can carry a per-response nonce and
@@ -21039,7 +23867,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             resp.headers["Permissions-Policy"] = "camera=(), geolocation=()"
             return resp
 
-        app.mount("/static", _NoCacheStaticFiles(directory=_os.path.join(_webrender_dir, "static")), name="static")
+        app.mount(
+            "/static",
+            _NoCacheStaticFiles(directory=_projection_static_dir),
+            name="static",
+        )
 
         # Mount REST API routers
         from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
@@ -21176,53 +24008,151 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
         if self.voice_services is not None:
             self.voice_services.start()
+        await server.serve()
+
+    async def _close_started_services(self) -> None:
+        """Share one exact teardown across normal, failed, and cancelled starts."""
+
+        task = getattr(self, "_started_services_close_task", None)
+        if task is None:
+            task = asyncio.create_task(
+                self._close_started_services_once(),
+                name="orchestrator-started-services-close",
+            )
+            self._started_services_close_task = task
         try:
-            await server.serve()
-        finally:
-            watchdog = getattr(self, "_personal_agent_watchdog_task", None)
-            if watchdog is not None:
-                watchdog.cancel()
-                await asyncio.gather(watchdog, return_exceptions=True)
-                self._personal_agent_watchdog_task = None
-            poller = getattr(self, "_remote_job_poll_task", None)
-            if poller is not None:
-                poller.cancel()
-                await asyncio.gather(poller, return_exceptions=True)
-                self._remote_job_poll_task = None
-            discovery = getattr(self, "_external_agent_discovery_task", None)
-            if discovery is not None:
-                discovery.cancel()
-                await asyncio.gather(discovery, return_exceptions=True)
-                self._external_agent_discovery_task = None
+            await _join_orchestrator_close_through_cancellation(task)
+        except BaseException:
+            shared_failed = task.cancelled()
+            if not shared_failed and task.done():
+                shared_failed = task.exception() is not None
+            if (
+                shared_failed
+                and getattr(self, "_started_services_close_task", None) is task
+            ):
+                self._started_services_close_task = None
+            raise
+
+    async def _close_started_services_once(self) -> None:
+        startup_tasks = tuple(getattr(self, "_startup_background_tasks", ()))
+        for task in startup_tasks:
+            task.cancel()
+        if startup_tasks:
+            await asyncio.gather(*startup_tasks, return_exceptions=True)
+        getattr(self, "_startup_background_tasks", set()).clear()
+
+        for attribute in (
+            "_personal_agent_watchdog_task",
+            "_remote_job_poll_task",
+            "_external_agent_discovery_task",
+        ):
+            task = getattr(self, attribute, None)
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                setattr(self, attribute, None)
+
+        exit_waiters = getattr(self, "_personal_agent_exit_waiters", None) or {}
+        for stop_waiter in tuple(exit_waiters.values()):
+            self._cancel_personal_agent_exit_waiter(stop_waiter)
+        exit_waiters.clear()
+
+        publication_close_error: BaseException | None = None
+        publication_service = getattr(
+            self,
+            "generated_agent_publication_service",
+            None,
+        )
+        if publication_service is not None:
             try:
-                scheduler_loop = getattr(self, "_scheduler_loop", None)
-                if scheduler_loop is not None:
-                    await scheduler_loop.stop()
-            finally:
-                try:
-                    remainder = await self.async_task_manager.drain(
-                        timeout_seconds=5.0
+                await publication_service.close()
+            except BaseException as exc:
+                publication_close_error = exc
+                logger.exception("generated_agent_publication_shutdown_failed")
+
+        try:
+            scheduler_loop = getattr(self, "_scheduler_loop", None)
+            if scheduler_loop is not None:
+                await scheduler_loop.stop()
+        finally:
+            try:
+                remainder = await self.async_task_manager.drain(
+                    timeout_seconds=5.0
+                )
+                if remainder:
+                    logger.critical(
+                        "Background service drain fenced %d "
+                        "cancellation-resistant task(s)",
+                        remainder,
                     )
-                    if remainder:
-                        logger.critical(
-                            "Background service drain fenced %d "
-                            "cancellation-resistant task(s)",
-                            remainder,
-                        )
+            finally:
+                # Kept as an idempotent compatibility guard if a partial
+                # startup failed before drain captured the retention task.
+                try:
+                    await self.async_task_manager.stop_retention_sweep()
                 finally:
-                    # Kept as an idempotent compatibility guard if a partial
-                    # startup failed before drain captured the retention task.
+                    voice_close_error: BaseException | None = None
+                    voice_services = getattr(self, "voice_services", None)
+                    if voice_services is not None:
+                        try:
+                            await voice_services.close()
+                        except BaseException as exc:
+                            voice_close_error = exc
+                            logger.warning("conversational_voice_shutdown_failed")
+                    audit_close_error: BaseException | None = None
+                    audit_recorder = getattr(
+                        self,
+                        "_owned_audit_recorder",
+                        None,
+                    )
+                    if audit_recorder is not None:
+                        try:
+                            from audit.recorder import get_recorder, set_recorder
+
+                            if get_recorder() is audit_recorder:
+                                set_recorder(None)
+                            await audit_recorder.close()
+                        except BaseException as exc:
+                            audit_close_error = exc
+                            logger.exception("audit_recorder_shutdown_failed")
+                    process_unbind_error: BaseException | None = None
                     try:
-                        await self.async_task_manager.stop_retention_sweep()
-                    finally:
-                        voice_services = getattr(self, "voice_services", None)
-                        if voice_services is not None:
-                            try:
-                                await voice_services.close()
-                            except Exception:
-                                logger.warning(
-                                    "conversational_voice_shutdown_failed"
-                                )
+                        _unbind_orchestrator_process_consumers(self)
+                    except BaseException as exc:
+                        process_unbind_error = exc
+                    global _ORCH_INSTANCE
+                    if _ORCH_INSTANCE is self:
+                        _ORCH_INSTANCE = None
+                    runtime_composition = getattr(
+                        self,
+                        "runtime_composition",
+                        None,
+                    )
+                    runtime_close_error: BaseException | None = None
+                    if runtime_composition is not None:
+                        try:
+                            await runtime_composition.close()
+                        except BaseException as exc:
+                            runtime_close_error = exc
+                            logger.exception("plane_lets_runtime_shutdown_failed")
+                    errors = tuple(
+                        error
+                        for error in (
+                            voice_close_error,
+                            audit_close_error,
+                            publication_close_error,
+                            process_unbind_error,
+                            runtime_close_error,
+                        )
+                        if error is not None
+                    )
+                    if len(errors) == 1:
+                        raise errors[0]
+                    if errors:
+                        raise BaseExceptionGroup(
+                            "orchestrator process unbind and runtime close failed",
+                            list(errors),
+                        )
 
     async def _jwks_warm_loop(self):
         """Warm the Keycloak JWKS at boot, then refresh it in the background.
@@ -21587,6 +24517,156 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # user_data is the JWT payload, sub is the subject (user ID)
         return user_data.get('sub', 'legacy')
 
+    def _load_user_preferences(self, user_id: str) -> Dict[str, Any]:
+        """Load the bounded public theme plus verified identity projection.
+
+        Generic preference-row transport belonged to the retired Deep database
+        facade.  The product consumes only two typed Plane contracts here and
+        reconstructs the existing internal preference-shaped handoff so the
+        authorization and client-redaction helpers remain unchanged.
+        """
+
+        from orchestrator.external_identity_links import PREFERENCES_KEY
+        from orchestrator.plane_repository_context import (
+            plane_source_from_orchestrator,
+        )
+
+        source = plane_source_from_orchestrator(self)
+        preferences: Dict[str, Any] = {}
+        with source.plane_runtime.transaction() as transaction:
+            theme = source.plane_repositories.preferences.theme.get(
+                transaction,
+                owner_id=user_id,
+            )
+            identities = source.plane_repositories.identity.list_external_identities(
+                transaction,
+                owner_id=user_id,
+                limit=100,
+            )
+        if theme is not None:
+            preferences["theme"] = dict(theme.theme)
+        if identities:
+            preferences[PREFERENCES_KEY] = {
+                record.provider: {
+                    "subject": record.subject,
+                    "issuer": record.issuer,
+                    "verified_by_agent": record.agent_id,
+                    "verified_at": record.verified_at,
+                }
+                for record in identities
+            }
+        return preferences
+
+    def _save_theme_preference(
+        self,
+        user_id: str,
+        theme: Dict[str, Any],
+    ) -> None:
+        """Replace one owner's bounded theme through Plane."""
+
+        from orchestrator.plane_repository_context import (
+            plane_source_from_orchestrator,
+        )
+
+        source = plane_source_from_orchestrator(self)
+        with source.plane_runtime.transaction() as transaction:
+            source.plane_repositories.preferences.theme.put(
+                transaction,
+                owner_id=user_id,
+                theme=theme,
+            )
+
+    def _background_tasks_for_replay(self, user_id: str):
+        """Return the newest bounded terminal, unnotified task projections."""
+
+        from astralplane.repositories.background_tasks import BackgroundTaskStatus
+        from orchestrator.plane_repository_context import (
+            plane_source_from_orchestrator,
+        )
+
+        source = plane_source_from_orchestrator(self)
+        terminal_states = (
+            BackgroundTaskStatus.COMPLETED,
+            BackgroundTaskStatus.FAILED,
+            BackgroundTaskStatus.CANCELLED,
+            BackgroundTaskStatus.RETRYABLE,
+        )
+        with source.plane_runtime.transaction() as transaction:
+            records = tuple(
+                record
+                for state in terminal_states
+                for record in source.plane_repositories.background_tasks.list_for_owner(
+                    transaction,
+                    owner_id=user_id,
+                    status=state,
+                    limit=20,
+                )
+                if not record.notified
+            )
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+        return tuple(
+            sorted(
+                records,
+                key=lambda record: (
+                    -(record.created_at or epoch).timestamp(),
+                    record.task_id,
+                ),
+            )[:20]
+        )
+
+    def _mark_background_tasks_notified(
+        self,
+        user_id: str,
+        task_ids: tuple[str, ...],
+    ) -> None:
+        """Apply owner-scoped notification CASes in one caller transaction."""
+
+        from orchestrator.plane_repository_context import (
+            plane_source_from_orchestrator,
+        )
+
+        source = plane_source_from_orchestrator(self)
+        with source.plane_runtime.transaction() as transaction:
+            for task_id in task_ids:
+                source.plane_repositories.background_tasks.mark_notified(
+                    transaction,
+                    owner_id=user_id,
+                    task_id=task_id,
+                )
+
+    def _probe_plane_readiness(self) -> None:
+        """Verify initialized runtime state and one real typed database query."""
+
+        from orchestrator.plane_repository_context import (
+            plane_source_from_orchestrator,
+        )
+
+        source = plane_source_from_orchestrator(self)
+        if not source.plane_runtime.health().ready:
+            raise RuntimeError("AstralPlane runtime is not ready")
+        from orchestrator.attachments.purge import (
+            purge_coordinator_from_orchestrator,
+        )
+
+        with source.plane_runtime.transaction() as transaction:
+            purge_coordinator_from_orchestrator(self).assert_globally_ready(
+                transaction
+            )
+            source.plane_repositories.identity.list_identities_for_administration(
+                transaction,
+                limit=1,
+            )
+
+    async def _probe_application_readiness(self) -> None:
+        """Probe Plane and generated-publication recovery without loop blocking."""
+
+        await asyncio.to_thread(self._probe_plane_readiness)
+        publication = await self.generated_agent_publication_service.readiness()
+        if not publication.ready:
+            raise RuntimeError(
+                "generated-agent publication recovery is unresolved"
+            )
+
     def _save_user_profile(self, user_data: Dict) -> None:
         """Persist user profile from JWT claims to the database."""
         user_id = user_data.get("sub")
@@ -21600,15 +24680,42 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     os.getenv("KEYCLOAK_CLIENT_ID", "astral-frontend"), {}
                 ).get("roles", [])
             ))
-            self.history.db.upsert_user(
-                user_id=user_id,
-                email=user_data.get("email"),
-                username=user_data.get("preferred_username"),
-                display_name=user_data.get("name") or user_data.get("preferred_username"),
-                roles=roles,
+            from orchestrator.plane_repository_context import (
+                plane_source_from_orchestrator,
             )
+
+            source = plane_source_from_orchestrator(self)
+            with source.plane_runtime.transaction() as transaction:
+                source.plane_repositories.identity.upsert_identity(
+                    transaction,
+                    owner_id=user_id,
+                    observed_at=int(time.time() * 1000),
+                    email=user_data.get("email"),
+                    username=user_data.get("preferred_username"),
+                    display_name=(
+                        user_data.get("name")
+                        or user_data.get("preferred_username")
+                    ),
+                    roles=roles,
+                )
         except Exception as e:
             logger.warning(f"Failed to save user profile for {user_id}: {e}")
+
+
+async def _join_orchestrator_close_through_cancellation(
+    task: asyncio.Task[None],
+) -> None:
+    """Observe exact teardown before propagating repeated caller cancellation."""
+
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    task.result()
+    if cancellation is not None:
+        raise cancellation
 
 
 if __name__ == "__main__":

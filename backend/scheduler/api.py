@@ -24,6 +24,7 @@ from pydantic import UUID4, BaseModel, Field
 
 from agentic_settings import SCHEDULE_MAX_ACTIVE_JOBS_PER_USER, SCHEDULE_MIN_INTERVAL_SECONDS
 from orchestrator.auth import get_current_user_payload, require_user_id
+from orchestrator.plane_repository_context import plane_source_from_orchestrator
 from orchestrator.tool_permissions import VALID_SCOPES as _CANONICAL_SCOPES
 from audit.hooks import record_generic
 from shared.feature_flags import flags
@@ -70,9 +71,14 @@ def _orch(request: Request):
 
 def _store(request: Request) -> ScheduledJobStore:
     orch = _orch(request)
+    injected = getattr(orch, "scheduled_job_store", None)
+    if injected is not None:
+        return injected
+    source = plane_source_from_orchestrator(orch)
     return ScheduledJobStore(
-        orch.history.db,
         coordinator=orch.work_admission,
+        plane_runtime=source.plane_runtime,
+        plane_repositories=source.plane_repositories,
     )
 
 
@@ -119,10 +125,7 @@ async def create_job(body: ScheduleCreateRequest, request: Request,
         raise HTTPException(status_code=422, detail="explicit consent is required to schedule unattended work")
 
     orch = _orch(request)
-    store = ScheduledJobStore(
-        orch.history.db,
-        coordinator=orch.work_admission,
-    )
+    store = _store(request)
 
     # Scope-bounding: consented scopes can never exceed the user's CURRENT scopes.
     bad = [s for s in body.consented_scopes if s not in _VALID_SCOPES]

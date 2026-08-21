@@ -2,14 +2,15 @@
 
 Covers: allowlist validation, revoked/queued outcomes with the originating
 client_id, the public-client revocation payload (no secret for native client
-ids), the retrier honoring the stored client_id, and the idempotent
-auth_revocation_queue.client_id migration against the live Postgres.
+ids), the retrier honoring the stored client_id, and Deep's use of Plane's
+nullable client-id revocation contract.
 """
 import asyncio
 import json
 from pathlib import Path
 
 import pytest
+from astralplane.repositories.revocations import RevocationQueueRecord
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -183,34 +184,51 @@ def test_retrier_uses_stored_client_id(monkeypatch):
     assert ("rt-web", None) in seen  # NULL → falls back to the web client id
 
 
-def test_migration_added_client_id_column():
-    """The idempotent _init_db delta must exist on the live schema."""
-    from shared.database import Database
-    db = Database()
-    row = db.fetch_one(
-        "SELECT column_name, is_nullable FROM information_schema.columns "
-        "WHERE table_name = 'auth_revocation_queue' AND column_name = 'client_id'")
-    assert row, "auth_revocation_queue.client_id missing — _init_db delta not applied"
-    assert row["is_nullable"] == "YES"  # NULL-compatible with pre-044 rows
+def test_plane_revocation_contract_keeps_client_id_nullable():
+    """Pre-044 rows remain representable without a client identity."""
+
+    legacy = RevocationQueueRecord(
+        queue_id=1,
+        owner_id="owner",
+        refresh_token_ciphertext="ciphertext",
+        client_id=None,
+    )
+    native = RevocationQueueRecord(
+        queue_id=2,
+        owner_id="owner",
+        refresh_token_ciphertext="ciphertext",
+        client_id="astral-mobile",
+    )
+
+    assert legacy.client_id is None
+    assert native.client_id == "astral-mobile"
 
 
 def test_client_local_manifest_untouched():
     """The endpoint is REST — the WS accept_actions manifest must not grow."""
-    from pathlib import Path
-    manifest = json.loads((Path(__file__).resolve().parents[1] / "shared" /
-                           "ui_protocol.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (
+            REPO_ROOT
+            / "components"
+            / "AstralProjection"
+            / "contracts"
+            / "ui_protocol.json"
+        ).read_text(encoding="utf-8")
+    )
     assert "native_logout" not in manifest["accept_actions"]
 
 
 @pytest.mark.skipif(
-    not (REPO_ROOT / "apple-clients").is_dir(),  # repo root absent inside the product image
+    not (
+        REPO_ROOT / "components" / "AstralProjection" / "apple-clients"
+    ).is_dir(),  # composition source absent inside the product image
     reason="repo-root tooling files are not part of the product image",
 )
 @pytest.mark.parametrize(
     "relative_path",
     [
-        "apple-clients/AstralApp/AstralApp/AppModel.swift",
-        "apple-clients/AstralWatch/WatchModel.swift",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift",
+        "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift",
     ],
 )
 def test_apple_sign_out_wipes_local_credentials_before_any_network_await(

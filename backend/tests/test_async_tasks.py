@@ -5,11 +5,14 @@ import dataclasses
 import json
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
+from astralplane.repositories.background_tasks import BackgroundTaskStatus
 from orchestrator.async_tasks import (
     BackgroundTaskAdmissionError,
     BackgroundTaskManager,
@@ -23,20 +26,22 @@ from orchestrator.work_admission import (
     AdmissionClass,
     AdmissionClassConfig,
     InMemoryWorkAdmissionRepository,
+    OperationNotFoundError,
     OperationOwner,
+    OperationRecord,
     OperationRequest,
     OwnerScope,
     PurgeResult,
+    SafeOperationProjection,
     WorkAdmissionCoordinator,
 )
 from shared.feature_flags import flags
 
 
-# The manager only performs the legacy compatibility write (the DB projection
-# these tests observe) when bg_continuity is enabled; the flags-off SC-009
-# byte-equivalence run correctly performs no such write, so tests that assert
-# on it skip cleanly there. Flags are read once at import, so this is stable
-# for the whole process.
+# The manager only performs the Plane compatibility projection when
+# bg_continuity is enabled; the flags-off SC-009 byte-equivalence run correctly
+# performs no such write, so tests that assert on it skip cleanly there. Flags
+# are read once at import, so this is stable for the whole process.
 _REQUIRES_BG_CONTINUITY = pytest.mark.skipif(
     not flags.is_enabled("bg_continuity"),
     reason="legacy compatibility write requires FF_BG_CONTINUITY",
@@ -109,6 +114,57 @@ class _FailingObservability:
         raise RuntimeError("collector unavailable")
 
 
+class _FakePlaneRuntime:
+    def __init__(self) -> None:
+        self.transactions: list[object] = []
+
+    @contextmanager
+    def transaction(self, *, isolation=None):
+        del isolation
+        transaction = object()
+        self.transactions.append(transaction)
+        yield transaction
+
+
+class _RecordingBackgroundRepository:
+    def __init__(self) -> None:
+        self.records = []
+        self.transactions = []
+        self.retained_at = None
+        self.purge_ids: tuple[str, ...] = ()
+
+    def apply_operation_projection(self, transaction, record):
+        self.transactions.append(transaction)
+        self.records.append(record)
+        return record
+
+    def oldest_overdue_for_administration(self, transaction, *, cutoff_at):
+        self.transactions.append(transaction)
+        self.cutoff_at = cutoff_at
+        return self.retained_at
+
+    def purge_overdue_for_administration(
+        self,
+        transaction,
+        *,
+        cutoff_at,
+        limit,
+    ):
+        self.transactions.append(transaction)
+        self.cutoff_at = cutoff_at
+        return self.purge_ids[:limit]
+
+
+def _bind_plane(manager, repository=None):
+    runtime = _FakePlaneRuntime()
+    repository = repository or _RecordingBackgroundRepository()
+    manager.bind(
+        plane_runtime=runtime,
+        plane_repositories=SimpleNamespace(background_tasks=repository),
+    )
+    return runtime, repository
+
+
 def _manager(
     *,
     active_limit=20,
@@ -153,6 +209,32 @@ def _maintenance_manager(*, active_limit=1, queue_limit=0, clock=None):
         clock=clock or _Clock(),
     )
     return BackgroundTaskManager(coordinator=coordinator)
+
+
+def _claim_maintenance(coordinator):
+    owner = OperationOwner(OwnerScope.MAINTENANCE, None, None)
+    admitted = coordinator.submit(
+        OperationRequest(
+            operation_kind="retention_test",
+            admission_class=AdmissionClass.MAINTENANCE,
+            owner=owner,
+            submission_id=uuid.uuid4(),
+            idempotency_namespace=None,
+            idempotency_key=None,
+            normalized_input_digest=None,
+            chat_id=None,
+            parent_operation_id=None,
+            connection_generation=None,
+            request_generation=None,
+        )
+    )
+    assert admitted.accepted
+    claim = coordinator.claim_operation(
+        AdmissionClass.MAINTENANCE,
+        admitted.operation_id,
+    )
+    assert claim is not None
+    return claim
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +466,491 @@ class TestBackgroundTaskManager:
             await _collect(mgr)
 
     @pytest.mark.asyncio
+    async def test_caller_cancellation_joins_committed_cancel_and_worker_cleanup(
+        self,
+        monkeypatch,
+    ):
+        mgr = _manager(active_limit=1, queue_limit=0)
+        started = asyncio.Event()
+        worker_cleanup_finished = asyncio.Event()
+        never = asyncio.Event()
+        cancel_committed = threading.Event()
+        cancel_response_release = threading.Event()
+        cancel_request = None
+
+        async def running(vws):
+            started.set()
+            try:
+                await never.wait()
+            finally:
+                worker_cleanup_finished.set()
+
+        task = await mgr.submit("c0", "u1", running)
+        await asyncio.wait_for(started.wait(), timeout=1)
+        coordinator = mgr._coordinator
+        original_cancel = coordinator.cancel
+        operation_id = uuid.UUID(task.task_id)
+
+        def committed_then_delayed(*args, **kwargs):
+            response = original_cancel(*args, **kwargs)
+            if kwargs.get("operation_id") == operation_id:
+                cancel_committed.set()
+                assert cancel_response_release.wait(timeout=5)
+            return response
+
+        monkeypatch.setattr(coordinator, "cancel", committed_then_delayed)
+        try:
+            cancel_request = asyncio.create_task(mgr.cancel(task.task_id))
+            await _wait_until(cancel_committed.is_set, timeout=1)
+
+            assert cancel_request.cancel() is True
+            await asyncio.sleep(0)
+            assert not cancel_request.done()
+            assert not worker_cleanup_finished.is_set()
+            assert cancel_request.cancel() is True
+            await asyncio.sleep(0)
+            assert not cancel_request.done()
+
+            cancel_response_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(cancel_request, timeout=1)
+
+            assert worker_cleanup_finished.is_set()
+            assert task.asyncio_task.done()
+            assert task._virtual_websocket is None
+            assert task.status is TaskStatus.CANCELLED
+            durable = coordinator.query_operation(
+                owner=task._owner,
+                operation_id=operation_id,
+            )
+            assert durable.state is OperationState.CANCELLED
+            assert (
+                coordinator.inspect_admission_class(
+                    AdmissionClass.BACKGROUND
+                ).active_count
+                == 0
+            )
+        finally:
+            cancel_response_release.set()
+            never.set()
+            if cancel_request is not None:
+                await asyncio.gather(cancel_request, return_exceptions=True)
+            if task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+                await mgr.cancel(task.task_id)
+            await _collect(mgr)
+
+    @pytest.mark.asyncio
+    async def test_double_caller_cancel_keeps_cleanup_failure_as_cause(
+        self,
+        monkeypatch,
+    ):
+        mgr = _manager(active_limit=1, queue_limit=0)
+        started = asyncio.Event()
+        worker_cleanup_finished = asyncio.Event()
+        never = asyncio.Event()
+        cancel_committed = threading.Event()
+        cancel_response_release = threading.Event()
+        flow_error_ready = asyncio.Event()
+        flow_error_release = asyncio.Event()
+        cancel_request = None
+
+        async def running(vws):
+            started.set()
+            try:
+                await never.wait()
+            finally:
+                worker_cleanup_finished.set()
+
+        task = await mgr.submit("c0", "u1", running)
+        await asyncio.wait_for(started.wait(), timeout=1)
+        coordinator = mgr._coordinator
+        original_cancel = coordinator.cancel
+        operation_id = uuid.UUID(task.task_id)
+
+        def committed_then_delayed(*args, **kwargs):
+            response = original_cancel(*args, **kwargs)
+            if kwargs.get("operation_id") == operation_id:
+                cancel_committed.set()
+                assert cancel_response_release.wait(timeout=5)
+            return response
+
+        original_cancellation_flow = mgr._cancel_and_cleanup
+
+        async def cleanup_then_fail(*args, **kwargs):
+            await original_cancellation_flow(*args, **kwargs)
+            flow_error_ready.set()
+            await flow_error_release.wait()
+            raise RuntimeError("cleanup-after-committed-cancel")
+
+        monkeypatch.setattr(coordinator, "cancel", committed_then_delayed)
+        monkeypatch.setattr(mgr, "_cancel_and_cleanup", cleanup_then_fail)
+        try:
+            cancel_request = asyncio.create_task(mgr.cancel(task.task_id))
+            await _wait_until(cancel_committed.is_set, timeout=1)
+
+            assert cancel_request.cancel() is True
+            await asyncio.sleep(0)
+            assert not cancel_request.done()
+            assert cancel_request.cancel() is True
+            await asyncio.sleep(0)
+            assert not cancel_request.done()
+
+            cancel_response_release.set()
+            await asyncio.wait_for(flow_error_ready.wait(), timeout=1)
+            assert worker_cleanup_finished.is_set()
+            assert not cancel_request.done()
+
+            flow_error_release.set()
+            with pytest.raises(asyncio.CancelledError) as exc_info:
+                await asyncio.wait_for(cancel_request, timeout=1)
+
+            assert isinstance(exc_info.value.__cause__, RuntimeError)
+            assert str(exc_info.value.__cause__) == "cleanup-after-committed-cancel"
+            assert task.asyncio_task.done()
+            assert task._virtual_websocket is None
+            assert task.status is TaskStatus.CANCELLED
+            durable = coordinator.query_operation(
+                owner=task._owner,
+                operation_id=operation_id,
+            )
+            assert durable.state is OperationState.CANCELLED
+        finally:
+            cancel_response_release.set()
+            flow_error_release.set()
+            never.set()
+            if cancel_request is not None:
+                await asyncio.gather(cancel_request, return_exceptions=True)
+            if task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+                await mgr.cancel(task.task_id)
+            await _collect(mgr)
+
+    @pytest.mark.asyncio
+    async def test_dispatcher_ignores_stale_query_after_cancel_and_keeps_progressing(
+        self,
+        monkeypatch,
+    ):
+        clock = _Clock()
+        mgr = _manager(active_limit=1, queue_limit=2, clock=clock)
+        active_started = asyncio.Event()
+        active_release = asyncio.Event()
+        successor_started = asyncio.Event()
+        cancel_entered = threading.Event()
+        cancel_commit_release = threading.Event()
+        stale_query_captured = threading.Event()
+        stale_query_release = threading.Event()
+        stale_queries = []
+        cancel_request = None
+        dispatcher = None
+
+        # Retain queued callables without starting the normal dispatcher so the
+        # cancellation can snapshot local authority before the forced query
+        # interleaving below acquires the manager lock.
+        monkeypatch.setattr(mgr, "_ensure_dispatcher_locked", lambda: None)
+
+        async def active(vws):
+            active_started.set()
+            await active_release.wait()
+
+        async def successor(vws):
+            successor_started.set()
+
+        current = await mgr.submit("c0", "u1", active)
+        first_queued = await mgr.submit("c1", "u1", successor)
+        clock.current += timedelta(milliseconds=1)
+        second_queued = await mgr.submit("c2", "u1", successor)
+        await asyncio.wait_for(active_started.wait(), timeout=1)
+
+        coordinator = mgr._coordinator
+        original_cancel = coordinator.cancel
+        original_query = coordinator.query_operation
+        first_id = uuid.UUID(first_queued.task_id)
+        block_dispatch_query = threading.Event()
+
+        def delayed_cancel(*args, **kwargs):
+            if kwargs.get("operation_id") == first_id:
+                cancel_entered.set()
+                assert cancel_commit_release.wait(timeout=5)
+            return original_cancel(*args, **kwargs)
+
+        def stale_query(*args, **kwargs):
+            response = original_query(*args, **kwargs)
+            if (
+                kwargs.get("operation_id") == first_id
+                and block_dispatch_query.is_set()
+                and not stale_query_captured.is_set()
+            ):
+                stale_queries.append(response)
+                stale_query_captured.set()
+                assert stale_query_release.wait(timeout=5)
+            return response
+
+        monkeypatch.setattr(coordinator, "cancel", delayed_cancel)
+        monkeypatch.setattr(coordinator, "query_operation", stale_query)
+        try:
+            cancel_request = asyncio.create_task(mgr.cancel(first_queued.task_id))
+            await _wait_until(cancel_entered.is_set, timeout=1)
+
+            block_dispatch_query.set()
+            mgr._dispatcher_wakeup = asyncio.Event()
+            dispatcher = asyncio.create_task(
+                mgr._dispatch_pending(),
+                name="stale-query-dispatcher-test",
+            )
+            mgr._dispatcher_task = dispatcher
+            await _wait_until(stale_query_captured.is_set, timeout=1)
+            assert stale_queries[0].state is OperationState.QUEUED
+
+            cancel_commit_release.set()
+            await _wait_until(
+                lambda: first_queued.status is TaskStatus.CANCELLED,
+                timeout=1,
+            )
+            assert not dispatcher.done()
+
+            stale_query_release.set()
+            assert await asyncio.wait_for(cancel_request, timeout=1) is True
+            assert first_queued.status is TaskStatus.CANCELLED
+
+            active_release.set()
+            await asyncio.wait_for(successor_started.wait(), timeout=1)
+            await asyncio.wait_for(second_queued.asyncio_task, timeout=1)
+            assert second_queued.status is TaskStatus.COMPLETED
+            await asyncio.wait_for(dispatcher, timeout=1)
+            assert dispatcher.exception() is None
+        finally:
+            cancel_commit_release.set()
+            stale_query_release.set()
+            active_release.set()
+            if cancel_request is not None:
+                await asyncio.gather(cancel_request, return_exceptions=True)
+            if dispatcher is not None:
+                await asyncio.gather(dispatcher, return_exceptions=True)
+            for task in (current, first_queued, second_queued):
+                if task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+                    await mgr.cancel(task.task_id)
+            await _collect(mgr)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "response_order",
+        ("terminal_response", "stale_response"),
+    )
+    async def test_completion_wins_inflight_cancellation_without_regression(
+        self,
+        monkeypatch,
+        response_order,
+    ):
+        mgr = _manager(active_limit=1, queue_limit=1)
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        successor_started = asyncio.Event()
+        cancel_entered = threading.Event()
+        cancel_release = threading.Event()
+        delayed_responses = []
+        current = None
+        successor = None
+        cancel_request = None
+
+        async def running(vws):
+            started.set()
+            await finish.wait()
+
+        async def queued(vws):
+            successor_started.set()
+
+        try:
+            current = await mgr.submit("c0", "u1", running)
+            await asyncio.wait_for(started.wait(), timeout=1)
+            coordinator = mgr._coordinator
+            original_cancel = coordinator.cancel
+            operation_id = uuid.UUID(current.task_id)
+
+            def delayed_cancel(*args, **kwargs):
+                if kwargs.get("operation_id") != operation_id:
+                    return original_cancel(*args, **kwargs)
+                if response_order == "terminal_response":
+                    cancel_entered.set()
+                    assert cancel_release.wait(timeout=5)
+                    return original_cancel(*args, **kwargs)
+                response = original_cancel(*args, **kwargs)
+                delayed_responses.append(response)
+                cancel_entered.set()
+                assert cancel_release.wait(timeout=5)
+                return response
+
+            monkeypatch.setattr(coordinator, "cancel", delayed_cancel)
+            cancel_request = asyncio.create_task(mgr.cancel(current.task_id))
+            await _wait_until(cancel_entered.is_set, timeout=1)
+
+            finish.set()
+            await asyncio.wait_for(current.asyncio_task, timeout=1)
+            assert current.status is TaskStatus.COMPLETED
+            terminal_revision = current._operation.state_revision
+
+            # The manager state lock must not be held by the blocked database
+            # cancellation call. Completion released durable capacity, so an
+            # unrelated successor can be admitted and run before it returns.
+            successor = await asyncio.wait_for(
+                mgr.submit("c1", "u1", queued),
+                timeout=1,
+            )
+            await asyncio.wait_for(successor_started.wait(), timeout=1)
+            await asyncio.wait_for(successor.asyncio_task, timeout=1)
+            assert successor.status is TaskStatus.COMPLETED
+            assert not cancel_request.done()
+
+            if response_order == "stale_response":
+                assert len(delayed_responses) == 1
+                delayed = delayed_responses[0]
+                assert delayed.state is OperationState.RUNNING
+                assert delayed.cancel_requested_at is not None
+                assert delayed.state_revision < terminal_revision
+
+            cancel_release.set()
+            assert await asyncio.wait_for(cancel_request, timeout=1) is False
+            assert current.status is TaskStatus.COMPLETED
+            assert current._operation.state is OperationState.COMPLETED
+            assert current._operation.state_revision == terminal_revision
+            durable = coordinator.query_operation(
+                owner=current._owner,
+                operation_id=operation_id,
+            )
+            assert durable.state is OperationState.COMPLETED
+            assert durable.state_revision == terminal_revision
+        finally:
+            finish.set()
+            cancel_release.set()
+            if cancel_request is not None:
+                await asyncio.gather(cancel_request, return_exceptions=True)
+            for task in (current, successor):
+                if task is not None and task.status in {
+                    TaskStatus.QUEUED,
+                    TaskStatus.RUNNING,
+                }:
+                    await mgr.cancel(task.task_id)
+            await _collect(mgr)
+
+    @pytest.mark.asyncio
+    async def test_stale_cancel_response_reconciles_newer_safe_projection(
+        self,
+        monkeypatch,
+    ):
+        mgr = _manager()
+        started = asyncio.Event()
+        hold = asyncio.Event()
+        cancel_entered = threading.Event()
+        cancel_release = threading.Event()
+        delayed_responses = []
+
+        async def running(vws):
+            started.set()
+            await hold.wait()
+
+        task = await mgr.submit("c0", "u1", running)
+        await asyncio.wait_for(started.wait(), timeout=1)
+        coordinator = mgr._coordinator
+        original_cancel = coordinator.cancel
+        fence = task._execution_fence
+        assert fence is not None
+
+        def delayed_cancel(*args, **kwargs):
+            response = original_cancel(*args, **kwargs)
+            delayed_responses.append(response)
+            cancel_entered.set()
+            assert cancel_release.wait(timeout=5)
+            return response
+
+        monkeypatch.setattr(coordinator, "cancel", delayed_cancel)
+        cancel_request = asyncio.create_task(mgr.cancel(task.task_id))
+        try:
+            await _wait_until(cancel_entered.is_set, timeout=1)
+            updated = coordinator.update_phase(fence, "cancel_pending")
+            assert await mgr._refresh(task) is True
+            assert task._operation.state_revision == updated.state_revision
+            assert not hasattr(task._operation, "cancel_requested_at")
+            assert delayed_responses[0].state_revision < updated.state_revision
+
+            cancel_release.set()
+            assert await asyncio.wait_for(cancel_request, timeout=1) is True
+            assert task.status is TaskStatus.CANCELLED
+        finally:
+            hold.set()
+            cancel_release.set()
+            await asyncio.gather(cancel_request, return_exceptions=True)
+            await _collect(mgr)
+
+    @pytest.mark.asyncio
+    async def test_same_revision_reconciliation_is_idempotent_only(self):
+        mgr = _manager()
+        hold = asyncio.Event()
+
+        async def running(vws):
+            await hold.wait()
+
+        task = await mgr.submit("c0", "u1", running)
+        full = task._operation
+        assert isinstance(full, OperationRecord)
+        safe = mgr._coordinator.query_operation(
+            owner=task._owner,
+            operation_id=uuid.UUID(task.task_id),
+        )
+        assert isinstance(safe, SafeOperationProjection)
+        try:
+            detached = BackgroundTask(task.task_id, "c0", "u1")
+            assert mgr._reconcile_operation_projection(detached, safe) is safe
+            assert detached._operation is safe
+            with pytest.raises(RuntimeError, match="identity changed"):
+                mgr._reconcile_operation_projection(
+                    task,
+                    replace(full, operation_id=uuid.uuid4()),
+                )
+            assert task._operation is full
+
+            equivalent_full = replace(full)
+            assert (
+                mgr._reconcile_operation_projection(task, equivalent_full)
+                is full
+            )
+            assert task._operation is full
+
+            hidden_payload_swap = replace(
+                full,
+                cancel_requested_at=full.updated_at,
+            )
+            with pytest.raises(RuntimeError, match="without advancing"):
+                mgr._reconcile_operation_projection(task, hidden_payload_swap)
+            assert task._operation is full
+
+            # A safe/full pair at the same revision represents the same
+            # authority only when every field exposed by the safe contract is
+            # identical. The existing richer projection is retained.
+            assert mgr._reconcile_operation_projection(task, safe) is full
+            assert task._operation is full
+            for changed_safe in (
+                replace(safe, state=OperationState.COMPLETED),
+                replace(safe, safe_summary="forged-same-revision"),
+            ):
+                with pytest.raises(RuntimeError, match="without advancing"):
+                    mgr._reconcile_operation_projection(task, changed_safe)
+                assert task._operation is full
+
+            # The inverse safe/full ordering is also idempotent-only and must
+            # not upgrade the stored representation at an unchanged revision.
+            task._apply_operation(safe)
+            assert task._operation is safe
+            assert mgr._reconcile_operation_projection(task, full) is safe
+            assert task._operation is safe
+            with pytest.raises(RuntimeError, match="without advancing"):
+                mgr._reconcile_operation_projection(
+                    task,
+                    replace(full, phase_code="forged_same_revision"),
+                )
+            assert task._operation is safe
+        finally:
+            hold.set()
+            await _collect(mgr)
+
+    @pytest.mark.asyncio
     async def test_cancellation_before_wrapper_start_releases_capacity_once(self):
         mgr = _manager(active_limit=1, queue_limit=0)
         user_code_called = False
@@ -464,6 +1031,44 @@ class TestBackgroundTaskManager:
         mgr = _manager()
         result = await mgr.cancel("nonexistent")
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_cancel_prunes_operation_missing_after_initial_refresh(
+        self,
+        monkeypatch,
+    ):
+        mgr = _manager(active_limit=1, queue_limit=1)
+        release = asyncio.Event()
+
+        async def running(vws):
+            await release.wait()
+
+        running_task = await mgr.submit("c0", "u1", running)
+        queued_task = await mgr.submit("c1", "u1", running)
+        coordinator = mgr._coordinator
+        original_cancel = coordinator.cancel
+        operation_id = uuid.UUID(queued_task.task_id)
+
+        def missing_after_refresh(*args, **kwargs):
+            if kwargs.get("operation_id") == operation_id:
+                raise OperationNotFoundError("operation was retained elsewhere")
+            return original_cancel(*args, **kwargs)
+
+        monkeypatch.setattr(coordinator, "cancel", missing_after_refresh)
+        try:
+            assert await mgr.cancel(queued_task.task_id) is False
+            assert queued_task.task_id not in mgr._tasks
+            assert queued_task.task_id not in mgr._pending_executions
+        finally:
+            original_cancel(
+                owner=queued_task._owner,
+                operation_id=operation_id,
+                terminal_code="cancelled_by_user",
+            )
+            release.set()
+            await _collect(mgr)
+            if running_task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+                await mgr.cancel(running_task.task_id)
 
     @pytest.mark.asyncio
     async def test_get_nonexistent(self):
@@ -850,22 +1455,94 @@ class TestBackgroundTaskManager:
         manager = BackgroundTaskManager()
         bound = _manager()._coordinator
         replacement = _manager()._coordinator
+        plane_runtime = _FakePlaneRuntime()
+        background_repository = _RecordingBackgroundRepository()
+        repositories = SimpleNamespace(
+            background_tasks=background_repository
+        )
 
-        manager.bind(coordinator=bound, db=object(), on_complete=lambda *_: None)
-        manager.bind(coordinator=bound)
+        manager.bind(
+            coordinator=bound,
+            plane_runtime=plane_runtime,
+            plane_repositories=repositories,
+            on_complete=lambda *_: None,
+        )
+        manager.bind(
+            coordinator=bound,
+            plane_runtime=plane_runtime,
+            plane_repositories=repositories,
+        )
         assert manager._coordinator is bound
-        assert manager._db is not None
+        assert manager._plane_runtime is plane_runtime
+        assert manager._background_tasks is background_repository
         assert manager._on_complete is not None
         with pytest.raises(RuntimeError, match="cannot replace"):
             manager.bind(coordinator=replacement)
+        with pytest.raises(RuntimeError, match="cannot replace"):
+            manager.bind(
+                plane_runtime=_FakePlaneRuntime(),
+                background_repository=background_repository,
+            )
+        with pytest.raises(ValueError, match="must be bound together"):
+            manager.bind(plane_runtime=plane_runtime)
 
         async def dummy(vws):
             return None
 
-        await manager.submit("c1", "u1", dummy)
+        submitted = await manager.submit("c1", "u1", dummy)
+        assert submitted.asyncio_task is not None
+        if flags.is_enabled("bg_continuity"):
+            await _wait_until(lambda: bool(background_repository.records))
+        else:
+            assert background_repository.records == []
         with pytest.raises(RuntimeError, match="cannot replace"):
             manager.bind(coordinator=replacement)
         await _collect(manager)
+
+    def test_bind_rejects_incomplete_or_conflicting_plane_contract(self):
+        manager = BackgroundTaskManager()
+        runtime = _FakePlaneRuntime()
+        repository = _RecordingBackgroundRepository()
+
+        with pytest.raises(ValueError, match="expose background_tasks"):
+            manager.bind(
+                plane_runtime=runtime,
+                plane_repositories=SimpleNamespace(),
+            )
+        with pytest.raises(RuntimeError, match="differs from the Plane catalog"):
+            manager.bind(
+                plane_runtime=runtime,
+                plane_repositories=SimpleNamespace(
+                    background_tasks=repository
+                ),
+                background_repository=_RecordingBackgroundRepository(),
+            )
+        with pytest.raises(TypeError, match=r"transaction\(\)"):
+            manager.bind(
+                plane_runtime=object(),
+                background_repository=repository,
+            )
+        with pytest.raises(TypeError, match="required Plane contract"):
+            manager.bind(
+                plane_runtime=runtime,
+                background_repository=object(),
+            )
+
+        manager.bind(
+            plane_runtime=runtime,
+            background_repository=repository,
+        )
+        with pytest.raises(RuntimeError, match="cannot replace the bound background"):
+            manager.bind(
+                plane_runtime=runtime,
+                background_repository=_RecordingBackgroundRepository(),
+            )
+
+    def test_projection_record_rejects_synthetic_task_without_authority(self):
+        with pytest.raises(RuntimeError, match="requires operation authority"):
+            BackgroundTaskManager._projection_record(
+                BackgroundTask(task_id="synthetic", chat_id="c1", user_id="u1")
+            )
 
     @pytest.mark.asyncio
     async def test_claim_mismatch_leaves_authoritative_projection_unexecuted(
@@ -929,14 +1606,10 @@ class TestBackgroundTaskManager:
 
     @pytest.mark.asyncio
     @_REQUIRES_BG_CONTINUITY
-    async def test_completion_fan_and_legacy_record_keep_operation_fence(self):
+    async def test_completion_fan_and_plane_projection_keep_operation_fence(self):
         mgr = _manager()
-        records = []
+        _, repository = _bind_plane(mgr)
         fanned = []
-
-        class FakeDB:
-            async def aexecute(self, query, params):
-                records.append((query, params))
 
         async def fan(task, frame):
             fanned.append(frame)
@@ -946,7 +1619,7 @@ class TestBackgroundTaskManager:
             async def send_text(self, data):
                 raise RuntimeError("gone")
 
-        mgr.bind(db=FakeDB(), on_complete=fan)
+        mgr.bind(on_complete=fan)
 
         async def narrative(vws):
             await vws.send_json(
@@ -960,11 +1633,28 @@ class TestBackgroundTaskManager:
         task = await mgr.submit("c1", "u1", narrative, title="Report")
         task.watchers.append(BrokenWatcher())
         await _collect(mgr)
-        await asyncio.sleep(0)
+        await _wait_until(
+            lambda: any(
+                record.status is BackgroundTaskStatus.COMPLETED
+                for record in repository.records
+            )
+        )
 
         assert fanned[0]["payload"]["summary"] == "Report finished."
-        assert any("operation_id" in query for query, _ in records)
-        assert all(task.task_id in params for _, params in records)
+        assert all(
+            record.operation_id == task.task_id
+            and record.owner_id == "u1"
+            and record.conversation_id == "c1"
+            for record in repository.records
+        )
+        terminal = next(
+            record
+            for record in repository.records
+            if record.status is BackgroundTaskStatus.COMPLETED
+        )
+        assert terminal.summary == "Report finished."
+        assert terminal.notified is True
+        assert terminal.completed_at is not None
         assert task.operation_execution_generation == 1
         assert task._execution_fence is None
         before = len(fanned)
@@ -975,32 +1665,56 @@ class TestBackgroundTaskManager:
     @_REQUIRES_BG_CONTINUITY
     async def test_delayed_submit_write_cannot_regress_terminal_durable_status(self):
         mgr = _manager()
-        terminal_written = asyncio.Event()
-        row = {}
+        initial_started = threading.Event()
+        initial_release = threading.Event()
+        terminal_written = threading.Event()
 
-        class ReorderedDB:
-            async def aexecute(self, query, params):
-                if "summary, completed_at" in query:
-                    row["status"] = params[4]
-                    terminal_written.set()
-                    return None
-                await terminal_written.wait()
-                if not row:
-                    row["status"] = params[4]
-                elif "DO NOTHING" not in query:
-                    row["status"] = params[4]
-                return None
+        class ReorderedRepository(_RecordingBackgroundRepository):
+            def __init__(self):
+                super().__init__()
+                self.row = None
+                self.lock = threading.Lock()
 
-        mgr.bind(db=ReorderedDB())
+            def apply_operation_projection(self, transaction, record):
+                if record.completed_at is None:
+                    initial_started.set()
+                    initial_release.wait(timeout=2)
+                with self.lock:
+                    if (
+                        self.row is not None
+                        and self.row.completed_at is not None
+                        and record.completed_at is None
+                    ):
+                        raise RuntimeError("projection moved backwards")
+                    self.row = record
+                    if record.completed_at is not None:
+                        terminal_written.set()
+                return record
+
+        repository = ReorderedRepository()
+        _bind_plane(mgr, repository)
+        finish = asyncio.Event()
 
         async def done(vws):
-            return None
+            await finish.wait()
 
         await mgr.submit("c1", "u1", done)
+        await asyncio.wait_for(
+            asyncio.to_thread(initial_started.wait),
+            timeout=1,
+        )
+        finish.set()
         await _collect(mgr)
-        await asyncio.sleep(0)
+        await asyncio.wait_for(
+            asyncio.to_thread(terminal_written.wait),
+            timeout=1,
+        )
+        initial_release.set()
+        await _wait_until(
+            lambda: mgr._async_plane_runtime.snapshot().active == 0
+        )
 
-        assert row["status"] == "completed"
+        assert repository.row.status is BackgroundTaskStatus.COMPLETED
 
     @pytest.mark.asyncio
     @_REQUIRES_BG_CONTINUITY
@@ -1828,36 +2542,41 @@ class TestBackgroundTaskShutdownAndObservability:
 
     @pytest.mark.asyncio
     @_REQUIRES_BG_CONTINUITY
-    async def test_service_drain_cancels_and_joins_compatibility_writes(self):
+    async def test_service_drain_cancels_projection_awaiters_while_worker_settles(
+        self,
+    ):
         mgr = _manager()
-        write_started = asyncio.Event()
-        write_cancelled = asyncio.Event()
-        write_release = asyncio.Event()
+        write_started = threading.Event()
+        write_release = threading.Event()
 
-        class BlockingDB:
-            async def aexecute(self, query, params):
+        class BlockingRepository(_RecordingBackgroundRepository):
+            def apply_operation_projection(self, transaction, record):
                 write_started.set()
-                try:
-                    await write_release.wait()
-                except asyncio.CancelledError:
-                    write_cancelled.set()
-                    raise
+                write_release.wait(timeout=2)
+                return record
 
-        mgr.bind(db=BlockingDB())
+        _bind_plane(mgr, BlockingRepository())
 
         async def running(vws):
             await asyncio.Event().wait()
 
         try:
             await mgr.submit("c1", "u1", running, kind="background_chat")
-            await asyncio.wait_for(write_started.wait(), timeout=1)
+            await asyncio.wait_for(
+                asyncio.to_thread(write_started.wait),
+                timeout=1,
+            )
 
             assert await mgr.drain(timeout_seconds=0.2) == 0
-            assert write_cancelled.is_set()
             assert not mgr._compatibility_write_tasks
+            snapshot = mgr._async_plane_runtime.snapshot()
+            assert snapshot.active == 1
+            assert snapshot.closed is True
         finally:
             write_release.set()
-            await asyncio.sleep(0)
+            await _wait_until(
+                lambda: mgr._async_plane_runtime.snapshot().active == 0
+            )
 
     @pytest.mark.asyncio
     async def test_background_lifecycle_records_safe_events_and_admission(self):
@@ -2134,3 +2853,75 @@ class TestBackgroundTaskShutdownAndObservability:
         assert result.operations == 1
         assert result.submissions == 1
         assert observability.retention_observations == [(2, 17.0)]
+
+    def test_retention_lag_includes_plane_background_projection_on_same_fence(self):
+        clock = _Clock()
+        mgr = _maintenance_manager(clock=clock)
+        repository = _RecordingBackgroundRepository()
+        repository.retained_at = clock.current - timedelta(
+            hours=24,
+            seconds=13,
+        )
+        _bind_plane(mgr, repository)
+        claim = _claim_maintenance(mgr._coordinator)
+
+        lag = mgr._oldest_retention_backlog_lag_seconds(claim.fence)
+
+        assert lag == 13.0
+        assert repository.transactions == [mgr._coordinator.repository]
+        assert repository.cutoff_at == clock.current - timedelta(hours=24)
+
+    @pytest.mark.parametrize(
+        ("result", "limit", "error", "message"),
+        (
+            ([], 1, TypeError, "invalid result"),
+            (("a", "b"), 1, RuntimeError, "exceeded"),
+            (("a", "a"), 2, RuntimeError, "duplicate"),
+            (("",), 1, RuntimeError, "invalid identity"),
+        ),
+    )
+    def test_fenced_plane_retention_rejects_invalid_repository_results(
+        self,
+        result,
+        limit,
+        error,
+        message,
+    ):
+        clock = _Clock()
+        mgr = _maintenance_manager(clock=clock)
+
+        class InvalidResultRepository(_RecordingBackgroundRepository):
+            def purge_overdue_for_administration(
+                self,
+                transaction,
+                *,
+                cutoff_at,
+                limit,
+            ):
+                self.transactions.append(transaction)
+                self.cutoff_at = cutoff_at
+                return result
+
+        repository = InvalidResultRepository()
+        _bind_plane(mgr, repository)
+        claim = _claim_maintenance(mgr._coordinator)
+
+        with pytest.raises(error, match=message):
+            mgr._fenced_compatibility_cleanup(
+                claim.fence,
+                limit=limit,
+            )
+
+        assert repository.transactions == [mgr._coordinator.repository]
+        assert repository.cutoff_at == clock.current - timedelta(hours=24)
+
+    def test_fenced_plane_retention_accepts_empty_bounded_result(self):
+        mgr = _maintenance_manager()
+        repository = _RecordingBackgroundRepository()
+        _bind_plane(mgr, repository)
+        claim = _claim_maintenance(mgr._coordinator)
+
+        assert (
+            mgr._fenced_compatibility_cleanup(claim.fence, limit=3)
+            == 0
+        )

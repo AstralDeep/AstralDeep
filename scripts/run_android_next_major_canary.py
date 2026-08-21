@@ -615,7 +615,12 @@ def run_canary(
 
     pins = load_pins(properties_path)
     if source_root is None:
-        source_root = Path(__file__).resolve().parents[1] / "android-client"
+        source_root = (
+            Path(__file__).resolve().parents[1]
+            / "components"
+            / "AstralProjection"
+            / "android-client"
+        )
     source_root = Path(source_root).resolve()
     verify_migration_blockers_removed(source_root)
     shipping = inspect_shipping_toolchain(source_root)

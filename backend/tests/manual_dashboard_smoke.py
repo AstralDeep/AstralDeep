@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import webrender
+from astralprojection.resources import static_path, vendor_path
 from agents.connectors.mcp_tools_creative import handle_artifacts
 from orchestrator import ui_designer
 
@@ -96,11 +97,13 @@ print(f"designer passes: {len(calls)}; final layout nodes: {[n.get('type') for n
 by_id = {c["component_id"]: c for c in components}
 materialized = ui_designer.materialize(layout, by_id)
 html_out = webrender.render_workspace(materialized, profile=None)
+tailwind_url = Path(str(vendor_path("tailwind.js"))).resolve().as_uri()
+css_url = Path(str(static_path("astral.css"))).resolve().as_uri()
 
 page = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<script src="/app/backend/webrender/static/vendor/tailwind.js"></script>
-<link rel="stylesheet" href="/app/backend/webrender/static/astral.css">
+<script src="{tailwind_url}"></script>
+<link rel="stylesheet" href="{css_url}">
 </head><body><div id="astral-canvas" class="p-4 space-y-3">{html_out}</div></body></html>"""
 Path("./backend/tmp/dashboard_smoke.html").write_text(page, encoding="utf-8")
 

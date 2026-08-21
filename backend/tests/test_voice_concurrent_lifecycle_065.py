@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from orchestrator.voice_sessions import VoiceSessionRepository
 from orchestrator.work_admission import OperationState
+from tests.helpers.voice_plane_runtime import voice_session_repository
 from tests.test_conversation_publication_voice_065 import (
     NOW,
     _admit_turn,
@@ -73,7 +74,7 @@ def test_navigation_keeps_origin_attribution_and_interruption_is_not_cancel(
     user_id = f"voice-concurrent-nav-{uuid.uuid4().hex}"
     first_chat = str(uuid.uuid4())
     second_chat = str(uuid.uuid4())
-    repository = VoiceSessionRepository(database)
+    repository = voice_session_repository(database)
     session = _create_active_session(
         repository,
         database,
@@ -206,7 +207,7 @@ def test_navigation_keeps_origin_attribution_and_interruption_is_not_cancel(
 def test_reverse_completions_terminalize_each_turn_once(database) -> None:
     user_id = f"voice-concurrent-complete-{uuid.uuid4().hex}"
     chat_id = str(uuid.uuid4())
-    repository = VoiceSessionRepository(database)
+    repository = voice_session_repository(database)
     session = _create_active_session(
         repository,
         database,
@@ -301,7 +302,7 @@ def test_unavailable_old_origin_cleans_voice_only_and_preserves_current_work(
     user_id = f"voice-concurrent-unavailable-{uuid.uuid4().hex}"
     old_chat = str(uuid.uuid4())
     current_chat = str(uuid.uuid4())
-    repository = VoiceSessionRepository(database)
+    repository = voice_session_repository(database)
     session = _create_active_session(
         repository,
         database,

@@ -281,13 +281,13 @@ jobs:
           umask 077
           set -o noclobber
           gh api -H "Accept: application/vnd.github.raw+json" \
-            "repos/$GITHUB_REPOSITORY/contents/windows-client/requirements-release.lock.txt?ref=$RELEASE_TRUSTED_BUILDER_SHA" \
+            "repos/$GITHUB_REPOSITORY/contents/components/AstralProjection/windows-client/requirements-release.lock.txt?ref=$RELEASE_TRUSTED_BUILDER_SHA" \
             > "$PROTECTED_LOCK"
           set +o noclobber
           [[ ! -L "$PROTECTED_LOCK" && -f "$PROTECTED_LOCK" ]]
           PROTECTED_LOCK_BYTES="$(wc -c < "$PROTECTED_LOCK")"
           (( PROTECTED_LOCK_BYTES > 0 && PROTECTED_LOCK_BYTES <= 2 * 1024 * 1024 ))
-          cmp -- "$PROTECTED_LOCK" protected-policy/windows-client/requirements-release.lock.txt
+          cmp -- "$PROTECTED_LOCK" protected-policy/components/AstralProjection/windows-client/requirements-release.lock.txt
           python -I -m pip install --require-hashes -r "$PROTECTED_LOCK"
       - name: Resolve the matrix-tested executable digest from the evidence set
         shell: bash
@@ -1087,7 +1087,7 @@ jobs:
 
           spec = importlib.util.spec_from_file_location(
               "astral_client_integrity",
-              "protected-policy/windows-client/astral_client/integrity.py",
+              "protected-policy/components/AstralProjection/windows-client/astral_client/integrity.py",
           )
           integrity = importlib.util.module_from_spec(spec)
           sys.modules[spec.name] = integrity

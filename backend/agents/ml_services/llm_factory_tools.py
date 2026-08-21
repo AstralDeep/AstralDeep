@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Set, Union
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from shared.attachment_resolver import resolve_attachment_path
+from shared.attachment_resolver import open_attachment_blob_reader
 from shared.external_http import ExternalHttpError
 from astralprims import Alert, Card, Text
 
@@ -221,9 +221,9 @@ def transcribe_audio(model_id: str, file_handle: str,
                      language: str = None, **kwargs):
     """Transcribe an uploaded audio file using the named transcription model.
 
-    Resolves ``file_handle`` to a real on-disk path via the AstralDeep
-    attachments helper (per-user ownership enforced) and submits the file
-    as ``multipart/form-data`` to ``/v1/audio/transcriptions``.
+    Resolves ``file_handle`` through a bounded Plane reader (per-user ownership
+    enforced) and submits the bytes as ``multipart/form-data`` to
+    ``/v1/audio/transcriptions``.
 
     Args:
         model_id: Identifier of a transcription-capable model (e.g. whisper-1).
@@ -239,23 +239,24 @@ def transcribe_audio(model_id: str, file_handle: str,
         user_id = kwargs.get("user_id")
         if not user_id:
             raise ValueError("user_id is required to resolve attachments")
-        local_path = resolve_attachment_path(file_handle, user_id)
         form = {"model": model_id}
         if language:
             form["language"] = language
-        with open(local_path, "rb") as fh:
-            files = {"file": (os.path.basename(local_path), fh, "application/octet-stream")}
-            resp = client.post(
-                "/v1/audio/transcriptions",
-                files=files,
-                data=form,
-            )
+        with open_attachment_blob_reader(file_handle, user_id) as (attachment, reader):
+            filename = attachment.filename
+            payload_bytes = b"".join(reader.iter_chunks())
+        files = {"file": (filename, payload_bytes, "application/octet-stream")}
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files=files,
+            data=form,
+        )
         payload = resp.json() if resp.content else {}
         text = payload.get("text", "") if isinstance(payload, dict) else str(payload)
         return _ui(
             [Card(title=f"Transcription from {model_id}",
                   content=[Text(content=text or "(empty transcription)")])],
-            data={"text": text, "model_id": model_id, "filename": os.path.basename(local_path)},
+            data={"text": text, "model_id": model_id, "filename": filename},
         )
     except (ExternalHttpError, ValueError) as e:
         return _ui([Alert(message=_user_facing_error(e), variant="error")], retryable=False)

@@ -5,12 +5,16 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
-from pathlib import Path
+import time
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 
 import pytest
+from coverage import Coverage
+from coverage.parser import PythonParser
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +40,30 @@ def _load_collector() -> ModuleType:
 collector = _load_collector()
 
 
+def _native_python_statements(source: str, path: str) -> frozenset[int]:
+    parser = PythonParser(
+        text=source,
+        filename=path,
+        exclude="|".join(Coverage(config_file=False).config.exclude_list),
+    )
+    parser.parse_source()
+    return frozenset(parser.statements)
+
+
+class _CountingText(str):
+    scanned_characters = 0
+
+    def count(
+        self,
+        sub: str,
+        start: int = 0,
+        end: int | None = None,
+    ) -> int:
+        selected_end = len(self) if end is None else end
+        type(self).scanned_characters += max(0, selected_end - start)
+        return super().count(sub, start, selected_end)
+
+
 def _load_xccov_exporter() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "export_xccov_line_coverage_060", XCCOV_EXPORT_SCRIPT
@@ -48,6 +76,36 @@ def _load_xccov_exporter() -> ModuleType:
 
 
 xccov_exporter = _load_xccov_exporter()
+
+
+def test_javascript_report_identity_matches_projection_v2_union() -> None:
+    assert collector.JAVASCRIPT_REPORT_KEYS == {
+        "schema_version",
+        "producer",
+        "producer_version",
+        "v8_to_istanbul_version",
+        "espree_version",
+        "coverage_lane",
+        "coverage",
+    }
+    assert collector.JAVASCRIPT_REPORT_IDENTITY == {
+        "schema_version": 1,
+        "producer": "astralprojection-node-browser-union",
+        "producer_version": 2,
+        "v8_to_istanbul_version": "9.3.0",
+        "espree_version": "11.2.0",
+        "coverage_lane": "node-browser-union",
+    }
+
+
+def test_report_reader_preserves_physical_crlf_bytes(tmp_path: Path) -> None:
+    """The bound identity must cover exact bytes on Windows as on POSIX."""
+
+    content = b'{"coverage":"physical"}\r\n{"line":2}\r\n'
+    report = tmp_path / "crlf-report.json"
+    report.write_bytes(content)
+
+    assert collector._read_report(report) == content
 
 
 @pytest.fixture(autouse=True)
@@ -120,11 +178,876 @@ def _cobertura(path: Path, filename: str, lines: dict[int, int]) -> Path:
     return path
 
 
+def _cobertura_many(path: Path, files: dict[str, dict[int, int]]) -> Path:
+    classes: list[str] = []
+    total = 0
+    covered = 0
+    for filename, lines in files.items():
+        rendered = "".join(
+            f'<line number="{line}" hits="{hits}"/>' for line, hits in lines.items()
+        )
+        class_covered = sum(hits > 0 for hits in lines.values())
+        class_total = len(lines)
+        rate = class_covered / class_total if class_total else 1
+        classes.append(
+            f'<class filename="{filename}" line-rate="{rate}">'
+            f"<lines>{rendered}</lines></class>"
+        )
+        total += class_total
+        covered += class_covered
+    rate = covered / total if total else 1
+    path.write_text(
+        f'<coverage lines-valid="{total}" lines-covered="{covered}" '
+        f'line-rate="{rate}"><sources><source>/work</source></sources>'
+        "<packages><package><classes>"
+        f"{''.join(classes)}"
+        "</classes></package></packages></coverage>\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def _javascript_envelope(coverage: dict[str, object]) -> dict[str, object]:
     return {
         **collector.JAVASCRIPT_REPORT_IDENTITY,
         "coverage": coverage,
     }
+
+
+def _kover(path: Path, source_name: str, *, covered: bool = True) -> Path:
+    missed = int(not covered)
+    hit = int(covered)
+    path.write_text(
+        '<report><package name="com/example">'
+        f'<sourcefile name="{source_name}">'
+        f'<line nr="1" mi="{missed}" ci="{hit}" mb="0" cb="0"/>'
+        f'<counter type="INSTRUCTION" missed="{missed}" covered="{hit}"/>'
+        f'<counter type="LINE" missed="{missed}" covered="{hit}"/>'
+        "</sourcefile>"
+        f'<counter type="INSTRUCTION" missed="{missed}" covered="{hit}"/>'
+        f'<counter type="LINE" missed="{missed}" covered="{hit}"/>'
+        "</package>"
+        f'<counter type="INSTRUCTION" missed="{missed}" covered="{hit}"/>'
+        f'<counter type="LINE" missed="{missed}" covered="{hit}"/>'
+        "</report>\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _xccov(path: Path, source: str, *, execution_count: int) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                source: [
+                    {
+                        "line": 1,
+                        "isExecutable": True,
+                        "executionCount": execution_count,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _projection_strict_case(
+    tmp_path: Path,
+) -> tuple[
+    Path,
+    object,
+    dict[str, list[Path]],
+    dict[str, Path],
+]:
+    """Build one real child-repository candidate and its eight native reports."""
+
+    repo = tmp_path / "projection"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    sources = {
+        "src/astralprojection/runtime.py": "first = 0\nsecond = 0\n",
+        "backend/rote/adaptation.py": "adapted = 0\n",
+        "src/astralprojection/declarations.py": (
+            "# old comment\n    \ndef declaration(\n"
+            "    value: int,\n) -> int:\n    return value\n"
+        ),
+        "windows-client/runtime.py": "value = 0\n",
+        "backend/webrender/static/client.js": "const value = 0;\n",
+        "android-client/app/src/main/kotlin/com/example/App.kt": "val value = 0\n",
+        "android-client/core/src/main/kotlin/com/example/Core.kt": "val value = 0\n",
+        "apple-clients/AstralApp/AstralApp/App.swift": "let value = 0\n",
+        "apple-clients/AstralWatch/Watch.swift": "let value = 0\n",
+    }
+    for relative, content in sources.items():
+        source = repo / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(content, encoding="utf-8")
+    base = _commit(repo, "base")
+    (repo / "src/astralprojection/runtime.py").write_text(
+        "first = 1\nsecond = 1\n", encoding="utf-8"
+    )
+    (repo / "backend/rote/adaptation.py").write_text("adapted = 1\n", encoding="utf-8")
+    (repo / "src/astralprojection/declarations.py").write_text(
+        "# new comment\n\ndef declaration(\n"
+        "    value: str,\n) -> int:\n    return value\n",
+        encoding="utf-8",
+    )
+    candidate = _commit(repo, "candidate")
+
+    projection = _cobertura_many(
+        tmp_path / "projection-python.xml",
+        {
+            "src/astralprojection/runtime.py": {1: 1, 2: 1},
+            "backend/rote/adaptation.py": {1: 1},
+            "src/astralprojection/declarations.py": {3: 1, 6: 1},
+        },
+    )
+    windows = _cobertura(tmp_path / "windows.xml", "windows-client/runtime.py", {1: 1})
+    javascript = tmp_path / "javascript.json"
+    javascript.write_text(
+        json.dumps(
+            _javascript_envelope(
+                {
+                    "backend/webrender/static/client.js": {
+                        "path": "backend/webrender/static/client.js",
+                        "statementMap": {
+                            "0": {
+                                "start": {"line": 1, "column": 0},
+                                "end": {"line": 1, "column": 16},
+                            }
+                        },
+                        "s": {"0": 1},
+                    }
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+    android_app = _kover(tmp_path / "android-app.xml", "App.kt")
+    android_core = _kover(tmp_path / "android-core.xml", "Core.kt")
+    ios = _xccov(
+        tmp_path / "ios.json",
+        "apple-clients/AstralApp/AstralApp/App.swift",
+        execution_count=1,
+    )
+    macos = _xccov(
+        tmp_path / "macos.json",
+        "apple-clients/AstralApp/AstralApp/App.swift",
+        execution_count=0,
+    )
+    watchos = _xccov(
+        tmp_path / "watchos.json",
+        "apple-clients/AstralWatch/Watch.swift",
+        execution_count=1,
+    )
+    slots = {
+        "projection_python": projection,
+        "windows": windows,
+        "javascript": javascript,
+        "android_app": android_app,
+        "android_core": android_core,
+        "ios": ios,
+        "macos": macos,
+        "watchos": watchos,
+    }
+    reports = {
+        "projection_python": [projection],
+        "windows_python": [windows],
+        "javascript": [javascript],
+        "android_app": [android_app],
+        "android_core": [android_core],
+        "apple": [ios, macos, watchos],
+    }
+    return repo, _selection(repo, base, candidate), reports, slots
+
+
+def _evaluate_projection_strict(
+    repo: Path,
+    selection: object,
+    reports: dict[str, list[Path]],
+    slots: dict[str, Path],
+) -> dict[str, object]:
+    profile = collector.REPOSITORY_PROFILES["projection"]
+    return collector.evaluate_changed_coverage(
+        repo,
+        selection,
+        reports,
+        producer_slots=slots,
+        strict_producers=True,
+        repository_profile="projection",
+        required_producer_keys=profile.producer_keys,
+        source_prefix=profile.source_prefix,
+    )
+
+
+def test_repository_profiles_partition_owned_producers() -> None:
+    assert collector.REPOSITORY_PROFILES["deep"].producer_keys == (
+        "backend",
+        "voice_worker",
+        "tooling",
+    )
+    assert collector.REPOSITORY_PROFILES["projection"].producer_keys == (
+        "projection_python",
+        "windows",
+        "javascript",
+        "android_app",
+        "android_core",
+        "ios",
+        "macos",
+        "watchos",
+    )
+    assert set(collector.REPOSITORY_PROFILES["monorepo"].producer_keys) == set(
+        collector.PRODUCER_BY_KEY
+    )
+    assert collector.REPORT_FLAGS["projection_python"] == "projection-python"
+
+
+def test_projection_profile_maps_child_git_paths_to_composed_paths(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "projection"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    source = repo / "windows-client" / "runtime.py"
+    projection_source = repo / "src" / "astralprojection" / "runtime.py"
+    source.parent.mkdir(parents=True)
+    projection_source.parent.mkdir(parents=True)
+    source.write_text("first = 1\n", encoding="utf-8")
+    projection_source.write_text("first = 1\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    projection_source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    candidate = _commit(repo, "candidate")
+
+    prefix = collector.REPOSITORY_PROFILES["projection"].source_prefix
+    changed = collector.read_changed_lines(
+        repo,
+        base,
+        candidate,
+        source_prefix=prefix,
+    )
+    blobs = collector._candidate_source_blobs(
+        repo,
+        candidate,
+        source_prefix=prefix,
+    )
+
+    composed_path = "components/AstralProjection/windows-client/runtime.py"
+    projection_path = "components/AstralProjection/src/astralprojection/runtime.py"
+    assert changed == {composed_path: {2}, projection_path: {2}}
+    assert composed_path in blobs
+    assert projection_path in blobs
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "src/astralprojection/runtime.py",
+        "backend/rote/adaptation.py",
+        "backend/webrender/renderer.py",
+    ),
+)
+def test_projection_python_cobertura_maps_each_composed_owner_root(
+    tmp_path: Path, relative: str
+) -> None:
+    report = _cobertura(tmp_path / "projection.xml", relative, {1: 1, 2: 0})
+
+    parsed = collector.parse_coverage_report(report, "projection_python")
+
+    composed = f"components/AstralProjection/{relative}"
+    assert parsed.files == {composed}
+    assert parsed.executable == {(composed, 1), (composed, 2)}
+    assert parsed.covered == {(composed, 1)}
+
+
+def test_projection_profile_requires_projection_python_slot(tmp_path: Path) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    reports.pop("projection_python")
+    slots.pop("projection_python")
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert failure.value.code == "incomplete_report_matrix"
+    assert "projection_python" in failure.value.message
+
+
+def test_projection_python_cli_rejects_duplicate_slot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = _cobertura(
+        tmp_path / "projection.xml", "src/astralprojection/runtime.py", {1: 1}
+    )
+
+    with pytest.raises(SystemExit) as failure:
+        collector._parser().parse_args(
+            [
+                "--projection-python",
+                str(report),
+                "--projection-python",
+                str(report),
+                "--output",
+                str(tmp_path / "decision.json"),
+            ]
+        )
+
+    assert failure.value.code == 2
+    assert "--projection-python may be supplied exactly once" in capsys.readouterr().err
+
+
+def test_projection_python_slot_rejects_wrong_owner_report(tmp_path: Path) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    wrong_owner = _cobertura(
+        tmp_path / "wrong-owner.xml", "windows-client/runtime.py", {1: 2}
+    )
+    reports["projection_python"] = [wrong_owner]
+    slots["projection_python"] = wrong_owner
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert failure.value.code == "unproductive_report"
+    assert "projection_python" in failure.value.message
+
+
+def test_projection_python_slot_rejects_non_candidate_source(tmp_path: Path) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    non_candidate = _cobertura(
+        tmp_path / "non-candidate.xml",
+        "src/astralprojection/not-in-candidate.py",
+        {1: 1},
+    )
+    reports["projection_python"] = [non_candidate]
+    slots["projection_python"] = non_candidate
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert failure.value.code == "unproductive_report"
+    assert "projection_python" in failure.value.message
+
+
+def test_projection_python_report_cannot_omit_one_of_multiple_executable_changes(
+    tmp_path: Path,
+) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    projection = _cobertura_many(
+        tmp_path / "projection-unobserved.xml",
+        {
+            "src/astralprojection/runtime.py": {1: 1},
+            "backend/rote/adaptation.py": {1: 1},
+            "src/astralprojection/declarations.py": {3: 1, 6: 1},
+        },
+    )
+    reports["projection_python"] = [projection]
+    slots["projection_python"] = projection
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert failure.value.code == "producer_unmapped_changed_line"
+    assert "runtime.py':2" in failure.value.message
+
+
+def test_python_candidate_executable_witness_excludes_non_statements() -> None:
+    source = b'''# comment
+"""module doc"""
+
+@decorate(
+    1,
+)
+def declared(
+    value: int,
+) -> int:
+    """function doc"""
+    try:
+        first = value + 1
+        return first
+    except ValueError:
+        return 0
+
+if TYPE_CHECKING:
+    from missing import thing
+
+blank = 1
+
+if unavailable:  # pragma: no cover - platform declaration
+    hidden = 1
+'''
+
+    assert collector._python_candidate_executable_lines(
+        source, "components/AstralProjection/src/astralprojection/runtime.py"
+    ) == frozenset({4, 7, 11, 12, 13, 14, 15, 20})
+
+
+def test_python_candidate_executable_witness_includes_match_case_headers() -> None:
+    source = b"""match value:
+    case 1:
+        result = 1
+    case _:
+        result = 0
+"""
+
+    assert collector._python_candidate_executable_lines(
+        source, "components/AstralProjection/backend/rote/match.py"
+    ) == frozenset({1, 2, 3, 4, 5})
+
+
+def test_python_candidate_executable_witness_keeps_runtime_else_clauses() -> None:
+    source = b"""if TYPE_CHECKING:
+    from missing import thing
+else:
+    runtime = 1
+
+if unavailable:  # pragma no cover
+    hidden = 1
+else:
+    visible = 1
+
+"runtime marker"
+"""
+
+    assert collector._python_candidate_executable_lines(
+        source, "components/AstralProjection/backend/rote/runtime.py"
+    ) == frozenset({4, 9, 11})
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (
+            "if (TYPE_CHECKING):\n    hidden = 1\nvisible = 2\n",
+            frozenset({1, 2, 3}),
+        ),
+        (
+            "if (\n    TYPE_CHECKING\n):\n    hidden = 1\nvisible = 2\n",
+            frozenset({1, 4, 5}),
+        ),
+        (
+            "if enabled:  # do not add pragma: no cover here\n"
+            "    runtime = 1\nvisible = 2\n",
+            frozenset({1, 2, 3}),
+        ),
+        (
+            "match value:\n    case (\n        1\n    ):\n        result = 1\n",
+            frozenset({1, 2, 5}),
+        ),
+        (
+            "def generate():\n    while False:\n        yield None\n    return 1\n",
+            frozenset({1, 2, 4}),
+        ),
+    ),
+)
+def test_python_candidate_witness_matches_locked_parser_edge_fixtures(
+    source: str, expected: frozenset[int]
+) -> None:
+    path = "backend/edge_fixture.py"
+
+    assert _native_python_statements(source, path) == expected
+    assert (
+        collector._python_candidate_executable_lines(source.encode("utf-8"), path)
+        == expected
+    )
+
+
+def test_python_exclusion_line_mapping_scans_source_linearly() -> None:
+    source = _CountingText("value = 1  # pragma: no cover\n" * 5_000)
+    _CountingText.scanned_characters = 0
+
+    lines = collector._matching_source_lines(
+        source,
+        collector.PYTHON_COVERAGE_DEFAULT_EXCLUDE,
+        {},
+    )
+
+    assert len(lines) == 5_000
+    assert _CountingText.scanned_characters <= len(source) * 4
+
+
+def test_python_exclusion_line_mapping_large_input_smoke() -> None:
+    source = "value = 1  # pragma: no cover\n" * 60_000
+
+    started = time.perf_counter()
+    lines = collector._matching_source_lines(
+        source,
+        collector.PYTHON_COVERAGE_DEFAULT_EXCLUDE,
+        {},
+    )
+    elapsed = time.perf_counter() - started
+
+    assert len(source) > 1_000_000
+    assert len(lines) == 60_000
+    assert elapsed < 5.0
+
+
+def test_python_candidate_witness_has_no_coverage_parser_underapproximation() -> None:
+    missing_by_path: dict[str, list[int]] = {}
+    extra_by_path: dict[str, list[int]] = {}
+    statement_count = 0
+    source_paths = (
+        REPO_ROOT / relative
+        for relative in _git(
+            REPO_ROOT, "ls-files", "--", "backend", "scripts"
+        ).splitlines()
+        if relative.endswith(".py")
+    )
+    for source_path in source_paths:
+        relative = source_path.relative_to(REPO_ROOT).as_posix()
+        target = collector.classify_path(relative)
+        if target is None or target.language != "python":
+            continue
+        source = source_path.read_text(encoding="utf-8")
+        native = _native_python_statements(source, relative)
+        statement_count += len(native)
+        witness = collector._python_candidate_executable_lines(
+            source.encode("utf-8"), relative
+        )
+        missing = sorted(native - witness)
+        if missing:
+            missing_by_path[relative] = missing
+        extra = sorted(witness - native)
+        if extra:
+            extra_by_path[relative] = extra
+
+    assert statement_count > 400
+    assert missing_by_path == {}
+    assert extra_by_path == {}
+
+
+def test_python_314_candidate_witness_matches_locked_coverage_parser() -> None:
+    python = shutil.which("python3")
+    assert python is not None
+    version = subprocess.run(
+        [
+            python,
+            "-c",
+            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    if tuple(int(part) for part in version.split(".")) < (3, 14):
+        pytest.skip("system Python 3.14 is not available on this runner")
+
+    relative_paths = [
+        relative
+        for relative in _git(
+            REPO_ROOT, "ls-files", "--", "backend", "scripts"
+        ).splitlines()
+        if relative.endswith(".py")
+        and (target := collector.classify_path(relative)) is not None
+        and target.language == "python"
+    ]
+    program = r"""
+import importlib.util
+import json
+import pathlib
+import sys
+
+root = pathlib.Path.cwd()
+spec = importlib.util.spec_from_file_location(
+    "changed_coverage_python_314", root / "scripts/check_changed_coverage.py"
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+paths = json.loads(sys.stdin.read())
+print(json.dumps({
+    path: sorted(module._python_candidate_executable_lines(
+        (root / path).read_bytes(), path
+    ))
+    for path in paths
+}, sort_keys=True))
+"""
+    process = subprocess.run(
+        [python, "-c", program],
+        cwd=REPO_ROOT,
+        input=json.dumps(relative_paths),
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    system_witnesses = json.loads(process.stdout)
+    mismatches: dict[str, dict[str, list[int]]] = {}
+    for relative in relative_paths:
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        native = _native_python_statements(source, relative)
+        witness = frozenset(system_witnesses[relative])
+        if native != witness:
+            mismatches[relative] = {
+                "missing": sorted(native - witness),
+                "extra": sorted(witness - native),
+            }
+
+    assert mismatches == {}
+
+
+def test_python_candidate_witness_covers_real_multiline_probe_statement() -> None:
+    relative = "backend/llm_config/probe.py"
+    source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    native = _native_python_statements(source, relative)
+
+    assert 32 in native
+    assert 32 in collector._python_candidate_executable_lines(
+        source.encode("utf-8"), relative
+    )
+
+
+def test_python_candidate_witness_does_not_use_nullable_dis_line_tables() -> None:
+    assert "dis.findlinestarts" not in SCRIPT.read_text(encoding="utf-8")
+
+
+def test_projection_python_slot_binds_raw_and_semantic_report_digests(
+    tmp_path: Path,
+) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+
+    decision = _evaluate_projection_strict(repo, selection, reports, slots)
+
+    projection = slots["projection_python"]
+    expected = {
+        "path": projection.as_posix(),
+        **collector.coverage_report_identity(
+            projection.read_bytes(),
+            "projection_python",
+            producer_key="projection_python",
+        ),
+        "producer_slot": "projection_python",
+    }
+    assert decision["status"] == "pass"
+    assert decision["producer_slots"]["projection_python"] == expected
+    assert decision["reports"]["projection_python"]["artifact_identities"] == [expected]
+
+
+def test_deep_repository_profile_accepts_exact_three_slots_with_gitlink(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "deep"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    sources = {
+        "backend/service.py": "service",
+        "backend/voice_agent/worker.py": "worker",
+        "scripts/tool.py": "tool",
+    }
+    for relative in sources:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("first = 1\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    for relative in sources:
+        (repo / relative).write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(
+        repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{base},components/AstralPrimitives",
+    )
+    _git(repo, "commit", "-m", "candidate")
+    candidate = _git(repo, "rev-parse", "HEAD")
+
+    reports = {
+        relative: _cobertura(
+            tmp_path / f"{label}.xml",
+            relative,
+            {1: 1, 2: 1},
+        )
+        for relative, label in zip(
+            sources,
+            ("backend", "voice", "tooling"),
+        )
+    }
+    output = tmp_path / "decision.json"
+    assert (
+        collector.main(
+            [
+                "--repo",
+                str(repo),
+                "--event-name",
+                "manual",
+                "--base-sha",
+                base,
+                "--candidate-sha",
+                candidate,
+                "--backend-python",
+                str(reports["backend/service.py"]),
+                "--voice-worker-python",
+                str(reports["backend/voice_agent/worker.py"]),
+                "--tooling-python",
+                str(reports["scripts/tool.py"]),
+                "--repository-profile",
+                "deep",
+                "--coverage-mode",
+                "strict",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    decision = json.loads(output.read_text(encoding="utf-8"))
+    assert decision["status"] == "pass"
+    assert decision["repository_profile"] == "deep"
+    assert set(decision["producer_slots"]) == {"backend", "voice_worker", "tooling"}
+
+
+def test_candidate_source_inventory_ignores_gitlinks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    source = repo / "backend" / "service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("value = 0\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    source.write_text("value = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(
+        repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{base},components/AstralProjection",
+    )
+    _git(repo, "commit", "-m", "candidate")
+    candidate = _git(repo, "rev-parse", "HEAD")
+
+    blobs = collector._candidate_source_blobs(repo, candidate)
+
+    assert "backend/service.py" in blobs
+    assert "components/AstralProjection" not in blobs
+
+
+def test_candidate_source_inventory_rejects_malformed_regular_blob_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        collector,
+        "_git",
+        lambda *_args, **_kwargs: (
+            b"100644 blob 1111111111111111111111111111111111111111 -"
+            b"\tbackend/service.py\0"
+        ),
+    )
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_blobs(tmp_path, "2" * 40)
+
+    assert failure.value.code == "invalid_candidate_tree"
+
+
+def test_candidate_source_inventory_rejects_regular_mode_non_blob_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        collector,
+        "_git",
+        lambda *_args, **_kwargs: (
+            b"100644 commit 1111111111111111111111111111111111111111 1"
+            b"\tbackend/service.py\0"
+        ),
+    )
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_blobs(tmp_path, "2" * 40)
+
+    assert failure.value.code == "invalid_candidate_tree"
+
+
+def test_candidate_source_inventory_rejects_negative_regular_blob_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        collector,
+        "_git",
+        lambda *_args, **_kwargs: (
+            b"100755 blob 1111111111111111111111111111111111111111 -1"
+            b"\tscripts/tool.py\0"
+        ),
+    )
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_blobs(tmp_path, "2" * 40)
+
+    assert failure.value.code == "invalid_candidate_tree"
+
+
+def test_required_python_witness_rejects_nonregular_candidate_path(
+    tmp_path: Path,
+) -> None:
+    path = "backend/linked.py"
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_witnesses(
+            tmp_path,
+            {},
+            {path},
+            required_python_paths={path},
+        )
+
+    assert failure.value.code == "candidate_witness_unavailable"
+    assert "regular candidate blob" in failure.value.message
+
+
+def test_required_python_witness_rejects_oversized_candidate_blob(
+    tmp_path: Path,
+) -> None:
+    path = "backend/oversized.py"
+    blobs = {
+        path: collector.CandidateBlob(
+            "1" * 40,
+            collector.MAX_CANDIDATE_WITNESS_BLOB_BYTES + 1,
+        )
+    }
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_witnesses(
+            tmp_path,
+            blobs,
+            {path},
+            required_python_paths={path},
+        )
+
+    assert failure.value.code == "candidate_witness_limit"
+    assert "per-blob" in failure.value.message
+
+
+def test_required_python_witness_rejects_nul_candidate_blob(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    path = "backend/nul.py"
+    source = repo / path
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"first = 1\n\0second = 2\n")
+    candidate = _commit(repo, "candidate")
+    blobs = collector._candidate_source_blobs(repo, candidate)
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector._candidate_source_witnesses(
+            repo,
+            blobs,
+            {path},
+            required_python_paths={path},
+        )
+
+    assert failure.value.code == "invalid_candidate_source"
+    assert "NUL" in failure.value.message
 
 
 def test_event_selection_is_authoritative_for_pr_main_and_manual() -> None:
@@ -261,24 +1184,27 @@ def test_null_delimited_diff_and_explicit_path_mapping(
         "backend/orchestrator/a.py": "backend_python",
         "backend/voice_agent/main.py": "backend_python",
         "scripts/release.py": "tooling_python",
-        "windows-client/win_agent/host.py": "windows_python",
-        "backend/webrender/static/client.js": "javascript",
-        "tooling/web-ci/eslint.config.mjs": "javascript",
-        "android-client/app/src/main/kotlin/x/App.kt": "android_app",
-        "android-client/app/src/main/java/x/Compat.kt": "android_app",
-        "android-client/core/src/main/kotlin/x/Core.kt": "android_core",
-        "apple-clients/AstralApp/AstralApp/AppModel.swift": "apple",
-        "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift": "apple",
-        "apple-clients/AstralWatch/WatchModel.swift": "apple",
+        "components/AstralProjection/src/astralprojection/runtime.py": "projection_python",
+        "components/AstralProjection/backend/rote/adaptation.py": "projection_python",
+        "components/AstralProjection/backend/webrender/renderer.py": "projection_python",
+        "components/AstralProjection/windows-client/win_agent/host.py": "windows_python",
+        "components/AstralProjection/backend/webrender/static/client.js": "javascript",
+        "components/AstralProjection/tooling/web-ci/eslint.config.mjs": "javascript",
+        "components/AstralProjection/android-client/app/src/main/kotlin/x/App.kt": "android_app",
+        "components/AstralProjection/android-client/app/src/main/java/x/Compat.kt": "android_app",
+        "components/AstralProjection/android-client/core/src/main/kotlin/x/Core.kt": "android_core",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift": "apple",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift": "apple",
+        "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift": "apple",
     }
     assert {path: collector.classify_path(path).key for path in expected} == expected
     for excluded in (
         "backend/tests/test_a.py",
-        "backend/webrender/static/vendor/plotly.min.js",
-        "tooling/web-ci/tests/release.spec.js",
-        "android-client/app/src/test/kotlin/x/AppTest.kt",
-        "apple-clients/AstralCore/Tests/AstralCoreTests/CoreTests.swift",
-        "android-client/build.gradle.kts",
+        "components/AstralProjection/backend/webrender/static/vendor/plotly.min.js",
+        "components/AstralProjection/tooling/web-ci/tests/release.spec.js",
+        "components/AstralProjection/android-client/app/src/test/kotlin/x/AppTest.kt",
+        "components/AstralProjection/apple-clients/AstralCore/Tests/AstralCoreTests/CoreTests.swift",
+        "components/AstralProjection/android-client/build.gradle.kts",
     ):
         assert collector.classify_path(excluded) is None
 
@@ -381,10 +1307,10 @@ def test_report_inputs_reject_global_path_inode_and_content_aliases(
 
 
 def test_semantic_identity_ignores_irrelevant_json_metadata(tmp_path: Path) -> None:
-    swift_path = "apple-clients/AstralWatch/WatchModel.swift"
-    observations = [
-        {"line": 1, "isExecutable": True, "executionCount": 1}
-    ]
+    swift_path = (
+        "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift"
+    )
+    observations = [{"line": 1, "isExecutable": True, "executionCount": 1}]
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
     first.write_text(
@@ -407,9 +1333,7 @@ def test_semantic_identity_ignores_irrelevant_json_metadata(tmp_path: Path) -> N
 def test_native_identity_rejects_metadata_copy_across_target_filters(
     tmp_path: Path,
 ) -> None:
-    first = _cobertura(
-        tmp_path / "backend.xml", "backend/service.py", {1: 1}
-    )
+    first = _cobertura(tmp_path / "backend.xml", "backend/service.py", {1: 1})
     second = tmp_path / "windows.xml"
     second.write_text(
         first.read_text(encoding="utf-8").replace(
@@ -454,7 +1378,9 @@ def test_overwritten_voice_shims_have_explicit_backend_ownership() -> None:
         assert collector._producer_applies_to_path("voice_worker", shim) is False
     for shared_source in collector.VOICE_WORKER_SOURCE_ALIASES.values():
         assert collector._producer_applies_to_path("backend", shared_source) is True
-        assert collector._producer_applies_to_path("voice_worker", shared_source) is True
+        assert (
+            collector._producer_applies_to_path("voice_worker", shared_source) is True
+        )
     assert (
         collector._producer_applies_to_path(
             "voice_worker", "backend/voice_agent/main.py"
@@ -462,15 +1388,13 @@ def test_overwritten_voice_shims_have_explicit_backend_ownership() -> None:
         is True
     )
     assert (
-        collector._producer_applies_to_path(
-            "backend", "backend/voice_agent/main.py"
-        )
+        collector._producer_applies_to_path("backend", "backend/voice_agent/main.py")
         is False
     )
 
 
 def test_apple_core_uses_ios_or_macos_ownership_not_watchos() -> None:
-    core_path = "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift"
+    core_path = "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift"
     assert collector._producer_applies_to_path("ios", core_path) is True
     assert collector._producer_applies_to_path("macos", core_path) is True
     assert collector._producer_applies_to_path("watchos", core_path) is False
@@ -534,7 +1458,15 @@ def test_per_language_gate_cannot_be_hidden_by_combined_coverage(
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
     python_path = repo / "backend" / "service.py"
-    js_path = repo / "backend" / "webrender" / "static" / "client.js"
+    js_path = (
+        repo
+        / "components"
+        / "AstralProjection"
+        / "backend"
+        / "webrender"
+        / "static"
+        / "client.js"
+    )
     python_path.parent.mkdir(parents=True)
     js_path.parent.mkdir(parents=True)
     python_path.write_text(
@@ -555,8 +1487,8 @@ def test_per_language_gate_cannot_be_hidden_by_combined_coverage(
         json.dumps(
             _javascript_envelope(
                 {
-                    "backend/webrender/static/client.js": {
-                        "path": "backend/webrender/static/client.js",
+                    "components/AstralProjection/backend/webrender/static/client.js": {
+                        "path": "components/AstralProjection/backend/webrender/static/client.js",
                         "statementMap": {
                             "0": {
                                 "start": {"line": 1, "column": 0},
@@ -598,7 +1530,7 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     kotlin = collector.parse_coverage_report(kover, "android_app")
-    kotlin_path = "android-client/app/src/main/kotlin/com/example/App.kt"
+    kotlin_path = "components/AstralProjection/android-client/app/src/main/kotlin/com/example/App.kt"
     assert kotlin.observed == {
         (kotlin_path, 3),
         (kotlin_path, 4),
@@ -607,7 +1539,7 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
     assert kotlin.executable == {(kotlin_path, 3), (kotlin_path, 4)}
     assert kotlin.covered == {(kotlin_path, 3)}
 
-    js_path = "backend/webrender/static/client.js"
+    js_path = "components/AstralProjection/backend/webrender/static/client.js"
     istanbul = tmp_path / "istanbul.json"
     istanbul.write_text(
         json.dumps(
@@ -637,7 +1569,9 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
     assert javascript.covered == {(js_path, 2)}
 
     xccov = tmp_path / "apple.json"
-    swift_path = "apple-clients/AstralWatch/WatchModel.swift"
+    swift_path = (
+        "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift"
+    )
     xccov.write_text(
         json.dumps(
             {
@@ -659,7 +1593,7 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
 def test_istanbul_statement_ranges_are_supported(
     tmp_path: Path,
 ) -> None:
-    js_path = "tooling/web-ci/eslint.config.mjs"
+    js_path = "components/AstralProjection/tooling/web-ci/eslint.config.mjs"
     istanbul = tmp_path / "statements.json"
     istanbul.write_text(
         json.dumps(
@@ -705,7 +1639,7 @@ def test_realistic_xccov_report_summary_is_not_misused_as_line_proof(
                         "lineCoverage": 0.8,
                         "files": [
                             {
-                                "path": "/work/apple-clients/AstralWatch/WatchModel.swift",
+                                "path": "/work/components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift",
                                 "coveredLines": 8,
                                 "executableLines": 10,
                                 "lineCoverage": 0.8,
@@ -734,24 +1668,84 @@ def test_realistic_xccov_report_summary_is_not_misused_as_line_proof(
 
 
 def _apple_export_repo(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    projection = tmp_path / "projection"
+    projection.mkdir()
+    _git(projection, "init", "-q")
+    _git(projection, "config", "user.email", "coverage@example.invalid")
+    _git(projection, "config", "user.name", "Coverage Fixture")
+
+    projection_root = PurePosixPath("components/AstralProjection")
+    sources = {
+        "app": "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift",
+        "core": "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
+        "watch": "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift",
+    }
+    for composed_path in sources.values():
+        relative_path = PurePosixPath(composed_path).relative_to(projection_root)
+        source = projection.joinpath(*relative_path.parts)
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("let first = 1\nlet second = 2\n", encoding="utf-8")
+    _commit(projection, "tracked Projection Apple sources")
+
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
-    sources = {
-        "app": "apple-clients/AstralApp/AstralApp/AppModel.swift",
-        "core": "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
-        "watch": "apple-clients/AstralWatch/WatchModel.swift",
-    }
-    for relative_path in sources.values():
-        path = repo / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("let first = 1\nlet second = 2\n", encoding="utf-8")
-    _commit(repo, "tracked Apple sources")
+    _git(
+        repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "--name",
+        "AstralProjection",
+        str(projection),
+        projection_root.as_posix(),
+    )
+    _commit(repo, "pin Projection Apple sources")
     bundle = repo / "build" / "fixture.xcresult"
     bundle.mkdir(parents=True)
     return repo, bundle, sources
+
+
+def test_xccov_exporter_rejects_missing_projection_checkout(tmp_path: Path) -> None:
+    repo, _bundle, _sources = _apple_export_repo(tmp_path)
+    _git(
+        repo,
+        "submodule",
+        "deinit",
+        "-f",
+        "--",
+        "components/AstralProjection",
+    )
+
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter._tracked_swift_sources(repo, "ios")
+
+    assert failure.value.code == "missing_component_checkout"
+
+
+def test_xccov_exporter_rejects_projection_head_beyond_gitlink(tmp_path: Path) -> None:
+    repo, _bundle, sources = _apple_export_repo(tmp_path)
+    projection = repo / "components" / "AstralProjection"
+    _git(projection, "config", "user.email", "coverage@example.invalid")
+    _git(projection, "config", "user.name", "Coverage Fixture")
+    source = repo / sources["app"]
+    source.write_text(
+        source.read_text(encoding="utf-8") + "let third = 3\n",
+        encoding="utf-8",
+    )
+    _commit(projection, "unapproved Projection descendant")
+
+    with pytest.raises(xccov_exporter.ExportError) as failure:
+        xccov_exporter._tracked_swift_sources(repo, "ios")
+
+    assert failure.value.code == "component_revision_mismatch"
+
+
+def _local_archive_source(repo: Path, relative_path: str) -> str:
+    return f"{xccov_exporter._local_archive_repo_root(repo)}/{relative_path}"
 
 
 def _install_fake_xcrun(
@@ -768,7 +1762,11 @@ def _install_fake_xcrun(
     calls = tmp_path / "fake-xccov-calls.jsonl"
     binary_dir = tmp_path / "bin"
     binary_dir.mkdir(exist_ok=True)
-    xcrun = binary_dir / "xcrun"
+    # POSIX can execute the shebang fixture directly. On Windows, place the
+    # script at the first argument (``xccov``) and expose a hard-linked Python
+    # launcher as xcrun.exe; CreateProcess does not execute extensionless
+    # shebang files.
+    xcrun = tmp_path / "repo" / "xccov" if os.name == "nt" else binary_dir / "xcrun"
     xcrun.write_text(
         """#!/usr/bin/env python3
 import json
@@ -776,20 +1774,31 @@ import os
 import sys
 
 fixture = json.load(open(os.environ["FAKE_XCCOV_FIXTURE"], encoding="utf-8"))
-with open(os.environ["FAKE_XCCOV_CALLS"], "a", encoding="utf-8") as stream:
-    stream.write(json.dumps(sys.argv[1:]) + "\\n")
 args = sys.argv[1:]
+if not args or args[0] != "xccov":
+    args = ["xccov", *args]
+with open(os.environ["FAKE_XCCOV_CALLS"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps(args) + "\\n")
 if args[:4] == ["xccov", "view", "--archive", "--file-list"]:
-    sys.stdout.write("\\n".join(fixture["file_list"]) + "\\n")
+    payload = "\\n".join(fixture["file_list"]) + "\\n"
+    sys.stdout.buffer.write(payload.encode("utf-8"))
 elif args[:4] == ["xccov", "view", "--archive", "--file"] and args[5] == "--json":
     value = fixture["files"][args[4]]
-    sys.stdout.write(value if isinstance(value, str) else json.dumps(value))
+    payload = value if isinstance(value, str) else json.dumps(value)
+    sys.stdout.buffer.write(payload.encode("utf-8"))
 else:
     raise SystemExit(7)
 """,
         encoding="utf-8",
     )
-    xcrun.chmod(0o755)
+    if os.name == "nt":
+        os.link(sys.executable, binary_dir / "xcrun.exe")
+        shutil.copyfile(
+            Path(sys.executable).parents[1] / "pyvenv.cfg",
+            tmp_path / "pyvenv.cfg",
+        )
+    else:
+        xcrun.chmod(0o755)
     monkeypatch.setenv("FAKE_XCCOV_FIXTURE", str(fixture))
     monkeypatch.setenv("FAKE_XCCOV_CALLS", str(calls))
     monkeypatch.setenv("PATH", f"{binary_dir}{os.pathsep}{os.environ['PATH']}")
@@ -812,7 +1821,7 @@ def test_xccov_exporter_uses_real_per_file_subprocess_contract_and_platform_filt
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = {name: (repo / path).as_posix() for name, path in sources.items()}
+    raw = {name: _local_archive_source(repo, path) for name, path in sources.items()}
     dependency = "/tmp/checkouts/LiveKit/Sources/LiveKit/Room.swift"
     calls_path = _install_fake_xcrun(
         tmp_path,
@@ -862,7 +1871,9 @@ def test_xccov_exporter_uses_real_per_file_subprocess_contract_and_platform_filt
     assert list(watch_report) == [sources["core"], sources["watch"]]
     assert sources["app"] not in watch_output.read_text(encoding="utf-8")
 
-    calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    calls = [
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
     assert ["xccov", "view", "--archive", "--file-list", str(bundle)] in calls
     assert not any(raw["watch"] in call for call in calls[:3])
     assert any(raw["watch"] in call for call in calls)
@@ -895,10 +1906,7 @@ def test_xccov_exporter_binds_a_historical_raw_job_checkout_root(
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
     archive_root = "/Users/runner/work/AstralDeep/AstralDeep"
-    raw = {
-        name: f"{archive_root}/{relative}"
-        for name, relative in sources.items()
-    }
+    raw = {name: f"{archive_root}/{relative}" for name, relative in sources.items()}
     _install_fake_xcrun(
         tmp_path,
         monkeypatch,
@@ -1026,8 +2034,8 @@ def test_xccov_exporter_enforces_file_count_and_output_bounds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = (repo / sources["app"]).as_posix()
-    raw_core = (repo / sources["core"]).as_posix()
+    raw = _local_archive_source(repo, sources["app"])
+    raw_core = _local_archive_source(repo, sources["core"])
     _install_fake_xcrun(
         tmp_path,
         monkeypatch,
@@ -1058,7 +2066,7 @@ def test_xccov_exporter_observation_budget_aborts_before_all_selected_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = {name: (repo / path).as_posix() for name, path in sources.items()}
+    raw = {name: _local_archive_source(repo, path) for name, path in sources.items()}
     calls_path = _install_fake_xcrun(
         tmp_path,
         monkeypatch,
@@ -1073,8 +2081,7 @@ def test_xccov_exporter_observation_budget_aborts_before_all_selected_files(
         )
     assert failure.value.code == "observation_budget_exceeded"
     calls = [
-        json.loads(line)
-        for line in calls_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
     ]
     per_file_calls = [call for call in calls if "--file" in call]
     assert len(per_file_calls) <= 1
@@ -1085,7 +2092,7 @@ def test_xccov_exporter_cumulative_input_budget_stops_before_second_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = {name: (repo / path).as_posix() for name, path in sources.items()}
+    raw = {name: _local_archive_source(repo, path) for name, path in sources.items()}
     files = {path: {path: _xccov_lines()} for path in raw.values()}
     calls_path = _install_fake_xcrun(
         tmp_path,
@@ -1094,9 +2101,7 @@ def test_xccov_exporter_cumulative_input_budget_stops_before_second_file(
         files=files,
     )
     first_payload_bytes = len(json.dumps(files[raw["app"]]).encode("utf-8"))
-    monkeypatch.setattr(
-        xccov_exporter, "MAX_TOTAL_XCCOV_BYTES", first_payload_bytes
-    )
+    monkeypatch.setattr(xccov_exporter, "MAX_TOTAL_XCCOV_BYTES", first_payload_bytes)
     output = repo / "build" / "bounded-input.json"
     with pytest.raises(xccov_exporter.ExportError) as failure:
         xccov_exporter.export_xccov(
@@ -1104,8 +2109,7 @@ def test_xccov_exporter_cumulative_input_budget_stops_before_second_file(
         )
     assert failure.value.code == "input_budget_exceeded"
     calls = [
-        json.loads(line)
-        for line in calls_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
     ]
     assert len([call for call in calls if "--file" in call]) == 1
     assert not output.exists()
@@ -1115,7 +2119,7 @@ def test_xccov_exporter_overall_deadline_covers_inventory_and_all_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = (repo / sources["app"]).as_posix()
+    raw = _local_archive_source(repo, sources["app"])
     _install_fake_xcrun(
         tmp_path,
         monkeypatch,
@@ -1153,7 +2157,11 @@ def test_xccov_exporter_command_and_json_bounds_fail_closed(
 ) -> None:
     with pytest.raises(xccov_exporter.ExportError) as failed:
         xccov_exporter._bounded_command(
-            [sys.executable, "-c", "print('x'); raise SystemExit(7)"],
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'x'); raise SystemExit(7)",
+            ],
             cwd=tmp_path,
             max_stdout_bytes=2,
         )
@@ -1206,6 +2214,8 @@ def test_xccov_exporter_inventory_path_and_observation_edge_contracts(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
+    projection = repo / "components" / "AstralProjection"
+    projection.mkdir(parents=True)
     bundle = repo / "fixture.xcresult"
     bundle.mkdir()
 
@@ -1214,9 +2224,9 @@ def test_xccov_exporter_inventory_path_and_observation_edge_contracts(
             xccov_exporter._safe_repo_path(value)
     assert (
         xccov_exporter._normalize_archive_path(
-            "apple-clients/AstralApp/AstralApp/AppModel.swift"
+            "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift"
         )
-        == "apple-clients/AstralApp/AstralApp/AppModel.swift"
+        == "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift"
     )
     assert xccov_exporter._normalize_archive_path("/tmp/dependency.swift") is None
 
@@ -1231,6 +2241,11 @@ def test_xccov_exporter_inventory_path_and_observation_edge_contracts(
         xccov_exporter,
         "_bounded_command",
         lambda *_args, **_kwargs: next(inventory_outputs),
+    )
+    monkeypatch.setattr(
+        xccov_exporter,
+        "_projection_checkout",
+        lambda *_args, **_kwargs: projection,
     )
     for expected in (
         "invalid_git_inventory",
@@ -1436,7 +2451,7 @@ def test_real_playwright_v8_comment_vector_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(collector.CoveragePolicyError) as failure:
         collector.parse_coverage_report(report, "javascript")
     assert failure.value.code == "unparseable_report"
-    assert "executable-line producer envelope" in failure.value.message
+    assert "node/browser union envelope" in failure.value.message
 
 
 def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
@@ -1447,7 +2462,15 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
-    source_path = repo / "backend" / "webrender" / "static" / "client.js"
+    source_path = (
+        repo
+        / "components"
+        / "AstralProjection"
+        / "backend"
+        / "webrender"
+        / "static"
+        / "client.js"
+    )
     source_path.parent.mkdir(parents=True)
     source_path.write_text("", encoding="utf-8")
     base = _commit(repo, "base")
@@ -1461,8 +2484,8 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
         json.dumps(
             _javascript_envelope(
                 {
-                    "backend/webrender/static/client.js": {
-                        "path": "backend/webrender/static/client.js",
+                    "components/AstralProjection/backend/webrender/static/client.js": {
+                        "path": "components/AstralProjection/backend/webrender/static/client.js",
                         "statementMap": {
                             "0": {
                                 "start": {"line": 10, "column": 0},
@@ -1496,7 +2519,7 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
     "hidden_record",
     [
         {
-            "path": "backend/webrender/static/hidden.js",
+            "path": "components/AstralProjection/backend/webrender/static/hidden.js",
             "l": {},
             "statementMap": {
                 "0": {
@@ -1507,7 +2530,7 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
             "s": {"0": 0},
         },
         {
-            "path": "backend/webrender/static/hidden.js",
+            "path": "components/AstralProjection/backend/webrender/static/hidden.js",
             "l": {"1": 1},
             "statementMap": {
                 "0": {
@@ -1518,12 +2541,12 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
             "s": {"0": 0},
         },
         {
-            "path": "backend/webrender/static/hidden.js",
+            "path": "components/AstralProjection/backend/webrender/static/hidden.js",
             "statementMap": {},
             "s": {},
         },
         {
-            "path": "backend/webrender/static/hidden.js",
+            "path": "components/AstralProjection/backend/webrender/static/hidden.js",
             "statementMap": {
                 "0": {
                     "start": {"line": 1, "column": 0},
@@ -1537,13 +2560,13 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
 def test_malformed_istanbul_cannot_hide_uncovered_file_behind_covered_peer(
     tmp_path: Path, hidden_record: dict[str, object]
 ) -> None:
-    peer_path = "backend/webrender/static/peer.js"
+    peer_path = "components/AstralProjection/backend/webrender/static/peer.js"
     report = tmp_path / "malformed-istanbul.json"
     report.write_text(
         json.dumps(
             _javascript_envelope(
                 {
-                    "backend/webrender/static/hidden.js": hidden_record,
+                    "components/AstralProjection/backend/webrender/static/hidden.js": hidden_record,
                     peer_path: {
                         "path": peer_path,
                         "statementMap": {
@@ -1776,7 +2799,11 @@ def test_xccov_empty_partial_and_duplicate_physical_lines_fail_closed(
 ) -> None:
     report = tmp_path / "invalid-archive.json"
     report.write_text(
-        json.dumps({"/work/apple-clients/AstralWatch/WatchModel.swift": observations}),
+        json.dumps(
+            {
+                "/work/components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift": observations
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(collector.CoveragePolicyError) as failure:
@@ -1792,8 +2819,9 @@ def test_xccov_non_executable_changed_line_is_observed_but_not_counted(
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
-    hidden = repo / "apple-clients" / "AstralWatch" / "Hidden.swift"
-    peer = repo / "apple-clients" / "AstralWatch" / "Peer.swift"
+    apple = repo / "components" / "AstralProjection" / "apple-clients"
+    hidden = apple / "AstralWatch" / "Hidden.swift"
+    peer = apple / "AstralWatch" / "Peer.swift"
     hidden.parent.mkdir(parents=True)
     hidden.write_text("// old\n", encoding="utf-8")
     peer.write_text("let peer = 0\n", encoding="utf-8")
@@ -1820,7 +2848,7 @@ def test_xccov_non_executable_changed_line_is_observed_but_not_counted(
     assert decision["languages"]["swift"]["executable_lines"] == 1
     assert decision["lines"] == [
         {
-            "path": "apple-clients/AstralWatch/Peer.swift",
+            "path": "components/AstralProjection/apple-clients/AstralWatch/Peer.swift",
             "line": 1,
             "target": "apple",
             "language": "swift",
@@ -1837,7 +2865,14 @@ def test_xccov_must_observe_each_changed_physical_line(
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
-    source = repo / "apple-clients" / "AstralWatch" / "WatchModel.swift"
+    source = (
+        repo
+        / "components"
+        / "AstralProjection"
+        / "apple-clients"
+        / "AstralWatch"
+        / "WatchModel.swift"
+    )
     source.parent.mkdir(parents=True)
     source.write_text("// first\n// old\n", encoding="utf-8")
     base = _commit(repo, "base")
@@ -1858,7 +2893,7 @@ def test_xccov_must_observe_each_changed_physical_line(
 
 
 def test_bare_unfiltered_istanbul_output_is_rejected(tmp_path: Path) -> None:
-    path = "backend/webrender/static/client.js"
+    path = "components/AstralProjection/backend/webrender/static/client.js"
     report = tmp_path / "unfiltered-v8-to-istanbul.json"
     report.write_text(
         json.dumps(
@@ -1880,7 +2915,7 @@ def test_bare_unfiltered_istanbul_output_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(collector.CoveragePolicyError) as failure:
         collector.parse_coverage_report(report, "javascript")
     assert failure.value.code == "unparseable_report"
-    assert "producer envelope" in failure.value.message
+    assert "node/browser union envelope" in failure.value.message
 
 
 def test_cli_writes_repeatable_exact_identity_json(
@@ -1978,7 +3013,7 @@ def test_cli_missing_report_error_retains_validated_revision_audit_fields(
     assert document["fail_under"] == 91.0
 
 
-def test_cli_strict_mode_requires_the_exact_ten_slot_matrix(
+def test_cli_strict_mode_requires_the_exact_eleven_slot_matrix(
     git_repo: tuple[Path, str], tmp_path: Path
 ) -> None:
     repo, base = git_repo

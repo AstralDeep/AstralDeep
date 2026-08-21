@@ -730,7 +730,7 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=(
             default_root
-            / "backend/tests/fixtures/voice_065/recap_review_matrix.json"
+            / "components/AstralProjection/contracts/fixtures/voice_065/recap_review_matrix.json"
         ),
     )
     return parser

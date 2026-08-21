@@ -10,9 +10,9 @@ sockets, no live boot:
   propagates (the poller must not swallow ``CancelledError`` at shutdown);
 - ``handle_ui_message`` — ``remote_op_decision`` reaches
   ``remote_confirmation.handle_decision`` with the SERVER-derived user id;
-- ``start()`` (driven with a fake self up to a sentinel, so no server is bound)
-  — the poller task exists only when the flag is on, and the safe-seed set drops
-  ``remote-compute-1`` when it is off (flag-off boot is pre-063-identical);
+- ``_run_started_server()`` (driven with a fake self up to a sentinel, so no
+  server is bound) — the poller task exists only when the flag is on, and the
+  safe-seed set drops ``remote-compute-1`` when it is off;
 - ``_trace_frame`` — the marker-file-gated outbound frame tracer, including its
   fail-open behavior (a broken trace must never break a send).
 """
@@ -30,6 +30,7 @@ from orchestrator import orchestrator as oo
 from orchestrator import remote_confirmation as rc
 from orchestrator import remote_jobs as rj
 from orchestrator.orchestrator import Orchestrator
+from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 _REAL_EXISTS = os.path.exists
 _MARKER = "/app/.frame_trace"
@@ -180,13 +181,8 @@ class _Stop(Exception):
     """Sentinel that aborts start() right after the 063 wiring runs."""
 
 
-class _SeedDB:
-    _FIRST_PARTY_PUBLIC_AGENT_IDS = (
-        "general-1", "weather-1", "remote-compute-1", "summarizer-1")
-
-
 async def _drive_start(monkeypatch, *, remote_compute: bool):
-    """Run the real ``Orchestrator.start`` on a double until the sentinel.
+    """Run the real startup body on a double until the sentinel.
 
     Everything before the 063 wiring is stubbed (no posture assert, no DB seed,
     no in-process fleet), and ``_start_phi_warm`` — the first statement after the
@@ -215,8 +211,31 @@ async def _drive_start(monkeypatch, *, remote_compute: bool):
     def _boom():
         raise _Stop()
 
+    def _discard_background(coroutine, *, name):
+        del name
+        coroutine.close()
+
+    async def _recover_publications():
+        return SimpleNamespace(degraded_publication_ids=())
+
+    plane_source = make_remote_plane_source(
+        SimpleNamespace(machines={}, credentials={}, jobs={})
+    )
     fake = SimpleNamespace(
-        history=SimpleNamespace(db=_SeedDB()),
+        runtime_composition=SimpleNamespace(
+            start=lambda: None,
+            plane=SimpleNamespace(
+                runtime=plane_source.plane_runtime,
+                repositories=plane_source.plane_repositories,
+            ),
+        ),
+        plane_repository_source=plane_source,
+        user_agent_registry=plane_source,
+        generated_agent_publication_service=SimpleNamespace(
+            recover_once=_recover_publications,
+            start=lambda: None,
+        ),
+        _track_startup_background_task=_discard_background,
         _jwks_warm_loop=_noop_loop,
         _personal_agent_watchdog_task=None,
         _personal_agent_watchdog_loop=_noop_loop,
@@ -228,7 +247,7 @@ async def _drive_start(monkeypatch, *, remote_compute: bool):
     before = asyncio.all_tasks()
     try:
         with pytest.raises(_Stop):
-            await types.MethodType(Orchestrator.start, fake)()
+            await types.MethodType(Orchestrator._run_started_server, fake)()
     finally:
         # The boot fires long-lived background tasks; none of them ever ran (no
         # await point between their creation and the sentinel), so cancelling
@@ -246,6 +265,7 @@ async def test_boot_launches_the_poller_and_seeds_remote_compute_when_enabled(mo
 
     assert len(seeded) == 1
     assert "remote-compute-1" in seeded[0][1]
+    assert seeded[0][1] == tuple(oo.FIRST_PARTY_PUBLIC_AGENT_IDS)
     task = fake._remote_job_poll_task
     assert task is not None and task.get_name() == "remote-cluster-job-poller"
 
@@ -259,14 +279,14 @@ def test_shutdown_cancels_the_poller():
     import inspect
     import textwrap
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(Orchestrator.start)))
-    shutdown = "\n".join(
-        ast.unparse(stmt)
-        for node in ast.walk(tree) if isinstance(node, ast.Try) and node.finalbody
-        for stmt in node.finalbody)
-    assert "poller = getattr(self, '_remote_job_poll_task', None)" in shutdown
-    assert "poller.cancel()" in shutdown
-    assert "self._remote_job_poll_task = None" in shutdown
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(Orchestrator._close_started_services_once))
+    )
+    shutdown = ast.unparse(tree)
+    assert "'_remote_job_poll_task'" in shutdown
+    assert "task.cancel()" in shutdown
+    assert "await asyncio.gather(task, return_exceptions=True)" in shutdown
+    assert "setattr(self, attribute, None)" in shutdown
 
 
 async def test_flag_off_boot_creates_no_poller_and_drops_remote_compute_from_the_seed(monkeypatch):
@@ -275,7 +295,11 @@ async def test_flag_off_boot_creates_no_poller_and_drops_remote_compute_from_the
     # Byte-identical to the pre-063 fleet: no agent_trust row for the agent...
     assert len(seeded) == 1
     assert "remote-compute-1" not in seeded[0][1]
-    assert seeded[0][1] == ("general-1", "weather-1", "summarizer-1")
+    assert seeded[0][1] == tuple(
+        agent_id
+        for agent_id in oo.FIRST_PARTY_PUBLIC_AGENT_IDS
+        if agent_id != "remote-compute-1"
+    )
     # ...and no background task at all.
     assert fake._remote_job_poll_task is None
 

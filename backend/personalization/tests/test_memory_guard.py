@@ -13,6 +13,8 @@ import pytest
 from personalization import memory_guard as mg
 from personalization import project_scope as ps
 from personalization.memory_tools import MemoryTools
+from personalization.repository import PersonalizationRepository
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 
 # ───────────────────────── flag ──────────────────────────────────────────────
@@ -177,18 +179,24 @@ def test_search_excludes_tampered_row(monkeypatch):
 
 def test_signed_row_round_trips_and_tamper_detected(monkeypatch):
     monkeypatch.setenv("MEMORY_HMAC_KEY", "real-db-key")
-    from shared.database import Database
-    from personalization.repository import PersonalizationRepository
-    repo = PersonalizationRepository(Database())
-    mt = MemoryTools(repo, phi_gate=_Gate())
-    user = f"pytest-guard-{uuid.uuid4().hex[:8]}"
-    a = repo.create_memory(user, "context", "Lives in Seattle")
-    assert a["signature"]  # signed because the key is set
-    assert [m["value"] for m in mt.memory_get(user)] == ["Lives in Seattle"]
+    with isolated_plane_runtime("personalization_guard") as runtime:
+        repo = PersonalizationRepository(
+            None,
+            plane_runtime=runtime,
+            plane_repositories=runtime.repositories,
+        )
+        mt = MemoryTools(repo, phi_gate=_Gate())
+        user = f"pytest-guard-{uuid.uuid4().hex[:8]}"
+        memory = repo.create_memory(user, "context", "Lives in Seattle")
+        assert memory["signature"]  # signed because the key is set
+        assert [item["value"] for item in mt.memory_get(user)] == [
+            "Lives in Seattle"
+        ]
 
-    # Directly tamper the stored value (simulating a DB-level poisoning write).
-    repo.db.execute("UPDATE memory_item SET value = ? WHERE id = ?",
-                    ("Lives in Mordor", a["id"]))
-    assert mt.memory_get(user) == []  # tampered row excluded from recall
-
-    repo.db.execute("DELETE FROM memory_item WHERE user_id = ?", (user,))
+        # Directly tamper the stored value (simulating DB-level poisoning).
+        with runtime.transaction() as transaction:
+            transaction.execute(
+                "UPDATE memory_item SET value = %s WHERE id = %s",
+                ("Lives in Mordor", memory["id"]),
+            )
+        assert mt.memory_get(user) == []  # tampered row excluded from recall

@@ -19,6 +19,10 @@ from cryptography.fernet import Fernet
 from shared.crypto import (
     encrypt_for_agent, ec_public_key_from_jwk, is_e2e_encrypted,
 )
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    repository_from,
+)
 
 logger = logging.getLogger("CredentialManager")
 
@@ -46,19 +50,38 @@ class CredentialManager:
         }
     """
 
-    def __init__(self, db=None, data_dir: str = None, database_url: str = None):
-        if db is not None:
-            self.db = db
-        elif data_dir is not None or database_url is not None:
-            import sys
-            sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-            from shared.database import Database
-            self.db = Database(database_url)
-        else:
-            raise ValueError("Either db, data_dir, or database_url must be provided")
+    def __init__(
+        self,
+        db=None,
+        data_dir: str = None,
+        database_url: str = None,
+        *,
+        plane_runtime=None,
+        plane_repositories=None,
+        plane_repository=None,
+    ):
+        if database_url is not None:
+            raise ValueError(
+                "CredentialManager no longer constructs database runtimes; "
+                "inject the application Plane runtime"
+            )
+        if db is None and plane_runtime is None:
+            raise ValueError("CredentialManager requires the application Plane runtime")
 
         self.data_dir = data_dir
         self._fernet = self._init_encryption()
+
+        repository, runtime = repository_from(
+            "credentials",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._credentials = PlaneRepositoryContext(
+            repository=plane_repository or repository,
+            plane_runtime=runtime,
+            legacy_database=db,
+        )
 
         # Agent public keys for ECIES encryption (agent_id -> JWK dict)
         self._agent_public_keys: Dict[str, dict] = {}
@@ -119,13 +142,13 @@ class CredentialManager:
             encrypted = self._fernet.encrypt(value.encode()).decode()
 
         now = int(time.time() * 1000)
-        self.db.execute(
-            """INSERT INTO user_credentials
-               (user_id, agent_id, credential_key, encrypted_value, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT (user_id, agent_id, credential_key)
-               DO UPDATE SET encrypted_value = EXCLUDED.encrypted_value, updated_at = EXCLUDED.updated_at""",
-            (user_id, agent_id, key, encrypted, now, now)
+        self._credentials.call(
+            self._credentials.repository.upsert_credential,
+            owner_id=user_id,
+            agent_id=agent_id,
+            credential_key=key,
+            encrypted_value=encrypted,
+            updated_at=now,
         )
         mode = "E2E/ECIES" if encrypted.startswith("e2e:") else "Fernet"
         logger.info(f"Credential set ({mode}): user={user_id} agent={agent_id} key={key}")
@@ -136,13 +159,15 @@ class CredentialManager:
         Only works for Fernet-encrypted values (OAuth credentials).
         E2E-encrypted values cannot be decrypted by the orchestrator.
         """
-        row = self.db.fetch_one(
-            "SELECT encrypted_value FROM user_credentials WHERE user_id = ? AND agent_id = ? AND credential_key = ?",
-            (user_id, agent_id, key)
+        row = self._credentials.call(
+            self._credentials.repository.get_credential,
+            owner_id=user_id,
+            agent_id=agent_id,
+            credential_key=key,
         )
         if row is None:
             return None
-        value = row['encrypted_value']
+        value = row.encrypted_value
         if is_e2e_encrypted(value):
             logger.error(f"Cannot decrypt E2E credential on orchestrator: key={key}")
             return None
@@ -159,16 +184,18 @@ class CredentialManager:
         Internal keys (starting with '_') are excluded.
         E2E-encrypted values are skipped.
         """
-        rows = self.db.fetch_all(
-            "SELECT credential_key, encrypted_value FROM user_credentials WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id)
+        rows = self._credentials.call(
+            self._credentials.repository.list_credentials,
+            owner_id=user_id,
+            agent_id=agent_id,
+            limit=1000,
         )
         result = {}
         for row in rows:
-            key = row['credential_key']
+            key = row.credential_key
             if key.startswith('_'):
                 continue
-            value = row['encrypted_value']
+            value = row.encrypted_value
             if is_e2e_encrypted(value):
                 continue  # Skip E2E — orchestrator can't decrypt these
             try:
@@ -185,33 +212,39 @@ class CredentialManager:
         backward compatibility during migration.
         Internal keys (starting with '_') are excluded.
         """
-        rows = self.db.fetch_all(
-            "SELECT credential_key, encrypted_value FROM user_credentials WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id)
+        rows = self._credentials.call(
+            self._credentials.repository.list_credentials,
+            owner_id=user_id,
+            agent_id=agent_id,
+            limit=1000,
         )
         result = {}
         for row in rows:
-            key = row['credential_key']
+            key = row.credential_key
             if key.startswith('_'):
                 continue
-            result[key] = row['encrypted_value']
+            result[key] = row.encrypted_value
         return result
 
     def delete_credential(self, user_id: str, agent_id: str, key: str):
         """Remove a single credential."""
-        self.db.execute(
-            "DELETE FROM user_credentials WHERE user_id = ? AND agent_id = ? AND credential_key = ?",
-            (user_id, agent_id, key)
+        self._credentials.call(
+            self._credentials.repository.delete_credential,
+            owner_id=user_id,
+            agent_id=agent_id,
+            credential_key=key,
         )
         logger.info(f"Credential deleted: user={user_id} agent={agent_id} key={key}")
 
     def list_credential_keys(self, user_id: str, agent_id: str) -> List[str]:
         """List stored credential keys (without values) for a user+agent."""
-        rows = self.db.fetch_all(
-            "SELECT credential_key FROM user_credentials WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id)
+        rows = self._credentials.call(
+            self._credentials.repository.list_credential_keys,
+            owner_id=user_id,
+            agent_id=agent_id,
+            limit=1000,
         )
-        return [row['credential_key'] for row in rows]
+        return list(rows)
 
     def set_bulk_credentials(self, user_id: str, agent_id: str, credentials: Dict[str, str], e2e: bool = True):
         """Set multiple credentials at once."""
@@ -220,9 +253,10 @@ class CredentialManager:
 
     def remove_agent_credentials(self, user_id: str, agent_id: str):
         """Remove all credentials for a specific agent under a user."""
-        self.db.execute(
-            "DELETE FROM user_credentials WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id)
+        self._credentials.call(
+            self._credentials.repository.delete_agent_credentials,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
         logger.info(f"All credentials removed: user={user_id} agent={agent_id}")
 
@@ -235,56 +269,87 @@ class CredentialManager:
 
     def set_machine_credential(self, machine_id: str, owner_user_id: str, cred_type: str,
                                secret: str, passphrase: Optional[str] = None):
-        """Encrypt and store the credential for one machine (upsert)."""
+        """Encrypt and store an owner-scoped credential for one machine."""
         enc_secret = self._fernet.encrypt(secret.encode()).decode()
         enc_pass = self._fernet.encrypt(passphrase.encode()).decode() if passphrase else None
         now = int(time.time() * 1000)
-        self.db.execute(
-            """INSERT INTO machine_credential
-               (machine_id, owner_user_id, cred_type, encrypted_secret, encrypted_passphrase,
-                created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT (machine_id) DO UPDATE SET
-                 owner_user_id = EXCLUDED.owner_user_id,
-                 cred_type = EXCLUDED.cred_type,
-                 encrypted_secret = EXCLUDED.encrypted_secret,
-                 encrypted_passphrase = EXCLUDED.encrypted_passphrase,
-                 updated_at = EXCLUDED.updated_at""",
-            (machine_id, owner_user_id, cred_type, enc_secret, enc_pass, now, now)
-        )
+        repository = self._credentials.repository
+        with self._credentials.transaction() as transaction:
+            current = repository.get_machine_credential(
+                transaction,
+                owner_id=owner_user_id,
+                machine_id=machine_id,
+            )
+            if current is None:
+                repository.create_machine_credential(
+                    transaction,
+                    owner_id=owner_user_id,
+                    machine_id=machine_id,
+                    credential_type=cred_type,
+                    encrypted_secret=enc_secret,
+                    encrypted_passphrase=enc_pass,
+                    created_at=now,
+                )
+            else:
+                repository.compare_and_set_machine_credential(
+                    transaction,
+                    owner_id=owner_user_id,
+                    machine_id=machine_id,
+                    expected_updated_at=current.updated_at,
+                    credential_type=cred_type,
+                    encrypted_secret=enc_secret,
+                    encrypted_passphrase=enc_pass,
+                    updated_at=max(now, current.updated_at + 1),
+                )
         logger.info(f"Machine credential set: machine={machine_id} type={cred_type}")
 
-    def get_machine_credential(self, machine_id: str) -> Optional[Dict[str, Optional[str]]]:
+    def get_machine_credential(
+        self,
+        machine_id: str,
+        owner_user_id: str,
+    ) -> Optional[Dict[str, Optional[str]]]:
         """Return {'cred_type','secret','passphrase'} decrypted, or None if not configured.
 
         Raises CredentialUndecryptable if a row exists but cannot be decrypted (FR-016).
         """
-        row = self.db.fetch_one(
-            "SELECT cred_type, encrypted_secret, encrypted_passphrase "
-            "FROM machine_credential WHERE machine_id = ?",
-            (machine_id,)
+        row = self._credentials.call(
+            self._credentials.repository.get_machine_credential,
+            owner_id=owner_user_id,
+            machine_id=machine_id,
         )
         if row is None:
             return None
         try:
-            secret = self._fernet.decrypt(row["encrypted_secret"].encode()).decode()
+            secret = self._fernet.decrypt(row.encrypted_secret.encode()).decode()
             passphrase = None
-            if row["encrypted_passphrase"]:
-                passphrase = self._fernet.decrypt(row["encrypted_passphrase"].encode()).decode()
+            if row.encrypted_passphrase:
+                passphrase = self._fernet.decrypt(
+                    row.encrypted_passphrase.encode()
+                ).decode()
         except Exception as e:
             raise CredentialUndecryptable(str(machine_id)) from e
-        return {"cred_type": row["cred_type"], "secret": secret, "passphrase": passphrase}
+        return {
+            "cred_type": row.credential_type,
+            "secret": secret,
+            "passphrase": passphrase,
+        }
 
-    def delete_machine_credential(self, machine_id: str):
-        """Destroy the stored credential for one machine (FR-015)."""
-        self.db.execute("DELETE FROM machine_credential WHERE machine_id = ?", (machine_id,))
+    def delete_machine_credential(self, machine_id: str, owner_user_id: str):
+        """Destroy one owner-scoped stored credential (FR-015)."""
+        self._credentials.call(
+            self._credentials.repository.delete_machine_credential,
+            owner_id=owner_user_id,
+            machine_id=machine_id,
+        )
         logger.info(f"Machine credential deleted: machine={machine_id}")
 
     def remove_machine_credentials_for_user(self, owner_user_id: str) -> int:
         """Destroy every machine credential owned by a user (account removal / logout, FR-015).
-        Returns the number of rows destroyed (psycopg2 reports -1 when unknown → 0)."""
-        cur = self.db.execute("DELETE FROM machine_credential WHERE owner_user_id = ?", (owner_user_id,))
-        removed = max(0, getattr(cur, "rowcount", 0) or 0)
+        Returns the number of rows destroyed (unknown row counts normalize to 0)."""
+        removed = self._credentials.call(
+            self._credentials.repository.delete_owner_machine_credentials,
+            owner_id=owner_user_id,
+        )
         logger.info(f"Machine credentials removed for user={owner_user_id}: {removed}")
         return removed
 
@@ -303,32 +368,44 @@ class CredentialManager:
             return 0
 
         agent_pub = ec_public_key_from_jwk(self._agent_public_keys[agent_id])
-        rows = self.db.fetch_all(
-            "SELECT user_id, credential_key, encrypted_value FROM user_credentials WHERE agent_id = ?",
-            (agent_id,)
-        )
-
         migrated = 0
-        for row in rows:
-            key = row['credential_key']
-            value = row['encrypted_value']
-
-            if key.startswith('_') or is_e2e_encrypted(value):
-                continue  # Skip internal keys and already-migrated values
-
-            try:
-                plaintext = self._fernet.decrypt(value.encode()).decode()
-                encrypted = encrypt_for_agent(plaintext, agent_pub)
-                now = int(time.time() * 1000)
-                self.db.execute(
-                    """UPDATE user_credentials
-                       SET encrypted_value = ?, updated_at = ?
-                       WHERE user_id = ? AND agent_id = ? AND credential_key = ?""",
-                    (encrypted, now, row['user_id'], agent_id, key)
+        after_credential_id = 0
+        while True:
+            with self._credentials.transaction() as transaction:
+                rows = self._credentials.repository.list_agent_credentials_for_reencryption(
+                    transaction,
+                    agent_id=agent_id,
+                    after_credential_id=after_credential_id,
+                    limit=200,
                 )
-                migrated += 1
-            except Exception as e:
-                logger.error(f"Migration failed for {key}: {e}")
+                for row in rows:
+                    after_credential_id = row.credential_id
+                    key = row.credential_key
+                    value = row.encrypted_value
+
+                    if key.startswith('_') or is_e2e_encrypted(value):
+                        continue
+
+                    try:
+                        plaintext = self._fernet.decrypt(value.encode()).decode()
+                        encrypted = encrypt_for_agent(plaintext, agent_pub)
+                        now = int(time.time() * 1000)
+                        expected = row.updated_at
+                        updated = now if expected is None else max(now, expected + 1)
+                        self._credentials.repository.compare_and_set_ciphertext(
+                            transaction,
+                            owner_id=row.owner_id,
+                            agent_id=agent_id,
+                            credential_key=key,
+                            expected_updated_at=expected,
+                            encrypted_value=encrypted,
+                            updated_at=updated,
+                        )
+                        migrated += 1
+                    except Exception as e:
+                        logger.error(f"Migration failed for {key}: {e}")
+            if len(rows) < 200:
+                break
 
         logger.info(f"Migrated {migrated} credentials to E2E for agent '{agent_id}'")
         return migrated

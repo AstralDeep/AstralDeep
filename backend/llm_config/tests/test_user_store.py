@@ -348,5 +348,9 @@ class TestNoKeyFileWritten:
                                                 tmp_path):
         # With CREDENTIAL_ENCRYPTION_KEY set, the dev key-file fallback
         # must not be touched even when a data_dir is supplied.
-        UserLLMConfigStore(fake_db, data_dir=str(tmp_path))
+        UserLLMConfigStore(
+            data_dir=str(tmp_path),
+            plane_runtime=fake_db,
+            plane_repositories=fake_db.repositories,
+        )
         assert not (tmp_path / ".credential_key").exists()

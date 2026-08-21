@@ -1,0 +1,12 @@
+[submodule "AstralProjection"]
+	path = components/AstralProjection
+	url = https://github.com/AstralDeep/AstralProjection.git
+[submodule "AstralPlane"]
+	path = components/AstralPlane
+	url = https://github.com/AstralDeep/AstralPlane.git
+[submodule "AstralPrimitives"]
+	path = components/AstralPrimitives
+	url = https://github.com/AstralDeep/AstralPrimitives.git
+[submodule "LETS"]
+	path = components/LETS
+	url = https://github.com/AstralDeep/LETS.git

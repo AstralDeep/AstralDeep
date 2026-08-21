@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 1,
+  "refreshedAtUtc": "2026-08-13T23:06:36.7146430Z",
+  "fetchPolicy": {
+    "command": "git fetch --no-prune origin",
+    "pruned": false,
+    "archiveRefsCreated": false
+  },
+  "repositories": {
+    "AstralDeep": {
+      "githubRepositoryId": 1157295552,
+      "canonicalUrl": "https://github.com/AstralDeep/AstralDeep.git",
+      "visibility": "public",
+      "defaultBranch": "main",
+      "defaultBranchProtected": true,
+      "liveHeads": {
+        "main": "fc113c4f99121b2053bb71523835c5c4743f1f56",
+        "074-multirepo-lets-integration": "b6bca6e59bfbb789d96cfc960b738e03c04ac774"
+      },
+      "planningAnchor": "3862a5d1c4ab1969cb8589b023e7f7a7c9f19e68",
+      "refreshedExtractionSource": {
+        "commit": "fc113c4f99121b2053bb71523835c5c4743f1f56",
+        "tree": "914b04d369faa4ee0d7c2bb59ce09db38a18d45a"
+      },
+      "planningAnchorRelationship": {
+        "mergeBase": "3862a5d1c4ab1969cb8589b023e7f7a7c9f19e68",
+        "mainCommitsAfterPlanningAnchor": 4,
+        "featureCommitsAfterPlanningAnchorAtRefresh": 4,
+        "resolution": "Merge refreshed origin/main into the published feature branch without rebasing; extract product blobs from the refreshed source."
+      },
+      "workingTreeAtInitialRefresh": {
+        "branch": "074-multirepo-lets-integration",
+        "head": "b6bca6e59bfbb789d96cfc960b738e03c04ac774",
+        "upstream": "origin/074-multirepo-lets-integration",
+        "ahead": 0,
+        "behind": 0,
+        "clean": true
+      },
+      "activeWorkflows": [
+        "android-ci",
+        "apple-ci",
+        "Release Apple clients",
+        "Build Windows unsigned candidate",
+        "CI",
+        "release-apple-evidence-normalizer",
+        "release-evidence-exception",
+        "release-readiness-protected",
+        "release-readiness",
+        "release-trusted-builder",
+        "release-windows-publisher-controller",
+        "release-windows-publisher",
+        "Release Windows client"
+      ]
+    },
+    "LETS": {
+      "githubRepositoryId": 1328441308,
+      "canonicalUrl": "https://github.com/AstralDeep/LETS.git",
+      "visibility": "public",
+      "defaultBranch": "main",
+      "liveHeads": {
+        "main": "7ed23472c162e30c9aaa59da7473f2a488be8149"
+      },
+      "immutableSource": {
+        "commit": "7ed23472c162e30c9aaa59da7473f2a488be8149",
+        "tree": "301a0eec920a65195489243ecd04fdedb009bb8a"
+      },
+      "workingTreeAtRefresh": {
+        "branch": "main",
+        "head": "7ed23472c162e30c9aaa59da7473f2a488be8149",
+        "upstream": "origin/main",
+        "clean": true
+      },
+      "activeWorkflows": [
+        "ci",
+        "release",
+        "security",
+        "Dynamic Dependabot Updates"
+      ]
+    },
+    "AstralPlane": {
+      "githubRepositoryId": 965610202,
+      "canonicalUrl": "https://github.com/AstralDeep/AstralPlane.git",
+      "visibility": "private",
+      "defaultBranch": "master",
+      "liveHeads": {
+        "master": "2cd12602e361a0dfb3e74655070720be405c09a3",
+        "a2a": "700151757a7e1fd2aef9a1d3fdde78112c8a6fb6"
+      },
+      "immutableSource": {
+        "commit": "2cd12602e361a0dfb3e74655070720be405c09a3",
+        "tree": "1197f642493ab2832af12d06b0840f31df0e1fa8"
+      },
+      "workingTreeAtRefresh": {
+        "branch": "master",
+        "head": "2cd12602e361a0dfb3e74655070720be405c09a3",
+        "upstream": "origin/master",
+        "clean": true
+      },
+      "workflows": {
+        "Pylint": "disabled_manually",
+        "Dynamic Dependency Graph": "active"
+      }
+    },
+    "AstralPrimitives": {
+      "githubRepositoryId": 1253442475,
+      "canonicalUrl": "https://github.com/AstralDeep/AstralPrimitives.git",
+      "visibility": "public",
+      "defaultBranch": "main",
+      "liveHeads": {
+        "main": "c1feada40e104ff345c3a94348305dcf27870054"
+      },
+      "immutableSource": {
+        "commit": "c1feada40e104ff345c3a94348305dcf27870054",
+        "tree": "945138f8ab8198997630e891996a40547367d506"
+      },
+      "workingTreeAtRefresh": {
+        "branch": "main",
+        "head": "c1feada40e104ff345c3a94348305dcf27870054",
+        "upstream": "origin/main",
+        "clean": true
+      },
+      "activeWorkflows": [
+        "Publish to PyPI"
+      ]
+    },
+    "AstralProjection": {
+      "githubRepositoryId": 965595102,
+      "canonicalUrl": "https://github.com/AstralDeep/AstralProjection.git",
+      "visibility": "private",
+      "defaultBranch": "master",
+      "liveHeads": {
+        "master": "7a10727b78f06e3b573c23b61ead5be6233506bb"
+      },
+      "immutableSource": {
+        "commit": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+        "tree": "461039a598a864e1248f0bee1400a0ef4aa1658d"
+      },
+      "workingTreeAtRefresh": {
+        "branch": "master",
+        "head": "d762f4747c6c2a35d902b02bbc3d3c723d3489e3",
+        "upstream": "origin/master",
+        "clean": true,
+        "ahead": 0,
+        "behind": 2
+      },
+      "activeWorkflows": []
+    }
+  },
+  "letsReleaseAnchor": {
+    "version": "v1.0.10",
+    "tagType": "annotated",
+    "tagObject": "5ed575066a0c61a51dc55278fa7412f60772fac7",
+    "peeledCommit": "82dbe4f5ddf410cc86778784bb612440725ec66d",
+    "tree": "16f6034c26e0d538eaf94867ed8dce166dc9f447",
+    "signature": {
+      "verified": true,
+      "scheme": "ssh-ed25519",
+      "signer": "armstrongsam25@gmail.com",
+      "keyFingerprint": "SHA256:5KasB4SV3tUn6UHrxeFR3ZmQ9faDA4Uq6blCa06ShRw",
+      "commandExitCode": 0
+    },
+    "currentMain": "7ed23472c162e30c9aaa59da7473f2a488be8149",
+    "mainAndTagHaveMergeBase": false,
+    "runtimeSourceDiffersFromCurrentMain": false,
+    "treeDifferenceSummary": "Only .gitignore, deploy evidence, and seven removed paper artifacts differ; runtime, client, and executor sources are unchanged."
+  },
+  "normalizationCheckpoint": {
+    "verifiedAtUtc": "2026-08-13T23:17:28.2159129Z",
+    "archiveRefsCreated": false,
+    "forcePushesUsed": false,
+    "pruningUsed": false,
+    "AstralDeep": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/AstralDeep.git",
+      "branch": "074-multirepo-lets-integration",
+      "headAfterRefreshedMainMerge": "3598a08703890a5299c17cdfd8cc7837368330aa",
+      "containsRefreshedMain": "fc113c4f99121b2053bb71523835c5c4743f1f56"
+    },
+    "LETS": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/LETS.git",
+      "branch": "codex/074-astral-case-study",
+      "branchBase": "7ed23472c162e30c9aaa59da7473f2a488be8149"
+    },
+    "AstralPrimitives": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/AstralPrimitives.git",
+      "branch": "codex/074-canonical-identity",
+      "branchBase": "c1feada40e104ff345c3a94348305dcf27870054"
+    },
+    "AstralPlane": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/AstralPlane.git",
+      "defaultBranch": "main",
+      "main": "2cd12602e361a0dfb3e74655070720be405c09a3",
+      "retainedMaster": "2cd12602e361a0dfb3e74655070720be405c09a3",
+      "legacyPushWorkflow": {
+        "name": "Pylint",
+        "state": "disabled_manually"
+      },
+      "worktree": {
+        "path": "Y:/WORK/MCP/.migration-worktrees/AstralPlane-074",
+        "branch": "codex/074-extract-data-plane",
+        "base": "2cd12602e361a0dfb3e74655070720be405c09a3",
+        "preflight": "passed"
+      }
+    },
+    "AstralProjection": {
+      "canonicalFetchAndPushUrl": "https://github.com/AstralDeep/AstralProjection.git",
+      "defaultBranch": "main",
+      "main": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+      "retainedMaster": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+      "legacyPushWorkflows": [],
+      "worktree": {
+        "path": "Y:/WORK/MCP/.migration-worktrees/AstralProjection-074",
+        "branch": "codex/074-extract-projection",
+        "base": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+        "preflight": "passed"
+      }
+    }
+  },
+  "stopConditions": {
+    "liveRefMismatch": true,
+    "unexpectedDefaultOrVisibilityChange": true,
+    "workflowPostureChange": true,
+    "nonFastForwardPush": true,
+    "ignoredStateCollision": true
+  }
+}

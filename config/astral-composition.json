@@ -1,0 +1,61 @@
+{
+  "format": "astral.composition/v1",
+  "astraldeep_contract_version": "astraldeep.composition/v1",
+  "components": {
+    "astral-projection": {
+      "repository": "https://github.com/AstralDeep/AstralProjection.git",
+      "path": "components/AstralProjection",
+      "commit": "77b31c36ea1ba7a69a3e450fa40ebc8efd3ad156",
+      "contract_version": "astralprojection.contract/v1"
+    },
+    "astral-plane": {
+      "repository": "https://github.com/AstralDeep/AstralPlane.git",
+      "path": "components/AstralPlane",
+      "commit": "799486468e13202fc87f73baf880bf8079b1e280",
+      "contract_version": "astralplane.contract/v1"
+    },
+    "astral-primitives": {
+      "repository": "https://github.com/AstralDeep/AstralPrimitives.git",
+      "path": "components/AstralPrimitives",
+      "commit": "8dadde18ea84b511e130ccc332cf2f62de2990cf",
+      "contract_version": "0.3.0"
+    },
+    "lets": {
+      "repository": "https://github.com/AstralDeep/LETS.git",
+      "path": "components/LETS",
+      "commit": "82dbe4f5ddf410cc86778784bb612440725ec66d",
+      "ref": "v1.0.10",
+      "contract_version": "1.0.10"
+    }
+  },
+  "availability": {
+    "astral-projection": "required-embedded",
+    "astral-plane": "required-embedded",
+    "astral-primitives": "required-embedded",
+    "lets": "external-feature-gated"
+  },
+  "compatibility": {
+    "ui_protocol": {
+      "version": "1",
+      "sha256": "cf30e7a25087cef4dc9bcff4d272d501eef6b128fa48582d2bdb753a68caf904"
+    },
+    "data_plane": {
+      "contract_version": "astralplane.contract/v1",
+      "schema_revision": "074.004",
+      "read_compatible_from": "066.001",
+      "migration_sha256": "31495e9b916301e5d9d5011f256224e62e0a0822e25fdf3b9c339beb695eff50",
+      "blob_layout_version": "astralplane.blob-layout/v1"
+    },
+    "primitives": {
+      "package_version": "0.3.0",
+      "contract_sha256": "910d9f27c303cc30c171110ade2186cf7a07b5b72b32e97fefc7b8ab9d7422de"
+    },
+    "lets": {
+      "release": "v1.0.10",
+      "api_version": "v1",
+      "openapi_sha256": "3394d91276cd687ecf551b9c77a955480038df7de32f8abdf1720254fa542103",
+      "receipt_wire_type": "lets.receipt/v1",
+      "scope_profile_version": "astral.tools/v1"
+    }
+  }
+}

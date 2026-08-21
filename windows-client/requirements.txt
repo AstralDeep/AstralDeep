@@ -1,3 +1,0 @@
-# Developer convenience input. Release jobs MUST install the complete hashed
-# requirements-release.lock.txt with --require-hashes instead.
--r requirements.in

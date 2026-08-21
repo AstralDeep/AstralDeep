@@ -1,5 +1,0 @@
-// Feature 053 — Release: the hosted deployment. Inherits the Base defaults.
-//
-// Repoint a release build by overriding ASTRAL_SERVER_BASE_URL /
-// ASTRAL_KEYCLOAK_AUTHORITY here (or on the xcodebuild command line) — no code edit.
-#include "Base.xcconfig"

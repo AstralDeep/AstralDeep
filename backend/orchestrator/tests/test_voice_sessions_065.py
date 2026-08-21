@@ -5,16 +5,18 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlsplit, urlunsplit
 
-import psycopg2
 import pytest
-from psycopg2 import sql
-from shared.database import Database, _build_database_url
 from shared.voice_transcript import TranscriptProofBinding, issue_transcript_proof
+from tests.helpers.voice_plane_runtime import (
+    VoicePlaneTestRuntime,
+    isolated_voice_plane_runtime,
+    voice_session_repository,
+)
 
 from orchestrator.voice_coordinator import (
     AnnouncementClaimRequest,
@@ -44,61 +46,17 @@ from orchestrator.voice_sessions import (
 NOW = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
 
 
-def _replace_database(dsn: str, database: str) -> str:
-    """Replace only the database path without disclosing DSN credentials."""
-
-    if "://" not in dsn:
-        params = psycopg2.extensions.parse_dsn(dsn)
-        params["dbname"] = database
-        return psycopg2.extensions.make_dsn(**params)
-    parsed = urlsplit(dsn)
-    return urlunsplit(parsed._replace(path=f"/{database}"))
-
-
 @pytest.fixture(scope="module")
-def database() -> Database:
-    """Create an isolated real PostgreSQL database and run normal migrations."""
+def database() -> Iterator[VoicePlaneTestRuntime]:
+    """Create an isolated database through the current Plane migration path."""
 
-    base_dsn = os.getenv("DATABASE_URL") or _build_database_url()
-    admin_dsn = _replace_database(base_dsn, "postgres")
-    database_name = f"voice_065_{uuid.uuid4().hex}"
-    try:
-        admin = psycopg2.connect(admin_dsn)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(
-                sql.SQL("CREATE DATABASE {} TEMPLATE template0").format(
-                    sql.Identifier(database_name)
-                )
-            )
-        admin.close()
-    except Exception as exc:  # pragma: no cover - CI has a PostgreSQL service.
-        pytest.skip(f"real PostgreSQL database unavailable: {type(exc).__name__}")
-
-    db = Database(_replace_database(base_dsn, database_name))
-    try:
-        yield db
-    finally:
-        Database.close()
-        admin = psycopg2.connect(admin_dsn)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                "WHERE datname = %s AND pid <> pg_backend_pid()",
-                (database_name,),
-            )
-            cursor.execute(
-                sql.SQL("DROP DATABASE IF EXISTS {}").format(
-                    sql.Identifier(database_name)
-                )
-            )
-        admin.close()
+    with isolated_voice_plane_runtime("voice_065") as runtime:
+        yield runtime
 
 
 @pytest.fixture
-def repository(database: Database) -> VoiceSessionRepository:
-    return VoiceSessionRepository(database)
+def repository(database: VoicePlaneTestRuntime) -> VoiceSessionRepository:
+    return voice_session_repository(database)
 
 
 def _create(
@@ -191,12 +149,12 @@ def _control(create: CreateSession, **changes) -> SessionControl:
 
 def test_create_is_durable_and_exact_activation_replay_is_idempotent(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     request = _create()
 
     first = repository.create_session(request, now=NOW)
-    restarted = VoiceSessionRepository(database)
+    restarted = voice_session_repository(database)
     replay = restarted.create_session(request, now=NOW + timedelta(seconds=1))
 
     assert first.replayed is False
@@ -406,7 +364,7 @@ def test_context_update_is_revisioned_and_waits_for_worker_application(
 
 def test_user_end_abandons_unaccepted_turn_and_lease_expiry_releases_media(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     chat_id = str(uuid.uuid4())
     create = _create(chat_id=uuid.UUID(chat_id))
@@ -485,7 +443,7 @@ def test_user_end_abandons_unaccepted_turn_and_lease_expiry_releases_media(
 
 def test_identity_shutdown_and_repeated_end_share_one_accepted_work_fence(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     chat_id = str(uuid.uuid4())
     create = _create(chat_id=uuid.UUID(chat_id))
@@ -595,7 +553,7 @@ def test_identity_shutdown_and_repeated_end_share_one_accepted_work_fence(
 )
 def test_ended_session_repairs_terminal_operation_without_exact_result(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
     operation_state: str,
     terminal_code: str | None,
     retry_after_ms: int | None,
@@ -761,7 +719,7 @@ def test_ended_session_repairs_terminal_operation_without_exact_result(
 )
 def test_ended_session_repairs_and_preserves_exact_committed_result(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
     operation_state: str,
     terminal_code: str | None,
     expected_state: str,
@@ -952,7 +910,7 @@ def test_ended_session_repairs_and_preserves_exact_committed_result(
 
 def test_control_lease_maintenance_renews_only_live_unexpired_owner_rows(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     owned_create = _create()
     foreign_create = _create()
@@ -1292,14 +1250,14 @@ def _binding(session, client_turn_id: str | None = None) -> RecognitionBinding:
 
 def test_turn_binding_replay_is_exact_and_foreground_selection_is_atomic(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     create = _create()
     session = _activate_and_sync(repository, create)
     first_request = _binding(session)
 
     first = repository.bind_recognition_turn(first_request, now=NOW)
-    restarted = VoiceSessionRepository(database)
+    restarted = voice_session_repository(database)
     replay = restarted.bind_recognition_turn(
         first_request, now=NOW + timedelta(seconds=1)
     )
@@ -1351,7 +1309,7 @@ def test_turn_binding_replay_is_exact_and_foreground_selection_is_atomic(
 
 def test_worker_recognition_and_proof_admission_never_persist_content(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     chat_id = str(uuid.uuid4())
     create = _create(chat_id=uuid.UUID(chat_id))
@@ -1493,7 +1451,7 @@ def test_worker_recognition_and_proof_admission_never_persist_content(
 
 def test_worker_recognition_failure_is_atomic_idempotent_and_assignment_fenced(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     chat_id = str(uuid.uuid4())
     create = _create(chat_id=uuid.UUID(chat_id))
@@ -1568,7 +1526,7 @@ def test_worker_recognition_failure_is_atomic_idempotent_and_assignment_fenced(
 
 def test_worker_self_speech_suppression_is_content_free_and_non_retrying(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     chat_id = str(uuid.uuid4())
     create = _create(chat_id=uuid.UUID(chat_id))
@@ -1793,7 +1751,7 @@ def _admit_bound_turn(
 
 def test_preacceptance_guidance_claim_is_exact_once_and_revision_fenced(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     chat_id = str(uuid.uuid4())
     create = _create(chat_id=uuid.UUID(chat_id))
@@ -1884,7 +1842,7 @@ def test_preacceptance_guidance_claim_is_exact_once_and_revision_fenced(
 
 def test_acceptance_foregrounds_without_cancelling_and_claims_speech_atomically(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     chat_id = str(uuid.uuid4())
     create = _create(chat_id=uuid.UUID(chat_id))
@@ -2211,10 +2169,10 @@ def test_active_turn_or_user_gate_prevents_true_idle(
 
 
 def test_constructor_and_input_validation_fail_before_database_use(
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
-    with pytest.raises(TypeError, match="_get_connection"):
-        VoiceSessionRepository(object())
+    with pytest.raises(TypeError, match="plane_runtime"):
+        VoiceSessionRepository(plane_runtime=object())
     with pytest.raises(ValueError, match="invalid_activation_id"):
         replace(_create(), activation_id=str(uuid.uuid1()))
     with pytest.raises(ValueError, match="invalid_nonce_hash"):

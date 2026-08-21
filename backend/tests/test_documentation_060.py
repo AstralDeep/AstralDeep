@@ -69,7 +69,7 @@ def test_byo_guide_is_explicitly_unignored_and_reachable_from_existing_docs() ->
     assert _git(REPO_ROOT, "check-ignore", "-q", "--no-index", str(GUIDE), check=False).returncode == 1
     for relative in (
         "CLAUDE.md",
-        "apple-clients/README.md",
+        "components/AstralProjection/apple-clients/README.md",
         "docs/production-deployment.md",
     ):
         assert "byo-client-agents.md" in (REPO_ROOT / relative).read_text(
@@ -150,6 +150,8 @@ def test_nul_safe_git_inventory_and_requested_path_selection(tmp_path: Path) -> 
     )
     assert PurePosixPath("candidate.md") in validator.git_candidate_files(repo)
     assert PurePosixPath("ignored.md") not in validator.git_candidate_files(repo)
+    (repo / "README.md").unlink()
+    assert PurePosixPath("README.md") not in validator.git_candidate_files(repo)
     assert validator.tracked_markdown_files(repo, ("docs",)) == (
         PurePosixPath("docs/operator guide.md"),
     )

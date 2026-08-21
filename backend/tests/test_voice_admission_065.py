@@ -6,11 +6,10 @@ import hashlib
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 
@@ -28,7 +27,6 @@ from orchestrator.work_admission import (
     OperationRequest,
     OperationState,
     OwnerScope,
-    PostgresWorkAdmissionRepository,
     RefusedAdmission,
     WorkAdmissionCoordinator,
 )
@@ -78,71 +76,6 @@ def _coordinator(*, shared_active_limit: int = 20) -> WorkAdmissionCoordinator:
         clock=_Clock(),
         operation_retention=timedelta(hours=24),
     )
-
-
-class _UnusedDatabase:
-    def _get_connection(self) -> None:
-        raise AssertionError("capacity refusal must not borrow a real connection")
-
-
-class _RunningCountCursor:
-    def __init__(self, running_count: int) -> None:
-        self.running_count = running_count
-        self.query = ""
-        self.params: tuple[Any, ...] = ()
-
-    def execute(self, query: str, params: tuple[Any, ...]) -> None:
-        self.query = query
-        self.params = params
-
-    def fetchone(self) -> dict[str, int]:
-        return {"running_count": self.running_count}
-
-
-class _PostgresVoiceCapacityHarness(PostgresWorkAdmissionRepository):
-    """Exercise the production per-user refusal branch without schema setup."""
-
-    def __init__(self, running_count: int) -> None:
-        super().__init__(_UnusedDatabase())
-        self.cursor = _RunningCountCursor(running_count)
-        self.refusal: dict[str, Any] | None = None
-        self._configs = {config.class_name: config for config in _classes()}
-
-    @contextmanager
-    def _transaction(self) -> Iterator[_RunningCountCursor]:
-        yield self.cursor
-
-    @classmethod
-    def _lock_request_identities(cls, cursor: Any, request: OperationRequest) -> None:
-        del cursor, request
-
-    def _submission_row(self, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
-        return None
-
-    def _existing_idempotent_operation(self, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
-        return None
-
-    def _lock_class_chain(self, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
-
-    @staticmethod
-    def _expire_queued_locked(*args: Any, **kwargs: Any) -> tuple[()]:
-        del args, kwargs
-        return ()
-
-    def _expire_execution_leases_locked(self, *args: Any, **kwargs: Any) -> tuple[()]:
-        del args, kwargs
-        return ()
-
-    def _insert_submission(self, *args: Any, **kwargs: Any) -> None:
-        del args
-        self.refusal = kwargs
-
-    def _select_free_slots(self, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
-        raise AssertionError("capacity must be refused before slot selection")
 
 
 def _request(label: str, *, owner_user_id: str = "user-a") -> OperationRequest:
@@ -554,37 +487,6 @@ def test_voice_shared_capacity_exhaustion_is_refused_instead_of_queued() -> None
     status = coordinator.inspect_admission_class(AdmissionClass.VOICE_INTERACTIVE)
     assert status.active_count == 1
     assert status.queued_count == 0
-
-
-def test_postgres_refuses_per_user_capacity_before_selecting_or_inserting_work() -> (
-    None
-):
-    repository = _PostgresVoiceCapacityHarness(running_count=2)
-    request = _request("postgres-capacity")
-    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
-
-    result = repository.submit(
-        request,
-        now=now,
-        retention=timedelta(hours=24),
-        slot_lease=timedelta(seconds=30),
-    )
-
-    assert result == RefusedAdmission(False, "capacity_exceeded", True, 1_000)
-    assert "owner_user_id = %s" in repository.cursor.query
-    assert "state = 'running'" in repository.cursor.query
-    assert repository.cursor.params == (
-        AdmissionClass.VOICE_INTERACTIVE.value,
-        OwnerScope.USER.value,
-        request.owner.owner_user_id,
-    )
-    assert repository.refusal == {
-        "current_time": now,
-        "retention": timedelta(hours=24),
-        "refusal_code": "capacity_exceeded",
-        "retryable": True,
-        "retry_after_ms": 1_000,
-    }
 
 
 def test_voice_running_limit_is_partitioned_by_authenticated_user() -> None:

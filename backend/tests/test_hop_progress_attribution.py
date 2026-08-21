@@ -21,7 +21,15 @@ from orchestrator import subtasks  # noqa: E402
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 
-MANIFEST = os.path.join(os.path.dirname(__file__), "..", "shared", "ui_protocol.json")
+MANIFEST = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "..",
+    "components",
+    "AstralProjection",
+    "contracts",
+    "ui_protocol.json",
+)
 
 
 @pytest.fixture(autouse=True)

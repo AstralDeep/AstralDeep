@@ -33,39 +33,51 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def orchestrator():
+async def orchestrator(orchestrator_factory):
     """Real Orchestrator instance with the fixture user's PERSISTED LLM
     config seeded (so the 054 pre-flight resolver succeeds), but every
     outbound side effect (LLM call, websocket send, audit recorder)
     replaced with a MagicMock/AsyncMock so we can introspect what was
     attempted.
     """
-    from orchestrator.orchestrator import Orchestrator
+    orch = await asyncio.to_thread(orchestrator_factory)
+    try:
+        # Feature 054: chat turns pre-flight the acting user's persisted
+        # record (env vars are inert) — seed the fixture user.
+        await asyncio.to_thread(
+            orch._llm_store.set_sync,
+            "text-only-test-user",
+            provider="custom",
+            base_url="http://test.invalid/v1",
+            model="test-model",
+            api_key="test-key",
+        )
+        # Replace audit recorder with an AsyncMock so .record() is awaitable.
+        orch.audit_recorder = MagicMock()
+        orch.audit_recorder.record = AsyncMock()
+        orch._record_llm_call = AsyncMock()
+        orch._record_llm_unconfigured = AsyncMock()
 
-    orch = Orchestrator()
-    # Feature 054: chat turns pre-flight the acting user's persisted
-    # record (env vars are inert) — seed the fixture user.
-    orch._llm_store.set_sync("text-only-test-user", provider="custom",
-                             base_url="http://test.invalid/v1",
-                             model="test-model", api_key="test-key")
-    # Replace audit recorder with an AsyncMock so .record() is awaitable.
-    orch.audit_recorder = MagicMock()
-    orch.audit_recorder.record = AsyncMock()
-    orch._record_llm_call = AsyncMock()
-    orch._record_llm_unconfigured = AsyncMock()
-
-    # Per-call surfaces patched on the instance so each test starts clean.
-    orch._safe_send = AsyncMock()
-    orch.send_ui_render = AsyncMock()
-    # Heartbeat task: return a MagicMock whose .cancel() is a sync Mock
-    # (cancel() on a real asyncio.Task is synchronous — using AsyncMock
-    # would mark it as a coroutine and trip a "never awaited" warning).
-    fake_heartbeat = MagicMock()
-    fake_heartbeat.cancel = MagicMock()
-    orch._start_heartbeat = AsyncMock(return_value=fake_heartbeat)
-    orch._send_or_replace_components = AsyncMock()
-    orch._emit_llm_usage_report = AsyncMock()
-    return orch
+        # Per-call surfaces patched on the instance so each test starts clean.
+        orch._safe_send = AsyncMock()
+        orch.send_ui_render = AsyncMock()
+        # Heartbeat task: return a MagicMock whose .cancel() is a sync Mock
+        # (cancel() on a real asyncio.Task is synchronous — using AsyncMock
+        # would mark it as a coroutine and trip a "never awaited" warning).
+        fake_heartbeat = MagicMock()
+        fake_heartbeat.cancel = MagicMock()
+        orch._start_heartbeat = AsyncMock(return_value=fake_heartbeat)
+        orch._send_or_replace_components = AsyncMock()
+        orch._emit_llm_usage_report = AsyncMock()
+        yield orch
+    finally:
+        try:
+            await asyncio.to_thread(
+                orch._llm_store.clear_sync,
+                "text-only-test-user",
+            )
+        finally:
+            await orch._close_started_services()
 
 
 def _rendered_components_text(orchestrator) -> str:
@@ -436,7 +448,9 @@ class TestAgentListPayload:
         orchestrator.tool_permissions.get_agent_scopes.return_value = {"tools:read": True}
         orchestrator.tool_permissions.get_tool_scope_map.return_value = {"search_tool": "tools:read"}
         orchestrator.tool_permissions.get_effective_permissions.return_value = {"search_tool": True}
-        orchestrator.history.db.get_all_agent_ownership = MagicMock(return_value=[])
+        orchestrator.user_agent_registry.get_all_agent_ownership = MagicMock(
+            return_value=[]
+        )
         orchestrator._is_draft_agent = MagicMock(return_value=False)
 
         ws = _fake_websocket(orchestrator)

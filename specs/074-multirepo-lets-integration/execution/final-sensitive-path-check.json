@@ -1,0 +1,57 @@
+{
+  "format": "astral.final-sensitive-path-check/v1",
+  "recordedAtUtc": "2026-08-21T09:07:01Z",
+  "status": "passed-with-classified-static-fixtures",
+  "method": "git ls-files -z for each exact feature index, evaluated by scripts/migration/check_staged_paths_074.py path policy; file contents were not read",
+  "repositories": [
+    {
+      "id": "astraldeep",
+      "commit": "0ae58e04f9d7b868933fa9cf26094defbdeaed9b",
+      "trackedPathCount": 1924,
+      "pathListSha256": "d30c6211daa3dafd6de086c5a299bcabd6efc370a11030859b8e6f19cf1a679b",
+      "sensitiveRuntimePathCount": 0,
+      "classifiedStaticMatches": [
+        "four tracked first-party capability/technique documents under backend/knowledge",
+        "one synthetic .draft denial fixture under backend/tests/fixtures"
+      ]
+    },
+    {
+      "id": "astralplane",
+      "commit": "3516dd52e1b49d078e12d90b965fa0f304a3f1ca",
+      "trackedPathCount": 178,
+      "pathListSha256": "f2dac578208847a2fcf2c8f4538a5ababd530901c606eb47afe31fae7a529ed4",
+      "sensitiveRuntimePathCount": 0
+    },
+    {
+      "id": "astralprojection",
+      "commit": "46b8173239a94ee55d5226c077ddd78a304e4d94",
+      "trackedPathCount": 557,
+      "pathListSha256": "597f8caded86b73e272513bd23e70c335f54a9cb1755fb850be563a982531e92",
+      "sensitiveRuntimePathCount": 0
+    },
+    {
+      "id": "astralprimitives",
+      "commit": "03870e55563f7522e95e298490e6a8638f2b8385",
+      "trackedPathCount": 12,
+      "pathListSha256": "aa1bdf7f2412dba4ee27d8e7962b9de9a37472e67e4a01eddf62f718bce7a1da",
+      "sensitiveRuntimePathCount": 0
+    },
+    {
+      "id": "lets",
+      "commit": "126b494c0676af7c216f5caa9367d127ebc9078f",
+      "trackedPathCount": 177,
+      "pathListSha256": "5a0b147b011cc14f7e9da14fa6ab08bab0f24f450a10e56642750636b5a777ae",
+      "sensitiveRuntimePathCount": 0
+    }
+  ],
+  "excludedFromEveryIndex": [
+    "credentials and private keys",
+    "runtime databases and dumps",
+    "logs",
+    "uploads and user state",
+    "generated agents",
+    "ignored Android local/signing properties",
+    "local submission/manuscript trees",
+    "generated case-study evidence"
+  ]
+}

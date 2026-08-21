@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
 
+from astralprojection.resources import static_path, template_path
 from orchestrator import api, voice_api
-
-
-BACKEND = Path(__file__).resolve().parents[1]
 
 
 def test_only_authenticated_fixed_profile_voice_control_routes_remain() -> None:
@@ -46,12 +43,8 @@ def test_caller_selected_models_uploads_and_realtime_proxy_are_physically_absent
 
 
 def test_typed_chat_composer_remains_available_when_voice_is_unavailable() -> None:
-    shell = (
-        BACKEND / "webrender" / "templates" / "shell.html"
-    ).read_text(encoding="utf-8")
-    client = (
-        BACKEND / "webrender" / "static" / "client.js"
-    ).read_text(encoding="utf-8")
+    shell = template_path("shell.html").read_text(encoding="utf-8")
+    client = static_path("client.js").read_text(encoding="utf-8")
     assert 'id="astral-input"' in shell
     assert 'id="astral-form"' in shell
     assert "Voice is unavailable. You can keep typing messages." in client

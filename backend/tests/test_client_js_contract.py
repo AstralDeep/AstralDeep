@@ -1,6 +1,6 @@
 """Feature 028 — Constitution-III source-level contract tests for the web client.
 
-The server-driven UI client (``backend/webrender/static/client.js``) has no
+The server-driven UI client (``components/AstralProjection/backend/webrender/static/client.js``) has no
 build step and no JS test runner, so its 028 auth/workspace obligations are
 pinned here as pure-text assertions over the shipped sources:
 
@@ -19,10 +19,11 @@ import re
 from pathlib import Path
 
 import pytest
+from astralprojection.resources import static_path, template_path
 
 BACKEND = Path(__file__).resolve().parent.parent
-CLIENT_JS = BACKEND / "webrender" / "static" / "client.js"
-SHELL_HTML = BACKEND / "webrender" / "templates" / "shell.html"
+CLIENT_JS = static_path("client.js")
+SHELL_HTML = template_path("shell.html")
 WEB_AUTH_PY = BACKEND / "orchestrator" / "web_auth.py"
 
 

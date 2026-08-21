@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from webrender.chrome.surfaces import remote_machines as surface
+from orchestrator.projection_surfaces import remote_machines as surface
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +44,7 @@ def _find_fields(node):
 def form_fields(monkeypatch):
     monkeypatch.setattr(surface.remote_machines, "list_machines",
                         lambda db, user_id: [])
-    orch = SimpleNamespace(history=SimpleNamespace(db=MagicMock()))
+    orch = SimpleNamespace(plane_repository_source=MagicMock())
     import asyncio
     components = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
         surface.components(orch, "u1", ["user"], {}))
@@ -92,7 +92,7 @@ def test_every_field_still_present_for_legacy_clients(form_fields):
 # the flag-off-byte-identical posture.
 
 def _orch_with_tripwire():
-    orch = SimpleNamespace(history=SimpleNamespace(db=MagicMock()),
+    orch = SimpleNamespace(plane_repository_source=MagicMock(),
                            credential_manager=MagicMock())
     return orch
 
@@ -158,7 +158,7 @@ _ROW_MISMATCH = {**_ROW_OK, "machine_id": "m2", "label": "edge",
 def _with_rows(monkeypatch, rows):
     monkeypatch.setattr(surface.remote_machines, "list_machines",
                         lambda db, user_id: [dict(r) for r in rows])
-    return SimpleNamespace(history=SimpleNamespace(db=MagicMock()))
+    return SimpleNamespace(plane_repository_source=MagicMock())
 
 
 def _dicts(node):

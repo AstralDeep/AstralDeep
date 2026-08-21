@@ -34,12 +34,39 @@ def flag_off(monkeypatch):
 
 @pytest.fixture
 def orch():
+    from orchestrator.concurrency_cap import ConcurrencyCap
+    from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
 
-    o = Orchestrator()
+    # Exercise the real dispatch methods without publishing an
+    # application-scoped Plane graph from this collaborator-injected unit
+    # fixture.
+    o = Orchestrator.__new__(Orchestrator)
+    o.agents = {}
+    o.a2a_clients = {}
+    o.local_agents = {}
+    o.agent_cards = {}
+    o.ui_sessions = {}
+    o.security_flags = {}
+    o._dispatch_context = {}
+    o._chain_budgets = {}
+    o._pending_cap_entries = {}
+    o._hop_cap_entries = {}
+    o._job_context = {}
+    o._active_request = {}
+    o._taint_trackers = {}
+    o.concurrency_cap = ConcurrencyCap(max_per_user_agent=3)
+    o.hooks = HookManager()
+    o.stream_manager = None
+    o._llm_store = SimpleNamespace(
+        get=AsyncMock(return_value=None),
+        get_system=AsyncMock(return_value=None),
+    )
     o.send_ui_render = AsyncMock()
+    o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o._map_file_paths = lambda cid, a, **k: a
+    o.credential_manager = MagicMock()
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["callee-1"] = MagicMock()
     o._execute_with_retry = AsyncMock(return_value=MCPResponse(result="ok"))
@@ -90,7 +117,7 @@ async def test_direct_dispatch_token_path_unchanged(orch, monkeypatch):
         orch, "_get_delegation_token", AsyncMock(return_value="flat-token-xyz"))
     seen = {}
 
-    async def _cap(ws, agent_id, tool_name, args, max_retries=None):
+    async def _cap(ws, agent_id, tool_name, args, max_retries=None, **_kwargs):
         seen.update(args=dict(args))
         return MCPResponse(result="ok")
 

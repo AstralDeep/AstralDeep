@@ -59,9 +59,12 @@ def _fresh_socket(user_id: str):
 def _seed(orch, user_id: str, email: str, agent_ids: list[str]) -> None:
     """Seed the probe user and a few owned agent cards so the render has rows."""
     from shared.protocol import AgentCard, AgentSkill
-    db = orch.history.db
-    db.upsert_user(user_id, email=email, username="perf-probe",
-                   display_name="Perf Probe", roles=["user"])
+
+    # The probe subject is itself email-shaped, so the agents surface's
+    # documented mock-auth fallback can derive the owner address without
+    # manufacturing a durable identity-provider observation.  Everything we
+    # do persist below has an exact typed cleanup path.
+    assert user_id == email and "@" in user_id
     # Feature 054: an unconfigured user's chrome_open is refused server-side
     # (first-run gate) — seed the probe user's persisted LLM config so the
     # probe measures the agents surface, not the setup dialog.
@@ -77,26 +80,35 @@ def _seed(orch, user_id: str, email: str, agent_ids: list[str]) -> None:
                 name=f"probe_tool_{i}", description="probe tool",
                 id=f"probe_tool_{i}", input_schema={"type": "object"})],
         )
-        db.set_agent_ownership(agent_id, owner_email=email, is_public=False)
+        orch.user_agent_registry.set_agent_ownership(
+            agent_id,
+            owner_email=email,
+            is_public=False,
+        )
 
 
 def _cleanup(orch, user_id: str, agent_ids: list[str]) -> None:
-    """Remove the seeded rows and cards (best-effort)."""
-    db = orch.history.db
+    """Remove every exact row created by :func:`_seed`."""
+    from orchestrator.plane_repository_context import (
+        PlaneRepositoryContext,
+        plane_source_from_orchestrator,
+    )
+
     for agent_id in agent_ids:
         orch.agent_cards.pop(agent_id, None)
-        try:
-            db.execute("DELETE FROM agent_ownership WHERE agent_id = ?", (agent_id,))
-        except Exception:
-            pass
-    try:
-        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    except Exception:
-        pass
-    try:
-        orch._llm_store.clear_sync(user_id)
-    except Exception:
-        pass
+    source = plane_source_from_orchestrator(orch)
+    ownership = PlaneRepositoryContext(
+        repository=source.plane_repositories.agents,
+        plane_runtime=source.plane_runtime,
+    )
+    with ownership.transaction() as transaction:
+        for agent_id in agent_ids:
+            ownership.repository.remove_ownership(
+                transaction,
+                agent_id=agent_id,
+                owner_email=user_id,
+            )
+    orch._llm_store.clear_sync(user_id)
 
 
 async def _open_once(orch, user_id: str, batch_t0: float | None = None) -> float:
@@ -132,11 +144,11 @@ async def _run_probe(n: int = N_CONCURRENT) -> dict:
     """Sequential-singles baseline then n simultaneous opens; returns the timings."""
     from orchestrator.orchestrator import Orchestrator
     orch = await asyncio.to_thread(Orchestrator)
-    user_id = f"perf-probe-{uuid.uuid4().hex[:8]}"
-    email = f"{user_id}@perf.local"
+    user_id = f"perf-probe-{uuid.uuid4().hex[:8]}@perf.local"
+    email = user_id
     agent_ids = [f"perf-probe-agent-{i}-{uuid.uuid4().hex[:6]}" for i in range(3)]
-    await asyncio.to_thread(_seed, orch, user_id, email, agent_ids)
     try:
+        await asyncio.to_thread(_seed, orch, user_id, email, agent_ids)
         for _ in range(3):
             await _open_once(orch, user_id)
         sequential = [await _open_once(orch, user_id) for _ in range(n)]
@@ -144,7 +156,10 @@ async def _run_probe(n: int = N_CONCURRENT) -> dict:
         concurrent = list(await asyncio.gather(
             *(_open_once(orch, user_id, batch_t0=batch_t0) for _ in range(n))))
     finally:
-        await asyncio.to_thread(_cleanup, orch, user_id, agent_ids)
+        try:
+            await asyncio.to_thread(_cleanup, orch, user_id, agent_ids)
+        finally:
+            await orch._close_started_services()
     return {
         "n": n,
         "seq_p95_ms": _percentile(sequential, 95.0),

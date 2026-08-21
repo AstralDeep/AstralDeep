@@ -1,0 +1,68 @@
+{
+  "format": "astral.plane-checkpoint/v1",
+  "recordedAtUtc": "2026-08-14T04:34:02.0108193Z",
+  "status": "interim-pushed",
+  "source": {
+    "repository": "https://github.com/AstralDeep/AstralDeep.git",
+    "commit": "fc113c4f99121b2053bb71523835c5c4743f1f56",
+    "tree": "914b04d369faa4ee0d7c2bb59ce09db38a18d45a"
+  },
+  "destination": {
+    "repository": "https://github.com/AstralDeep/AstralPlane.git",
+    "branch": "codex/074-extract-data-plane",
+    "commit": "c1182c09ca767c7c8b3396fae91aa27d0b1c56ce",
+    "legacyBaseline": "2cd12602e361a0dfb3e74655070720be405c09a3",
+    "legacyBaselineIsAncestor": true,
+    "cachedRemoteVerified": true,
+    "liveRemoteVerified": true
+  },
+  "provenance": {
+    "format": "astral.extraction-provenance/v1",
+    "entryCount": 52,
+    "manifestSha256": "faf3e958601379954875cbc928423bc95d4b1786b59d6d3992241c8f69ee91ba",
+    "commitTrailersVerified": true
+  },
+  "staging": {
+    "exactPathCount": 105,
+    "guard": "astral.staged-path-guard/074-v1",
+    "deniedPathCount": 0,
+    "unstagedPathCountBeforeCommit": 0,
+    "untrackedPathCountBeforeCommit": 0,
+    "runtimeDatabaseTracked": false
+  },
+  "localEvidence": [
+    {
+      "check": "serial-package-suite",
+      "result": "608 passed in 2.90s",
+      "runtime": "CPython 3.11"
+    },
+    {
+      "check": "ruff-0.15.21",
+      "result": "check and format-check passed"
+    },
+    {
+      "check": "extraction-provenance-replay",
+      "result": "3 passed; 52 entries bound to immutable Git blobs"
+    },
+    {
+      "check": "outbox-contract-replay-after-final-contract-sync",
+      "result": "4 passed in 0.05s"
+    },
+    {
+      "check": "synthetic-fixture-integrity-replay",
+      "result": "2 passed in 0.01s"
+    },
+    {
+      "check": "package-build",
+      "result": "wheel and source archive produced; Apache-2.0 license embedded; no runtime dependencies"
+    }
+  ],
+  "remainingGates": [
+    "PostgreSQL 17 upgrade, repeat-upgrade, transactional-failure, and recovery replay",
+    "executable representative 066.001 database fixture",
+    "cross-repository owner-isolation and failure-visibility contract matrix",
+    "aggregate changed-Python branch coverage replay",
+    "canonical provenance/checks.json with final command and output digests",
+    "workflow activation and release qualification"
+  ]
+}

@@ -17,6 +17,7 @@ import pytest
 
 from orchestrator import remote_jobs as rj
 from orchestrator.remote_transport import MachineTarget, RemoteResult, Verdict, set_transport
+from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 
 def _target(pinned: bool = True):
@@ -72,8 +73,11 @@ def _reset_transport():
 
 
 def _orch(db=None):
-    return SimpleNamespace(history=SimpleNamespace(db=db if db is not None else object()),
-                           credential_manager=object())
+    source = db if db is not None else object()
+    return SimpleNamespace(
+        plane_repository_source=source,
+        credential_manager=object(),
+    )
 
 
 # ── state classifier ────────────────────────────────────────────────────────
@@ -271,6 +275,12 @@ class _JobsDB:
 
     def __init__(self):
         self.rows = {}  # tracked_job_id -> row dict
+        self.jobs = self.rows
+        self.machines = {}
+        self.credentials = {}
+        source = make_remote_plane_source(self)
+        self.plane_runtime = source.plane_runtime
+        self.plane_repositories = source.plane_repositories
 
     def execute(self, q, params):
         qs = " ".join(q.split())
@@ -324,7 +334,7 @@ def ctl_db(monkeypatch):
     """Wire the mutating verb library to a fake inventory + tracked_job store."""
     from agents.remote_control import mcp_tools as ctl
     db = _JobsDB()
-    ctl.register_deps(db, object())
+    ctl.register_deps(db, object(), object())
     monkeypatch.setattr("orchestrator.remote_machines.resolve_machine",
                         lambda d, uid, ref: {"machine_id": "m1", "label": "dgx"})
     monkeypatch.setattr("orchestrator.remote_machines.build_target",
@@ -396,13 +406,15 @@ async def test_boot_reconciliation_resolves_job_finished_during_outage(ctl_db, m
 
 
 def test_boot_reconciliation_pass_is_wired_into_orchestrator_start():
-    # The reconciliation pass must actually run at boot: start() launches the
-    # poller task (flag-gated, fail-closed off) and its loop body is poll_once.
+    # The application-graph owner delegates boot to _run_started_server, which
+    # launches the flag-gated poller; its loop body remains poll_once.
     import inspect
     from orchestrator.orchestrator import Orchestrator
     start_src = inspect.getsource(Orchestrator.start)
-    assert "_remote_job_poll_loop" in start_src
-    assert 'is_enabled("remote_compute")' in start_src
+    boot_src = inspect.getsource(Orchestrator._run_started_server)
+    assert "await self._run_started_server()" in start_src
+    assert "_remote_job_poll_loop" in boot_src
+    assert 'is_enabled("remote_compute")' in boot_src
     assert "poll_once" in inspect.getsource(Orchestrator._remote_job_poll_loop)
 
 
@@ -581,53 +593,72 @@ class TestSubmitJobParity:
 # ── repository writes (the sync helpers the poller wraps in to_thread) ─────────
 
 class _CaptureDB:
-    """Records the exact UPDATE each repository helper issues (no DB needed)."""
+    """Typed in-memory Plane source for the poller repository helpers."""
 
     def __init__(self):
-        self.writes = []
-
-    def execute(self, q, params):
-        self.writes.append((" ".join(q.split()), params))
+        self.jobs = {"t1": _row(created_at=0, last_polled_at=None)}
+        self.machines = {}
+        self.credentials = {}
+        source = make_remote_plane_source(self)
+        self.plane_runtime = source.plane_runtime
+        self.plane_repositories = source.plane_repositories
 
 
 class TestRepositoryWrites:
     def test_apply_open_job_leaves_notified_alone_and_finished_at_null(self):
         db = _CaptureDB()
-        rj._apply(db, "t1", state="RUNNING", exit_code=None, terminal=False, fail_count=0)
-        q, params = db.writes[0]
-        assert "notified" not in q
-        assert params[0] == "RUNNING" and params[2] is False and params[-1] == "t1"
-        assert params[5] is None  # finished_at stays NULL while the job is open
+        rj._apply(
+            db,
+            dict(db.jobs["t1"]),
+            state="RUNNING",
+            exit_code=None,
+            terminal=False,
+            fail_count=0,
+        )
+        row = db.jobs["t1"]
+        assert row["state"] == "RUNNING" and row["terminal"] is False
+        assert row["notified"] is False and row.get("finished_at") is None
 
-    def test_apply_with_notified_writes_the_flag_and_stamps_finished_at(self):
+    def test_terminal_apply_then_notification_cas_stamps_both_states(self):
         db = _CaptureDB()
-        rj._apply(db, "t1", state="COMPLETED", exit_code="0:0", terminal=True,
-                  fail_count=0, notified=True)
-        q, params = db.writes[0]
-        assert "notified=?" in q
-        assert params[-2] is True and params[-1] == "t1"
-        assert params[5] is not None  # finished_at stamped on the terminal write
+        rj._apply(
+            db,
+            dict(db.jobs["t1"]),
+            state="COMPLETED",
+            exit_code="0:0",
+            terminal=True,
+            fail_count=0,
+        )
+        rj._mark_notified(db, dict(db.jobs["t1"]))
+        row = db.jobs["t1"]
+        assert row["notified"] is True and row["finished_at"] is not None
 
     def test_orphan_closes_the_row(self):
         db = _CaptureDB()
-        rj._orphan(db, "t1")
-        q, params = db.writes[0]
-        assert "state='orphaned'" in q and "terminal=TRUE" in q
-        assert params[1] == "t1"
+        rj._orphan(db, dict(db.jobs["t1"]))
+        row = db.jobs["t1"]
+        assert row["state"] == "orphaned" and row["terminal"] is True
+        assert row["finished_at"] is not None
 
     def test_touch_fail_records_only_the_counter(self):
         # A transport blip must not rewrite state/terminal — only the fail counter
         # and the poll timestamp, so a later good poll resumes cleanly.
         db = _CaptureDB()
-        rj._touch_fail(db, "t1", 3)
-        q, params = db.writes[0]
-        assert "fail_count=?" in q and "state=" not in q and "terminal" not in q
-        assert params[0] == 3 and params[2] == "t1"
+        before = dict(db.jobs["t1"])
+        rj._touch_fail(db, before, 3)
+        row = db.jobs["t1"]
+        assert row["fail_count"] == 3 and row["state"] == before["state"]
+        assert row["terminal"] is False and row["last_polled_at"] is not None
 
     def test_mark_notified(self):
         db = _CaptureDB()
-        rj._mark_notified(db, "t1")
-        assert "notified=TRUE" in db.writes[0][0] and db.writes[0][1] == ("t1",)
+        db.jobs["t1"].update(
+            terminal=True,
+            finished_at=1,
+            notify_on_finish=True,
+        )
+        rj._mark_notified(db, dict(db.jobs["t1"]))
+        assert db.jobs["t1"]["notified"] is True
 
 
 # ── card variants ─────────────────────────────────────────────────────────────
@@ -726,9 +757,13 @@ class TestProbeEdges:
 # ── poll_once isolation ───────────────────────────────────────────────────────
 
 class _OneRowDB:
-    def fetch_all(self, q, params):
-        assert "terminal = FALSE" in q
-        return [_row()]
+    def __init__(self):
+        self.jobs = {"t1": _row(created_at=0, last_polled_at=None)}
+        self.machines = {}
+        self.credentials = {}
+        source = make_remote_plane_source(self)
+        self.plane_runtime = source.plane_runtime
+        self.plane_repositories = source.plane_repositories
 
 
 async def test_poll_once_isolates_a_failing_job(monkeypatch):
@@ -746,7 +781,7 @@ class _PushOrch:
     workspace upsert this module builds is exercised end to end."""
 
     def __init__(self, *, mutation_error=None, ops=None):
-        self.history = SimpleNamespace(db=object())
+        self.plane_repository_source = object()
         self.workspace = SimpleNamespace(aupsert=self._aupsert)
         self.upserts = []
         self.aupserts = []

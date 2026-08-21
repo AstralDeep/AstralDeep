@@ -11,7 +11,7 @@ from webrender.chrome.menu_model import (
     build_menu_model,
     menu_model_dict,
 )
-from webrender.chrome.surfaces import SURFACE_MODULES
+from orchestrator.projection_surfaces import SURFACE_MODULES
 
 
 @pytest.fixture(autouse=True)
@@ -146,8 +146,10 @@ def test_to_dict_non_admin_has_no_admin_anything():
         assert marker not in flat
 
 
-def test_pulse_resolves_from_env_when_unspecified(monkeypatch):
+def test_pulse_requires_an_explicit_host_policy_input(monkeypatch):
     monkeypatch.setenv("FF_PULSE_DIGEST", "on")
-    assert any(c.key == "pulse" for c in build_menu_model(["user"]).topbar)
-    monkeypatch.delenv("FF_PULSE_DIGEST", raising=False)
     assert not any(c.key == "pulse" for c in build_menu_model(["user"]).topbar)
+    assert any(
+        c.key == "pulse"
+        for c in build_menu_model(["user"], pulse_enabled=True).topbar
+    )

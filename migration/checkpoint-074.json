@@ -1,0 +1,179 @@
+{
+  "format": "astral.migration-checkpoint/v1",
+  "checkpoint_id": "074-composed-qualification-2026-08-21",
+  "recorded_at_utc": "2026-08-21T09:21:32Z",
+  "status": "pushed-merge-blocked",
+  "repositories": {
+    "astraldeep": {
+      "repository": "https://github.com/AstralDeep/AstralDeep.git",
+      "default_branch": "main",
+      "feature_branch": "074-multirepo-lets-integration",
+      "feature_commit": "bb8e60e9d9842be7f436b9f8c504e18883603d10",
+      "qualified_product_commit": "0ae58e04f9d7b868933fa9cf26094defbdeaed9b",
+      "remote_matches_local": true,
+      "clean": true
+    },
+    "astralplane": {
+      "repository": "https://github.com/AstralDeep/AstralPlane.git",
+      "default_branch": "main",
+      "feature_branch": "codex/074-extract-data-plane",
+      "feature_commit": "3516dd52e1b49d078e12d90b965fa0f304a3f1ca",
+      "qualified_source_commit": "75a28dd48ff1116050ba2e2c78cbf9be46d35d9b",
+      "remote_matches_local": true,
+      "clean": true
+    },
+    "astralprojection": {
+      "repository": "https://github.com/AstralDeep/AstralProjection.git",
+      "default_branch": "main",
+      "feature_branch": "codex/074-extract-projection",
+      "feature_commit": "46b8173239a94ee55d5226c077ddd78a304e4d94",
+      "remote_matches_local": true,
+      "clean": true
+    },
+    "astralprimitives": {
+      "repository": "https://github.com/AstralDeep/AstralPrimitives.git",
+      "default_branch": "main",
+      "feature_branch": "codex/074-canonical-identity",
+      "feature_commit": "03870e55563f7522e95e298490e6a8638f2b8385",
+      "remote_matches_local": true,
+      "clean": true
+    },
+    "lets": {
+      "repository": "https://github.com/AstralDeep/LETS.git",
+      "default_branch": "main",
+      "feature_branch": "codex/074-astral-case-study",
+      "feature_evidence_commit": "126b494c0676af7c216f5caa9367d127ebc9078f",
+      "composition_runtime_commit": "82dbe4f5ddf410cc86778784bb612440725ec66d",
+      "composition_runtime_ref": "v1.0.10",
+      "remote_matches_local": true,
+      "clean": true
+    }
+  },
+  "composition": {
+    "manifest": "config/astral-composition.json",
+    "digest": "8c3646306818ddac7d06ec1b47f71b8f34ddcde5fde230de68dcb6016c979425",
+    "pins_match_tested_commits": true,
+    "ownership_managed_paths": 2744,
+    "ownership_violations": 0,
+    "generated_mutable_copies": 0
+  },
+  "legacy_baselines": [
+    {
+      "repository": "astralplane",
+      "legacy_baseline": "2cd12602e361a0dfb3e74655070720be405c09a3",
+      "retained_main": "2cd12602e361a0dfb3e74655070720be405c09a3",
+      "retained_master": "2cd12602e361a0dfb3e74655070720be405c09a3",
+      "feature_commit": "3516dd52e1b49d078e12d90b965fa0f304a3f1ca",
+      "ordinary_descendant": true
+    },
+    {
+      "repository": "astralprojection",
+      "legacy_baseline": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+      "retained_main": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+      "retained_master": "7a10727b78f06e3b573c23b61ead5be6233506bb",
+      "feature_commit": "46b8173239a94ee55d5226c077ddd78a304e4d94",
+      "ordinary_descendant": true
+    }
+  ],
+  "ref_verification": {
+    "feature_heads_match_local": true,
+    "feature_074_archive_ref_count": 0,
+    "force_push_used": false,
+    "published_ref_deleted": false,
+    "remote_defaults_verified_with_github": true,
+    "verified_at_utc": "2026-08-21T09:21:32Z"
+  },
+  "verification": [
+    {
+      "scope": "astraldeep-local-ci",
+      "evidence": "specs/074-multirepo-lets-integration/execution/local-ci-qualification.json",
+      "outcome": "tests-green-coverage-blocked"
+    },
+    {
+      "scope": "astraldeep-live-image",
+      "evidence": "specs/074-multirepo-lets-integration/execution/final-live-verification.json",
+      "outcome": "health-and-readiness-passed; authenticated golden flow incomplete"
+    },
+    {
+      "scope": "release-qualification",
+      "evidence": "specs/074-multirepo-lets-integration/execution/release-qualification.json",
+      "outcome": "partial-blocked-no-macos-host"
+    },
+    {
+      "scope": "sensitive-path-index",
+      "evidence": "specs/074-multirepo-lets-integration/execution/final-sensitive-path-check.json",
+      "outcome": "passed"
+    },
+    {
+      "scope": "astralplane",
+      "outcome": "2016 passed, 9 skipped on Linux; 2022 passed, 3 skipped on Windows; changed executable Python 90.4834 percent"
+    },
+    {
+      "scope": "astralprojection",
+      "outcome": "536 Python passed; 80 focused Windows/LETS passed with 1 soak deselected; 17 protocol/provenance passed with 1 expected skip; Ruff passed"
+    },
+    {
+      "scope": "astralprimitives",
+      "outcome": "36 passed"
+    },
+    {
+      "scope": "lets-case-study",
+      "evidence_commit": "126b494c0676af7c216f5caa9367d127ebc9078f",
+      "study_digest": "sha256:0340344d192b7d79658789464a1fd3de68428bb691aaf9598c1b5cd84741f749",
+      "root_manifest_sha256": "c91d958779fa90fc04d42025149342aab5e3c4e291c1d410ff7ad99071fd4dba",
+      "summary_sha256": "3ad0929929916ac1a11101b4edc66570460dd46aafa627a2c812b8e0fbc015b5",
+      "outcome": "57 of 57 scenarios completed; unchanged-runtime disposition"
+    }
+  ],
+  "release_transition": {
+    "production_artifact_unchanged": true,
+    "hosted_composed_ci_active": false,
+    "release_workflows_active_for_candidate": false,
+    "pull_requests_opened": false,
+    "merge_authorized": false,
+    "deployment_authorized": false,
+    "release_authorized": false
+  },
+  "paper_impact": "new_results",
+  "paper": {
+    "baseline_release": "v1.0.10",
+    "version_disposition": "unchanged-runtime",
+    "amia_citation_status": "eligible-existing-citation; no manuscript mutation",
+    "manuscript_changed": false,
+    "original_ignored_submission_present": false,
+    "case_study_limit": "147 of 151 measurements have n=1; no p95/p99, recovery measurement, inferential claim, or distinct historical comparator"
+  },
+  "risks": [
+    {
+      "id": "changed-code-coverage",
+      "status": "open-blocking",
+      "detail": "Legacy diff-cover is 82 percent across 15078 changed product lines versus 90 percent required; canonical strict coverage lacks nine producer families and is not composition-aware for gitlinked Projection."
+    },
+    {
+      "id": "apple-host",
+      "status": "open-external-blocking",
+      "detail": "Required macOS/Xcode qualification is unavailable."
+    },
+    {
+      "id": "account-retirement-authority",
+      "status": "open-owner-blocking",
+      "detail": "T241 needs the authoritative retirement event and owner identity, deletion-status contract, and recovery/manual-review semantics; logout is not deletion."
+    },
+    {
+      "id": "lets-submission-locality",
+      "status": "open-owner-or-source-blocking",
+      "detail": "The original ignored 91-file submission tree is absent; restore it or explicitly authorize a separate reconstruction before manuscript work."
+    },
+    {
+      "id": "windows-docker-bind-atomicity",
+      "status": "accepted-local-environment",
+      "detail": "Docker Desktop NTFS bind storage under /app/backend/tmp does not satisfy Plane atomic dirfd materialization; qualification uses container-native tmpfs/blob storage."
+    },
+    {
+      "id": "legacy-unmerged-plane-tips",
+      "status": "accepted",
+      "detail": "Previously deleted unmerged Plane tips remain intentionally unarchived and are not guaranteed remote recovery."
+    }
+  ],
+  "wiki_commit": "4a9561d499225dc670ce94412b3468804e5d17bf"
+}

@@ -13,6 +13,8 @@ import hashlib
 import sys
 from pathlib import Path
 
+from astralprojection.resources import static_root, template_path
+
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -90,10 +92,10 @@ def test_apply_asset_versions_substitutes_every_token(tmp_path):
 
 def test_real_shell_template_tokens_all_resolve():
     """The checked-in shell's tokens all resolve against the real static dir."""
-    webrender = BACKEND_DIR / "webrender"
-    shell = (webrender / "templates" / "shell.html").read_text(encoding="utf-8")
+    static = Path(str(static_root()))
+    shell = template_path("shell.html").read_text(encoding="utf-8")
     assert "%%ASTRAL_V:" in shell
-    out = _apply_asset_versions(shell, str(webrender / "static"))
+    out = _apply_asset_versions(shell, str(static))
     assert "%%ASTRAL_V" not in out
     assert "?v=dev" not in out
 

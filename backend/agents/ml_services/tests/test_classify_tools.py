@@ -46,11 +46,10 @@ def stub_dns():
 
 @pytest.fixture(autouse=True)
 def clear_report_path_cache():
-    """The classify_submit_dataset -> set_column_types path-lookup map is
-    module-level state; isolate it across tests so a stale entry can't leak."""
-    mcp_tools._REPORT_PATHS.clear()
+    """Isolate the report-to-attachment identity cache across tests."""
+    mcp_tools._REPORT_ATTACHMENTS.clear()
     yield
-    mcp_tools._REPORT_PATHS.clear()
+    mcp_tools._REPORT_ATTACHMENTS.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -187,44 +186,22 @@ def test_submit_dataset_returns_uuid(rmock: HttpMock, tmp_path) -> None:
     }
 
 
-def test_submit_dataset_writes_debug_copy(rmock: HttpMock, tmp_path, monkeypatch) -> None:
+def test_submit_dataset_retains_identity_not_parser_path(
+    rmock: HttpMock,
+    tmp_path,
+) -> None:
     csv = tmp_path / "data.csv"
     csv.write_text("a,b,target\n1,2,X\n")
     rmock.add("POST", SUBMIT_URL, status=200, json={
         "report_uuid": "rpt-1",
         "column_types": {"data_types": {"a": "integer"}},
     })
-    # Redirect /tmp to a sandbox so the test never touches the real /tmp.
-    sandbox = tmp_path / "fake_tmp"
-    from pathlib import Path as _Path
-    original_pathcls = mcp_tools.Path
-    monkeypatch.setattr(mcp_tools, "Path", lambda p: original_pathcls(str(sandbox)) if p == "/tmp" else original_pathcls(p))
     result = mcp_tools.classify_submit_dataset(
         file_handle=str(csv), _credentials=GOOD_CREDS,
         user_id="alice", session_id="chat-123",
     )
-    saved = result["_data"]["debug_copy_path"]
-    assert saved is not None, "debug copy should be reported in _data"
-    assert _Path(saved).read_text() == "a,b,target\n1,2,X\n"
-    # Path layout: <sandbox>/alice/chat-123/data.csv
-    assert _Path(saved).parent.name == "chat-123"
-    assert _Path(saved).parent.parent.name == "alice"
-
-
-def test_submit_dataset_sanitizes_path_segments(tmp_path, monkeypatch) -> None:
-    """user_id / session_id containing path-traversal chars are scrubbed."""
-    sandbox = tmp_path / "fake_tmp"
-    from pathlib import Path as _Path
-    original_pathcls = mcp_tools.Path
-    monkeypatch.setattr(mcp_tools, "Path", lambda p: original_pathcls(str(sandbox)) if p == "/tmp" else original_pathcls(p))
-    saved = mcp_tools._save_debug_copy(
-        str(tmp_path / "src.csv") if (tmp_path / "src.csv").write_text("x") or True else None,
-        "src.csv", "../../etc", "..\\windows",
-    )
-    # Even though we passed traversal-y inputs, the sanitized segments stay
-    # within the sandbox.
-    assert saved is not None
-    assert ".." not in _Path(saved).as_posix()
+    assert result["_data"]["debug_copy_path"] is None
+    assert mcp_tools._REPORT_ATTACHMENTS["rpt-1"] == (str(csv), "alice")
 
 
 def test_submit_dataset_missing_user_id_returns_error(rmock: HttpMock, tmp_path) -> None:
@@ -271,8 +248,11 @@ def test_submit_dataset_inline_data_materializes_and_uploads(rmock: HttpMock, tm
     call = rmock.calls[-1]
     assert call["url"] == SUBMIT_URL
     assert "file" in (call.get("files") or {})
-    # The materialized path is remembered for set_column_types like any upload.
-    assert mcp_tools._REPORT_PATHS["rpt-inline"] == str(materialized)
+    # Only the typed attachment and owner identities survive the parser lease.
+    assert mcp_tools._REPORT_ATTACHMENTS["rpt-inline"] == (
+        str(materialized),
+        "alice",
+    )
 
 
 def test_submit_dataset_inline_data_requires_user_id(rmock: HttpMock) -> None:
@@ -482,7 +462,7 @@ def test_set_column_types_uses_path_stashed_by_submit_dataset(rmock: HttpMock,
     assert by_col["target"].get("class") is True
 
 
-def test_delete_dataset_clears_stashed_path(rmock: HttpMock, tmp_path) -> None:
+def test_delete_dataset_clears_stashed_attachment(rmock: HttpMock, tmp_path) -> None:
     csv_path = tmp_path / "uploaded.csv"
     csv_path.write_text("a,target\n1,x\n")
     rmock.add("POST", SUBMIT_URL, status=200, json={
@@ -495,10 +475,10 @@ def test_delete_dataset_clears_stashed_path(rmock: HttpMock, tmp_path) -> None:
         file_handle=str(csv_path),
         _credentials=GOOD_CREDS, user_id="dev", session_id="sess-1",
     )
-    assert "rpt-del" in mcp_tools._REPORT_PATHS
+    assert "rpt-del" in mcp_tools._REPORT_ATTACHMENTS
 
     mcp_tools.classify_delete_dataset(report_uuid="rpt-del", _credentials=GOOD_CREDS)
-    assert "rpt-del" not in mcp_tools._REPORT_PATHS
+    assert "rpt-del" not in mcp_tools._REPORT_ATTACHMENTS
 
 
 # ---------------------------------------------------------------------------

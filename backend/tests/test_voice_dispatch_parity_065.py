@@ -392,6 +392,7 @@ async def test_tool_cancellation_propagates_without_a_voice_retry() -> None:
     runtime = Orchestrator.__new__(Orchestrator)
     runtime.MAX_RETRIES = 3
     runtime.RETRY_BACKOFF = (0.01, 0.01)
+    runtime.ui_sessions = {typed: _claims(), voice: _claims()}
     attempts: dict[object, int] = {typed: 0, voice: 0}
     entered: dict[object, asyncio.Event] = {
         typed: asyncio.Event(),
@@ -405,8 +406,20 @@ async def test_tool_cancellation_propagates_without_a_voice_retry() -> None:
         *,
         timeout: float,
         ui_websocket: object,
+        protected_owner_id: str | None,
+        protected_channel: str,
+        protected_audit_correlation_id: str | None,
+        protected_actor_user_id: str | None,
+        protected_auth_principal: str | None,
+        protected_conversation_id: str | None,
     ) -> MCPResponse:
         del timeout
+        assert protected_owner_id is None
+        assert protected_channel == "websocket"
+        assert protected_audit_correlation_id is None
+        assert protected_actor_user_id is None
+        assert protected_auth_principal is None
+        assert protected_conversation_id is None
         attempts[ui_websocket] += 1
         entered[ui_websocket].set()
         await asyncio.Future()
@@ -426,11 +439,25 @@ async def test_tool_cancellation_propagates_without_a_voice_retry() -> None:
         )
         for socket in (typed, voice)
     }
-    await asyncio.gather(*(event.wait() for event in entered.values()))
-    for task in tasks.values():
-        task.cancel()
-    for task in tasks.values():
-        with pytest.raises(asyncio.CancelledError):
-            await task
+    try:
+        # Fail quickly if a stale dispatch fake rejects the current protected
+        # call shape before entering. The unconditional cleanup below keeps
+        # either regression from stranding tasks and hanging the full suite.
+        await asyncio.wait_for(
+            asyncio.gather(*(event.wait() for event in entered.values())),
+            timeout=1.0,
+        )
+        for task in tasks.values():
+            task.cancel()
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(*tasks.values(), return_exceptions=True),
+            timeout=1.0,
+        )
+    finally:
+        for task in tasks.values():
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
 
+    assert all(isinstance(outcome, asyncio.CancelledError) for outcome in outcomes)
     assert attempts == {typed: 1, voice: 1}

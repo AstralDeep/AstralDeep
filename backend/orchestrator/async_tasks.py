@@ -17,11 +17,18 @@ import logging
 import math
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Optional
 
+from astralplane import AsyncPlaneRuntime
+from astralplane.repositories.background_tasks import (
+    BackgroundTaskRecord as PlaneBackgroundTaskRecord,
+)
+from astralplane.repositories.background_tasks import (
+    BackgroundTaskStatus as PlaneBackgroundTaskStatus,
+)
 from orchestrator.work_admission import (
     AdmissionClass,
     ExecutionFence,
@@ -99,6 +106,9 @@ class RetentionSweepResult:
 
 OperationProjection = OperationRecord | SafeOperationProjection
 _FENCE_UNSET = object()
+_SAFE_OPERATION_PROJECTION_FIELDS = tuple(
+    projection_field.name for projection_field in fields(SafeOperationProjection)
+)
 
 
 @dataclass(frozen=True)
@@ -436,7 +446,9 @@ class BackgroundTaskManager:
         self._dispatch_poll_seconds = dispatch_poll_seconds
         self._dispatcher_task: asyncio.Task | None = None
         self._dispatcher_wakeup: asyncio.Event | None = None
-        self._db = None
+        self._plane_runtime = None
+        self._async_plane_runtime: AsyncPlaneRuntime | None = None
+        self._background_tasks = None
         self._on_complete = None
         self._observability = None
         self._admission_observer_task: asyncio.Task | None = None
@@ -451,23 +463,74 @@ class BackgroundTaskManager:
         self,
         *,
         coordinator=None,
-        db=None,
+        plane_runtime=None,
+        plane_repositories=None,
+        background_repository=None,
         on_complete=None,
         observability=None,
     ):
-        """Additively bind operation authority and legacy continuity hooks.
-
-        ``db`` remains the compatibility write-through store.  It is never used
-        to construct an implicit coordinator: production integration must bind
-        the same explicit ``WorkAdmissionCoordinator`` used by other work paths.
-        """
+        """Additively bind operation authority and Plane-owned projections."""
 
         if coordinator is not None:
             if self._coordinator is not None and coordinator is not self._coordinator:
                 raise RuntimeError("cannot replace the bound coordinator")
             self._coordinator = coordinator
-        if db is not None:
-            self._db = db
+        if plane_repositories is not None:
+            catalog_repository = getattr(
+                plane_repositories,
+                "background_tasks",
+                None,
+            )
+            if catalog_repository is None:
+                raise ValueError(
+                    "plane_repositories must expose background_tasks"
+                )
+            if (
+                background_repository is not None
+                and background_repository is not catalog_repository
+            ):
+                raise RuntimeError(
+                    "background repository differs from the Plane catalog"
+                )
+            background_repository = catalog_repository
+        if (plane_runtime is None) != (background_repository is None):
+            raise ValueError(
+                "plane_runtime and background repository must be bound together"
+            )
+        if plane_runtime is not None:
+            if (
+                self._plane_runtime is not None
+                and plane_runtime is not self._plane_runtime
+            ):
+                raise RuntimeError("cannot replace the bound Plane runtime")
+            if (
+                self._background_tasks is not None
+                and background_repository is not self._background_tasks
+            ):
+                raise RuntimeError(
+                    "cannot replace the bound background-task repository"
+                )
+            if not callable(getattr(plane_runtime, "transaction", None)):
+                raise TypeError("plane_runtime must expose transaction()")
+            required_repository_methods = (
+                "apply_operation_projection",
+                "oldest_overdue_for_administration",
+                "purge_overdue_for_administration",
+            )
+            if any(
+                not callable(getattr(background_repository, method, None))
+                for method in required_repository_methods
+            ):
+                raise TypeError(
+                    "background repository does not expose the required Plane contract"
+                )
+            if self._plane_runtime is None:
+                self._plane_runtime = plane_runtime
+                self._background_tasks = background_repository
+                self._async_plane_runtime = AsyncPlaneRuntime(
+                    plane_runtime,
+                    maximum_concurrency=2,
+                )
         if on_complete is not None:
             self._on_complete = on_complete
         if observability is not None:
@@ -684,25 +747,69 @@ class BackgroundTaskManager:
             self._dispatch_pending(), name="background-operation-dispatcher"
         )
 
-    def _record(self, query: str, params) -> None:
-        """Best-effort write of the operation-backed legacy task projection."""
+    @staticmethod
+    def _projection_record(
+        bg_task: BackgroundTask,
+        *,
+        summary: str | None = None,
+        notified: bool = False,
+    ) -> PlaneBackgroundTaskRecord:
+        """Build the exact Plane projection for one managed operation."""
+
+        if bg_task._operation is None:
+            raise RuntimeError("background projection requires operation authority")
+        return PlaneBackgroundTaskRecord(
+            task_id=bg_task.task_id,
+            owner_id=bg_task.user_id,
+            conversation_id=bg_task.chat_id,
+            kind=bg_task.kind,
+            status=PlaneBackgroundTaskStatus(
+                bg_task._canonical_status().value
+            ),
+            title=bg_task.title,
+            summary=summary,
+            created_at=bg_task.created_at,
+            completed_at=bg_task.completed_at,
+            notified=notified,
+            operation_id=bg_task.task_id,
+            operation_execution_generation=(
+                bg_task.operation_execution_generation
+            ),
+        )
+
+    def _project(self, record: PlaneBackgroundTaskRecord) -> None:
+        """Best-effort typed projection over the shared Plane runtime."""
 
         if (
             self._draining
-            or self._db is None
+            or self._async_plane_runtime is None
+            or self._background_tasks is None
             or not flags.is_enabled("bg_continuity")
         ):
             return
 
+        runtime = self._async_plane_runtime
+        repository = self._background_tasks
+
         async def _write():
             try:
-                await self._db.aexecute(query, params)
+                await runtime.run_in_transaction(
+                    lambda transaction: repository.apply_operation_projection(
+                        transaction,
+                        record,
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logger.debug("background_task bookkeeping failed", exc_info=True)
+                logger.debug(
+                    "background task Plane projection failed",
+                    exc_info=True,
+                )
 
         task = asyncio.create_task(
             _write(),
-            name="background-compatibility-write",
+            name="background-plane-projection",
         )
         self._compatibility_write_tasks.add(task)
         task.add_done_callback(self._compatibility_write_done)
@@ -863,21 +970,7 @@ class BackgroundTaskManager:
         if accepted_while_draining:
             await self._observe_terminal(bg_task)
 
-        self._record(
-            "INSERT INTO background_task (task_id, user_id, chat_id, kind, status, "
-            "title, operation_id, operation_execution_generation) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (task_id) DO NOTHING",
-            (
-                bg_task.task_id,
-                user_id,
-                chat_id,
-                kind,
-                bg_task.status.value,
-                title,
-                bg_task.task_id,
-                bg_task.operation_execution_generation,
-            ),
-        )
+        self._project(self._projection_record(bg_task))
         return bg_task
 
     def _start_claimed_task_locked(self, bg_task: BackgroundTask, claim: Any) -> bool:
@@ -976,7 +1069,10 @@ class BackgroundTaskManager:
                                 bg_task.task_id,
                             )
                             break
-                        bg_task._apply_operation(operation)
+                        operation = self._reconcile_operation_projection(
+                            bg_task,
+                            operation,
+                        )
                         if operation.state in _TERMINAL_OPERATION_STATES:
                             self._pending_executions.pop(bg_task.task_id, None)
                             notify.append(bg_task)
@@ -1044,7 +1140,7 @@ class BackgroundTaskManager:
                 owner=bg_task._owner,
                 operation_id=fence.operation_id,
             )
-        bg_task._apply_operation(operation)
+        operation = self._reconcile_operation_projection(bg_task, operation)
         await self._observe_terminal(bg_task)
         return operation
 
@@ -1083,7 +1179,7 @@ class BackgroundTaskManager:
                     bg_task.task_id,
                 )
         if operation is not None:
-            bg_task._apply_operation(operation)
+            operation = self._reconcile_operation_projection(bg_task, operation)
             if operation.state in _TERMINAL_OPERATION_STATES:
                 await self._observe_terminal(bg_task)
                 await self._notify_watchers(bg_task)
@@ -1298,27 +1394,12 @@ class BackgroundTaskManager:
                     exc_info=True,
                 )
         bg_task.watchers.clear()
-        self._record(
-            "INSERT INTO background_task (task_id, user_id, chat_id, kind, status, "
-            "title, summary, completed_at, notified, operation_id, "
-            "operation_execution_generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (task_id) DO UPDATE SET status = EXCLUDED.status, "
-            "summary = EXCLUDED.summary, completed_at = EXCLUDED.completed_at, "
-            "notified = EXCLUDED.notified, operation_id = EXCLUDED.operation_id, "
-            "operation_execution_generation = EXCLUDED.operation_execution_generation",
-            (
-                bg_task.task_id,
-                bg_task.user_id,
-                bg_task.chat_id,
-                bg_task.kind,
-                bg_task._canonical_status().value,
-                bg_task.title,
-                summary,
-                bg_task.completed_at,
-                fanned > 0,
-                bg_task.task_id,
-                bg_task.operation_execution_generation,
-            ),
+        self._project(
+            self._projection_record(
+                bg_task,
+                summary=summary,
+                notified=fanned > 0,
+            )
         )
 
     @staticmethod
@@ -1343,6 +1424,49 @@ class BackgroundTaskManager:
             summary = str(bg_task.errors[-1])
         return " ".join(summary.split())[:200]
 
+    @staticmethod
+    def _reconcile_operation_projection(
+        bg_task: BackgroundTask,
+        candidate: OperationProjection,
+    ) -> OperationProjection:
+        """Keep the newest projection when coordinator calls finish out of order.
+
+        Durable cancellation and terminalization serialize at the coordinator,
+        but their results return to the event loop independently. A worker can
+        therefore apply a newer terminal record while an earlier cancellation
+        response is still in flight. The DTO's strict monotonic guard remains
+        valuable for direct callers; manager-owned reconciliation discards only
+        an authority-issued response whose revision is already known to be stale.
+        """
+
+        if str(candidate.operation_id) != bg_task.task_id:
+            raise RuntimeError("background task operation identity changed")
+        current = bg_task._operation
+        if current is None:
+            bg_task._apply_operation(candidate)
+            return candidate
+        if candidate.state_revision < current.state_revision:
+            return current
+        if candidate.state_revision == current.state_revision:
+            if type(candidate) is type(current):
+                equivalent = candidate == current
+            else:
+                equivalent = all(
+                    getattr(candidate, field_name) == getattr(current, field_name)
+                    for field_name in _SAFE_OPERATION_PROJECTION_FIELDS
+                )
+            if not equivalent:
+                raise RuntimeError(
+                    "background task operation projection changed without "
+                    "advancing its revision"
+                )
+            # Owner-safe and full records are different views of the same
+            # authority. Do not downgrade, upgrade, or otherwise swap the
+            # already-applied representation at an unchanged revision.
+            return current
+        bg_task._apply_operation(candidate)
+        return candidate
+
     async def _refresh(self, bg_task: BackgroundTask) -> bool:
         coordinator = self._require_coordinator()
         if bg_task._owner is None:
@@ -1355,56 +1479,86 @@ class BackgroundTaskManager:
             )
         except OperationNotFoundError:
             return False
-        bg_task._apply_operation(operation)
+        self._reconcile_operation_projection(bg_task, operation)
         await self._observe_terminal(bg_task)
         return True
 
-    async def cancel(self, task_id: str) -> bool:
-        coordinator = self._require_coordinator()
-        worker: asyncio.Task | None = None
-        bg_task: BackgroundTask | None = None
-        async with self._lock:
-            bg_task = self._tasks.get(task_id)
-            if bg_task is None or bg_task._owner is None:
-                return False
-            if not await self._refresh(bg_task):
-                self._pending_executions.pop(task_id, None)
-                self._tasks.pop(task_id, None)
-                return False
-            if (
-                bg_task._operation is None
-                or bg_task._operation.state in _TERMINAL_OPERATION_STATES
-            ):
-                return False
+    async def _cancel_and_cleanup(
+        self,
+        bg_task: BackgroundTask,
+        *,
+        owner: OperationOwner,
+        coordinator: WorkAdmissionCoordinator,
+    ) -> bool:
+        """Commit cancellation and settle its process-local execution."""
 
+        task_id = bg_task.task_id
+        worker: asyncio.Task | None
+        websocket: VirtualWebSocket | None
+
+        try:
             operation = await asyncio.to_thread(
                 coordinator.cancel,
-                owner=bg_task._owner,
+                owner=owner,
                 operation_id=uuid.UUID(bg_task.task_id),
                 terminal_code="cancelled_by_user",
             )
-            bg_task._apply_operation(operation)
-            await self._observe_terminal(bg_task)
-            self._pending_executions.pop(task_id, None)
-            if bg_task._virtual_websocket is not None:
-                await bg_task._virtual_websocket.close()
+        except OperationNotFoundError:
+            async with self._lock:
+                if self._tasks.get(task_id) is bg_task:
+                    self._pending_executions.pop(task_id, None)
+                    self._tasks.pop(task_id, None)
+            return False
 
-            worker = bg_task.asyncio_task
-            if (
-                operation.state is OperationState.RUNNING
-                and bg_task._execution_fence is not None
-                and (worker is None or worker.done())
-            ):
-                terminal = await self._terminalize(
-                    bg_task,
-                    state=OperationState.CANCELLED,
-                    terminal_code="cancelled_by_user",
-                    safe_summary="Cancelled",
+        response_requested_cancellation = (
+            operation.state is OperationState.RUNNING
+            and operation.cancel_requested_at is not None
+        )
+        operation = self._reconcile_operation_projection(bg_task, operation)
+        async with self._lock:
+            # Terminalization may have advanced the local authority while this
+            # coroutine waited to reacquire the state lock.
+            operation = self._reconcile_operation_projection(bg_task, operation)
+            cancellation_effective = (
+                operation.state is OperationState.CANCELLED
+                or (
+                    operation.state is OperationState.RUNNING
+                    and (
+                        response_requested_cancellation
+                        or getattr(operation, "cancel_requested_at", None)
+                        is not None
+                    )
                 )
-                if terminal is not None:
-                    bg_task._apply_operation(terminal)
+            )
+            if (
+                cancellation_effective
+                or operation.state in _TERMINAL_OPERATION_STATES
+            ):
+                self._pending_executions.pop(task_id, None)
+            worker = bg_task.asyncio_task
+            websocket = bg_task._virtual_websocket
 
-        if worker is not None and not worker.done():
+        await self._observe_terminal(bg_task)
+
+        if cancellation_effective and websocket is not None:
+            await websocket.close()
+
+        if (
+            cancellation_effective
+            and operation.state is OperationState.RUNNING
+            and bg_task._execution_fence is not None
+            and (worker is None or worker.done())
+        ):
+            terminal = await self._terminalize(
+                bg_task,
+                state=OperationState.CANCELLED,
+                terminal_code="cancelled_by_user",
+                safe_summary="Cancelled",
+            )
+            if terminal is not None:
+                operation = terminal
+
+        if cancellation_effective and worker is not None and not worker.done():
             worker.cancel()
             if worker is not asyncio.current_task():
                 await asyncio.gather(worker, return_exceptions=True)
@@ -1413,22 +1567,19 @@ class BackgroundTaskManager:
         # does not enter that coroutine's ``finally`` block.  Only after the
         # wrapper is fully joined may this fallback clear the durable slot;
         # otherwise a replacement could start while old user cleanup runs.
-        if worker is None or worker.done():
-            async with self._lock:
-                if await self._refresh(bg_task):
-                    if (
-                        bg_task._operation is not None
-                        and bg_task._operation.state is OperationState.RUNNING
-                        and bg_task._execution_fence is not None
-                    ):
-                        terminal = await self._terminalize(
-                            bg_task,
-                            state=OperationState.CANCELLED,
-                            terminal_code="cancelled_by_user",
-                            safe_summary="Cancelled",
-                        )
-                        if terminal is not None:
-                            bg_task._apply_operation(terminal)
+        if cancellation_effective and (worker is None or worker.done()):
+            if await self._refresh(bg_task):
+                if (
+                    bg_task._operation is not None
+                    and bg_task._operation.state is OperationState.RUNNING
+                    and bg_task._execution_fence is not None
+                ):
+                    await self._terminalize(
+                        bg_task,
+                        state=OperationState.CANCELLED,
+                        terminal_code="cancelled_by_user",
+                        safe_summary="Cancelled",
+                    )
         notify = (
             bg_task._operation is not None
             and bg_task._operation.state in _TERMINAL_OPERATION_STATES
@@ -1436,7 +1587,76 @@ class BackgroundTaskManager:
         self._wake_dispatcher()
         if notify:
             await self._notify_watchers(bg_task)
-        return True
+        final_operation = bg_task._operation
+        if final_operation is None:
+            return False
+        if final_operation.state in _TERMINAL_OPERATION_STATES:
+            return final_operation.state is OperationState.CANCELLED
+        return cancellation_effective
+
+    async def cancel(self, task_id: str) -> bool:
+        coordinator = self._require_coordinator()
+        async with self._lock:
+            bg_task = self._tasks.get(task_id)
+            if bg_task is None or bg_task._owner is None:
+                return False
+            owner = bg_task._owner
+
+        # Coordinator calls may block on PostgreSQL row/class locks. Never
+        # retain the process-local state lock across that I/O: worker
+        # terminalization and unrelated submissions must remain able to make
+        # progress while this request is in flight.
+        if not await self._refresh(bg_task):
+            async with self._lock:
+                if self._tasks.get(task_id) is bg_task:
+                    self._pending_executions.pop(task_id, None)
+                    self._tasks.pop(task_id, None)
+            return False
+        if (
+            bg_task._operation is None
+            or bg_task._operation.state in _TERMINAL_OPERATION_STATES
+        ):
+            return False
+
+        cancellation_flow = asyncio.create_task(
+            self._cancel_and_cleanup(
+                bg_task,
+                owner=owner,
+                coordinator=coordinator,
+            ),
+            name=f"background-cancellation-{task_id}",
+        )
+        try:
+            return await asyncio.shield(cancellation_flow)
+        except asyncio.CancelledError as caller_cancellation:
+            # ``asyncio.to_thread`` cannot stop its worker thread. Once the
+            # coordinator call may have committed, join the shielded flow so
+            # its response is reconciled and local execution is closed before
+            # honoring cancellation of this caller. Repeated cancellation of
+            # the caller must not strand the committed cleanup either.
+            completion = asyncio.get_running_loop().create_future()
+
+            def mark_completed(_task: asyncio.Task[bool]) -> None:
+                if not completion.done():
+                    completion.set_result(None)
+
+            cancellation_flow.add_done_callback(mark_completed)
+            while not cancellation_flow.done():
+                try:
+                    # Wait only for completion here. Awaiting the flow itself
+                    # could surface its ordinary exception from this loop and
+                    # bypass the stable caller-cancellation precedence below.
+                    await asyncio.shield(completion)
+                except asyncio.CancelledError:
+                    continue
+            cancellation_flow.remove_done_callback(mark_completed)
+            try:
+                cancellation_flow.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as cleanup_error:
+                raise caller_cancellation from cleanup_error
+            raise
 
     @staticmethod
     def _consume_drain_helper(task: asyncio.Task) -> None:
@@ -1473,7 +1693,7 @@ class BackgroundTaskManager:
                 bg_task.task_id,
             )
             return
-        bg_task._apply_operation(operation)
+        self._reconcile_operation_projection(bg_task, operation)
         await self._observe_terminal(bg_task)
 
     async def _force_service_terminal(
@@ -1715,6 +1935,8 @@ class BackgroundTaskManager:
             self._compatibility_write_tasks.difference_update(
                 task for task in compatibility_writes if task.done()
             )
+            if self._async_plane_runtime is not None:
+                self._async_plane_runtime.close()
             if drain_lock_acquired:
                 self._drain_lock.release()
 
@@ -1786,128 +2008,29 @@ class BackgroundTaskManager:
         """Return the age of the oldest row currently eligible for purge."""
 
         coordinator = self._require_coordinator()
-        retention_seconds = int(coordinator.operation_retention.total_seconds())
-        with coordinator.fenced_transaction(fence) as cursor:
-            execute = getattr(cursor, "execute", None)
-            fetchone = getattr(cursor, "fetchone", None)
-            if callable(execute) and callable(fetchone):
-                execute(
-                    """
-                    WITH eligible AS (
-                        SELECT submission.purge_after AS due_at
-                        FROM operation_submission_result AS submission
-                        LEFT JOIN operation_record AS operation
-                          ON operation.operation_id = submission.operation_id
-                        WHERE submission.purge_after < CURRENT_TIMESTAMP
-                          AND (
-                              NOT submission.accepted
-                              OR operation.operation_id IS NULL
-                              OR (
-                                  operation.state IN (
-                                      'completed', 'failed', 'cancelled', 'retryable'
-                                  )
-                                  AND operation.purge_after < CURRENT_TIMESTAMP
-                              )
-                          )
-                        UNION ALL
-                        SELECT operation.purge_after AS due_at
-                        FROM operation_record AS operation
-                        WHERE operation.state IN (
-                            'completed', 'failed', 'cancelled', 'retryable'
-                        )
-                          AND operation.purge_after < CURRENT_TIMESTAMP
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM operation_submission_result AS submission
-                              WHERE submission.accepted
-                                AND submission.operation_id = operation.operation_id
-                          )
-                        UNION ALL
-                        SELECT COALESCE(task.completed_at, task.created_at)
-                               + (%s * INTERVAL '1 second') AS due_at
-                        FROM background_task AS task
-                        WHERE task.operation_id IS NULL
-                          AND COALESCE(task.completed_at, task.created_at) < (
-                              CURRENT_TIMESTAMP - (%s * INTERVAL '1 second')
-                          )
-                          AND (
-                              task.operation_execution_generation IS NOT NULL
-                              OR task.task_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-                              OR (
-                                  task.task_id ~* '^[0-9a-f]{8}$'
-                                  AND task.status IN (
-                                      'completed', 'failed', 'cancelled', 'retryable'
-                                  )
-                              )
-                          )
+        current_time = coordinator.current_time()
+        cutoff_at = current_time - coordinator.operation_retention
+        due_times: list[datetime] = []
+        with coordinator.fenced_transaction(fence) as transaction:
+            operation_due_at = coordinator.oldest_purge_eligible_due_at(
+                transaction=transaction,
+            )
+            if operation_due_at is not None:
+                due_times.append(operation_due_at)
+            if self._background_tasks is not None:
+                retained_at = (
+                    self._background_tasks.oldest_overdue_for_administration(
+                        transaction,
+                        cutoff_at=cutoff_at,
                     )
-                    SELECT COALESCE(
-                        GREATEST(
-                            0,
-                            EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - MIN(due_at))
-                        ),
-                        0
-                    ) AS lag_seconds
-                    FROM eligible
-                    """,
-                    (retention_seconds, retention_seconds),
                 )
-                row = fetchone()
-                if row is None:
-                    return 0.0
-                value = (
-                    row["lag_seconds"]
-                    if isinstance(row, Mapping)
-                    else row[0]
-                )
-                return max(0.0, float(value or 0.0))
-
-            # The explicitly injected in-memory repository is yielded as the
-            # fenced-transaction sentinel. Mirror its purge eligibility so
-            # deterministic tests exercise the same oldest-overdue meaning.
-            operations = getattr(cursor, "_operations", None)
-            submissions = getattr(cursor, "_submissions", None)
-            if not isinstance(operations, Mapping) or not isinstance(
-                submissions, Mapping
-            ):
-                return 0.0
-            now_factory = getattr(coordinator, "_now", None)
-            current_time = now_factory() if callable(now_factory) else None
-            if current_time is None:
-                current_time = datetime.now(timezone.utc)
-            due_times: list[datetime] = []
-            for submission in submissions.values():
-                if submission.purge_after >= current_time:
-                    continue
-                operation = (
-                    operations.get(submission.operation_id)
-                    if submission.operation_id is not None
-                    else None
-                )
-                if submission.accepted and operation is not None and (
-                    operation.state not in _TERMINAL_OPERATION_STATES
-                    or operation.purge_after is None
-                    or operation.purge_after >= current_time
-                ):
-                    continue
-                due_times.append(submission.purge_after)
-            for operation in operations.values():
-                if (
-                    operation.state not in _TERMINAL_OPERATION_STATES
-                    or operation.purge_after is None
-                    or operation.purge_after >= current_time
-                ):
-                    continue
-                if any(
-                    submission.accepted
-                    and submission.operation_id == operation.operation_id
-                    for submission in submissions.values()
-                ):
-                    continue
-                due_times.append(operation.purge_after)
-            if not due_times:
-                return 0.0
-            return max(0.0, (current_time - min(due_times)).total_seconds())
+                if retained_at is not None:
+                    due_times.append(
+                        retained_at + coordinator.operation_retention
+                    )
+        if not due_times:
+            return 0.0
+        return max(0.0, (current_time - min(due_times)).total_seconds())
 
     def _fenced_compatibility_cleanup(
         self,
@@ -1915,46 +2038,38 @@ class BackgroundTaskManager:
         *,
         limit: int,
     ) -> int:
-        """Bulk-delete retained FK-null rows in the maintenance transaction."""
+        """Purge retained FK-null rows in the exact maintenance transaction."""
 
         coordinator = self._require_coordinator()
-        retention_seconds = int(coordinator.operation_retention.total_seconds())
-        with coordinator.fenced_transaction(fence) as cursor:
-            # The deterministic in-memory repository yields itself rather than
-            # a SQL cursor.  It has no compatibility table to clean.
-            if not callable(getattr(cursor, "execute", None)):
-                return 0
-            cursor.execute(
-                """
-                WITH candidates AS (
-                    SELECT task_id
-                    FROM background_task
-                    WHERE operation_id IS NULL
-                      AND COALESCE(completed_at, created_at) < (
-                          CURRENT_TIMESTAMP - (%s * INTERVAL '1 second')
-                      )
-                      AND (
-                          operation_execution_generation IS NOT NULL
-                          OR task_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-                          OR (
-                              task_id ~* '^[0-9a-f]{8}$'
-                              AND status IN (
-                                  'completed', 'failed', 'cancelled', 'retryable'
-                              )
-                          )
-                      )
-                    ORDER BY COALESCE(completed_at, created_at), task_id
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT %s
-                )
-                DELETE FROM background_task AS task
-                USING candidates
-                WHERE task.task_id = candidates.task_id
-                RETURNING task.task_id
-                """,
-                (retention_seconds, limit),
+        repository = self._background_tasks
+        if repository is None:
+            return 0
+        cutoff_at = coordinator.current_time() - coordinator.operation_retention
+        with coordinator.fenced_transaction(fence) as transaction:
+            purged = repository.purge_overdue_for_administration(
+                transaction,
+                cutoff_at=cutoff_at,
+                limit=limit,
             )
-            return len(cursor.fetchall())
+            if not isinstance(purged, tuple):
+                raise TypeError(
+                    "background retention repository returned an invalid result"
+                )
+            if len(purged) > limit:
+                raise RuntimeError(
+                    "background retention repository exceeded the requested limit"
+                )
+            if len(set(purged)) != len(purged):
+                raise RuntimeError(
+                    "background retention repository returned duplicate identities"
+                )
+            if any(not isinstance(task_id, str) or not task_id for task_id in purged):
+                raise RuntimeError(
+                    "background retention repository returned an invalid identity"
+                )
+            if not purged:
+                return 0
+            return len(purged)
 
     async def run_retention_sweep_once(
         self,

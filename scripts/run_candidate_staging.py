@@ -16,7 +16,6 @@ import sys
 import tempfile
 import time
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -88,13 +87,12 @@ STAGING_COMPOSE_SERVICES = frozenset(
         "keycloak-postgres",
         "keycloak",
         "livekit",
-        "schema-baseline",
         "astraldeep",
         "voice-worker",
     }
 )
 STAGING_COMPOSE_VOLUMES = frozenset({"product-postgres", "keycloak-postgres"})
-STAGING_RUNNING_SERVICES = STAGING_COMPOSE_SERVICES - {"schema-baseline"}
+STAGING_RUNNING_SERVICES = STAGING_COMPOSE_SERVICES
 
 
 class StagingError(ValueError):
@@ -237,6 +235,32 @@ def validate_fixtures(manifest_path: str | Path) -> dict[str, Any]:
     }
 
 
+def _require_plane_fixture_importer() -> None:
+    """Block the retired Deep-owned representative-database restore.
+
+    Feature 060 restored a raw SQL fixture with a driver-side ``psql`` call and
+    then queried schema metadata directly. AstralPlane now owns migrations,
+    database readiness, and representative pre-split replay. Its immutable
+    fixture loader is intentionally qualification-only and does not expose a
+    production arbitrary-SQL importer, so this old deploy command has no safe
+    replacement to invoke.
+
+    Keep the gate visibly closed until a future, reviewed Plane-owned staging
+    import contract exists. Plane qualification currently lives in
+    ``AstralPlane/tests/integration/test_pre_split_upgrade.py`` and
+    ``AstralPlane/provenance/checks.json``; it is evidence for the migration,
+    not permission for Deep to recreate an importer.
+    """
+
+    raise StagingError(
+        "candidate staging deploy is retired: the representative-057 restore "
+        "has no AstralPlane-owned exact-fixture import contract. No staging "
+        "namespace was created. Keep the release gate blocked and use "
+        "AstralPlane's pre-split upgrade integration evidence; do not run psql, "
+        "the removed Deep migration scripts, or ad-hoc SQL."
+    )
+
+
 def validate_endpoint(endpoint: str) -> str:
     """Validate one archived non-loopback HTTPS staging endpoint."""
 
@@ -370,7 +394,6 @@ def _required_environment(*, for_deploy: bool = True) -> dict[str, str]:
                 "ASTRAL_STAGING_PROBE_TOKEN",
                 "STAGING_POSTGRES_IMAGE",
                 "STAGING_KEYCLOAK_IMAGE",
-                "STAGING_SCHEMA_BASELINE_IMAGE",
                 "STAGING_RUNTIME_ENV_FILE",
                 "STAGING_DB_USER",
                 "STAGING_DB_PASSWORD",
@@ -400,7 +423,6 @@ def _required_environment(*, for_deploy: bool = True) -> dict[str, str]:
         for name in (
             "STAGING_POSTGRES_IMAGE",
             "STAGING_KEYCLOAK_IMAGE",
-            "STAGING_SCHEMA_BASELINE_IMAGE",
         ):
             validate_image_reference(values[name])
         runtime_env = Path(values["STAGING_RUNTIME_ENV_FILE"])
@@ -604,192 +626,6 @@ def _authenticated_json_request(
         raise StagingError(f"{purpose} request failed") from exc
     finally:
         connection.close()
-
-
-def _strict_uuid4(value: Any, *, purpose: str) -> str:
-    if not isinstance(value, str):
-        raise StagingError(f"{purpose} did not return one canonical UUID4")
-    try:
-        parsed = uuid.UUID(value)
-    except (ValueError, AttributeError) as exc:
-        raise StagingError(f"{purpose} did not return one canonical UUID4") from exc
-    if parsed.version != 4 or parsed.variant != uuid.RFC_4122 or str(parsed) != value:
-        raise StagingError(f"{purpose} did not return one canonical UUID4")
-    return value
-
-
-def _local_chat_row_count(
-    *,
-    environment: Mapping[str, str],
-    project: str,
-    chat_id: str,
-) -> int:
-    """Count one strict probe UUID in this Compose project's PostgreSQL."""
-
-    _strict_uuid4(chat_id, purpose="public route probe")
-    statement = f"SELECT COUNT(*) FROM chats WHERE id = '{chat_id}';\n".encode("ascii")
-    try:
-        output = _run(
-            _compose(
-                environment,
-                project,
-                "exec",
-                "--no-TTY",
-                "postgres",
-                "psql",
-                "--quiet",
-                "--tuples-only",
-                "--no-align",
-                "--username",
-                environment["STAGING_DB_USER"],
-                "--dbname",
-                environment["STAGING_DB_NAME"],
-                "--set",
-                "ON_ERROR_STOP=1",
-            ),
-            environment=environment,
-            input_bytes=statement,
-        ).stdout
-    except (KeyError, StagingError) as exc:
-        raise StagingError("public route local database proof failed") from exc
-    try:
-        value = output.decode("ascii").strip()
-    except UnicodeError as exc:
-        raise StagingError("public route local database proof is malformed") from exc
-    if value not in {"0", "1"}:
-        raise StagingError("public route local database proof is malformed")
-    return int(value)
-
-
-def _remove_local_empty_probe_chat(
-    *,
-    environment: Mapping[str, str],
-    project: str,
-    chat_id: str,
-) -> None:
-    """Remove only the exact content-free probe row and prove it is absent."""
-
-    _strict_uuid4(chat_id, purpose="public route probe cleanup")
-    statement = (
-        "DELETE FROM chats AS probe "
-        f"WHERE probe.id = '{chat_id}' "
-        "AND probe.title = 'New Chat' "
-        "AND probe.agent_id IS NULL "
-        "AND probe.has_saved_components IS NOT TRUE "
-        "AND NOT EXISTS (SELECT 1 FROM messages WHERE chat_id = probe.id) "
-        "AND NOT EXISTS (SELECT 1 FROM saved_components WHERE chat_id = probe.id) "
-        "AND NOT EXISTS (SELECT 1 FROM chat_files WHERE chat_id = probe.id) "
-        "AND NOT EXISTS (SELECT 1 FROM workspace_layout WHERE chat_id = probe.id); "
-        f"SELECT COUNT(*) FROM chats WHERE id = '{chat_id}';\n"
-    ).encode("ascii")
-    try:
-        output = _run(
-            _compose(
-                environment,
-                project,
-                "exec",
-                "--no-TTY",
-                "postgres",
-                "psql",
-                "--quiet",
-                "--tuples-only",
-                "--no-align",
-                "--username",
-                environment["STAGING_DB_USER"],
-                "--dbname",
-                environment["STAGING_DB_NAME"],
-                "--set",
-                "ON_ERROR_STOP=1",
-            ),
-            environment=environment,
-            input_bytes=statement,
-        ).stdout
-    except (KeyError, StagingError) as exc:
-        raise StagingError("local probe cleanup could not be verified") from exc
-    try:
-        remaining = output.decode("ascii").strip()
-    except UnicodeError as exc:
-        raise StagingError("local probe cleanup proof is malformed") from exc
-    if remaining != "0":
-        raise StagingError("local probe cleanup refused a non-empty or mismatched row")
-
-
-def _verify_public_endpoint_binding(
-    endpoint: str,
-    token: str,
-    *,
-    environment: Mapping[str, str],
-    project: str,
-) -> None:
-    """Bind the public route to this project's DB using a transient empty chat."""
-
-    chat_id: str | None = None
-    failure: StagingError | None = None
-    cleanup_failure: StagingError | None = None
-    try:
-        created = _authenticated_json_request(
-            endpoint,
-            token,
-            method="POST",
-            suffix="/api/chats",
-            expected_status=201,
-            purpose="public route create probe",
-        )
-        chat_id = _strict_uuid4(created.get("chat_id"), purpose="public route create probe")
-        if set(created) != {"chat_id", "agent_id", "message"}:
-            raise StagingError("public route create probe response shape is invalid")
-        if created.get("agent_id") is not None or not isinstance(created.get("message"), str):
-            raise StagingError("public route create probe response shape is invalid")
-        if _local_chat_row_count(
-            environment=environment,
-            project=project,
-            chat_id=chat_id,
-        ) != 1:
-            raise StagingError("public endpoint is not bound to the current staging database")
-
-        deleted = _authenticated_json_request(
-            endpoint,
-            token,
-            method="DELETE",
-            suffix=f"/api/chats/{chat_id}",
-            expected_status=200,
-            purpose="public route delete probe",
-        )
-        if set(deleted) != {"success", "message"} or deleted.get("success") is not True:
-            raise StagingError("public route delete probe response shape is invalid")
-        if _local_chat_row_count(
-            environment=environment,
-            project=project,
-            chat_id=chat_id,
-        ) != 0:
-            raise StagingError("public endpoint deletion did not reach the current staging database")
-    except StagingError as exc:
-        failure = exc
-    finally:
-        if chat_id is not None and failure is not None:
-            try:
-                _authenticated_json_request(
-                    endpoint,
-                    token,
-                    method="DELETE",
-                    suffix=f"/api/chats/{chat_id}",
-                    expected_status=200,
-                    purpose="public route cleanup probe",
-                )
-            except StagingError:
-                pass
-            try:
-                _remove_local_empty_probe_chat(
-                    environment=environment,
-                    project=project,
-                    chat_id=chat_id,
-                )
-            except StagingError as exc:
-                cleanup_failure = exc
-    if failure is not None:
-        if cleanup_failure is not None:
-            raise StagingError(f"{failure}; {cleanup_failure}") from failure
-        raise failure
 
 
 def _probe(endpoint: str, token: str, *, timeout_seconds: int = 180) -> dict[str, Any]:
@@ -1430,7 +1266,7 @@ def _deploy(args: argparse.Namespace) -> int:
     protected = _required_environment()
     if not args.leave_running:
         raise StagingError("qualifying deploy must use --leave-running until matrix cleanup")
-    candidate_image = validate_image_reference(args.candidate_image)
+    validate_image_reference(args.candidate_image)
     voice_runtime = _voice_runtime(args)
     voice_runtime.update(
         {
@@ -1444,225 +1280,13 @@ def _deploy(args: argparse.Namespace) -> int:
             "livekit-config-sha256 differs from the tracked staging configuration"
         )
     _git_identity(args.candidate_sha, args.candidate_source_root)
-    fixtures = validate_fixtures(args.fixture_manifest)
+    validate_fixtures(args.fixture_manifest)
     tracked_fixture_root = (
         REPO_ROOT / "backend/tests/fixtures/runtime_reliability_060/staging"
     ).resolve()
     if Path(args.fixture_manifest).resolve().parent != tracked_fixture_root:
         raise StagingError("qualifying deploy must use the tracked fixture root")
-    project = _project_name(args.environment_id)
-    ownership_labels = _staging_ownership_labels(
-        project=project,
-        environment_id=args.environment_id,
-        run_id=protected["GITHUB_RUN_ID"],
-        run_attempt=protected["GITHUB_RUN_ATTEMPT"],
-    )
-    environment = dict(os.environ)
-    environment.update(
-        {
-            "STAGING_PROJECT_NAME": project,
-            "STAGING_ENVIRONMENT_ID": args.environment_id,
-            "STAGING_RUN_ID": protected["GITHUB_RUN_ID"],
-            "STAGING_RUN_ATTEMPT": protected["GITHUB_RUN_ATTEMPT"],
-            "STAGING_BIND_PORT": protected["STAGING_BIND_PORT"],
-            "ASTRAL_CANDIDATE_IMAGE": candidate_image,
-            "ASTRAL_VOICE_WORKER_IMAGE": voice_runtime[
-                "voice_worker_image_reference"
-            ],
-            "STAGING_POSTGRES_IMAGE": protected["STAGING_POSTGRES_IMAGE"],
-            "STAGING_KEYCLOAK_IMAGE": protected["STAGING_KEYCLOAK_IMAGE"],
-            "STAGING_SCHEMA_BASELINE_IMAGE": protected[
-                "STAGING_SCHEMA_BASELINE_IMAGE"
-            ],
-        }
-    )
-    expected_images = {
-        "postgres": protected["STAGING_POSTGRES_IMAGE"],
-        "keycloak-postgres": protected["STAGING_POSTGRES_IMAGE"],
-        "keycloak": protected["STAGING_KEYCLOAK_IMAGE"],
-        "livekit": voice_runtime["livekit_image_reference"],
-        "schema-baseline": protected["STAGING_SCHEMA_BASELINE_IMAGE"],
-        "astraldeep": candidate_image,
-        "voice-worker": voice_runtime["voice_worker_image_reference"],
-    }
-    compose_model = _run(
-        _compose(
-            environment,
-            project,
-            "--profile",
-            "bootstrap",
-            "config",
-            "--format",
-            "json",
-        ),
-        environment=environment,
-    ).stdout
-    service_identity = _compose_runtime_identity(
-        compose_model,
-        project=project,
-        expected_images=expected_images,
-        livekit_turn_domain=protected["LIVEKIT_TURN_DOMAIN"],
-        ownership_labels=ownership_labels,
-        staging_bind_port=protected["STAGING_BIND_PORT"],
-    )
-    _run(
-        _compose(
-            environment,
-            project,
-            "up",
-            "--detach",
-            "postgres",
-            "keycloak-postgres",
-            "keycloak",
-            "livekit",
-        ),
-        environment=environment,
-    )
-    _run(
-        _compose(
-            environment,
-            project,
-            "--profile",
-            "bootstrap",
-            "run",
-            "--rm",
-            "schema-baseline",
-        ),
-        environment=environment,
-    )
-    fixture_bytes = (
-        Path(args.fixture_manifest).resolve().parent / "representative-057.sql"
-    ).read_bytes()
-    _run(
-        _compose(
-            environment,
-            project,
-            "exec",
-            "--no-TTY",
-            "postgres",
-            "psql",
-            "--username",
-            protected["STAGING_DB_USER"],
-            "--dbname",
-            protected["STAGING_DB_NAME"],
-            "--set",
-            "ON_ERROR_STOP=1",
-        ),
-        environment=environment,
-        input_bytes=fixture_bytes,
-    )
-    _run(
-        _compose(
-            environment,
-            project,
-            "up",
-            "--detach",
-            "astraldeep",
-            "voice-worker",
-        ),
-        environment=environment,
-    )
-    capability = _probe(
-        protected["ASTRAL_STAGING_ENDPOINT"],
-        protected["ASTRAL_STAGING_PROBE_TOKEN"],
-    )
-    _verify_public_endpoint_binding(
-        protected["ASTRAL_STAGING_ENDPOINT"],
-        protected["ASTRAL_STAGING_PROBE_TOKEN"],
-        environment=environment,
-        project=project,
-    )
-    revision = _run(
-        _compose(
-            environment,
-            project,
-            "exec",
-            "--no-TTY",
-            "postgres",
-            "psql",
-            "--tuples-only",
-            "--no-align",
-            "--username",
-            protected["STAGING_DB_USER"],
-            "--dbname",
-            protected["STAGING_DB_NAME"],
-            "--command",
-            "SELECT value FROM schema_meta WHERE key='revision';",
-        ),
-        environment=environment,
-    ).stdout.decode("utf-8").strip()
-    if revision != "060.004":
-        raise StagingError(f"candidate normal startup ended at schema {revision!r}")
-    ps_bytes = _run(
-        _compose(environment, project, "ps", "--format", "json"),
-        environment=environment,
-    ).stdout
-    running_services = _running_compose_services(
-        ps_bytes,
-        expected_images=service_identity["images"],
-    )
-    service_identity["running_services"] = sorted(running_services)
-    service_identity_bytes = json.dumps(
-        service_identity,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    candidate_digest = candidate_image.rsplit("@sha256:", 1)[1]
-    capability_bytes = json.dumps(
-        capability,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    deployed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    output = {
-        "environment_id": args.environment_id,
-        "request_namespace": project,
-        "topology": "shared_reachable_ephemeral",
-        "deployment_run_id": protected["GITHUB_RUN_ID"],
-        "deployed_at": deployed_at,
-        "endpoint": validate_endpoint(protected["ASTRAL_STAGING_ENDPOINT"]),
-        "candidate_image_reference": candidate_image,
-        "candidate_image_sha256": candidate_digest,
-        "representative_dataset_sha256": fixtures[
-            "representative_dataset_sha256"
-        ],
-        "fixture_manifest_sha256": fixtures["fixture_manifest_sha256"],
-        "keycloak_realm_sha256": fixtures["keycloak_realm_sha256"],
-        "source_schema_revision": "057.001",
-        "migrated_schema_revision": "060.004",
-        "authentication_posture": "real_keycloak_oidc",
-        "database_posture": "representative_postgresql",
-        "worker_paths": ["background", "scheduler", "maintenance", "voice"],
-        "voice_runtime": voice_runtime,
-        "service_image_references": service_identity["images"],
-        "livekit_turn_tls": service_identity["livekit_turn_tls"],
-        "macos_personal_agent_host": {
-            **capability,
-            "source": "candidate_capability_map",
-            "manifest_sha256": hashlib.sha256(capability_bytes).hexdigest(),
-        },
-        "capability_manifest_sha256": hashlib.sha256(capability_bytes).hexdigest(),
-        "service_identity_sha256": hashlib.sha256(service_identity_bytes).hexdigest(),
-    }
-    _assert_no_secret_values(output, location="$staging_output")
-    _atomic_json(Path(args.outputs), output)
-    print(
-        json.dumps(
-            {
-                "candidate_sha": args.candidate_sha,
-                "environment_id": args.environment_id,
-                "output": str(Path(args.outputs)),
-                "qualifying_decision": False,
-                "requires_protected_attestation": True,
-            },
-            sort_keys=True,
-        )
-    )
-    return 0
+    _require_plane_fixture_importer()
 
 
 def _cleanup(args: argparse.Namespace) -> int:
@@ -1698,7 +1322,6 @@ def _cleanup(args: argparse.Namespace) -> int:
             "ASTRAL_VOICE_WORKER_IMAGE": cleanup_image,
             "STAGING_POSTGRES_IMAGE": cleanup_image,
             "STAGING_KEYCLOAK_IMAGE": cleanup_image,
-            "STAGING_SCHEMA_BASELINE_IMAGE": cleanup_image,
             "STAGING_RUNTIME_ENV_FILE": "/dev/null",
             "STAGING_DB_USER": "cleanup",
             "STAGING_DB_PASSWORD": "cleanup",

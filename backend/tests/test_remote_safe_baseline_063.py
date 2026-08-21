@@ -13,8 +13,8 @@ this suite proves both halves where each actually lives:
   reach with zero transport effects, and the classification map covers the
   whole mutating registry so no mutating verb can drift past the gate.
 
-Hermetic: fake permission/proposal stores shaped to the modules' exact queries
-(the test_remote_confirmation_063 convention); FakeTransport; no postgres.
+Permission decisions run against an isolated current AstralPlane database;
+confirmation decisions retain the hermetic proposal store and FakeTransport.
 """
 from __future__ import annotations
 
@@ -28,6 +28,8 @@ from agents.remote_observe import mcp_tools as obs
 from orchestrator import remote_confirmation as rc
 from orchestrator.remote_transport import FakeTransport, MachineTarget, set_transport
 from orchestrator.tool_permissions import ToolPermissionManager
+from tests.helpers.remote_plane_runtime import make_remote_confirmation_plane_source
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 AGENT = "remote-compute-1"
 USER = "fresh-user-1"
@@ -36,31 +38,25 @@ READ_VERBS = sorted(obs.TOOL_REGISTRY)
 MUTATING_VERBS = sorted(ctl.TOOL_REGISTRY)
 
 
-class _PermDB:
-    """Permission store double: NO tool_overrides, NO user_agent rows, and only
-    the agent_scopes rows a test explicitly seeds — i.e. a fresh user."""
-
-    def __init__(self, *, safe=True, public=True):
-        self.safe, self.public = safe, public
-        self.scope_rows = {}  # (user_id, agent_id, scope) -> enabled
-
-    def fetch_one(self, q, params=()):
-        if "FROM user_agent" in q or "FROM tool_overrides" in q:
-            return None
-        if "FROM agent_scopes" in q:
-            key = tuple(params[:3])
-            return {"enabled": self.scope_rows[key]} if key in self.scope_rows else None
-        raise AssertionError("unexpected fetch_one: " + q)
-
-    def get_agent_is_safe(self, agent_id):
-        return self.safe and agent_id == AGENT
-
-    def get_agent_ownership(self, agent_id):
-        return {"is_public": self.public}
-
-
-def _pm(**db_kw):
-    pm = ToolPermissionManager(db=_PermDB(**db_kw))
+def _pm(plane_runtime, *, safe=True, public=True):
+    with plane_runtime.transaction() as transaction:
+        plane_runtime.repositories.agents.upsert_ownership(
+            transaction,
+            agent_id=AGENT,
+            owner_email="remote-baseline@example.test",
+            is_public=public,
+            observed_at=1,
+        )
+        plane_runtime.repositories.agents.set_trust(
+            transaction,
+            agent_id=AGENT,
+            is_safe=safe,
+            marked_by="pytest",
+        )
+    pm = ToolPermissionManager(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
     # The REAL registered scope map (read tier tools:read; mutating tier
     # tools:write / tools:system) — what registration wires in production.
     pm.register_tool_scopes(AGENT, {v: e["scope"] for v, e in unified.TOOL_REGISTRY.items()})
@@ -75,13 +71,23 @@ def _no_audit(monkeypatch):
     set_transport(None)
 
 
+@pytest.fixture
+def plane_runtime(monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "safe_agents", True)
+    with isolated_plane_runtime("remote_baseline") as runtime:
+        yield runtime
+
+
 # ── seed source + registry shape ──────────────────────────────────────────────
 
 def test_remote_compute_is_in_the_boot_seed_source():
-    from shared.database import Database
+    from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
+
     # The boot safe-seed draws from this catalog (filtered by FF_REMOTE_COMPUTE
     # in orchestrator.start) — the unified agent must be in it to be seeded.
-    assert AGENT in Database._FIRST_PARTY_PUBLIC_AGENT_IDS
+    assert AGENT in FIRST_PARTY_PUBLIC_AGENT_IDS
 
 
 def test_registry_tiers_are_disjoint_and_fully_classified():
@@ -100,39 +106,39 @@ def test_registry_tiers_are_disjoint_and_fully_classified():
 
 # ── read verbs under the safe-seed baseline (is_tool_allowed) ─────────────────
 
-def test_no_grant_user_runs_every_read_verb_under_the_safe_baseline():
-    pm = _pm()
+def test_no_grant_user_runs_every_read_verb_under_the_safe_baseline(plane_runtime):
+    pm = _pm(plane_runtime)
     for verb in READ_VERBS:
         assert pm.is_tool_allowed(USER, AGENT, verb) is True, verb
 
 
-def test_read_verbs_denied_without_the_safe_marker():
-    pm = _pm(safe=False)
+def test_read_verbs_denied_without_the_safe_marker(plane_runtime):
+    pm = _pm(plane_runtime, safe=False)
     for verb in READ_VERBS:
         assert pm.is_tool_allowed(USER, AGENT, verb) is False, verb
 
 
-def test_read_verbs_denied_when_the_agent_is_private():
+def test_read_verbs_denied_when_the_agent_is_private(plane_runtime):
     # The flip is withheld for a non-public agent (040 anti-fleet-exposure).
-    pm = _pm(public=False)
+    pm = _pm(plane_runtime, public=False)
     for verb in READ_VERBS:
         assert pm.is_tool_allowed(USER, AGENT, verb) is False, verb
 
 
-def test_explicit_optout_beats_the_safe_baseline():
-    pm = _pm()
-    pm.db.scope_rows[(USER, AGENT, "tools:read")] = False
+def test_explicit_optout_beats_the_safe_baseline(plane_runtime):
+    pm = _pm(plane_runtime)
+    pm.set_agent_scopes(USER, AGENT, {"tools:read": False})
     for verb in READ_VERBS:
         assert pm.is_tool_allowed(USER, AGENT, verb) is False, verb
 
 
-def test_mutating_scopes_also_ride_the_safe_baseline():
+def test_mutating_scopes_also_ride_the_safe_baseline(plane_runtime):
     # Reconciled posture pin (merge ac6ed97): the unified agent is safe-seeded,
     # so the PERMISSION layer alone does not distinguish the mutating tier —
     # SC-003's "zero mutating tasks" is enforced by the per-verb confirmation
     # gate below, not here. If the baseline is ever narrowed per-tier, update
     # this pin deliberately.
-    pm = _pm()
+    pm = _pm(plane_runtime)
     for verb in MUTATING_VERBS:
         assert pm.is_tool_allowed(USER, AGENT, verb) is True, verb
 
@@ -141,19 +147,23 @@ def test_mutating_scopes_also_ride_the_safe_baseline():
 
 class _ProposalDB:
     def __init__(self):
-        self.proposals = []  # INSERT param tuples
-
-    def execute(self, q, params=()):
-        assert "INSERT INTO remote_operation_proposal" in q
-        self.proposals.append(params)
-
-    def fetch_one(self, q, params=()):
-        return None  # no machine rows (label lookup), no stored proposals
+        self.rows = {}
 
 
 def _orch(db):
-    return SimpleNamespace(history=SimpleNamespace(db=db),
-                           credential_manager=object(), ui_sessions={})
+    source = make_remote_confirmation_plane_source(db)
+    return SimpleNamespace(
+        history=SimpleNamespace(db=db),
+        plane_repository_source=source,
+        runtime_composition=SimpleNamespace(
+            plane=SimpleNamespace(
+                runtime=source.plane_runtime,
+                repositories=source.plane_repositories,
+            )
+        ),
+        credential_manager=object(),
+        ui_sessions={},
+    )
 
 
 _DESTRUCTIVE_CALLS = {
@@ -178,7 +188,8 @@ def test_every_destructive_verb_is_refused_on_first_reach_with_no_effect(monkeyp
         assert out is not None and "confirmation_required" in out[0], verb
         # a proposal was recorded for the caller, and NOTHING executed: the
         # only transport traffic allowed is the read-only if_exists stat.
-        assert len(db.proposals) == 1 and db.proposals[0][5] == verb
+        assert len(db.rows) == 1
+        assert next(iter(db.rows.values()))["verb"] == verb
         assert [c["op"] for c in t.calls if c["op"] != "stat"] == [], verb
 
 
@@ -195,4 +206,4 @@ def test_read_and_nondestructive_verbs_pass_the_gate_untouched():
         ("manage_package", {"machine_id": "m1", "package_name": "vim", "action": "install"}),
     ):
         assert rc.evaluate(o, object(), AGENT, verb, args, "chat", USER) is None, verb
-    assert db.proposals == []
+    assert db.rows == {}

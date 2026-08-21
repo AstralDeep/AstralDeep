@@ -439,10 +439,16 @@ class TestOrchestratorRetry:
     @pytest.fixture
     def orchestrator(self):
         """Create a minimal orchestrator for retry testing."""
-        # Feature 054: env vars are inert and there is no orchestrator-held
-        # llm_client — these tests never reach an LLM call.
         from orchestrator.orchestrator import Orchestrator
-        orch = Orchestrator()
+
+        # The retry wrapper is a unit seam: constructing the full application
+        # graph here binds process-global Plane consumers that these tests do
+        # not exercise. Keep the fake exact to the state this method reads so
+        # repeated cases cannot leak one test's runtime binding into the next.
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.MAX_RETRIES = 3
+        orch.RETRY_BACKOFF = (0.001, 0.001, 0.001)
+        orch.ui_sessions = {}
         return orch
 
     @pytest.mark.asyncio
@@ -595,10 +601,15 @@ class TestLLMRouting:
     @pytest.fixture
     def orchestrator(self):
         """Create an orchestrator with mocked LLM client."""
-        # Feature 054: env vars are inert and there is no orchestrator-held
-        # llm_client — these tests never reach an LLM call.
         from orchestrator.orchestrator import Orchestrator
-        orch = Orchestrator()
+
+        # These tests cover only tool metadata and pending-request bookkeeping;
+        # keep them independent of the application-scoped Plane runtime.
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.agent_cards = {}
+        orch.agent_capabilities = {}
+        orch.agents = {}
+        orch.pending_requests = {}
 
         # Register a fake agent with capabilities
         from shared.protocol import AgentCard, AgentSkill

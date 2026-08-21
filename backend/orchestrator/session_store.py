@@ -21,6 +21,12 @@ import os
 import time
 from typing import Any, Dict, Optional
 
+from astralplane.repositories.history import SessionRecord
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    repository_from,
+)
+
 logger = logging.getLogger("orchestrator.session_store")
 
 _DEV_VALUES = ("development", "dev")
@@ -123,12 +129,55 @@ class SessionStoreError(Exception):
 class WebSessionStore:
     """Postgres-backed session CRUD with an in-process read-through cache."""
 
-    def __init__(self, db=None):
-        if db is None:
-            from shared.database import Database
-            db = Database()
-        self.db = db
+    def __init__(
+        self,
+        db=None,
+        *,
+        plane_runtime=None,
+        plane_repositories=None,
+        session_context: PlaneRepositoryContext | None = None,
+        revocation_context: PlaneRepositoryContext | None = None,
+    ):
+        """Bind to the application's initialized Plane runtime.
+
+        ``db`` remains accepted only as a transition-time dependency carrier:
+        it must expose the already-created ``plane_runtime`` and repository
+        catalog.  It is never used for statements or connection ownership.
+        Tests may instead inject the two narrow repository contexts directly.
+        """
+        if session_context is None:
+            history, runtime = repository_from(
+                "history",
+                plane_runtime=plane_runtime,
+                repositories=plane_repositories,
+                legacy_database=db,
+            )
+            if runtime is None:
+                raise ValueError("an initialized Plane runtime is required")
+            session_context = PlaneRepositoryContext(
+                repository=history.sessions,
+                plane_runtime=runtime,
+            )
+        if revocation_context is None:
+            revocations, runtime = repository_from(
+                "revocations",
+                plane_runtime=plane_runtime,
+                repositories=plane_repositories,
+                legacy_database=db,
+            )
+            if runtime is None:
+                raise ValueError("an initialized Plane runtime is required")
+            revocation_context = PlaneRepositoryContext(
+                repository=revocations,
+                plane_runtime=runtime,
+            )
+        self._sessions = session_context
+        self._revocations = revocation_context
         self._cache: Dict[str, Dict[str, Any]] = {}
+        # Resolution and attempt mutations are owner-scoped in Plane.  The
+        # trusted drainer first obtains these fences from pending_revocations;
+        # keeping them detached here prevents queue ids becoming authority.
+        self._revocation_fences: Dict[int, tuple[str, int]] = {}
         # sid -> why get() last returned None for it ('hard_cap'), so the
         # /auth/session contract can report reason:'hard_cap' (auth-session.md).
         self._death_reasons: Dict[str, str] = {}
@@ -165,6 +214,19 @@ class WebSessionStore:
             logger.warning("session_store: token decrypt failed (key rotated?) — treating session as dead")
             return ""
 
+    def _from_record(self, record: SessionRecord) -> Dict[str, Any]:
+        return {
+            "sid": record.session_id,
+            "user_id": record.owner_id,
+            "access_token": self._dec(record.access_token_ciphertext),
+            "refresh_token": self._dec(record.refresh_token_ciphertext),
+            "interactive_anchor": record.interactive_anchor,
+            "hard_expires_at": record.hard_expires_at,
+            "last_refresh_at": record.last_refresh_at,
+            "resumed": record.resumed,
+            "created_at": record.created_at,
+        }
+
     # ── session CRUD ─────────────────────────────────────────────────────
     def create(self, sid: str, *, user_id: str, access_token: str,
                refresh_token: str, hard_max_seconds: int,
@@ -182,14 +244,18 @@ class WebSessionStore:
             "resumed": bool(resumed),
             "created_at": now,
         }
-        self.db.execute(
-            "INSERT INTO web_session (sid, user_id, access_token_enc, refresh_token_enc, "
-            "interactive_anchor, hard_expires_at, last_refresh_at, resumed, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (sid, user_id, self._enc(access_token), self._enc(refresh_token),
-             row["interactive_anchor"], row["hard_expires_at"],
-             row["last_refresh_at"], row["resumed"], row["created_at"]),
+        record = SessionRecord(
+            session_id=sid,
+            owner_id=user_id,
+            access_token_ciphertext=self._enc(access_token),
+            refresh_token_ciphertext=self._enc(refresh_token),
+            interactive_anchor=row["interactive_anchor"],
+            hard_expires_at=row["hard_expires_at"],
+            last_refresh_at=row["last_refresh_at"],
+            resumed=row["resumed"],
+            created_at=row["created_at"],
         )
+        self._sessions.call(self._sessions.repository.put, record=record)
         self._cache[sid] = row
         return row
 
@@ -197,23 +263,23 @@ class WebSessionStore:
         """Return the live session (cap-checked); expired sessions are deleted."""
         row = self._cache.get(sid)
         if row is None:
-            db_row = self.db.fetch_one("SELECT * FROM web_session WHERE sid = ?", (sid,))
-            if not db_row:
-                return None
-            row = {
-                "sid": db_row["sid"],
-                "user_id": db_row["user_id"],
-                "access_token": self._dec(db_row["access_token_enc"]),
-                "refresh_token": self._dec(db_row["refresh_token_enc"]),
-                "interactive_anchor": int(db_row["interactive_anchor"]),
-                "hard_expires_at": int(db_row["hard_expires_at"]),
-                "last_refresh_at": int(db_row["last_refresh_at"]),
-                "resumed": bool(db_row.get("resumed")),
-                "created_at": int(db_row["created_at"]),
-            }
-            if not row["access_token"] and not row["refresh_token"]:
-                # Undecryptable (key rotation) — dead session.
-                self.delete(sid)
+            with self._sessions.transaction() as transaction:
+                record = self._sessions.repository.get_by_session_id_for_administration(
+                    transaction,
+                    session_id=sid,
+                )
+                if record is None:
+                    return None
+                row = self._from_record(record)
+                if not row["access_token"] and not row["refresh_token"]:
+                    # Undecryptable (key rotation) — dead session.
+                    self._sessions.repository.delete(
+                        transaction,
+                        owner_id=record.owner_id,
+                        session_id=record.session_id,
+                    )
+                    return None
+            if row is None:  # pragma: no cover - narrows Optional for type checkers
                 return None
             self._cache[sid] = row
         if int(time.time()) >= row["hard_expires_at"]:
@@ -235,15 +301,25 @@ class WebSessionStore:
         fails closed and nothing durable is created). Token bytes never leave
         this class except through this deliberate, consent-gated read.
         """
-        row = self.db.fetch_one(
-            "SELECT sid FROM web_session WHERE user_id = ? AND hard_expires_at > ? "
-            "ORDER BY last_refresh_at DESC LIMIT 1",
-            (user_id, int(time.time())),
-        )
-        if not row:
-            return None
-        session = self.get(dict(row)["sid"])
-        return (session or {}).get("refresh_token") or None
+        with self._sessions.transaction() as transaction:
+            record = self._sessions.repository.get_latest_live_for_owner(
+                transaction,
+                owner_id=user_id,
+                observed_at=int(time.time()),
+            )
+            if record is None:
+                return None
+            row = self._from_record(record)
+            if not row["access_token"] and not row["refresh_token"]:
+                self._sessions.repository.delete(
+                    transaction,
+                    owner_id=record.owner_id,
+                    session_id=record.session_id,
+                )
+                self._cache.pop(record.session_id, None)
+                return None
+        self._cache[record.session_id] = row
+        return row["refresh_token"] or None
 
     def _record_death(self, sid: str, reason: str) -> None:
         if len(self._death_reasons) > 256:
@@ -256,89 +332,155 @@ class WebSessionStore:
 
     def update_tokens(self, sid: str, *, access_token: str, refresh_token: str) -> None:
         """Rotate tokens after a silent refresh. NEVER moves the anchor (016 FR-001)."""
-        now = int(time.time())
-        self.db.execute(
-            "UPDATE web_session SET access_token_enc = ?, refresh_token_enc = ?, last_refresh_at = ? "
-            "WHERE sid = ?",
-            (self._enc(access_token), self._enc(refresh_token), now, sid),
-        )
-        row = self._cache.get(sid)
-        if row:
-            row.update(access_token=access_token, refresh_token=refresh_token, last_refresh_at=now)
+        with self._sessions.transaction() as transaction:
+            current = self._sessions.repository.get_by_session_id_for_administration(
+                transaction,
+                session_id=sid,
+            )
+            if current is None:
+                self._cache.pop(sid, None)
+                return
+            refreshed_at = max(int(time.time()), current.last_refresh_at + 1)
+            refreshed = SessionRecord(
+                session_id=current.session_id,
+                owner_id=current.owner_id,
+                access_token_ciphertext=self._enc(access_token),
+                refresh_token_ciphertext=self._enc(refresh_token),
+                interactive_anchor=current.interactive_anchor,
+                hard_expires_at=current.hard_expires_at,
+                last_refresh_at=refreshed_at,
+                resumed=current.resumed,
+                created_at=current.created_at,
+            )
+            stored = self._sessions.repository.compare_and_set_refresh(
+                transaction,
+                refreshed,
+                expected_last_refresh_at=current.last_refresh_at,
+            )
+        self._cache[sid] = self._from_record(stored)
 
     def mark_resumed(self, sid: str, resumed: bool = True) -> None:
-        self.db.execute("UPDATE web_session SET resumed = ? WHERE sid = ?", (bool(resumed), sid))
-        row = self._cache.get(sid)
-        if row:
-            row["resumed"] = bool(resumed)
+        target = bool(resumed)
+        with self._sessions.transaction() as transaction:
+            current = self._sessions.repository.get_by_session_id_for_administration(
+                transaction,
+                session_id=sid,
+            )
+            if current is None:
+                self._cache.pop(sid, None)
+                return
+            stored = (
+                current
+                if current.resumed == target
+                else self._sessions.repository.mark_resumed(
+                    transaction,
+                    owner_id=current.owner_id,
+                    session_id=current.session_id,
+                    expected_resumed=current.resumed,
+                    resumed=target,
+                )
+            )
+        self._cache[sid] = self._from_record(stored)
 
     def delete(self, sid: str) -> Optional[Dict[str, Any]]:
         """Delete a session; returns the cached row (for revocation) if known."""
         row = self._cache.pop(sid, None)
-        if row is None:
-            db_row = self.db.fetch_one("SELECT * FROM web_session WHERE sid = ?", (sid,))
-            if db_row:
-                row = {
-                    "sid": db_row["sid"],
-                    "user_id": db_row["user_id"],
-                    "access_token": self._dec(db_row["access_token_enc"]),
-                    "refresh_token": self._dec(db_row["refresh_token_enc"]),
-                }
-        self.db.execute("DELETE FROM web_session WHERE sid = ?", (sid,))
+        with self._sessions.transaction() as transaction:
+            record = self._sessions.repository.get_by_session_id_for_administration(
+                transaction,
+                session_id=sid,
+            )
+            if record is None:
+                return row
+            if row is None:
+                row = self._from_record(record)
+            self._sessions.repository.delete(
+                transaction,
+                owner_id=record.owner_id,
+                session_id=record.session_id,
+            )
         return row
 
     def delete_for_user(self, user_id: str) -> int:
         """Delete every session of a user (user-switch revocation, 016 FR-008)."""
         for sid in [s for s, r in self._cache.items() if r.get("user_id") == user_id]:
             self._cache.pop(sid, None)
-        cur = self.db.execute("DELETE FROM web_session WHERE user_id = ?", (user_id,))
-        return getattr(cur, "rowcount", 0)
+        return self._sessions.call(
+            self._sessions.repository.delete_owner,
+            owner_id=user_id,
+        )
 
     def purge_expired(self) -> int:
         """Opportunistic cleanup of hard-cap-expired rows."""
         now = int(time.time())
         for sid in [s for s, r in self._cache.items() if now >= r.get("hard_expires_at", 0)]:
             self._cache.pop(sid, None)
-        cur = self.db.execute("DELETE FROM web_session WHERE hard_expires_at <= ?", (now,))
-        return getattr(cur, "rowcount", 0)
+        return self._sessions.call(
+            self._sessions.repository.delete_expired_for_administration,
+            observed_at=now,
+        )
 
     # ── revocation queue (FR-013; client_id added by feature 044) ────────
     def enqueue_revocation(self, user_id: str, refresh_token: str,
                            client_id: str | None = None) -> None:
         if not refresh_token:
             return
-        self.db.execute(
-            "INSERT INTO auth_revocation_queue "
-            "(user_id, refresh_token_enc, enqueued_at, attempts, client_id) "
-            "VALUES (?, ?, ?, 0, ?)",
-            (user_id, self._enc(refresh_token), int(time.time()),
-             (client_id or "").strip() or None),
+        self._revocations.call(
+            self._revocations.repository.enqueue,
+            owner_id=user_id,
+            refresh_token_ciphertext=self._enc(refresh_token),
+            enqueued_at=int(time.time()),
+            client_id=(client_id or "").strip() or None,
         )
 
     def pending_revocations(self, limit: int = 20) -> list:
-        rows = self.db.fetch_all(
-            "SELECT * FROM auth_revocation_queue ORDER BY enqueued_at ASC LIMIT ?", (limit,)
+        records = self._revocations.call(
+            self._revocations.repository.pending_for_administration,
+            limit=limit,
         )
         out = []
-        for r in rows:
+        fences: Dict[int, tuple[str, int]] = {}
+        for record in records:
+            fences[record.queue_id] = (record.owner_id, record.attempts)
             out.append({
-                "id": r["id"],
-                "user_id": r["user_id"],
-                "refresh_token": self._dec(r["refresh_token_enc"]),
-                "attempts": int(r.get("attempts") or 0),
-                "enqueued_at": int(r["enqueued_at"]),
+                "id": record.queue_id,
+                "user_id": record.owner_id,
+                "refresh_token": self._dec(record.refresh_token_ciphertext),
+                "attempts": record.attempts,
+                "enqueued_at": record.enqueued_at,
                 # NULL for pre-044 rows → retrier falls back to the web client id.
-                "client_id": r.get("client_id"),
+                "client_id": record.client_id,
             })
+        self._revocation_fences = fences
         return out
 
     def resolve_revocation(self, queue_id: int) -> None:
-        self.db.execute("DELETE FROM auth_revocation_queue WHERE id = ?", (queue_id,))
+        try:
+            owner_id, _attempts = self._revocation_fences.pop(queue_id)
+        except KeyError:
+            raise SessionStoreError(
+                "revocation mutation requires a pending owner fence"
+            ) from None
+        self._revocations.call(
+            self._revocations.repository.resolve,
+            owner_id=owner_id,
+            queue_id=queue_id,
+        )
 
     def bump_revocation_attempt(self, queue_id: int) -> None:
-        self.db.execute(
-            "UPDATE auth_revocation_queue SET attempts = attempts + 1 WHERE id = ?", (queue_id,)
+        try:
+            owner_id, attempts = self._revocation_fences[queue_id]
+        except KeyError:
+            raise SessionStoreError(
+                "revocation mutation requires a pending owner fence"
+            ) from None
+        updated = self._revocations.call(
+            self._revocations.repository.bump_attempt,
+            owner_id=owner_id,
+            queue_id=queue_id,
+            expected_attempts=attempts,
         )
+        self._revocation_fences[queue_id] = (owner_id, updated.attempts)
 
     # ── async facade (event-loop-safe twins of the sync methods above) ────
     async def acreate(self, sid: str, *, user_id: str, access_token: str,

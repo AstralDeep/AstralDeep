@@ -1,46 +1,39 @@
 """Feature 052 — every async twin runs its sync counterpart off the loop.
 
 One await per ``a*`` facade method across WorkspaceManager, WebSessionStore
-and the attachment repositories, against the live dev Postgres. All rows are
-namespaced per-test and deleted on teardown. Sync setup happens in sync
+and the attachment repositories, against an isolated current Plane database.
+All rows are namespaced per-test and deleted on teardown. Sync setup happens in sync
 fixtures (no running loop), so the suite's event-loop guard stays quiet even
 in enforce mode.
 """
+
 from __future__ import annotations
 
-import sys
 import uuid
-from pathlib import Path
 
 import pytest
+from astralplane import create_streaming_blob_store
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-try:
-    import psycopg2  # noqa: F401
-    from shared.database import Database
-except Exception:  # pragma: no cover - import guard
-    Database = None  # type: ignore
+from tests.helpers.attachment_materialization import publish_attachment_for_test
+from tests.helpers.voice_plane_runtime import (
+    PlaneTestRuntime,
+    history_manager,
+    isolated_plane_runtime,
+)
 
 
-def _db_or_skip():
-    """Return a connected Database or skip the test."""
-    if Database is None:
-        pytest.skip("psycopg2/shared.database unavailable")
-    try:
-        return Database()
-    except Exception as exc:  # pragma: no cover - no DB in this env
-        pytest.skip(f"database unreachable: {exc}")
+@pytest.fixture(scope="module")
+def plane_runtime():
+    """Create one isolated current Plane runtime for the async facade proofs."""
+
+    with isolated_plane_runtime("async_twins") as runtime:
+        yield runtime
 
 
 @pytest.fixture()
-def chat_env():
+def chat_env(plane_runtime: PlaneTestRuntime):
     """Real HistoryManager + unique user/chat, deleted on teardown."""
-    _db_or_skip()
-    from orchestrator.history import HistoryManager
-    history = HistoryManager()
+    history = history_manager(plane_runtime)
     user_id = f"twin-user-{uuid.uuid4()}"
     chat_id = history.create_chat(user_id=user_id)
     yield history, user_id, chat_id
@@ -49,11 +42,17 @@ def chat_env():
 
 async def test_workspace_async_twins_cover_the_sync_surface(chat_env):
     from orchestrator.workspace import WorkspaceManager
+
     history, user_id, chat_id = chat_env
     ws = WorkspaceManager(history)
-    comp = {"type": "metric", "title": "Twin", "value": "1",
-            "_source_agent": "agent-t", "_source_tool": "tool-t",
-            "_source_params": {}}
+    comp = {
+        "type": "metric",
+        "title": "Twin",
+        "value": "1",
+        "_source_agent": "agent-t",
+        "_source_tool": "tool-t",
+        "_source_params": {},
+    }
 
     ops = await ws.aupsert(chat_id, user_id, [comp])
     cid = ops[0]["component_id"]
@@ -65,9 +64,12 @@ async def test_workspace_async_twins_cover_the_sync_surface(chat_env):
     got = await ws.aget_by_component_id(chat_id, user_id, cid)
     assert got is not None
 
-    assert await ws.aupsert_layout(
-        chat_id, user_id, "lk_test",
-        [{"type": "ref", "component_id": cid}]) is True
+    assert (
+        await ws.aupsert_layout(
+            chat_id, user_id, "lk_test", [{"type": "ref", "component_id": cid}]
+        )
+        is True
+    )
     layouts = await ws.alive_layouts(chat_id, user_id)
     assert layouts and layouts[0]["layout_key"] == "lk_test"
 
@@ -84,24 +86,33 @@ async def test_workspace_async_twins_cover_the_sync_surface(chat_env):
 
 
 @pytest.fixture()
-def session_env(monkeypatch):
+def session_env(monkeypatch, plane_runtime: PlaneTestRuntime):
     """A dev-mode WebSessionStore + namespaced ids, cleaned on teardown."""
-    db = _db_or_skip()
     monkeypatch.setenv("ASTRAL_ENV", "development")
     from orchestrator.session_store import WebSessionStore
-    store = WebSessionStore(db)
+
+    store = WebSessionStore(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
     sid = f"twin-sid-{uuid.uuid4()}"
     user_id = f"twin-user-{uuid.uuid4()}"
     yield store, sid, user_id
-    db.execute("DELETE FROM web_session WHERE sid = ?", (sid,))
-    db.execute("DELETE FROM auth_revocation_queue WHERE user_id = ?", (user_id,))
+    plane_runtime.execute("DELETE FROM web_session WHERE sid = ?", (sid,))
+    plane_runtime.execute(
+        "DELETE FROM auth_revocation_queue WHERE user_id = ?", (user_id,)
+    )
 
 
 async def test_session_store_async_twins_cover_the_sync_surface(session_env):
     store, sid, user_id = session_env
     row = await store.acreate(
-        sid, user_id=user_id, access_token="at", refresh_token="rt",
-        hard_max_seconds=3600)
+        sid,
+        user_id=user_id,
+        access_token="at",
+        refresh_token="rt",
+        hard_max_seconds=3600,
+    )
     assert row["sid"] == sid
 
     got = await store.aget(sid)
@@ -117,33 +128,53 @@ async def test_session_store_async_twins_cover_the_sync_surface(session_env):
     assert isinstance(await store.apurge_expired(), int)
 
     await store.aenqueue_revocation(user_id, "rt-orphan", client_id="astral-web")
-    pending = await store.apending_revocations(limit=500)
+    pending = await store.apending_revocations(limit=200)
     mine = [p for p in pending if p["user_id"] == user_id]
     assert mine and mine[0]["client_id"] == "astral-web"
     await store.aresolve_revocation(mine[0]["id"])
 
 
 @pytest.fixture()
-def attachment_env():
+def attachment_env(plane_runtime: PlaneTestRuntime, tmp_path):
     """Live-DB attachment repositories + namespaced ids, cleaned on teardown."""
-    db = _db_or_skip()
     user_id = f"twin-att-user-{uuid.uuid4()}"
     att_id = str(uuid.uuid4())
-    yield db, user_id, att_id
-    db.execute("DELETE FROM message_attachment WHERE user_id = ?", (user_id,))
-    db.execute("DELETE FROM user_attachments WHERE user_id = ?", (user_id,))
+    blobs = create_streaming_blob_store(root=tmp_path / "attachments")
+    publish_attachment_for_test(
+        plane_runtime,
+        plane_runtime.repositories,
+        blobs,
+        owner_id=user_id,
+        attachment_id=att_id,
+        filename="twin.md",
+        content_type="text/markdown",
+        category="text",
+        extension="md",
+        chunks=(b"twin",),
+        max_bytes=4,
+    )
+    try:
+        yield plane_runtime, user_id, att_id
+    finally:
+        plane_runtime.execute(
+            "DELETE FROM message_attachment WHERE user_id = ?", (user_id,)
+        )
+        plane_runtime.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
+        plane_runtime.execute("DELETE FROM chats WHERE user_id = ?", (user_id,))
+        plane_runtime.execute(
+            "DELETE FROM user_attachments WHERE user_id = ?", (user_id,)
+        )
+        blobs.close()
 
 
-async def test_attachment_repository_async_twins(attachment_env):
+async def test_attachment_repository_async_read_twins(attachment_env):
     from orchestrator.attachments.repository import AttachmentRepository
-    db, user_id, att_id = attachment_env
-    repo = AttachmentRepository(db)
 
-    att = await repo.ainsert(
-        attachment_id=att_id, user_id=user_id, filename="twin.md",
-        content_type="text/markdown", category="text", extension="md",
-        size_bytes=4, sha256="0" * 64, storage_path=f"{user_id}/twin.md")
-    assert att.attachment_id == att_id
+    db, user_id, att_id = attachment_env
+    repo = AttachmentRepository(
+        plane_runtime=db,
+        plane_repositories=db.repositories,
+    )
 
     got = await repo.aget_by_id(att_id, user_id)
     assert got is not None and got.filename == "twin.md"
@@ -151,36 +182,44 @@ async def test_attachment_repository_async_twins(attachment_env):
     listed, cursor = await repo.alist_for_user(user_id, limit=10)
     assert [a.attachment_id for a in listed] == [att_id]
 
-    assert await repo.asoft_delete(att_id, user_id) is True
-    assert await repo.asoft_delete_all_for_user(user_id) == 0
-
-
 async def test_message_attachment_repo_async_twins(attachment_env):
     from orchestrator.attachments.message_attachment_repo import (
         MessageAttachmentRepository,
     )
     db, user_id, att_id = attachment_env
-    repo = MessageAttachmentRepository(db)
-    chat_id = f"twin-chat-{uuid.uuid4()}"
+    history = history_manager(db)
+    chat_id = history.create_chat(user_id=user_id)
+    history.add_message(chat_id, "user", "link this attachment", user_id=user_id)
+    message_id = history.get_latest_message_id(chat_id, user_id=user_id)
+    assert message_id is not None
+    repo = MessageAttachmentRepository(
+        plane_runtime=db,
+        plane_repositories=db.repositories,
+    )
 
     link_id = await repo.ainsert(
-        chat_id=chat_id, attachment_id=att_id, user_id=user_id,
-        message_id="m-twin-1")
+        chat_id=chat_id,
+        attachment_id=att_id,
+        user_id=user_id,
+        message_id=message_id,
+    )
     assert link_id
 
     for_chat = await repo.alist_for_chat(chat_id, user_id)
     assert [r["id"] for r in for_chat] == [link_id]
-    for_message = await repo.alist_for_message("m-twin-1", user_id)
+    for_message = await repo.alist_for_message(message_id, user_id)
     assert [r["attachment_id"] for r in for_message] == [att_id]
 
 
 @pytest.fixture()
-def parser_env():
+def parser_env(plane_runtime: PlaneTestRuntime):
     """Live-DB parser registry repo + namespaced gap, cleaned on teardown."""
-    db = _db_or_skip()
     gap = f"twin-gap-{uuid.uuid4()}"
-    yield db, gap
-    db.execute("DELETE FROM attachment_parser WHERE gap_fingerprint = ?", (gap,))
+    yield plane_runtime, gap
+    plane_runtime.execute(
+        "DELETE FROM attachment_parser WHERE gap_fingerprint IN (?, ?)",
+        (gap, f"{gap}-failed"),
+    )
 
 
 async def test_parser_repo_async_twins(parser_env):
@@ -189,23 +228,52 @@ async def test_parser_repo_async_twins(parser_env):
         STATUS_LIVE,
         AttachmentParserRepository,
     )
+
     db, gap = parser_env
-    repo = AttachmentParserRepository(db)
+    repo = AttachmentParserRepository(
+        plane_runtime=db,
+        plane_repositories=db.repositories,
+    )
     draft_id = f"twin-draft-{uuid.uuid4().hex[:12]}"
 
     row = await repo.acreate_pending(
-        gap_fingerprint=gap, category="data", extension="xyz",
-        draft_agent_id=draft_id, source_attachment_id=None,
-        source_chat_id=None, requested_by="twin-user")
+        gap_fingerprint=gap,
+        category="data",
+        extension="xyz",
+        draft_agent_id=draft_id,
+        source_attachment_id=None,
+        source_chat_id=None,
+        requested_by="twin-user",
+    )
     assert row["gap_fingerprint"] == gap
 
     assert (await repo.aget_by_gap(gap))["id"] == row["id"]
-    assert (await repo.aget_by_draft(draft_id))["id"] == row["id"]
+    assert (await repo.aget_by_draft(draft_id, owner_user_id="twin-user"))["id"] == row[
+        "id"
+    ]
 
-    await repo.amark_live(gap, live_agent_id="xyz-parser-1",
-                          tool_name="read_xyz", approved_by="admin")
+    await repo.amark_live(
+        gap, live_agent_id="xyz-parser-1", tool_name="read_xyz", approved_by="admin"
+    )
     assert (await repo.aget_by_gap(gap))["status"] == STATUS_LIVE
 
-    await repo.amark_status(gap, STATUS_FAILED)
-    failed = await repo.alist_by_status(STATUS_FAILED)
-    assert any(r["gap_fingerprint"] == gap for r in failed)
+    failed_gap = f"{gap}-failed"
+    await repo.acreate_pending(
+        gap_fingerprint=failed_gap,
+        category="data",
+        extension="xyzf",
+        draft_agent_id=f"{draft_id}-failed",
+        source_attachment_id=None,
+        source_chat_id=None,
+        requested_by="twin-user",
+    )
+    await repo.amark_status(
+        failed_gap,
+        STATUS_FAILED,
+        owner_user_id="twin-user",
+    )
+    failed = await repo.alist_by_status(
+        STATUS_FAILED,
+        owner_user_id="twin-user",
+    )
+    assert any(r["gap_fingerprint"] == failed_gap for r in failed)

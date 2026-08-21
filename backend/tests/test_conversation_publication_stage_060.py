@@ -11,15 +11,12 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import os
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterator
 
-import psycopg2
 import pytest
-from psycopg2 import sql
 
 from orchestrator.conversation_publication import (
     ConversationPublicationStage,
@@ -27,8 +24,9 @@ from orchestrator.conversation_publication import (
     current_conversation_publication,
     reset_conversation_publication,
 )
+from orchestrator.history import HistoryManager
 from orchestrator.workspace import WorkspaceManager, iter_layout_refs
-from shared.database import Database, _build_database_url
+from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
 
 
 OWNER = "canvas-owner-060"
@@ -38,73 +36,36 @@ REQUEST_GENERATION = "55555555-5555-4555-8555-555555555555"
 
 
 @pytest.fixture(scope="module")
-def postgres_database() -> Iterator[Database]:
-    params = psycopg2.extensions.parse_dsn(_build_database_url())
-    name = f"astraldeep_canvas_stage_{uuid.uuid4().hex}"
-    try:
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    dsn = psycopg2.extensions.make_dsn(**database_params)
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(dsn)
-    finally:
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name))
-                )
-            admin.close()
-        except Exception:
-            pass
+def postgres_database() -> Iterator[PlaneTestRuntime]:
+    with isolated_plane_runtime("canvas_stage") as runtime:
+        yield runtime
 
 
 @pytest.fixture
-def database(postgres_database: Database) -> Database:
-    connection = postgres_database._get_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM workspace_snapshot")
-            cursor.execute("DELETE FROM workspace_layout")
-            cursor.execute("DELETE FROM saved_components")
-            cursor.execute("UPDATE chats SET conversation_commit_id = NULL")
-            cursor.execute("DELETE FROM conversation_commit")
-            cursor.execute("DELETE FROM chats")
-        connection.commit()
-    except BaseException:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+def database(postgres_database: PlaneTestRuntime) -> PlaneTestRuntime:
+    with postgres_database.transaction() as transaction:
+        transaction.execute("DELETE FROM workspace_snapshot")
+        transaction.execute("DELETE FROM workspace_layout")
+        transaction.execute("DELETE FROM saved_components")
+        transaction.execute("UPDATE chats SET conversation_commit_id = NULL")
+        transaction.execute("DELETE FROM conversation_commit")
+        transaction.execute("DELETE FROM chats")
     return postgres_database
 
 
-def _manager(database: Database) -> tuple[SimpleNamespace, WorkspaceManager]:
-    history = SimpleNamespace(db=database)
-    return history, WorkspaceManager(history)
+def _manager(database: PlaneTestRuntime) -> tuple[HistoryManager, WorkspaceManager]:
+    history = HistoryManager(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
+    return history, WorkspaceManager(
+        history,
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
 
 
-def _seed_authoritative_canvas(database: Database) -> None:
+def _seed_authoritative_canvas(database: PlaneTestRuntime) -> None:
     database.execute(
         "INSERT INTO chats (id, user_id, title, created_at, updated_at) "
         "VALUES (?, ?, 'Canvas staging', 1, 1)",
@@ -156,8 +117,8 @@ def _seed_authoritative_canvas(database: Database) -> None:
 
 
 def _stage_complete_copy(
-    database: Database,
-    history: SimpleNamespace,
+    database: PlaneTestRuntime,
+    history: HistoryManager,
     manager: WorkspaceManager,
 ) -> ConversationPublicationStage:
     authoritative_rows = manager.live_rows(CHAT_ID, OWNER)
@@ -210,7 +171,7 @@ def _contents(manager: WorkspaceManager) -> dict[str, str]:
 
 
 def test_staged_workspace_mutations_are_task_local_and_authority_is_unchanged(
-    database: Database,
+    database: PlaneTestRuntime,
 ) -> None:
     _seed_authoritative_canvas(database)
     history, manager = _manager(database)
@@ -222,7 +183,11 @@ def test_staged_workspace_mutations_are_task_local_and_authority_is_unchanged(
     try:
         assert current_conversation_publication() is stage
         assert stage.matches(history, CHAT_ID, OWNER)
-        assert not stage.matches(SimpleNamespace(db=database), CHAT_ID, OWNER)
+        other_history = HistoryManager(
+            plane_runtime=database,
+            plane_repositories=database.repositories,
+        )
+        assert not stage.matches(other_history, CHAT_ID, OWNER)
         assert _contents(manager) == authoritative
 
         ops = manager.upsert(
@@ -292,7 +257,7 @@ def test_staged_workspace_mutations_are_task_local_and_authority_is_unchanged(
 
 
 def test_staged_empty_canvas_is_explicit_without_clearing_authority(
-    database: Database,
+    database: PlaneTestRuntime,
 ) -> None:
     _seed_authoritative_canvas(database)
     history, manager = _manager(database)
@@ -304,12 +269,11 @@ def test_staged_empty_canvas_is_explicit_without_clearing_authority(
         assert manager.remove(CHAT_ID, OWNER, "component-b")
         assert manager.live_rows(CHAT_ID, OWNER) == []
         assert manager.live_components(CHAT_ID, OWNER) == []
-        assert stage.layouts == [
-            {
-                "layout_key": "authoritative-layout",
-                "position": 3,
-                "layout": [{"type": "stack", "children": []}],
-            }
+        assert len(stage.layouts) == 1
+        assert stage.layouts[0]["layout_key"] == "authoritative-layout"
+        assert stage.layouts[0]["position"] == 3
+        assert stage.layouts[0]["layout"] == [
+            {"type": "stack", "children": []}
         ]
         stage.seal(committed=True)
         assert stage.sealed is True
@@ -327,7 +291,7 @@ def test_staged_empty_canvas_is_explicit_without_clearing_authority(
 
 
 def test_unmatched_stage_and_current_revision_filter_hide_non_authoritative_rows(
-    database: Database,
+    database: PlaneTestRuntime,
 ) -> None:
     _seed_authoritative_canvas(database)
     history, manager = _manager(database)
@@ -337,29 +301,31 @@ def test_unmatched_stage_and_current_revision_filter_hide_non_authoritative_rows
     try:
         # A different chat/user/history must never inherit this task's stage.
         assert manager.live_rows(CHAT_ID, "another-owner") == []
-        other_history = SimpleNamespace(db=database)
-        other_manager = WorkspaceManager(other_history)
+        other_history = HistoryManager(
+            plane_runtime=database,
+            plane_repositories=database.repositories,
+        )
+        other_manager = WorkspaceManager(
+            other_history,
+            plane_runtime=database,
+            plane_repositories=database.repositories,
+        )
         assert set(_contents(other_manager)) == {"component-a", "component-b"}
     finally:
         reset_conversation_publication(token)
 
-    connection = database._get_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "UPDATE conversation_commit SET state = 'committed', "
-                "committed_render_revision = 1, committed_at = now() "
-                "WHERE commit_id = %s",
-                (COMMIT_ID,),
-            )
-            cursor.execute(
-                "UPDATE chats SET render_revision = 1, conversation_commit_id = %s, "
-                "snapshot_committed_at = now() WHERE id = %s AND user_id = %s",
-                (COMMIT_ID, CHAT_ID, OWNER),
-            )
-        connection.commit()
-    finally:
-        connection.close()
+    with database.transaction() as transaction:
+        transaction.execute(
+            "UPDATE conversation_commit SET state = 'committed', "
+            "committed_render_revision = 1, committed_at = now() "
+            "WHERE commit_id = %s",
+            (COMMIT_ID,),
+        )
+        transaction.execute(
+            "UPDATE chats SET render_revision = 1, conversation_commit_id = %s, "
+            "snapshot_committed_at = now() WHERE id = %s AND user_id = %s",
+            (COMMIT_ID, CHAT_ID, OWNER),
+        )
 
     # Legacy revision-zero rows coexist physically but the current committed
     # revision is the only authoritative read outside a publication stage.

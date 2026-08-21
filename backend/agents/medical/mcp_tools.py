@@ -334,22 +334,21 @@ def analyze_csv_file(
     the tool never accepts a caller-supplied on-disk path.
     """
     try:
-        from agents.general.file_tools import resolve_attachment
+        from agents.general.file_tools import read_attachment_bytes
     except ImportError as e:
         return create_ui_response([Alert(message=f"Attachments subsystem unavailable: {e}", variant="error")])
 
-    _att, blob_path, err = resolve_attachment(attachment_id, user_id)
+    _att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return create_ui_response([Alert(message=err["error"]["message"], variant="error")])
 
     try:
-        with open(blob_path, mode='r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
-            if not rows:
-                return create_ui_response([Alert(message="CSV file contains no data rows.", variant="error")])
-            fieldnames = reader.fieldnames or []
-            return _process_csv_data(rows, fieldnames, missing_strategy)
+        reader = csv.DictReader(io.StringIO(payload.decode("utf-8", errors="replace")))
+        rows = list(reader)
+        if not rows:
+            return create_ui_response([Alert(message="CSV file contains no data rows.", variant="error")])
+        fieldnames = reader.fieldnames or []
+        return _process_csv_data(rows, fieldnames, missing_strategy)
     except Exception as e:
         return create_ui_response([Alert(message=f"Failed to read CSV file: {e}", variant="error")])
 

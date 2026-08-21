@@ -3,7 +3,7 @@ import asyncio
 import json
 import types
 
-from webrender.chrome.surfaces import drafts
+from orchestrator.projection_surfaces import drafts
 
 
 class FakeDB:
@@ -19,9 +19,26 @@ class FakeDB:
                 return dict(r)
         return None
 
+    def get_owned_draft_agent(self, user_id, draft_id):
+        draft = self.get_draft_agent(draft_id)
+        if draft is None or draft.get("user_id") != user_id:
+            return None
+        return draft
+
+    def get_decidable_drafts(self, user_id):
+        return [
+            dict(row)
+            for row in self.rows
+            if row.get("user_id") == user_id and row.get("status") != "live"
+        ]
+
 
 def orch_with(rows):
-    return types.SimpleNamespace(history=types.SimpleNamespace(db=FakeDB(rows)))
+    store = FakeDB(rows)
+    return types.SimpleNamespace(
+        history=types.SimpleNamespace(db=store),
+        lifecycle_manager=types.SimpleNamespace(draft_store=store),
+    )
 
 
 def run(coro):

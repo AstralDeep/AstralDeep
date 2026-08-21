@@ -7,77 +7,39 @@ public API and Chrome adapters have separate focused fake-backed tests.
 
 from __future__ import annotations
 
-import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Iterator
 
-import psycopg2
 import pytest
-from psycopg2 import sql
 
 from orchestrator.work_admission import (
     AdmissionClass,
     AdmissionClassConfig,
     WorkAdmissionCoordinator,
 )
-from scheduler.store import ScheduledJobStore
-from shared.database import Database, _build_database_url
+from scheduler.tests.plane_runtime import (
+    ensure_plane_runtime,
+    scheduled_job_store as ScheduledJobStore,
+    work_admission_repository,
+)
+from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
 
 
 @pytest.fixture(scope="module")
-def postgres_database() -> Iterator[Database]:
-    """Create one isolated, normally migrated PostgreSQL database."""
+def postgres_database() -> Iterator[PlaneTestRuntime]:
+    """Create one isolated database initialized only by AstralPlane."""
 
-    base_dsn = _build_database_url()
-    try:
-        params = psycopg2.extensions.parse_dsn(base_dsn)
-        name = f"astraldeep_schedule_actions_{uuid.uuid4().hex}"
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    dsn = psycopg2.extensions.make_dsn(**database_params)
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(dsn)
-    finally:
-        Database.close()
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(
-                        sql.Identifier(name)
-                    )
-                )
-            admin.close()
-        except Exception:
-            pass
+    with isolated_plane_runtime("schedule_actions") as runtime:
+        yield runtime
 
 
 @pytest.fixture
-def clean_database(postgres_database: Database) -> Database:
+def clean_database(postgres_database: PlaneTestRuntime) -> PlaneTestRuntime:
     db = postgres_database
+    ensure_plane_runtime(db)
     db.execute("DELETE FROM effect_ledger")
     db.execute("DELETE FROM job_run")
     db.execute("DELETE FROM scheduled_occurrence")
@@ -91,7 +53,7 @@ def clean_database(postgres_database: Database) -> Database:
     return db
 
 
-def _coordinator(db: Database) -> WorkAdmissionCoordinator:
+def _coordinator(db: PlaneTestRuntime) -> WorkAdmissionCoordinator:
     return WorkAdmissionCoordinator(
         admission_classes=(
             AdmissionClassConfig(
@@ -111,17 +73,10 @@ def _coordinator(db: Database) -> WorkAdmissionCoordinator:
                 config_revision="schedule-actions-060-test",
             ),
         ),
-        database=db,
+        repository=work_admission_repository(db),
         operation_retention=timedelta(hours=24),
         slot_lease=timedelta(seconds=90),
     )
-
-
-def _database_now_ms(db: Database) -> int:
-    row = db.fetch_one(
-        "SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS now_ms"
-    )
-    return int(row["now_ms"])
 
 
 def _job(
@@ -131,7 +86,7 @@ def _job(
     label: str,
     due: bool = False,
 ) -> dict[str, Any]:
-    now_ms = _database_now_ms(store.db)
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
     return store.create_job(
         owner,
         name=f"Job {label}",
@@ -190,7 +145,7 @@ def _assert_code(exc: BaseException, expected: str) -> None:
 
 
 def test_schema_has_owner_scoped_run_now_submission_identity(
-    postgres_database: Database,
+    postgres_database: PlaneTestRuntime,
 ) -> None:
     column = postgres_database.fetch_one(
         """
@@ -222,7 +177,7 @@ def test_schema_has_owner_scoped_run_now_submission_identity(
 
 
 def test_concurrent_and_replayed_run_now_resolve_one_occurrence_without_cadence_change(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     coordinator = _coordinator(clean_database)
     stores = (
@@ -248,8 +203,7 @@ def test_concurrent_and_replayed_run_now_resolve_one_occurrence_without_cadence_
         results = tuple(pool.map(submit, stores))
 
     occurrence_ids = {
-        uuid.UUID(str(_occurrence_value(result, "occurrence_id")))
-        for result in results
+        uuid.UUID(str(_occurrence_value(result, "occurrence_id"))) for result in results
     }
     assert len(occurrence_ids) == 1
     occurrence_id = next(iter(occurrence_ids))
@@ -282,11 +236,9 @@ def test_concurrent_and_replayed_run_now_resolve_one_occurrence_without_cadence_
 
 
 def test_run_now_submission_cannot_be_rebound_to_another_job(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
-    store = ScheduledJobStore(
-        clean_database, coordinator=_coordinator(clean_database)
-    )
+    store = ScheduledJobStore(clean_database, coordinator=_coordinator(clean_database))
     owner = "owner-run-now-conflict"
     first_job = _job(store, owner=owner, label="conflict-a")
     second_job = _job(store, owner=owner, label="conflict-b")
@@ -320,11 +272,9 @@ def test_run_now_submission_cannot_be_rebound_to_another_job(
 
 
 def test_run_now_owner_scope_is_enforced_without_cross_owner_disclosure(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
-    store = ScheduledJobStore(
-        clean_database, coordinator=_coordinator(clean_database)
-    )
+    store = ScheduledJobStore(clean_database, coordinator=_coordinator(clean_database))
     submission_id = uuid.uuid4()
     owner_a = "owner-scope-a"
     owner_b = "owner-scope-b"
@@ -353,21 +303,22 @@ def test_run_now_owner_scope_is_enforced_without_cross_owner_disclosure(
         submission_id=submission_id,
     )
     assert _created(second_owner) is True
-    assert int(
-        clean_database.fetch_one(
-            "SELECT COUNT(*) AS n FROM scheduled_occurrence "
-            "WHERE run_now_submission_id = ?",
-            (str(submission_id),),
-        )["n"]
-    ) == 2
+    assert (
+        int(
+            clean_database.fetch_one(
+                "SELECT COUNT(*) AS n FROM scheduled_occurrence "
+                "WHERE run_now_submission_id = ?",
+                (str(submission_id),),
+            )["n"]
+        )
+        == 2
+    )
 
 
 def test_claim_scan_does_not_claim_pending_work_for_paused_job(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
-    store = ScheduledJobStore(
-        clean_database, coordinator=_coordinator(clean_database)
-    )
+    store = ScheduledJobStore(clean_database, coordinator=_coordinator(clean_database))
     owner = "owner-paused-claim-guard"
     job = _job(store, owner=owner, label="paused-claim-guard")
     occurrence_id = uuid.uuid4()
@@ -394,10 +345,13 @@ def test_claim_scan_does_not_claim_pending_work_for_paused_job(
     )
 
     assert claims == ()
-    assert clean_database.fetch_one(
-        "SELECT state FROM scheduled_occurrence WHERE occurrence_id = ?",
-        (str(occurrence_id),),
-    )["state"] == "pending"
+    assert (
+        clean_database.fetch_one(
+            "SELECT state FROM scheduled_occurrence WHERE occurrence_id = ?",
+            (str(occurrence_id),),
+        )["state"]
+        == "pending"
+    )
 
 
 @pytest.mark.parametrize(
@@ -408,13 +362,11 @@ def test_claim_scan_does_not_claim_pending_work_for_paused_job(
     ),
 )
 def test_pause_or_delete_cancels_pending_run_now_occurrence(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
     status: str,
     terminal_code: str,
 ) -> None:
-    store = ScheduledJobStore(
-        clean_database, coordinator=_coordinator(clean_database)
-    )
+    store = ScheduledJobStore(clean_database, coordinator=_coordinator(clean_database))
     owner = f"owner-pending-{status}"
     job = _job(store, owner=owner, label=f"pending-{status}")
     result = _run_now(
@@ -456,7 +408,7 @@ def test_pause_or_delete_cancels_pending_run_now_occurrence(
     ),
 )
 def test_pause_or_delete_cancels_claimed_but_not_running_attempt(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
     status: str,
     terminal_code: str,
 ) -> None:
@@ -469,10 +421,13 @@ def test_pause_or_delete_cancels_claimed_but_not_running_attempt(
     )[0]
     attempt = store.allocate_attempt(claim)
     assert attempt.execution_fence is not None
-    assert clean_database.fetch_one(
-        "SELECT state FROM scheduled_occurrence WHERE occurrence_id = ?",
-        (str(claim.occurrence_id),),
-    )["state"] == "claimed"
+    assert (
+        clean_database.fetch_one(
+            "SELECT state FROM scheduled_occurrence WHERE occurrence_id = ?",
+            (str(claim.occurrence_id),),
+        )["state"]
+        == "claimed"
+    )
 
     changed = store.set_status_and_cancel_unstarted(
         user_id=owner,
@@ -497,13 +452,16 @@ def test_pause_or_delete_cancels_claimed_but_not_running_attempt(
     assert occurrence["terminal_at"] is not None
     assert operation["state"] == "cancelled"
     assert operation["terminal_code"] == terminal_code
-    assert int(
-        clean_database.fetch_one(
-            "SELECT COUNT(*) AS n FROM operation_admission_slot "
-            "WHERE operation_id = ?",
-            (str(attempt.operation_id),),
-        )["n"]
-    ) == 0
+    assert (
+        int(
+            clean_database.fetch_one(
+                "SELECT COUNT(*) AS n FROM operation_admission_slot "
+                "WHERE operation_id = ?",
+                (str(attempt.operation_id),),
+            )["n"]
+        )
+        == 0
+    )
 
 
 @pytest.mark.parametrize(
@@ -514,7 +472,7 @@ def test_pause_or_delete_cancels_claimed_but_not_running_attempt(
     ),
 )
 def test_pause_or_delete_leaves_already_running_occurrence_and_operation_untouched(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
     status: str,
     terminal_code: str,
 ) -> None:

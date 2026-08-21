@@ -8,19 +8,16 @@ per-component construction logic and no client-side rendering framework
 """
 from __future__ import annotations
 
-import os
 import re
 from typing import Any, Dict, List
+
+from astralprojection.resources import static_path
 
 from verification.checks.base import Check, CheckResult, no, ok, register, unsure
 from verification.checks.common import vocabulary_check
 from verification.evidence import CapturedEvidence
 
-# backend/verification/checks/thin_client.py -> parents[3] == backend/
-_BACKEND_DIR = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-)
-_CLIENT_JS = os.path.join(_BACKEND_DIR, "webrender", "static", "client.js")
+_CLIENT_JS = str(static_path("client.js"))
 
 # Framework / construction markers whose ABSENCE we assert (FR-025).
 _FRAMEWORK_PATTERNS = (

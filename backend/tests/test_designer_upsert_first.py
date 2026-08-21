@@ -55,12 +55,12 @@ def _canvas_renders(ws):
 
 
 @pytest.fixture()
-def env(monkeypatch):
+async def env(monkeypatch):
     """A real Orchestrator + registered socket + fresh chat for one user."""
     monkeypatch.setenv("FF_UI_DESIGNER", "true")
     from orchestrator.orchestrator import Orchestrator
     try:
-        orch = Orchestrator()
+        orch = await asyncio.to_thread(Orchestrator)
     except Exception as exc:
         pytest.skip(f"orchestrator/database unavailable: {exc}")
     user_id = f"designer-test-{uuid.uuid4().hex[:8]}"
@@ -68,13 +68,23 @@ def env(monkeypatch):
     orch.ui_sessions[ws] = {"sub": user_id}
     orch.ui_clients.append(ws)
     orch.rote.register_device(ws, {})
-    chat_id = orch.history.create_chat(user_id=user_id)
+    chat_id = await asyncio.to_thread(
+        orch.history.create_chat,
+        user_id=user_id,
+    )
     orch._ws_active_chat[id(ws)] = chat_id
-    yield orch, ws, chat_id, user_id
     try:
-        orch.history.delete_chat(chat_id, user_id=user_id)
-    except Exception:
-        pass
+        yield orch, ws, chat_id, user_id
+    finally:
+        try:
+            await asyncio.to_thread(
+                orch.history.delete_chat,
+                chat_id,
+                user_id=user_id,
+            )
+        except Exception:
+            pass
+        await orch._close_started_services()
 
 
 def _ref_layout_from_rows(canvas_rows):

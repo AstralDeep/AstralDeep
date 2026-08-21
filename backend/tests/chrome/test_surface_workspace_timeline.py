@@ -1,6 +1,6 @@
 """Feature 028 — workspace timeline chrome surface (FR-031/FR-032/FR-033/EC-5).
 
-Exercises ``backend/webrender/chrome/surfaces/workspace_timeline.py`` over a
+Exercises ``backend/orchestrator/projection_surfaces/workspace_timeline.py`` over a
 REAL Postgres-backed ``WorkspaceManager``/``HistoryManager`` (uuid-unique
 user/chat per test, FK CASCADE cleanup) and a fake orchestrator that captures
 ``_safe_send`` / ``send_ui_render`` traffic, mirroring
@@ -35,25 +35,8 @@ if str(BACKEND_DIR) not in sys.path:
 
 from orchestrator.history import HistoryManager  # noqa: E402
 from orchestrator.workspace import WorkspaceManager  # noqa: E402
-from webrender.chrome.surfaces import workspace_timeline as wt  # noqa: E402
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
-)
+from orchestrator.projection_surfaces import workspace_timeline as wt  # noqa: E402
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 class _FakeWS:
@@ -94,11 +77,20 @@ def _make_orch(history, user_id):
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="module")
+def plane_runtime():
+    with isolated_plane_runtime("workspace_timeline") as runtime:
+        yield runtime
+
+
 @pytest.fixture
-def env(tmp_path):
+def env(plane_runtime):
     """Real HistoryManager + uuid-unique user/chat; chat deleted on teardown
     (FK CASCADE clears saved_components and workspace_snapshot rows)."""
-    history = HistoryManager(data_dir=str(tmp_path))
+    history = HistoryManager(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
     user_id = f"pytest-wt-{uuid.uuid4().hex[:12]}"
     chat_id = history.create_chat(user_id=user_id)
     orch = _make_orch(history, user_id)

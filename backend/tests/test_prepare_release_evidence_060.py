@@ -192,11 +192,17 @@ def _native_coverage_report(prepare: Any, root: Path, slot: str) -> Path:
         )
     if slot == "tooling":
         return _cobertura(root / "tooling.xml", "scripts/release.py", hits=1)
+    if slot == "projection_python":
+        return _cobertura(
+            root / "projection-python.xml",
+            "components/AstralProjection/src/astralprojection/runtime.py",
+            hits=1,
+        )
     if slot == "windows":
-        return _cobertura(root / "windows.xml", "windows-client/app.py", hits=1)
+        return _cobertura(root / "windows.xml", "components/AstralProjection/windows-client/app.py", hits=1)
     if slot == "javascript":
         path = root / "javascript.json"
-        source = "backend/webrender/static/client.js"
+        source = "components/AstralProjection/backend/webrender/static/client.js"
         path.write_text(
             json.dumps(
                 {
@@ -234,11 +240,11 @@ def _native_coverage_report(prepare: Any, root: Path, slot: str) -> Path:
         )
         return path
     apple_sources = {
-        "ios": ("apple-clients/AstralApp/AstralApp/AppModel.swift",),
-        "macos": ("apple-clients/AstralApp/AstralApp/AstralAppMain.swift",),
+        "ios": ("components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift",),
+        "macos": ("components/AstralProjection/apple-clients/AstralApp/AstralApp/AstralAppMain.swift",),
         "watchos": (
-            "apple-clients/AstralWatch/WatchModel.swift",
-            "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
+            "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift",
+            "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
         ),
     }
     path = root / f"{slot}.json"
@@ -708,14 +714,15 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
         "backend/voice_agent/main.py",
         "backend/voice_agent/voice_transcript.py",
         "scripts/release.py",
-        "windows-client/app.py",
-        "backend/webrender/static/client.js",
-        "android-client/app/src/main/kotlin/com/example/App.kt",
-        "android-client/core/src/main/kotlin/com/example/Core.kt",
-        "apple-clients/AstralApp/AstralApp/AppModel.swift",
-        "apple-clients/AstralApp/AstralApp/AstralAppMain.swift",
-        "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
-        "apple-clients/AstralWatch/WatchModel.swift",
+        "components/AstralProjection/src/astralprojection/runtime.py",
+        "components/AstralProjection/windows-client/app.py",
+        "components/AstralProjection/backend/webrender/static/client.js",
+        "components/AstralProjection/android-client/app/src/main/kotlin/com/example/App.kt",
+        "components/AstralProjection/android-client/core/src/main/kotlin/com/example/Core.kt",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AstralAppMain.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
+        "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift",
     ):
         tracked = repo / tracked_path
         tracked.parent.mkdir(parents=True, exist_ok=True)
@@ -754,7 +761,7 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
         tmp_path / "voice-worker.xml",
         {
             "backend/voice_agent/voice_transcript.py": {2: 1},
-            "backend/voice_agent/main.py": {1: 1},
+            "backend/voice_agent/main.py": {1: 1, 2: 1},
         },
     )
     coverage = tmp_path / "voice-worker.xml"
@@ -809,8 +816,11 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
         prepare.COVERAGE_INPUT_SLOTS
     )
     assert all(decision["producer_contributions"].values())
-    assert not any(
-        line["path"] == "backend/voice_agent/main.py" for line in decision["lines"]
+    assert any(
+        line["path"] == "backend/voice_agent/main.py"
+        and line["line"] == 2
+        and line["covered"] is True
+        for line in decision["lines"]
     )
     capsys.readouterr()
 
@@ -901,10 +911,10 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
     (tmp_path / "watchos.json").write_text(
         json.dumps(
             {
-                "apple-clients/AstralWatch/WatchModel.swift": [
+                "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift": [
                     {"line": 1, "isExecutable": True, "executionCount": 1}
                 ],
-                "apple-clients/AstralApp/AstralApp/AstralAppMain.swift": [
+                "components/AstralProjection/apple-clients/AstralApp/AstralApp/AstralAppMain.swift": [
                     {"line": 1, "isExecutable": True, "executionCount": 1}
                 ],
             }
@@ -939,10 +949,10 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
     (tmp_path / "ios.json").write_text(
         json.dumps(
             {
-                "apple-clients/AstralApp/AstralApp/AppModel.swift": [
+                "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift": [
                     {"line": 1, "isExecutable": True, "executionCount": 1}
                 ],
-                "apple-clients/AstralWatch/WatchModel.swift": [
+                "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift": [
                     {"line": 1, "isExecutable": True, "executionCount": 1}
                 ],
             }
@@ -1064,7 +1074,7 @@ def test_standard_mode_rejects_an_empty_coverage_matrix(
         == 2
     )
     error = capsys.readouterr().err
-    assert "strict coverage mode requires all ten producer slots" in error
+    assert "strict coverage mode requires every repository-profile slot" in error
     assert "--voice-worker-python" in error
     assert "--watchos" in error
     assert not output.exists()
@@ -1110,14 +1120,15 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
         "backend/service.py",
         "backend/voice_agent/main.py",
         "scripts/release.py",
-        "windows-client/app.py",
-        "backend/webrender/static/client.js",
-        "android-client/app/src/main/kotlin/com/example/App.kt",
-        "android-client/core/src/main/kotlin/com/example/Core.kt",
-        "apple-clients/AstralApp/AstralApp/AppModel.swift",
-        "apple-clients/AstralApp/AstralApp/AstralAppMain.swift",
-        "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
-        "apple-clients/AstralWatch/WatchModel.swift",
+        "components/AstralProjection/src/astralprojection/runtime.py",
+        "components/AstralProjection/windows-client/app.py",
+        "components/AstralProjection/backend/webrender/static/client.js",
+        "components/AstralProjection/android-client/app/src/main/kotlin/com/example/App.kt",
+        "components/AstralProjection/android-client/core/src/main/kotlin/com/example/Core.kt",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AstralAppMain.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
+        "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift",
     )
     for tracked_path in tracked_paths:
         tracked = repo / tracked_path
@@ -1129,10 +1140,10 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
         )
         tracked.write_text(content, encoding="utf-8")
     base = _commit(repo, "base")
-    app_model = repo / "apple-clients/AstralApp/AstralApp/AppModel.swift"
+    app_model = repo / "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift"
     app_model.write_text("first\nchanged\n", encoding="utf-8")
     core_source = (
-        repo / "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift"
+        repo / "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift"
     )
     core_source.write_text("first\nchanged\n", encoding="utf-8")
     candidate = _commit(repo, "candidate")
@@ -1149,17 +1160,17 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
         coverage_args.extend((f"--{producer.flag}", str(report)))
 
     ios = {
-        "apple-clients/AstralApp/AstralApp/AppModel.swift": [
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift": [
             {"line": 1, "isExecutable": False},
             {"line": 2, "isExecutable": True, "executionCount": 1},
         ]
     }
     macos = {
-        "apple-clients/AstralApp/AstralApp/AppModel.swift": [
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift": [
             {"line": 1, "isExecutable": False},
             {"line": 2, "isExecutable": True, "executionCount": 0},
         ],
-        "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift": [
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift": [
             {"line": 1, "isExecutable": False},
             {"line": 2, "isExecutable": True, "executionCount": 1}
         ],
@@ -1190,11 +1201,11 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
     (tmp_path / "macos.json").write_text(
         json.dumps(
                 {
-                    "apple-clients/AstralApp/AstralApp/AppModel.swift": [
+                    "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift": [
                         {"line": 1, "isExecutable": False},
                         {"line": 2, "isExecutable": True, "executionCount": 0}
                     ],
-                "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift": [
+                "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift": [
                     {"line": 1, "isExecutable": True, "executionCount": 0}
                 ],
             }
@@ -1207,7 +1218,7 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
     (tmp_path / "macos.json").write_text(
         json.dumps(
             {
-                "apple-clients/AstralApp/AstralApp/AppModel.swift": [
+                "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift": [
                     {"line": 1, "isExecutable": False},
                     {"line": 2, "isExecutable": True, "executionCount": 0}
                 ]
@@ -1226,7 +1237,7 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
     (tmp_path / "macos.json").write_text(
         json.dumps(
             {
-                "apple-clients/AstralApp/AstralApp/AppModel.swift": [
+                "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift": [
                     {"line": 1, "isExecutable": True, "executionCount": 0}
                 ]
             }
@@ -1410,10 +1421,11 @@ def test_make_wrapper_passes_every_required_coverage_partition() -> None:
     assert flags.count("--backend-python") == 1
     assert flags.count("--voice-worker-python") == 1
     assert flags.count("--tooling-python") == 1
-    assert flags.count("--windows-python") == 1
-    assert flags.count("--javascript") == 1
-    assert flags.count("--android-app") == 1
-    assert flags.count("--android-core") == 1
-    assert flags.count("--ios") == 1
-    assert flags.count("--macos") == 1
-    assert flags.count("--watchos") == 1
+    assert "--repository-profile deep" in target
+    assert flags.count("--windows-python") == 0
+    assert flags.count("--javascript") == 0
+    assert flags.count("--android-app") == 0
+    assert flags.count("--android-core") == 0
+    assert flags.count("--ios") == 0
+    assert flags.count("--macos") == 0
+    assert flags.count("--watchos") == 0

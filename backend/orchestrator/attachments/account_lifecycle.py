@@ -1,38 +1,66 @@
-"""Account-deletion hook for attachments.
+"""Authorized self-service account-retirement attachment boundary.
 
-Called by the user-management subsystem when an account is removed (per
-contracts/upload-api.md "Account deletion" section). Soft-deletes every
-attachment row owned by *user_id* and recursively removes the user's blob
-directory under ``ATTACHMENT_UPLOAD_ROOT``.
+The initiating identity is the verified Keycloak ``sub``.  Logout never calls
+this module.  Plane atomically retires the owner's attachment namespace and
+reconciles physical absence asynchronously.  Keycloak account removal must be
+performed only after this status reaches ``purged``.  A ``manual_review`` state
+is intentionally recoverable only through Plane's evidence-bound operator
+procedure.
 """
 
 from __future__ import annotations
 
-import logging
+from orchestrator.attachments.purge import (
+    AttachmentPurgeAcceptance,
+    AttachmentPurgeCoordinator,
+    AttachmentPurgeOutcome,
+    AttachmentPurgeStatus,
+)
 
-from orchestrator.attachments import store
-from orchestrator.attachments.repository import AttachmentRepository
 
-logger = logging.getLogger("AttachmentsLifecycle")
+async def initiate_account_retirement(
+    purge_coordinator: AttachmentPurgeCoordinator,
+    user_id: str,
+) -> AttachmentPurgeAcceptance:
+    """Durably accept owner cleanup without waiting for physical deletion."""
+
+    return await purge_coordinator.aschedule_owner(owner_id=user_id)
 
 
-def purge_user_attachments(db, user_id: str) -> int:
-    """Soft-delete all of *user_id*'s attachments and remove their blobs.
+async def account_retirement_status(
+    purge_coordinator: AttachmentPurgeCoordinator,
+    user_id: str,
+    cleanup_id: str,
+) -> AttachmentPurgeStatus | None:
+    """Return only the authenticated owner's cleanup status."""
+
+    return await purge_coordinator.aowner_cleanup_status(
+        owner_id=user_id,
+        cleanup_id=cleanup_id,
+    )
+
+
+def purge_user_attachments(
+    purge_coordinator: AttachmentPurgeCoordinator,
+    user_id: str,
+) -> AttachmentPurgeOutcome:
+    """Schedule one owner namespace and report its actual physical state.
 
     Args:
-        db: A :class:`backend.shared.database.Database` (or compatible) instance.
+        purge_coordinator: The application-scoped durable purge boundary.
         user_id: The Keycloak ``sub`` of the deleted account.
 
     Returns:
-        Number of attachment rows that were soft-deleted.
+        The committed logical-deletion and physical-purge outcome.  A caller
+        MUST NOT report account purge complete unless ``outcome.completed`` is
+        true.
     """
-    repo = AttachmentRepository(db)
-    deleted = repo.soft_delete_all_for_user(user_id)
-    try:
-        store.delete_user(user_id)
-    except Exception as exc:  # pragma: no cover - log and swallow
-        logger.warning(f"Blob purge failed for user {user_id}: {exc}")
-    return deleted
+
+    return purge_coordinator.schedule_owner(owner_id=user_id)
 
 
-__all__ = ["purge_user_attachments"]
+__all__ = [
+    "account_retirement_status",
+    "initiate_account_retirement",
+    "purge_user_attachments",
+]

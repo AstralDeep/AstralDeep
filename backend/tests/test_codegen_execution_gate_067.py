@@ -30,7 +30,7 @@ from orchestrator.code_security import (
     Severity,
     blocks_execution,
 )
-from shared.database import Database
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 
 # Reads a secret straight out of the orchestrator's environment. Classified
@@ -185,10 +185,13 @@ def test_codegen_prompt_and_the_execution_floor_never_disagree():
 
 
 @pytest.fixture()
-def lifecycle():
-    db = Database()
-    db._init_db()
-    manager = AgentLifecycleManager(db, orchestrator=None)
+def lifecycle(plane_runtime, tmp_path):
+    manager = AgentLifecycleManager(
+        orchestrator=None,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    manager._agents_dir = str(tmp_path)
     created = []
     _create = manager.create_draft
 
@@ -204,7 +207,13 @@ def lifecycle():
             os.path.join(manager._agents_dir, draft["agent_slug"]),
             ignore_errors=True,
         )
-        db.execute("DELETE FROM draft_agents WHERE id = ?", (draft["id"],))
+        manager.draft_store.delete_draft_agent(draft["id"])
+
+
+@pytest.fixture(scope="module")
+def plane_runtime():
+    with isolated_plane_runtime("codegen_gate") as runtime:
+        yield runtime
 
 
 async def _generate(manager, code, *, name="Gate Probe"):

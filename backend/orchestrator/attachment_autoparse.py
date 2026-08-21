@@ -13,12 +13,77 @@ Lifecycle contract: specs/031-attachment-upload-parsing/contracts/parser-autocre
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from typing import Optional, TypedDict
 
 logger = logging.getLogger("attachment_autoparse")
+
+
+def _plane(orch):
+    composition = getattr(getattr(orch, "runtime_composition", None), "plane", None)
+    if composition is None:
+        raise RuntimeError("attachment autoparse requires the application Plane runtime")
+    return composition
+
+
+def _bind_attachment_provenance(
+    plane,
+    *,
+    owner_id: str,
+    draft_id: str,
+    source_chat_id: str,
+    gap_fingerprint: str,
+    source_attachment_id: str,
+) -> None:
+    with plane.runtime.transaction() as transaction:
+        current = plane.repositories.draft_agents.get_draft(
+            transaction,
+            owner_id=owner_id,
+            draft_id=draft_id,
+            for_update=True,
+        )
+        if current is None:
+            raise LookupError("autoparse draft is unavailable")
+        plane.repositories.draft_agents.bind_attachment_provenance(
+            transaction,
+            owner_id=owner_id,
+            draft_id=draft_id,
+            expected_revision=current.state_revision,
+            source_chat_id=source_chat_id,
+            gap_fingerprint=gap_fingerprint,
+            source_attachment_id=source_attachment_id,
+            updated_at=int(time.time() * 1000),
+        )
+
+
+def _store_self_test(
+    plane,
+    *,
+    owner_id: str,
+    draft_id: str,
+    self_test: str,
+) -> None:
+    with plane.runtime.transaction() as transaction:
+        current = plane.repositories.draft_agents.get_draft(
+            transaction,
+            owner_id=owner_id,
+            draft_id=draft_id,
+            for_update=True,
+        )
+        if current is None:
+            raise LookupError("autoparse draft is unavailable")
+        plane.repositories.draft_agents.compare_and_set_draft(
+            transaction,
+            owner_id=owner_id,
+            draft_id=draft_id,
+            expected_revision=current.state_revision,
+            updates={"self_test": self_test},
+            updated_at=int(time.time() * 1000),
+        )
 
 
 class CoverageStatus(TypedDict):
@@ -44,7 +109,8 @@ def coverage_status(orch, *, extension: Optional[str], category: str) -> Coverag
     from orchestrator.attachments.parser_repo import AttachmentParserRepository
     from shared.feature_flags import flags
 
-    parser_repo = AttachmentParserRepository(orch.history.db)
+    plane = _plane(orch)
+    parser_repo = AttachmentParserRepository.from_plane_source(plane)
     fp = parser_registry.gap_fingerprint(category, extension)
     if parser_registry.coverage(extension, category, parser_repo=parser_repo)["covered"]:
         return {"status": "covered", "gap_fingerprint": fp}
@@ -100,27 +166,50 @@ async def auto_continue_after_go_live(orch, *, requested_by: Optional[str],
     if not (requested_by and source_chat_id and source_attachment_id):
         return False
     try:
-        db = orch.history.db
-        link = db.fetch_one(
-            "SELECT message_id FROM message_attachment "
-            "WHERE attachment_id = ? AND chat_id = ? AND user_id = ? "
-            "ORDER BY created_at ASC",
-            (source_attachment_id, source_chat_id, requested_by),
-        )
-        message_id = (dict(link).get("message_id") if link else None)
-        if not message_id:
-            return False
-        msg = db.fetch_one(
-            "SELECT content FROM messages WHERE id = ? AND chat_id = ?",
-            (message_id, source_chat_id),
-        )
-        original = (dict(msg).get("content") if msg else None)
-        if not original or not str(original).strip():
-            return False
+        plane = _plane(orch)
 
-        from orchestrator.attachments.repository import AttachmentRepository
-        att = AttachmentRepository(db).get_by_id(source_attachment_id, requested_by)
-        if att is None:
+        def _load_original_turn():
+            with plane.runtime.transaction() as transaction:
+                links = plane.repositories.artifacts.message_attachments.list_for_conversation(
+                    transaction,
+                    owner_id=requested_by,
+                    conversation_id=source_chat_id,
+                )
+                link = next(
+                    (
+                        candidate
+                        for candidate in links
+                        if candidate.attachment_id == source_attachment_id
+                        and candidate.message_id is not None
+                    ),
+                    None,
+                )
+                if link is None:
+                    return None
+                try:
+                    message_id = int(link.message_id)
+                except (TypeError, ValueError):
+                    return None
+                message = plane.repositories.history.messages.get(
+                    transaction,
+                    owner_id=requested_by,
+                    conversation_id=source_chat_id,
+                    message_id=message_id,
+                )
+                attachment = plane.repositories.artifacts.attachments.get(
+                    transaction,
+                    owner_id=requested_by,
+                    attachment_id=source_attachment_id,
+                )
+                if message is None or attachment is None:
+                    return None
+                return message.content, attachment
+
+        loaded = await asyncio.to_thread(_load_original_turn)
+        if loaded is None:
+            return False
+        original, attachment = loaded
+        if not isinstance(original, str) or not original.strip():
             return False
 
         # Replay the original turn in-process; the parser is now live so the
@@ -145,7 +234,8 @@ async def auto_continue_after_go_live(orch, *, requested_by: Optional[str],
             await orch.handle_chat_message(
                 vws, str(original), source_chat_id, user_id=requested_by,
                 attachments=[{"attachment_id": source_attachment_id,
-                              "filename": att.filename, "category": att.category}],
+                              "filename": attachment.filename,
+                              "category": attachment.category}],
             )
         finally:
             orch._unbind_machine_turn(vws)
@@ -181,7 +271,8 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
     attachment_id = getattr(attachment, "attachment_id", None)
     filename = getattr(attachment, "filename", "") or ""
     fp = parser_registry.gap_fingerprint(category, extension)
-    parser_repo = AttachmentParserRepository(orch.history.db)
+    plane = _plane(orch)
+    parser_repo = AttachmentParserRepository.from_plane_source(plane)
 
     # Dedup (FR-018): a pending/live row for this gap means no new draft.
     existing = parser_repo.get_by_gap(fp)
@@ -215,12 +306,19 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
 
     # Record provenance + register the (dedup-keyed) registry row.
     try:
-        orch.history.db.update_draft_agent(
-            draft_id, origin="auto_attachment", source_chat_id=chat_id or "",
-            gap_fingerprint=fp, source_attachment_id=attachment_id,
+        if not isinstance(attachment_id, str) or not attachment_id:
+            raise ValueError("autoparse attachment identity is unavailable")
+        await asyncio.to_thread(
+            _bind_attachment_provenance,
+            plane,
+            owner_id=user_id,
+            draft_id=draft_id,
+            source_chat_id=chat_id or "",
+            gap_fingerprint=fp,
+            source_attachment_id=attachment_id,
         )
     except Exception:
-        logger.debug("autoparse: update_draft_agent provenance failed", exc_info=True)
+        logger.debug("autoparse: draft provenance binding failed", exc_info=True)
     try:
         parser_repo.create_pending(
             gap_fingerprint=fp, category=category, extension=extension,
@@ -248,7 +346,11 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
     try:
         draft = await lifecycle.generate_code(draft_id)
         if (draft or {}).get("status") in ("error", "rejected"):
-            parser_repo.mark_status(fp, STATUS_FAILED)
+            parser_repo.mark_status(
+                fp,
+                STATUS_FAILED,
+                owner_user_id=user_id,
+            )
             await agentic_creation._audit(
                 user_id, "lifecycle.auto_created", "Parser generation failed",
                 correlation_id=draft_id, outcome="failure", chat_id=chat_id,
@@ -274,7 +376,13 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
             self_test = await agentic_creation._self_test_draft(
                 orch, draft, user_request, user_id, attachments=test_attachments)
         self_test["auto_refines"] = refines
-        orch.history.db.update_draft_agent(draft_id, self_test=json.dumps(self_test))
+        await asyncio.to_thread(
+            _store_self_test,
+            plane,
+            owner_id=user_id,
+            draft_id=draft_id,
+            self_test=json.dumps(self_test),
+        )
         await agentic_creation._audit(
             user_id, "lifecycle.auto_created",
             f"Auto-created parser draft '{agent_name}' ({draft_id})",
@@ -296,7 +404,11 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
                 "configure the System LLM in admin settings", extension)
         else:
             logger.exception("autoparse: draft pipeline failed for .%s", extension)
-        parser_repo.mark_status(fp, STATUS_FAILED)
+        parser_repo.mark_status(
+            fp,
+            STATUS_FAILED,
+            owner_user_id=user_id,
+        )
         await _notify_user(orch, user_id,
                            f"Couldn't prepare a reader for .{extension} files.", chat_id)
         return {"status": "unavailable", "gap_fingerprint": fp}

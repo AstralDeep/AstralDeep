@@ -17,6 +17,7 @@ Two entry points:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -24,6 +25,13 @@ import time
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
+
+from astralplane.repositories.remote_proposals import RemoteOperationProposalRecord
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    plane_source_from_orchestrator,
+    repository_from,
+)
 
 logger = logging.getLogger("RemoteConfirmation")
 
@@ -130,7 +138,11 @@ def _machine_label(orch, user_id: str, machine_id: Optional[str]) -> str:
         return "?"
     try:
         from orchestrator import remote_machines
-        row = remote_machines.get_machine(orch.history.db, user_id, machine_id)
+        row = remote_machines.get_machine(
+            plane_source_from_orchestrator(orch),
+            user_id,
+            machine_id,
+        )
         if row:
             return str(row.get("label") or machine_id)
     except Exception:  # noqa: BLE001
@@ -192,7 +204,11 @@ def _is_destructive(orch, user_id: str, tool_name: str, args: Dict[str, Any], cl
         from orchestrator.remote_transport import get_transport
         try:
             target = remote_machines.build_target(
-                orch.history.db, orch.credential_manager, user_id, args.get("machine_id"))
+                plane_source_from_orchestrator(orch),
+                orch.credential_manager,
+                user_id,
+                args.get("machine_id"),
+            )
             res = get_transport().stat(target, str(args.get("remote_path") or ""), timeout=15.0)
             if not res.ok:
                 return True  # cannot tell -> treat as destructive (fail-closed)
@@ -223,42 +239,69 @@ def _no_live_human(orch, websocket) -> bool:
 
 # ── proposal store ────────────────────────────────────────────────────────────
 
-def _consume_if_valid(db, proposal_id: str, user_id: str, tool_name: str, args: Dict[str, Any]) -> bool:
+def _proposal_context(orch) -> PlaneRepositoryContext:
+    plane = orch.runtime_composition.plane
+    repository, runtime = repository_from(
+        "remote_operation_proposals",
+        plane_runtime=plane.runtime,
+        repositories=plane.repositories,
+        legacy_database=None,
+    )
+    return PlaneRepositoryContext(repository=repository, plane_runtime=runtime)
+
+
+def _consume_if_valid(
+    orch,
+    proposal_id: str,
+    user_id: str,
+    tool_name: str,
+    args: Dict[str, Any],
+) -> bool:
     """Atomically consume an APPROVED, matching, unexpired proposal. Single-use: the
     guarded ``UPDATE ... WHERE status='approved' RETURNING`` yields the row to exactly
     one caller (FR-031)."""
-    row = db.fetch_one(
-        "SELECT owner_user_id, verb, status, expires_at, args_fingerprint "
-        "FROM remote_operation_proposal WHERE proposal_id = ?", (proposal_id,))
-    if row is None:
-        return False
-    if row["owner_user_id"] != user_id or row["verb"] != tool_name or row["status"] != "approved":
-        return False
-    if int(time.time()) > int(row["expires_at"]):
-        return False
-    if row["args_fingerprint"] != _fingerprint(args):
-        return False  # arguments must match exactly the ones approved
-    consumed = db.fetch_one(
-        "UPDATE remote_operation_proposal SET status='consumed', consumed_at=? "
-        "WHERE proposal_id=? AND status='approved' RETURNING proposal_id",
-        (int(time.time()), proposal_id))
+    context = _proposal_context(orch)
+    with context.transaction() as transaction:
+        consumed = context.repository.consume_if_valid(
+            transaction,
+            owner_id=user_id,
+            proposal_id=proposal_id,
+            expected_tool_name=tool_name,
+            expected_args_fingerprint=_fingerprint(args),
+            consumed_at=int(time.time()),
+        )
     return consumed is not None
 
 
 def _create_proposal(orch, user_id: str, chat_id: Optional[str], agent_id: str,
                      tool_name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     from astralprims import Button, Card, Text
-    db = orch.history.db
     proposal_id = uuid.uuid4().hex
     now = int(time.time())
     summary = _summary(orch, user_id, tool_name, args)
-    db.execute(
-        """INSERT INTO remote_operation_proposal
-           (proposal_id, owner_user_id, chat_id, machine_id, agent_id, verb, args_json,
-            args_fingerprint, summary, status, created_at, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-        (proposal_id, user_id, chat_id, args.get("machine_id"), agent_id, tool_name,
-         _canonical_args(args), _fingerprint(args), summary, now, now + PROPOSAL_TTL_S))
+    context = _proposal_context(orch)
+    with context.transaction() as transaction:
+        context.repository.create(
+            transaction,
+            RemoteOperationProposalRecord(
+                proposal_id=proposal_id,
+                owner_id=user_id,
+                conversation_id=chat_id,
+                machine_id=str(args.get("machine_id") or ""),
+                agent_id=agent_id,
+                tool_name=tool_name,
+                args_fingerprint=_fingerprint(args),
+                arguments={
+                    key: value
+                    for key, value in args.items()
+                    if not str(key).startswith("_")
+                },
+                summary=summary,
+                status="pending",
+                created_at=now,
+                expires_at=now + PROPOSAL_TTL_S,
+            ),
+        )
     logger.info("remote_op proposal created: %s verb=%s owner=%s", proposal_id, tool_name, user_id)
     _audit_sync(user_id, "remote_op.proposed", f"proposed {tool_name}: {summary}",
                 proposal_id=proposal_id, machine_id=args.get("machine_id"), verb=tool_name,
@@ -309,7 +352,7 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
 
     marker = args.get(_MARKER)
     if marker:
-        ok = _consume_if_valid(orch.history.db, str(marker), user_id, tool_name, args)
+        ok = _consume_if_valid(orch, str(marker), user_id, tool_name, args)
         args.pop(_MARKER, None)  # never hand the marker to the agent
         if ok:
             _audit_sync(user_id, "remote_op.consumed",
@@ -333,18 +376,22 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
 
 async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]) -> None:
     from astralprims import Alert
-    db = orch.history.db
     proposal_id = (payload or {}).get("proposal_id")
     decision = (payload or {}).get("decision")
 
     async def _say(message: str, variant: str = "warning") -> None:
         await orch.send_ui_render(websocket, [Alert(message=message, variant=variant).to_dict()], target="chat")
 
+    context = _proposal_context(orch)
     row = None
     if proposal_id:
-        row = await db.afetch_one(
-            "SELECT * FROM remote_operation_proposal WHERE proposal_id = ?", (proposal_id,))
-    if row is None or row["owner_user_id"] != user_id:
+        row = await asyncio.to_thread(
+            context.call,
+            context.repository.get,
+            owner_id=user_id,
+            proposal_id=str(proposal_id),
+        )
+    if row is None:
         # Not found, or belongs to a different user (US3-4) — refuse + audit.
         logger.warning("remote_op_decision refused (not owner/found): id=%s actor=%s", proposal_id, user_id)
         await _audit_async(user_id, "remote_op.decision_refused",
@@ -353,21 +400,44 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         await _say("That confirmation is not available.")
         return
     now = int(time.time())
-    _mid, _verb, _cid = row["machine_id"], row["verb"], row["chat_id"]
-    if row["status"] != "pending":
+    _mid, _verb, _cid = row.machine_id, row.tool_name, row.conversation_id
+    if row.status != "pending":
         await _say("This request was already handled.")
         return
-    if now > int(row["expires_at"]):
-        await db.aexecute("UPDATE remote_operation_proposal SET status='expired' "
-                          "WHERE proposal_id=? AND status='pending'", (proposal_id,))
+    if now > row.expires_at:
+        def _expire():
+            with context.transaction() as transaction:
+                return context.repository.expire_if_pending(
+                    transaction,
+                    owner_id=user_id,
+                    proposal_id=str(proposal_id),
+                    observed_at=now,
+                )
+
+        expired = await asyncio.to_thread(_expire)
+        if expired is None:
+            await _say("This request was already handled.")
+            return
         await _audit_async(user_id, "remote_op.expired", f"approval expired for {_verb}",
                            proposal_id=proposal_id, machine_id=_mid, verb=_verb,
                            outcome="failure", chat_id=_cid)
         await _say("This request expired — please re-request the operation.")
         return
     if decision != "approve":
-        await db.aexecute("UPDATE remote_operation_proposal SET status='declined', decided_at=? "
-                          "WHERE proposal_id=? AND status='pending'", (now, proposal_id))
+        def _decline():
+            with context.transaction() as transaction:
+                return context.repository.decide_if_pending(
+                    transaction,
+                    owner_id=user_id,
+                    proposal_id=str(proposal_id),
+                    decision="declined",
+                    decided_at=now,
+                )
+
+        declined = await asyncio.to_thread(_decline)
+        if declined is None:
+            await _say("This request was already handled.")
+            return
         await _audit_async(user_id, "remote_op.declined", f"declined {_verb}",
                            proposal_id=proposal_id, machine_id=_mid, verb=_verb,
                            outcome="failure", chat_id=_cid)
@@ -375,9 +445,17 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         return
 
     # Approve atomically (single-use guard against a double-click / concurrent tab).
-    approved = await db.afetch_one(
-        "UPDATE remote_operation_proposal SET status='approved', decided_at=? "
-        "WHERE proposal_id=? AND status='pending' RETURNING proposal_id", (now, proposal_id))
+    def _approve():
+        with context.transaction() as transaction:
+            return context.repository.decide_if_pending(
+                transaction,
+                owner_id=user_id,
+                proposal_id=str(proposal_id),
+                decision="approved",
+                decided_at=now,
+            )
+
+    approved = await asyncio.to_thread(_approve)
     if approved is None:
         await _say("This request was already handled.")
         return
@@ -387,10 +465,15 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     # Re-enter the tool with the STORED args + the consume marker. The gate re-checks
     # the full stack, matches the approved proposal by (owner, verb, args), consumes it
     # single-use, strips the marker, and dispatches — FR-033's not-a-direct-dispatch.
-    stored_args = json.loads(row["args_json"])
+    stored_args = dict(row.arguments)
     stored_args[_MARKER] = proposal_id
     tc = SimpleNamespace(id="remote-op", function=SimpleNamespace(
-        name=row["verb"], arguments=json.dumps(stored_args)))
-    logger.info("remote_op approved -> re-dispatch: id=%s verb=%s", proposal_id, row["verb"])
+        name=row.tool_name, arguments=json.dumps(stored_args)))
+    logger.info("remote_op approved -> re-dispatch: id=%s verb=%s", proposal_id, row.tool_name)
     await orch.execute_single_tool(
-        websocket, tc, {row["verb"]: row["agent_id"]}, row["chat_id"], user_id=user_id)
+        websocket,
+        tc,
+        {row.tool_name: row.agent_id},
+        row.conversation_id,
+        user_id=user_id,
+    )

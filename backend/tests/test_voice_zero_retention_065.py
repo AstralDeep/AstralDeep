@@ -22,6 +22,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from astralplane.database.legacy_baseline_066 import _LegacyBaseline066Builder
 from orchestrator.history import ConversationCommitRepository
 from orchestrator.orchestrator import Orchestrator, _VoiceDispatchContext
 from orchestrator.runtime_observability import RuntimeObservability
@@ -31,7 +32,6 @@ from orchestrator.voice_sessions import (
     VoiceSessionRepository,
     VoiceTurnRecord,
 )
-from shared.database import Database
 from voice_agent.config import VoiceProfile, WorkerConfig
 from voice_agent.session import (
     BoundControlSession,
@@ -124,8 +124,7 @@ def _ddl_columns(query: str, table: str) -> set[str]:
 
 def test_database_schema_is_metadata_only_and_message_is_single_source() -> None:
     cursor = _MigrationCursor()
-    database = Database.__new__(Database)
-    Database._migrate_conversational_voice_065(database, cursor)
+    _LegacyBaseline066Builder()._migrate_conversational_voice_065(cursor)  # noqa: SLF001
 
     session_ddl = next(
         query
@@ -167,13 +166,15 @@ def test_database_schema_is_metadata_only_and_message_is_single_source() -> None
     )
     assert "message_id" in turn_columns
 
-    # Acceptance owns the one ordinary user-message insert. Proof admission
-    # and the content-free voice correlation update cannot create a duplicate.
+    # Acceptance owns the one typed ordinary user-message append. Proof
+    # admission and the content-free voice correlation update cannot create a
+    # duplicate or regain a raw persistence path in Deep.
     acceptance_source = inspect.getsource(
         ConversationCommitRepository.accept_voice_turn
     )
-    assert acceptance_source.count("INSERT INTO messages") == 1
-    assert "'user'" in acceptance_source
+    assert acceptance_source.count("append_next_to_staged_publication") == 1
+    assert "INSERT INTO messages" not in acceptance_source
+    assert '"role": "user"' in acceptance_source
     assert "accept_turn" in acceptance_source
     assert "INSERT INTO messages" not in inspect.getsource(
         VoiceSessionRepository.admit_transcript

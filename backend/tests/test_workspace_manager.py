@@ -22,23 +22,9 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from orchestrator.workspace import WorkspaceManager, canonical_params, fingerprint  # noqa: E402
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
+from tests.helpers.voice_plane_runtime import (  # noqa: E402
+    history_manager,
+    isolated_voice_plane_runtime,
 )
 
 
@@ -48,15 +34,23 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def history(tmp_path_factory):
-    from orchestrator.history import HistoryManager
-
-    return HistoryManager(data_dir=str(tmp_path_factory.mktemp("ws-data")))
+def plane_runtime():
+    with isolated_voice_plane_runtime("workspace_manager") as runtime:
+        yield runtime
 
 
 @pytest.fixture(scope="module")
-def ws(history):
-    return WorkspaceManager(history)
+def history(plane_runtime):
+    return history_manager(plane_runtime)
+
+
+@pytest.fixture(scope="module")
+def ws(history, plane_runtime):
+    return WorkspaceManager(
+        history,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
 
 
 @pytest.fixture
@@ -295,11 +289,7 @@ def test_remove_deletes_and_flips_flag(ws, history, chat):
 
     assert ws.remove(chat_id, user_id, cid_b) is True
     assert ws.live_rows(chat_id, user_id) == []
-    flag = ws.db.fetch_one(
-        "SELECT has_saved_components FROM chats WHERE id = ? AND user_id = ?",
-        (chat_id, user_id),
-    )
-    assert flag["has_saved_components"] is False
+    assert history.chat_has_saved_components(chat_id, user_id) is False
 
     assert ws.remove(chat_id, user_id, "wc_nonexistent000") is False
 
@@ -309,7 +299,9 @@ def test_remove_deletes_and_flips_flag(ws, history, chat):
 # ----------------------------------------------------------------------
 
 
-def test_live_components_ordering_and_legacy_rows_sort_last(ws, chat):
+def test_live_components_ordering_and_legacy_rows_sort_last(
+    ws, history, chat, plane_runtime
+):
     """028 FR-019/FR-021 / research D11: position order; legacy NULL-position rows last by created_at."""
     chat_id, user_id = chat
     ws.upsert(chat_id, user_id, [_comp("agentA", "toolA", {"n": 1}, marker="pos1")])
@@ -320,7 +312,7 @@ def test_live_components_ordering_and_legacy_rows_sort_last(ws, chat):
     # would put them first — they must still sort LAST.
     now = int(time.time() * 1000)
     for marker, created_at in (("legacy1", now - 100_000), ("legacy2", now - 50_000)):
-        ws.db.execute(
+        plane_runtime.execute(
             "INSERT INTO saved_components (id, chat_id, user_id, component_data, "
             "component_type, title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (str(uuid.uuid4()), chat_id, user_id,
@@ -334,3 +326,13 @@ def test_live_components_ordering_and_legacy_rows_sort_last(ws, chat):
     assert [r["position"] for r in rows] == [1, 2, None, None]
     # positioned rows carry their component_id through to the structured dicts
     assert comps[0]["component_id"] == fingerprint("agentA", "toolA", {"n": 1})
+
+    saved_id = history.save_component(
+        chat_id,
+        {"type": "card", "marker": "post-legacy"},
+        "card",
+        user_id=user_id,
+    )
+    saved = next(row for row in ws.live_rows(chat_id, user_id)
+                 if row["component_id"] == saved_id)
+    assert saved["position"] == 3

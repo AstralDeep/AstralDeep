@@ -7,11 +7,11 @@ to interpret directly. There is no OCR step.
 
 from __future__ import annotations
 
+import io
 import logging
-from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import read_attachment_bytes
 from agents.general.file_tools.ocr import pdf_to_vision_images
 
 logger = logging.getLogger("FileTools.read_document")
@@ -42,10 +42,10 @@ def _parse_page_range(spec: str, total: int) -> list[int]:
     return pages
 
 
-def _read_pdf(path: Path, page_range: Optional[str], max_chars: int) -> Dict[str, Any]:
+def _read_pdf(payload: bytes, page_range: Optional[str], max_chars: int) -> Dict[str, Any]:
     from pypdf import PdfReader  # type: ignore
 
-    reader = PdfReader(str(path))
+    reader = PdfReader(io.BytesIO(payload))
     pages = _parse_page_range(page_range or "", len(reader.pages))
     chunks = []
     for i in pages:
@@ -69,7 +69,7 @@ def _read_pdf(path: Path, page_range: Optional[str], max_chars: int) -> Dict[str
         }
 
     # Embedded extraction yielded too little — hand pages to the vision model.
-    images = pdf_to_vision_images(path)
+    images = pdf_to_vision_images(payload)
     return {
         "page_count": len(reader.pages),
         "text": "",
@@ -79,10 +79,10 @@ def _read_pdf(path: Path, page_range: Optional[str], max_chars: int) -> Dict[str
     }
 
 
-def _read_docx(path: Path, max_chars: int) -> Dict[str, Any]:
+def _read_docx(payload: bytes, max_chars: int) -> Dict[str, Any]:
     import docx  # python-docx
 
-    doc = docx.Document(str(path))
+    doc = docx.Document(io.BytesIO(payload))
     text = "\n".join(p.text for p in doc.paragraphs)
     truncated = len(text) > max_chars
     if truncated:
@@ -90,10 +90,10 @@ def _read_docx(path: Path, max_chars: int) -> Dict[str, Any]:
     return {"text": text, "truncated": truncated, "vision_required": False, "images": []}
 
 
-def _read_rtf(path: Path, max_chars: int) -> Dict[str, Any]:
+def _read_rtf(payload: bytes, max_chars: int) -> Dict[str, Any]:
     from striprtf.striprtf import rtf_to_text
 
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    raw = payload.decode("utf-8", errors="replace")
     text = rtf_to_text(raw) or ""
     truncated = len(text) > max_chars
     if truncated:
@@ -101,12 +101,12 @@ def _read_rtf(path: Path, max_chars: int) -> Dict[str, Any]:
     return {"text": text, "truncated": truncated, "vision_required": False, "images": []}
 
 
-def _read_odt(path: Path, max_chars: int) -> Dict[str, Any]:
+def _read_odt(payload: bytes, max_chars: int) -> Dict[str, Any]:
     from odf.opendocument import load  # type: ignore
     from odf import text as odftext  # type: ignore
     from odf.element import Text  # type: ignore
 
-    doc = load(str(path))
+    doc = load(io.BytesIO(payload))
     parts: list[str] = []
 
     def _walk(node):
@@ -134,7 +134,7 @@ def read_document(
     **_ignored: Any,
 ) -> Dict[str, Any]:
     """Read a document attachment (PDF/DOCX/RTF/ODT) and return its text."""
-    att, path, err = resolve_attachment(attachment_id, user_id)
+    att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err
 
@@ -144,13 +144,13 @@ def read_document(
     }
     try:
         if att.extension == "pdf":
-            base.update(_read_pdf(path, page_range, max_chars))
+            base.update(_read_pdf(payload, page_range, max_chars))
         elif att.extension == "docx":
-            base.update(_read_docx(path, max_chars))
+            base.update(_read_docx(payload, max_chars))
         elif att.extension == "rtf":
-            base.update(_read_rtf(path, max_chars))
+            base.update(_read_rtf(payload, max_chars))
         elif att.extension == "odt":
-            base.update(_read_odt(path, max_chars))
+            base.update(_read_odt(payload, max_chars))
         else:
             return {"error": {
                 "code": "unsupported",

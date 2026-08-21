@@ -1,7 +1,7 @@
 """Real-PostgreSQL scheduler occurrence, lease, and effect contracts (T023).
 
-The tests intentionally exercise the product ``Database`` and two independent
-``ScheduledJobStore`` instances.  PostgreSQL time, row locks, unique indexes,
+The tests intentionally exercise the product store and two independent Plane
+runtime consumers. PostgreSQL time, row locks, unique indexes,
 and the feature-060 operation coordinator are part of the assertions; a fake
 repository cannot satisfy this suite.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -18,9 +17,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Iterator
 
-import psycopg2
 import pytest
-from psycopg2 import sql
 
 from orchestrator.work_admission import (
     AdmissionClass,
@@ -40,16 +37,20 @@ from scheduler.runner import (
     OccurrenceRunResult,
     ScheduledHandlerDeclaration,
 )
+from scheduler.tests.plane_runtime import (
+    ensure_plane_runtime,
+    scheduled_job_store as ScheduledJobStore,
+    work_admission_repository,
+)
 from scheduler.store import (
     EffectReservation,
     EffectIdempotencyConflictError,
     OccurrenceClaim,
     ScheduledAdmissionRefusedError,
     ScheduledAttempt,
-    ScheduledJobStore,
     StaleOccurrenceClaimError,
 )
-from shared.database import Database, _build_database_url
+from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
 
 
 def _sha256(value: str) -> str:
@@ -78,54 +79,17 @@ def _classes(*, scheduled_active: int = 1, scheduled_queue: int = 20):
 
 
 @pytest.fixture(scope="module")
-def postgres_database() -> Iterator[Database]:
-    """Create an isolated migrated database and drop it after this module."""
+def postgres_database() -> Iterator[PlaneTestRuntime]:
+    """Create one isolated database initialized only by AstralPlane."""
 
-    base_dsn = _build_database_url()
-    try:
-        params = psycopg2.extensions.parse_dsn(base_dsn)
-        name = f"astraldeep_scheduler_{uuid.uuid4().hex}"
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    dsn = psycopg2.extensions.make_dsn(**database_params)
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(dsn)
-    finally:
-        Database.close()
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name))
-                )
-            admin.close()
-        except Exception:
-            pass
+    with isolated_plane_runtime("scheduler_occurrence") as runtime:
+        yield runtime
 
 
 @pytest.fixture
-def clean_database(postgres_database: Database) -> Database:
+def clean_database(postgres_database: PlaneTestRuntime) -> PlaneTestRuntime:
     db = postgres_database
+    ensure_plane_runtime(db)
     db.execute("DELETE FROM effect_ledger")
     db.execute("DELETE FROM job_run")
     db.execute("DELETE FROM scheduled_occurrence")
@@ -140,14 +104,14 @@ def clean_database(postgres_database: Database) -> Database:
 
 
 def _coordinator(
-    db: Database, *, scheduled_active: int = 1, scheduled_queue: int = 20
+    db: PlaneTestRuntime, *, scheduled_active: int = 1, scheduled_queue: int = 20
 ) -> WorkAdmissionCoordinator:
     return WorkAdmissionCoordinator(
         admission_classes=_classes(
             scheduled_active=scheduled_active,
             scheduled_queue=scheduled_queue,
         ),
-        database=db,
+        repository=work_admission_repository(db),
         operation_retention=timedelta(hours=24),
         slot_lease=timedelta(seconds=90),
     )
@@ -155,10 +119,7 @@ def _coordinator(
 
 def _due_job(store: ScheduledJobStore, label: str, *, due_ms: int | None = None):
     if due_ms is None:
-        row = store.db.fetch_one(
-            "SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS now_ms"
-        )
-        due_ms = int(row["now_ms"]) - 1_000
+        due_ms = int(datetime.now(UTC).timestamp() * 1000) - 1_000
     return store.create_job(
         f"owner-{label}",
         name=f"Job {label}",
@@ -174,7 +135,7 @@ def _due_job(store: ScheduledJobStore, label: str, *, due_ms: int | None = None)
     )
 
 
-def _expire_claim(db: Database, occurrence_id: uuid.UUID) -> None:
+def _expire_claim(db: PlaneTestRuntime, occurrence_id: uuid.UUID) -> None:
     db.execute(
         "UPDATE scheduled_occurrence SET lease_expires_at = "
         "clock_timestamp() - INTERVAL '1 second' WHERE occurrence_id = ?",
@@ -182,7 +143,7 @@ def _expire_claim(db: Database, occurrence_id: uuid.UUID) -> None:
     )
 
 
-def _rotate_claim(db: Database, occurrence_id: uuid.UUID) -> None:
+def _rotate_claim(db: PlaneTestRuntime, occurrence_id: uuid.UUID) -> None:
     db.execute(
         "UPDATE scheduled_occurrence SET claim_generation = claim_generation + 1, "
         "lease_token = ?, lease_owner = 'replacement', "
@@ -196,10 +157,10 @@ class _ValidGrants:
     def latest_valid_for(self, user_id, agent_id):
         return "grant-scheduler-060"
 
-    def is_valid(self, grant_id):
+    def is_valid(self, grant_id, *, user_id):
         return True
 
-    async def mint_access_token(self, grant_id):
+    async def mint_access_token(self, grant_id, *, user_id):
         return "test-access-token"
 
 
@@ -711,7 +672,7 @@ async def test_runner_replays_published_effect_without_reinvoking_handler(
         "WHERE occurrence_id = ? ORDER BY effect_kind",
         (str(claim.occurrence_id),),
     )
-    assert effects == [
+    assert [dict(effect) for effect in effects] == [
         {"effect_kind": "chat_history", "state": "published"},
         {"effect_kind": "notification", "state": "published"},
     ]
@@ -877,7 +838,8 @@ def test_scheduler_configuration_and_binding_fail_closed(monkeypatch):
     with pytest.raises(ValueError, match="claim_limit"):
         SchedulerLoop(BoundStore(), BoundRunner(), claim_lease_seconds=5, claim_limit=0)
 
-    database_store = ScheduledJobStore(SimpleNamespace())
+    database_store = object.__new__(scheduler_store_module.ScheduledJobStore)
+    database_store._coordinator = None
     with pytest.raises(RuntimeError, match="requires a WorkAdmissionCoordinator"):
         database_store._require_coordinator()
     database_store.bind_coordinator(coordinator)
@@ -1276,9 +1238,7 @@ def test_retryable_running_claim_settles_its_exact_job_run(clean_database):
     claim = store.materialize_and_claim_due(
         "scheduler-retryable", limit=1, lease_seconds=15
     )[0]
-    attempt = store.start_attempt(
-        store.allocate_attempt(claim), lease_seconds=15
-    )
+    attempt = store.start_attempt(store.allocate_attempt(claim), lease_seconds=15)
 
     store.mark_claim_retryable(
         claim,
@@ -1287,8 +1247,7 @@ def test_retryable_running_claim_settles_its_exact_job_run(clean_database):
     )
 
     assert clean_database.fetch_one(
-        "SELECT outcome, ended_at IS NOT NULL AS ended "
-        "FROM job_run WHERE id = ?",
+        "SELECT outcome, ended_at IS NOT NULL AS ended FROM job_run WHERE id = ?",
         (str(attempt.run_id),),
     ) == {"outcome": "interrupted", "ended": True}
     assert clean_database.fetch_one(
@@ -2086,13 +2045,12 @@ async def test_dispatch_renews_operation_execution_lease_while_handler_runs(
         )
 
     monkeypatch.setattr(scheduler_loop_module, "ClaimLeaseKeeper", _ScriptKeeper)
-    await _script_loop(
-        store, _LoopRunner(long_runner), coordinator
-    )._dispatch_claim(attempt.claim)
+    await _script_loop(store, _LoopRunner(long_runner), coordinator)._dispatch_claim(
+        attempt.claim
+    )
     assert coordinator.execution_renewals
     assert all(
-        fence == attempt.execution_fence
-        for fence in coordinator.execution_renewals
+        fence == attempt.execution_fence for fence in coordinator.execution_renewals
     )
 
 
@@ -2147,9 +2105,7 @@ async def test_dispatch_bounds_cancellation_resistant_handler_after_lease_loss(
         )
 
     monkeypatch.setattr(scheduler_loop_module, "ClaimLeaseKeeper", _ScriptKeeper)
-    loop = _script_loop(
-        store, _LoopRunner(cancellation_resistant_runner), coordinator
-    )
+    loop = _script_loop(store, _LoopRunner(cancellation_resistant_runner), coordinator)
     dispatch = asyncio.create_task(loop._dispatch_claim(attempt.claim))
     try:
         done, _ = await asyncio.wait({dispatch}, timeout=0.75)

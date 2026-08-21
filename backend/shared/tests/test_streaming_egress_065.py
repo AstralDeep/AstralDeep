@@ -461,7 +461,7 @@ async def test_dns_timeout_failure_and_address_limit_are_typed_and_redacted() ->
         ("not-records", "dns_invalid"),
         ([(socket.AF_INET,)], "dns_invalid"),
         (
-            [(socket.AF_UNIX, socket.SOCK_STREAM, 0, "", ("ignored", 443))],
+            [(socket.AF_UNSPEC, socket.SOCK_STREAM, 0, "", ("ignored", 443))],
             "dns_empty",
         ),
         (

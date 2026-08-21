@@ -29,10 +29,8 @@ USER = "first-turn-user"
 
 
 @pytest.fixture
-def orch():
-    from orchestrator.orchestrator import Orchestrator
-
-    o = Orchestrator()
+def orch(orchestrator_factory):
+    o = orchestrator_factory()
     o._llm_store.set_sync(USER, provider="custom",
                           base_url="http://test.invalid/v1",
                           model="test-model", api_key="test-key")

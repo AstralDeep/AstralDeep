@@ -66,7 +66,23 @@ class OrchestratorA2AExecutor(AgentExecutor):
 
             mcp_request = a2a_message_to_mcp_request(message)
             if mcp_request:
-                await self._execute_direct_tool(mcp_request, updater, context)
+                identity = await self._validated_invocation_identity(context)
+                if identity is None:
+                    await updater.failed(
+                        message=self._msg(
+                            "A valid bearer token is required for tool execution",
+                            context.task_id,
+                        )
+                    )
+                    return
+                claims, subject_token = identity
+                await self._execute_direct_tool(
+                    mcp_request,
+                    updater,
+                    context,
+                    claims=claims,
+                    subject_token=subject_token,
+                )
                 return
 
             text = extract_text_from_a2a_message(message)
@@ -86,8 +102,42 @@ class OrchestratorA2AExecutor(AgentExecutor):
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         await updater.cancel()
 
-    async def _execute_direct_tool(self, mcp_request, updater, context):
-        """Execute a direct tool call via the orchestrator's dual-transport dispatch."""
+    async def _validated_invocation_identity(self, context):
+        """Validate the actual A2A HTTP bearer from SDK server context."""
+
+        call_context = getattr(context, "call_context", None)
+        state = getattr(call_context, "state", {}) or {}
+        headers = state.get("headers", {}) if isinstance(state, dict) else {}
+        authorization = ""
+        if isinstance(headers, dict):
+            authorization = next(
+                (
+                    str(value)
+                    for key, value in headers.items()
+                    if str(key).lower() == "authorization"
+                ),
+                "",
+            )
+        scheme, separator, subject_token = authorization.partition(" ")
+        if not separator or scheme.lower() != "bearer" or not subject_token.strip():
+            return None
+        subject_token = subject_token.strip()
+        claims = await self.security_validator.validate_token(subject_token)
+        if not isinstance(claims, dict) or not isinstance(claims.get("sub"), str):
+            return None
+        return claims, subject_token
+
+    async def _execute_direct_tool(
+        self,
+        mcp_request,
+        updater,
+        context,
+        *,
+        claims,
+        subject_token,
+    ):
+        """Execute a direct tool call through Astral gates and final dispatch."""
+        mcp_request.validate_protocol_metadata(allow_legacy=True)
         tool_name = mcp_request.params.get("name", "")
         arguments = mcp_request.params.get("arguments", {})
 
@@ -103,7 +153,15 @@ class OrchestratorA2AExecutor(AgentExecutor):
             )
             return
 
-        result = await self.orchestrator.execute_tool_and_wait(agent_id, tool_name, arguments)
+        result = await self.orchestrator.execute_authorized_tool(
+            claims=claims,
+            user_id=claims["sub"],
+            agent_id=agent_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            channel="a2a",
+            delegation_subject_token=subject_token,
+        )
 
         if result and result.error:
             error_msg = result.error.get("message", "Tool failed") if isinstance(result.error, dict) else str(result.error)

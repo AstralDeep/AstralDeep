@@ -10,13 +10,18 @@ and emits one deterministic JSON decision.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
+import io
 import json
 import os
 import re
 import stat
 import subprocess
 import sys
+import token as token_types
+import tokenize
+import types
 import urllib.parse
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
@@ -33,19 +38,27 @@ JAVASCRIPT_REPORT_KEYS = {
     "producer_version",
     "v8_to_istanbul_version",
     "espree_version",
+    "coverage_lane",
     "coverage",
 }
 JAVASCRIPT_REPORT_IDENTITY = {
     "schema_version": 1,
-    "producer": "astraldeep-playwright-executable-lines",
-    "producer_version": 1,
+    "producer": "astralprojection-node-browser-union",
+    "producer_version": 2,
     "v8_to_istanbul_version": "9.3.0",
     "espree_version": "11.2.0",
+    "coverage_lane": "node-browser-union",
 }
 MAX_REPORT_BYTES = 64 * 1024 * 1024
 MAX_CANDIDATE_WITNESS_PATHS = 10_000
 MAX_CANDIDATE_WITNESS_BLOB_BYTES = 16 * 1024 * 1024
 MAX_CANDIDATE_WITNESS_TOTAL_BYTES = 128 * 1024 * 1024
+PYTHON_COVERAGE_DEFAULT_EXCLUDE = re.compile(
+    r"#\s*(pragma|PRAGMA)[:\s]?\s*(no|NO)\s*(cover|COVER)"
+    r"|^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.\.\s*(#|$)"
+    r"|if (typing\.)?TYPE_CHECKING:",
+    re.MULTILINE,
+)
 VOICE_WORKER_SOURCE_ALIASES = {
     "backend/voice_agent/streaming_egress.py": "backend/shared/streaming_egress.py",
     "backend/voice_agent/voice_transcript.py": "backend/shared/voice_transcript.py",
@@ -95,11 +108,27 @@ class CoverageProducer:
 
 
 @dataclass(frozen=True)
+class CoverageRepositoryProfile:
+    """One repository's owned producer set and composed path namespace."""
+
+    producer_keys: tuple[str, ...]
+    source_prefix: str = ""
+
+
+@dataclass(frozen=True)
 class CandidateBlob:
     """One regular source blob anchored to the immutable candidate tree."""
 
     object_id: str
     size_bytes: int
+
+
+@dataclass(frozen=True)
+class CandidateSourceWitness:
+    """Candidate-bound physical and Python-executable source facts."""
+
+    line_count: int
+    executable_lines: frozenset[int] | None = None
 
 
 @dataclass(frozen=True)
@@ -156,22 +185,42 @@ class CoverageData:
         self.covered.update(other.covered)
 
 
+PROJECTION_PYTHON_ROOTS = (
+    "components/AstralProjection/src/astralprojection",
+    "components/AstralProjection/backend/rote",
+    "components/AstralProjection/backend/webrender",
+)
+
 TARGETS = (
     CoverageTarget("backend_python", "python", ("backend",), "cobertura"),
     CoverageTarget("tooling_python", "python", ("scripts",), "cobertura"),
-    CoverageTarget("windows_python", "python", ("windows-client",), "cobertura"),
+    CoverageTarget(
+        "projection_python",
+        "python",
+        PROJECTION_PYTHON_ROOTS,
+        "cobertura",
+    ),
+    CoverageTarget(
+        "windows_python",
+        "python",
+        ("components/AstralProjection/windows-client",),
+        "cobertura",
+    ),
     CoverageTarget(
         "javascript",
         "javascript",
-        ("backend/webrender", "tooling/web-ci"),
+        (
+            "components/AstralProjection/backend/webrender",
+            "components/AstralProjection/tooling/web-ci",
+        ),
         "javascript",
     ),
     CoverageTarget(
         "android_app",
         "kotlin",
         (
-            "android-client/app/src/main/kotlin",
-            "android-client/app/src/main/java",
+            "components/AstralProjection/android-client/app/src/main/kotlin",
+            "components/AstralProjection/android-client/app/src/main/java",
         ),
         "kover",
     ),
@@ -179,8 +228,8 @@ TARGETS = (
         "android_core",
         "kotlin",
         (
-            "android-client/core/src/main/kotlin",
-            "android-client/core/src/main/java",
+            "components/AstralProjection/android-client/core/src/main/kotlin",
+            "components/AstralProjection/android-client/core/src/main/java",
         ),
         "kover",
     ),
@@ -188,9 +237,9 @@ TARGETS = (
         "apple",
         "swift",
         (
-            "apple-clients/AstralApp/AstralApp",
-            "apple-clients/AstralCore/Sources",
-            "apple-clients/AstralWatch",
+            "components/AstralProjection/apple-clients/AstralApp/AstralApp",
+            "components/AstralProjection/apple-clients/AstralCore/Sources",
+            "components/AstralProjection/apple-clients/AstralWatch",
         ),
         "xccov",
     ),
@@ -215,21 +264,30 @@ COVERAGE_PRODUCERS = (
     ),
     CoverageProducer("tooling", "tooling_python", "tooling-python", ("scripts",)),
     CoverageProducer(
-        "windows", "windows_python", "windows-python", ("windows-client",)
+        "projection_python",
+        "projection_python",
+        "projection-python",
+        PROJECTION_PYTHON_ROOTS,
+    ),
+    CoverageProducer(
+        "windows",
+        "windows_python",
+        "windows-python",
+        ("components/AstralProjection/windows-client",),
     ),
     CoverageProducer(
         "javascript",
         "javascript",
         "javascript",
-        ("backend/webrender/static/client.js",),
+        ("components/AstralProjection/backend/webrender/static/client.js",),
     ),
     CoverageProducer(
         "android_app",
         "android_app",
         "android-app",
         (
-            "android-client/app/src/main/kotlin",
-            "android-client/app/src/main/java",
+            "components/AstralProjection/android-client/app/src/main/kotlin",
+            "components/AstralProjection/android-client/app/src/main/java",
         ),
     ),
     CoverageProducer(
@@ -237,24 +295,51 @@ COVERAGE_PRODUCERS = (
         "android_core",
         "android-core",
         (
-            "android-client/core/src/main/kotlin",
-            "android-client/core/src/main/java",
+            "components/AstralProjection/android-client/core/src/main/kotlin",
+            "components/AstralProjection/android-client/core/src/main/java",
         ),
     ),
     CoverageProducer(
-        "ios", "apple", "ios", ("apple-clients/AstralApp/AstralApp",)
+        "ios",
+        "apple",
+        "ios",
+        ("components/AstralProjection/apple-clients/AstralApp/AstralApp",),
     ),
     CoverageProducer(
-        "macos", "apple", "macos", ("apple-clients/AstralApp/AstralApp",)
+        "macos",
+        "apple",
+        "macos",
+        ("components/AstralProjection/apple-clients/AstralApp/AstralApp",),
     ),
     CoverageProducer(
-        "watchos", "apple", "watchos", ("apple-clients/AstralWatch",)
+        "watchos",
+        "apple",
+        "watchos",
+        ("components/AstralProjection/apple-clients/AstralWatch",),
     ),
 )
 PRODUCER_BY_KEY = {producer.key: producer for producer in COVERAGE_PRODUCERS}
+REPOSITORY_PROFILES = {
+    "monorepo": CoverageRepositoryProfile(tuple(PRODUCER_BY_KEY)),
+    "deep": CoverageRepositoryProfile(("backend", "voice_worker", "tooling")),
+    "projection": CoverageRepositoryProfile(
+        (
+            "projection_python",
+            "windows",
+            "javascript",
+            "android_app",
+            "android_core",
+            "ios",
+            "macos",
+            "watchos",
+        ),
+        "components/AstralProjection",
+    ),
+}
 REPORT_FLAGS = {
     "backend_python": "backend-python",
     "tooling_python": "tooling-python",
+    "projection_python": "projection-python",
     "windows_python": "windows-python",
     "javascript": "javascript",
     "android_app": "android-app",
@@ -264,10 +349,13 @@ REPORT_FLAGS = {
 ANCHORS = (
     "backend/",
     "scripts/",
-    "windows-client/",
-    "android-client/",
-    "apple-clients/",
-    "tooling/web-ci/",
+    "components/AstralProjection/src/astralprojection/",
+    "components/AstralProjection/backend/rote/",
+    "components/AstralProjection/backend/webrender/",
+    "components/AstralProjection/windows-client/",
+    "components/AstralProjection/android-client/",
+    "components/AstralProjection/apple-clients/",
+    "components/AstralProjection/tooling/web-ci/",
 )
 
 
@@ -311,16 +399,21 @@ def classify_path(path: str) -> CoverageTarget | None:
     if _is_test_or_generated(path):
         return None
     if path.endswith(".py"):
+        if any(_path_matches_root(path, root) for root in PROJECTION_PYTHON_ROOTS):
+            return TARGET_BY_KEY["projection_python"]
         if path.startswith("backend/"):
             return TARGET_BY_KEY["backend_python"]
         if path.startswith("scripts/"):
             return TARGET_BY_KEY["tooling_python"]
-        if path.startswith("windows-client/"):
+        if path.startswith("components/AstralProjection/windows-client/"):
             return TARGET_BY_KEY["windows_python"]
     if path.endswith((".js", ".mjs")):
-        if path.startswith("backend/webrender/") and "/static/vendor/" not in path:
+        if (
+            path.startswith("components/AstralProjection/backend/webrender/")
+            and "/static/vendor/" not in path
+        ):
             return TARGET_BY_KEY["javascript"]
-        if path.startswith("tooling/web-ci/"):
+        if path.startswith("components/AstralProjection/tooling/web-ci/"):
             return TARGET_BY_KEY["javascript"]
     if path.endswith(".kt"):
         if any(
@@ -520,7 +613,11 @@ def validate_revisions(repo: Path, selection: RevisionSelection) -> RevisionSele
 
 
 def read_changed_lines(
-    repo: Path, base_sha: str, candidate_sha: str
+    repo: Path,
+    base_sha: str,
+    candidate_sha: str,
+    *,
+    source_prefix: str = "",
 ) -> dict[str, set[int]]:
     """Read added/modified candidate lines from a NUL-delimited immutable Git diff."""
 
@@ -549,9 +646,11 @@ def read_changed_lines(
         raise CoveragePolicyError(
             "invalid_git_diff", "Git diff contains a non-UTF-8 path"
         ) from exc
+    prefix = _repo_path(source_prefix) if source_prefix else ""
     changed: dict[str, set[int]] = {}
     for raw_path in sorted(set(decoded)):
-        path = _repo_path(raw_path)
+        git_path = _repo_path(raw_path)
+        path = _repo_path(f"{prefix}/{git_path}") if prefix else git_path
         maintained = classify_path(path) is not None
         text_override = ["--text"] if maintained else []
         patch = _git(
@@ -566,7 +665,7 @@ def read_changed_lines(
                 base_sha,
                 candidate_sha,
                 "--",
-                path,
+                git_path,
             ],
         ).decode("utf-8", "strict")
         lines: set[int] = set()
@@ -598,7 +697,18 @@ def _read_report(path: Path) -> bytes:
             "unparseable_report",
             f"coverage report must be a regular non-symlink file: {path}",
         )
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # Python's Windows CRT opens descriptors in text mode unless O_BINARY is
+    # explicit.  ``os.read`` would then translate CRLF to LF while ``fstat``
+    # continues to report the physical byte length, producing a false
+    # ``invalid size`` failure and hashing bytes other than the artifact that
+    # was bound.  O_BINARY is zero/absent on POSIX, so Linux behavior is
+    # unchanged.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
@@ -630,7 +740,10 @@ def _read_report(path: Path) -> bytes:
         ) from exc
     stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
     if (
-        any(getattr(before_read, field) != getattr(after_read, field) for field in stable_fields)
+        any(
+            getattr(before_read, field) != getattr(after_read, field)
+            for field in stable_fields
+        )
         or before_path.st_dev != before_read.st_dev
         or before_path.st_ino != before_read.st_ino
         or after_path.st_dev != before_read.st_dev
@@ -640,7 +753,11 @@ def _read_report(path: Path) -> bytes:
             "report_changed", f"coverage report changed while being read: {path}"
         )
     content = b"".join(chunks)
-    if not content or len(content) > MAX_REPORT_BYTES or len(content) != after_read.st_size:
+    if (
+        not content
+        or len(content) > MAX_REPORT_BYTES
+        or len(content) != after_read.st_size
+    ):
         raise CoveragePolicyError(
             "unparseable_report", f"coverage report has invalid size: {path}"
         )
@@ -831,9 +948,10 @@ def coverage_report_identity(
 def _normalized_report_path(raw: str, target: CoverageTarget) -> str | None:
     """Map a producer path from its first repository anchor only.
 
-    The first anchor is authoritative.  Looking for a later anchor that happens to
-    match ``target`` would let an absolute ``backend/scripts/...`` path masquerade
-    as a repository-root ``scripts/...`` path.
+    Projection-native targets first map a child-checkout owner root into the
+    composed namespace. Otherwise the first repository anchor is authoritative;
+    looking for a later generic anchor that happens to match ``target`` would let
+    an absolute ``backend/scripts/...`` path masquerade as root ``scripts/...``.
     """
 
     value = raw.strip().replace("\\", "/")
@@ -841,21 +959,51 @@ def _normalized_report_path(raw: str, target: CoverageTarget) -> str | None:
     if parsed.scheme in {"file", "http", "https"}:
         value = urllib.parse.unquote(parsed.path)
     value = value.replace("\\", "/")
-    anchored: list[tuple[int, str]] = []
-    for anchor in ANCHORS:
-        if value.startswith(anchor):
-            anchored.append((0, value))
-        marker = f"/{anchor}"
-        start = 0
-        while (index := value.find(marker, start)) >= 0:
-            anchored.append((index + 1, value[index + 1 :]))
-            start = index + 1
-    if anchored:
-        candidate = min(anchored, key=lambda item: item[0])[1]
+    relative = value.lstrip("/")
+    projection_owner_roots = (
+        "src/astralprojection/",
+        "backend/rote/",
+        "backend/webrender/",
+        "tooling/web-ci/",
+        "windows-client/",
+        "android-client/",
+        "apple-clients/",
+    )
+    projection_targets = {
+        "projection_python",
+        "windows_python",
+        "javascript",
+        "android_app",
+        "android_core",
+        "apple",
+    }
+    projection_anchors: list[tuple[int, str]] = []
+    if target.key in projection_targets:
+        for root in projection_owner_roots:
+            if relative.startswith(root):
+                projection_anchors.append((0, relative))
+            marker = f"/{root}"
+            start = 0
+            while (index := value.find(marker, start)) >= 0:
+                projection_anchors.append((index + 1, value[index + 1 :]))
+                start = index + 1
+    if projection_anchors:
+        child_path = min(projection_anchors, key=lambda item: item[0])[1]
+        candidate = f"components/AstralProjection/{child_path}"
     else:
-        relative = value.lstrip("/")
-        if target.key == "javascript" and relative.startswith("static/"):
-            candidate = f"backend/webrender/{relative}"
+        anchored: list[tuple[int, str]] = []
+        for anchor in ANCHORS:
+            if value.startswith(anchor):
+                anchored.append((0, value))
+            marker = f"/{anchor}"
+            start = 0
+            while (index := value.find(marker, start)) >= 0:
+                anchored.append((index + 1, value[index + 1 :]))
+                start = index + 1
+        if anchored:
+            candidate = min(anchored, key=lambda item: item[0])[1]
+        elif target.key == "javascript" and relative.startswith("static/"):
+            candidate = f"components/AstralProjection/backend/webrender/{relative}"
         else:
             return None
     try:
@@ -1167,9 +1315,10 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
                 "unparseable_report",
                 f"Kover package {package_name!r} LINE counter disagrees with sourcefiles",
             )
-        if _instruction_counter(
-            package, label=f"Kover package {package_name!r}"
-        ) != (package_instruction_missed, package_instruction_covered):
+        if _instruction_counter(package, label=f"Kover package {package_name!r}") != (
+            package_instruction_missed,
+            package_instruction_covered,
+        ):
             raise CoveragePolicyError(
                 "unparseable_report",
                 f"Kover package {package_name!r} INSTRUCTION counter "
@@ -1308,8 +1457,8 @@ def _parse_javascript(content: bytes, target: CoverageTarget) -> CoverageData:
     if not isinstance(document, Mapping) or set(document) != JAVASCRIPT_REPORT_KEYS:
         raise CoveragePolicyError(
             "unparseable_report",
-            "JavaScript coverage requires the exact lock-pinned AstralDeep "
-            "executable-line producer envelope",
+            "JavaScript coverage requires the exact lock-pinned AstralProjection "
+            "node/browser union envelope",
         )
     for key, expected in JAVASCRIPT_REPORT_IDENTITY.items():
         if document.get(key) != expected:
@@ -1531,9 +1680,7 @@ def _unique_report_inputs(
                     size_bytes=artifact_identity["size_bytes"],
                     semantic_sha256=artifact_identity["semantic_sha256"],
                     semantic_size_bytes=artifact_identity["semantic_size_bytes"],
-                    native_semantic_sha256=artifact_identity[
-                        "native_semantic_sha256"
-                    ],
+                    native_semantic_sha256=artifact_identity["native_semantic_sha256"],
                     native_semantic_size_bytes=artifact_identity[
                         "native_semantic_size_bytes"
                     ],
@@ -1552,8 +1699,7 @@ def _producer_applies_to_path(slot_key: str, path: str) -> bool:
 
     if slot_key == "backend":
         return path in VOICE_WORKER_OVERWRITTEN_SHIMS or (
-            path.startswith("backend/")
-            and not path.startswith("backend/voice_agent/")
+            path.startswith("backend/") and not path.startswith("backend/voice_agent/")
         )
     if slot_key == "voice_worker":
         return (
@@ -1564,27 +1710,27 @@ def _producer_applies_to_path(slot_key: str, path: str) -> bool:
         return any(
             _path_matches_root(path, root)
             for root in (
-                "apple-clients/AstralApp/AstralApp",
-                "apple-clients/AstralCore/Sources",
+                "components/AstralProjection/apple-clients/AstralApp/AstralApp",
+                "components/AstralProjection/apple-clients/AstralCore/Sources",
             )
         )
     if slot_key == "macos":
         return any(
             _path_matches_root(path, root)
             for root in (
-                "apple-clients/AstralApp/AstralApp",
-                "apple-clients/AstralCore/Sources",
+                "components/AstralProjection/apple-clients/AstralApp/AstralApp",
+                "components/AstralProjection/apple-clients/AstralCore/Sources",
             )
         )
     if slot_key == "watchos":
-        return _path_matches_root(path, "apple-clients/AstralWatch")
+        return _path_matches_root(
+            path, "components/AstralProjection/apple-clients/AstralWatch"
+        )
     target = TARGET_BY_KEY[PRODUCER_BY_KEY[slot_key].target_key]
     return any(_path_matches_root(path, root) for root in target.roots)
 
 
-def _producer_owned_coverage(
-    coverage: CoverageData, slot_key: str
-) -> CoverageData:
+def _producer_owned_coverage(coverage: CoverageData, slot_key: str) -> CoverageData:
     """Exclude observations outside a strict producer's owned source partition."""
 
     def owned(path: str) -> bool:
@@ -1598,10 +1744,16 @@ def _producer_owned_coverage(
     )
 
 
-def _candidate_source_blobs(repo: Path, candidate_sha: str) -> dict[str, CandidateBlob]:
+def _candidate_source_blobs(
+    repo: Path,
+    candidate_sha: str,
+    *,
+    source_prefix: str = "",
+) -> dict[str, CandidateBlob]:
     """Inventory regular blobs from one immutable candidate tree."""
 
     output = _git(repo, ["ls-tree", "-r", "-z", "-l", "--full-tree", candidate_sha])
+    prefix = _repo_path(source_prefix) if source_prefix else ""
     blobs: dict[str, CandidateBlob] = {}
     for record in output.split(b"\0"):
         if not record:
@@ -1609,6 +1761,19 @@ def _candidate_source_blobs(repo: Path, candidate_sha: str) -> dict[str, Candida
         try:
             metadata, raw_path = record.split(b"\t", 1)
             mode, kind, raw_object_id, raw_size = metadata.split()
+        except ValueError as exc:
+            raise CoveragePolicyError(
+                "invalid_candidate_tree", "candidate tree has malformed blob metadata"
+            ) from exc
+        regular_mode = mode in {b"100644", b"100755"}
+        if regular_mode and kind != b"blob":
+            raise CoveragePolicyError(
+                "invalid_candidate_tree",
+                "candidate regular file has non-blob object metadata",
+            )
+        if not regular_mode:
+            continue
+        try:
             path = raw_path.decode("utf-8", "strict")
             object_id = raw_object_id.decode("ascii", "strict")
             size_bytes = int(raw_size)
@@ -1616,29 +1781,202 @@ def _candidate_source_blobs(repo: Path, candidate_sha: str) -> dict[str, Candida
             raise CoveragePolicyError(
                 "invalid_candidate_tree", "candidate tree has malformed blob metadata"
             ) from exc
-        if kind != b"blob" or mode not in {b"100644", b"100755"}:
-            continue
-        blobs[_repo_path(path)] = CandidateBlob(object_id, size_bytes)
+        if size_bytes < 0:
+            raise CoveragePolicyError(
+                "invalid_candidate_tree", "candidate tree has malformed blob metadata"
+            )
+        git_path = _repo_path(path)
+        canonical_path = _repo_path(f"{prefix}/{git_path}") if prefix else git_path
+        blobs[canonical_path] = CandidateBlob(object_id, size_bytes)
     return blobs
 
 
-def _candidate_source_line_counts(
+def _matching_source_lines(
+    source: str,
+    pattern: re.Pattern[str],
+    multiline_map: Mapping[int, int],
+) -> set[int]:
+    """Map regex matches to source lines with linear incremental scanning."""
+
+    lines: set[int] = set()
+    last_start = 0
+    last_start_line = 0
+    for match in pattern.finditer(source):
+        start, end = match.span()
+        start_line = last_start_line + source.count("\n", last_start, start)
+        end_line = last_start_line + source.count("\n", last_start, end)
+        lines.update(
+            multiline_map.get(line_number, line_number)
+            for line_number in range(start_line + 1, end_line + 2)
+        )
+        last_start = start
+        last_start_line = start_line
+    return lines
+
+
+def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[int]:
+    """Derive the pinned native producer's interpreter-stable statement witness.
+
+    This is the stdlib-only equivalent of Coverage.py 7.15.2's statement parser:
+    recursive ``co_lines()`` observations are mapped to logical statement headers,
+    then its exact default exclusions and docstring rules are applied. Nullable line
+    metadata from newer interpreters is ignored explicitly.
+    """
+
+    try:
+        encoding, _lines = tokenize.detect_encoding(io.BytesIO(content).readline)
+        source = content.decode(encoding)
+        tree = ast.parse(source, filename=path, mode="exec")
+        compiled = compile(source, path, "exec", dont_inherit=True, optimize=0)
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (
+        LookupError,
+        SyntaxError,
+        tokenize.TokenError,
+        UnicodeDecodeError,
+        ValueError,
+    ) as exc:
+        raise CoveragePolicyError(
+            "invalid_candidate_source",
+            f"candidate Python source is not parseable: {path!r}",
+        ) from exc
+
+    multiline_map: dict[int, int] = {}
+    first_line = 0
+    for token in tokens:
+        if token.type == token_types.NEWLINE:
+            if first_line and token.end[0] != first_line:
+                for line_number in range(first_line, token.end[0] + 1):
+                    multiline_map[line_number] = first_line
+            first_line = 0
+        if token.string.strip() and token.type != tokenize.COMMENT and not first_line:
+            first_line = token.start[0]
+
+    excluded = _matching_source_lines(
+        source,
+        PYTHON_COVERAGE_DEFAULT_EXCLUDE,
+        multiline_map,
+    )
+
+    indent = 0
+    exclude_indent = 0
+    excluding = False
+    first_line = 0
+    nesting = 0
+    for token in tokens:
+        if token.type == token_types.INDENT:
+            indent += 1
+        elif token.type == token_types.DEDENT:
+            indent -= 1
+        elif token.type == token_types.OP:
+            if token.string == ":" and nesting == 0:
+                should_exclude = excluded.intersection(
+                    range(first_line, token.end[0] + 1)
+                )
+                if not excluding and should_exclude:
+                    excluded.add(token.end[0])
+                    exclude_indent = indent
+                    excluding = True
+            elif token.string in "([{":
+                nesting += 1
+            elif token.string in ")]}":
+                nesting -= 1
+        elif token.type == token_types.NEWLINE:
+            first_line = 0
+
+        if token.string.strip() and token.type != tokenize.COMMENT:
+            if not first_line:
+                first_line = token.start[0]
+                if excluding and indent <= exclude_indent:
+                    excluding = False
+                if excluding:
+                    excluded.add(token.end[0])
+
+    excluded = {multiline_map.get(line_number, line_number) for line_number in excluded}
+    docstrings: set[int] = set()
+    definitions = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)
+    for node in ast.walk(tree):
+        if not isinstance(node, definitions) or not node.body:
+            continue
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            first_line = min(
+                (decorator.lineno for decorator in node.decorator_list),
+                default=node.lineno,
+            )
+            if excluded.intersection(range(first_line, node.lineno + 1)):
+                excluded.update(
+                    range(first_line, int(node.end_lineno or first_line) + 1)
+                )
+        first = node.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            docstrings.update(
+                range(first.lineno, int(first.end_lineno or first.lineno) + 1)
+            )
+
+    raw_statements: set[int] = set()
+    stack = [compiled]
+    while stack:
+        code = stack.pop()
+        stack.extend(
+            constant
+            for constant in code.co_consts
+            if isinstance(constant, types.CodeType)
+        )
+        raw_statements.update(
+            line_number
+            for _start, _end, line_number in code.co_lines()
+            if isinstance(line_number, int) and line_number > 0
+        )
+
+    ignore = excluded | docstrings
+    return frozenset(
+        multiline_map.get(line_number, line_number)
+        for line_number in raw_statements - ignore
+        if multiline_map.get(line_number, line_number) not in ignore
+    )
+
+
+def _candidate_source_witnesses(
     repo: Path,
     blobs: Mapping[str, CandidateBlob],
     paths: set[str],
-) -> dict[str, int]:
-    """Batch-read bounded candidate blobs and count their physical source lines."""
+    *,
+    required_python_paths: set[str] | None = None,
+) -> dict[str, CandidateSourceWitness]:
+    """Batch-read bounded candidate blobs and derive source completeness facts."""
 
+    required = required_python_paths or set()
     if len(paths) > MAX_CANDIDATE_WITNESS_PATHS:
         raise CoveragePolicyError(
             "candidate_witness_limit",
             "coverage reports cite too many candidate source paths for witness validation",
         )
+    missing = sorted(required - set(blobs))
+    if missing:
+        raise CoveragePolicyError(
+            "candidate_witness_unavailable",
+            "changed maintained Python source is not a regular candidate blob: "
+            f"{missing[0]!r}",
+        )
+    oversized = sorted(
+        path
+        for path in required
+        if blobs[path].size_bytes > MAX_CANDIDATE_WITNESS_BLOB_BYTES
+    )
+    if oversized:
+        raise CoveragePolicyError(
+            "candidate_witness_limit",
+            "changed maintained Python source exceeds the per-blob witness limit: "
+            f"{oversized[0]!r}",
+        )
     selected = {
         path: blobs[path]
         for path in sorted(paths)
-        if path in blobs
-        and blobs[path].size_bytes <= MAX_CANDIDATE_WITNESS_BLOB_BYTES
+        if path in blobs and blobs[path].size_bytes <= MAX_CANDIDATE_WITNESS_BLOB_BYTES
     }
     by_object = {blob.object_id: blob.size_bytes for blob in selected.values()}
     if sum(by_object.values()) > MAX_CANDIDATE_WITNESS_TOTAL_BYTES:
@@ -1658,10 +1996,11 @@ def _candidate_source_line_counts(
     )
     if process.returncode != 0:
         raise CoveragePolicyError(
-            "git_error", "git cat-file --batch failed during candidate witness validation"
+            "git_error",
+            "git cat-file --batch failed during candidate witness validation",
         )
     cursor = 0
-    line_counts_by_object: dict[str, int] = {}
+    contents_by_object: dict[str, bytes] = {}
     for object_id in object_ids:
         header_end = process.stdout.find(b"\n", cursor)
         if header_end < 0:
@@ -1693,20 +2032,46 @@ def _candidate_source_line_counts(
                 "invalid_candidate_tree", "candidate blob batch payload is truncated"
             )
         content = process.stdout[content_start:content_end]
-        if b"\0" not in content:
-            line_counts_by_object[object_id] = content.count(b"\n") + int(
-                bool(content) and not content.endswith(b"\n")
+        if b"\0" in content:
+            required_for_object = sorted(
+                path for path in required if blobs[path].object_id == object_id
             )
+            if required_for_object:
+                raise CoveragePolicyError(
+                    "invalid_candidate_source",
+                    "changed maintained Python source contains a NUL byte: "
+                    f"{required_for_object[0]!r}",
+                )
+        else:
+            contents_by_object[object_id] = content
         cursor = content_end + 1
     if cursor != len(process.stdout):
         raise CoveragePolicyError(
             "invalid_candidate_tree", "candidate blob batch output has trailing data"
         )
-    return {
-        path: line_counts_by_object[blob.object_id]
-        for path, blob in selected.items()
-        if blob.object_id in line_counts_by_object
-    }
+    witnesses: dict[str, CandidateSourceWitness] = {}
+    for path, blob in selected.items():
+        content = contents_by_object.get(blob.object_id)
+        if content is None:
+            continue
+        line_count = content.count(b"\n") + int(
+            bool(content) and not content.endswith(b"\n")
+        )
+        target = classify_path(path)
+        executable = (
+            _python_candidate_executable_lines(content, path)
+            if target is not None and target.language == "python"
+            else None
+        )
+        witnesses[path] = CandidateSourceWitness(line_count, executable)
+    unwitnessed = sorted(required - set(witnesses))
+    if unwitnessed:
+        raise CoveragePolicyError(
+            "candidate_witness_unavailable",
+            "changed maintained Python source has no candidate witness: "
+            f"{unwitnessed[0]!r}",
+        )
+    return witnesses
 
 
 def _strict_producer_contributions(
@@ -1716,10 +2081,19 @@ def _strict_producer_contributions(
     maintained: Mapping[str, CoverageTarget],
     report_inputs: Mapping[str, Sequence[BoundCoverageReport]],
     producer_slots: Mapping[str, Path] | None,
+    *,
+    required_producer_keys: Sequence[str] | None = None,
+    source_prefix: str = "",
 ) -> dict[str, int]:
-    """Require one useful, producer-scoped native report in every release slot."""
+    """Require one useful native report in every repository-owned slot."""
 
-    expected_slots = set(PRODUCER_BY_KEY)
+    expected_slots = set(required_producer_keys or PRODUCER_BY_KEY)
+    unknown_slots = expected_slots - set(PRODUCER_BY_KEY)
+    if unknown_slots:
+        raise CoveragePolicyError(
+            "invalid_report_slot",
+            f"unknown required producer slot {sorted(unknown_slots)[0]!r}",
+        )
     actual_slots = set(producer_slots or {})
     if actual_slots != expected_slots:
         missing = sorted(expected_slots - actual_slots)
@@ -1729,10 +2103,14 @@ def _strict_producer_contributions(
             details.append(f"missing {', '.join(missing)}")
         if unexpected:
             details.append(f"unexpected {', '.join(unexpected)}")
+        requirement = (
+            f"strict coverage requires the exact {len(PRODUCER_BY_KEY)} producer slots"
+            if expected_slots == set(PRODUCER_BY_KEY)
+            else "strict repository coverage requires its exact producer slots"
+        )
         raise CoveragePolicyError(
             "incomplete_report_matrix",
-            "strict coverage requires the exact ten producer slots: "
-            + "; ".join(details),
+            requirement + ": " + "; ".join(details),
         )
 
     artifacts_by_path = {
@@ -1740,7 +2118,11 @@ def _strict_producer_contributions(
         for artifacts in report_inputs.values()
         for artifact in artifacts
     }
-    candidate_blobs = _candidate_source_blobs(repo, candidate_sha)
+    candidate_blobs = _candidate_source_blobs(
+        repo,
+        candidate_sha,
+        source_prefix=source_prefix,
+    )
     candidate_paths = set(candidate_blobs)
     witness_paths = {
         path
@@ -1748,8 +2130,15 @@ def _strict_producer_contributions(
         for path, _line in artifact.coverage.executable
         if path in candidate_blobs and classify_path(path) is not None
     }
-    candidate_line_counts = _candidate_source_line_counts(
-        repo, candidate_blobs, witness_paths
+    required_python_paths = {
+        path for path, target in maintained.items() if target.language == "python"
+    }
+    witness_paths.update(required_python_paths)
+    candidate_witnesses = _candidate_source_witnesses(
+        repo,
+        candidate_blobs,
+        witness_paths,
+        required_python_paths=required_python_paths,
     )
     contributions: dict[str, int] = {}
     artifacts_by_slot: dict[str, BoundCoverageReport] = {}
@@ -1771,7 +2160,10 @@ def _strict_producer_contributions(
             and observation[0] in candidate_paths
             and classify_path(observation[0]) is not None
             and classify_path(observation[0]).key == producer.target_key
-            and observation[1] <= candidate_line_counts.get(observation[0], 0)
+            and observation[1]
+            <= candidate_witnesses.get(
+                observation[0], CandidateSourceWitness(0)
+            ).line_count
         }
         if not useful:
             roots = ", ".join(producer.required_roots)
@@ -1793,14 +2185,18 @@ def _strict_producer_contributions(
                 "backend/voice_agent and its audited backend/shared source aliases",
             )
         if slot_key == "ios" and any(
-            _path_matches_root(path, "apple-clients/AstralWatch")
+            _path_matches_root(
+                path, "components/AstralProjection/apple-clients/AstralWatch"
+            )
             for path in artifact.coverage.files
         ):
             raise CoveragePolicyError(
                 "producer_scope_mismatch", "ios coverage contains Watch sources"
             )
         if slot_key == "macos" and any(
-            _path_matches_root(path, "apple-clients/AstralWatch")
+            _path_matches_root(
+                path, "components/AstralProjection/apple-clients/AstralWatch"
+            )
             for path in artifact.coverage.files
         ):
             raise CoveragePolicyError(
@@ -1808,8 +2204,8 @@ def _strict_producer_contributions(
             )
         if slot_key == "watchos":
             watch_roots = (
-                "apple-clients/AstralWatch",
-                "apple-clients/AstralCore/Sources",
+                "components/AstralProjection/apple-clients/AstralWatch",
+                "components/AstralProjection/apple-clients/AstralCore/Sources",
             )
             if any(
                 not any(_path_matches_root(path, root) for root in watch_roots)
@@ -1829,12 +2225,10 @@ def _strict_producer_contributions(
             if _producer_applies_to_path(slot_key, changed_path)
         ]
         if target.key == "apple" and _path_matches_root(
-            changed_path, "apple-clients/AstralCore/Sources"
+            changed_path, "components/AstralProjection/apple-clients/AstralCore/Sources"
         ):
             core_slots = [
-                slot_key
-                for slot_key in applicable
-                if slot_key in {"ios", "macos"}
+                slot_key for slot_key in applicable if slot_key in {"ios", "macos"}
             ]
             mapped_slots = [
                 slot_key
@@ -1888,11 +2282,29 @@ def _strict_producer_contributions(
                     f"producer slot {slot_key!r} does not map changed file "
                     f"{changed_path!r}",
                 )
+            witness = candidate_witnesses.get(changed_path)
+            if target.language == "python":
+                if witness is None or witness.executable_lines is None:
+                    raise CoveragePolicyError(
+                        "candidate_witness_unavailable",
+                        "changed maintained Python source has no candidate witness: "
+                        f"{changed_path!r}",
+                    )
+                required_lines = changed[changed_path] & witness.executable_lines
+                observed_lines = {
+                    line for path, line in coverage.executable if path == changed_path
+                }
+                missing = sorted(required_lines - observed_lines)
+                if missing:
+                    raise CoveragePolicyError(
+                        "producer_unmapped_changed_line",
+                        f"producer slot {slot_key!r} does not observe "
+                        "candidate-executable changed line "
+                        f"{changed_path!r}:{missing[0]}",
+                    )
             if target.key == "apple":
                 observed = {
-                    line
-                    for path, line in coverage.observed
-                    if path == changed_path
+                    line for path, line in coverage.observed if path == changed_path
                 }
                 missing = sorted(changed[changed_path] - observed)
                 if missing:
@@ -1906,7 +2318,9 @@ def _strict_producer_contributions(
                 *(
                     {
                         line
-                        for path, line in artifacts_by_slot[slot_key].coverage.executable
+                        for path, line in artifacts_by_slot[
+                            slot_key
+                        ].coverage.executable
                         if path == changed_path and line in changed[changed_path]
                     }
                     for slot_key in applicable
@@ -1936,6 +2350,9 @@ def evaluate_changed_coverage(
     fail_under: float | int | str = 90,
     producer_slots: Mapping[str, Path] | None = None,
     strict_producers: bool = False,
+    repository_profile: str = "monorepo",
+    required_producer_keys: Sequence[str] | None = None,
+    source_prefix: str = "",
 ) -> dict[str, Any]:
     """Evaluate changed executable lines and return a deterministic decision.
 
@@ -1997,7 +2414,12 @@ def evaluate_changed_coverage(
                 "native_semantic_size_bytes": artifact.native_semantic_size_bytes,
                 "producer_slot": slot_key,
             }
-    changed = read_changed_lines(repo, selection.base_sha, selection.candidate_sha)
+    changed = read_changed_lines(
+        repo,
+        selection.base_sha,
+        selection.candidate_sha,
+        source_prefix=source_prefix,
+    )
     maintained: dict[str, CoverageTarget] = {}
     for path in sorted(changed):
         target = classify_path(path)
@@ -2016,6 +2438,8 @@ def evaluate_changed_coverage(
             maintained,
             report_inputs,
             producer_slots,
+            required_producer_keys=required_producer_keys,
+            source_prefix=source_prefix,
         )
         if strict_producers
         else {}
@@ -2080,9 +2504,7 @@ def evaluate_changed_coverage(
                     )
         target_data[target_key] = merged
         report_summary[target_key] = {
-            "artifacts": [
-                str(report.path).replace("\\", "/") for report in artifacts
-            ],
+            "artifacts": [str(report.path).replace("\\", "/") for report in artifacts],
             "artifact_identities": artifact_identities,
             "changed_files": changed_files,
             "mapped_files": sorted(set(changed_files) & merged.files),
@@ -2154,6 +2576,8 @@ def evaluate_changed_coverage(
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "fail" if failures else "pass",
+        "repository_profile": repository_profile,
+        "source_prefix": source_prefix,
         "base_sha": selection.base_sha,
         "candidate_sha": selection.candidate_sha,
         "revisions_validated": True,
@@ -2245,7 +2669,16 @@ def _parser() -> argparse.ArgumentParser:
         "--coverage-mode",
         choices=("strict", "partial"),
         default="strict",
-        help="strict requires useful native reports in all ten producer slots",
+        help="strict requires useful native reports in every profile-owned slot",
+    )
+    parser.add_argument(
+        "--repository-profile",
+        choices=tuple(REPOSITORY_PROFILES),
+        default="monorepo",
+        help=(
+            "select the repository-owned producer matrix; projection maps its "
+            "child paths into the composed components/AstralProjection namespace"
+        ),
     )
     parser.add_argument("--fail-under", default="90")
     parser.add_argument("--output", required=True)
@@ -2273,6 +2706,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         selected = validate_revisions(Path(args.repo), selected)
         revisions_validated = True
+        profile = REPOSITORY_PROFILES[args.repository_profile]
         reports = {target.key: [] for target in TARGETS}
         producer_slots: dict[str, Path] = {}
         for producer in COVERAGE_PRODUCERS:
@@ -2289,6 +2723,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             fail_under=args.fail_under,
             producer_slots=producer_slots,
             strict_producers=args.coverage_mode == "strict",
+            repository_profile=args.repository_profile,
+            required_producer_keys=profile.producer_keys,
+            source_prefix=profile.source_prefix,
         )
     except CoveragePolicyError as exc:
         decision = {

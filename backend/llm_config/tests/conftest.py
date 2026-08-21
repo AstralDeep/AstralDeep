@@ -1,82 +1,179 @@
 """Shared fixtures for the llm_config test suite (feature 054-byo-llm-setup).
 
-The persisted store (``UserLLMConfigStore``) only touches its DB handle via
-``execute``/``fetch_one`` with ``?`` placeholders, so these tests run against
-a lightweight in-memory fake instead of postgres. Rows are RealDictCursor-
-style dicts, matching what ``shared/database.py`` returns.
+The persisted store consumes the application Plane runtime and its typed
+``encrypted_llm_config`` repository.  These tests use a narrow in-memory
+implementation of that exact repository contract; no SQL or retired Deep
+database facade is present in the fixture.
 
 ``CREDENTIAL_ENCRYPTION_KEY`` is monkeypatched to a per-test generated
 Fernet key so no dev key file is ever written by the suite.
 """
 from __future__ import annotations
 
-import time
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from astralplane.repositories import RepositoryNotFoundError
+from astralplane.repositories.secrets import EncryptedLLMConfigRecord
 from cryptography.fernet import Fernet
 
 from llm_config.user_store import UserLLMConfigStore
 
 
-class FakeDB:
-    """Minimal stand-in for the shared Database facade.
+def _stored_time(value: object | None) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if value is None:
+        return datetime.now(UTC)
+    return datetime.fromtimestamp(float(value), UTC)
 
-    Implements exactly the surface ``UserLLMConfigStore`` uses:
-    ``execute(sql, params=())`` and ``fetch_one(sql, params=())`` with
-    ``?`` placeholders, returning dict rows.
-    """
+
+class InMemoryEncryptedLLMConfigRepository:
+    """Typed Plane repository double with inspectable encrypted state."""
+
+    def __init__(self, storage: "CredentialPlaneFixture") -> None:
+        self._storage = storage
+
+    @staticmethod
+    def _user_record(
+        owner_id: str,
+        row: dict[str, Any],
+    ) -> EncryptedLLMConfigRecord:
+        updated_at = _stored_time(row.get("updated_at"))
+        return EncryptedLLMConfigRecord(
+            scope="user",
+            owner_id=owner_id,
+            provider=str(row.get("provider") or "custom"),
+            base_url=str(row.get("base_url") or ""),
+            model=str(row.get("model") or ""),
+            api_key_ciphertext=row.get("api_key_enc"),
+            updated_by=None,
+            created_at=_stored_time(row.get("created_at") or updated_at),
+            updated_at=updated_at,
+        )
+
+    @staticmethod
+    def _system_record(row: dict[str, Any]) -> EncryptedLLMConfigRecord:
+        updated_at = _stored_time(row.get("updated_at"))
+        return EncryptedLLMConfigRecord(
+            scope="system",
+            owner_id=None,
+            provider=str(row.get("provider") or "custom"),
+            base_url=str(row.get("base_url") or ""),
+            model=str(row.get("model") or ""),
+            api_key_ciphertext=row.get("api_key_enc"),
+            updated_by=str(row.get("updated_by") or ""),
+            created_at=_stored_time(row.get("created_at") or updated_at),
+            updated_at=updated_at,
+        )
+
+    def get_user(
+        self,
+        _executor: object,
+        *,
+        owner_id: str,
+    ) -> EncryptedLLMConfigRecord | None:
+        row = self._storage.users.get(owner_id)
+        return None if row is None else self._user_record(owner_id, row)
+
+    def upsert_user(
+        self,
+        _transaction: object,
+        *,
+        owner_id: str,
+        provider: str,
+        base_url: str,
+        model: str,
+        api_key_ciphertext: str | None,
+    ) -> EncryptedLLMConfigRecord:
+        now = datetime.now(UTC)
+        existing = self._storage.users.get(owner_id)
+        self._storage.users[owner_id] = {
+            "provider": provider,
+            "base_url": base_url,
+            "model": model,
+            "api_key_enc": api_key_ciphertext,
+            "created_at": (
+                existing.get("created_at", now) if existing is not None else now
+            ),
+            "updated_at": now,
+        }
+        return self._user_record(owner_id, self._storage.users[owner_id])
+
+    def upsert_user_before_deadline(
+        self,
+        transaction: object,
+        *,
+        deadline_at: datetime,
+        **values: object,
+    ) -> EncryptedLLMConfigRecord | None:
+        if datetime.now(UTC) >= deadline_at:
+            return None
+        return self.upsert_user(transaction, **values)
+
+    def delete_user(self, _transaction: object, *, owner_id: str) -> None:
+        if self._storage.users.pop(owner_id, None) is None:
+            raise RepositoryNotFoundError(
+                "owner-scoped LLM configuration was not found"
+            )
+
+    def get_system(
+        self,
+        _executor: object,
+    ) -> EncryptedLLMConfigRecord | None:
+        row = self._storage.system
+        return None if row is None else self._system_record(row)
+
+    def upsert_system(
+        self,
+        _transaction: object,
+        *,
+        updated_by: str,
+        provider: str,
+        base_url: str,
+        model: str,
+        api_key_ciphertext: str | None,
+    ) -> EncryptedLLMConfigRecord:
+        now = datetime.now(UTC)
+        existing = self._storage.system
+        self._storage.system = {
+            "provider": provider,
+            "base_url": base_url,
+            "model": model,
+            "api_key_enc": api_key_ciphertext,
+            "updated_by": updated_by,
+            "created_at": (
+                existing.get("created_at", now) if existing is not None else now
+            ),
+            "updated_at": now,
+        }
+        return self._system_record(self._storage.system)
+
+    def delete_system(self, _transaction: object) -> None:
+        if self._storage.system is None:
+            raise RepositoryNotFoundError("system LLM configuration was not found")
+        self._storage.system = None
+
+
+class CredentialPlaneFixture:
+    """Minimal application Plane runtime/catalog for credential-store tests."""
 
     def __init__(self) -> None:
-        self.users: Dict[str, Dict[str, Any]] = {}
-        self.system: Optional[Dict[str, Any]] = None
+        self.users: dict[str, dict[str, Any]] = {}
+        self.system: dict[str, Any] | None = None
+        repository = InMemoryEncryptedLLMConfigRepository(self)
+        self.repositories = SimpleNamespace(encrypted_llm_config=repository)
+        self.plane_runtime = self
+        self.plane_repositories = self.repositories
 
-    def execute(self, sql: str, params: tuple = ()) -> None:
-        s = " ".join(sql.split()).lower()
-        if s.startswith("insert into user_llm_config"):
-            user_id, provider, base_url, model, api_key_enc = params
-            self.users[user_id] = {
-                "provider": provider,
-                "base_url": base_url,
-                "model": model,
-                "api_key_enc": api_key_enc,
-                "updated_at": time.time(),
-            }
-        elif s.startswith("insert into system_llm_config"):
-            provider, base_url, model, api_key_enc, updated_by = params
-            self.system = {
-                "provider": provider,
-                "base_url": base_url,
-                "model": model,
-                "api_key_enc": api_key_enc,
-                "updated_by": updated_by,
-                "updated_at": time.time(),
-            }
-        elif s.startswith("delete from user_llm_config"):
-            self.users.pop(params[0], None)
-        elif s.startswith("delete from system_llm_config"):
-            self.system = None
-        else:  # pragma: no cover — guards against silent SQL drift
-            raise AssertionError(f"FakeDB got unexpected execute SQL: {sql}")
-
-    def fetch_one(self, sql: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
-        s = " ".join(sql.split()).lower()
-        if "from user_llm_config" in s:
-            row = self.users.get(params[0])
-            if row is None:
-                return None
-            if s.startswith("select 1"):
-                return {"present": 1}
-            return dict(row)
-        if "from system_llm_config" in s:
-            if self.system is None:
-                return None
-            if s.startswith("select 1"):
-                return {"present": 1}
-            return dict(self.system)
-        raise AssertionError(  # pragma: no cover
-            f"FakeDB got unexpected fetch_one SQL: {sql}")
+    @contextmanager
+    def transaction(self, *, isolation: object = None):
+        del isolation
+        yield object()
 
 
 @pytest.fixture
@@ -88,13 +185,23 @@ def fernet_key(monkeypatch) -> str:
 
 
 @pytest.fixture
-def fake_db() -> FakeDB:
-    return FakeDB()
+def credential_plane() -> CredentialPlaneFixture:
+    return CredentialPlaneFixture()
 
 
 @pytest.fixture
-def store(fernet_key, fake_db) -> UserLLMConfigStore:
-    return UserLLMConfigStore(fake_db)
+def fake_db(credential_plane) -> CredentialPlaneFixture:
+    """Inspectable ciphertext state retained for existing security assertions."""
+
+    return credential_plane
+
+
+@pytest.fixture
+def store(fernet_key, credential_plane) -> UserLLMConfigStore:
+    return UserLLMConfigStore(
+        plane_runtime=credential_plane,
+        plane_repositories=credential_plane.repositories,
+    )
 
 
 @pytest.fixture

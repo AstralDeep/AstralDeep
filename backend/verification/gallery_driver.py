@@ -4,7 +4,7 @@ Two things:
 
 * :func:`build_gallery` — a **pure** function returning one flat list of
   astralprims component dicts covering EVERY renderable type
-  (``webrender.allowed_primitive_types()`` / ``shared/ui_protocol.json``
+  (``webrender.allowed_primitive_types()`` / Projection ``contracts/ui_protocol.json``
   ``component_types`` — 35 today) plus the interactive variants
   (button+action+payload, input, a multi-field ``param_picker`` with a
   password field and a ``submit_action``, a paginated ``table`` with

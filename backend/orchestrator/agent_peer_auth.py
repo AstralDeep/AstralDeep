@@ -65,7 +65,7 @@ _STATIC_TRUSTED_HOSTS = frozenset(
 
 #: The authentication scheme an Astral agent names in its 401 challenge. Both
 #: sides must spell this identically (pinned by a cross-file drift test in
-#: windows-client/tests/test_win_agent_inbound_auth.py).
+#: components/AstralProjection/windows-client/tests/test_win_agent_inbound_auth.py).
 AGENT_AUTH_SCHEME = "AstralAgentKey"
 
 

@@ -16,7 +16,7 @@ from orchestrator.knowledge_synthesis import (
     MaintenanceUnitRepository,
 )
 from orchestrator.work_admission import WorkAdmissionCoordinator
-from shared.database import Database
+from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
 
 
 _AGENT_PREFIX = "maintenance-060-"
@@ -24,47 +24,24 @@ _AGENT_PREFIX = "maintenance-060-"
 
 @pytest.fixture()
 def db():
-    database = Database()
-    database._init_db()
-
-    def cleanup():
-        database.execute(
-            "UPDATE operation_admission_slot SET lease_expires_at = "
-            "clock_timestamp() - interval '1 second' WHERE operation_id IN ("
-            "SELECT DISTINCT unit.operation_id FROM maintenance_unit unit "
-            "JOIN maintenance_unit_input membership ON membership.unit_id = unit.unit_id "
-            "JOIN interaction_log source ON source.id::text = membership.input_id "
-            "WHERE source.agent_id LIKE ? AND unit.operation_id IS NOT NULL)",
-            (f"{_AGENT_PREFIX}%",),
-        )
-        WorkAdmissionCoordinator.from_database(
-            database=database, slot_lease=timedelta(seconds=30)
-        ).expire_execution_leases()
-        database.execute(
-            "DELETE FROM maintenance_unit WHERE unit_id IN ("
-            "SELECT DISTINCT membership.unit_id FROM maintenance_unit_input membership "
-            "JOIN interaction_log source ON source.id::text = membership.input_id "
-            "WHERE source.agent_id LIKE ?)",
-            (f"{_AGENT_PREFIX}%",),
-        )
-        database.execute(
-            "DELETE FROM interaction_log WHERE agent_id LIKE ?",
-            (f"{_AGENT_PREFIX}%",),
-        )
-
-    cleanup()
-    yield database
-    cleanup()
+    with isolated_plane_runtime("maintenance_claims") as runtime:
+        yield runtime
 
 
-def _seed(db: Database, agent_id: str, count: int = 2) -> list[dict]:
+def _seed(db: PlaneTestRuntime, agent_id: str, count: int = 2) -> list[dict]:
     for index in range(count):
-        db.log_interaction(
-            agent_id=agent_id,
-            tool_name=f"tool_{index}",
-            success=index % 2 == 0,
-            error_message=None if index % 2 == 0 else "bounded failure",
-            response_time_ms=10 + index,
+        db.execute(
+            "INSERT INTO interaction_log ("
+            "agent_id, tool_name, success, error_message, response_time_ms, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                agent_id,
+                f"tool_{index}",
+                index % 2 == 0,
+                None if index % 2 == 0 else "bounded failure",
+                10 + index,
+                index + 1,
+            ),
         )
     rows = db.fetch_all(
         "SELECT * FROM interaction_log WHERE agent_id = ? ORDER BY id",
@@ -82,6 +59,25 @@ def _render(claim, marker: str = "content") -> str:
     )
 
 
+def _plane_dependencies(db: PlaneTestRuntime):
+    coordinator = WorkAdmissionCoordinator.from_plane(
+        plane_runtime=db,
+        plane_repositories=db.repositories,
+        slot_lease=timedelta(seconds=30),
+    )
+    return coordinator, db, db.repositories
+
+
+def _maintenance_repository(db: PlaneTestRuntime) -> MaintenanceUnitRepository:
+    coordinator, runtime, catalog = _plane_dependencies(db)
+    return MaintenanceUnitRepository(
+        coordinator=coordinator,
+        lease_seconds=30,
+        plane_runtime=runtime,
+        plane_repositories=catalog,
+    )
+
+
 def _publish_and_complete(repo, publisher, claim, relative_path=None):
     path = relative_path or f"test/{claim.unit_id}.md"
     digest = publisher.publish(
@@ -95,7 +91,7 @@ def test_partial_failure_completes_only_successful_agent_inputs(db, tmp_path):
     agent_ok = f"{_AGENT_PREFIX}ok"
     agent_failed = f"{_AGENT_PREFIX}failed"
     interactions = _seed(db, agent_ok) + _seed(db, agent_failed)
-    repo = MaintenanceUnitRepository(db, lease_seconds=30)
+    repo = _maintenance_repository(db)
     publisher = MaintenanceOutputPublisher(tmp_path)
     unit_ids = repo.ensure_synthesis_units(interactions)
     assert len(unit_ids) == 5
@@ -137,7 +133,7 @@ def test_partial_failure_completes_only_successful_agent_inputs(db, tmp_path):
 
 def test_retry_preserves_unit_and_output_generation_identity(db, tmp_path):
     agent_id = f"{_AGENT_PREFIX}retry"
-    repo = MaintenanceUnitRepository(db, lease_seconds=30)
+    repo = _maintenance_repository(db)
     unit_ids = repo.ensure_synthesis_units(_seed(db, agent_id, 1))
     claim = None
     while claim is None or not (
@@ -168,7 +164,7 @@ def test_crash_after_replace_reconciles_same_output_without_republishing(
     db, tmp_path
 ):
     agent_id = f"{_AGENT_PREFIX}crash"
-    repo = MaintenanceUnitRepository(db, lease_seconds=30)
+    repo = _maintenance_repository(db)
     publisher = MaintenanceOutputPublisher(tmp_path)
     unit_ids = repo.ensure_synthesis_units(_seed(db, agent_id, 1))
 
@@ -258,11 +254,14 @@ async def test_synthesis_cycle_uses_claims_and_commits_all_atomic_outputs(
 ):
     agent_id = f"{_AGENT_PREFIX}cycle"
     await asyncio.to_thread(_seed, db, agent_id, 2)
+    coordinator, runtime, catalog = _plane_dependencies(db)
     synthesizer = await asyncio.to_thread(
         KnowledgeSynthesizer,
-        db=db,
         knowledge_dir=str(tmp_path),
         config_resolver=lambda: None,
+        coordinator=coordinator,
+        plane_runtime=runtime,
+        plane_repositories=catalog,
     )
     synthesizer.min_interactions = 1
     monkeypatch.setattr(synthesizer, "_refresh_client", lambda: True)

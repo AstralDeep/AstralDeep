@@ -45,8 +45,8 @@ def captured(monkeypatch):
 
 
 @pytest.fixture
-def orch():
-    o = Orchestrator()
+def orch(orchestrator_factory):
+    o = orchestrator_factory()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])

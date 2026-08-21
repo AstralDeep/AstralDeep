@@ -1,7 +1,7 @@
 """Feature 052 — the orchestrator's off-loop inner seams execute for real.
 
-Drives the ``get_history``/``load_chat`` WS actions, the legacy
-combine/condense reconciliation, and the delegation scope-read through a live
+Drives the ``get_history``/``load_chat`` WS actions, legacy canvas identity
+canonicalization, and the delegation scope-read through a live
 Orchestrator so the ``asyncio.to_thread`` inner functions introduced by the
 perf pass (``_hydrate_loaded_chat``, ``_stamp_and_snapshot``,
 ``_scope_reads``) run end-to-end instead of being replicated in test code.
@@ -40,8 +40,8 @@ def _fresh_socket():
     return VirtualWebSocket(task)
 
 
-@pytest.fixture(scope="module")
-def orch():
+@pytest.fixture()
+async def orch():
     """One real Orchestrator (mock auth) shared by the module's tests.
 
     Mock auth must be forced under BOTH env names AFTER imports: the
@@ -54,16 +54,23 @@ def orch():
     os.environ["USE_MOCK_AUTH"] = "true"
     os.environ["USE_MOCK_AUTH"] = "true"
     from orchestrator.orchestrator import Orchestrator
+    instance = None
     try:
-        yield Orchestrator()
-    except Exception as exc:
-        pytest.skip(f"orchestrator/database unavailable: {exc}")
+        try:
+            instance = await asyncio.to_thread(Orchestrator)
+        except Exception as exc:
+            pytest.skip(f"orchestrator/database unavailable: {exc}")
+        yield instance
     finally:
-        for name, value in saved.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
+        try:
+            if instance is not None:
+                await instance._close_started_services()
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
 
 @pytest.fixture()
@@ -78,11 +85,20 @@ async def registered_ws(orch):
 
 
 @pytest.fixture()
-def chat_env(orch):
+async def chat_env(orch):
     """A real chat owned by the mock-auth user; deleted on teardown."""
-    chat_id = orch.history.create_chat(user_id=USER_ID)
-    yield chat_id
-    orch.history.delete_chat(chat_id, user_id=USER_ID)
+    chat_id = await asyncio.to_thread(
+        orch.history.create_chat,
+        user_id=USER_ID,
+    )
+    try:
+        yield chat_id
+    finally:
+        await asyncio.to_thread(
+            orch.history.delete_chat,
+            chat_id,
+            user_id=USER_ID,
+        )
 
 
 def _frames(ws, frame_type):
@@ -190,11 +206,29 @@ async def test_load_chat_rehydrates_attachment_chips_real_row(
         MessageAttachmentRepository,
     )
     from orchestrator.attachments.repository import AttachmentRepository
+    from orchestrator.plane_repository_context import plane_source_from_orchestrator
+    from tests.helpers.attachment_materialization import publish_attachment_for_test
 
     ws, chat_id = registered_ws, chat_env
-    att_id = f"att-real-{uuid.uuid4().hex[:8]}"
-    att_repo = AttachmentRepository(orch.history.db)
-    link_repo = MessageAttachmentRepository(orch.history.db)
+    att_id = str(uuid.uuid4())
+    plane = orch.runtime_composition.plane
+    source = plane_source_from_orchestrator(orch)
+    await asyncio.to_thread(
+        publish_attachment_for_test,
+        plane.runtime,
+        plane.repositories,
+        plane.blobs,
+        owner_id=USER_ID,
+        attachment_id=att_id,
+        filename="real-notes.md",
+        content_type="text/markdown",
+        category="text",
+        extension="md",
+        chunks=(b"hello world!",),
+        max_bytes=12,
+    )
+    att_repo = AttachmentRepository.from_plane_source(source)
+    link_repo = MessageAttachmentRepository.from_plane_source(source)
     try:
         await asyncio.to_thread(
             orch.history.add_message, chat_id, "user", "read this real file",
@@ -202,11 +236,11 @@ async def test_load_chat_rehydrates_attachment_chips_real_row(
         msg_id = await asyncio.to_thread(
             orch.history.get_latest_message_id, chat_id, USER_ID)
         assert isinstance(msg_id, int), "messages.id is the integer PK"
-        await asyncio.to_thread(
-            att_repo.insert, attachment_id=att_id, user_id=USER_ID,
-            filename="real-notes.md", content_type="text/markdown",
-            category="text", extension="md", size_bytes=12,
-            sha256="0" * 64, storage_path="/tmp/real-notes.md")
+        assert await asyncio.to_thread(
+            att_repo.get_by_id,
+            att_id,
+            USER_ID,
+        ) is not None
         await asyncio.to_thread(
             link_repo.insert, chat_id=chat_id, attachment_id=att_id,
             user_id=USER_ID, message_id=msg_id)
@@ -224,11 +258,10 @@ async def test_load_chat_rehydrates_attachment_chips_real_row(
              "category": "text"}]
     finally:
         await asyncio.to_thread(
-            orch.history.db.execute,
-            "DELETE FROM message_attachment WHERE attachment_id = ?", (att_id,))
-        await asyncio.to_thread(
-            orch.history.db.execute,
-            "DELETE FROM user_attachments WHERE attachment_id = ?", (att_id,))
+            orch.attachment_purge_coordinator.schedule_attachment,
+            owner_id=USER_ID,
+            attachment_id=att_id,
+        )
 
 
 async def test_load_chat_survives_transcript_render_failure(
@@ -279,52 +312,116 @@ async def test_load_chat_survives_attachment_rehydration_failure(
     assert loaded[-1]["chat"]["id"] == chat_id
 
 
-async def test_reconcile_legacy_replacement_stamps_identities(orch, chat_env):
+async def test_legacy_replacement_resolves_identities_in_publication(
+        orch, chat_env):
     chat_id = chat_env
     now_ms = int(time.time() * 1000)
 
     def _seed_rows():
-        db = orch.history.db
-        db.execute(
-            "INSERT INTO saved_components "
-            "(id, chat_id, user_id, component_data, component_type, title, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), chat_id, USER_ID,
-             json.dumps({"type": "metric", "title": "Fresh", "value": "1",
-                         "_source_agent": "agent-a", "_source_tool": "tool-a",
-                         "_source_params": {}}),
-             "metric", "Fresh", now_ms))
-        db.execute(
-            "INSERT INTO saved_components "
-            "(id, chat_id, user_id, component_data, component_type, title, "
-            "created_at, component_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), chat_id, USER_ID,
-             json.dumps({"type": "text", "content": "kept",
-                         "component_id": "wc_prestamped"}),
-             "text", "Kept", now_ms + 1, "wc_prestamped"))
-        db.execute(
-            "INSERT INTO saved_components "
-            "(id, chat_id, user_id, component_data, component_type, title, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), chat_id, USER_ID, "not-json{",
-             "text", "Broken", now_ms + 2))
+        fresh_id = str(uuid.uuid4())
+        kept_id = str(uuid.uuid4())
+        runtime = orch.runtime_composition.plane.runtime
+        with runtime.transaction() as transaction:
+            transaction.execute(
+                "INSERT INTO saved_components "
+                "(id, chat_id, user_id, component_data, component_type, title, "
+                "created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (fresh_id, chat_id, USER_ID,
+                 json.dumps({"type": "metric", "title": "Fresh", "value": "1",
+                             "_source_agent": "agent-a", "_source_tool": "tool-a",
+                             "_source_params": {}}),
+                 "metric", "Fresh", now_ms),
+            )
+            transaction.execute(
+                "INSERT INTO saved_components "
+                "(id, chat_id, user_id, component_data, component_type, title, "
+                "created_at, component_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (kept_id, chat_id, USER_ID,
+                 json.dumps({"type": "text", "content": "kept",
+                             "component_id": "wc_prestamped"}),
+                 "text", "Kept", now_ms + 1, "wc_prestamped"),
+            )
+        return fresh_id, kept_id
 
-    await asyncio.to_thread(_seed_rows)
-    await orch._reconcile_legacy_replacement(
-        None, chat_id, USER_ID, cause="combine_components")
+    fresh_id, kept_id = await asyncio.to_thread(_seed_rows)
+    fresh = await asyncio.to_thread(
+        orch.history.get_component_by_id, fresh_id, user_id=USER_ID
+    )
+    kept = await asyncio.to_thread(
+        orch.history.get_component_by_id, kept_id, user_id=USER_ID
+    )
+    assert fresh is not None and kept is not None
+
+    identities = {}
+
+    async def _mutation():
+        identities["Fresh"] = await orch._workspace_identity_for_saved_row(
+            chat_id=chat_id, user_id=USER_ID, row=fresh
+        )
+        identities["Kept"] = await orch._workspace_identity_for_saved_row(
+            chat_id=chat_id, user_id=USER_ID, row=kept
+        )
+        await orch.workspace.aupsert(
+            chat_id,
+            USER_ID,
+            [{"type": "text", "content": "publication marker"}],
+        )
+        await orch.workspace.asnapshot(
+            chat_id, USER_ID, cause="combine_components"
+        )
+
+    await orch.run_detached_conversation_mutation(
+        chat_id=chat_id, user_id=USER_ID, mutation=_mutation
+    )
 
     rows = await asyncio.to_thread(orch.workspace.live_rows, chat_id, USER_ID)
     by_title = {r["title"]: r for r in rows}
-    assert by_title["Fresh"]["component_id"], "fresh legacy row must be stamped"
-    assert by_title["Kept"]["component_id"] == "wc_prestamped"
-    assert by_title["Broken"]["component_id"] is None
+    by_identity = {r["component_id"]: r for r in rows}
+    assert identities["Fresh"].startswith("cc_")
+    assert by_title["Fresh"]["component_id"] == identities["Fresh"]
+    assert identities["Kept"] == "wc_prestamped"
+    assert by_identity["wc_prestamped"]["component_id"] == "wc_prestamped"
     count = await asyncio.to_thread(
         orch.workspace.count_snapshots, chat_id, USER_ID)
     assert count >= 1
 
 
-async def test_reconcile_legacy_replacement_ignores_empty_chat(orch):
-    await orch._reconcile_legacy_replacement(None, "", USER_ID, cause="noop")
+async def test_legacy_publication_rejects_malformed_component_json(
+        orch, chat_env):
+    from astralplane.repositories import RepositoryDataError
+
+    chat_id = chat_env
+    runtime = orch.runtime_composition.plane.runtime
+
+    def _seed_malformed():
+        with runtime.transaction() as transaction:
+            transaction.execute(
+                "INSERT INTO saved_components "
+                "(id, chat_id, user_id, component_data, component_type, title, "
+                "created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (str(uuid.uuid4()), chat_id, USER_ID, "not-json{", "text",
+                 "Broken", int(time.time() * 1000)),
+            )
+
+    await asyncio.to_thread(_seed_malformed)
+    mutation_called = False
+
+    async def _mutation():
+        nonlocal mutation_called
+        mutation_called = True
+
+    with pytest.raises(RepositoryDataError, match="not valid JSON"):
+        await orch.run_detached_conversation_mutation(
+            chat_id=chat_id, user_id=USER_ID, mutation=_mutation
+        )
+    assert mutation_called is False
+    record = await asyncio.to_thread(
+        orch.history.get_conversation_record,
+        chat_id,
+        user_id=USER_ID,
+    )
+    assert record is not None and record.render_revision == 0
 
 
 async def test_get_delegation_token_scopes_off_loop(orch, monkeypatch):

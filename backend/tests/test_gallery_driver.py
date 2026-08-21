@@ -1,7 +1,7 @@
 """Feature 044 (T031, US2) — canonical gallery driver coverage.
 
 ``build_gallery()`` must cover every renderable primitive type (parity with
-``webrender.allowed_primitive_types()`` / ``shared/ui_protocol.json``), carry
+``webrender.allowed_primitive_types()`` / Projection ``contracts/ui_protocol.json``), carry
 the interactive + edge variants US2 verifies, and be well-formed (every element
 a dict with a ``"type"`` key). Pure — no socket required.
 """

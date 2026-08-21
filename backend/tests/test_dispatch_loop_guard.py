@@ -14,9 +14,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from orchestrator.orchestrator import Orchestrator
-
-
 def _loop_running_here() -> bool:
     try:
         asyncio.get_running_loop()
@@ -37,8 +34,8 @@ class _LoopRecordingDraftDB:
 
 
 @pytest.fixture()
-def orch(monkeypatch):
-    o = Orchestrator()
+def orch(monkeypatch, orchestrator_factory):
+    o = orchestrator_factory()
     o.send_ui_render = AsyncMock()
     o._safe_send = AsyncMock()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)

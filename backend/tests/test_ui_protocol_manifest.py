@@ -1,6 +1,7 @@
-"""Feature 044 — drift guards for the committed UI-protocol manifest.
+"""Drift guards for AstralProjection's authoritative UI-protocol manifest.
 
-``backend/shared/ui_protocol.json`` is the single machine-readable source for
+``components/AstralProjection/contracts/ui_protocol.json`` is the single
+machine-readable source for
 (a) every server->client WS frame type, (b) the ui_event action vocabulary, and
 (c) the component vocabulary. Windows and Android test suites assert their own
 classification tables against the same file; these backend guards assert the
@@ -15,9 +16,18 @@ from pathlib import Path
 import pytest
 
 BACKEND = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = BACKEND / "shared" / "ui_protocol.json"
+ROOT = BACKEND.parent
+MANIFEST_PATH = (
+    ROOT / "components" / "AstralProjection" / "contracts" / "ui_protocol.json"
+)
 VOICE_FIXTURE_PATH = (
-    BACKEND / "tests" / "fixtures" / "voice_065" / "client_conformance.json"
+    ROOT
+    / "components"
+    / "AstralProjection"
+    / "contracts"
+    / "fixtures"
+    / "voice_065"
+    / "client_conformance.json"
 )
 
 VOICE_REQUIRED_DISPOSITIONS = {
@@ -193,7 +203,7 @@ def test_runtime_reliability_frames_and_structured_host_registration_are_manifes
         "agent_host_registration_refused",
     }
     assert required_pushes <= _push_names(manifest), (
-        "feature-060 server frames are missing from shared/ui_protocol.json: "
+        "feature-060 server frames are missing from Projection ui_protocol.json: "
         f"{sorted(required_pushes - _push_names(manifest))}"
     )
 
@@ -204,7 +214,7 @@ def test_runtime_reliability_frames_and_structured_host_registration_are_manifes
         and entry.get("carried_on") == ["register_ui"]
     ]
     assert len(registrations) == 1, (
-        "shared/ui_protocol.json must declare structured register_ui.agent_host exactly once"
+        "Projection ui_protocol.json must declare structured register_ui.agent_host exactly once"
     )
     shape = registrations[0].get("shape")
     assert isinstance(shape, dict)
@@ -395,7 +405,7 @@ def test_push_types_cover_send_sites():
             unmanifested.setdefault(name, []).append(rel)
 
     assert not unmanifested, (
-        "frame types sent to UI clients but missing from shared/ui_protocol.json "
+        "frame types sent to UI clients but missing from Projection ui_protocol.json "
         f"(add them + classify on every client): {unmanifested}"
     )
 
@@ -414,9 +424,15 @@ def test_accept_actions_cover_dispatch():
     for rel in ["orchestrator/chrome_events.py", "orchestrator/agentic_creation.py"]:
         src = (BACKEND / rel).read_text(encoding="utf-8")
         actions |= set(_CHROME_KEY.findall(src))
-    surfaces = BACKEND / "webrender" / "chrome" / "surfaces"
-    for path in surfaces.glob("*.py"):
-        actions |= set(_CHROME_KEY.findall(path.read_text(encoding="utf-8")))
+    from webrender.chrome import surfaces as projection_surfaces
+
+    surface_roots = (
+        BACKEND / "orchestrator" / "projection_surfaces",
+        Path(projection_surfaces.__file__).resolve().parent,
+    )
+    for surfaces in surface_roots:
+        for path in surfaces.glob("*.py"):
+            actions |= set(_CHROME_KEY.findall(path.read_text(encoding="utf-8")))
     # payload keys that match the draft/revision prefix but are not actions
     actions -= {"draft_id", "draft_status", "revision_staged"}
 

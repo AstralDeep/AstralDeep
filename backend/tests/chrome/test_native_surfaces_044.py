@@ -18,9 +18,9 @@ import types
 import pytest
 
 from rote.capabilities import DeviceProfile
-from webrender.chrome.surfaces import attachments as att_surface
-from webrender.chrome.surfaces import pulse as pulse_surface
-from webrender.chrome.surfaces import workspace_timeline as wt
+from orchestrator.projection_surfaces import attachments as att_surface
+from orchestrator.projection_surfaces import pulse as pulse_surface
+from orchestrator.projection_surfaces import workspace_timeline as wt
 
 
 def run(coro):

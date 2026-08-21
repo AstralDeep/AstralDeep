@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import attachment_parser_scope, resolve_attachment
 from agents.general.file_tools.medical import _common
 
 logger = logging.getLogger("FileTools.read_dicom")
@@ -103,6 +104,7 @@ def _collect_tags(ds: Any, names) -> Dict[str, Any]:
     return out
 
 
+@attachment_parser_scope
 def read_dicom(
     attachment_id: str,
     user_id: Optional[str] = None,
@@ -125,7 +127,7 @@ def read_dicom(
         return _common.missing_dep("pydicom", exc)
 
     try:
-        ds = pydicom.dcmread(str(path), force=True)
+        ds = pydicom.dcmread(os.fspath(path), force=True)
     except Exception as exc:
         logger.exception("dicom parse failed")
         return _common.error("parse_failed", f"Failed to read DICOM: {exc}")

@@ -9,9 +9,11 @@ Usage:
     python -m backend.qual_audit.cli rerun <case_id>
 """
 
+import atexit
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import click
 
@@ -21,12 +23,34 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 from qual_audit.database import AuditDatabase  # noqa: E402
-from qual_audit.evidence import get_previous_hash, verify_chain  # noqa: E402
 from qual_audit.models import AuditAction, AuditEntry, VerificationStatus  # noqa: E402
 from qual_audit.runner import run_backend_tests, run_frontend_tests  # noqa: E402
+from orchestrator.plane_composition import compose_plane_from_environment  # noqa: E402
+
+_composition = None
+_database = None
+
+
+def _close_plane_runtime() -> None:
+    global _composition
+    if _composition is not None:
+        _composition.close()
+        _composition = None
+
+
+atexit.register(_close_plane_runtime)
 
 def _db() -> AuditDatabase:
-    return AuditDatabase()
+    global _composition, _database
+    if _database is None:
+        manifest = Path(_backend_dir).parent / "config" / "astral-composition.json"
+        _composition = compose_plane_from_environment(manifest)
+        _database = AuditDatabase(
+            plane_runtime=_composition.runtime,
+            plane_repositories=_composition.repositories,
+            owner_id=os.getenv("QUAL_AUDIT_OWNER_ID"),
+        )
+    return _database
 
 
 @click.group()
@@ -172,29 +196,19 @@ def verify(case_id, action, rationale, reviewer):
     if not reviewer:
         reviewer = os.environ.get("USER", os.environ.get("USERNAME", "unknown"))
 
-    # Get the latest audit entry for hash chain
-    latest = db.get_latest_audit()
-    prev_hash = get_previous_hash(latest)
-
     entry = AuditEntry(
         case_id=case_id,
         action=AuditAction(action),
         reviewer=reviewer,
         rationale=rationale,
         timestamp=datetime.now(timezone.utc),
-        previous_hash=prev_hash,
     )
-    db.insert_audit(entry)
+    persisted = db.review_case(entry)
+    if persisted is None:
+        click.echo(f"Case not found: {case_id}")
+        sys.exit(1)
 
-    # Update case verification status
-    status_map = {
-        "verified": VerificationStatus.VERIFIED,
-        "disputed": VerificationStatus.DISPUTED,
-        "needs_rerun": VerificationStatus.NEEDS_RERUN,
-    }
-    db.update_verification_status(case_id, status_map[action])
-
-    click.echo(f"Audit entry: {entry.id}")
+    click.echo(f"Audit entry: {persisted.id}")
     click.echo(f"Action: {action} | Reviewer: {reviewer}")
     click.echo(f"Case {case_id} → {action}")
 
@@ -229,7 +243,10 @@ def export(run_id, output):
 
     # Verify audit chain integrity
     all_audits = db.get_all_audits_for_run(run_id)
-    if all_audits and not verify_chain(all_audits, require_genesis=False):
+    if all_audits and not db.verify_audit_chain_for_run(
+        run_id,
+        require_genesis=False,
+    ):
         click.echo("ERROR: Audit trail hash chain integrity check FAILED.")
         click.echo("The audit trail may have been tampered with.")
         sys.exit(3)

@@ -62,15 +62,18 @@ class _CaptureSocket:
 
 
 @pytest.fixture
-def orch(monkeypatch):
+async def orch(monkeypatch):
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.orchestrator import Orchestrator
 
     try:
-        o = Orchestrator()
+        o = await asyncio.to_thread(Orchestrator)
     except Exception as exc:  # pragma: no cover — env-dependent
         pytest.skip(f"orchestrator/database unavailable: {exc}")
-    return o
+    try:
+        yield o
+    finally:
+        await o._close_started_services()
 
 
 def _seed_user(orch, user_id: str) -> None:

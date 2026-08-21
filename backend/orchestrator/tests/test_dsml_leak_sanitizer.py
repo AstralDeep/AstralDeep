@@ -5,7 +5,6 @@ Exercises the same chain the chat-message handler uses:
         → orch._diagnose_leaked_tool_calls(...) → list of Alert dicts
         → _sanitize_text_response(raw_content) → cleaned text
 """
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
@@ -34,13 +33,20 @@ def _orch_with(tool_to_agent: dict, *,
     orch = Orchestrator.__new__(Orchestrator)
     orch.agent_cards = cards
     orch.security_flags = {}
-    db = MagicMock()
-    db.get_user_disabled_agents.return_value = disabled_agents or []
-    db.get_chat_agent.side_effect = lambda chat_id: (chat_to_agent or {}).get(chat_id)
-    db.get_user_tool_selection.side_effect = lambda u, a: (saved_selection or {}).get((u, a))
-    orch.history = SimpleNamespace(db=db)
+    orch.history = MagicMock()
+    orch.history.get_chat_agent.side_effect = (
+        lambda chat_id, *, user_id: (chat_to_agent or {}).get(chat_id)
+    )
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.list_disabled_agents.return_value = tuple(
+        disabled_agents or ()
+    )
+    orch.tool_permissions.get_tool_selection.side_effect = (
+        lambda user_id, agent_id: (saved_selection or {}).get(
+            (user_id, agent_id)
+        )
+    )
     return orch
 
 

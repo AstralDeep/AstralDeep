@@ -17,10 +17,10 @@ AstralDeep is a clinical-AI, multi-agent platform with one FastAPI orchestrator 
 
 The UI contract is:
 
-`astralprims defines -> orchestrator/webrender renders -> ROTE adapts`
+`AstralPrimitives defines -> AstralProjection renders and adapts -> AstralDeep orchestrates`
 
 - There is no React/Vite SPA. Do not reintroduce a parallel frontend source of truth.
-- Web UI is backend-served HTML plus vanilla JS/CSS under `backend/webrender/`.
+- Web UI is backend-served HTML plus vanilla JS/CSS owned under `components/AstralProjection/backend/webrender/` and exposed to Deep through the installed Projection resource accessors.
 - Windows (PySide6), Android (Kotlin/Compose), and Apple (Swift/SwiftUI) are thin native consumers of server-owned structured UI and chrome contracts.
 - "LLM proposes, code decides" is the default design rule: models may draft layouts or artifacts, but deterministic code validates, authorizes, bounds, and renders them.
 
@@ -29,18 +29,24 @@ The UI contract is:
 - `backend/orchestrator/orchestrator.py`: central dispatch/runtime hub. Keep edits narrow and cover surrounding authorization and delivery seams.
 - `backend/orchestrator/`: auth, permissions, delegation, agent lifecycle, workspace, streaming, scheduling, UI design, and chrome event logic.
 - `backend/shared/protocol.py`: shared transport structures.
-- `backend/shared/ui_protocol.json`: authoritative cross-client frame/component vocabulary.
-- `backend/shared/database.py`: schema state and guarded startup migrations.
+- `components/AstralProjection/contracts/ui_protocol.json`: authoritative cross-client frame/component vocabulary, consumed from the pinned Projection component.
+- `backend/orchestrator/plane_composition.py`: fail-closed binding to the one
+  application-scoped AstralPlane runtime and its pinned contract metadata.
+- `components/AstralPlane/`: pinned data-plane component. Its public facade,
+  guarded migration registry, repositories, PostgreSQL pool, recovery logic,
+  and configured blob stores own all durable mechanics; Deep code must not
+  borrow connections or reintroduce `backend/shared/database.py`.
 - `backend/shared/external_http.py`: approved outbound HTTP/egress path.
-- `backend/webrender/`: primitive rendering, sanitization, accessibility, web shell, and server-owned chrome.
-- `backend/rote/`: device capabilities and semantic adaptation.
+- `components/AstralProjection/backend/webrender/`: authoritative primitive rendering, sanitization, accessibility, web shell, reusable chrome, and static resources.
+- `components/AstralProjection/backend/rote/`: authoritative device capabilities and semantic adaptation.
+- `backend/orchestrator/projection_surfaces/`: Deep-owned, host-authorized chrome surface adapters; reusable rendering remains in Projection.
 - `backend/agents/`: bundled first-party agents. Generated draft directories can appear here during development; treat unexpected untracked directories as user/generated data, never as files to stage blindly.
 - `backend/tests/` plus module-local `*/tests/`: backend verification. Root pytest discovery does not include every module suite.
-- `windows-client/`, `android-client/`, `apple-clients/`: native clients and their parity/drift guards.
+- `components/AstralProjection/windows-client/`, `components/AstralProjection/android-client/`, `components/AstralProjection/apple-clients/`: authoritative native clients and their parity/drift guards.
 - `specs/`: numbered Spec Kit feature artifacts; the spec number is more reliable than historical branch naming.
 - `docs/`: operator documentation. Most of this tree is ignored; check `.gitignore` before assuming a new doc will be committed.
 
-The sibling `../Astral-Primitives` repository owns primitive definitions and Python serialization. It is a separate release train; do not edit or publish it as an incidental AstralDeep change.
+The pinned `components/AstralPrimitives` repository owns primitive definitions and Python serialization. It is a separate release train; do not edit or publish it as an incidental AstralDeep change.
 
 ## Non-negotiable engineering rules
 
@@ -58,7 +64,7 @@ The sibling `../Astral-Primitives` repository owns primitive definitions and Pyt
 - Use `css`, not `style`. Escape and sanitize web output through the existing renderer helpers; never pass model/user text as raw HTML.
 - `Primitive.attributes` flattens last and can overwrite declared fields, including `type`; use it only with trusted, deliberate keys.
 - The installed `astralprims` wheel may lag the sibling repository's `main`. Before importing a newer class, bump the AstralDeep version floor, rebuild the environment/image, verify the import, and run parity tests. Until then, an already-approved manifest type may be emitted as a plain dict.
-- A new primitive requires constitution approval and a coordinated change: definition/exports/serialization tests/docs/version in Astral-Primitives; renderer and ROTE behavior; `ui_protocol.json`; all affected client dispositions/renderers; drift guards; and live client verification.
+- A new primitive requires constitution approval and a coordinated change: definition/exports/serialization tests/docs/version in AstralPrimitives; renderer and ROTE behavior; `ui_protocol.json`; all affected client dispositions/renderers; drift guards; and live client verification.
 - A protocol, frame, chrome, theme, component, or layout change must land across every in-scope client in the same feature. A web-only exception must be explicit in the spec and enforced by the server-owned definition, never hidden independently by clients.
 
 ## Security, identity, and data
@@ -72,8 +78,16 @@ The sibling `../Astral-Primitives` repository owns primitive definitions and Pyt
 
 ## Database changes
 
-- PostgreSQL schema evolution lives only in guarded, idempotent startup migrations in `backend/shared/database.py::_init_db()`.
-- Schema changes require the matching `SCHEMA_REVISION` bump, repeat-safe DDL/data migration, rollback or recovery procedure, and tests against representative existing data. Do not use ad-hoc deployed SQL or introduce a second migration framework.
+- PostgreSQL schema evolution lives only in AstralPlane's guarded, idempotent
+  migration registry. Deep pins the exact Plane schema revision and migration
+  digest in `config/astral-composition.json`; it owns product policy and
+  orchestration, not SQL, driver pools, baseline provisioning, or blob
+  mechanics.
+- Schema changes require the matching AstralPlane `SCHEMA_REVISION` bump,
+  repeat-safe DDL/data migration, rollback or recovery procedure, current-schema
+  verification, and tests against representative existing data. Update Deep's
+  composition pin only after the exact Plane revision is qualified. Do not use
+  ad-hoc deployed SQL or introduce a second migration framework.
 
 ## Spec Kit with Codex
 
@@ -138,10 +152,10 @@ Important: `backend/pytest.ini` has `testpaths = tests`. The command above is no
 
 Client gates:
 
-- Windows: set `QT_QPA_PLATFORM=offscreen`, then run `python -m pytest windows-client/tests -q` with the client requirements installed.
-- Android (from `android-client/`): run the committed wrapper for `ktlintCheck`, `:app:lintDebug`, `:core:test`, `:app:testDebugUnitTest`, `:core:koverVerify`, and `:app:assembleDebug`.
-- Apple (macOS only): run `swift test --package-path apple-clients/AstralCore` and the affected unsigned `xcodebuild` schemes from `apple-clients/README.md`.
-- Astral-Primitives changes (only when explicitly in scope): run its pytest suite before any version bump/publish. Its publish workflow does not run tests for you.
+- Windows: set `QT_QPA_PLATFORM=offscreen`, then run `python -m pytest components/AstralProjection/windows-client/tests -q` with the client requirements installed.
+- Android (from `components/AstralProjection/android-client/`): run the committed wrapper for `ktlintCheck`, `:app:lintDebug`, `:core:test`, `:app:testDebugUnitTest`, `:core:koverVerify`, and `:app:assembleDebug`.
+- Apple (macOS only): run `swift test --package-path components/AstralProjection/apple-clients/AstralCore` and the affected unsigned `xcodebuild` schemes from `components/AstralProjection/apple-clients/README.md`.
+- AstralPrimitives changes (only when explicitly in scope): run its pytest suite before any version bump/publish. Its publish workflow does not run tests for you.
 
 Tests are necessary, not sufficient. Exercise changed UI behavior against the live backend on every affected client/form factor. Verify authorization and security changes through the real dispatch path, including denial/failure cases. If an unrelated baseline failure exists, demonstrate and document the baseline rather than hiding it or weakening a gate.
 
@@ -185,12 +199,20 @@ if the vault commit or push is blocked.
 Finish with an evidence-backed summary: files changed, behavior changed, exact tests/checks and results, live verification performed or still required, feature flags/migrations/contracts affected, and any residual risk. Keep work-in-progress recoverable across machines through a named pushed branch only when the user has requested pushing; otherwise leave a precise local handoff without claiming remote persistence.
 
 <!-- SPECKIT START -->
+## Active Feature Plan
+
+- `074-multirepo-lets-integration`: `specs/074-multirepo-lets-integration/plan.md`
+
 ## Active Technologies
+
+- Python 3.11; vanilla JavaScript; Python/PySide6; Kotlin/JVM 17; Swift 5.9-compatible sources; JSON Schema 2020-12; Git/PowerShell + FastAPI/ASGI, PostgreSQL, Keycloak/RFC 8693, Docker/Compose, AstralPrimitives, AstralProjection, AstralPlane, and pinned LETS v1.0.10 public client/executor contracts (074-multirepo-lets-integration)
+- Existing PostgreSQL and configured blob roots remain in place; LETS warden storage remains external; executor replay/authority and local manuscript/evidence state remain outside repositories (074-multirepo-lets-integration)
 
 - Python 3.11, vanilla JavaScript, Python/PySide6, Kotlin/JVM 17, and Swift 5.9-compatible sources + pinned self-hosted LiveKit server/direct-RTC/client SDKs, bounded WebSocket worker control, ONNX Runtime + exact Silero VAD, FastAPI, PostgreSQL, Keycloak, astralprims/ROTE (065-conversational-voice)
 - PostgreSQL additive `voice_session`/`voice_turn` metadata plus immutable execution-base commit anchors/digests and commit-scoped workspace-layout versioning; ephemeral LiveKit media and speech buffers with no audio retention (065-conversational-voice)
 
 ## Recent Changes
 
+- 074-multirepo-lets-integration: Planned independent Projection/Plane/Primitives/LETS submodules, a history-preserving content replacement, and fail-closed LETS enforcement without changing production during migration.
 - 065-conversational-voice: Planned an included exact-model conversational voice path across web, Windows, Android, macOS, iOS, and watchOS while preserving the normal authenticated agentic dispatcher.
 <!-- SPECKIT END -->

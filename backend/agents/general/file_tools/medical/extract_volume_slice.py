@@ -7,11 +7,12 @@ OME-TIFF. Returns a base64 PNG plus the index that was actually used.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
 import numpy as np
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import attachment_parser_scope, resolve_attachment
 from agents.general.file_tools.medical import _common
 
 logger = logging.getLogger("FileTools.extract_volume_slice")
@@ -53,6 +54,7 @@ def _load_volume(path_str: str, extension: str):
     raise ValueError(f"Unsupported extension for volume slicing: .{ext}")
 
 
+@attachment_parser_scope
 def extract_volume_slice(
     attachment_id: str,
     user_id: Optional[str] = None,
@@ -73,7 +75,7 @@ def extract_volume_slice(
         return err
 
     try:
-        vol, source = _load_volume(str(path), att.extension)
+        vol, source = _load_volume(os.fspath(path), att.extension)
     except ValueError as exc:
         return _common.error("unsupported_file", str(exc))
     except ImportError as exc:

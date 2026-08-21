@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from feedback.schemas import KnowledgeUpdateProposalDTO, ToolQualitySignalDTO
 from onboarding.repository import DuplicateSlug, StepNotFound
 from onboarding.schemas import TutorialStepDTO
-from webrender.chrome.surfaces import admin_tools
+from orchestrator.projection_surfaces import admin_tools
 
 T0 = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
 T1 = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
@@ -189,8 +189,8 @@ def test_module_contract():
 
 
 def test_registered_in_surface_registry():
-    from webrender.chrome.surfaces import SURFACE_MODULES, get_surface
-    assert SURFACE_MODULES["admin_tools"] == "webrender.chrome.surfaces.admin_tools"
+    from orchestrator.projection_surfaces import SURFACE_MODULES, get_surface
+    assert SURFACE_MODULES["admin_tools"] == "orchestrator.projection_surfaces.admin_tools"
     assert get_surface("admin_tools") is admin_tools
 
 

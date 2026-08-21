@@ -17,6 +17,8 @@ from personalization.memory_tools import (
     derive_keywords,
     linking_enabled,
 )
+from personalization.repository import PersonalizationRepository
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 
 class _FakeGate:
@@ -164,22 +166,32 @@ def test_search_without_links_is_direct_only():
 # ───────────────────────── real-DB round-trip ────────────────────────────────
 
 def test_repo_links_round_trip_and_exclude_superseded():
-    from shared.database import Database
-    from personalization.repository import PersonalizationRepository
-    repo = PersonalizationRepository(Database())
-    user = f"pytest-link-{uuid.uuid4().hex[:8]}"
-    a = repo.create_memory(user, "goal", "track grant deadlines", keywords="track grant deadlines")
-    b = repo.create_memory(user, "workflow_tag", "grant portal", keywords="grant portal")
-    assert repo.create_memory(user, "context", "x")["keywords"] is None
+    with isolated_plane_runtime("personalization_links") as runtime:
+        repo = PersonalizationRepository(
+            None,
+            plane_runtime=runtime,
+            plane_repositories=runtime.repositories,
+        )
+        user = f"pytest-link-{uuid.uuid4().hex[:8]}"
+        first = repo.create_memory(
+            user,
+            "goal",
+            "track grant deadlines",
+            keywords="track grant deadlines",
+        )
+        second = repo.create_memory(
+            user,
+            "workflow_tag",
+            "grant portal",
+            keywords="grant portal",
+        )
+        assert repo.create_memory(user, "context", "x")["keywords"] is None
 
-    assert repo.add_link(user, a["id"], b["id"]) is True
-    assert b["id"] in repo.linked_ids(user, a["id"])
-    assert a["id"] in repo.linked_ids(user, b["id"])  # undirected
-    assert repo.add_link(user, a["id"], a["id"]) is False  # no self-link
+        assert repo.add_link(user, first["id"], second["id"]) is True
+        assert second["id"] in repo.linked_ids(user, first["id"])
+        assert first["id"] in repo.linked_ids(user, second["id"])  # undirected
+        assert repo.add_link(user, first["id"], first["id"]) is False
 
-    # superseding a linked memory drops it from the neighbour's link list
-    repo.supersede_memory(user, b["id"], None)
-    assert repo.linked_ids(user, a["id"]) == []
-
-    repo.db.execute("DELETE FROM memory_link WHERE user_id = ?", (user,))
-    repo.db.execute("DELETE FROM memory_item WHERE user_id = ?", (user,))
+        # Superseding a linked memory drops it from the neighbour's link list.
+        repo.supersede_memory(user, second["id"], None)
+        assert repo.linked_ids(user, first["id"]) == []

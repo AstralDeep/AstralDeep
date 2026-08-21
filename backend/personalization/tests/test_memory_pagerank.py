@@ -17,6 +17,8 @@ from personalization.memory_tools import (
     pagerank_enabled,
     personalized_pagerank,
 )
+from personalization.repository import PersonalizationRepository
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 
 # ───────────────────────── pure PageRank ─────────────────────────────────────
@@ -171,19 +173,33 @@ def test_search_respects_limit():
 # ───────────────────────── real-DB round-trip ────────────────────────────────
 
 def test_pagerank_search_over_real_db():
-    from shared.database import Database
-    from personalization.repository import PersonalizationRepository
-    repo = PersonalizationRepository(Database())
-    user = f"pytest-ppr-{uuid.uuid4().hex[:8]}"
-    a = repo.create_memory(user, "goal", "track grant deadlines", keywords="track grant deadlines")
-    b = repo.create_memory(user, "workflow_tag", "submission portal", keywords="submission portal")
-    repo.add_link(user, a["id"], b["id"])
-    edges = repo.list_links(user)
-    assert {(e["memory_id"], e["linked_id"]) for e in edges} >= {(a["id"], b["id"]), (b["id"], a["id"])}
+    with isolated_plane_runtime("personalization_pagerank") as runtime:
+        repo = PersonalizationRepository(
+            None,
+            plane_runtime=runtime,
+            plane_repositories=runtime.repositories,
+        )
+        user = f"pytest-ppr-{uuid.uuid4().hex[:8]}"
+        first = repo.create_memory(
+            user,
+            "goal",
+            "track grant deadlines",
+            keywords="track grant deadlines",
+        )
+        second = repo.create_memory(
+            user,
+            "workflow_tag",
+            "submission portal",
+            keywords="submission portal",
+        )
+        repo.add_link(user, first["id"], second["id"])
+        edges = repo.list_links(user)
+        assert {(edge["memory_id"], edge["linked_id"]) for edge in edges} >= {
+            (first["id"], second["id"]),
+            (second["id"], first["id"]),
+        }
 
-    mt = MemoryTools(repo, phi_gate=_Gate())
-    vals = [h["value"] for h in mt.memory_search(user, "grant")]
-    assert "track grant deadlines" in vals and "submission portal" in vals  # multi-hop
-
-    repo.db.execute("DELETE FROM memory_link WHERE user_id = ?", (user,))
-    repo.db.execute("DELETE FROM memory_item WHERE user_id = ?", (user,))
+        tools = MemoryTools(repo, phi_gate=_Gate())
+        values = [hit["value"] for hit in tools.memory_search(user, "grant")]
+        assert "track grant deadlines" in values
+        assert "submission portal" in values  # multi-hop

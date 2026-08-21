@@ -1,14 +1,24 @@
 """Feature 027 — T012: Agents & permissions surface (structural/behavioral).
 
-Runs without Postgres: a minimal fake orchestrator exposes exactly the
-internals the surface uses (``history.db`` ownership/disabled helpers,
-``tool_permissions``, ``credential_manager``, ``agent_cards``,
-``_is_draft_agent``). Assertions are structural (key markup + handler
-side-effects), mirroring test_topbar.py / test_render_golden.py style.
+Runs without Postgres: a minimal fake orchestrator exposes the typed Plane
+agent-management projection, registry, tool-permission facade, credential
+manager, cards, and draft predicate used by the surface. Assertions are
+structural (key markup + handler side-effects), mirroring test_topbar.py /
+test_render_golden.py style.
 """
 import asyncio
+from contextlib import contextmanager
+from types import SimpleNamespace
 
-from webrender.chrome.surfaces import agents as surface
+from astralplane.repositories.agent_management import (
+    AgentManagementDetailContext,
+    AgentManagementListContext,
+)
+from astralplane.repositories.agents import AgentOwnershipRecord
+from astralplane.repositories.identity import ExternalIdentityLinkRecord
+from astralplane.repositories.tool_policy import ScopeState, ToolOverrideState
+from orchestrator.plane_repository_context import ApplicationPlaneSource
+from orchestrator.projection_surfaces import agents as surface
 
 
 def run(coro):
@@ -44,6 +54,7 @@ class FakeDB:
         self.disabled = set()
         self.calls = []
         self.preferences = {}
+        self.safe = {}
 
     def get_all_agent_ownership(self):
         return [{"agent_id": k, **v} for k, v in self.ownership.items()]
@@ -77,6 +88,17 @@ class FakeDB:
     def get_user_preferences(self, user_id):
         return dict(self.preferences.get(user_id) or {})
 
+    def get_agent_is_safe(self, agent_id):
+        return bool(self.safe.get(agent_id, False))
+
+    def upsert_agent_safe(self, agent_id, is_safe, *, marked_by):
+        prior = self.get_agent_is_safe(agent_id)
+        self.safe[agent_id] = bool(is_safe)
+        return prior
+
+    def reset_agent_safe(self, agent_id, *, marked_by):
+        return self.upsert_agent_safe(agent_id, False, marked_by=marked_by)
+
 
 class FakePerms:
     def __init__(self, scope_map=None, per_tool=None):
@@ -86,6 +108,8 @@ class FakePerms:
         self.set_calls = []
         self.scope_calls = []
         self.backfilled = []
+        self.disabled = set()
+        self.disabled_calls = []
 
     def backfill_per_tool_rows(self, user_id, agent_id):
         self.backfilled.append((user_id, agent_id))
@@ -107,6 +131,14 @@ class FakePerms:
     def set_agent_scopes(self, user_id, agent_id, scopes):
         self.scope_calls.append(dict(scopes))
         self.scopes.update(scopes)
+
+    def set_agent_disabled(self, user_id, agent_id, disabled):
+        self.disabled_calls.append((user_id, agent_id, disabled))
+        if disabled:
+            self.disabled.add(agent_id)
+        else:
+            self.disabled.discard(agent_id)
+        return True
 
 
 class FakeCreds:
@@ -137,12 +169,110 @@ class FakeHistory:
         self.db = db
 
 
+class FakeAgentManagementRepository:
+    def __init__(self, db, perms, creds):
+        self.db = db
+        self.perms = perms
+        self.creds = creds
+
+    @staticmethod
+    def _ownership(agent_id, value):
+        if value is None:
+            return None
+        return AgentOwnershipRecord(
+            agent_id=agent_id,
+            owner_email=value["owner_email"],
+            is_public=bool(value.get("is_public")),
+            created_at=None,
+            updated_at=None,
+        )
+
+    def get_list_context(self, transaction, *, owner_id, ownership_limit=5000):
+        ownership = tuple(
+            record
+            for agent_id, value in sorted(self.db.ownership.items())
+            if (record := self._ownership(agent_id, value)) is not None
+        )
+        return AgentManagementListContext(
+            owner_id=owner_id,
+            email=(self.db.users.get(owner_id) or {}).get("email"),
+            disabled_agent_ids=tuple(sorted(self.db.disabled)),
+            ownership=ownership,
+        )
+
+    def get_detail_context(self, transaction, *, owner_id, agent_id, **limits):
+        preferences = self.db.preferences.get(owner_id) or {}
+        links = []
+        for provider, value in sorted(
+            (preferences.get("verified_external_identities") or {}).items()
+        ):
+            links.append(
+                ExternalIdentityLinkRecord(
+                    owner_id=owner_id,
+                    agent_id=value["verified_by_agent"],
+                    provider=provider,
+                    subject=value["subject"],
+                    issuer=value["issuer"],
+                    verified_at=int(value.get("verified_at") or 0),
+                )
+            )
+        return AgentManagementDetailContext(
+            owner_id=owner_id,
+            agent_id=agent_id,
+            email=(self.db.users.get(owner_id) or {}).get("email"),
+            disabled=agent_id in self.db.disabled,
+            ownership=self._ownership(agent_id, self.db.ownership.get(agent_id)),
+            is_safe=self.db.get_agent_is_safe(agent_id),
+            safe_known=True,
+            credential_keys=tuple(sorted(self.creds.keys)),
+            scope_states=tuple(
+                ScopeState(
+                    owner_id=owner_id,
+                    agent_id=agent_id,
+                    scope=scope,
+                    enabled=bool(enabled),
+                    updated_at=None,
+                )
+                for scope, enabled in sorted(self.perms.scopes.items())
+            ),
+            tool_override_states=tuple(
+                ToolOverrideState(
+                    owner_id=owner_id,
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                    permission_kind=permission_kind,
+                    enabled=bool(enabled),
+                    updated_at=None,
+                )
+                for tool_name, kind_map in sorted(self.perms.per_tool.items())
+                for permission_kind, enabled in sorted(kind_map.items())
+            ),
+            external_identity_links=tuple(links),
+        )
+
+
+class FakePlaneRuntime:
+    def __init__(self, repository):
+        self.repositories = SimpleNamespace(agent_management=repository)
+
+    @contextmanager
+    def transaction(self):
+        yield object()
+
+
 class FakeOrch:
     def __init__(self, cards, db, perms, creds, draft_ids=()):
         self.agent_cards = cards
         self.history = FakeHistory(db)
         self.tool_permissions = perms
         self.credential_manager = creds
+        repository = FakeAgentManagementRepository(db, perms, creds)
+        runtime = FakePlaneRuntime(repository)
+        self.plane_repository_source = ApplicationPlaneSource(
+            plane_runtime=runtime,
+            plane_repositories=runtime.repositories,
+        )
+        self.user_agent_registry = db
         self.security_flags = {}
         self._draft_ids = set(draft_ids)
         self.dispatched = []
@@ -153,6 +283,12 @@ class FakeOrch:
 
     async def _dispatch_tool_call(self, agent_id, tool_name, args, timeout, ui_websocket):
         self.dispatched.append((agent_id, tool_name, dict(args)))
+        return self.probe_response
+
+    async def execute_authorized_tool(self, **kwargs):
+        self.dispatched.append(
+            (kwargs["agent_id"], kwargs["tool_name"], dict(kwargs["arguments"]))
+        )
         return self.probe_response
 
 
@@ -609,14 +745,14 @@ def test_agent_enabled_toggle_writes_inverse_disabled_flag():
     orch = make_orch()
     key, params, notice = run(surface.HANDLERS["chrome_agent_enabled"](
         orch, None, "u1", ["user"], {"agent_id": "alpha", "enabled": False, "tab": "mine"}))
-    assert ("set_user_agent_disabled", "u1", "alpha", True) in orch.history.db.calls
+    assert ("u1", "alpha", True) in orch.tool_permissions.disabled_calls
     assert key == "agents" and params == {"tab": "mine"}
     assert "disabled" in notice
 
     key, params, _ = run(surface.HANDLERS["chrome_agent_enabled"](
         orch, None, "u1", ["user"],
         {"agent_id": "alpha", "enabled": True, "detail": True, "tab": "mine"}))
-    assert ("set_user_agent_disabled", "u1", "alpha", False) in orch.history.db.calls
+    assert ("u1", "alpha", False) in orch.tool_permissions.disabled_calls
     assert params == {"agent_id": "alpha", "tab": "mine"}  # detail re-render
 
 

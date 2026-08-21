@@ -12,7 +12,10 @@ kill-switch is left alone.
 """
 from __future__ import annotations
 
+import asyncio
 import os
+
+import pytest
 
 _AMBIENT_FLAG_PREFIXES = ("FF_UI_DESIGNER_",)
 _AMBIENT_FLAGS = (
@@ -20,6 +23,7 @@ _AMBIENT_FLAGS = (
     "FF_MOA_DEBATE",
     "FF_HITL_HIGHRISK",
     "FF_HOOK_SYSTEM",
+    "FF_RECURSIVE_DELEGATION",
 )
 
 
@@ -48,5 +52,58 @@ def _strip_ambient_flags() -> None:
 # Run at collection import time (before any test module import can cache a
 # flag read); tests that need a flag set it explicitly via monkeypatch.
 _strip_ambient_flags()
+
+
+@pytest.fixture
+async def orchestrator_factory():
+    """Construct real Orchestrators and release their application graph.
+
+    The production runtime intentionally permits one application-scoped Plane
+    binding.  Tests that historically constructed a fresh Orchestrator for
+    every parameter case must therefore close the exact graph at fixture
+    teardown instead of leaking process bindings and connection pools into the
+    next case.
+    """
+
+    instances = []
+
+    def build():
+        from orchestrator.orchestrator import Orchestrator
+
+        instance = Orchestrator()
+        instances.append(instance)
+        return instance
+
+    try:
+        yield build
+    finally:
+        for instance in reversed(instances):
+            await asyncio.wait_for(
+                instance._close_started_services(),
+                timeout=30.0,
+            )
+
+
+@pytest.fixture(scope="module")
+async def orchestrator_module_factory():
+    """Module-scoped counterpart for intentionally shared Orchestrators."""
+
+    instances = []
+
+    def build():
+        from orchestrator.orchestrator import Orchestrator
+
+        instance = Orchestrator()
+        instances.append(instance)
+        return instance
+
+    try:
+        yield build
+    finally:
+        for instance in reversed(instances):
+            await asyncio.wait_for(
+                instance._close_started_services(),
+                timeout=30.0,
+            )
 
 from tests.plugins.event_loop_guard import event_loop_guard  # noqa: E402,F401

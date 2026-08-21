@@ -4,74 +4,29 @@ set -e
 # Feature 026: no separate frontend static server. The orchestrator serves the
 # server-driven web UI (shell + static assets) directly on port 8001.
 echo "Starting AstralDeep Backend Services on port 8001..."
-# Orchestrator consolidated FastAPI app will run on 8001
 export ORCHESTRATOR_PORT=8001
-
-# Force UTF-8 encoding
 export PYTHONIOENCODING=utf-8
 
 cd /app/backend
 
-# Wait for PostgreSQL to be ready (belt-and-suspenders with docker healthcheck)
-echo "Waiting for PostgreSQL..."
-PG_URL="postgresql://${DB_USER:-astral}:${DB_PASSWORD:-astral_dev}@${DB_HOST:-localhost}:${DB_PORT:-5432}/${DB_NAME:-astraldeep}"
-until python3 -c "import psycopg2; psycopg2.connect('$PG_URL')" 2>/dev/null; do
-    sleep 1
-done
-echo "PostgreSQL is ready."
-
-# ── SQLite → PostgreSQL data migration (one-time) ──────────────────────
+# AstralPlane owns PostgreSQL connection readiness, guarded schema evolution,
+# and recovery. Deep must never open a second driver connection or run a
+# best-effort migration before the application-scoped Plane runtime starts.
+#
+# The retired SQLite importer could partially copy rows and then continue
+# startup after errors. Refuse legacy inputs instead: keep every source byte
+# untouched and require the reviewed Plane migration/recovery procedure.
 SQLITE_MAIN="/app/backend/data/astral.db"
 SQLITE_AUDIT="/app/backend/data/test_audit.db"
-MIGRATION_MARKER="/app/backend/data/.sqlite_migrated"
 
 if [ -f "$SQLITE_MAIN" ] || [ -f "$SQLITE_AUDIT" ]; then
-    if [ ! -f "$MIGRATION_MARKER" ]; then
-        echo ""
-        echo "════════════════════════════════════════════════════════════"
-        echo "  SQLite databases detected — running one-time migration…"
-        echo "════════════════════════════════════════════════════════════"
-        if python3 -m scripts.migrate_sqlite_to_postgres; then
-            touch "$MIGRATION_MARKER"
-            echo ""
-            echo "════════════════════════════════════════════════════════════"
-            echo "  ✓ Migration complete!"
-            echo ""
-            echo "  It is now safe to delete the old SQLite files:"
-            echo "    - backend/data/astral.db"
-            echo "    - backend/data/test_audit.db"
-            echo "════════════════════════════════════════════════════════════"
-            echo ""
-        else
-            echo ""
-            echo "  ⚠ SQLite migration encountered errors."
-            echo "  The system will continue starting with PostgreSQL."
-            echo "  You can retry manually with:"
-            echo "    docker compose exec astraldeep python -m scripts.migrate_sqlite_to_postgres"
-            echo ""
-        fi
-    else
-        echo "SQLite migration already completed (marker found). Skipping."
-    fi
-else
-    echo "No SQLite databases found. Nothing to migrate."
+    echo "ERROR: legacy SQLite data was detected; AstralDeep will not start." >&2
+    echo "The files were not modified. Do not delete them or run ad-hoc SQL." >&2
+    echo "Follow AstralPlane docs/migration-and-recovery.md using a verified" >&2
+    echo "PostgreSQL/blob backup or a separately reviewed import boundary." >&2
+    exit 78
 fi
 
-# Run agent ownership migration in the background after services start.
-# Probes the ungated /healthz endpoint with python (the slim image has no
-# curl — the previous curl probe never succeeded, and its mock bearer token
-# would be refused under real auth anyway).
-(
-    echo "Waiting for orchestrator to start before running migrations..."
-    for i in $(seq 1 30); do
-        if python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz', timeout=3)" > /dev/null 2>&1; then
-            sleep 5  # give auto-started agents a moment to register
-            echo "Running agent ownership migration..."
-            python3 -m scripts.migrate_agent_ownership || true
-            break
-        fi
-        sleep 2
-    done
-) &
-
+# Normal startup composes exactly one Plane runtime. It owns connection retry,
+# migration, compatibility, and readiness; any failure propagates fail-closed.
 exec python start.py

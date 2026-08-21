@@ -19,7 +19,7 @@ from rote.capabilities import DeviceProfile  # noqa: E402
 
 
 #: the 10-type native set real watch clients advertise in register_ui
-#: (apple-clients AstralCore Dispositions.swift watchNativeComponentTypes)
+#: (Projection Apple AstralCore Dispositions.swift watchNativeComponentTypes)
 _WATCH_TYPES = ["alert", "badge", "card", "container", "divider",
                 "keyvalue", "list", "metric", "progress", "text"]
 

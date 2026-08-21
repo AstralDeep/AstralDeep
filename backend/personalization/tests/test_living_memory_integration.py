@@ -1,10 +1,8 @@
-"""Feature 033 — REAL integration of living memory (C-M6/M7/M8) + project scope
-(C-U9) into the live MemoryTools / repository / Database path.
+"""Feature 033 — real integration of living memory and project scope.
 
 Unlike ``test_living_memory.py`` (pure functions) and the fake-repo reconcile
-suite, these drive a real ``Database`` + ``PersonalizationRepository`` +
-``MemoryTools`` and assert the wired behavior end-to-end with the feature flags
-ON, plus that flag-OFF behavior is unchanged. Skipped when Postgres is absent.
+suite, these drive a Plane-backed ``PersonalizationRepository`` + ``MemoryTools``
+and assert the wired behavior end-to-end with the feature flags on and off.
 """
 from __future__ import annotations
 
@@ -22,22 +20,18 @@ if str(BACKEND_DIR) not in sys.path:
 from personalization import living_memory as lm  # noqa: E402
 from personalization.memory_tools import MemoryTools  # noqa: E402
 from personalization.repository import PersonalizationRepository  # noqa: E402
+from tests.helpers.voice_plane_runtime import (  # noqa: E402
+    PlaneTestRuntime,
+    isolated_plane_runtime,
+)
 
 
 # ───────────────────────── harness ───────────────────────────────────────────
 
-def _can_connect() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-needs_db = pytest.mark.skipif(not _can_connect(), reason="Postgres unavailable")
+@pytest.fixture(scope="module")
+def plane_runtime():
+    with isolated_plane_runtime("personalization_living") as runtime:
+        yield runtime
 
 DAY = 24 * 3600 * 1000
 
@@ -48,9 +42,12 @@ class _CleanGate:
         return False
 
 
-def _tools():
-    from shared.database import Database
-    repo = PersonalizationRepository(Database())
+def _tools(runtime: PlaneTestRuntime):
+    repo = PersonalizationRepository(
+        None,
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+    )
     return MemoryTools(repo, phi_gate=_CleanGate()), repo
 
 
@@ -65,13 +62,12 @@ def _on(monkeypatch, **flags):
 
 # ───────────────────────── C-M6 temporal validity (READ) ─────────────────────
 
-@needs_db
-def test_expired_valid_to_excluded_from_search(monkeypatch):
+def test_expired_valid_to_excluded_from_search(monkeypatch, plane_runtime):
     """A memory whose validity window has closed (valid_to in the past) is hidden
     from memory_search / memory_get when FF_MEMORY_TEMPORAL is on."""
     _on(monkeypatch, FF_MEMORY_TEMPORAL="true")
     monkeypatch.delenv("FF_PROJECT_MEMORY", raising=False)
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("temporal")
 
     # Two distinct preferences; one will be force-expired.
@@ -93,12 +89,11 @@ def test_expired_valid_to_excluded_from_search(monkeypatch):
     assert "prefers decaf tea" not in hits
 
 
-@needs_db
-def test_temporal_off_keeps_expired_visible(monkeypatch):
+def test_temporal_off_keeps_expired_visible(monkeypatch, plane_runtime):
     """Flag OFF: an expired valid_to is ignored — recall is unchanged (today)."""
     monkeypatch.delenv("FF_MEMORY_TEMPORAL", raising=False)
     monkeypatch.delenv("FF_PROJECT_MEMORY", raising=False)
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("temporal-off")
 
     m = mt.remember(user, "preference", "prefers oat milk lattes")
@@ -111,14 +106,16 @@ def test_temporal_off_keeps_expired_visible(monkeypatch):
     assert any(x["value"] == "prefers oat milk lattes" for x in hits)
 
 
-@needs_db
-def test_singular_category_contradiction_closes_prior_window(monkeypatch):
+def test_singular_category_contradiction_closes_prior_window(
+    monkeypatch,
+    plane_runtime,
+):
     """C-M6 WRITE: in a SINGULAR category (profession) a new value temporally
     supersedes the prior one — the older fact's window is closed so an as-of
     recall surfaces only the latest. Provenance (ingested_at) is stamped."""
     _on(monkeypatch, FF_MEMORY_TEMPORAL="true")
     monkeypatch.delenv("FF_PROJECT_MEMORY", raising=False)
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("contradict")
 
     first = mt.remember(user, "profession", "Software engineer at Acme")
@@ -137,13 +134,12 @@ def test_singular_category_contradiction_closes_prior_window(monkeypatch):
     assert newrow["valid_to"] is None and newrow["ingested_at"] is not None
 
 
-@needs_db
-def test_multivalued_category_keeps_all_live(monkeypatch):
+def test_multivalued_category_keeps_all_live(monkeypatch, plane_runtime):
     """C-M6 WRITE: a multi-valued category (preference) is NOT auto-closed — two
     distinct preferences both stay live (a user holds many at once)."""
     _on(monkeypatch, FF_MEMORY_TEMPORAL="true")
     monkeypatch.delenv("FF_PROJECT_MEMORY", raising=False)
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("multi")
 
     p1 = mt.remember(user, "preference", "prefers concise summaries")
@@ -157,14 +153,13 @@ def test_multivalued_category_keeps_all_live(monkeypatch):
 
 # ───────────────────────── C-M7 reinforcement on recall ──────────────────────
 
-@needs_db
-def test_recall_bumps_recall_count(monkeypatch):
+def test_recall_bumps_recall_count(monkeypatch, plane_runtime):
     """C-M7: a recall (memory_search / memory_get) reinforces the surfaced rows —
     recall_count increments and last_recalled_at is stamped."""
     _on(monkeypatch, FF_MEMORY_FORGETTING="true")
     monkeypatch.delenv("FF_PROJECT_MEMORY", raising=False)
     monkeypatch.delenv("FF_MEMORY_TEMPORAL", raising=False)
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("reinforce")
 
     m = mt.remember(user, "goal", "ship the quarterly roadmap")
@@ -181,13 +176,12 @@ def test_recall_bumps_recall_count(monkeypatch):
     assert row["last_recalled_at"] is not None
 
 
-@needs_db
-def test_forgetting_off_does_not_reinforce(monkeypatch):
+def test_forgetting_off_does_not_reinforce(monkeypatch, plane_runtime):
     """Flag OFF: recall does NOT touch recall_count (byte-identical to today)."""
     monkeypatch.delenv("FF_MEMORY_FORGETTING", raising=False)
     monkeypatch.delenv("FF_PROJECT_MEMORY", raising=False)
     monkeypatch.delenv("FF_MEMORY_TEMPORAL", raising=False)
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("reinforce-off")
 
     m = mt.remember(user, "goal", "ship the annual report")
@@ -198,12 +192,11 @@ def test_forgetting_off_does_not_reinforce(monkeypatch):
 
 # ───────────────────────── C-M8 evolving persona ─────────────────────────────
 
-@needs_db
-def test_persona_evolves_after_repeated_signals(monkeypatch):
+def test_persona_evolves_after_repeated_signals(monkeypatch, plane_runtime):
     """C-M8: repeated preference signals fold into the persona via keep-best —
     new uncovered signals grow it, already-covered ones don't regress it."""
     _on(monkeypatch, FF_MEMORY_PERSONA="true")
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("persona")
 
     assert mt.get_persona(user) == ""  # none yet
@@ -227,11 +220,10 @@ def test_persona_evolves_after_repeated_signals(monkeypatch):
     assert repo.get_persona(user)["persona"] == before
 
 
-@needs_db
-def test_persona_off_is_noop(monkeypatch):
+def test_persona_off_is_noop(monkeypatch, plane_runtime):
     """Flag OFF: persona seams are inert — nothing is read or written."""
     monkeypatch.delenv("FF_MEMORY_PERSONA", raising=False)
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("persona-off")
 
     assert mt.get_persona(user) == ""
@@ -241,14 +233,13 @@ def test_persona_off_is_noop(monkeypatch):
 
 # ───────────────────────── C-U9 project scoping ──────────────────────────────
 
-@needs_db
-def test_project_scope_filters_search(monkeypatch):
+def test_project_scope_filters_search(monkeypatch, plane_runtime):
     """C-U9: a project-tagged memory is private to that project; an untagged
     memory is global (visible from every project); the global view excludes
     project-private rows."""
     _on(monkeypatch, FF_PROJECT_MEMORY="true")
     monkeypatch.delenv("FF_MEMORY_TEMPORAL", raising=False)
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("project")
 
     a = mt.remember(user, "context", "uses alpha staging cluster", project_id="alpha")
@@ -275,14 +266,13 @@ def test_project_scope_filters_search(monkeypatch):
     assert beta_vals == {"uses beta staging cluster", "uses shared logging stack"}
 
 
-@needs_db
-def test_project_scope_off_ignores_project_id(monkeypatch):
+def test_project_scope_off_ignores_project_id(monkeypatch, plane_runtime):
     """Flag OFF: project_id is ignored on both write and read — every memory is
     the single global slice (today's behavior), so a 'project' write is visible
     everywhere and the column stays NULL."""
     monkeypatch.delenv("FF_PROJECT_MEMORY", raising=False)
     monkeypatch.delenv("FF_MEMORY_TEMPORAL", raising=False)
-    mt, repo = _tools()
+    mt, repo = _tools(plane_runtime)
     user = _user("project-off")
 
     m = mt.remember(user, "context", "uses gamma staging cluster", project_id="gamma")

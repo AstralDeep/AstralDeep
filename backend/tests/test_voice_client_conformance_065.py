@@ -34,7 +34,8 @@ from webrender.chrome.composer_model import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = (
-    REPO_ROOT / "backend/tests/fixtures/voice_065/client_conformance.json"
+    REPO_ROOT
+    / "components/AstralProjection/contracts/fixtures/voice_065/client_conformance.json"
 )
 VALIDATOR_PATH = REPO_ROOT / "tooling/contract-ci/validate_voice_contracts.py"
 SCHEMA_ENGINE_PATH = Path(
@@ -123,13 +124,13 @@ indexed = validator.index_fixture_vectors(fixture)
 def test_native_clients_disable_vendor_rtc_diagnostics_before_connect() -> None:
     android = (
         REPO_ROOT
-        / "android-client/app/src/main/kotlin/com/personalailabs/astraldeep/app/voice/VoiceSessionController.kt"
+        / "components/AstralProjection/android-client/app/src/main/kotlin/com/personalailabs/astraldeep/app/voice/VoiceSessionController.kt"
     ).read_text(encoding="utf-8")
     apple = (
         REPO_ROOT
-        / "apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift"
+        / "components/AstralProjection/apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift"
     ).read_text(encoding="utf-8")
-    windows = (REPO_ROOT / "windows-client/astral_client/voice.py").read_text(
+    windows = (REPO_ROOT / "components/AstralProjection/windows-client/astral_client/voice.py").read_text(
         encoding="utf-8"
     )
 
@@ -147,7 +148,7 @@ def test_native_clients_disable_vendor_rtc_diagnostics_before_connect() -> None:
 def test_apple_authenticated_transports_are_ephemeral_and_no_store() -> None:
     no_store = (
         REPO_ROOT
-        / "apple-clients/AstralCore/Sources/AstralCore/Transport/NoStoreHTTP.swift"
+        / "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Transport/NoStoreHTTP.swift"
     ).read_text(encoding="utf-8")
     assert "URLSessionConfiguration.ephemeral" in no_store
     for marker in (
@@ -161,12 +162,12 @@ def test_apple_authenticated_transports_are_ephemeral_and_no_store() -> None:
         assert marker in no_store
 
     paths = (
-        "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
-        "apple-clients/AstralCore/Sources/AstralCore/Auth/DeviceLogin.swift",
-        "apple-clients/AstralCore/Sources/AstralCore/Auth/TokenStore.swift",
-        "apple-clients/AstralCore/Sources/AstralCore/Transport/WSClient.swift",
-        "apple-clients/AstralApp/AstralApp/AppModel.swift",
-        "apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/DeviceLogin.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/TokenStore.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Transport/WSClient.swift",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift",
     )
     for relative in paths:
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")

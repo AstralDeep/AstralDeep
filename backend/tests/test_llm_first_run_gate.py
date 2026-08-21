@@ -49,9 +49,8 @@ def _uid() -> str:
 
 
 @pytest.fixture(scope="module")
-def orch_module():
-    from orchestrator.orchestrator import Orchestrator
-    return Orchestrator()
+def orch_module(orchestrator_module_factory):
+    return orchestrator_module_factory()
 
 
 @pytest.fixture

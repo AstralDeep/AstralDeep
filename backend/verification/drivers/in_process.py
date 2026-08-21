@@ -9,6 +9,8 @@ scripted (so output is reproducible).
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -95,7 +97,12 @@ class LoopbackAgent:
 
 
 class InProcessDriver:
-    """Drives the orchestrator in-process; the CI merge-gate surface."""
+    """Drives the orchestrator in-process; the qualification merge-gate surface.
+
+    Durable setup and cleanup reuse the one Plane runtime/catalog composed by
+    the product orchestrator. This driver does not borrow a legacy database
+    handle or own an independent data-plane connection.
+    """
 
     mode = "in_process"
     auth_mode = "mock_inprocess"
@@ -105,6 +112,10 @@ class InProcessDriver:
         self.orch: Any = None
         self.agent_id = AGENT_ID
         self._tmp = os.path.join(config.run_dir, "fixtures")
+        self._uploaded_blob_owners: set[str] = set()
+        self._execution_nonce = uuid.uuid4().hex[:16]
+        self._execution_principals: dict[str, Principal] = {}
+        self._teardown_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------ setup
     async def setup(self) -> None:
@@ -114,7 +125,56 @@ class InProcessDriver:
         from orchestrator.orchestrator import Orchestrator
 
         self.orch = Orchestrator()
-        self._register_general_agent()
+        try:
+            self._register_general_agent()
+            self.orch.runtime_composition.start()
+        except BaseException:
+            orch = self.orch
+            self.orch = None
+            try:
+                await _close_owned_orchestrator_graph(orch)
+            except BaseException:
+                logger.exception("verification setup rollback failed")
+            raise
+
+    def _plane_dependencies(self, orchestrator: Any | None = None) -> tuple[Any, Any, Any]:
+        target = self.orch if orchestrator is None else orchestrator
+        composition = getattr(target, "runtime_composition", None)
+        plane = getattr(composition, "plane", None)
+        runtime = getattr(plane, "runtime", None)
+        repositories = getattr(plane, "repositories", None)
+        blobs = getattr(plane, "blobs", None)
+        if (
+            not callable(getattr(runtime, "transaction", None))
+            or repositories is None
+            or blobs is None
+        ):
+            raise RuntimeError(
+                "in-process verification requires the orchestrator application Plane"
+            )
+        return runtime, repositories, blobs
+
+    def _execution_principal(self, principal: Principal) -> Principal:
+        """Map one logical run principal to a one-shot durable owner namespace."""
+
+        existing = self._execution_principals.get(principal.user_id)
+        if existing is not None:
+            if tuple(existing.roles) != tuple(principal.roles):
+                raise RuntimeError("verification principal roles changed within one run")
+            return existing
+        expected_prefix = f"{self.config.run_id}_"
+        if not principal.user_id.startswith(expected_prefix):
+            raise ValueError("verification principal is outside the configured run namespace")
+        identity_digest = hashlib.sha256(principal.user_id.encode("utf-8")).hexdigest()[:12]
+        suffix = f"_exec_{self._execution_nonce}_{identity_digest}"
+        maximum_base = 255 - len(suffix)
+        if len(expected_prefix) > maximum_base:
+            raise ValueError("verification run namespace is too long for blob ownership")
+        scoped_id = f"{principal.user_id[:maximum_base]}{suffix}"
+        scoped = Principal(user_id=scoped_id, roles=list(principal.roles))
+        self._execution_principals[principal.user_id] = scoped
+        self._execution_principals[scoped_id] = scoped
+        return scoped
 
     def _seed_llm_config(self, user_id: str) -> None:
         """Feature 054: the operator-default env path is gone — seed the
@@ -179,10 +239,16 @@ class InProcessDriver:
     async def upload_as(self, principal: Principal, fixture: Fixture) -> Dict[str, Any]:
         """Upload a fixture as ``principal`` via the real store + repository."""
         from orchestrator.attachments import content_type as ct
-        from orchestrator.attachments import store
-        from orchestrator.attachments.repository import AttachmentRepository
+        from orchestrator.attachments.materialization import (
+            materialization_service_from_orchestrator,
+        )
 
-        path = materialize(fixture, os.path.join(self._tmp, principal.user_id))
+        principal = self._execution_principal(principal)
+        path = await asyncio.to_thread(
+            materialize,
+            fixture,
+            os.path.join(self._tmp, principal.user_id),
+        )
         ext = ct.normalise_extension(fixture.filename)
         category = ct.category_for_extension(ext) or fixture.category
         attachment_id = str(uuid.uuid4())
@@ -192,34 +258,37 @@ class InProcessDriver:
             max_bytes = 100 * 1024 * 1024
 
         async def _chunks():
-            with open(path, "rb") as fh:
+            fh = await asyncio.to_thread(open, path, "rb")
+            try:
                 while True:
-                    buf = fh.read(262144)
+                    buf = await asyncio.to_thread(fh.read, 262144)
                     if not buf:
                         break
                     yield buf
+            finally:
+                await asyncio.to_thread(fh.close)
 
-        spath, size_bytes, sha256 = await store.awrite(
-            user_id=principal.user_id,
+        materializations = materialization_service_from_orchestrator(self.orch)
+        # Register the isolated verification namespace before publication so
+        # teardown remains a second fail-closed owner-wide cleanup barrier even
+        # when streaming, sniffing, metadata persistence, or immediate cleanup
+        # fails partway through this method.
+        owners = getattr(self, "_uploaded_blob_owners", None)
+        if owners is None:
+            owners = self._uploaded_blob_owners = set()
+        owners.add(principal.user_id)
+        record = await materializations.materialize_stream(
+            owner_id=principal.user_id,
             attachment_id=attachment_id,
             filename=fixture.filename,
-            chunks=_chunks(),
-            max_bytes=max_bytes,
-        )
-        sniffed = ct.sniff_content_type(spath)
-        rel = str(spath.relative_to(store.get_upload_root()))
-        repo = AttachmentRepository(self.orch.history.db)
-        repo.insert(
-            attachment_id=attachment_id,
-            user_id=principal.user_id,
-            filename=fixture.filename,
-            content_type=sniffed,
             category=category,
             extension=ext,
-            size_bytes=size_bytes,
-            sha256=sha256,
-            storage_path=rel,
+            chunks=_chunks(),
+            max_bytes=max_bytes,
+            resolve_content_type=ct.sniff_content_type,
         )
+        if record.attachment_id != attachment_id:
+            raise RuntimeError("Plane returned a different verification attachment identity")
         return {
             "attachment_id": attachment_id,
             "filename": fixture.filename,
@@ -229,6 +298,7 @@ class InProcessDriver:
 
     # ------------------------------------------------------------ sessions
     def _register_session(self, principal: Principal, chat_id: Optional[str] = None) -> CaptureSocket:
+        principal = self._execution_principal(principal)
         ws = CaptureSocket(label=principal.user_id)
         self.orch.ui_sessions[ws] = principal.claims()
         self.orch.ui_clients.append(ws)
@@ -246,18 +316,20 @@ class InProcessDriver:
         self.orch._ws_active_chat.pop(id(ws), None)
 
     def grant_default_scopes(self, principal: Principal) -> None:
+        principal = self._execution_principal(principal)
         self.orch.tool_permissions.set_agent_scopes(
             principal.user_id, self.agent_id, dict(READ_SCOPES)
         )
 
     async def set_scope(self, principal: Principal, agent_id: str, scope: str, enabled: bool) -> None:
+        principal = self._execution_principal(principal)
         self.orch.tool_permissions.set_agent_scopes(
             principal.user_id, agent_id or self.agent_id, {scope: enabled}
         )
 
     # ------------------------------------------------------------- scenarios
     async def run_scenario(self, scenario: Scenario) -> CapturedEvidence:
-        p = scenario.principal
+        p = self._execution_principal(scenario.principal)
         persona = scenario.persona
         self.grant_default_scopes(p)
         att = await self.upload_as(p, persona.fixture)
@@ -303,6 +375,7 @@ class InProcessDriver:
     ) -> CapturedEvidence:
         """Send a turn as ``principal`` referencing ``attachment_id`` (may be
         foreign). Used to prove cross-user refusal (US2)."""
+        principal = self._execution_principal(principal)
         self.grant_default_scopes(principal)
         chat_id = self.orch.history.create_chat(user_id=principal.user_id)
         ws = self._register_session(principal, chat_id)
@@ -344,8 +417,8 @@ class InProcessDriver:
         from verification.isolation import make_principal
         from verification.personas import get_persona
 
-        a = make_principal(run_id, "xuserA")
-        b = make_principal(run_id, "xuserB")
+        a = self._execution_principal(make_principal(run_id, "xuserA"))
+        b = self._execution_principal(make_principal(run_id, "xuserB"))
         self.grant_default_scopes(a)
         self.grant_default_scopes(b)
         persona = get_persona("everyday")
@@ -370,7 +443,7 @@ class InProcessDriver:
         from verification.isolation import make_principal
         from verification.personas import get_persona
 
-        c = make_principal(run_id, "scopeC")
+        c = self._execution_principal(make_principal(run_id, "scopeC"))
         self.orch.tool_permissions.set_agent_scopes(
             c.user_id, self.agent_id,
             {"tools:read": False, "tools:search": False, "tools:files": False},
@@ -406,7 +479,7 @@ class InProcessDriver:
         from audit.hooks import actor_principal_from_claims
         from verification.isolation import make_principal
 
-        d = make_principal(run_id, "delegD")
+        d = self._execution_principal(make_principal(run_id, "delegD"))
         claims: Dict[str, Any]
         try:
             from jose import jwt
@@ -439,12 +512,13 @@ class InProcessDriver:
         from orchestrator import agentic_creation
         from verification.isolation import make_principal
 
-        owner = make_principal(run_id, "apprOwner")
-        other = make_principal(run_id, "apprOther")
+        owner = self._execution_principal(make_principal(run_id, "apprOwner"))
+        other = self._execution_principal(make_principal(run_id, "apprOther"))
         # Must be a UUID: _h_draft_approve passes draft_id as the audit
         # correlation_id, and that column is UUID-typed.
         draft_id = str(_uuid.uuid4())
-        self.orch.history.db.create_draft_agent(
+        draft_store = agentic_creation._draft_store(self.orch)
+        draft_store.create_draft_agent(
             draft_id, owner.user_id, "ZZV Parser",
             f"zzv_parser_{_uuid.uuid4().hex[:6]}", "Synthetic verification parser draft",
             origin="auto_attachment",
@@ -477,10 +551,10 @@ class InProcessDriver:
         finally:
             self._drop_session(ws_owner)
             self._drop_session(ws_other)
-            try:
-                self.orch.history.db.execute("DELETE FROM draft_agents WHERE id = ?", (draft_id,))
-            except Exception:
-                logger.debug("draft cleanup failed", exc_info=True)
+            # PlaneDraftStore is already bound to the orchestrator's composed
+            # runtime/catalog. Cleanup failures propagate: this qualification
+            # probe must not pass while leaving a synthetic draft behind.
+            draft_store.delete_draft_agent(draft_id)
 
     def enrich_thin_client(self, ev: CapturedEvidence) -> CapturedEvidence:
         """Attach the objective client-surface measurement + a backend ROTE
@@ -543,8 +617,151 @@ class InProcessDriver:
         return rows, chain_ok
 
     async def teardown(self) -> None:
-        if self.orch is not None:
+        task = getattr(self, "_teardown_task", None)
+        if task is None:
+            orch = self.orch
+            if orch is None:
+                return
+            self.orch = None
+            task = asyncio.create_task(
+                self._teardown_owned_graph(orch),
+                name="in-process-verification-teardown",
+            )
+            self._teardown_task = task
+        error, cancellation = await _observe_close_through_cancellation(task)
+        if error is not None:
+            raise error
+        if cancellation is not None:
+            raise cancellation
+
+    async def _teardown_owned_graph(self, orch: Any) -> None:
+        """Settle every durable owner cleanup before closing the owned graph."""
+
+        errors: list[BaseException] = []
+        plane_runtime = None
+        plane_repositories = None
+        purges = None
+        try:
+            plane_runtime, plane_repositories, _blobs = self._plane_dependencies(orch)
+            from orchestrator.attachments.purge import (
+                purge_coordinator_from_orchestrator,
+            )
+
+            purges = purge_coordinator_from_orchestrator(orch)
+        except BaseException as error:
+            errors.append(error)
+
+        accepted_owners = 0
+        if purges is not None:
+            owners = tuple(sorted(getattr(self, "_uploaded_blob_owners", set())))
+            for owner_id in owners:
+                try:
+                    await purges.aschedule_owner(owner_id=owner_id)
+                    accepted_owners += 1
+                except BaseException as error:
+                    errors.append(error)
+
+            # Scheduling every namespace is the critical durable barrier. Only
+            # after all attempts have been made do physical reconciliation
+            # passes run; one failed owner can never skip later owners.
+            for _index in range(accepted_owners):
+                try:
+                    await purges.areconcile_once(fail_on_incomplete=True)
+                except BaseException as error:
+                    errors.append(error)
+
+        if not errors and purges is not None and plane_runtime is not None:
             try:
-                teardown(self.orch.history.db, self.config.run_id)
-            except Exception:
-                logger.exception("teardown failed")
+                await asyncio.to_thread(
+                    _assert_verification_purge_ready,
+                    plane_runtime,
+                    purges,
+                )
+            except BaseException as error:
+                errors.append(error)
+
+        # Removing SQL metadata before every owner tombstone is accepted and
+        # globally reconciled would recreate the historical orphan window.
+        if not errors and plane_runtime is not None and plane_repositories is not None:
+            try:
+                await asyncio.to_thread(
+                    teardown,
+                    plane_runtime=plane_runtime,
+                    plane_repositories=plane_repositories,
+                    run_id=self.config.run_id,
+                )
+            except BaseException as error:
+                errors.append(error)
+
+        try:
+            await _close_owned_orchestrator_graph(orch)
+        except BaseException as close_error:
+            errors.append(close_error)
+
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup(
+                "verification cleanup and graph close reported failures",
+                errors,
+            )
+
+
+async def _close_owned_orchestrator_graph(orchestrator: Any) -> None:
+    """Close voice then the owned runtime graph through repeated cancellation."""
+
+    unified_close = getattr(orchestrator, "_close_started_services", None)
+    if callable(unified_close):
+        task = asyncio.create_task(unified_close())
+        error, cancellation = await _observe_close_through_cancellation(task)
+        if error is not None:
+            raise error
+        if cancellation is not None:
+            raise cancellation
+        return
+
+    cancellation: asyncio.CancelledError | None = None
+    errors: list[BaseException] = []
+    voice_services = getattr(orchestrator, "voice_services", None)
+    runtime_composition = getattr(orchestrator, "runtime_composition", None)
+    for component in (voice_services, runtime_composition):
+        close = getattr(component, "close", None)
+        if not callable(close):
+            continue
+        task = asyncio.create_task(close())
+        error, observed_cancellation = await _observe_close_through_cancellation(task)
+        cancellation = cancellation or observed_cancellation
+        if error is not None:
+            errors.append(error)
+    if errors:
+        for secondary in errors[1:]:
+            logger.error(
+                "verification graph close reported an additional failure",
+                extra={"close_error_type": type(secondary).__name__},
+            )
+        raise errors[0]
+    if cancellation is not None:
+        raise cancellation
+
+
+def _assert_verification_purge_ready(plane_runtime: Any, purges: Any) -> None:
+    with plane_runtime.transaction() as transaction:
+        purges.assert_globally_ready(transaction)
+
+
+async def _observe_close_through_cancellation(
+    task: asyncio.Task[Any],
+) -> tuple[BaseException | None, asyncio.CancelledError | None]:
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancellation = cancellation or error
+        except BaseException:
+            break
+    try:
+        task.result()
+    except BaseException as error:
+        return error, cancellation
+    return None, cancellation

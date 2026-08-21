@@ -12,21 +12,23 @@ could put it on the central host, so both are pinned here:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import shutil
 import sys
-import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.database import Database  # noqa: E402
 from orchestrator import agent_authoring as aa  # noqa: E402
 from orchestrator.agent_lifecycle import AgentLifecycleManager, BYO_ORIGIN  # noqa: E402
-from orchestrator.orchestrator import LIVE_DRAFT_RELAUNCH_QUERY  # noqa: E402
+from orchestrator.orchestrator import Orchestrator  # noqa: E402
+from orchestrator.user_agents import UserAgentRegistry  # noqa: E402
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 async def _t(fn, *a, **k):
@@ -35,66 +37,85 @@ async def _t(fn, *a, **k):
 
 
 @pytest.fixture()
-def db():
-    d = Database()
-    d._init_db()
-    return d
+def plane_runtime():
+    with isolated_plane_runtime("byo_offserver") as runtime:
+        yield runtime
 
 
-def _live_draft(db, origin):
-    draft_id = str(uuid.uuid4())
-    slug = "offsrv_" + draft_id[:8].replace("-", "")
-    db.create_draft_agent(draft_id=draft_id, user_id="u-offsrv", agent_name=slug,
-                          agent_slug=slug, description="d" * 20, origin=origin)
-    db.update_draft_agent(draft_id, status="live")
-    return draft_id
+async def _live_draft(lifecycle, origin):
+    draft = await lifecycle.create_draft(
+        user_id="u-offsrv",
+        agent_name="Offserver Probe",
+        description="d" * 20,
+        origin=origin,
+    )
+    lifecycle.draft_store.update_draft_agent(draft["id"], status="live")
+    return draft["id"]
 
 
-def test_boot_relaunch_query_excludes_byo_agents(db):
-    byo_id = _live_draft(db, BYO_ORIGIN)
-    server_id = _live_draft(db, "manual")
-    try:
-        relaunched = {r["id"] for r in db.fetch_all(LIVE_DRAFT_RELAUNCH_QUERY)}
-        assert server_id in relaunched      # 027 agents still come back up
-        assert byo_id not in relaunched     # a user agent is never Popen'd here
-    finally:
-        for d in (byo_id, server_id):
-            db.delete_draft_agent(d)
+def test_boot_relaunch_uses_typed_plane_draft_inventory():
+    start_source = inspect.getsource(Orchestrator.start)
+    server_source = inspect.getsource(Orchestrator._run_started_server)
+
+    assert "await self._run_started_server()" in start_source
+    assert "self.lifecycle_manager.draft_store.list_relaunchable_drafts" in (
+        server_source
+    )
+    assert "history.db.afetch_all" not in server_source
 
 
-async def test_start_draft_agent_refuses_a_byo_draft(db, monkeypatch):
+async def test_start_draft_agent_refuses_a_byo_draft(
+    plane_runtime, monkeypatch, tmp_path
+):
     import subprocess
 
     def _no_popen(*a, **kw):
         raise AssertionError("Popen'd a user agent on the orchestrator host (SC-002)")
 
     monkeypatch.setattr(subprocess, "Popen", _no_popen)
-    lm = AgentLifecycleManager(db, orchestrator=None)
-    draft_id = await _t(_live_draft, db, BYO_ORIGIN)
+    lm = AgentLifecycleManager(
+        orchestrator=None,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    lm._agents_dir = str(tmp_path)
+    draft_id = await _live_draft(lm, BYO_ORIGIN)
     try:
         with pytest.raises(ValueError, match="BYO"):
             await lm.start_draft_agent(draft_id)
     finally:
-        await _t(db.delete_draft_agent, draft_id)
+        await _t(lm.draft_store.delete_draft_agent, draft_id)
 
 
-async def test_approve_agent_refuses_a_byo_draft(db):
+async def test_approve_agent_refuses_a_byo_draft(plane_runtime, tmp_path):
     # approve_agent both exec's the tools in-process AND Popens them. A BYO draft
     # id belongs to the user, so this entry point is reachable — refuse it.
-    lm = AgentLifecycleManager(db, orchestrator=None)
-    draft_id = await _t(_live_draft, db, BYO_ORIGIN)
+    lm = AgentLifecycleManager(
+        orchestrator=None,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    lm._agents_dir = str(tmp_path)
+    draft_id = await _live_draft(lm, BYO_ORIGIN)
     try:
         with pytest.raises(ValueError, match="BYO"):
             await lm.approve_agent(draft_id)
     finally:
-        await _t(db.delete_draft_agent, draft_id)
+        await _t(lm.draft_store.delete_draft_agent, draft_id)
 
 
-async def test_refine_validates_a_byo_draft_out_of_process(db, monkeypatch, tmp_path):
+async def test_refine_validates_a_byo_draft_out_of_process(
+    plane_runtime, monkeypatch, tmp_path
+):
     # The refine entry point validates too — and validation EXECUTES the tools.
-    lm = AgentLifecycleManager(db, orchestrator=None)
-    draft_id = await _t(_live_draft, db, BYO_ORIGIN)
-    slug = (await _t(db.get_draft_agent, draft_id))["agent_slug"]
+    lm = AgentLifecycleManager(
+        orchestrator=None,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    lm._agents_dir = str(tmp_path)
+    draft_id = await _live_draft(lm, BYO_ORIGIN)
+    slug = (await _t(lm.draft_store.get_draft_agent, draft_id))["agent_slug"]
     agent_dir = os.path.join(lm._agents_dir, slug)
     os.makedirs(agent_dir, exist_ok=True)
     with open(os.path.join(agent_dir, "mcp_tools.py"), "w", encoding="utf-8") as fh:
@@ -116,54 +137,68 @@ async def test_refine_validates_a_byo_draft_out_of_process(db, monkeypatch, tmp_
         assert json.loads(state["validation_report"])["passed"]
     finally:
         shutil.rmtree(agent_dir, ignore_errors=True)
-        await _t(db.delete_draft_agent, draft_id)
+        await _t(lm.draft_store.delete_draft_agent, draft_id)
 
 
-async def test_authoring_path_never_starts_a_process(monkeypatch, db):
+async def test_authoring_path_never_starts_a_process(monkeypatch, plane_runtime):
     import subprocess
 
     monkeypatch.setattr(subprocess, "Popen", MagicMock(
         side_effect=AssertionError("BYO authoring spawned a process")))
 
-    o = MagicMock()
-    o.history.db = db
-    o.lifecycle_manager = MagicMock()
-    o.lifecycle_manager.create_draft = AsyncMock(
-        return_value={"id": "d-offsrv", "agent_slug": "offsrv"})
+    o = SimpleNamespace()
+    o.user_agent_registry = UserAgentRegistry(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    lifecycle = AgentLifecycleManager(
+        orchestrator=o,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    o.lifecycle_manager = lifecycle
+    created_origins = []
+    created_draft_ids = []
+    created_target_ids = []
+    create_draft = lifecycle.create_draft
+
+    async def _create_draft(**kwargs):
+        created_origins.append(kwargs.get("origin"))
+        draft = await create_draft(**kwargs)
+        created_draft_ids.append(draft["id"])
+        created_target_ids.append(draft["target_agent_id"])
+        return draft
+
+    lifecycle.create_draft = AsyncMock(side_effect=_create_draft)
     o.deliver_agent_bundle = AsyncMock(return_value=1)
-
-    updates = []
-    real_update = db.update_draft_agent
-
-    def _spy(draft_id, **kw):
-        updates.append(kw)
-        return real_update(draft_id, **kw)
-
-    monkeypatch.setattr(db, "update_draft_agent", _spy)
 
     async def _generate(draft_id, **kw):
         # The origin filter only protects us if the row is stamped BEFORE the
         # draft can be picked up — i.e. before generation, not after delivery.
-        assert any(u.get("origin") == BYO_ORIGIN for u in updates), \
+        assert BYO_ORIGIN in created_origins, \
             "draft was generated before it was stamped byo_client"
         assert kw.get("target") == "byo"
-        assert kw.get("agent_id", "").startswith("ua-")   # owner-namespaced
+        # The immutable Plane-allocated target, not a name-derived identity,
+        # is carried from draft persistence into generation.
+        assert kw.get("agent_id") == created_target_ids[-1]
         return {"status": "generated",
                 "files": {"agent_main.py": "x", "mcp_tools.py": "y",
                           "manifest.json": "{}"}}
 
-    o.lifecycle_manager.generate_code = AsyncMock(side_effect=_generate)
+    lifecycle.generate_code = AsyncMock(side_effect=_generate)
+    lifecycle.start_draft_agent = AsyncMock()
+    lifecycle.approve_agent = AsyncMock()
 
-    res = await aa.author_and_deliver(
-        o, user_id="u-offsrv", agent_name="Offserver",
-        description="greets the owner by their name",
-        declared_tools=["greet"], declared_scopes=["tools:read"],
-        plan={"tools_used": ["greet"], "tool_scopes": {"greet": "tools:read"}})
     try:
+        res = await aa.author_and_deliver(
+            o, user_id="u-offsrv", agent_name="Offserver",
+            description="greets the owner by their name",
+            declared_tools=["greet"], declared_scopes=["tools:read"],
+            plan={"tools_used": ["greet"], "tool_scopes": {"greet": "tools:read"}})
         assert res["status"] == "delivered"          # bundle went to the host…
         o.deliver_agent_bundle.assert_awaited_once()
-        o.lifecycle_manager.start_draft_agent.assert_not_called()   # …and nowhere else
-        o.lifecycle_manager.approve_agent.assert_not_called()
+        lifecycle.start_draft_agent.assert_not_awaited()   # …and nowhere else
+        lifecycle.approve_agent.assert_not_awaited()
     finally:
-        for t in ("user_agent", "agent_ownership"):
-            await _t(db.execute, f"DELETE FROM {t} WHERE agent_id = ?", (res["agent_id"],))
+        for draft_id in created_draft_ids:
+            await _t(lifecycle.draft_store.delete_draft_agent, draft_id)

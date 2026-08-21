@@ -16,14 +16,13 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-if not (
-    (REPO_ROOT / "tooling").is_dir() and (REPO_ROOT / "scripts").is_dir()
-):  # repo root absent inside the product image
+PROJECTION_ROOT = REPO_ROOT / "components" / "AstralProjection"
+TOOL_ROOT = PROJECTION_ROOT / "tooling" / "web-ci"
+if not (TOOL_ROOT.is_dir() and (REPO_ROOT / "scripts").is_dir()):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
     )
-TOOL_ROOT = REPO_ROOT / "tooling" / "web-ci"
 PACKAGE = TOOL_ROOT / "package.json"
 LOCK = TOOL_ROOT / "package-lock.json"
 IMAGE = TOOL_ROOT / "playwright-image.txt"
@@ -31,6 +30,7 @@ RUNNER = TOOL_ROOT / "release-runner.mjs"
 RELEASE_SPEC = TOOL_ROOT / "tests" / "release-060.spec.js"
 CONTRACT_SPEC = TOOL_ROOT / "tests" / "continuity-contract-060.spec.js"
 COVERAGE_PRODUCER = TOOL_ROOT / "coverage-conversion.mjs"
+COVERAGE_UNION = TOOL_ROOT / "coverage-union.mjs"
 EVIDENCE_SCHEMA = (
     REPO_ROOT
     / "specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json"
@@ -147,12 +147,17 @@ def test_release_lane_wires_the_lock_pinned_coverage_producer() -> None:
     assert "web-istanbul.json" in runner_source
 
     producer_source = COVERAGE_PRODUCER.read_text(encoding="utf-8")
+    assert "export const BROWSER_COVERAGE_PRODUCER" in producer_source
+    assert 'producer: "astralprojection-browser-v8-executable-lines"' in producer_source
+    assert 'coverage_lane: "browser-v8"' in producer_source
+
+    union_source = COVERAGE_UNION.read_text(encoding="utf-8")
     match = re.search(
-        r"export const COVERAGE_PRODUCER = Object\.freeze\(\{(?P<body>.*?)\}\);",
-        producer_source,
+        r"export const UNION_COVERAGE_PRODUCER = Object\.freeze\(\{(?P<body>.*?)\}\);",
+        union_source,
         flags=re.DOTALL,
     )
-    assert match, "coverage-conversion.mjs no longer exports COVERAGE_PRODUCER"
+    assert match, "coverage-union.mjs no longer exports UNION_COVERAGE_PRODUCER"
     body = match.group("body")
     gate = _load_module("coverage_gate_060_e2e", COVERAGE_GATE)
     assert gate.JAVASCRIPT_REPORT_KEYS == set(gate.JAVASCRIPT_REPORT_IDENTITY) | {
@@ -229,20 +234,45 @@ def test_real_browser_release_lane_against_trusted_staging(tmp_path: Path) -> No
             "-v",
             f"{tmp_path}:/evidence",
             "-w",
-            "/work/tooling/web-ci",
+            "/work/components/AstralProjection/tooling/web-ci",
             *environment_flags,
             pinned,
             "sh",
             "-lc",
             (
-                'test "$(corepack npm --version)" = "11.16.0" '
-                "&& corepack npm ci --ignore-scripts "
-                "&& corepack npm run browser:release -- "
+                "set -eu\n"
+                "NODE_V8_DIRECTORY=/tmp/astral-node-v8\n"
+                "NODE_INTERIM=/tmp/astral-node-interim.json\n"
+                "NODE_COVERAGE=/tmp/astral-node.json\n"
+                "BROWSER_COVERAGE=/tmp/astral-browser.json\n"
+                'test ! -e "$NODE_V8_DIRECTORY"\n'
+                'mkdir "$NODE_V8_DIRECTORY"\n'
+                'test "$(corepack npm --version)" = "11.16.0"\n'
+                "corepack npm ci --ignore-scripts\n"
+                "corepack npm run check:package-manager\n"
+                'export NODE_V8_COVERAGE="$NODE_V8_DIRECTORY"\n'
+                "corepack npm run check:product-isolation\n"
+                "corepack npm run lint\n"
+                "corepack npm run test:coverage-conversion\n"
+                "corepack npm run test:coverage-conversion:node\n"
+                "corepack npm run test:coverage-union\n"
+                "corepack npm run test:coverage-conversion:browser\n"
+                "corepack npm run browser:release -- "
                 '--base-url "$STAGING_URL" '
                 '--candidate-sha "$ASTRAL_RELEASE_CANDIDATE_SHA" '
                 "--output /evidence/web.json "
                 "--coverage-output /evidence/web-v8.json "
-                "--coverage-istanbul-output /evidence/web-istanbul.json"
+                '--coverage-istanbul-output "$BROWSER_COVERAGE"\n'
+                "corepack npm run coverage:node -- "
+                '--node-v8-directory "$NODE_V8_DIRECTORY" '
+                '--repo-root ../.. --output "$NODE_INTERIM"\n'
+                "unset NODE_V8_COVERAGE\n"
+                "corepack npm run coverage:node -- "
+                '--node-v8-directory "$NODE_V8_DIRECTORY" '
+                '--repo-root ../.. --output "$NODE_COVERAGE"\n'
+                "corepack npm run coverage:union -- "
+                '--node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" '
+                "--repo-root ../.. --output /evidence/web-istanbul.json"
             ),
         ],
         cwd=REPO_ROOT,

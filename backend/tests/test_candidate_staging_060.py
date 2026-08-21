@@ -184,20 +184,19 @@ def test_deploy_fails_before_docker_without_protected_runner_inputs() -> None:
     assert not Path("/tmp/stage-060-output-must-not-exist.json").exists()
 
 
-def test_compose_topology_has_real_baseline_restore_auth_database_and_candidate_paths() -> None:
+def test_compose_topology_has_no_retired_deep_schema_loader() -> None:
     source = COMPOSE.read_text(encoding="utf-8")
-    for service in ("postgres:", "keycloak:", "schema-baseline:", "astraldeep:"):
+    for service in ("postgres:", "keycloak:", "astraldeep:"):
         assert service in source
     for variable in (
         "STAGING_POSTGRES_IMAGE",
         "STAGING_KEYCLOAK_IMAGE",
-        "STAGING_SCHEMA_BASELINE_IMAGE",
         "ASTRAL_CANDIDATE_IMAGE",
     ):
         assert "${" + variable in source
-    assert "representative-057.sql" not in source, (
-        "the populated fixture must be restored after baseline 057 startup, not as empty-db init SQL"
-    )
+    assert "schema-baseline" not in source
+    assert "from shared.database import Database" not in source
+    assert "representative-057.sql" not in source
     assert "keycloak-realm.json" in source
     assert "latest" not in source.lower()
     assert "build:" not in source
@@ -230,7 +229,6 @@ def _protected_environment(runtime_env: Path) -> dict[str, str]:
         "ASTRAL_STAGING_PROBE_TOKEN": "test-only-probe-value",
         "STAGING_POSTGRES_IMAGE": image,
         "STAGING_KEYCLOAK_IMAGE": image,
-        "STAGING_SCHEMA_BASELINE_IMAGE": image,
         "STAGING_RUNTIME_ENV_FILE": str(runtime_env),
         "STAGING_DB_USER": "astral",
         "STAGING_DB_PASSWORD": "test-only-database-value",
@@ -274,7 +272,6 @@ def _expected_service_images(environment: dict[str, str]) -> dict[str, str]:
         "keycloak-postgres": environment["STAGING_POSTGRES_IMAGE"],
         "keycloak": environment["STAGING_KEYCLOAK_IMAGE"],
         "livekit": PINNED_LIVEKIT_IMAGE,
-        "schema-baseline": environment["STAGING_SCHEMA_BASELINE_IMAGE"],
         "astraldeep": environment["ASTRAL_CANDIDATE_IMAGE"],
         "voice-worker": environment["ASTRAL_VOICE_WORKER_IMAGE"],
     }
@@ -293,10 +290,6 @@ def _rendered_compose_model(environment: dict[str, str]) -> bytes:
                     "labels": ownership_labels,
                 },
                 "keycloak": {"image": images["keycloak"], "labels": ownership_labels},
-                "schema-baseline": {
-                    "image": images["schema-baseline"],
-                    "labels": ownership_labels,
-                },
                 "astraldeep": {
                     "image": images["astraldeep"],
                     "labels": ownership_labels,
@@ -353,6 +346,23 @@ def test_protected_environment_validation_accepts_only_private_complete_inputs(
     runtime_env.write_text("ASTRAL_ENV=staging\n", encoding="utf-8")
     runtime_env.chmod(0o600)
     values = _protected_environment(runtime_env)
+
+    class ProtectedPath:
+        mode = 0o600
+
+        def __init__(self, value: str) -> None:
+            self.path = Path(value)
+
+        def is_absolute(self) -> bool:
+            return self.path.is_absolute()
+
+        def is_file(self) -> bool:
+            return self.path.is_file()
+
+        def stat(self) -> SimpleNamespace:
+            return SimpleNamespace(st_mode=self.mode)
+
+    monkeypatch.setattr(driver, "Path", ProtectedPath)
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("ASTRAL_STAGING_RUNNER_TRUSTED", "true")
     for name, value in values.items():
@@ -368,6 +378,7 @@ def test_protected_environment_validation_accepts_only_private_complete_inputs(
     )
 
     runtime_env.chmod(0o644)
+    ProtectedPath.mode = 0o644
     with pytest.raises(driver.StagingError, match="group/world"):
         driver._required_environment()
     runtime_env.chmod(0o600)
@@ -526,237 +537,6 @@ def test_authenticated_staging_request_is_bounded_and_never_follows_redirects(
     assert len(requests) == 2
 
 
-def test_public_route_binding_creates_checks_deletes_and_leaves_no_identifier(
-    driver: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    probe_chat_id = "123e4567-e89b-42d3-a456-426614174000"
-    requests: list[tuple[str, str, str]] = []
-    row_counts = iter((1, 0))
-
-    def request(
-        _endpoint: str,
-        _token: str,
-        *,
-        method: str,
-        suffix: str,
-        purpose: str,
-        **_kwargs: Any,
-    ) -> dict[str, Any]:
-        requests.append((method, suffix, purpose))
-        if method == "POST":
-            return {
-                "chat_id": probe_chat_id,
-                "agent_id": None,
-                "message": "Chat created successfully",
-            }
-        return {"success": True, "message": "Deleted successfully"}
-
-    monkeypatch.setattr(driver, "_authenticated_json_request", request)
-    monkeypatch.setattr(
-        driver,
-        "_local_chat_row_count",
-        lambda **_kwargs: next(row_counts),
-    )
-    result = driver._verify_public_endpoint_binding(
-        "https://stage.example.invalid",
-        "opaque",
-        environment={},
-        project="astral060-rr-6001-1",
-    )
-    assert result is None
-    assert requests == [
-        ("POST", "/api/chats", "public route create probe"),
-        (
-            "DELETE",
-            f"/api/chats/{probe_chat_id}",
-            "public route delete probe",
-        ),
-    ]
-
-
-def test_wrong_public_endpoint_fails_and_best_effort_deletes_probe_chat(
-    driver: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    probe_chat_id = "123e4567-e89b-42d3-a456-426614174000"
-    requests: list[tuple[str, str]] = []
-    local_cleanups: list[str] = []
-
-    def request(
-        _endpoint: str,
-        _token: str,
-        *,
-        method: str,
-        purpose: str,
-        **_kwargs: Any,
-    ) -> dict[str, Any]:
-        requests.append((method, purpose))
-        if method == "POST":
-            return {
-                "chat_id": probe_chat_id,
-                "agent_id": None,
-                "message": "Chat created successfully",
-            }
-        return {"success": True, "message": "Deleted successfully"}
-
-    monkeypatch.setattr(driver, "_authenticated_json_request", request)
-    monkeypatch.setattr(driver, "_local_chat_row_count", lambda **_kwargs: 0)
-    monkeypatch.setattr(
-        driver,
-        "_remove_local_empty_probe_chat",
-        lambda **kwargs: local_cleanups.append(kwargs["chat_id"]),
-    )
-    with pytest.raises(driver.StagingError, match="not bound") as captured:
-        driver._verify_public_endpoint_binding(
-            "https://wrong-stage.example.invalid",
-            "opaque",
-            environment={},
-            project="astral060-rr-6001-1",
-        )
-    assert requests == [
-        ("POST", "public route create probe"),
-        ("DELETE", "public route cleanup probe"),
-    ]
-    assert local_cleanups == [probe_chat_id]
-    assert probe_chat_id not in str(captured.value)
-
-
-def test_stale_public_delete_route_fails_when_local_row_survives(
-    driver: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    probe_chat_id = "123e4567-e89b-42d3-a456-426614174000"
-    row_counts = iter((1, 1))
-    requests: list[tuple[str, str]] = []
-    local_cleanups: list[str] = []
-
-    def request(
-        _endpoint: str,
-        _token: str,
-        *,
-        method: str,
-        purpose: str,
-        **_kwargs: Any,
-    ) -> dict[str, Any]:
-        requests.append((method, purpose))
-        if method == "POST":
-            return {
-                "chat_id": probe_chat_id,
-                "agent_id": None,
-                "message": "Chat created successfully",
-            }
-        return {"success": True, "message": "Deleted successfully"}
-
-    monkeypatch.setattr(driver, "_authenticated_json_request", request)
-    monkeypatch.setattr(
-        driver,
-        "_local_chat_row_count",
-        lambda **_kwargs: next(row_counts),
-    )
-    monkeypatch.setattr(
-        driver,
-        "_remove_local_empty_probe_chat",
-        lambda **kwargs: local_cleanups.append(kwargs["chat_id"]),
-    )
-    with pytest.raises(driver.StagingError, match="deletion did not reach"):
-        driver._verify_public_endpoint_binding(
-            "https://stale-stage.example.invalid",
-            "opaque",
-            environment={},
-            project="astral060-rr-6001-1",
-        )
-    assert requests == [
-        ("POST", "public route create probe"),
-        ("DELETE", "public route delete probe"),
-        ("DELETE", "public route cleanup probe"),
-    ]
-    assert local_cleanups == [probe_chat_id]
-
-
-def test_local_probe_cleanup_is_content_guarded_and_verified(
-    driver: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    probe_chat_id = "123e4567-e89b-42d3-a456-426614174000"
-    captured: dict[str, Any] = {}
-
-    def run(
-        arguments: list[str],
-        *,
-        environment: dict[str, str],
-        input_bytes: bytes | None = None,
-    ) -> subprocess.CompletedProcess[bytes]:
-        del environment
-        captured["arguments"] = arguments
-        captured["input"] = input_bytes
-        return subprocess.CompletedProcess(arguments, 0, b"0\n", b"")
-
-    monkeypatch.setattr(driver, "_run", run)
-    environment = {"STAGING_DB_USER": "astral", "STAGING_DB_NAME": "astral"}
-    driver._remove_local_empty_probe_chat(
-        environment=environment,
-        project="astral060-rr-6001-1",
-        chat_id=probe_chat_id,
-    )
-    assert probe_chat_id not in " ".join(captured["arguments"])
-    statement = captured["input"].decode("ascii")
-    assert probe_chat_id in statement
-    for guard in (
-        "probe.title = 'New Chat'",
-        "probe.agent_id IS NULL",
-        "messages",
-        "saved_components",
-        "chat_files",
-        "workspace_layout",
-    ):
-        assert guard in statement
-
-    monkeypatch.setattr(
-        driver,
-        "_run",
-        lambda arguments, **_kwargs: subprocess.CompletedProcess(
-            arguments, 0, b"1\n", b""
-        ),
-    )
-    with pytest.raises(driver.StagingError, match="refused"):
-        driver._remove_local_empty_probe_chat(
-            environment=environment,
-            project="astral060-rr-6001-1",
-            chat_id=probe_chat_id,
-        )
-
-
-def test_local_chat_probe_queries_only_the_current_compose_project(
-    driver: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    probe_chat_id = "123e4567-e89b-42d3-a456-426614174000"
-    captured: dict[str, Any] = {}
-
-    def run(
-        arguments: list[str],
-        *,
-        environment: dict[str, str],
-        input_bytes: bytes | None = None,
-    ) -> subprocess.CompletedProcess[bytes]:
-        del environment
-        captured["arguments"] = arguments
-        captured["input"] = input_bytes
-        return subprocess.CompletedProcess(arguments, 0, b"1\n", b"")
-
-    monkeypatch.setattr(driver, "_run", run)
-    assert driver._local_chat_row_count(
-        environment={"STAGING_DB_USER": "astral", "STAGING_DB_NAME": "astral"},
-        project="astral060-rr-6001-1",
-        chat_id=probe_chat_id,
-    ) == 1
-    command = captured["arguments"]
-    assert command[command.index("--project-name") + 1] == "astral060-rr-6001-1"
-    assert probe_chat_id not in " ".join(command)
-    assert probe_chat_id in captured["input"].decode("ascii")
-
-
 def test_deploy_and_cleanup_execute_exact_request_scoped_sequence(
     driver: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -771,11 +551,6 @@ def test_deploy_and_cleanup_execute_exact_request_scoped_sequence(
     monkeypatch.setattr(driver, "_git_identity", lambda _candidate, _root: None)
     capability = {"supported": False, "runtime_contract_versions": [], "source_feature": None}
     monkeypatch.setattr(driver, "_probe", lambda _endpoint, _token: capability)
-    monkeypatch.setattr(
-        driver,
-        "_verify_public_endpoint_binding",
-        lambda _endpoint, _token, **_kwargs: None,
-    )
     calls: list[tuple[list[str], bytes | None, dict[str, str]]] = []
 
     def run(
@@ -785,9 +560,7 @@ def test_deploy_and_cleanup_execute_exact_request_scoped_sequence(
         input_bytes: bytes | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         calls.append((list(arguments), input_bytes, dict(environment)))
-        if "SELECT value FROM schema_meta" in arguments[-1]:
-            output = b"060.004\n"
-        elif "config" in arguments and "--format" in arguments:
+        if "config" in arguments and "--format" in arguments:
             output = _rendered_compose_model(environment)
         elif "ps" in arguments and "--format" in arguments:
             images = _expected_service_images(environment)
@@ -826,78 +599,10 @@ def test_deploy_and_cleanup_execute_exact_request_scoped_sequence(
         outputs=str(output_path),
         **_voice_args(),
     )
-    assert driver._deploy(args) == 0
-    output = json.loads(output_path.read_text(encoding="utf-8"))
-    assert output["candidate_image_reference"] == candidate_image
-    assert output["candidate_image_sha256"] == "c" * 64
-    assert output["migrated_schema_revision"] == "060.004"
-    assert output["authentication_posture"] == "real_keycloak_oidc"
-    assert output["worker_paths"] == [
-        "background",
-        "scheduler",
-        "maintenance",
-        "voice",
-    ]
-    assert output["voice_runtime"] == {
-        "voice_worker_image_reference": _voice_args()["voice_worker_image"],
-        "voice_worker_image_sha256": "d" * 64,
-        "livekit_image_reference": _voice_args()["livekit_image"],
-        "livekit_image_sha256": (
-            "3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1"
-        ),
-        "livekit_config_sha256": LIVEKIT_CONFIG_SHA256,
-        "livekit_public_url": protected["LIVEKIT_PUBLIC_URL"],
-        "livekit_turn_domain": protected["LIVEKIT_TURN_DOMAIN"],
-        "speech_profile": {
-            "asr_model": "Systran/faster-whisper-large-v3",
-            "tts_model": "speaches-ai/Kokoro-82M-v1.0-ONNX",
-            "voice": "af_heart",
-            "sample_rate_hz": 24000,
-            "inventory_sha256": "1" * 64,
-            "profile_sha256": SPEECH_PROFILE_SHA256,
-        },
-    }
-    support_image = protected["STAGING_POSTGRES_IMAGE"]
-    assert output["service_image_references"] == {
-        "postgres": support_image,
-        "keycloak-postgres": support_image,
-        "keycloak": protected["STAGING_KEYCLOAK_IMAGE"],
-        "livekit": _voice_args()["livekit_image"],
-        "schema-baseline": protected["STAGING_SCHEMA_BASELINE_IMAGE"],
-        "astraldeep": candidate_image,
-        "voice-worker": _voice_args()["voice_worker_image"],
-    }
-    assert output["livekit_turn_tls"] == {
-        "advertised_uri": (
-            f"turns:{protected['LIVEKIT_TURN_DOMAIN']}:443?transport=tcp"
-        ),
-        "public_port": 443,
-        "external_tls": True,
-        "terminator_upstream_host": "127.0.0.1",
-        "terminator_upstream_port": 15349,
-        "livekit_listener_port": 5349,
-    }
-    serialized_output = json.dumps(output, sort_keys=True).lower()
-    for secret_name in ("api_key", "password", "access_token", "refresh_token"):
-        assert secret_name not in serialized_output
-    assert any(
-        input_bytes and b"requires schema revision 057.001" in input_bytes
-        for _, input_bytes, _ in calls
-    )
-    commands = [arguments for arguments, _, _ in calls]
-    assert any("schema-baseline" in command for command in commands)
-    assert any(
-        command[-3:] == ["--detach", "astraldeep", "voice-worker"]
-        for command in commands
-    )
-    assert any("livekit" in command and "up" in command for command in commands)
-    assert any(
-        environment.get("ASTRAL_VOICE_WORKER_IMAGE")
-        == _voice_args()["voice_worker_image"]
-        for _, _, environment in calls
-    )
-    assert "requires_protected_attestation" in capsys.readouterr().out
-    assert len(output["service_identity_sha256"]) == 64
+    with pytest.raises(driver.StagingError, match="no AstralPlane-owned"):
+        driver._deploy(args)
+    assert calls == []
+    assert not output_path.exists()
 
     calls.clear()
     protected["GITHUB_JOB"] = "stage-cleanup"
@@ -1194,11 +899,6 @@ def _fake_docker_deploy(
     monkeypatch.setattr(driver, "_git_identity", lambda _candidate, _root: None)
     capability = {"supported": False, "runtime_contract_versions": [], "source_feature": None}
     monkeypatch.setattr(driver, "_probe", lambda _endpoint, _token: capability)
-    monkeypatch.setattr(
-        driver,
-        "_verify_public_endpoint_binding",
-        lambda _endpoint, _token, **_kwargs: None,
-    )
 
     def run(
         arguments: list[str],
@@ -1207,9 +907,7 @@ def _fake_docker_deploy(
         input_bytes: bytes | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         del input_bytes
-        if "SELECT value FROM schema_meta" in arguments[-1]:
-            output = b"060.004\n"
-        elif "config" in arguments and "--format" in arguments:
+        if "config" in arguments and "--format" in arguments:
             output = _rendered_compose_model(environment)
         elif "ps" in arguments and "--format" in arguments:
             images = _expected_service_images(environment)
@@ -1351,9 +1049,6 @@ def test_rendered_compose_identity_rejects_image_and_mount_substitution(
         "STAGING_KEYCLOAK_IMAGE": (
             "registry.invalid/keycloak@sha256:" + "2" * 64
         ),
-        "STAGING_SCHEMA_BASELINE_IMAGE": (
-            "registry.invalid/schema-baseline@sha256:" + "3" * 64
-        ),
         "LIVEKIT_TURN_DOMAIN": "turn.stage-060.example.invalid",
     }
     model = json.loads(_rendered_compose_model(environment))
@@ -1462,7 +1157,6 @@ def test_running_compose_identity_rejects_runtime_image_substitution(
         "astraldeep": "registry.invalid/astral@sha256:" + "1" * 64,
         "voice-worker": "registry.invalid/voice@sha256:" + "2" * 64,
         "livekit": PINNED_LIVEKIT_IMAGE,
-        "schema-baseline": "registry.invalid/baseline@sha256:" + "5" * 64,
     }
     records = [
         {
@@ -1481,7 +1175,7 @@ def test_running_compose_identity_rejects_runtime_image_substitution(
     ]
     assert driver._running_compose_services(
         json.dumps(records).encode(), expected_images=expected_images
-    ) == set(expected_images) - {"schema-baseline"}
+    ) == set(expected_images)
 
     records[-1]["Image"] = "registry.invalid/substitute@sha256:" + "9" * 64
     with pytest.raises(driver.StagingError, match="approved image reference"):
@@ -1532,53 +1226,11 @@ def test_post_upload_trusted_manifest_is_schema_valid_and_binds_actual_artifact(
         outputs=str(output_path),
         **_voice_args(),
     )
-    assert driver._deploy(args) == 0
+    with pytest.raises(driver.StagingError, match="no AstralPlane-owned"):
+        driver._deploy(args)
     capsys.readouterr()
+    assert not output_path.exists()
     assert not manifest_path.exists()
-    assert driver._write_trusted_manifest_command(
-        _post_upload_manifest_args(output_path, manifest_path)
-    ) == 0
-    capsys.readouterr()
-
-    output = json.loads(output_path.read_text(encoding="utf-8"))
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["document_type"] == "trusted_stage_deploy"
-    assert manifest["candidate_sha"] == "b" * 40
-    assert manifest["workflow"] == {
-        "name": "release-readiness",
-        "run_id": "6001",
-        "run_attempt": 1,
-        "job_id": "stage-deploy",
-    }
-    assert manifest["workflow_ref"] == (
-        "AstralDeep/AstralDeep/.github/workflows/release-readiness.yml@" + "d" * 40
-    )
-    assert manifest["trusted_builder"]["signer_digest"] == "d" * 40
-    assert manifest["generated_at"] == output["deployed_at"]
-    assert manifest["deployment"] == {
-        key: value
-        for key, value in output.items()
-        if key not in {"deployed_at", "macos_personal_agent_host"}
-    }
-    artifact = manifest["stage_outputs_artifact"]
-    assert artifact["artifact_id"] == "7001"
-    assert artifact["artifact_name"] == "stage-outputs-protected-6001"
-    assert artifact["member"] == "staging-outputs.json"
-    assert artifact["sha256"] == hashlib.sha256(output_path.read_bytes()).hexdigest()
-    assert artifact["immutable_reference"].startswith(
-        "gh://AstralDeep/AstralDeep/runs/6001/attempts/1/artifacts/"
-    )
-
-    validator = _load_release_validator()
-    trust_schema = validator.load_json_document(
-        REPO_ROOT
-        / "specs/060-runtime-reliability-hardening/contracts/release-trust.schema.json"
-    )
-    validator.validate_document(manifest, trust_schema)
-    missing_voice_runtime = copy.deepcopy(manifest)
-    del missing_voice_runtime["deployment"]["voice_runtime"]
-    with pytest.raises(validator.SchemaValidationError):
-        validator.validate_document(missing_voice_runtime, trust_schema)
 
 
 def test_post_upload_manifest_requires_actual_id_stage_job_and_github_identity(
@@ -1632,7 +1284,7 @@ def test_post_upload_manifest_requires_actual_id_stage_job_and_github_identity(
     assert not manifest_path.exists()
 
 
-def test_schema_invalid_post_upload_manifest_is_refused_before_writing(
+def test_retired_deploy_cannot_create_post_upload_manifest_input(
     driver: Any,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1640,7 +1292,6 @@ def test_schema_invalid_post_upload_manifest_is_refused_before_writing(
 ) -> None:
     _fake_docker_deploy(driver, monkeypatch, tmp_path)
     _stage_deploy_github_identity(monkeypatch)
-    protected = driver._required_environment()
     manifest_path = tmp_path / "trusted-stage-deploy.json"
     output_path = tmp_path / "outputs" / "staging-outputs.json"
     deploy_args = SimpleNamespace(
@@ -1653,21 +1304,14 @@ def test_schema_invalid_post_upload_manifest_is_refused_before_writing(
         outputs=str(output_path),
         **_voice_args(),
     )
-    assert driver._deploy(deploy_args) == 0
-    output = json.loads(output_path.read_text(encoding="utf-8"))
-    output["deployment_run_id"] = "0"
-    output_path.write_text(json.dumps(output), encoding="utf-8")
-    # Let the deliberately invalid API run id reach trust-schema validation.
-    protected["GITHUB_RUN_ID"] = "0"
-    monkeypatch.setattr(driver, "_run_scoped_environment_id", lambda _protected: "rr-6001-1")
-    args = _post_upload_manifest_args(output_path, manifest_path)
-    with pytest.raises(driver.StagingError, match="schema-invalid"):
-        driver._write_trusted_manifest_command(args)
+    with pytest.raises(driver.StagingError, match="no AstralPlane-owned"):
+        driver._deploy(deploy_args)
     capsys.readouterr()
+    assert not output_path.exists()
     assert not manifest_path.exists()
 
 
-def test_deploy_writes_only_pre_manifest_stage_outputs(
+def test_retired_deploy_writes_no_stage_outputs(
     driver: Any,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1685,6 +1329,7 @@ def test_deploy_writes_only_pre_manifest_stage_outputs(
         outputs=str(output_path),
         **_voice_args(),
     )
-    assert driver._deploy(args) == 0
+    with pytest.raises(driver.StagingError, match="no AstralPlane-owned"):
+        driver._deploy(args)
     capsys.readouterr()
-    assert [path.name for path in output_path.parent.iterdir()] == [output_path.name]
+    assert not output_path.exists()

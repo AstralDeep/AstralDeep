@@ -27,17 +27,42 @@ from shared.protocol import AgentCard, AgentSkill  # noqa: E402
 
 @pytest.fixture
 def orch():
+    from orchestrator.concurrency_cap import ConcurrencyCap
+    from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
 
-    o = Orchestrator()
+    # Exercise the real bound gate methods without composing the application
+    # Plane graph.  This unit suite has no durable-storage behavior in scope;
+    # its external permission, credential, and LLM lookups are explicit fakes,
+    # while the hook and concurrency gates use their production implementations.
+    o = Orchestrator.__new__(Orchestrator)
+    o.agents = {}
+    o.a2a_clients = {}
+    o.local_agents = {"a1": MagicMock()}
+    o.agent_cards = {}
+    o.ui_sessions = {}
+    o.security_flags = {}
+    o._pending_cap_entries = {}
+    o._hop_cap_entries = {}
+    o._job_context = {}
+    o.concurrency_cap = ConcurrencyCap(max_per_user_agent=3)
+    o.hooks = HookManager()
+    o.stream_manager = None
+
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
+    o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o._map_file_paths = lambda cid, a, **k: a
-    o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
-    # Register a live agent so the allow path clears the no-agent check.
-    o.local_agents["a1"] = MagicMock()
+    o.credential_manager = MagicMock()
+    o.credential_manager.get_agent_credentials_encrypted = MagicMock(
+        return_value=None
+    )
+    o._llm_store = SimpleNamespace(
+        get=AsyncMock(return_value=None),
+        get_system=AsyncMock(return_value=None),
+    )
     return o
 
 

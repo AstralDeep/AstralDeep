@@ -20,11 +20,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 @pytest.fixture
-def orch():
+def orch(orchestrator_factory):
     os.environ["OPENAI_API_KEY"] = "test-key"
-    from orchestrator.orchestrator import Orchestrator
-
-    o = Orchestrator()
+    o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()

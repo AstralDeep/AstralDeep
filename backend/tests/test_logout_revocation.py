@@ -6,22 +6,27 @@ best-effort refresh-token revocation with the offline-tolerant retry queue
 session destruction + offline-grant revocation + Keycloak end-session
 redirect), and user-switch revocation in ``/auth/callback``.
 
-Uses the live Postgres from shared.database defaults; every row is keyed by
-a uuid4 user_id so parallel runs never collide, and rows are cleaned up.
+Uses one isolated current AstralPlane PostgreSQL runtime; every row is keyed
+by a uuid4 user_id and removed through typed owner-scoped contracts.
 """
 import asyncio
 import base64
 import json
 import secrets
 import time
+from types import SimpleNamespace
 import uuid
 
 import pytest
 from cryptography.fernet import Fernet
 
 from orchestrator import web_auth
-from orchestrator.session_store import WebSessionStore
-from shared.database import Database
+from tests.helpers.session_plane_runtime import (
+    isolated_plane_runtime,
+    purge_revocations,
+    revocation_records,
+    web_session_store,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -36,15 +41,16 @@ class _FakeRequest:
 
 
 @pytest.fixture(scope="module")
-def db():
-    return Database()
+def plane_runtime():
+    with isolated_plane_runtime("logout_revocation") as runtime:
+        yield runtime
 
 
 @pytest.fixture()
-def store(db, monkeypatch):
+def store(plane_runtime, monkeypatch):
     """A WebSessionStore with a real Fernet key, wired into web_auth."""
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
-    s = WebSessionStore(db=db)
+    s = web_session_store(plane_runtime)
     monkeypatch.setattr(web_auth, "_get_store", lambda: s)
     return s
 
@@ -58,23 +64,12 @@ def real_auth_env(monkeypatch):
     monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)
 
 
-def _queue_rows(db, user_id):
-    return db.fetch_all(
-        "SELECT * FROM auth_revocation_queue WHERE user_id = ? ORDER BY id ASC", (user_id,)
-    )
+def _queue_rows(plane_runtime, user_id):
+    return revocation_records(plane_runtime, user_id)
 
 
-def _purge_queue(db, *user_ids):
-    for uid in user_ids:
-        db.execute("DELETE FROM auth_revocation_queue WHERE user_id = ?", (uid,))
-
-
-def _backdate_queue(db, user_id):
-    """Make this user's queue rows sort first (pending_revocations limit=20)."""
-    db.execute(
-        "UPDATE auth_revocation_queue SET enqueued_at = ? WHERE user_id = ?",
-        (int(time.time()) - 10_000_000, user_id),
-    )
+def _purge_queue(plane_runtime, *user_ids):
+    purge_revocations(plane_runtime, user_ids)
 
 
 def _fake_jwt(payload: dict) -> str:
@@ -88,7 +83,7 @@ def _fake_jwt(payload: dict) -> str:
 # _revoke_or_queue (FR-012/FR-013, D5)
 # ---------------------------------------------------------------------------
 
-def test_revoke_or_queue_success_queues_nothing(db, store, monkeypatch):
+def test_revoke_or_queue_success_queues_nothing(plane_runtime, store, monkeypatch):
     """028 FR-012: a successful IdP revocation leaves the retry queue empty."""
     user_id = f"u-{uuid.uuid4()}"
     calls = []
@@ -100,15 +95,15 @@ def test_revoke_or_queue_success_queues_nothing(db, store, monkeypatch):
     monkeypatch.setattr(web_auth, "_revoke_refresh_token", ok)
     asyncio.run(web_auth._revoke_or_queue(user_id, "rt-success"))
     assert calls == ["rt-success"]
-    assert _queue_rows(db, user_id) == []
+    assert _queue_rows(plane_runtime, user_id) == ()
 
     # Empty refresh token short-circuits without even calling the IdP.
     asyncio.run(web_auth._revoke_or_queue(user_id, ""))
     assert calls == ["rt-success"]
-    assert _queue_rows(db, user_id) == []
+    assert _queue_rows(plane_runtime, user_id) == ()
 
 
-def test_revoke_or_queue_failure_enqueues_token(db, store, monkeypatch):
+def test_revoke_or_queue_failure_enqueues_token(plane_runtime, store, monkeypatch):
     """028 FR-013 (D5): a failed IdP revocation lands the token in the queue."""
     user_id = f"u-{uuid.uuid4()}"
     token = f"rt-{uuid.uuid4()}"
@@ -119,25 +114,24 @@ def test_revoke_or_queue_failure_enqueues_token(db, store, monkeypatch):
     monkeypatch.setattr(web_auth, "_revoke_refresh_token", fail)
     try:
         asyncio.run(web_auth._revoke_or_queue(user_id, token))
-        rows = _queue_rows(db, user_id)
+        rows = _queue_rows(plane_runtime, user_id)
         assert len(rows) == 1
-        assert store._dec(rows[0]["refresh_token_enc"]) == token
-        assert int(rows[0]["attempts"] or 0) == 0
+        assert store._dec(rows[0].refresh_token_ciphertext) == token
+        assert rows[0].attempts == 0
     finally:
-        _purge_queue(db, user_id)
+        _purge_queue(plane_runtime, user_id)
 
 
 # ---------------------------------------------------------------------------
 # process_revocation_queue_once (FR-013, D5)
 # ---------------------------------------------------------------------------
 
-def test_revocation_queue_drains_on_success(db, store, monkeypatch):
+def test_revocation_queue_drains_on_success(plane_runtime, store, monkeypatch):
     """028 FR-013: queued tokens are revoked and removed; count returned."""
     user_id = f"u-{uuid.uuid4()}"
     mine = {f"rt-{uuid.uuid4()}", f"rt-{uuid.uuid4()}"}
     for t in mine:
         store.enqueue_revocation(user_id, t)
-    _backdate_queue(db, user_id)  # ensure inside the limit-20 scan window
 
     async def revoke(token, client_id=None):
         return token in mine  # only resolve OUR rows — deterministic count
@@ -146,17 +140,18 @@ def test_revocation_queue_drains_on_success(db, store, monkeypatch):
     try:
         resolved = asyncio.run(web_auth.process_revocation_queue_once())
         assert resolved == 2
-        assert _queue_rows(db, user_id) == []
+        assert _queue_rows(plane_runtime, user_id) == ()
     finally:
-        _purge_queue(db, user_id)
+        _purge_queue(plane_runtime, user_id)
 
 
-def test_revocation_queue_failure_bumps_attempts_and_keeps_row(db, store, monkeypatch):
+def test_revocation_queue_failure_bumps_attempts_and_keeps_row(
+    plane_runtime, store, monkeypatch
+):
     """028 FR-013: an unreachable IdP bumps attempts; the row survives."""
     user_id = f"u-{uuid.uuid4()}"
     token = f"rt-{uuid.uuid4()}"
     store.enqueue_revocation(user_id, token)
-    _backdate_queue(db, user_id)
 
     async def fail(_token, client_id=None):
         return False
@@ -165,23 +160,27 @@ def test_revocation_queue_failure_bumps_attempts_and_keeps_row(db, store, monkey
     try:
         resolved = asyncio.run(web_auth.process_revocation_queue_once())
         assert resolved == 0
-        rows = _queue_rows(db, user_id)
+        rows = _queue_rows(plane_runtime, user_id)
         assert len(rows) == 1
-        assert int(rows[0]["attempts"]) == 1
-        assert store._dec(rows[0]["refresh_token_enc"]) == token
+        assert rows[0].attempts == 1
+        assert store._dec(rows[0].refresh_token_ciphertext) == token
     finally:
-        _purge_queue(db, user_id)
+        _purge_queue(plane_runtime, user_id)
 
 
-def test_revocation_queue_drops_row_after_max_attempts(db, store, monkeypatch):
+def test_revocation_queue_drops_row_after_max_attempts(
+    plane_runtime, store, monkeypatch
+):
     """028 FR-013 (D5): a row at the 30-attempt cap is dropped, not retried forever."""
     user_id = f"u-{uuid.uuid4()}"
-    db.execute(
-        "INSERT INTO auth_revocation_queue (user_id, refresh_token_enc, enqueued_at, attempts) "
-        "VALUES (?, ?, ?, ?)",
-        (user_id, store._enc("rt-doomed"), int(time.time()) - 10_000_000,
-         web_auth._MAX_REVOCATION_ATTEMPTS),
-    )
+    store.enqueue_revocation(user_id, "rt-doomed")
+    for _ in range(web_auth._MAX_REVOCATION_ATTEMPTS):
+        queued = next(
+            row
+            for row in store.pending_revocations(limit=200)
+            if row["user_id"] == user_id
+        )
+        store.bump_revocation_attempt(queued["id"])
 
     async def fail(_token, client_id=None):
         return False
@@ -190,16 +189,18 @@ def test_revocation_queue_drops_row_after_max_attempts(db, store, monkeypatch):
     try:
         resolved = asyncio.run(web_auth.process_revocation_queue_once())
         assert resolved == 0  # dropped rows don't count as resolved
-        assert _queue_rows(db, user_id) == []  # but the row is gone
+        assert _queue_rows(plane_runtime, user_id) == ()  # but the row is gone
     finally:
-        _purge_queue(db, user_id)
+        _purge_queue(plane_runtime, user_id)
 
 
 # ---------------------------------------------------------------------------
 # /auth/logout end-to-end (FR-012/FR-013)
 # ---------------------------------------------------------------------------
 
-def test_auth_logout_revokes_everything_and_redirects(db, store, monkeypatch, real_auth_env):
+def test_auth_logout_revokes_everything_and_redirects(
+    plane_runtime, store, monkeypatch, real_auth_env
+):
     """028 FR-012: logout kills the session (cache + store), revokes the
     refresh token and the user's offline grants, deletes the cookie, and
     redirects to the Keycloak end-session endpoint."""
@@ -218,9 +219,12 @@ def test_auth_logout_revokes_everything_and_redirects(db, store, monkeypatch, re
     monkeypatch.setattr(web_auth, "_revoke_refresh_token", ok)
 
     grant_calls = []
-    from orchestrator.offline_grant import OfflineGrantStore
-    monkeypatch.setattr(OfflineGrantStore, "revoke_for_user",
-                        lambda self, uid: grant_calls.append(uid) or 0)
+    monkeypatch.setattr(
+        "orchestrator.offline_grant.get_offline_grant_store",
+        lambda: SimpleNamespace(
+            revoke_for_user=lambda uid: grant_calls.append(uid) or 0
+        ),
+    )
 
     req = _FakeRequest(cookies={web_auth.COOKIE_NAME: web_auth._sign(sid)})
     try:
@@ -230,7 +234,7 @@ def test_auth_logout_revokes_everything_and_redirects(db, store, monkeypatch, re
         assert store.get(sid) is None                 # durable row deleted
         assert revoked_tokens == [refresh]            # refresh token revoked
         assert grant_calls == [user_id]               # 025 offline grants revoked
-        assert _queue_rows(db, user_id) == []         # nothing queued on success
+        assert _queue_rows(plane_runtime, user_id) == ()  # nothing queued
 
         assert resp.status_code == 303
         location = resp.headers["location"]
@@ -241,10 +245,12 @@ def test_auth_logout_revokes_everything_and_redirects(db, store, monkeypatch, re
     finally:
         web_auth._SESSIONS.pop(sid, None)
         store.delete(sid)
-        _purge_queue(db, user_id)
+        _purge_queue(plane_runtime, user_id)
 
 
-def test_auth_logout_offline_idp_still_signs_out_and_queues(db, store, monkeypatch, real_auth_env):
+def test_auth_logout_offline_idp_still_signs_out_and_queues(
+    plane_runtime, store, monkeypatch, real_auth_env
+):
     """028 FR-013: with the IdP unreachable, logout still completes locally
     (redirect + session gone) and the refresh token is queued for retry."""
     user_id = f"u-{uuid.uuid4()}"
@@ -258,8 +264,10 @@ def test_auth_logout_offline_idp_still_signs_out_and_queues(db, store, monkeypat
 
     monkeypatch.setattr(web_auth, "_revoke_refresh_token", unreachable)
 
-    from orchestrator.offline_grant import OfflineGrantStore
-    monkeypatch.setattr(OfflineGrantStore, "revoke_for_user", lambda self, uid: 0)
+    monkeypatch.setattr(
+        "orchestrator.offline_grant.get_offline_grant_store",
+        lambda: SimpleNamespace(revoke_for_user=lambda _uid: 0),
+    )
 
     req = _FakeRequest(cookies={web_auth.COOKIE_NAME: web_auth._sign(sid)})
     try:
@@ -270,20 +278,22 @@ def test_auth_logout_offline_idp_still_signs_out_and_queues(db, store, monkeypat
         assert sid not in web_auth._SESSIONS
         assert store.get(sid) is None
 
-        rows = _queue_rows(db, user_id)               # token awaits retry
+        rows = _queue_rows(plane_runtime, user_id)  # token awaits retry
         assert len(rows) == 1
-        assert store._dec(rows[0]["refresh_token_enc"]) == refresh
+        assert store._dec(rows[0].refresh_token_ciphertext) == refresh
     finally:
         web_auth._SESSIONS.pop(sid, None)
         store.delete(sid)
-        _purge_queue(db, user_id)
+        _purge_queue(plane_runtime, user_id)
 
 
 # ---------------------------------------------------------------------------
 # User-switch revocation in /auth/callback (FR-014, D6)
 # ---------------------------------------------------------------------------
 
-def test_auth_callback_user_switch_revokes_prior_session(db, store, monkeypatch, real_auth_env):
+def test_auth_callback_user_switch_revokes_prior_session(
+    plane_runtime, store, monkeypatch, real_auth_env
+):
     """028 FR-014 (D6): user B signing in over user A's live cookie revokes
     A's session (cache + store) and A's refresh token (revoked-or-queued)."""
     user_a = f"uA-{uuid.uuid4()}"
@@ -352,9 +362,9 @@ def test_auth_callback_user_switch_revokes_prior_session(db, store, monkeypatch,
 
         # A's refresh token was revoked-or-queued (queued here: IdP "down").
         assert refresh_a in revoke_attempts
-        rows = _queue_rows(db, user_a)
+        rows = _queue_rows(plane_runtime, user_a)
         assert len(rows) == 1
-        assert store._dec(rows[0]["refresh_token_enc"]) == refresh_a
+        assert store._dec(rows[0].refresh_token_ciphertext) == refresh_a
 
         # And B got a fresh session + cookie.
         assert resp.status_code == 303
@@ -368,11 +378,13 @@ def test_auth_callback_user_switch_revokes_prior_session(db, store, monkeypatch,
             web_auth._SESSIONS.pop(s, None)
         store.delete(sid_a)
         store.delete_for_user(user_b)
-        _purge_queue(db, user_a, user_b)
+        _purge_queue(plane_runtime, user_a, user_b)
         web_auth._PENDING.pop(state, None)
 
 
-def test_auth_callback_forged_state_leaves_prior_session_intact(db, store, monkeypatch, real_auth_env):
+def test_auth_callback_forged_state_leaves_prior_session_intact(
+    plane_runtime, store, monkeypatch, real_auth_env
+):
     """The user-switch revocation above is destructive, so it must be
     unreachable without the browser-bound state cookie: a forged callback
     carrying only the victim's session cookie is refused before the token
@@ -429,9 +441,9 @@ def test_auth_callback_forged_state_leaves_prior_session_intact(db, store, monke
         assert revoke_attempts == []                        # A's refresh token untouched
         assert web_auth._SESSIONS.get(sid_a) is not None     # A is still signed in
         assert store.get(sid_a) is not None
-        assert _queue_rows(db, user_a) == []
+        assert _queue_rows(plane_runtime, user_a) == ()
     finally:
         web_auth._SESSIONS.pop(sid_a, None)
         store.delete(sid_a)
-        _purge_queue(db, user_a)
+        _purge_queue(plane_runtime, user_a)
         web_auth._PENDING.pop(state, None)

@@ -1,13 +1,26 @@
 """030 — knowledge index never surfaces retired/merged agents (US6 / T037)."""
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from orchestrator.knowledge_synthesis import (RETIRED_KNOWLEDGE_STEMS,  # noqa: E402
-                                              KnowledgeSynthesizer)
+from astralplane import create_repository_catalog  # noqa: E402
+from orchestrator.knowledge_synthesis import (  # noqa: E402
+    RETIRED_KNOWLEDGE_STEMS,
+    KnowledgeSynthesizer,
+)
+
+
+class _PlaneRuntime:
+    def __init__(self) -> None:
+        self.repositories = create_repository_catalog()
+
+    @contextmanager
+    def transaction(self):
+        yield object()
 
 
 def _write(p: Path, name: str):
@@ -31,7 +44,15 @@ def test_update_index_skips_retired_files(tmp_path):
     _write(caps, "weather")
     _write(tech, "weather")
 
-    synth = KnowledgeSynthesizer(db=None, knowledge_dir=str(tmp_path))
+    runtime = _PlaneRuntime()
+    synth = KnowledgeSynthesizer(
+        knowledge_dir=str(tmp_path),
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+        # _update_index is a pure filesystem projection; this focused test
+        # does not create or claim durable maintenance units.
+        maintenance_repository=object(),
+    )
     synth._update_index()
 
     index = (tmp_path / "_index.md").read_text(encoding="utf-8")

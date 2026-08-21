@@ -7,13 +7,12 @@ contracted ``reason: 'hard_cap'`` on both the in-memory-cache and the
 durable-store death paths, and the one-shot ``resumed`` semantics
 (auth-session.md), plus the ``session_resumed_flag`` shell-injection helper.
 
-Style follows tests/test_logout_revocation.py (_FakeRequest, _fake_jwt,
-db/store/real_auth_env fixtures). All sids/user ids are uuid4-unique and DB
-rows are cleaned up in finally blocks because the suite shares the live
-Postgres with a running orchestrator.
+Style follows tests/test_logout_revocation.py (_FakeRequest and _fake_jwt).
+All durable scenarios use a uniquely named, current Plane database.
 """
 import asyncio
 import base64
+from dataclasses import replace
 import json
 import time
 import uuid
@@ -22,8 +21,12 @@ import pytest
 from cryptography.fernet import Fernet
 
 from orchestrator import web_auth
-from orchestrator.session_store import WebSessionStore
-from shared.database import Database
+from tests.helpers.session_plane_runtime import (
+    get_session_record,
+    isolated_plane_runtime,
+    replace_session_record,
+    web_session_store,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -40,8 +43,9 @@ class _FakeRequest:
 
 
 @pytest.fixture(scope="module")
-def db():
-    return Database()
+def plane_runtime():
+    with isolated_plane_runtime("session_ensure") as runtime:
+        yield runtime
 
 
 @pytest.fixture()
@@ -60,10 +64,10 @@ def memory_only(monkeypatch, real_auth_env):
 
 
 @pytest.fixture()
-def store(db, monkeypatch, real_auth_env):
+def store(plane_runtime, monkeypatch, real_auth_env):
     """A WebSessionStore with a real Fernet key, wired into web_auth."""
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
-    s = WebSessionStore(db=db)
+    s = web_session_store(plane_runtime)
     monkeypatch.setattr(web_auth, "_get_store", lambda: s)
     return s
 
@@ -239,7 +243,7 @@ def test_auth_session_hard_cap_reason_memory_cache(memory_only):
         web_auth._DEATH_REASONS.pop(sid, None)
 
 
-def test_store_get_capped_row_records_death_reason(db, store):
+def test_store_get_capped_row_records_death_reason(plane_runtime, store):
     """028 FR-006/FR-007: WebSessionStore.get deletes a hard-capped row and
     records 'hard_cap' for pop_death_reason (itself one-shot)."""
     sid, user = _ids()
@@ -247,22 +251,26 @@ def test_store_get_capped_row_records_death_reason(db, store):
                  hard_max_seconds=0)
     try:
         assert store.get(sid) is None
-        assert db.fetch_one("SELECT 1 FROM web_session WHERE sid = ?", (sid,)) is None
+        assert get_session_record(plane_runtime, sid) is None
         assert store.pop_death_reason(sid) == "hard_cap"
         assert store.pop_death_reason(sid) is None   # consumed
     finally:
         store.delete(sid)
 
 
-def test_auth_session_hard_cap_reason_store_path(db, store):
+def test_auth_session_hard_cap_reason_store_path(plane_runtime, store):
     """028 FR-007 (D3): with no in-process cache (restart), the durable-store
     read path surfaces the hard cap end-to-end — the capped web_session row is
     deleted and /auth/session answers authenticated:false reason:'hard_cap'."""
     sid, user = _ids()
     store.create(sid, user_id=user, access_token="at", refresh_token="rt",
                  hard_max_seconds=3600)
-    db.execute("UPDATE web_session SET hard_expires_at = ? WHERE sid = ?",
-               (int(time.time()) - 60, sid))
+    current = get_session_record(plane_runtime, sid)
+    assert current is not None
+    replace_session_record(
+        plane_runtime,
+        replace(current, hard_expires_at=int(time.time()) - 60),
+    )
     store._cache.pop(sid, None)          # simulate a fresh process
     web_auth._SESSIONS.pop(sid, None)
     try:
@@ -270,7 +278,7 @@ def test_auth_session_hard_cap_reason_store_path(db, store):
         assert body["authenticated"] is False
         assert body["access_token"] == ""
         assert body["reason"] == "hard_cap"
-        assert db.fetch_one("SELECT 1 FROM web_session WHERE sid = ?", (sid,)) is None
+        assert get_session_record(plane_runtime, sid) is None
     finally:
         web_auth._SESSIONS.pop(sid, None)
         store.delete(sid)
@@ -302,7 +310,9 @@ def test_auth_session_one_shot_resumed(memory_only, monkeypatch):
         web_auth._SESSIONS.pop(sid, None)
 
 
-def test_auth_session_resumed_flip_writes_through_the_store(db, store, monkeypatch):
+def test_auth_session_resumed_flip_writes_through_the_store(
+    plane_runtime, store, monkeypatch
+):
     """028 FR-011 + 052: the async /auth/session one-shot flip persists to the
     durable row off the event loop (store.amark_resumed), so a restart after
     the first fetch still reports resumed:true."""
@@ -316,14 +326,14 @@ def test_auth_session_resumed_flip_writes_through_the_store(db, store, monkeypat
         first = _json(asyncio.run(web_auth.auth_session(_cookie_req(sid))))
         assert first["authenticated"] is True and first["resumed"] is False
 
-        row = db.fetch_one("SELECT resumed FROM web_session WHERE sid = ?", (sid,))
-        assert bool(row["resumed"]) is True
+        row = get_session_record(plane_runtime, sid)
+        assert row is not None and row.resumed is True
     finally:
         web_auth._SESSIONS.pop(sid, None)
         store.delete(sid)
 
 
-def test_session_resumed_flag_one_shot_and_persists(db, store):
+def test_session_resumed_flag_one_shot_and_persists(plane_runtime, store):
     """028 FR-011: session_resumed_flag has the same one-shot flip as
     /auth/session — False once right after interactive login, True after —
     and the flip is persisted to the durable row via mark_resumed."""
@@ -335,8 +345,8 @@ def test_session_resumed_flag_one_shot_and_persists(db, store):
     try:
         assert web_auth.session_resumed_flag(_cookie_req(sid)) is False
 
-        row = db.fetch_one("SELECT resumed FROM web_session WHERE sid = ?", (sid,))
-        assert bool(row["resumed"]) is True       # mark_resumed hit the store
+        row = get_session_record(plane_runtime, sid)
+        assert row is not None and row.resumed is True  # persisted in Plane
 
         assert web_auth.session_resumed_flag(_cookie_req(sid)) is True
     finally:

@@ -86,7 +86,7 @@ curl -fsS http://localhost:8001/readyz
 Run the affected existing suites plus the 060 migration suite first:
 
 ```bash
-docker exec astraldeep bash -c "cd /app/backend && python -m pytest tests/test_async_tasks.py tests/test_register_ui_pipeline.py tests/test_byo_tunnel.py tests/test_byo_lifecycle.py tests/test_byo_authoring_flow.py tests/test_progress_system.py tests/test_schema_revision_guard.py tests/test_migrations_060.py scheduler/tests -q"
+docker exec astraldeep bash -c "cd /app/backend && python -m pytest tests/test_async_tasks.py tests/test_register_ui_pipeline.py tests/test_byo_tunnel.py tests/test_byo_lifecycle.py tests/test_byo_authoring_flow.py tests/test_progress_system.py tests/test_schema_revision_guard.py scheduler/tests -q"
 ```
 
 Then mirror the backend CI's separate discovery roots. The first command alone does not collect the
@@ -103,33 +103,38 @@ build/060/tooling-venv/bin/python -m pip install pytest 'coverage[toml]'
 build/060/tooling-venv/bin/python -m coverage run --source=scripts -m pytest backend/tests/test_changed_coverage_060.py backend/tests/test_release_evidence_validator.py backend/tests/test_staging_fixtures_060.py backend/tests/test_documentation_060.py backend/tests/test_android_next_major_canary.py backend/tests/test_release_tooling_coverage_060.py -q
 build/060/tooling-venv/bin/python -m coverage xml -o build/060/coverage/tooling-python.xml
 ruff check .
-test "$(cd tooling/web-ci && corepack npm --version)" = "11.16.0"
-(cd tooling/web-ci && corepack npm ci --ignore-scripts)
-(cd tooling/web-ci && corepack npm run check:package-manager)
-(cd tooling/web-ci && corepack npm run check:product-isolation)
-(cd tooling/web-ci && corepack npm run lint)
-(cd tooling/web-ci && corepack npm run test:coverage-conversion)
-(cd tooling/web-ci && corepack npm run test:coverage-conversion:node)
+test "$(cd components/AstralProjection/tooling/web-ci && corepack npm --version)" = "11.16.0"
+(cd components/AstralProjection/tooling/web-ci && corepack npm ci --ignore-scripts)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run check:package-manager)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run check:product-isolation)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run lint)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run test:coverage-conversion)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run test:coverage-conversion:node)
 NODE_V8_DIR="$PWD/build/060/coverage/node-v8"
 mkdir -p "$NODE_V8_DIR"
-(cd tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run lint)
-(cd tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run test:coverage-conversion)
-(cd tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../.. --output "$NODE_V8_DIR/interim.json")
-(cd tooling/web-ci && corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../.. --output "$NODE_V8_DIR/tooling-javascript.json")
-PLAYWRIGHT_IMAGE="$(tr -d '\n' < tooling/web-ci/playwright-image.txt)"
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run check:product-isolation)
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run lint)
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run test:coverage-conversion)
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run test:coverage-conversion:node)
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run test:coverage-union)
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../.. --output "$NODE_V8_DIR/interim.json")
+(cd components/AstralProjection/tooling/web-ci && corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../.. --output "$NODE_V8_DIR/tooling-javascript.json")
+PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
 test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"
 docker pull "$PLAYWRIGHT_IMAGE"
 docker image inspect "$PLAYWRIGHT_IMAGE" --format '{{json .RepoDigests}}'
-docker run --rm -v "$PWD:/work" -w /work/tooling/web-ci "$PLAYWRIGHT_IMAGE" sh -lc 'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm exec playwright -- --version && corepack npm run test:coverage-conversion:browser'
+docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web-ci "$PLAYWRIGHT_IMAGE" sh -lc 'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm exec playwright -- --version && corepack npm run test:coverage-conversion:browser'
 ```
 
 CI reports the JavaScript command separately from Ruff and runs it on pull requests and main pushes.
-The package cache is keyed to `tooling/web-ci/package-lock.json`; CI records both the Playwright
+The package cache is keyed to `components/AstralProjection/tooling/web-ci/package-lock.json`; CI records both the Playwright
 version, container digest, and pinned Chromium revision, and never falls back to a system browser.
 Each platform emits its native coverage format and the final merge gate maps an immutable event-aware
-base-to-candidate diff to backend, root-tooling, and Windows Python XML, Playwright V8 coverage
-converted and executable-syntax-filtered by the lock-pinned producer to canonical Istanbul statement
-JSON, counter-validated Android app/core Kover XML, and line-complete Apple app/core/Watch coverage.
+base-to-candidate diff to repository-owned Python XML, Projection's lock-pinned v2 Node/browser V8
+union converted and executable-syntax-filtered to canonical Istanbul statement JSON,
+counter-validated Android app/core Kover XML, and line-complete Apple app/core/Watch coverage. The
+JavaScript input must carry the exact `astralprojection-node-browser-union` producer and
+`node-browser-union` lane identity; a browser-only or legacy producer envelope fails closed.
 The protected collector rejects raw or unfiltered V8 ranges and forces text hunks for maintained
 paths, so comments and candidate `.gitattributes` cannot inflate or hide coverage.
 Every changed maintained language and the combined executable lines must each be at least 90%; a
@@ -137,9 +142,11 @@ missing applicable report fails rather than becoming zero selected lines.
 
 ## 3. Guarded migration and representative-data proof
 
-Feature 060 schema evolution remains in `backend/shared/database.py::_init_db()`, with a bumped
-`SCHEMA_REVISION`, one PostgreSQL advisory-lock owner, a post-lock state recheck, idempotent DDL, and
-an independent `user_agent_policy_revision` marker.
+Feature 074 extracted schema evolution into AstralPlane. Its guarded lineage now
+owns `SCHEMA_REVISION`, the PostgreSQL advisory-lock owner, post-lock state
+rechecks, idempotent DDL, current-structure verification, and recovery. Deep
+retains the product policy revision and invokes Plane's atomic reconciliation
+repository before admitting traffic.
 
 Create a pre-migration backup before the first boot of 060 against representative data. This command
 uses the database container's existing environment and does not echo credentials:
@@ -155,7 +162,7 @@ an updater crash, repeat execution, and a policy-only revision change while the 
 already current:
 
 ```bash
-docker exec astraldeep bash -c "cd /app/backend && python -m pytest tests/test_migrations_060.py tests/test_schema_revision_guard.py -q"
+docker exec astraldeep bash -c "cd /app/backend && python -m pytest tests/test_schema_revision_guard.py ../components/AstralPlane/tests/test_schema_migrations.py ../components/AstralPlane/tests/integration/test_empty_database_startup.py -q"
 docker compose restart astraldeep
 curl -fsS http://localhost:8001/readyz
 docker compose restart astraldeep
@@ -222,8 +229,9 @@ injects a token or persists browser auth state, and writes a schema-valid report
 evidence. Until then the protected readiness caller remains fail-closed:
 
 ```bash
-PLAYWRIGHT_IMAGE="$(tr -d '\n' < tooling/web-ci/playwright-image.txt)"
-docker run --rm -v "$PWD:/work" -w /work/tooling/web-ci \
+PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
+mkdir -p build/060/coverage build/060/release-evidence
+docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web-ci \
   -e ASTRAL_PLAYWRIGHT_IMAGE="$PLAYWRIGHT_IMAGE" \
   -e STAGING_URL -e SHA \
   -e ASTRAL_RELEASE_USERNAME -e ASTRAL_RELEASE_PASSWORD \
@@ -233,7 +241,30 @@ docker run --rm -v "$PWD:/work" -w /work/tooling/web-ci \
   -e ASTRAL_RUNNER_ENVIRONMENT \
   -e GITHUB_WORKFLOW -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT -e GITHUB_JOB \
   -e RUNNER_OS -e RUNNER_ARCH -e RUNNER_NAME \
-  "$PLAYWRIGHT_IMAGE" sh -lc 'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm run browser:release -- --base-url "$STAGING_URL" --candidate-sha "$SHA" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/coverage/web-v8.json'
+  "$PLAYWRIGHT_IMAGE" sh -lc '
+    set -eu
+    NODE_V8_DIRECTORY=/tmp/astral-node-v8
+    NODE_INTERIM=/tmp/astral-node-interim.json
+    NODE_COVERAGE=/tmp/astral-node.json
+    BROWSER_COVERAGE=/tmp/astral-browser-istanbul.json
+    test ! -e "$NODE_V8_DIRECTORY"
+    mkdir "$NODE_V8_DIRECTORY"
+    test "$(corepack npm --version)" = "11.16.0"
+    corepack npm ci --ignore-scripts
+    corepack npm run check:package-manager
+    export NODE_V8_COVERAGE="$NODE_V8_DIRECTORY"
+    corepack npm run check:product-isolation
+    corepack npm run lint
+    corepack npm run test:coverage-conversion
+    corepack npm run test:coverage-conversion:node
+    corepack npm run test:coverage-union
+    corepack npm run test:coverage-conversion:browser
+    corepack npm run browser:release -- --base-url "$STAGING_URL" --candidate-sha "$SHA" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/coverage/web-v8.json --coverage-istanbul-output "$BROWSER_COVERAGE"
+    corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_INTERIM"
+    unset NODE_V8_COVERAGE
+    corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_COVERAGE"
+    corepack npm run coverage:union -- --node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" --repo-root ../.. --output /work/build/060/coverage/web-istanbul.json
+  '
 ```
 
 After that activation, the protected producer supplies those identities and the request-scoped
@@ -630,13 +661,7 @@ python3 scripts/prepare_release_evidence.py --base-sha "$(git rev-parse origin/m
   --backend-python build/060/coverage/backend.xml \
   --voice-worker-python build/065/coverage/voice-worker.xml \
   --tooling-python build/060/coverage/tooling-python.xml \
-  --windows-python build/060/coverage/windows.xml \
-  --javascript build/060/coverage/web-istanbul.json \
-  --android-app build/060/coverage/android-app.xml \
-  --android-core build/060/coverage/android-core.xml \
-  --ios build/060/coverage/apple-ios-xccov.json \
-  --macos build/060/coverage/apple-macos-xccov.json \
-  --watchos build/060/coverage/apple-watchos-xccov.json \
+  --repository-profile deep \
   --coverage-mode strict
 ```
 
@@ -644,9 +669,12 @@ The wrapper collects, normalizes, and parses canonical evidence and digests loca
 `build/060/release-evidence`, canonicalizes and SHA-256-digests every recognized document, assembles
 one deterministic `release_evidence_set` (content-derived UUIDv5 identity) when the directory holds
 only platform reports, and delegates schema plus same-candidate policy validation to
-`scripts/validate_release_evidence.py`. Standard strict mode requires exactly one independently
-named report from backend, voice worker, tooling, Windows, JavaScript, Android app, Android core,
-iOS, macOS, and watchOS. `--coverage-mode partial` exists only for focused programmatic diagnostics;
+`scripts/validate_release_evidence.py`. Under the repository-owner topology, Deep strict mode
+requires exactly three independently named reports: backend, voice worker, and tooling. Projection
+strict mode runs separately in the AstralProjection repository with exactly eight reports:
+Projection Python, Windows, JavaScript, Android app, Android core, iOS, macOS, and watchOS. The
+legacy composed-monorepo profile is an exact eleven-slot compatibility diagnostic, not Deep's
+normative owner lane. `--coverage-mode partial` exists only for focused programmatic diagnostics;
 the Make wrapper pins strict mode after any report-path override, so an empty or incomplete override
 fails closed. Before invoking the changed-code collector, the wrapper binds each report's raw and
 canonical semantic identities, rejects path/inode/content aliases globally, and then requires the
@@ -655,9 +683,10 @@ binding and policy phases. Semantic identity is derived only from the native par
 files plus observed/executable/covered source-line sets, so whitespace, timestamps, generator labels,
 and other irrelevant XML/JSON metadata cannot disguise a copied report. A second target-independent
 native-observation identity closes copies that target path filtering would otherwise make look
-different. Strict mode parses all ten reports even when their evaluator target is unchanged, requires
-a nonempty executable contribution from a file that exists in the exact candidate tree, and enforces
-producer source scopes: non-voice backend; isolated voice worker; `client.js`; separate Android
+different. Strict mode parses every report in the selected exact owner profile even when its
+evaluator target is unchanged, requires a nonempty executable contribution from a file that exists
+in the exact candidate tree, and enforces producer source scopes: non-voice backend; isolated voice
+worker; Projection package/ROTE/web-renderer Python; `client.js`; separate Android
 app/core; iOS App plus AstralCore with Watch rejected; macOS App with no Watch; and watchOS with a required tracked Watch
 witness, allowed AstralCore output, and no App output. The voice worker's
 runtime-renamed `streaming_egress.py`, `voice_transcript.py`, and `watch_ticket.py` observations are
@@ -667,10 +696,19 @@ shims remain backend-producer owned and are excluded from worker ownership becau
 those runtime paths. Every applicable producer must map its own scoped changed files. A changed
 AstralCore file and all of its changed physical lines must map completely through at least one of iOS
 or macOS because a real iOS UI archive can omit Core; Watch archive Core observations do not substitute
-for that group. Every other applicable Apple report must observe every changed physical line, while
-overlapping Python producers must agree on executable changed lines. No producer is required to cover
-a line merely to prove its native contribution—a valid zero-hit macOS archive remains valid input to
-the ordinary threshold decision. The protected collector
+for that group. Every other applicable Apple report must observe every changed physical line. Each
+Cobertura-backed Python producer must observe every candidate-executable changed line in its owned
+files. That candidate-bound witness normalizes recursive `co_lines()` metadata through Python's
+tokenized logical-statement map, ignores nullable line entries, and applies the exact default
+exclusions and docstring rules from locked Coverage 7.15.2. It is checked in both directions against
+all tracked maintained Deep Python sources under Python 3.11 and 3.14; exclusion matches are mapped
+with one incremental linear scan rather than rescanning the candidate prefix per match. Comments, blanks, docstrings,
+declaration continuations, exact `TYPE_CHECKING`/ellipsis-only declarations, and exact no-cover
+clauses are not invented as executable work. Every changed maintained Python path must yield a bounded,
+NUL-free regular-blob witness; missing, non-regular, oversized, or binary sources fail explicitly.
+Overlapping Python producers must also agree on executable changed lines. No producer is required to cover a line merely
+to prove its native contribution—a valid zero-hit macOS archive remains valid input to the ordinary
+threshold decision. The protected collector
 invocation independently pins the same strict mode and complete matrix. Local shape rules cannot prove
 that an iOS- versus macOS-shaped archive came from a particular job; producer origin comes from
 protected, attempt-scoped artifact and job identities rather than self-asserted xccov metadata. It writes
@@ -686,6 +724,13 @@ approve an exception.
 Release publication and protected exception/debt transitions remain environment-approved GitHub
 Actions jobs using the built-in short-lived `GITHUB_TOKEN` with job-scoped permissions. Do not
 create a repository-scoped GitHub App, installation token, publisher App, or custom token broker.
+
+Candidate jobs initialize the pinned component gitlinks recursively and verify the exact local
+composition before consuming component-owned sources. AstralProjection and AstralPlane are private
+sibling repositories, and separately authorized cross-repository read access is not currently
+available to these jobs. Do not add a token to the workflows or activate the readiness variables to
+work around that boundary. Until a lead approves and installs least-privilege source-read access,
+the recursive checkout must fail closed and release readiness remains unavailable.
 
 The readiness matrix is called only by the protected default-branch
 `release-readiness-protected.yml` workflow after both
@@ -850,7 +895,7 @@ The candidate-tree command below is diagnostic only; reproduce it locally with t
 base/candidate and downloaded artifacts:
 
 ```bash
-python3 scripts/check_changed_coverage.py --base-sha "$BASE_SHA" --candidate-sha "$SHA" --backend-python build/060/coverage/backend.xml --voice-worker-python build/065/coverage/voice-worker.xml --tooling-python build/060/coverage/tooling-python.xml --windows-python build/060/coverage/windows.xml --javascript build/060/coverage/web-istanbul.json --android-app build/060/coverage/android-app.xml --android-core build/060/coverage/android-core.xml --ios build/060/coverage/apple-ios-xccov.json --macos build/060/coverage/apple-macos-xccov.json --watchos build/060/coverage/apple-watchos-xccov.json --coverage-mode strict --fail-under 90 --output build/060/coverage/changed-code.json
+python3 scripts/check_changed_coverage.py --base-sha "$BASE_SHA" --candidate-sha "$SHA" --backend-python build/060/coverage/backend.xml --voice-worker-python build/065/coverage/voice-worker.xml --tooling-python build/060/coverage/tooling-python.xml --repository-profile deep --coverage-mode strict --fail-under 90 --output build/060/coverage/changed-code.json
 ```
 
 </details>

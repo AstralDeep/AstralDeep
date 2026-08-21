@@ -83,7 +83,7 @@ async def emit_operation_status(orch: Any, websocket: Any, **projection: Any) ->
 def _handlers():
     global _HANDLERS
     if _HANDLERS is None:
-        from webrender.chrome.surfaces import collect_handlers
+        from orchestrator.projection_surfaces import collect_handlers
         _HANDLERS = collect_handlers()
         try:
             from orchestrator import agentic_creation
@@ -222,7 +222,7 @@ async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str
                                params: dict, notice_html: str = ""):
     """Web path — server-rendered HTML modal (feature 027; behavior unchanged)."""
     from webrender.chrome import chrome_error_block, render_modal_shell
-    from webrender.chrome.surfaces import get_surface
+    from orchestrator.projection_surfaces import get_surface
 
     mod = get_surface(surface_key)
     if mod is None:
@@ -251,7 +251,8 @@ async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str
 async def _render_surface_sdui(orch, websocket, user_id, roles, surface_key: str,
                                params: dict, notice_html: str = ""):
     """Native SDUI path (feature 043) — a ROTE-adapted ChromeSurface frame."""
-    from webrender.chrome.surfaces import _sdui, get_surface
+    from orchestrator.projection_surfaces import get_surface
+    from webrender.chrome.surfaces import _sdui
 
     mod = get_surface(surface_key)
     if mod is None:
@@ -412,7 +413,7 @@ async def handle_chrome_event(orch, websocket, action: str, payload: dict,
         surface_key, fn = entry
         err_surface = surface_key
         # Admin re-check for actions owned by admin-only surfaces (FR-014).
-        from webrender.chrome.surfaces import get_surface
+        from orchestrator.projection_surfaces import get_surface
         owner = get_surface(surface_key)
         if owner is not None and getattr(owner, "ADMIN_ONLY", False) and "admin" not in roles:
             logger.warning("chrome: non-admin %s denied action %s", user_id, action)

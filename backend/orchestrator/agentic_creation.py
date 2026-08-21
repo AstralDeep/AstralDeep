@@ -52,6 +52,23 @@ CAPABILITY GAPS (create_capability / extend_agent):
 """
 
 
+def _draft_store(orch):
+    lifecycle = getattr(orch, "lifecycle_manager", None)
+    store = vars(lifecycle).get("draft_store") if hasattr(lifecycle, "__dict__") else None
+    if store is None:
+        raise RuntimeError("Plane draft persistence is unavailable")
+    return store
+
+
+def _parser_repository(orch):
+    from orchestrator.attachments.parser_repo import AttachmentParserRepository
+    from orchestrator.plane_repository_context import plane_source_from_orchestrator
+
+    return AttachmentParserRepository.from_plane_source(
+        plane_source_from_orchestrator(orch)
+    )
+
+
 def meta_tool_definitions() -> List[Dict[str, Any]]:
     """OpenAI-style tool definitions for the orchestrator meta-tools."""
     return [
@@ -513,8 +530,9 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
     tools_spec = tools_spec[:4]
 
     fingerprint = gap_fingerprint(agent_name, tools_spec)
+    draft_store = _draft_store(orch)
     existing = await run_generation(
-        orch.history.db.find_gap_draft,
+        draft_store.find_gap_draft,
         user_id,
         chat_id or "",
         fingerprint,
@@ -535,15 +553,11 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
         user_id=user_id, agent_name=agent_name, description=description,
         tools_spec=[{"name": t.get("name", ""), "description": t.get("description", "")}
                     for t in tools_spec],
-    )
-    draft_id = draft["id"]
-    await run_generation(
-        orch.history.db.update_draft_agent,
-        draft_id,
         origin="auto_chat",
         source_chat_id=chat_id or "",
         gap_fingerprint=fingerprint,
     )
+    draft_id = draft["id"]
     await _audit(user_id, "lifecycle.gap_detected",
                  f"Capability gap: {agent_name} — auto-creating draft",
                  correlation_id=draft_id, outcome="in_progress", chat_id=chat_id,
@@ -586,13 +600,13 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
 
     self_test["auto_refines"] = refines
     await run_generation(
-        orch.history.db.update_draft_agent,
+        draft_store.update_draft_agent,
         draft_id,
         self_test=json.dumps(self_test),
     )
     # C-N4: a passing draft becomes a future codegen exemplar (flag-gated).
     stored_draft = await run_generation(
-        orch.history.db.get_draft_agent, draft_id
+        draft_store.get_draft_agent, draft_id
     )
     await run_generation(
         _archive_on_success, orch, stored_draft or draft, self_test
@@ -608,7 +622,7 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
                  chat_id=chat_id, inputs_meta={"draft_id": draft_id})
 
     card = creation_card(
-        await run_generation(orch.history.db.get_draft_agent, draft_id) or draft,
+        await run_generation(draft_store.get_draft_agent, draft_id) or draft,
         self_test,
     )
     return MCPResponse(
@@ -690,9 +704,9 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
                                   "retryable": False})
 
     # Ownership gate: only the owner may stage a revision.
-    db = orch.history.db
-    ownership = await run_generation(db.get_agent_ownership, agent_id)
-    user = await run_generation(db.get_user, user_id) or {}
+    draft_store = _draft_store(orch)
+    ownership = await run_generation(draft_store.get_agent_ownership, agent_id)
+    user = await run_generation(draft_store.get_user, user_id) or {}
     owner_email = user.get("email", user_id)
     if not ownership or ownership.get("owner_email") not in (owner_email, user_id):
         return MCPResponse(
@@ -715,7 +729,7 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
 
     fingerprint = gap_fingerprint(agent_id, extra=instruction)
     existing = await run_generation(
-        db.find_gap_draft, user_id, chat_id or "", fingerprint
+        draft_store.find_gap_draft, user_id, chat_id or "", fingerprint
     )
     if existing:
         self_test = json.loads(existing.get("self_test") or "{}")
@@ -729,16 +743,12 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
         user_id=user_id,
         agent_name=f"{live_row['agent_name']} (revision)",
         description=f"Revision of {agent_id}: {instruction}",
-    )
-    rev_id = rev["id"]
-    await run_generation(
-        db.update_draft_agent,
-        rev_id,
         origin="revision",
         source_chat_id=chat_id or "",
         gap_fingerprint=fingerprint,
         revises_agent_id=agent_id,
     )
+    rev_id = rev["id"]
     await _audit(user_id, "lifecycle.gap_detected",
                  f"Revision requested for {agent_id}: {instruction[:120]}",
                  correlation_id=rev_id, outcome="in_progress", chat_id=chat_id,
@@ -780,7 +790,7 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
             "evidence": "", "tested_at": int(time.time() * 1000),
         }
         await run_generation(
-            db.update_draft_agent,
+            draft_store.update_draft_agent,
             rev_id,
             # A security refusal wrote NO file (H4 gates before the write), so
             # the draft is not "generated" — leaving it so would offer Apply and
@@ -795,7 +805,7 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
     except Exception as exc:
         logger.exception("agentic: revision staging failed for %s", agent_id)
         await run_generation(
-            db.update_draft_agent,
+            draft_store.update_draft_agent,
             rev_id,
             status="error",
             error_message=str(exc)[:500],
@@ -831,7 +841,7 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
         )
 
     card = creation_card(
-        await run_generation(db.get_draft_agent, rev_id),
+        await run_generation(draft_store.get_draft_agent, rev_id),
         self_test,
         revision=True,
     )
@@ -852,7 +862,7 @@ async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, A
     Returns {applied: bool, detail: str}.
     """
     lifecycle = orch.lifecycle_manager
-    db = orch.history.db
+    draft_store = _draft_store(orch)
     agent_id = rev.get("revises_agent_id") or ""
     live_row, live_dir = await run_generation(
         _live_agent_dir_and_draft, orch, agent_id
@@ -880,7 +890,7 @@ async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, A
             else "skipped (security gate refused execution)"
         )
         await run_generation(
-            db.update_draft_agent,
+            draft_store.update_draft_agent,
             rev["id"],
             status="rejected",
             error_message=(
@@ -914,18 +924,26 @@ async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, A
         await run_generation(shutil.copy2, live_tools, backup)
         await run_generation(Path(live_tools).write_text, new_code, encoding="utf-8")
         await lifecycle.start_draft_agent(live_row["id"], align_scopes=False)
-        await run_generation(db.update_draft_agent, live_row["id"], status="live")
+        await run_generation(
+            draft_store.update_draft_agent,
+            live_row["id"],
+            status="live",
+        )
     except Exception as exc:
         logger.exception("agentic: revision swap failed for %s — rolling back", agent_id)
         try:
             if await run_generation(os.path.exists, backup):
                 await run_generation(shutil.copy2, backup, live_tools)
             await lifecycle.start_draft_agent(live_row["id"], align_scopes=False)
-            await run_generation(db.update_draft_agent, live_row["id"], status="live")
+            await run_generation(
+                draft_store.update_draft_agent,
+                live_row["id"],
+                status="live",
+            )
         except Exception:
             logger.exception("agentic: rollback restart failed for %s", agent_id)
         await run_generation(
-            db.update_draft_agent,
+            draft_store.update_draft_agent,
             rev["id"],
             status="rejected",
             error_message=str(exc)[:500],
@@ -960,7 +978,11 @@ async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, A
     # reset any owner-safe marker on the live agent — re-approval is required.
     try:
         from orchestrator import agent_trust
-        await agent_trust.reset_on_revision(db, agent_id, actor_user=user_id)
+        await agent_trust.reset_on_revision(
+            draft_store,
+            agent_id,
+            actor_user=user_id,
+        )
     except Exception:
         logger.debug("agentic: safe-marker reset failed for %s", agent_id, exc_info=True)
     await _audit(user_id, "lifecycle.revision_applied",
@@ -978,11 +1000,13 @@ async def _owned_draft(
 ) -> Optional[Dict[str, Any]]:
     draft_id = str(payload.get("draft_id") or "")
     draft = (
-        await run_generation(orch.history.db.get_draft_agent, draft_id)
+        await run_generation(
+            _draft_store(orch).get_owned_draft_agent,
+            user_id,
+            draft_id,
+        )
         if draft_id else None
     )
-    if not draft or draft.get("user_id") != user_id:
-        return None
     return draft
 
 
@@ -993,7 +1017,7 @@ async def _decidable_draft(
     auto-created attachment parser (origin ``auto_attachment``)."""
     draft_id = str(payload.get("draft_id") or "")
     draft = (
-        await run_generation(orch.history.db.get_draft_agent, draft_id)
+        await run_generation(_draft_store(orch).get_draft_agent, draft_id)
         if draft_id else None
     )
     if not draft:
@@ -1045,10 +1069,12 @@ async def _promote_parser_global(orch, draft, agent_id, *, approved_by):
     """
     try:
         from orchestrator import attachment_autoparse
-        from orchestrator.attachments.parser_repo import AttachmentParserRepository
-
-        parser_repo = AttachmentParserRepository(orch.history.db)
-        row = await run_generation(parser_repo.get_by_draft, draft["id"]) or {}
+        parser_repo = _parser_repository(orch)
+        row = await run_generation(
+            parser_repo.get_by_draft,
+            draft["id"],
+            for_administration=True,
+        ) or {}
         gap = row.get("gap_fingerprint")
         extension = row.get("extension")
         requested_by = row.get("requested_by")
@@ -1057,7 +1083,9 @@ async def _promote_parser_global(orch, draft, agent_id, *, approved_by):
         # Make the agent public (global), then mark the registry live.
         try:
             await run_generation(
-                orch.history.db.set_agent_visibility, agent_id, True
+                _draft_store(orch).set_agent_visibility,
+                agent_id,
+                True,
             )
         except Exception:
             logger.debug("autoparse: set_agent_visibility failed", exc_info=True)
@@ -1125,7 +1153,7 @@ async def _h_draft_approve(orch, websocket, user_id, roles, payload):
     """
     draft_id = str(payload.get("draft_id") or "")
     raw_draft = (
-        await run_generation(orch.history.db.get_draft_agent, draft_id)
+        await run_generation(_draft_store(orch).get_draft_agent, draft_id)
         if draft_id else None
     )
     is_autoparse = bool(raw_draft and raw_draft.get("origin") == "auto_attachment")
@@ -1161,7 +1189,7 @@ async def _h_draft_approve(orch, websocket, user_id, roles, payload):
                          correlation_id=draft["id"], outcome="failure")
             try:
                 await run_generation(
-                    orch.history.db.update_draft_agent,
+                    _draft_store(orch).update_draft_agent,
                     draft["id"],
                     status="rejected",
                     error_message=f"Red-team gate: {reasons}"[:500],
@@ -1188,7 +1216,8 @@ async def _h_draft_approve(orch, websocket, user_id, roles, payload):
         # codegen of similar capability gaps. Flag-gated + best-effort.
         try:
             approved_draft = await run_generation(
-                orch.history.db.get_draft_agent, draft["id"]
+                _draft_store(orch).get_draft_agent,
+                draft["id"],
             ) or draft
             approved_self_test = json.loads(approved_draft.get("self_test") or "{}")
             if approved_self_test.get("status") != "passed":
@@ -1249,7 +1278,8 @@ async def _h_draft_refine(orch, websocket, user_id, roles, payload):
             if result.get("status") != "error"
             else f"Refine failed: {result.get('error_message', 'unknown error')}")
     latest = await run_generation(
-        orch.history.db.get_draft_agent, draft["id"]
+        _draft_store(orch).get_draft_agent,
+        draft["id"],
     ) or {}
     self_test = json.loads(latest.get("self_test") or "{}")
     refreshed = creation_card(
@@ -1271,16 +1301,20 @@ async def _h_draft_discard(orch, websocket, user_id, roles, payload):
     # format can be re-attempted by a later upload.
     if draft.get("origin") == "auto_attachment":
         try:
-            from orchestrator.attachments.parser_repo import (
-                AttachmentParserRepository, STATUS_DISCARDED,
+            from orchestrator.attachments.parser_repo import STATUS_DISCARDED
+
+            _pr = _parser_repository(orch)
+            _row = await run_generation(
+                _pr.get_by_draft,
+                draft["id"],
+                owner_user_id=user_id,
             )
-            _pr = AttachmentParserRepository(orch.history.db)
-            _row = await run_generation(_pr.get_by_draft, draft["id"])
             if _row:
                 await run_generation(
                     _pr.mark_status,
                     _row["gap_fingerprint"],
                     STATUS_DISCARDED,
+                    owner_user_id=user_id,
                 )
         except Exception:
             logger.debug("autoparse: discard registry update failed", exc_info=True)

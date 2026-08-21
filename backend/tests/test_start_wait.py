@@ -1,9 +1,9 @@
 """Unit tests for start.py's orchestrator readiness poll (feature 052, FR-029).
 
 ``_wait_for_orchestrator`` must proceed on the first healthy /healthz
-response, stop early when the orchestrator process dies, and give up (but
-never block startup) after the timeout. The module import itself is
-side-effect free beyond dotenv loading, so importing it here is safe.
+response, stop early when the orchestrator process dies, and fail closed
+after the timeout. The module import itself is side-effect free beyond dotenv
+loading, so importing it here is safe.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import start  # noqa: E402
-from orchestrator.agent_constitution import UserAgentPolicyOutcome  # noqa: E402
 
 
 class _Proc:
@@ -111,24 +110,6 @@ def test_main_propagates_orchestrator_exit_78_after_supervisor_cleanup(
     backend_dir = tmp_path / "backend"
     (backend_dir / "agents").mkdir(parents=True)
     monkeypatch.setattr(start, "__file__", str(backend_dir / "start.py"))
-    monkeypatch.setattr(start.time, "sleep", lambda _seconds: None)
-    monkeypatch.delenv("DEFAULT_AGENT_OWNER", raising=False)
-
-    class _Database:
-        closed = False
-
-        def __init__(self):
-            self.user_agent_policy_outcome = UserAgentPolicyOutcome(
-                policy_revision="constitution=0.1.0;analyze=1",
-                marker_changed=False,
-                agents_marked_for_revalidation=0,
-            )
-
-        @classmethod
-        def close(cls):
-            cls.closed = True
-
-    monkeypatch.setattr(start, "Database", _Database)
 
     class _ExitedOrchestrator:
         returncode = 78
@@ -158,22 +139,41 @@ def test_main_propagates_orchestrator_exit_78_after_supervisor_cleanup(
     assert len(supervisor.spawned) == 1
     assert supervisor.spawned[0]["owner"].owner_id == "orchestrator"
     assert supervisor.termination_reason.value == "quit"
-    assert _Database.closed is True
 
 
-def test_policy_report_is_bounded_and_non_sensitive(capsys):
-    class _Database:
-        user_agent_policy_outcome = UserAgentPolicyOutcome(
-            policy_revision="constitution=0.1.0;analyze=1",
-            marker_changed=True,
-            agents_marked_for_revalidation=17,
-        )
+def test_main_times_out_before_spawning_dependent_agents(monkeypatch, tmp_path):
+    backend_dir = tmp_path / "backend"
+    agent_dir = backend_dir / "agents" / "external_agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "external_agent.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(start, "__file__", str(backend_dir / "start.py"))
+    monkeypatch.setattr(start, "_wait_for_orchestrator", lambda *_args, **_kwargs: False)
 
-    start._report_user_agent_policy_outcome(_Database())
+    class _RunningOrchestrator:
+        returncode = None
 
-    output = capsys.readouterr().out
-    assert "constitution=0.1.0;analyze=1" in output
-    assert "marker_changed=true" in output
-    assert "agents_marked_for_revalidation=17" in output
-    assert "owner" not in output
-    assert "agent_id" not in output
+        @staticmethod
+        def poll():
+            return None
+
+    class _Supervisor:
+        def __init__(self):
+            self.spawned = []
+            self.termination_reason = None
+
+        def spawn(self, **kwargs):
+            self.spawned.append(kwargs)
+            return _RunningOrchestrator()
+
+        def terminate_all(self, *, reason):
+            self.termination_reason = reason
+            return ()
+
+    supervisor = _Supervisor()
+    with pytest.raises(SystemExit) as exited:
+        start.main(process_supervisor=supervisor)
+
+    assert exited.value.code == start.EX_UNAVAILABLE
+    assert len(supervisor.spawned) == 1
+    assert supervisor.spawned[0]["owner"].owner_id == "orchestrator"
+    assert supervisor.termination_reason.value == "quit"

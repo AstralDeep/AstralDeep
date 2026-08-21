@@ -18,8 +18,8 @@ import pytest
 from llm_config.api import ListModelsResponse, TestConnectionResponse
 from llm_config.providers import CUSTOM_PROVIDER_KEY, all_presets
 from llm_config.user_store import PersistedLLMConfig
-from webrender.chrome.surfaces import get_surface
-from webrender.chrome.surfaces import llm as llm_surface
+from orchestrator.projection_surfaces import get_surface
+from orchestrator.projection_surfaces import llm as llm_surface
 
 SECRET = "sk-supersecret-test-key-123456789012345"
 

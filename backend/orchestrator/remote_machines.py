@@ -13,7 +13,12 @@ import time
 import uuid
 from typing import Dict, List, Optional
 
+from astralplane.repositories.remote import RemoteMachine
 from orchestrator.credential_manager import CredentialNotConfigured
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    repository_from,
+)
 from orchestrator.remote_transport import MachineTarget
 
 logger = logging.getLogger("RemoteMachines")
@@ -27,43 +32,113 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _remote_context(db) -> PlaneRepositoryContext:
+    repository, runtime = repository_from(
+        "remote",
+        plane_runtime=None,
+        repositories=None,
+        legacy_database=db,
+    )
+    return PlaneRepositoryContext(
+        repository=repository,
+        plane_runtime=runtime,
+        legacy_database=db,
+    )
+
+
+def _tracked_context(db) -> PlaneRepositoryContext:
+    repository, runtime = repository_from(
+        "tracked_jobs",
+        plane_runtime=None,
+        repositories=None,
+        legacy_database=db,
+    )
+    return PlaneRepositoryContext(
+        repository=repository,
+        plane_runtime=runtime,
+        legacy_database=db,
+    )
+
+
+def _machine_dict(machine: RemoteMachine) -> Dict:
+    return {
+        "machine_id": machine.machine_id,
+        "owner_user_id": machine.owner_id,
+        "label": machine.label,
+        "address": machine.address,
+        "port": machine.port,
+        "username": machine.username,
+        "os_family": machine.os_family,
+        "role": machine.role,
+        "host_key_type": machine.host_key_type,
+        "host_key_fingerprint": machine.host_key_fingerprint,
+        "host_key_blob": machine.host_key_blob,
+        "last_verdict": machine.last_verdict,
+        "last_checked_at": machine.last_checked_at,
+        "created_at": machine.created_at,
+        "updated_at": machine.updated_at,
+    }
+
+
 def create_machine(db, owner_user_id: str, label: str, address: str, port: int,
                    username: str, os_family: str, role: str) -> str:
     """Insert a machine into the user's inventory; return its new id."""
     machine_id = uuid.uuid4().hex
     now = _now_ms()
-    db.execute(
-        """INSERT INTO remote_machine
-           (machine_id, owner_user_id, label, address, port, username, os_family, role,
-            created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (machine_id, owner_user_id, label, address, int(port), username, os_family, role, now, now),
+    context = _remote_context(db)
+    context.call(
+        context.repository.create_machine,
+        machine=RemoteMachine(
+            machine_id=machine_id,
+            owner_id=owner_user_id,
+            label=label,
+            address=address,
+            port=int(port),
+            username=username,
+            os_family=os_family,
+            role=role,
+            host_key_type=None,
+            host_key_fingerprint=None,
+            host_key_blob=None,
+            last_verdict=None,
+            last_checked_at=None,
+            created_at=now,
+            updated_at=now,
+        ),
     )
     return machine_id
 
 
 def list_machines(db, owner_user_id: str) -> List[Dict]:
-    return db.fetch_all(
-        """SELECT machine_id, label, address, port, username, os_family, role,
-                  last_verdict, last_checked_at
-           FROM remote_machine WHERE owner_user_id = ? ORDER BY label""",
-        (owner_user_id,),
+    context = _remote_context(db)
+    records = context.call(
+        context.repository.list_machines,
+        owner_id=owner_user_id,
+        limit=1000,
     )
+    return [_machine_dict(machine) for machine in records]
 
 
 def owns_any_machine(db, owner_user_id: str) -> bool:
     """Existence-only check for tool visibility; no machine data leaves."""
-    return db.fetch_one(
-        "SELECT 1 FROM remote_machine WHERE owner_user_id = ? LIMIT 1",
-        (owner_user_id,),
-    ) is not None
+    context = _remote_context(db)
+    return bool(
+        context.call(
+            context.repository.list_machines,
+            owner_id=owner_user_id,
+            limit=1,
+        )
+    )
 
 
 def get_machine(db, owner_user_id: str, machine_id: str) -> Optional[Dict]:
-    return db.fetch_one(
-        "SELECT * FROM remote_machine WHERE machine_id = ? AND owner_user_id = ?",
-        (machine_id, owner_user_id),
+    context = _remote_context(db)
+    record = context.call(
+        context.repository.get_machine,
+        owner_id=owner_user_id,
+        machine_id=machine_id,
     )
+    return None if record is None else _machine_dict(record)
 
 
 def resolve_machine(db, owner_user_id: str, ref: str) -> Optional[Dict]:
@@ -72,24 +147,24 @@ def resolve_machine(db, owner_user_id: str, ref: str) -> Optional[Dict]:
     just the opaque machine_id. Owner-scoped throughout (FR-018)."""
     if not ref:
         return None
-    row = get_machine(db, owner_user_id, ref)
-    if row is not None:
-        return row
-    return db.fetch_one(
-        "SELECT * FROM remote_machine WHERE owner_user_id = ? "
-        "AND (lower(label) = lower(?) OR lower(address) = lower(?)) ORDER BY label LIMIT 1",
-        (owner_user_id, ref, ref),
+    context = _remote_context(db)
+    record = context.call(
+        context.repository.resolve_machine,
+        owner_id=owner_user_id,
+        reference=ref,
     )
+    return None if record is None else _machine_dict(record)
 
 
 def delete_machine(db, owner_user_id: str, machine_id: str) -> bool:
     """Delete an owned machine (credential cascades via the FK). Returns False if
     the machine is not in the caller's inventory."""
-    if get_machine(db, owner_user_id, machine_id) is None:
-        return False
-    db.execute("DELETE FROM remote_machine WHERE machine_id = ? AND owner_user_id = ?",
-               (machine_id, owner_user_id))
-    return True
+    context = _remote_context(db)
+    return context.call(
+        context.repository.delete_machine,
+        owner_id=owner_user_id,
+        machine_id=machine_id,
+    )
 
 
 def purge_user_remote_compute(db, owner_user_id: str, credential_manager=None) -> Dict[str, int]:
@@ -103,13 +178,11 @@ def purge_user_remote_compute(db, owner_user_id: str, credential_manager=None) -
         credential_manager = CredentialManager(db=db)
     credentials = credential_manager.remove_machine_credentials_for_user(owner_user_id)
 
-    def _count(cur) -> int:
-        return max(0, getattr(cur, "rowcount", 0) or 0)  # psycopg2 -1 == unknown
-
-    machines = _count(db.execute(
-        "DELETE FROM remote_machine WHERE owner_user_id = ?", (owner_user_id,)))
-    jobs = _count(db.execute(
-        "DELETE FROM tracked_job WHERE owner_user_id = ?", (owner_user_id,)))
+    remote = _remote_context(db)
+    tracked = _tracked_context(db)
+    with remote.transaction() as transaction:
+        jobs = tracked.repository.delete_owner(transaction, owner_id=owner_user_id)
+        machines = remote.repository.delete_owner(transaction, owner_id=owner_user_id)
     return {"credentials": credentials, "machines": machines, "jobs": jobs}
 
 
@@ -181,29 +254,45 @@ def record_probe(db, owner_user_id: str, machine_id: str, verdict: str,
         machine_id=machine_id, label=row["label"], verdict=verdict,
         outcome="success" if verdict in _CONNECTED_VERDICTS else "failure",
     )
-    if host_key and not row.get("host_key_fingerprint"):
-        db.execute(
-            """UPDATE remote_machine SET last_verdict = ?, last_checked_at = ?,
-               host_key_type = ?, host_key_fingerprint = ?, host_key_blob = ?, updated_at = ?
-               WHERE machine_id = ? AND owner_user_id = ?""",
-            (verdict, now, host_key.get("type"), host_key.get("fingerprint"),
-             host_key.get("blob_b64"), now, machine_id, owner_user_id),
+    context = _remote_context(db)
+    context.call(
+        context.repository.record_probe,
+        owner_id=owner_user_id,
+        machine_id=machine_id,
+        expected_updated_at=int(row["updated_at"]),
+        verdict=verdict,
+        checked_at=max(now, int(row["updated_at"]) + 1),
+        host_key_type=(
+            host_key.get("type")
+            if host_key and not row.get("host_key_fingerprint")
+            else None
+        ),
+        host_key_fingerprint=(
+            host_key.get("fingerprint")
+            if host_key and not row.get("host_key_fingerprint")
+            else None
+        ),
+        host_key_blob=(
+            host_key.get("blob_b64")
+            if host_key and not row.get("host_key_fingerprint")
+            else None
         )
-    else:
-        db.execute(
-            "UPDATE remote_machine SET last_verdict = ?, last_checked_at = ?, updated_at = ? "
-            "WHERE machine_id = ? AND owner_user_id = ?",
-            (verdict, now, now, machine_id, owner_user_id),
-        )
+    )
 
 
 def retrust_host_key(db, owner_user_id: str, machine_id: str) -> None:
     """Deliberately clear the recorded host key so the next probe re-records it —
     the ONLY path that accepts a changed host identity (FR-020)."""
-    db.execute(
-        "UPDATE remote_machine SET host_key_type = NULL, host_key_fingerprint = NULL, "
-        "host_key_blob = NULL, updated_at = ? WHERE machine_id = ? AND owner_user_id = ?",
-        (_now_ms(), machine_id, owner_user_id),
+    row = get_machine(db, owner_user_id, machine_id)
+    if row is None:
+        return
+    context = _remote_context(db)
+    context.call(
+        context.repository.clear_host_trust,
+        owner_id=owner_user_id,
+        machine_id=machine_id,
+        expected_updated_at=int(row["updated_at"]),
+        updated_at=max(_now_ms(), int(row["updated_at"]) + 1),
     )
 
 
@@ -218,7 +307,10 @@ def build_target(db, credmgr, owner_user_id: str, machine_id: str) -> MachineTar
     row = get_machine(db, owner_user_id, machine_id)
     if row is None:
         raise MachineNotFound(machine_id)
-    cred = credmgr.get_machine_credential(machine_id)  # may raise CredentialUndecryptable
+    cred = credmgr.get_machine_credential(
+        machine_id,
+        owner_user_id,
+    )  # may raise CredentialUndecryptable
     if cred is None:
         raise CredentialNotConfigured(machine_id)
     return MachineTarget(

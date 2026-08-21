@@ -17,7 +17,7 @@ import pytest
 
 from personalization import phi_gate as pg
 from shared.feature_flags import flags
-from webrender.chrome.surfaces import personalization as surf
+from orchestrator.projection_surfaces import personalization as surf
 
 
 # ---------------------------------------------------------------------------
@@ -283,13 +283,15 @@ def _job(job_id, status, name="Daily digest"):
 
 def make_orch(jobs=None, runs=None):
     repo = FakeRepo()
+    schedule_db = FakeDB(jobs=jobs, runs=runs)
     runner = SimpleNamespace(
         assess_job=lambda _job: SimpleNamespace(eligible=True, code=None)
     )
     return SimpleNamespace(
         personalization_service=SimpleNamespace(repo=repo),
         tool_permissions=FakeToolPermissions(),
-        history=SimpleNamespace(db=FakeDB(jobs=jobs, runs=runs)),
+        history=SimpleNamespace(db=schedule_db),
+        scheduled_job_store=FakeScheduleActionStore(schedule_db),
         work_admission=object(),
         _scheduler_loop=SimpleNamespace(runner=runner),
         ui_sessions={},

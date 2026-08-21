@@ -32,24 +32,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from orchestrator.workspace import WorkspaceManager  # noqa: E402
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
-)
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 class _FakeWS:
@@ -66,13 +49,22 @@ class _FakeWS:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def plane_runtime():
+    with isolated_plane_runtime("snapshot_turn") as runtime:
+        yield runtime
+
+
 @pytest.fixture
-def chat_env(tmp_path):
+def chat_env(plane_runtime):
     """Real HistoryManager + a unique user/chat pair; chat deleted on teardown
     (FK CASCADE clears messages, saved_components and workspace_snapshot)."""
     from orchestrator.history import HistoryManager
 
-    history = HistoryManager(data_dir=str(tmp_path))
+    history = HistoryManager(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
     user_id = f"pytest-snapturn-{uuid.uuid4().hex[:12]}"
     chat_id = history.create_chat(user_id=user_id)
     yield history, user_id, chat_id
@@ -152,11 +144,13 @@ def _run(coro):
     return asyncio.run(_wrapper())
 
 
-def _snapshot_rows(history, chat_id):
-    return history.db.fetch_all(
-        "SELECT * FROM workspace_snapshot WHERE chat_id = ? ORDER BY id",
-        (chat_id,),
-    )
+def _snapshot_rows(history, chat_id, user_id):
+    workspace = WorkspaceManager(history)
+    summaries = workspace.list_snapshots(chat_id, user_id, limit=200)
+    return [
+        workspace.get_snapshot(summary["id"], user_id)
+        for summary in sorted(summaries, key=lambda value: value["id"])
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +203,7 @@ def test_send_or_replace_returns_ops_and_persists_rows(chat_env, audit_events):
     assert sorted(e["component_id"] for e in added) == sorted(cids)
 
     # No snapshot yet — the turn sites write it AFTER this call returns.
-    assert _snapshot_rows(history, chat_id) == []
+    assert _snapshot_rows(history, chat_id, user_id) == []
 
 
 def test_empty_components_return_no_ops_so_turn_guard_skips_snapshot(chat_env, audit_events):
@@ -229,7 +223,7 @@ def test_empty_components_return_no_ops_so_turn_guard_skips_snapshot(chat_env, a
     assert fake._renders, "no-chat path must fall back to a transient ui_render"
 
     assert fake.workspace.live_rows(chat_id, user_id) == []
-    assert _snapshot_rows(history, chat_id) == []
+    assert _snapshot_rows(history, chat_id, user_id) == []
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +254,7 @@ def test_turn_snapshot_written_with_real_turn_message_id(chat_env, audit_events)
     sid = fake.workspace.snapshot(chat_id, user_id, cause="turn", turn_message_id=mid)
     assert isinstance(sid, int)
 
-    rows = _snapshot_rows(history, chat_id)
+    rows = _snapshot_rows(history, chat_id, user_id)
     assert len(rows) == 1
     snap = rows[0]
     assert snap["id"] == sid
@@ -269,7 +263,7 @@ def test_turn_snapshot_written_with_real_turn_message_id(chat_env, audit_events)
     assert snap["created_at"] > 0
 
     # Full-state capture: the JSON payload IS the live workspace, ids included.
-    assert json.loads(snap["components"]) == fake.workspace.live_components(chat_id, user_id)
+    assert snap["components"] == fake.workspace.live_components(chat_id, user_id)
 
 
 def test_one_snapshot_per_turn_batches_all_ops(chat_env, audit_events):
@@ -293,9 +287,9 @@ def test_one_snapshot_per_turn_batches_all_ops(chat_env, audit_events):
     # ONE turn boundary -> ONE snapshot call.
     fake.workspace.snapshot(chat_id, user_id, cause="turn", turn_message_id=mid)
 
-    rows = _snapshot_rows(history, chat_id)
+    rows = _snapshot_rows(history, chat_id, user_id)
     assert len(rows) == 1, "one turn must leave exactly one new snapshot row"
-    snapped_ids = {c["component_id"] for c in json.loads(rows[0]["components"])}
+    snapped_ids = {c["component_id"] for c in rows[0]["components"]}
     assert snapped_ids == {ops1[0]["component_id"], ops2[0]["component_id"]}
 
 
@@ -313,14 +307,12 @@ def test_chat_delete_cascades_turn_snapshots(chat_env):
     history.add_message(chat_id, "assistant", "done", user_id=user_id)
     mid = history.get_latest_message_id(chat_id, user_id=user_id)
     workspace.snapshot(chat_id, user_id, cause="turn", turn_message_id=mid)
-    assert len(_snapshot_rows(history, chat_id)) == 1
+    assert len(_snapshot_rows(history, chat_id, user_id)) == 1
 
     history.delete_chat(chat_id, user_id=user_id)
 
-    assert _snapshot_rows(history, chat_id) == []
-    comp_count = history.db.fetch_one(
-        "SELECT COUNT(*) as count FROM saved_components WHERE chat_id = ?", (chat_id,))
-    assert comp_count["count"] == 0
+    assert _snapshot_rows(history, chat_id, user_id) == []
+    assert workspace.live_rows(chat_id, user_id) == []
 
 
 def test_message_delete_cascades_only_that_turns_snapshot(chat_env):
@@ -337,11 +329,12 @@ def test_message_delete_cascades_only_that_turns_snapshot(chat_env):
     mid = history.get_latest_message_id(chat_id, user_id=user_id)
     sid_turn = workspace.snapshot(chat_id, user_id, cause="turn", turn_message_id=mid)
     sid_action = workspace.snapshot(chat_id, user_id, cause="component_action")
-    assert len(_snapshot_rows(history, chat_id)) == 2
+    assert len(_snapshot_rows(history, chat_id, user_id)) == 2
 
-    history.db.execute("DELETE FROM messages WHERE id = ?", (mid,))
+    with history.plane_runtime.transaction() as transaction:
+        transaction.execute("DELETE FROM messages WHERE id = %s", (mid,))
 
-    remaining = _snapshot_rows(history, chat_id)
+    remaining = _snapshot_rows(history, chat_id, user_id)
     assert [r["id"] for r in remaining] == [sid_action], (
         "deleting the turn's message must cascade-delete exactly the snapshot "
         f"FK'd to it (expected only {sid_action} to survive, "

@@ -7,9 +7,12 @@ import json
 from pathlib import Path
 import uuid
 
+import astralprojection
+from astralplane import GENERATED_AGENT_BUNDLE_CONTRACT, FinalizedBundle
 import pytest
 
 from orchestrator.agent_generator import (
+    BYO_LEGACY_RUNTIME_DISPOSITIONS,
     BYO_RUNTIME_CONTRACT_VERSION,
     BYO_RUNTIME_LOCK_ARTIFACT,
     BYO_RUNTIME_LOCK_SHA256,
@@ -18,7 +21,10 @@ from orchestrator.agent_generator import (
 from orchestrator.user_agents import RuntimeCompatibilityPolicy
 
 
-_ROOT = Path(__file__).resolve().parents[2]
+_PROJECTION_ROOT = Path(astralprojection.__file__).resolve().parents[2]
+_PROJECTION_LOCK = _PROJECTION_ROOT / Path(BYO_RUNTIME_LOCK_ARTIFACT).relative_to(
+    Path("components") / "AstralProjection"
+)
 _FIXTURE = json.loads(
     (
         Path(__file__).parent
@@ -30,23 +36,23 @@ _FIXTURE = json.loads(
 
 
 @pytest.mark.skipif(
-    not (_ROOT / "windows-client").is_dir(),  # repo root absent inside the product image
-    reason="repo-root tooling files are not part of the product image",
+    not _PROJECTION_LOCK.is_file(),
+    reason="active Projection runtime lock is not part of the product image",
 )
 def test_final_release_lock_is_the_only_backend_runtime_identity() -> None:
     assert _FIXTURE["runtime_contract_version"] == BYO_RUNTIME_CONTRACT_VERSION
     assert _FIXTURE["lock_artifact"] == BYO_RUNTIME_LOCK_ARTIFACT
     assert _FIXTURE["lock_digest"] == BYO_RUNTIME_LOCK_SHA256
-    artifact = _ROOT / BYO_RUNTIME_LOCK_ARTIFACT
-    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == (
+    assert hashlib.sha256(_PROJECTION_LOCK.read_bytes()).hexdigest() == (
         BYO_RUNTIME_LOCK_SHA256
     )
     policy = RuntimeCompatibilityPolicy(
         runtime_contract_version=BYO_RUNTIME_CONTRACT_VERSION,
         runtime_lock_sha256=BYO_RUNTIME_LOCK_SHA256,
     )
-    assert policy.runtime_contract_version == 2
+    assert policy.runtime_contract_version == 3
     assert policy.runtime_lock_sha256 == BYO_RUNTIME_LOCK_SHA256
+    assert BYO_LEGACY_RUNTIME_DISPOSITIONS == {2: "dispatch_mediated_only"}
 
 
 def test_neutral_complete_bundle_digest_vector_matches_generator() -> None:
@@ -76,8 +82,10 @@ def test_finalized_delivery_metadata_cannot_drift_from_selected_release_lock() -
         constitution_version="0.1.0",
         required_runtime_lock_sha256=BYO_RUNTIME_LOCK_SHA256,
     )
+    assert isinstance(finalized, FinalizedBundle)
+    assert finalized.contract is GENERATED_AGENT_BUNDLE_CONTRACT
     assert finalized.bundle_sha256 == vector["bundle_sha256"]
-    assert finalized.manifest["runtime_contract_version"] == 2
+    assert finalized.manifest["runtime_contract_version"] == 3
     assert finalized.manifest["required_runtime_lock_sha256"] == (
         BYO_RUNTIME_LOCK_SHA256
     )

@@ -104,6 +104,7 @@ async def test_batch_transcription_retries_one_transient_5xx() -> None:
         (b"\0", "invalid_pcm"),
         (b"\0\0" * (16_000 * 60 + 1), "audio_too_long"),
     ),
+    ids=("empty", "odd-byte", "too-long"),
 )
 async def test_invalid_audio_never_reaches_upstream(pcm: bytes, reason: str) -> None:
     transport = FakeTransport(HttpResponse(status=200, headers={}, body=b'{"text":"x"}'))

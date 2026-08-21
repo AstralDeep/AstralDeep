@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from agents.general.file_tools.read_document import read_document
 from conftest import (
     _persist, make_docx, make_odt, make_pdf_blank, make_pdf_with_text, make_rtf,
 )
+
+
+def test_pdf_rasterizer_passes_bytes_to_pdf2image(monkeypatch):
+    from agents.general.file_tools import ocr
+    import pdf2image
+
+    page = object()
+    convert = MagicMock(return_value=[page])
+    monkeypatch.setattr(pdf2image, "convert_from_bytes", convert)
+
+    assert ocr.rasterize_pdf(b"%PDF-test", dpi=144, max_pages=3) == [page]
+    convert.assert_called_once_with(b"%PDF-test", dpi=144, last_page=3)
 
 
 def test_read_pdf_with_embedded_text(repo, upload_root):

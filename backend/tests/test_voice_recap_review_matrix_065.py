@@ -17,7 +17,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EVALUATOR_PATH = REPO_ROOT / "tooling/evaluate_voice_recap_matrix_065.py"
 FIXTURE_PATH = (
-    REPO_ROOT / "backend/tests/fixtures/voice_065/recap_review_matrix.json"
+    REPO_ROOT
+    / "components/AstralProjection/contracts/fixtures/voice_065/recap_review_matrix.json"
 )
 
 

@@ -10,15 +10,12 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import os
 import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Iterator
 
-import psycopg2
 import pytest
-from psycopg2 import sql
 
 from orchestrator.history import (
     ConversationCommitConflict,
@@ -38,12 +35,12 @@ from orchestrator.work_admission import (
     OperationRequest,
     OperationState,
     OwnerScope,
-    PostgresWorkAdmissionRepository,
     StaleExecutionFenceError,
     WorkAdmissionCoordinator,
 )
 from rote.capabilities import DeviceProfile
-from shared.database import Database, _build_database_url
+from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
+from tests.test_work_admission_repository import _plane_repository
 
 
 OWNER = "conversation-owner-060"
@@ -52,76 +49,36 @@ OTHER_CHAT_ID = "22222222-2222-4222-8222-222222222222"
 
 
 @pytest.fixture(scope="module")
-def postgres_database() -> Iterator[Database]:
-    params = psycopg2.extensions.parse_dsn(_build_database_url())
-    name = f"astraldeep_conversation_{uuid.uuid4().hex}"
-    try:
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    dsn = psycopg2.extensions.make_dsn(**database_params)
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(dsn)
-    finally:
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name))
-                )
-            admin.close()
-        except Exception:
-            pass
+def postgres_database() -> Iterator[PlaneTestRuntime]:
+    with isolated_plane_runtime("conversation_snapshot") as runtime:
+        yield runtime
 
 
 @pytest.fixture
-def database(postgres_database: Database) -> Database:
-    connection = postgres_database._get_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM message_attachment")
-            cursor.execute("DELETE FROM user_attachments")
-            cursor.execute("DELETE FROM workspace_layout")
-            cursor.execute("DELETE FROM saved_components")
-            cursor.execute("DELETE FROM messages")
-            cursor.execute("UPDATE chats SET conversation_commit_id = NULL")
-            cursor.execute("DELETE FROM conversation_commit")
-            cursor.execute("DELETE FROM chats")
-            cursor.execute("DELETE FROM operation_submission_result")
-            cursor.execute(
-                "UPDATE operation_admission_slot SET operation_id = NULL, "
-                "lease_token = NULL, lease_expires_at = NULL"
-            )
-            cursor.execute("DELETE FROM operation_record")
-        connection.commit()
-    except BaseException:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+def database(postgres_database: PlaneTestRuntime) -> PlaneTestRuntime:
+    with postgres_database.transaction() as transaction:
+        transaction.execute("DELETE FROM message_attachment")
+        transaction.execute("DELETE FROM user_attachments")
+        transaction.execute("DELETE FROM workspace_layout")
+        transaction.execute("DELETE FROM saved_components")
+        transaction.execute("DELETE FROM messages")
+        transaction.execute("UPDATE chats SET conversation_commit_id = NULL")
+        transaction.execute("DELETE FROM conversation_commit")
+        transaction.execute("DELETE FROM chats")
+        transaction.execute("DELETE FROM operation_submission_result")
+        transaction.execute(
+            "UPDATE operation_admission_slot SET operation_id = NULL, "
+            "lease_token = NULL, lease_expires_at = NULL"
+        )
+        transaction.execute("DELETE FROM operation_record")
     return postgres_database
 
 
-def _create_chat(database: Database, chat_id: str = CHAT_ID, owner: str = OWNER) -> None:
+def _create_chat(
+    database: PlaneTestRuntime,
+    chat_id: str = CHAT_ID,
+    owner: str = OWNER,
+) -> None:
     database.execute(
         "INSERT INTO chats (id, user_id, title, created_at, updated_at) "
         "VALUES (?, ?, 'Conversation 060', ?, ?)",
@@ -129,8 +86,15 @@ def _create_chat(database: Database, chat_id: str = CHAT_ID, owner: str = OWNER)
     )
 
 
-def _repository(database: Database, coordinator=None) -> ConversationCommitRepository:
-    return ConversationCommitRepository(database, operation_coordinator=coordinator)
+def _repository(
+    database: PlaneTestRuntime,
+    coordinator=None,
+) -> ConversationCommitRepository:
+    return ConversationCommitRepository(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+        operation_coordinator=coordinator,
+    )
 
 
 def _snapshot(repository: ConversationCommitRepository, **overrides):
@@ -145,7 +109,7 @@ def _snapshot(repository: ConversationCommitRepository, **overrides):
     return repository.build_snapshot(**values)
 
 
-def _coordinator(database: Database) -> WorkAdmissionCoordinator:
+def _coordinator(database: PlaneTestRuntime) -> WorkAdmissionCoordinator:
     return WorkAdmissionCoordinator(
         admission_classes=(
             AdmissionClassConfig(
@@ -165,8 +129,18 @@ def _coordinator(database: Database) -> WorkAdmissionCoordinator:
                 config_revision="conversation-060",
             ),
         ),
-        repository=PostgresWorkAdmissionRepository(database),
+        repository=_plane_repository(database),
         operation_retention=timedelta(hours=24),
+    )
+
+
+def _workspace_manager(history, database: PlaneTestRuntime) -> WorkspaceManager:
+    """Bind workspace tests to one typed Plane catalog over the isolated DB."""
+
+    return WorkspaceManager(
+        history,
+        plane_runtime=database,
+        plane_repositories=database.repositories,
     )
 
 
@@ -197,7 +171,9 @@ def _claim(
     return owner, claim
 
 
-def test_legacy_revision_zero_is_coherent_visible_and_owner_scoped(database: Database) -> None:
+def test_legacy_revision_zero_is_coherent_visible_and_owner_scoped(
+    database: PlaneTestRuntime,
+) -> None:
     _create_chat(database)
     _create_chat(database, OTHER_CHAT_ID, "other-owner")
     database.execute(
@@ -260,9 +236,17 @@ def test_legacy_revision_zero_is_coherent_visible_and_owner_scoped(database: Dat
     database.execute(
         "INSERT INTO user_attachments "
         "(attachment_id, user_id, filename, content_type, category, extension, "
-        "size_bytes, sha256, storage_path, created_at, deleted_at) "
-        "VALUES (?, ?, 'evidence.txt', 'text/plain', 'document', '.txt', 4, ?, ?, ?, NULL)",
-        (attachment_id, OWNER, "cd" * 32, "/synthetic/evidence.txt", 1_752_664_800_500),
+        "size_bytes, sha256, storage_path, created_at, deleted_at, "
+        "materialization_state) "
+        "VALUES (?, ?, 'evidence.txt', 'text/plain', 'document', '.txt', 4, ?, ?, ?, "
+        "NULL, 'ready')",
+        (
+            attachment_id,
+            OWNER,
+            "cd" * 32,
+            f"{OWNER}/{attachment_id}/evidence.txt",
+            1_752_664_800_500,
+        ),
     )
     first_id = database.fetch_one(
         "SELECT id FROM messages WHERE chat_id = ? ORDER BY id LIMIT 1", (CHAT_ID,)
@@ -331,7 +315,7 @@ def test_legacy_revision_zero_is_coherent_visible_and_owner_scoped(database: Dat
 
 @pytest.mark.parametrize("boundary", ["after_messages", "after_canvas", "before_publish"])
 def test_fault_at_each_publication_boundary_exposes_only_prior_commit(
-    database: Database, boundary: str
+    database: PlaneTestRuntime, boundary: str
 ) -> None:
     _create_chat(database)
     repository = _repository(database)
@@ -367,7 +351,9 @@ def test_fault_at_each_publication_boundary_exposes_only_prior_commit(
     assert row["state"] == "staged"
 
 
-def test_atomic_publish_advances_once_and_explicit_empty_canvas_clears(database: Database) -> None:
+def test_atomic_publish_advances_once_and_explicit_empty_canvas_clears(
+    database: PlaneTestRuntime,
+) -> None:
     _create_chat(database)
     repository = _repository(database)
     first = repository.stage_commit(
@@ -434,7 +420,9 @@ def test_atomic_publish_advances_once_and_explicit_empty_canvas_clears(database:
         _snapshot(repository, snapshot_purpose="commit")
 
 
-def test_stale_base_and_stale_operation_fence_cannot_publish(database: Database) -> None:
+def test_stale_base_and_stale_operation_fence_cannot_publish(
+    database: PlaneTestRuntime,
+) -> None:
     _create_chat(database)
     coordinator = _coordinator(database)
     owner, claim = _claim(coordinator)
@@ -480,7 +468,9 @@ def test_stale_base_and_stale_operation_fence_cannot_publish(database: Database)
         )
 
 
-def test_fenced_stage_cannot_publish_through_unfenced_api(database: Database) -> None:
+def test_fenced_stage_cannot_publish_through_unfenced_api(
+    database: PlaneTestRuntime,
+) -> None:
     _create_chat(database)
     coordinator = _coordinator(database)
     owner, claim = _claim(coordinator)
@@ -509,7 +499,9 @@ def test_fenced_stage_cannot_publish_through_unfenced_api(database: Database) ->
     assert projection.state is OperationState.RUNNING
 
 
-def test_stage_rejects_wrong_operation_request_generation(database: Database) -> None:
+def test_stage_rejects_wrong_operation_request_generation(
+    database: PlaneTestRuntime,
+) -> None:
     _create_chat(database)
     coordinator = _coordinator(database)
     owner, claim = _claim(coordinator)
@@ -530,7 +522,9 @@ def test_stage_rejects_wrong_operation_request_generation(database: Database) ->
     )["count"] == 0
 
 
-def test_nonzero_revision_requires_a_complete_current_commit_anchor(database: Database) -> None:
+def test_nonzero_revision_requires_a_complete_current_commit_anchor(
+    database: PlaneTestRuntime,
+) -> None:
     _create_chat(database)
     database.execute(
         "UPDATE chats SET render_revision = 1, snapshot_committed_at = now() "
@@ -542,7 +536,9 @@ def test_nonzero_revision_requires_a_complete_current_commit_anchor(database: Da
         _snapshot(_repository(database))
 
 
-def test_web_presentation_is_exact_post_adaptation_and_never_semantic(database: Database) -> None:
+def test_web_presentation_is_exact_post_adaptation_and_never_semantic(
+    database: PlaneTestRuntime,
+) -> None:
     _create_chat(database)
     repository = _repository(database)
     commit = repository.stage_commit(
@@ -589,7 +585,9 @@ def test_web_presentation_is_exact_post_adaptation_and_never_semantic(database: 
     assert native == original
 
 
-def test_new_literal_strings_round_trip_as_text_not_json(database: Database) -> None:
+def test_new_literal_strings_round_trip_as_text_not_json(
+    database: PlaneTestRuntime,
+) -> None:
     _create_chat(database)
     repository = _repository(database)
     commit = repository.stage_commit(
@@ -616,7 +614,7 @@ def test_new_literal_strings_round_trip_as_text_not_json(database: Database) -> 
 
 
 def test_structured_type_field_is_not_misclassified_and_blank_text_recovers(
-    database: Database,
+    database: PlaneTestRuntime,
 ) -> None:
     _create_chat(database)
     database.execute(
@@ -648,7 +646,7 @@ def test_structured_type_field_is_not_misclassified_and_blank_text_recovers(
     ]
 
 
-def test_nonfinite_saved_json_recovers_visibly(database: Database) -> None:
+def test_nonfinite_saved_json_recovers_visibly(database: PlaneTestRuntime) -> None:
     _create_chat(database)
     database.execute(
         "INSERT INTO messages (chat_id, user_id, role, content, timestamp) "
@@ -699,7 +697,9 @@ def test_transient_scope_is_exact_sequenced_and_never_relabels_snapshots() -> No
     assert orchestrator._conversation_scopes[id(socket)]["frame_sequence"] == 2
 
 
-def test_client_authored_presentation_is_rejected_before_durable_write(database: Database) -> None:
+def test_client_authored_presentation_is_rejected_before_durable_write(
+    database: PlaneTestRuntime,
+) -> None:
     _create_chat(database)
     repository = _repository(database)
     commit = repository.stage_commit(
@@ -750,7 +750,7 @@ def test_client_authored_presentation_is_rejected_before_durable_write(database:
 
 @pytest.mark.asyncio
 async def test_production_turn_seam_emits_one_complete_post_rote_commit_snapshot(
-    database: Database,
+    database: PlaneTestRuntime,
 ) -> None:
     await asyncio.to_thread(_create_chat, database)
     coordinator = await asyncio.to_thread(_coordinator, database)
@@ -774,11 +774,13 @@ async def test_production_turn_seam_emits_one_complete_post_rote_commit_snapshot
 
     socket = Socket()
     other_user_socket = Socket()
-    history = object.__new__(HistoryManager)
-    history.db = database
+    history = HistoryManager(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
     orchestrator = object.__new__(Orchestrator)
     orchestrator.history = history
-    orchestrator.workspace = WorkspaceManager(history)
+    orchestrator.workspace = _workspace_manager(history, database)
     orchestrator.work_admission = coordinator
     orchestrator.conversation_commits = _repository(database, coordinator)
     orchestrator.rote = Rote()
@@ -916,7 +918,7 @@ async def test_commit_history_refresh_is_fail_soft() -> None:
 
 
 def test_revisioned_chats_reject_every_legacy_message_and_canvas_write(
-    database: Database,
+    database: PlaneTestRuntime,
 ) -> None:
     """Once revision 1 exists, no unversioned row can escape beside it."""
 
@@ -936,9 +938,11 @@ def test_revisioned_chats_reject_every_legacy_message_and_canvas_write(
         ],
     )
 
-    history = object.__new__(HistoryManager)
-    history.db = database
-    workspace = WorkspaceManager(history)
+    history = HistoryManager(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
+    workspace = _workspace_manager(history, database)
     current = workspace.get_by_component_id(CHAT_ID, OWNER, "stable")
     assert current is not None
 

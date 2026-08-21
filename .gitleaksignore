@@ -10,3 +10,10 @@ b7d66e7621cfd4aa1af84d8e97293e1b4fba18f4:frontend/src/__tests__/llm_config_hook.
 05c9d0db36dd7422a507b620aba27798cb08b0b8:docs/keycloak_agent_delegation_setup.md:generic-api-key:243
 84507067550473aec89953531bcac7d8c3c7f60f:docs/keycloak_agent_delegation_setup.md:generic-api-key:171
 84507067550473aec89953531bcac7d8c3c7f60f:docs/keycloak_agent_delegation_setup.md:generic-api-key:243
+7bc9d1f683c535863b5426ab3053db3bdefc6a1a:config/astral-composition.json:generic-api-key:56
+839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_startup_gate.py:generic-api-key:121
+839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_startup_gate.py:generic-api-key:133
+839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_startup_gate.py:generic-api-key:201
+839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_inbound_auth.py:generic-api-key:124
+839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_inbound_auth.py:generic-api-key:267
+40cc17aba0c6bd4d7ca3e22b76829b7b657e5b90:windows-client/tests/test_remote_machines_surface.py:private-key:42

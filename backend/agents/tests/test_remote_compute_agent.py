@@ -1,12 +1,12 @@
 """Unit tests for the unified remote-compute agent class (feature 063).
 
-Covers ``agents.remote_compute`` end to end WITHOUT a real Database, SSH socket or
-event-loop-bound orchestrator: construction + dependency wiring into BOTH verb
+Covers ``agents.remote_compute`` end to end without a real Plane runtime, SSH socket,
+or event-loop-bound orchestrator: construction + dependency wiring into both verb
 libraries, the unioned 18-verb registry, the agent card the orchestrator registers,
 and ``MCPServer``/``handle_mcp_request`` routing into each risk tier.
 
-Hermetic by construction — ``shared.database.Database`` and ``CredentialManager``
-are replaced with doubles before the agent is built, the ECIES key is written to a
+Hermetic by construction — the Plane binding and ``CredentialManager`` are
+replaced with doubles before the agent is built, the ECIES key is written to a
 tmp path via ``AGENT_KEY_PATH`` (never the shared ``backend/data/agent_keys`` file),
 and the transport seam uses ``FakeTransport``.
 """
@@ -16,6 +16,7 @@ import asyncio
 import json
 import runpy
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,18 +32,13 @@ from shared.protocol import MCPRequest
 USER = "user-1"
 
 
-class FakeDatabase:
-    """Stand-in for ``shared.database.Database`` — never opens a connection."""
-
+class FakeCredentialManager:
     instances: list = []
 
-    def __init__(self, *args, **kwargs):
-        FakeDatabase.instances.append(self)
-
-
-class FakeCredentialManager:
     def __init__(self, db=None, **kwargs):
         self.db = db
+        self.kwargs = kwargs
+        FakeCredentialManager.instances.append(self)
 
 
 @pytest.fixture(autouse=True)
@@ -52,19 +48,29 @@ def _isolate_module_state(monkeypatch, tmp_path):
     ``register_deps`` sets module GLOBALS shared with every other 063 suite, so a
     construction test would otherwise leak its doubles into whatever runs next.
     """
-    saved = (obs._DB, obs._CREDMGR, ctl._DB, ctl._CREDMGR)
-    FakeDatabase.instances = []
+    saved = (obs._DB, obs._CREDMGR, ctl._DB, ctl._CREDMGR, ctl._BLOBS)
+    FakeCredentialManager.instances = []
     monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "remote-compute-1.pem"))
-    monkeypatch.setattr("shared.database.Database", FakeDatabase)
     monkeypatch.setattr("orchestrator.credential_manager.CredentialManager",
                         FakeCredentialManager)
     yield
-    obs._DB, obs._CREDMGR, ctl._DB, ctl._CREDMGR = saved
+    obs._DB, obs._CREDMGR, ctl._DB, ctl._CREDMGR, ctl._BLOBS = saved
     set_transport(None)
 
 
+def _plane():
+    repositories = SimpleNamespace()
+    return SimpleNamespace(repositories=repositories), repositories
+
+
 def _agent(port: int = 0) -> RemoteComputeAgent:
-    return RemoteComputeAgent(port=port)
+    runtime, repositories = _plane()
+    return RemoteComputeAgent(
+        port=port,
+        plane_runtime=runtime,
+        plane_repositories=repositories,
+        plane_blobs=object(),
+    )
 
 
 def _target():
@@ -99,18 +105,24 @@ def test_agent_identity_is_the_single_grantable_remote_compute_agent():
     assert "confirm" in agent.description
 
 
-def test_construction_wires_the_shared_db_into_both_verb_libraries():
+def test_construction_wires_one_plane_binding_into_both_verb_libraries():
     obs.register_deps(None, None)
-    ctl.register_deps(None, None)
-    _agent()
-    assert len(FakeDatabase.instances) == 1
-    db = FakeDatabase.instances[0]
-    # The SAME Database + CredentialManager reach both risk tiers (one process,
-    # one connection pool, one CREDENTIAL_ENCRYPTION_KEY).
-    assert obs._DB is db and ctl._DB is db
+    ctl.register_deps(None, None, None)
+    agent = _agent()
+    assert agent.agent_id == "remote-compute-1"
+    # The same pool-free binding + CredentialManager reach both risk tiers.
+    binding = obs._DB
+    assert binding is ctl._DB
+    assert ctl._BLOBS is not None
+    assert binding.plane_runtime is not None
+    assert binding.plane_repositories is binding.plane_runtime.repositories
     assert isinstance(obs._CREDMGR, FakeCredentialManager)
     assert obs._CREDMGR is ctl._CREDMGR
-    assert obs._CREDMGR.db is db
+    assert obs._CREDMGR.db is binding
+    assert obs._CREDMGR.kwargs == {
+        "plane_runtime": binding.plane_runtime,
+        "plane_repositories": binding.plane_repositories,
+    }
 
 
 def test_explicit_port_wins_over_the_env_var(monkeypatch):
@@ -120,26 +132,23 @@ def test_explicit_port_wins_over_the_env_var(monkeypatch):
 
 def test_port_env_var_is_the_agents_own(monkeypatch):
     monkeypatch.setenv("REMOTE_COMPUTE_AGENT_PORT", "9111")
-    assert RemoteComputeAgent(port=None).port == 9111
+    runtime, repositories = _plane()
+    assert RemoteComputeAgent(
+        port=None,
+        plane_runtime=runtime,
+        plane_repositories=repositories,
+        plane_blobs=object(),
+    ).port == 9111
 
 
-def test_dependency_wiring_failure_does_not_break_construction(monkeypatch, caplog):
-    def _boom(*a, **kw):
-        raise RuntimeError("no database")
-
-    monkeypatch.setattr("shared.database.Database", _boom)
+def test_missing_plane_dependency_fails_closed_without_rebinding():
     sentinel = object()
     obs.register_deps(sentinel, sentinel)
-    ctl.register_deps(sentinel, sentinel)
+    ctl.register_deps(sentinel, sentinel, sentinel)
 
-    with caplog.at_level("WARNING"):
-        agent = _agent()
-
-    # The agent still registers (its verbs then fail honestly per-call) and the
-    # previously wired deps are left untouched rather than half-replaced.
-    assert agent.agent_id == "remote-compute-1"
+    with pytest.raises(RuntimeError, match="initialized AstralPlane"):
+        RemoteComputeAgent(port=0, plane_runtime=None)
     assert obs._DB is sentinel and ctl._DB is sentinel
-    assert any("dependency wiring failed" in r.message for r in caplog.records)
 
 
 # ── the union (FR-024) ────────────────────────────────────────────────────────
@@ -152,10 +161,10 @@ def test_registry_is_exactly_nine_plus_nine_with_no_key_collision():
 
 
 def test_register_deps_propagates_to_both_libraries():
-    db, cm = object(), object()
-    unified.register_deps(db, cm)
-    assert (obs._DB, obs._CREDMGR) == (db, cm)
-    assert (ctl._DB, ctl._CREDMGR) == (db, cm)
+    source, cm, blobs = object(), object(), object()
+    unified.register_deps(source, cm, blobs)
+    assert (obs._DB, obs._CREDMGR) == (source, cm)
+    assert (ctl._DB, ctl._CREDMGR, ctl._BLOBS) == (source, cm, blobs)
 
 
 def test_agent_serves_the_unified_registry_by_reference():
@@ -342,13 +351,27 @@ async def test_handle_mcp_request_serves_tools_list():
 
 def test_module_main_builds_the_agent_and_runs_it(monkeypatch):
     started = []
+    closed = []
+    runtime, repositories = _plane()
+
+    composition = SimpleNamespace(
+        runtime=runtime,
+        repositories=repositories,
+        blobs=object(),
+        close=lambda: closed.append(True),
+    )
 
     def _fake_asyncio_run(coro):
         started.append(coro)
         coro.close()  # never actually serve — the coroutine is inert until awaited
 
     monkeypatch.setattr(asyncio, "run", _fake_asyncio_run)
+    monkeypatch.setattr(
+        "orchestrator.plane_composition.compose_plane_from_environment",
+        lambda _manifest: composition,
+    )
     monkeypatch.setattr(sys, "argv", ["remote_compute_agent.py", "--port", "9333"])
     ns = runpy.run_path(agent_module.__file__, run_name="__main__")
     assert len(started) == 1
     assert ns["agent"].port == 9333 and ns["agent"].agent_id == "remote-compute-1"
+    assert closed == [True]

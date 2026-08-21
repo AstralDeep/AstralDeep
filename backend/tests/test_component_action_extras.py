@@ -31,8 +31,11 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from orchestrator.history import HistoryManager
 from orchestrator.orchestrator import Orchestrator
+from tests.helpers.voice_plane_runtime import (
+    history_manager,
+    isolated_plane_runtime,
+)
 from tests.test_component_action import (
     _FakeWS,
     _alerts,
@@ -47,11 +50,18 @@ from tests.test_component_action import (
 # fixture names don't shadow imports, keeping ruff F811-clean)
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="module")
+def plane_runtime():
+    """One managed application Plane runtime for this integration module."""
+    with isolated_plane_runtime("component_action_extra") as runtime:
+        yield runtime
+
+
 @pytest.fixture
-def chat_env(tmp_path):
+def chat_env(plane_runtime):
     """Real HistoryManager + a unique user/chat pair; chat deleted on teardown
     (FK CASCADE clears messages, saved_components and workspace_snapshot)."""
-    history = HistoryManager(data_dir=str(tmp_path))
+    history = history_manager(plane_runtime)
     user_id = f"test-user-{uuid.uuid4()}"
     chat_id = history.create_chat(user_id=user_id)
     yield history, user_id, chat_id

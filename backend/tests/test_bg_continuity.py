@@ -14,11 +14,13 @@ unreachable.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import sys
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -26,6 +28,10 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from orchestrator.plane_repository_context import (  # noqa: E402
+    PlaneRepositoryContext,
+    plane_source_from_orchestrator,
+)
 from shared.feature_flags import flags  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
@@ -40,14 +46,18 @@ def bg_flag():
 
 
 @pytest.fixture
-def orch(bg_flag, monkeypatch):
+async def orch(bg_flag, monkeypatch):
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.orchestrator import Orchestrator
+
     try:
-        o = Orchestrator()
+        o = await asyncio.to_thread(Orchestrator)
     except Exception as exc:
         pytest.skip(f"orchestrator/database unavailable: {exc}")
-    return o
+    try:
+        yield o
+    finally:
+        await asyncio.wait_for(o._close_started_services(), timeout=15.0)
 
 
 class _CaptureSocket:
@@ -83,18 +93,156 @@ def _frames(ws, ftype):
     return [f for f in ws.task.outputs if f.get("type") == ftype]
 
 
+def _isolated_mock_identity():
+    user_id = f"bgc-auth-{uuid.uuid4().hex}"
+    claims = {
+        "sub": user_id,
+        "preferred_username": user_id,
+        "email": f"{user_id}@invalid.example",
+        "realm_access": {"roles": ["admin", "user"]},
+        "resource_access": {
+            "astral-frontend": {"roles": ["admin", "user"]}
+        },
+    }
+    payload = base64.b64encode(
+        json.dumps(claims, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return user_id, f"mock.{payload}.signature"
+
+
 async def _await_manager_tasks(orch):
     tasks = [t.asyncio_task for t in orch.async_task_manager._tasks.values()
              if t.asyncio_task]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-    # Let the fire-and-forget bookkeeping writes land.
-    await asyncio.sleep(0.2)
+    while writes := tuple(orch.async_task_manager._compatibility_write_tasks):
+        await asyncio.gather(*writes, return_exceptions=True)
+
+
+async def _handle_ui_message_and_join_background(orch, websocket, message):
+    """Join register_ui's deliberately off-critical-path profile/audit writes."""
+    spawned = []
+    create_task = asyncio.create_task
+
+    def _capture_register_task(coroutine, *args, **kwargs):
+        task = create_task(coroutine, *args, **kwargs)
+        code = getattr(coroutine, "cr_code", None)
+        qualname = getattr(code, "co_qualname", "")
+        if qualname == "to_thread" or qualname.endswith("._record_register_audit"):
+            spawned.append(task)
+        return task
+
+    try:
+        with patch.object(asyncio, "create_task", _capture_register_task):
+            return await orch.handle_ui_message(websocket, message)
+    finally:
+        if spawned:
+            await asyncio.wait_for(
+                asyncio.gather(*spawned, return_exceptions=True),
+                timeout=5.0,
+            )
+
+
+async def _background_task_record(orch, *, user_id, task_id):
+    source = plane_source_from_orchestrator(orch)
+    context = PlaneRepositoryContext(
+        repository=source.plane_repositories.background_tasks,
+        plane_runtime=source.plane_runtime,
+    )
+    return await context.call_async(
+        context.repository.get,
+        owner_id=user_id,
+        task_id=task_id,
+    )
+
+
+async def _create_completed_background_task(
+    orch,
+    *,
+    task_id,
+    user_id,
+    chat_id,
+    title,
+    summary,
+):
+    from astralplane.repositories.background_tasks import (
+        BackgroundTaskRecord,
+        BackgroundTaskStatus,
+    )
+
+    source = plane_source_from_orchestrator(orch)
+    context = PlaneRepositoryContext(
+        repository=source.plane_repositories.background_tasks,
+        plane_runtime=source.plane_runtime,
+    )
+    completed_at = datetime.now(UTC)
+    record = BackgroundTaskRecord(
+        task_id=task_id,
+        owner_id=user_id,
+        conversation_id=chat_id,
+        kind="async_chat",
+        status=BackgroundTaskStatus.COMPLETED,
+        title=title,
+        summary=summary,
+        created_at=completed_at,
+        completed_at=completed_at,
+    )
+    return await context.call_async(context.repository.create, record=record)
+
+
+async def _clear_owner_task_replays(orch, user_id):
+    """Retire replay eligibility; durable task history stays retention-owned."""
+    from astralplane.repositories.background_tasks import BackgroundTaskStatus
+
+    source = plane_source_from_orchestrator(orch)
+    context = PlaneRepositoryContext(
+        repository=source.plane_repositories.background_tasks,
+        plane_runtime=source.plane_runtime,
+    )
+
+    def _mark_notified(transaction):
+        repository = context.repository
+        terminal_states = (
+            BackgroundTaskStatus.COMPLETED,
+            BackgroundTaskStatus.FAILED,
+            BackgroundTaskStatus.CANCELLED,
+            BackgroundTaskStatus.RETRYABLE,
+        )
+        for status in terminal_states:
+            records = repository.list_for_owner(
+                transaction,
+                owner_id=user_id,
+                status=status,
+                limit=1000,
+            )
+            for record in records:
+                if record.notified:
+                    continue
+                repository.mark_notified(
+                    transaction,
+                    owner_id=user_id,
+                    task_id=record.task_id,
+                )
+        remaining = tuple(
+            record.task_id
+            for status in terminal_states
+            for record in repository.list_for_owner(
+                transaction,
+                owner_id=user_id,
+                status=status,
+                limit=1000,
+            )
+            if not record.notified
+        )
+        assert not remaining, (
+            f"owner {user_id!r} retained replay-eligible tasks: {remaining!r}"
+        )
+
+    await context.call_async(_mark_notified)
 
 
 async def _cleanup(orch, user_id, chat_ids=()):
-    await orch.history.db.aexecute(
-        "DELETE FROM background_task WHERE user_id = ?", (user_id,))
+    await _clear_owner_task_replays(orch, user_id)
     for cid in chat_ids:
         try:
             await asyncio.to_thread(orch.history.delete_chat, cid, user_id=user_id)
@@ -164,13 +312,15 @@ async def test_completion_fan_reaches_socket_joined_after_start(orch):
     assert payload["status"] == "completed"
     assert payload["summary"] == "Report finished."
 
-    row = await orch.history.db.afetch_one(
-        "SELECT status, summary, notified FROM background_task WHERE task_id = ?",
-        (payload["task_id"],))
+    row = await _background_task_record(
+        orch,
+        user_id=user_id,
+        task_id=payload["task_id"],
+    )
     assert row is not None
-    assert row["status"] == "completed"
-    assert row["summary"] == "Report finished."
-    assert row["notified"] is True
+    assert row.status.value == "completed"
+    assert row.summary == "Report finished."
+    assert row.notified is True
 
     await _cleanup(orch, user_id, [chat_id])
 
@@ -215,7 +365,7 @@ async def test_vws_narrative_and_done_reach_chat_socket(orch):
 # ---------------------------------------------------------------------------
 
 async def test_register_ui_session_resume_replays_in_flight_task(orch):
-    user_id = "test_user"  # mock-auth dev-token subject
+    user_id, token = _isolated_mock_identity()
     await _cleanup(orch, user_id)
     chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
     hold = asyncio.Event()
@@ -228,8 +378,8 @@ async def test_register_ui_session_resume_replays_in_flight_task(orch):
 
     ws = _capture_socket(orch, user_id)
     orch._registered_events[id(ws)] = asyncio.Event()
-    await orch.handle_ui_message(ws, json.dumps({
-        "type": "register_ui", "token": "dev-token", "device": {},
+    await _handle_ui_message_and_join_background(orch, ws, json.dumps({
+        "type": "register_ui", "token": token, "device": {},
         "session_id": chat_id}))
 
     assert orch._ws_active_chat.get(id(ws)) == chat_id, \
@@ -248,8 +398,8 @@ async def test_register_ui_session_resume_replays_in_flight_task(orch):
         orch.history.create_chat, user_id=other_user)
     ws2 = _capture_socket(orch, user_id)
     orch._registered_events[id(ws2)] = asyncio.Event()
-    await orch.handle_ui_message(ws2, json.dumps({
-        "type": "register_ui", "token": "dev-token", "device": {},
+    await _handle_ui_message_and_join_background(orch, ws2, json.dumps({
+        "type": "register_ui", "token": token, "device": {},
         "session_id": other_chat}))
     assert orch._ws_active_chat.get(id(ws2)) is None
     assert _frames(ws2, "rote_config"), "register must still succeed"
@@ -265,20 +415,27 @@ async def test_register_ui_session_resume_replays_in_flight_task(orch):
 # ---------------------------------------------------------------------------
 
 async def test_completed_unnotified_replay_marks_notified(orch):
-    user_id = "test_user"
+    user_id, token = _isolated_mock_identity()
     await _cleanup(orch, user_id)
     task_id = uuid.uuid4().hex[:8]
-    await orch.history.db.aexecute(
-        "INSERT INTO background_task (task_id, user_id, chat_id, kind, status, "
-        "title, summary, completed_at, notified) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, now(), FALSE)",
-        (task_id, user_id, "chat-x", "async_chat", "completed",
-         "old job", "Finished while you were away."))
+    await _create_completed_background_task(
+        orch,
+        task_id=task_id,
+        user_id=user_id,
+        chat_id="chat-x",
+        title="old job",
+        summary="Finished while you were away.",
+    )
 
     ws = _capture_socket(orch, user_id)
     orch._registered_events[id(ws)] = asyncio.Event()
-    await orch.handle_ui_message(ws, json.dumps({
-        "type": "register_ui", "token": "dev-token", "device": {}}))
+    await _handle_ui_message_and_join_background(
+        orch,
+        ws,
+        json.dumps({
+            "type": "register_ui", "token": token, "device": {}
+        }),
+    )
 
     replays = [f for f in _frames(ws, "task_completed")
                if f["payload"].get("task_id") == task_id]
@@ -286,15 +443,23 @@ async def test_completed_unnotified_replay_marks_notified(orch):
     assert replays[0]["payload"]["summary"] == "Finished while you were away."
     assert replays[0]["payload"]["replay"] is True
 
-    row = await orch.history.db.afetch_one(
-        "SELECT notified FROM background_task WHERE task_id = ?", (task_id,))
-    assert row["notified"] is True
+    row = await _background_task_record(
+        orch,
+        user_id=user_id,
+        task_id=task_id,
+    )
+    assert row is not None and row.notified is True
 
     # A second registration replays nothing (notified sticks).
     ws2 = _capture_socket(orch, user_id)
     orch._registered_events[id(ws2)] = asyncio.Event()
-    await orch.handle_ui_message(ws2, json.dumps({
-        "type": "register_ui", "token": "dev-token", "device": {}}))
+    await _handle_ui_message_and_join_background(
+        orch,
+        ws2,
+        json.dumps({
+            "type": "register_ui", "token": token, "device": {}
+        }),
+    )
     assert [f for f in _frames(ws2, "task_completed")
             if f["payload"].get("task_id") == task_id] == []
 
@@ -333,9 +498,11 @@ async def test_flag_off_all_new_sends_absent(orch):
     assert ws2.task.outputs == []
 
     # No durable record with the flag off.
-    row = await orch.history.db.afetch_one(
-        "SELECT 1 FROM background_task WHERE task_id = ?",
-        (started[0]["payload"]["task_id"],))
+    row = await _background_task_record(
+        orch,
+        user_id=user_id,
+        task_id=started[0]["payload"]["task_id"],
+    )
     assert row is None
 
     # VirtualWebSocket turn frames stay captured-only.
@@ -349,10 +516,11 @@ async def test_flag_off_all_new_sends_absent(orch):
         [{"type": "chat_status", "status": "done", "message": ""}]
 
     # register_ui ignores session_id with the flag off.
-    ws3 = _capture_socket(orch, "test_user")
+    auth_user, token = _isolated_mock_identity()
+    ws3 = _capture_socket(orch, auth_user)
     orch._registered_events[id(ws3)] = asyncio.Event()
-    await orch.handle_ui_message(ws3, json.dumps({
-        "type": "register_ui", "token": "dev-token", "device": {},
+    await _handle_ui_message_and_join_background(orch, ws3, json.dumps({
+        "type": "register_ui", "token": token, "device": {},
         "session_id": chat_id}))
     assert orch._ws_active_chat.get(id(ws3)) is None
 
@@ -378,8 +546,11 @@ async def test_scheduled_fallback_chat_created(orch, monkeypatch):
         correlation_id="bgc-corr-1")
 
     fallback = f"scheduled-{user_id}"
-    row = await orch.history.db.afetch_one(
-        "SELECT id FROM chats WHERE id = ? AND user_id = ?", (fallback, user_id))
+    row = await asyncio.to_thread(
+        orch.history.get_conversation_record,
+        fallback,
+        user_id=user_id,
+    )
     assert row is not None, "fallback chat must exist so history writes persist"
 
     # Flag off: pre-055 behavior (no chat created).
@@ -389,9 +560,11 @@ async def test_scheduled_fallback_chat_created(orch, monkeypatch):
         user_id=off_user, chat_id=None, instruction="daily digest",
         agent_id=None, access_token="tok", allowed_scopes=[],
         correlation_id="bgc-corr-2")
-    assert await orch.history.db.afetch_one(
-        "SELECT id FROM chats WHERE id = ? AND user_id = ?",
-        (f"scheduled-{off_user}", off_user)) is None
+    assert await asyncio.to_thread(
+        orch.history.get_conversation_record,
+        f"scheduled-{off_user}",
+        user_id=off_user,
+    ) is None
 
     await _cleanup(orch, user_id, [fallback])
 

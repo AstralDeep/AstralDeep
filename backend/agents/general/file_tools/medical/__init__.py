@@ -2,8 +2,10 @@
 
 Each tool follows the contract documented in
 ``backend/agents/general/file_tools/__init__.py``: takes ``attachment_id`` +
-``user_id``, resolves the blob via :func:`resolve_attachment`, returns a
-plain dict on success or ``{"error": {"code": ..., "message": ...}}``.
+``user_id``, uses Plane's bounded byte reader whenever its parser accepts a
+file-like object, and requests a scoped path lease only for filename-only
+libraries. Tools return a plain dict on success or
+``{"error": {"code": ..., "message": ...}}``.
 
 Extensions served:
   * ``read_dicom``            — .dcm / .dicom (single-file)

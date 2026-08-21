@@ -1,0 +1,37 @@
+{
+  "format": "astral.changed-coverage-repository-profiles/v1",
+  "recordedAtUtc": "2026-08-21T21:12:03Z",
+  "status": "implemented-and-tested",
+  "thresholdPercent": 90,
+  "profiles": {
+    "deep": [
+      "backend",
+      "voice_worker",
+      "tooling"
+    ],
+    "projection": [
+      "projection_python",
+      "windows",
+      "javascript",
+      "android_app",
+      "android_core",
+      "ios",
+      "macos",
+      "watchos"
+    ]
+  },
+  "projectionPathPrefix": "components/AstralProjection",
+  "reason": "Gitlink entries are not source blobs in the parent candidate tree. Each repository must prove its own changed executable lines from native reports.",
+  "deepWorkflow": "release-readiness now selects the deep profile and its exact three owned reports",
+  "projectionGate": "Run the protected collector against the AstralProjection repository with the projection profile and its exact eight native reports, including Cobertura for package, ROTE, and web-renderer Python plus the v2 node/browser JavaScript union",
+  "javascriptIdentity": "astralprojection-node-browser-union producer v2, node-browser-union lane",
+  "pythonWitness": "Token-normalized recursive co_lines statements match locked Coverage 7.15.2 in both directions across 82,925 tracked Deep statements and 15,023 current Projection statements, with zero missing and zero extra under Python 3.11; the Deep corpus also matches under system Python 3.14, and exclusion-match line mapping is incremental linear work",
+  "verification": {
+    "coverageCollectorTests": "114 passed",
+    "focusedEvidenceIntegrationTests": "32 passed",
+    "releaseToolingTests": "680 passed, 1 skipped, and 2 composition-state tests deselected while sibling closure commits were in progress",
+    "releaseToolingScriptsCoverage": "91 percent",
+    "changedScriptsDiffCoverage": "90 percent for the current collector against origin/main",
+    "ruff": "passed"
+  }
+}

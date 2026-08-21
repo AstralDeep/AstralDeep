@@ -1,6 +1,6 @@
 # Keycloak setup — native Android client (`astral-mobile`)
 
-The Android client (`android-client/`) authenticates with **real Keycloak** using
+The Android client (`components/AstralProjection/android-client/`) authenticates with **real Keycloak** using
 OIDC **Authorization Code + PKCE** through the system browser / Chrome Custom Tabs
 (RFC 8252 native-app posture), exactly like the Windows client — just a different
 public client and redirect scheme. There is no client secret (public client; PKCE

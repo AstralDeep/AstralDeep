@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import uuid
+from collections.abc import Mapping
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,10 +24,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 @pytest.fixture
-def orch():
-    from orchestrator.orchestrator import Orchestrator
-
-    o = Orchestrator()
+def orch(orchestrator_factory):
+    o = orchestrator_factory()
     # Feature 054: chat turns pre-flight the acting user's PERSISTED LLM
     # config (env vars are inert) — seed the fixture user so turns proceed.
     o._llm_store.set_sync("seam-user", provider="custom",
@@ -82,7 +81,14 @@ async def _last_assistant_text(o, chat_id, user_id):
     texts = []
     for m in data.get("messages", []):
         if m.get("role") == "assistant":
-            texts.append(json.dumps(m.get("content")))
+            texts.append(
+                json.dumps(
+                    m.get("content"),
+                    default=lambda value: (
+                        dict(value) if isinstance(value, Mapping) else str(value)
+                    ),
+                )
+            )
     return texts[-1] if texts else ""
 
 

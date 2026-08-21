@@ -17,6 +17,8 @@ from personalization.memory_tools import (
     parse_reconcile_decision,
     reconcile_enabled,
 )
+from personalization.repository import PersonalizationRepository
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 
 # ───────────────────────── fakes ─────────────────────────────────────────────
@@ -237,19 +239,24 @@ async def test_phi_is_refused_before_any_llm():
 def test_repo_supersede_excludes_from_recall():
     """The schema migration + supersede_memory round-trip over a real DB:
     a superseded row drops out of list_memory and carries superseded_by."""
-    from shared.database import Database
-    from personalization.repository import PersonalizationRepository
-    repo = PersonalizationRepository(Database())
-    user = f"pytest-recon-{uuid.uuid4().hex[:8]}"
-    a = repo.create_memory(user, "context", "Lives in Portland")
-    b = repo.create_memory(user, "context", "Lives in Seattle")
-    assert {m["value"] for m in repo.list_memory(user)} == {"Lives in Portland", "Lives in Seattle"}
+    with isolated_plane_runtime("personalization_reconcile") as runtime:
+        repo = PersonalizationRepository(
+            None,
+            plane_runtime=runtime,
+            plane_repositories=runtime.repositories,
+        )
+        user = f"pytest-recon-{uuid.uuid4().hex[:8]}"
+        first = repo.create_memory(user, "context", "Lives in Portland")
+        second = repo.create_memory(user, "context", "Lives in Seattle")
+        assert {memory["value"] for memory in repo.list_memory(user)} == {
+            "Lives in Portland",
+            "Lives in Seattle",
+        }
 
-    assert repo.supersede_memory(user, a["id"], b["id"]) is True
-    live = repo.list_memory(user)
-    assert [m["value"] for m in live] == ["Lives in Seattle"]  # Portland excluded
-    # second supersede of the same row is a no-op (already superseded)
-    assert repo.supersede_memory(user, a["id"], b["id"]) is False
-    # the soft-deleted row still exists with its pointer
-    row = repo.get_memory(user, a["id"])
-    assert row is not None and str(row["superseded_by"]) == b["id"]
+        assert repo.supersede_memory(user, first["id"], second["id"]) is True
+        live = repo.list_memory(user)
+        assert [memory["value"] for memory in live] == ["Lives in Seattle"]
+        # Second supersede of the same row is a no-op.
+        assert repo.supersede_memory(user, first["id"], second["id"]) is False
+        row = repo.get_memory(user, first["id"])
+        assert row is not None and str(row["superseded_by"]) == second["id"]

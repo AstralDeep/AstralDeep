@@ -21,6 +21,8 @@ docs/*
 !docs/byo-client-agents.md
 !docs/remote-compute-agents.md
 !docs/mcp-server-endpoint.md
+!docs/component-composition.md
+!docs/migration-rollback-074.md
 /.ruff_cache/
 Qualifying_Exam/
 .docker-cache/
@@ -42,7 +44,31 @@ docker_logs_fixes_known_remaining.md
 .DS_Store
 Thumbs.db
 *.log
+*.log.*
 *.tmp
+
+# Sensitive local credentials and durable runtime state
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+# Preserve opaque Android continuity files after the monorepo client tree is
+# removed.  The client-local ignore file currently protects them, but that
+# tracked file leaves with AstralProjection during feature 074.
+/android-client/local.properties
+/android-client/keystore.properties
+# Retain generated Android continuity state without inspecting or reclassifying
+# it while binary assets temporarily keep this removed owner root present.
+/android-client/.gradle/
+/android-client/core/bin/
 
 # Python
 __pycache__/
@@ -88,6 +114,8 @@ test-results/
 
 # Environment Variables
 .env
+.env.*
+!.env.example
 .env.local
 .env.development.local
 .env.test.local

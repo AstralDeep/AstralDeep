@@ -1,13 +1,48 @@
-"""AttachmentRepository: insert, ownership-scoped get, listing, soft-delete."""
+"""AttachmentRepository owner-scoped read adapter."""
 
 from __future__ import annotations
+
+from contextlib import contextmanager
+from types import SimpleNamespace
+
+import pytest
 
 from orchestrator.attachments.repository import AttachmentRepository
 from .conftest import insert_sample
 
 
-def test_insert_and_get_by_id(stub_db):
-    repo = AttachmentRepository(stub_db)
+class _PlaneRuntime:
+    @contextmanager
+    def transaction(self):
+        yield object()
+
+
+def _repository(stub_db) -> AttachmentRepository:
+    return AttachmentRepository.from_plane_source(
+        SimpleNamespace(
+            plane_runtime=_PlaneRuntime(),
+            plane_repositories=stub_db.plane_repositories,
+        )
+    )
+
+
+def test_from_plane_source_requires_and_uses_application_binding(stub_db):
+    runtime = _PlaneRuntime()
+    source = SimpleNamespace(
+        plane_runtime=runtime,
+        plane_repositories=stub_db.plane_repositories,
+    )
+    repo = AttachmentRepository.from_plane_source(source)
+    attachment_id = insert_sample(repo, user_id="alice")
+    assert repo.db is None
+    assert repo.get_by_id(attachment_id, "alice") is not None
+
+    with pytest.raises(RuntimeError, match="application Plane runtime"):
+        AttachmentRepository.from_plane_source(SimpleNamespace())
+
+
+def test_seeded_fixture_get_by_id(stub_db):
+    repo = _repository(stub_db)
     aid = insert_sample(repo, user_id="alice")
     got = repo.get_by_id(aid, "alice")
     assert got is not None
@@ -16,13 +51,13 @@ def test_insert_and_get_by_id(stub_db):
 
 
 def test_get_by_id_returns_none_for_foreign_user(stub_db):
-    repo = AttachmentRepository(stub_db)
+    repo = _repository(stub_db)
     aid = insert_sample(repo, user_id="alice")
     assert repo.get_by_id(aid, "bob") is None
 
 
 def test_list_filters_by_user_and_category(stub_db):
-    repo = AttachmentRepository(stub_db)
+    repo = _repository(stub_db)
     insert_sample(repo, user_id="alice", category="document", extension="pdf")
     insert_sample(repo, user_id="alice", category="image", extension="png")
     insert_sample(repo, user_id="bob", category="document", extension="pdf")
@@ -41,7 +76,7 @@ def test_list_filters_by_user_and_category(stub_db):
 
 
 def test_list_pagination_cursor(stub_db):
-    repo = AttachmentRepository(stub_db)
+    repo = _repository(stub_db)
     ids = [insert_sample(repo, user_id="alice") for _ in range(5)]
     page1, cursor = repo.list_for_user("alice", limit=2)
     assert len(page1) == 2
@@ -55,29 +90,14 @@ def test_list_pagination_cursor(stub_db):
     assert seen == set(ids)
 
 
-def test_soft_delete_hides_from_get_and_list(stub_db):
-    repo = AttachmentRepository(stub_db)
-    aid = insert_sample(repo, user_id="alice")
-    assert repo.soft_delete(aid, "alice") is True
-    assert repo.get_by_id(aid, "alice") is None
-    items, _ = repo.list_for_user("alice")
-    assert items == []
-
-
-def test_soft_delete_rejects_foreign_user(stub_db):
-    repo = AttachmentRepository(stub_db)
-    aid = insert_sample(repo, user_id="alice")
-    assert repo.soft_delete(aid, "bob") is False
-    # Alice's row is still live.
-    assert repo.get_by_id(aid, "alice") is not None
-
-
-def test_soft_delete_all_for_user(stub_db):
-    repo = AttachmentRepository(stub_db)
-    insert_sample(repo, user_id="alice")
-    insert_sample(repo, user_id="alice")
-    insert_sample(repo, user_id="bob")
-    purged = repo.soft_delete_all_for_user("alice")
-    assert purged == 2
-    assert repo.list_for_user("alice")[0] == []
-    assert len(repo.list_for_user("bob")[0]) == 1
+def test_public_adapter_exposes_no_metadata_or_blob_mutation_bypass(stub_db):
+    repo = _repository(stub_db)
+    for method in (
+        "insert",
+        "ainsert",
+        "soft_delete",
+        "asoft_delete",
+        "soft_delete_all_for_user",
+        "asoft_delete_all_for_user",
+    ):
+        assert not hasattr(repo, method)

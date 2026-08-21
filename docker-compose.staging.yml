@@ -100,29 +100,6 @@ services:
       - ALL
     restart: "no"
 
-  # The protected staging configuration supplies the exact pre-060 image.
-  # The driver runs this one-shot service first, restores representative 057
-  # rows second, and starts the candidate only after that restore succeeds.
-  schema-baseline:
-    image: ${STAGING_SCHEMA_BASELINE_IMAGE:?set the digest-qualified 057 baseline image}
-    labels: *staging-ownership
-    profiles: [bootstrap]
-    working_dir: /app/backend
-    command:
-      - python
-      - -c
-      - from shared.database import Database; Database()
-    environment:
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_USER: ${STAGING_DB_USER:?set the staging database user}
-      DB_PASSWORD: ${STAGING_DB_PASSWORD:?set the staging database password}
-      DB_NAME: ${STAGING_DB_NAME:?set the staging database name}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
   astraldeep:
     image: ${ASTRAL_CANDIDATE_IMAGE:?set the digest-qualified candidate image}
     labels: *staging-ownership

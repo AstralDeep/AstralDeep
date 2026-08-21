@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -45,30 +46,20 @@ from orchestrator.artifact_share import (  # noqa: E402
     set_share_store,
 )
 from personalization.phi_gate import PHIGate, set_phi_gate  # noqa: E402
-from shared.database import Database  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
-)
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def mock_auth(monkeypatch):
+    """Keep this module independent of collection-time environment writes."""
+
+    monkeypatch.setenv("USE_MOCK_AUTH", "true")
 
 
 class _CleanAnalyzer:
@@ -100,20 +91,27 @@ def _auth(user_id: str) -> dict:
 
 
 @pytest.fixture(scope="module")
-def db():
-    return Database()
+def plane_runtime():
+    with isolated_plane_runtime("share_routes") as runtime:
+        yield runtime
 
 
 @pytest.fixture()
-def user(db):
+def user(plane_runtime):
     uid = f"pytest-shareroutes-{uuid.uuid4().hex[:12]}"
     yield uid
-    db.execute("DELETE FROM share_grant WHERE user_id = ?", (uid,))
+    with plane_runtime.transaction() as transaction:
+        transaction.execute("DELETE FROM share_grant WHERE user_id = %s", (uid,))
 
 
 @pytest.fixture(autouse=True)
-def real_store(db):
-    set_share_store(ShareGrantStore(db))
+def real_store(plane_runtime):
+    set_share_store(
+        ShareGrantStore(
+            plane_runtime=plane_runtime,
+            plane_repositories=plane_runtime.repositories,
+        )
+    )
     yield
     set_share_store(None)
 
@@ -160,9 +158,21 @@ def _mint(client, user_id, scope="component", **over):
     return client.post("/api/share", json=body, headers=_auth(user_id))
 
 
-def _grant_rows(db, user_id):
-    return db.fetch_all(
-        "SELECT * FROM share_grant WHERE user_id = ? ORDER BY id ASC", (user_id,))
+def _plain(value):
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _grant_rows(plane_runtime, user_id):
+    with plane_runtime.transaction() as transaction:
+        rows = transaction.fetch_all(
+            "SELECT * FROM share_grant WHERE user_id = %s ORDER BY id ASC",
+            (user_id,),
+        )
+    return [_plain(row) for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +180,7 @@ def _grant_rows(db, user_id):
 # ---------------------------------------------------------------------------
 
 
-def test_flag_off_all_routes_404(db, client, user):
+def test_flag_off_all_routes_404(plane_runtime, client, user):
     prior = flags._flags.get("artifact_sharing")
     flags._flags["artifact_sharing"] = False
     try:
@@ -183,7 +193,7 @@ def test_flag_off_all_routes_404(db, client, user):
         assert (r.status_code, r.json()) == (404, absent)
         r = client.get("/share/any-token-at-all")
         assert (r.status_code, r.json()) == (404, absent)
-        assert _grant_rows(db, user) == []
+        assert _grant_rows(plane_runtime, user) == []
     finally:
         flags._flags["artifact_sharing"] = prior
 
@@ -193,7 +203,9 @@ def test_flag_off_all_routes_404(db, client, user):
 # ---------------------------------------------------------------------------
 
 
-def test_mint_returns_url_once_and_serves_unauthenticated(db, client, user, sharing_on):
+def test_mint_returns_url_once_and_serves_unauthenticated(
+    plane_runtime, client, user, sharing_on
+):
     r = _mint(client, user)
     assert r.status_code == 201
     body = r.json()
@@ -215,12 +227,12 @@ def test_mint_returns_url_once_and_serves_unauthenticated(db, client, user, shar
     assert pub.headers["Content-Security-Policy"] == \
         "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
 
-    row = _grant_rows(db, user)[0]
+    row = _grant_rows(plane_runtime, user)[0]
     assert row["open_count"] == 1
     assert row["scope"] == "component" and row["component_id"] == "wc_shared"
 
 
-def test_serve_is_the_mint_time_snapshot_not_live(db, client, orch, user, sharing_on):
+def test_serve_is_the_mint_time_snapshot_not_live(client, orch, user, sharing_on):
     r = _mint(client, user)
     # The workspace changes after mint — the link must keep serving the snapshot.
     orch.workspace.aget_by_component_id.return_value = None
@@ -229,13 +241,13 @@ def test_serve_is_the_mint_time_snapshot_not_live(db, client, orch, user, sharin
     assert "Quarterly revenue" in pub.text
 
 
-def test_canvas_scope_mint_and_serve(db, client, user, sharing_on):
+def test_canvas_scope_mint_and_serve(plane_runtime, client, user, sharing_on):
     r = _mint(client, user, scope="canvas", component_id=None)
     assert r.status_code == 201
     pub = client.get(r.json()["share_url"])
     assert pub.status_code == 200
     assert "Quarterly revenue" in pub.text
-    assert _grant_rows(db, user)[0]["scope"] == "canvas"
+    assert _grant_rows(plane_runtime, user)[0]["scope"] == "canvas"
 
 
 def test_unknown_token_uniform_404(client, user, sharing_on):
@@ -263,7 +275,7 @@ def test_revoke_immediately_stops_public_serving(client, user, sharing_on):
     assert client.delete("/api/share/999999999", headers=_auth(user)).status_code == 404
 
 
-def test_stranger_cannot_revoke(db, client, user, sharing_on):
+def test_stranger_cannot_revoke(client, user, sharing_on):
     minted = _mint(client, user).json()
     stranger = f"pytest-shareroutes-{uuid.uuid4().hex[:12]}"
     r = client.delete(f"/api/share/{minted['id']}", headers=_auth(stranger))
@@ -297,12 +309,12 @@ def test_list_owner_metadata_never_token_material(client, user, sharing_on):
 # ---------------------------------------------------------------------------
 
 
-def test_phi_refusal_is_403_phi_blocked(db, client, user, sharing_on):
+def test_phi_refusal_is_403_phi_blocked(plane_runtime, client, user, sharing_on):
     set_phi_gate(PHIGate(analyzer=_HitAnalyzer(), build_if_missing=False))
     r = _mint(client, user)
     assert r.status_code == 403
     assert r.json() == {"error": "phi_blocked"}
-    assert _grant_rows(db, user) == []
+    assert _grant_rows(plane_runtime, user) == []
 
 
 def test_invalid_scope_and_missing_component_id_are_422(client, user, sharing_on):
@@ -349,7 +361,7 @@ def test_unauthenticated_browser_navigation_redirects(client, sharing_on, monkey
     assert r.status_code == 401
 
 
-def test_cookie_session_mock_mode_mints_and_lists(db, client, sharing_on):
+def test_cookie_session_mock_mode_mints_and_lists(plane_runtime, client, sharing_on):
     """No Authorization header at all — the astral_session cookie path
     (USE_MOCK_AUTH=true makes ensure_session return the test_user session)."""
     r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
@@ -357,19 +369,24 @@ def test_cookie_session_mock_mode_mints_and_lists(db, client, sharing_on):
     try:
         assert r.status_code == 201
         minted_id = r.json()["id"]
-        rows = _grant_rows(db, "test_user")
+        rows = _grant_rows(plane_runtime, "test_user")
         assert minted_id in [row["id"] for row in rows]
         listed = client.get("/api/share")
         assert listed.status_code == 200
         assert minted_id in [s["id"] for s in listed.json()["shares"]]
     finally:
-        # Delete only this grant — test_user may hold real rows in the shared
-        # dev container.
+        # Delete exactly the cookie-session grant without broad fixture cleanup.
         if r.status_code == 201:
-            db.execute("DELETE FROM share_grant WHERE id = ?", (r.json()["id"],))
+            with plane_runtime.transaction() as transaction:
+                transaction.execute(
+                    "DELETE FROM share_grant WHERE id = %s",
+                    (r.json()["id"],),
+                )
 
 
-def test_cookie_session_real_mode_mints(db, client, user, sharing_on, monkeypatch):
+def test_cookie_session_real_mode_mints(
+    plane_runtime, client, user, sharing_on, monkeypatch
+):
     """Non-mock: the faked session's access token flows through the SAME JWKS
     verification path as a Bearer token (test_download_auth.py pattern)."""
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
@@ -392,4 +409,4 @@ def test_cookie_session_real_mode_mints(db, client, user, sharing_on, monkeypatc
     r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
                                         "component_id": "wc_shared"})
     assert r.status_code == 201
-    assert _grant_rows(db, user)[0]["id"] == r.json()["id"]
+    assert _grant_rows(plane_runtime, user)[0]["id"] == r.json()["id"]

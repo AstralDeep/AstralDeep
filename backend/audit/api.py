@@ -16,6 +16,7 @@ own log (closing the AU-2 / AU-12 loop).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime
@@ -56,14 +57,22 @@ def _get_orchestrator(request: Request):
     return orch
 
 
-def _availability_resolver(orch):
+def _availability_resolver(orch, user_id: str):
     """Return a callable that checks whether an artifact pointer still resolves.
 
     For artifacts in the ``user_attachments`` store the resolver consults
-    ``orch.history.db`` for a non-deleted row; for unknown stores the
+    Plane's owner-scoped attachment repository for a non-deleted row; for unknown stores the
     pointer is reported as available by default (FR-017 only requires
     that *known* stores be checked — unknown integrations are opaque).
     """
+    from orchestrator.attachments.repository import AttachmentRepository
+    from orchestrator.plane_repository_context import plane_source_from_orchestrator
+
+    injected = getattr(orch, "attachment_repository", None)
+    attachments = injected or AttachmentRepository.from_plane_source(
+        plane_source_from_orchestrator(orch)
+    )
+
     def resolve(pointer: dict) -> bool:
         store = (pointer or {}).get("store")
         artifact_id = (pointer or {}).get("artifact_id")
@@ -71,11 +80,7 @@ def _availability_resolver(orch):
             return True
         if store == "user_attachments":
             try:
-                row = orch.history.db.fetch_one(
-                    "SELECT 1 FROM user_attachments WHERE attachment_id = ? AND deleted_at IS NULL",
-                    (artifact_id,),
-                )
-                return bool(row)
+                return attachments.get_by_id(str(artifact_id), user_id) is not None
             except Exception:
                 return True
         return True
@@ -133,7 +138,12 @@ async def list_audit(
     recorder = get_recorder()
 
     try:
-        items, next_cursor = repo.list_for_user(
+        # The audit query invokes the availability resolver synchronously for
+        # every pointer in its bounded page. Keep the complete query + READY
+        # evaluation on one worker so neither PostgreSQL call path touches the
+        # ASGI event loop and the repository retains one coherent evaluation.
+        items, next_cursor = await asyncio.to_thread(
+            repo.list_for_user,
             user_id,
             limit=limit,
             cursor=cursor,
@@ -142,7 +152,7 @@ async def list_audit(
             from_ts=from_ts,
             to_ts=to_ts,
             keyword=q,
-            availability_resolver=_availability_resolver(orch),
+            availability_resolver=_availability_resolver(orch, user_id),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -220,7 +230,7 @@ async def get_audit_event(
 
     dto = repo.get_for_user(
         user_id, event_id,
-        availability_resolver=_availability_resolver(orch),
+        availability_resolver=_availability_resolver(orch, user_id),
     )
     if dto is None:
         raise HTTPException(status_code=404, detail="not found")

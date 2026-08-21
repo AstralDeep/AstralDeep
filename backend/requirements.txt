@@ -1,5 +1,8 @@
 # Core
-astralprims>=0.2.0  # first-party UI primitives package (feature 026); 0.2.0 adds the dashboard primitives (badge/hero/keyvalue/timeline/rating). Orchestrator renders, ROTE adapts.
+# First-party Projection, Plane, Primitives, and LETS distributions are built
+# and installed from the exact initialized submodules by
+# scripts/install_local_components.py. Keep them out of this resolver input so
+# an index package can never substitute for the composition's local wheel.
 websockets>=12.0
 openai>=1.0.0
 python-dotenv>=1.0.0
@@ -68,6 +71,10 @@ paramiko>=3.4.0
 # cryptography is used directly (credential_manager Fernet) and by paramiko/python-jose;
 # pin it explicitly here rather than relying on transitive resolution.
 cryptography>=42.0.0
+# LETS protected-executor signature verification is a direct runtime use. The
+# local-component installer is intentionally --no-deps, so do not rely on the
+# LETS wheel or Paramiko to resolve this transitively.
+PyNaCl>=1.6.2,<2
 
 # Testing
 pytest>=7.0.0

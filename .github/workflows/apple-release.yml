@@ -21,16 +21,11 @@ name: Release Apple clients
 
 # Triggers:
 #   * apple-v* tag push       — versioned release (guard asserts tag==MARKETING_VERSION)
-#   * push to main            — auto-release ONLY when apple-clients/** changed (the
-#                               `gate` job below decides); build number = run number,
-#                               version = the project's MARKETING_VERSION
 #   * workflow_dispatch       — manual release from the main/default ref only
-# A `paths:` filter is deliberately NOT used: on GitHub it interacts unreliably with
-# tag pushes (they can be silently skipped), so the apple-clients change check lives
-# in the `gate` job instead — the tag/dispatch paths are never path-filtered.
+# Merging a composition never submits to the App Store. A tag or a guarded manual
+# dispatch is a separate, explicit release decision.
 on:
   push:
-    branches: ["main"]
     tags: ["apple-v*"]
   workflow_dispatch:
 
@@ -38,13 +33,12 @@ permissions:
   contents: read # checkout only; the App Store is the channel, not a GH Release
 
 env:
-  PROJECT: apple-clients/AstralApp/AstralApp.xcodeproj
+  PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
   SCHEME: AstralApp
 
 jobs:
-  # Cheap Linux gate: a tag push or main-ref manual dispatch always releases; a push to
-  # main releases only when apple-clients/** changed on that push (so ordinary
-  # backend merges don't upload a redundant TestFlight build).
+  # Cheap Linux gate: a tag push or main-ref manual dispatch is the only release
+  # activation surface. Ordinary main merges cannot reach this workflow.
   gate:
     name: Decide whether to release
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
@@ -52,22 +46,10 @@ jobs:
     outputs:
       release: ${{ steps.decide.outputs.release }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          fetch-depth: 2
       - id: decide
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
-             || [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "release: event=${{ github.event_name }} ref=${{ github.ref }}"
-          elif git diff --name-only HEAD^ HEAD | grep -q '^apple-clients/'; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "release: apple-clients/** changed on this main push"
-          else
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "skip: no apple-clients/** changes on this main push"
-          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "release: explicit event=${{ github.event_name }} ref=${{ github.ref }}"
 
   release:
     name: Archive, sign, upload and submit
@@ -77,6 +59,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       - name: Select the latest stable Xcode
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
@@ -252,8 +237,8 @@ jobs:
         run: |
           # `envsubst` (gettext) is not guaranteed on a macOS runner; python3 is.
           for f in ios macos; do
-            python3 apple-clients/Scripts/render_export_options.py \
-              "apple-clients/ExportOptions-$f.plist" "$RUNNER_TEMP/ExportOptions-$f.plist"
+            python3 components/AstralProjection/apple-clients/Scripts/render_export_options.py \
+              "components/AstralProjection/apple-clients/ExportOptions-$f.plist" "$RUNNER_TEMP/ExportOptions-$f.plist"
             plutil -lint "$RUNNER_TEMP/ExportOptions-$f.plist"
           done
 
@@ -319,7 +304,7 @@ jobs:
           [ -f "$PKG" ] || {
             echo "::error::macOS export produced no .pkg. A Mac App Store submission must be a"
             echo "::error::signed installer package. Check installerSigningCertificate in"
-            echo "::error::apple-clients/ExportOptions-macos.plist against the identity actually"
+            echo "::error::components/AstralProjection/apple-clients/ExportOptions-macos.plist against the identity actually"
             echo "::error::present in the keychain ('3rd Party Mac Developer Installer: …')."
             exit 1; }
           echo "IPA=$IPA" >> "$GITHUB_ENV"
@@ -340,9 +325,9 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           # altool exits 0 even when it prints "VERIFY FAILED"; the wrapper refuses that.
-          bash apple-clients/Scripts/altool_strict.sh "validate iOS" \
+          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh "validate iOS" \
             --validate-app -f "$IPA" -t ios   --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-          bash apple-clients/Scripts/altool_strict.sh "validate macOS" \
+          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh "validate macOS" \
             --validate-app -f "$PKG" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
 
       - name: Upload both builds to the single Universal Purchase record
@@ -350,9 +335,9 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
-          bash apple-clients/Scripts/altool_strict.sh "upload iOS" \
+          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh "upload iOS" \
             --upload-app -f "$IPA" -t ios   --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-          bash apple-clients/Scripts/altool_strict.sh "upload macOS" \
+          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh "upload macOS" \
             --upload-app -f "$PKG" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
 
       # Submitting for review requires a COMPLETE store listing (screenshots for

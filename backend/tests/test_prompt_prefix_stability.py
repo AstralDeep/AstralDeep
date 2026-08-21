@@ -22,11 +22,9 @@ from tests.test_wave0_live_wiring import _fake_ws, _msg, _register_tool_agent, _
 
 
 @pytest.fixture
-def orch():
+def orch(orchestrator_factory):
     """A chat-loop orchestrator with delivery and heartbeat stubbed out."""
-    from orchestrator.orchestrator import Orchestrator
-
-    orch = Orchestrator()
+    orch = orchestrator_factory()
     orch._llm_store.set_sync("wave0-user", provider="custom",
                              base_url="http://test.invalid/v1",
                              model="test-model", api_key="test-key")

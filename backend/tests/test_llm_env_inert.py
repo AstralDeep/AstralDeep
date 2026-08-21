@@ -42,7 +42,10 @@ LEGACY_VARS = {
 # (a) SC-007 — env vars change nothing
 # ---------------------------------------------------------------------------
 
-def test_legacy_env_vars_do_not_configure_any_llm(monkeypatch):
+def test_legacy_env_vars_do_not_configure_any_llm(
+    monkeypatch,
+    orchestrator_factory,
+):
     for name, value in LEGACY_VARS.items():
         monkeypatch.setenv(name, value)
 
@@ -50,8 +53,7 @@ def test_legacy_env_vars_do_not_configure_any_llm(monkeypatch):
     # must not mint any default credential from them.
     from unittest.mock import AsyncMock
 
-    from orchestrator.orchestrator import Orchestrator
-    orch = Orchestrator()
+    orch = orchestrator_factory()
     orch._record_llm_unconfigured = AsyncMock()
 
     uid = f"envinert054-{uuid.uuid4().hex[:10]}"

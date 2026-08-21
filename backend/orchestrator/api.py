@@ -81,6 +81,47 @@ def _get_orchestrator(request: Request):
     return orch
 
 
+def _plane_boundary(orch):
+    """Return the one application-scoped Plane runtime and repository catalog."""
+
+    composition = getattr(orch, "runtime_composition", None)
+    plane = getattr(composition, "plane", None)
+    runtime = getattr(plane, "runtime", None)
+    repositories = getattr(plane, "repositories", None)
+    if runtime is None or repositories is None:
+        raise HTTPException(
+            status_code=503,
+            detail="AstralPlane runtime is not initialized",
+        )
+    return runtime, repositories
+
+
+def _request_dispatch_identity(
+    request: Request,
+    user_id: str,
+) -> tuple[Dict[str, Any], Optional[str]]:
+    """Return only transport-verified REST identity for internal dispatch.
+
+    Authentication dependencies store claims and the short-lived subject
+    token on ``request.state``.  Keeping the bearer separate prevents audit
+    serialization while still allowing the normal RFC 8693 gate to run.
+    """
+
+    state = getattr(request, "state", None)
+    claims = getattr(state, "audit_claims", None)
+    if not isinstance(claims, dict):
+        # Direct unit invocations do not execute FastAPI dependencies.  Their
+        # explicit ``user_id`` remains the already-resolved dependency value;
+        # production requests always take the state-backed branch above.
+        claims = {"sub": user_id}
+    if claims.get("sub") != user_id:
+        raise HTTPException(status_code=401, detail="Invalid dispatch identity")
+    subject_token = getattr(state, "delegation_subject_token", None)
+    if not isinstance(subject_token, str) or not subject_token:
+        subject_token = None
+    return dict(claims), subject_token
+
+
 async def _run_atomic_canvas_mutation(
     orchestrator,
     *,
@@ -104,7 +145,10 @@ async def _run_atomic_canvas_mutation(
         )
         from orchestrator.history import ConversationCommitRepository
 
-        repository = ConversationCommitRepository(orchestrator.history.db)
+        repository = ConversationCommitRepository(
+            plane_runtime=orchestrator.history.plane_runtime,
+            plane_repositories=orchestrator.history.plane_repositories,
+        )
         request_generation = str(uuid.uuid4())
         layouts = await orchestrator.workspace.alive_layouts(chat_id, user_id)
         staged = await asyncio.to_thread(
@@ -673,10 +717,19 @@ async def get_chat_steps(
     chat = await asyncio.to_thread(orch.history.get_chat, chat_id, user_id=user_id)
     if not chat:
         # Try to differentiate "exists for another user" vs "does not exist".
-        cross_user = await orch.history.db.afetch_one(
-            "SELECT 1 FROM chats WHERE id = ? LIMIT 1", (chat_id,)
-        )
-        if cross_user is not None:
+        plane_runtime, plane_repositories = _plane_boundary(orch)
+
+        def _exists_for_administration() -> bool:
+            with plane_runtime.transaction() as transaction:
+                return (
+                    plane_repositories.history.conversations.get_for_administration(
+                        transaction,
+                        conversation_id=chat_id,
+                    )
+                    is not None
+                )
+
+        if await asyncio.to_thread(_exists_for_administration):
             raise HTTPException(status_code=403, detail="Chat not owned by user")
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -685,10 +738,10 @@ async def get_chat_steps(
     try:
         from shared.phi_redactor import redact
 
-        rows = await orch.history.db.afetch_all(
-            "SELECT * FROM chat_steps WHERE chat_id = ? AND user_id = ? "
-            "ORDER BY started_at ASC, id ASC",
-            (chat_id, user_id),
+        records = await asyncio.to_thread(
+            orch.history.list_chat_steps,
+            chat_id,
+            user_id,
         )
 
         # Read-time healing: orphan in-progress rows older than 30 s when
@@ -699,34 +752,33 @@ async def get_chat_steps(
         active = orch.task_manager.get_active_task(chat_id)
 
         steps = []
-        for row in rows:
-            row = dict(row)
-            status_value = row.get("status")
+        for record in records:
+            status_value = record.status.value
             if (
                 status_value == "in_progress"
                 and active is None
-                and now_ms - int(row.get("started_at", 0)) > 30_000
+                and now_ms - record.started_at > 30_000
             ):
                 status_value = "interrupted"
             # Defense-in-depth re-redaction on every field that could
             # ever contain PHI.
-            args_text, _ = redact(row.get("args_truncated"), kind="args")
-            result_text, _ = redact(row.get("result_summary"), kind="result")
-            error_text, _ = redact(row.get("error_message"), kind="error")
+            args_text, _ = redact(record.args_truncated, kind="args")
+            result_text, _ = redact(record.result_summary, kind="result")
+            error_text, _ = redact(record.error_message, kind="error")
             steps.append({
-                "id": row["id"],
-                "chat_id": row["chat_id"],
-                "turn_message_id": row.get("turn_message_id"),
-                "kind": row["kind"],
-                "name": row["name"],
+                "id": record.step_id,
+                "chat_id": record.conversation_id,
+                "turn_message_id": record.turn_message_id,
+                "kind": record.kind,
+                "name": record.name,
                 "status": status_value,
                 "args_truncated": args_text,
-                "args_was_truncated": bool(row.get("args_was_truncated", False)),
+                "args_was_truncated": record.args_was_truncated,
                 "result_summary": result_text,
-                "result_was_truncated": bool(row.get("result_was_truncated", False)),
+                "result_was_truncated": record.result_was_truncated,
                 "error_message": error_text,
-                "started_at": row["started_at"],
-                "ended_at": row.get("ended_at"),
+                "started_at": record.started_at,
+                "ended_at": record.ended_at,
             })
         return {"chat_id": chat_id, "steps": steps}
     except HTTPException:
@@ -1215,6 +1267,7 @@ async def complete_external_identity_link(
     if declaration is None or secret is None or not identity_projection_trusted(card):
         raise HTTPException(status_code=404, detail="Identity linking is unavailable")
     try:
+        plane_runtime, repositories = _plane_boundary(orch)
         verified = verify_link_handoff(
             agent_id=agent_id,
             provider=provider,
@@ -1225,13 +1278,15 @@ async def complete_external_identity_link(
         )
         await asyncio.to_thread(
             store_verified_identity,
-            orch.history.db,
+            None,
             user_id=user_id,
             agent_id=agent_id,
             provider=provider,
             subject=verified["subject"],
             issuer=verified["issuer"],
             state_nonce=verified["state_nonce"],
+            plane_runtime=plane_runtime,
+            plane_repositories=repositories,
         )
     except IdentityAlreadyLinkedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1242,9 +1297,11 @@ async def complete_external_identity_link(
         if (session or {}).get("sub") == user_id:
             orch.ui_sessions[websocket] = await asyncio.to_thread(
                 claims_with_saved_identities,
-                orch.history.db,
+                None,
                 user_id,
                 session,
+                plane_runtime=plane_runtime,
+                plane_repositories=repositories,
             )
     return RedirectResponse(
         "/?external_identity=orcid-linked",
@@ -1264,20 +1321,27 @@ async def list_agents(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    db = orch.history.db
-    ownership_map = {
-        o["agent_id"]: o
-        for o in await asyncio.to_thread(db.get_all_agent_ownership)
-    }
-    # Feature 013 follow-up: resolve the requesting user's per-agent
-    # disabled list once so every row in the response carries it.
-    disabled_set = set(await asyncio.to_thread(db.get_user_disabled_agents, user_id))
+    plane_runtime, repositories = _plane_boundary(orch)
+
+    def _read_agent_index():
+        with plane_runtime.transaction() as transaction:
+            ownership = repositories.agents.list_ownership_for_administration(
+                transaction,
+                limit=5000,
+            )
+            disabled = repositories.tool_policy_state.list_disabled_agents(
+                transaction,
+                owner_id=user_id,
+            )
+        return {record.agent_id: record for record in ownership}, set(disabled)
+
+    ownership_map, disabled_set = await asyncio.to_thread(_read_agent_index)
     agents = []
     for agent_id, card in orch.agent_cards.items():
         # Hide draft agents that aren't live yet
         if await asyncio.to_thread(orch._is_draft_agent, agent_id):
             continue
-        ownership = ownership_map.get(agent_id, {})
+        ownership = ownership_map.get(agent_id)
         agents.append(AgentInfo(
             id=card.agent_id,
             name=card.name,
@@ -1288,8 +1352,8 @@ async def list_agents(
             ],
             security_flags=orch.security_flags.get(agent_id, {}),
             status="connected",
-            owner_email=ownership.get("owner_email"),
-            is_public=bool(ownership.get("is_public", False)),
+            owner_email=None if ownership is None else ownership.owner_email,
+            is_public=False if ownership is None else ownership.is_public,
             disabled=agent_id in disabled_set,
         ))
     return AgentListResponse(agents=agents)
@@ -1370,7 +1434,12 @@ async def set_agent_permissions(
     # themselves (a cross-user break, SC-003). Non-user-agents (built-ins/public)
     # are unaffected: can_user_use_agent returns True for them.
     from orchestrator.user_agents import can_user_use_agent
-    if not await asyncio.to_thread(can_user_use_agent, orch.history.db, user_id, agent_id):
+    if not await asyncio.to_thread(
+        can_user_use_agent,
+        orch.user_agent_registry,
+        user_id,
+        agent_id,
+    ):
         raise HTTPException(
             status_code=403,
             detail=f"You cannot manage permissions for agent '{agent_id}'.")
@@ -1517,7 +1586,7 @@ async def get_user_tool_selection(
     if agent_id not in orch.agent_cards:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     selected = await asyncio.to_thread(
-        orch.history.db.get_user_tool_selection, user_id, agent_id
+        orch.tool_permissions.get_tool_selection, user_id, agent_id
     )
     return ToolSelectionResponse(agent_id=agent_id, selected_tools=selected)
 
@@ -1566,7 +1635,10 @@ async def set_user_tool_selection(
             detail=f"Tools blocked by scope/per-tool permissions: {blocked}",
         )
     await asyncio.to_thread(
-        orch.history.db.set_user_tool_selection, user_id, body.agent_id, body.selected_tools
+        orch.tool_permissions.set_tool_selection,
+        user_id,
+        body.agent_id,
+        body.selected_tools,
     )
     logger.info(
         "Tool selection updated: user=%s agent=%s tools=%d action=set",
@@ -1598,7 +1670,7 @@ async def clear_user_tool_selection(
     if agent_id not in orch.agent_cards:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     cleared = await asyncio.to_thread(
-        orch.history.db.clear_user_tool_selection, user_id, agent_id
+        orch.tool_permissions.clear_tool_selection, user_id, agent_id
     )
     logger.info(
         "Tool selection updated: user=%s agent=%s action=reset cleared=%s",
@@ -1630,7 +1702,10 @@ async def set_user_agent_enabled(
     if body.agent_id not in orch.agent_cards:
         raise HTTPException(status_code=404, detail=f"Agent '{body.agent_id}' not found")
     await asyncio.to_thread(
-        orch.history.db.set_user_agent_disabled, user_id, body.agent_id, not body.enabled
+        orch.tool_permissions.set_agent_disabled,
+        user_id,
+        body.agent_id,
+        not body.enabled,
     )
     logger.info(
         "Agent enabled state updated: user=%s agent=%s enabled=%s",
@@ -1657,15 +1732,32 @@ async def set_agent_visibility(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    db = orch.history.db
-    ownership = await asyncio.to_thread(db.get_agent_ownership, agent_id)
-    if not ownership:
+    plane_runtime, repositories = _plane_boundary(orch)
+
+    def _set_visibility():
+        with plane_runtime.transaction() as transaction:
+            ownership = repositories.agents.get_ownership(
+                transaction,
+                agent_id=agent_id,
+            )
+            if ownership is None:
+                return "missing"
+            if ownership.owner_email != payload.get("email", ""):
+                return "forbidden"
+            repositories.agents.set_visibility(
+                transaction,
+                agent_id=agent_id,
+                owner_email=ownership.owner_email,
+                is_public=body.is_public,
+                updated_at=int(time.time() * 1000),
+            )
+            return "updated"
+
+    result = await asyncio.to_thread(_set_visibility)
+    if result == "missing":
         raise HTTPException(status_code=404, detail=f"No ownership record for agent '{agent_id}'")
-    # Only the owner can change visibility
-    user_email = payload.get("email", "")
-    if ownership["owner_email"] != user_email:
+    if result == "forbidden":
         raise HTTPException(status_code=403, detail="Only the agent owner can change visibility")
-    await asyncio.to_thread(db.set_agent_visibility, agent_id, body.is_public)
     return {"agent_id": agent_id, "is_public": body.is_public}
 
 
@@ -1731,19 +1823,16 @@ async def set_agent_credentials(
     skill_names = {getattr(s, "name", None) for s in getattr(card, "skills", [])}
     if "_credentials_check" in skill_names:
         try:
-            creds = await asyncio.to_thread(
-                orch.credential_manager.get_agent_credentials_encrypted, user_id, agent_id
-            )
-            args: Dict[str, Any] = {}
-            if creds:
-                args["_credentials"] = creds
-                args["_credentials_encrypted"] = True
-            mcp_resp = await orch._dispatch_tool_call(
+            claims, subject_token = _request_dispatch_identity(request, user_id)
+            mcp_resp = await orch.execute_authorized_tool(
+                claims=claims,
+                user_id=user_id,
                 agent_id=agent_id,
                 tool_name="_credentials_check",
-                args=args,
+                arguments={},
+                channel="rest",
+                delegation_subject_token=subject_token,
                 timeout=5.0,
-                ui_websocket=None,
             )
             verdict = "unreachable"
             detail = None
@@ -1800,6 +1889,14 @@ def _get_lifecycle(request: Request):
     if lifecycle is None:
         raise HTTPException(status_code=503, detail="Agent lifecycle manager not initialized")
     return lifecycle
+
+
+def _draft_store(orch):
+    lifecycle = getattr(orch, "lifecycle_manager", None)
+    store = vars(lifecycle).get("draft_store") if hasattr(lifecycle, "__dict__") else None
+    if store is None:
+        raise HTTPException(status_code=503, detail="Draft persistence not initialized")
+    return store
 
 
 def _find_user_websocket(orch, user_id: str):
@@ -1896,7 +1993,10 @@ async def list_drafts(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    drafts = await asyncio.to_thread(orch.history.db.get_user_draft_agents, user_id)
+    drafts = await asyncio.to_thread(
+        _draft_store(orch).get_user_draft_agents,
+        user_id,
+    )
     return DraftAgentListResponse(
         drafts=[_draft_to_response(d, orch) for d in drafts]
     )
@@ -1945,7 +2045,7 @@ async def list_pending_review(
         raise HTTPException(status_code=403, detail="Admin role required")
 
     orch = _get_orchestrator(request)
-    drafts = await asyncio.to_thread(orch.history.db.get_pending_review_drafts)
+    drafts = await asyncio.to_thread(_draft_store(orch).get_pending_review_drafts)
     return DraftAgentListResponse(
         drafts=[_draft_to_response(d, orch) for d in drafts]
     )
@@ -1962,11 +2062,13 @@ async def get_draft(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    draft = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    draft = await asyncio.to_thread(
+        _draft_store(orch).get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
-    if draft["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Not your draft agent")
     return _draft_to_response(draft, orch)
 
 
@@ -1982,11 +2084,13 @@ async def delete_draft(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    draft = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    draft = await asyncio.to_thread(
+        _draft_store(orch).get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
-    if draft["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Not your draft agent")
 
     lifecycle = _get_lifecycle(request)
     deleted = await lifecycle.delete_draft(draft_id)
@@ -2007,11 +2111,13 @@ async def generate_draft(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    draft = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    draft = await asyncio.to_thread(
+        _draft_store(orch).get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
-    if draft["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Not your draft agent")
 
     # 058 SC-002 — this endpoint generates for the SERVER-HOSTED (027) target,
     # which validates by executing the generated tools here. A BYO draft's code
@@ -2045,11 +2151,13 @@ async def refine_draft(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    draft = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    draft = await asyncio.to_thread(
+        _draft_store(orch).get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
-    if draft["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Not your draft agent")
 
     lifecycle = _get_lifecycle(request)
     ws = _find_user_websocket(orch, user_id)
@@ -2069,11 +2177,13 @@ async def test_draft(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    draft = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    draft = await asyncio.to_thread(
+        _draft_store(orch).get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
-    if draft["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Not your draft agent")
 
     lifecycle = _get_lifecycle(request)
     ws = _find_user_websocket(orch, user_id)
@@ -2095,16 +2205,27 @@ async def stop_draft(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    draft = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    draft_store = _draft_store(orch)
+    draft = await asyncio.to_thread(
+        draft_store.get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
-    if draft["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Not your draft agent")
 
     lifecycle = _get_lifecycle(request)
     await lifecycle.stop_draft_agent(draft_id)
-    await asyncio.to_thread(orch.history.db.update_draft_agent, draft_id, status="generated")
-    updated = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    await asyncio.to_thread(
+        draft_store.update_draft_agent,
+        draft_id,
+        status="generated",
+    )
+    updated = await asyncio.to_thread(
+        draft_store.get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     return _draft_to_response(updated, orch)
 
 
@@ -2120,11 +2241,13 @@ async def approve_draft(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    draft = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    draft = await asyncio.to_thread(
+        _draft_store(orch).get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
-    if draft["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Not your draft agent")
 
     lifecycle = _get_lifecycle(request)
     ws = _find_user_websocket(orch, user_id)
@@ -2175,11 +2298,13 @@ async def get_draft_credentials(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    draft = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    draft = await asyncio.to_thread(
+        _draft_store(orch).get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
-    if draft["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Not your draft agent")
 
     agent_id = f"{draft['agent_slug'].replace('_', '-')}-1"
     stored_keys = await asyncio.to_thread(
@@ -2207,11 +2332,13 @@ async def set_draft_credentials(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    draft = await asyncio.to_thread(orch.history.db.get_draft_agent, draft_id)
+    draft = await asyncio.to_thread(
+        _draft_store(orch).get_owned_draft_agent,
+        user_id,
+        draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
-    if draft["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Not your draft agent")
 
     agent_id = f"{draft['agent_slug'].replace('_', '-')}-1"
     await asyncio.to_thread(
@@ -2307,10 +2434,16 @@ def _roles_from_payload(payload: dict) -> list:
     ),
 )
 async def get_chrome_menu(payload: dict = Depends(get_current_user_payload)):
+    from orchestrator.chrome_availability import projection_chrome_availability
     from webrender.chrome.menu_model import menu_model_dict
     # Native clients consume this — ADMIN TOOLS is web-only (include_admin=False)
     # and "Take the tour" is web-only (include_tour=False, feature 043).
-    return menu_model_dict(_roles_from_payload(payload), include_admin=False, include_tour=False)
+    return menu_model_dict(
+        _roles_from_payload(payload),
+        include_admin=False,
+        include_tour=False,
+        **projection_chrome_availability(),
+    )
 
 
 # =============================================================================
@@ -2527,7 +2660,7 @@ def _render_export_html(components: List[Dict[str, Any]], title: str) -> str:
         render_workspace(adapted, profile), title, note, date.today().isoformat())
 
 
-async def _full_table_rows(orch, user_id: str, chat_id: str,
+async def _full_table_rows(orch, request: Request, user_id: str, chat_id: str,
                            cd: Dict[str, Any], total: int):
     """Re-invoke a paginated table's recorded source tool for the complete
     row set — the component_action gate sequence (retired/merged-agent
@@ -2550,18 +2683,24 @@ async def _full_table_rows(orch, user_id: str, chat_id: str,
     # Full-range paging under the same param names the pagination footer patches.
     args.update({"limit": int(total), "offset": 0})
     try:
-        creds = await asyncio.to_thread(
-            orch.credential_manager.get_agent_credentials_encrypted, user_id, agent_id)
-        if creds:
-            args["_credentials"] = creds
-            args["_credentials_encrypted"] = True
-    except Exception:
-        logger.debug("csv export: credential injection failed", exc_info=True)
-    try:
-        result = await orch._execute_with_retry(None, agent_id, tool_name, args)
+        claims, subject_token = _request_dispatch_identity(request, user_id)
+        result = await orch.execute_authorized_tool(
+            claims=claims,
+            user_id=user_id,
+            agent_id=agent_id,
+            tool_name=tool_name,
+            arguments=args,
+            channel="rest",
+            chat_id=chat_id,
+            delegation_subject_token=subject_token,
+        )
     except Exception:
         logger.warning("csv export: source re-invoke failed", exc_info=True)
         result = None
+    if result is not None and result.error:
+        error_message = str(result.error.get("message", ""))
+        if "restricted" in error_message.lower() or "permission" in error_message.lower():
+            raise _ExportError(403, "forbidden", error_message)
     if result is not None and not result.error:
         for comp in result.ui_components or []:
             if isinstance(comp, dict) and str(comp.get("type") or "").strip().lower() == "table":
@@ -2610,7 +2749,9 @@ async def export_component_csv(
     full_export = False
     if total is not None and total > len(rows) and not stored_only:
         try:
-            headers, rows = await _full_table_rows(orch, user_id, chat_id, cd, total)
+            headers, rows = await _full_table_rows(
+                orch, request, user_id, chat_id, cd, total
+            )
             full_export = True
         except _ExportError as e:
             return e.response()
@@ -2791,5 +2932,8 @@ async def serve_share(token: str):
     grant = await store.resolve(token)
     if grant is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    await store.record_open(grant)
+    if not await store.record_open(grant):
+        # The digest was revoked or expired after resolution but before the
+        # open-count fence. Never serve through that revocation race.
+        raise HTTPException(status_code=404, detail="Not Found")
     return HTMLResponse(content=grant["snapshot_html"], headers=_SHARE_PUBLIC_HEADERS)

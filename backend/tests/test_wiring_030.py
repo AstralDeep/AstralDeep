@@ -7,7 +7,7 @@ Covers:
 * Orchestrator._text_only_cta_components (deterministic enable affordance)
 * Orchestrator._is_draft_agent public-ownership short-circuit (etf false positive)
 * Orchestrator._delegation_required (Constitution VII fail-closed posture)
-* Database._migrate_agent_visibility_030 (idempotent visibility backfill)
+* Plane-backed first-party visibility and owner-scoped permission state
 
 Run inside the astraldeep container:
     python -m pytest tests/test_wiring_030.py -q
@@ -24,22 +24,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from orchestrator.tool_permissions import ToolPermissionManager  # noqa: E402
 from orchestrator.welcome import enable_agents_card, welcome_components  # noqa: E402
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-_DB_OK = _can_connect_to_db()
-needs_db = pytest.mark.skipif(not _DB_OK, reason="Postgres unavailable in this environment")
+@pytest.fixture(scope="module")
+def plane_runtime():
+    with isolated_plane_runtime("wiring_030") as runtime:
+        yield runtime
 
 
 # ---------------------------------------------------------------------------
@@ -89,16 +80,27 @@ def test_enable_agents_card_never_promises_write_access():
 
 
 @pytest.fixture
-def perms():
-    from shared.database import Database
+def perms(plane_runtime):
+    from orchestrator.user_agents import UserAgentRegistry
 
-    manager = ToolPermissionManager(db=Database())
+    registry = UserAgentRegistry(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    manager = ToolPermissionManager(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+        user_agent_registry=registry,
+    )
     user_id = f"pytest-030-{uuid.uuid4().hex[:12]}"
     yield manager, user_id
-    manager.db.execute("DELETE FROM agent_scopes WHERE user_id = ?", (user_id,))
+    with plane_runtime.transaction() as transaction:
+        plane_runtime.repositories.tool_policy_state.remove_owner_state(
+            transaction,
+            owner_id=user_id,
+        )
 
 
-@needs_db
 def test_has_any_enabled_scope_false_for_fresh_user(perms):
     manager, user_id = perms
     assert manager.has_any_enabled_scope(user_id) is False
@@ -107,7 +109,6 @@ def test_has_any_enabled_scope_false_for_fresh_user(perms):
 # ── 030 ∩ 040: who the enable affordance is still FOR ─────────────────────
 
 
-@needs_db
 def test_fresh_user_on_safe_baseline_is_not_shown_the_enable_affordance(perms):
     """The 030 affordance is deliberately unreachable for a fresh account.
 
@@ -120,8 +121,12 @@ def test_fresh_user_on_safe_baseline_is_not_shown_the_enable_affordance(perms):
     """
     manager, user_id = perms
     agent_id = f"pytest-030-safe-{uuid.uuid4().hex[:10]}"
-    manager.db.upsert_agent_safe(agent_id, True, marked_by="pytest")
-    manager.db.set_agent_ownership(agent_id, "o@e.com", is_public=True)
+    manager.user_agent_registry.upsert_agent_safe(agent_id, True, marked_by="pytest")
+    manager.user_agent_registry.set_agent_ownership(
+        agent_id,
+        "o@e.com",
+        is_public=True,
+    )
     manager.register_tool_scopes(agent_id, {"web_search": "tools:search"})
 
     # Dispatchable → compute_tools_available_for_user would return True …
@@ -132,7 +137,6 @@ def test_fresh_user_on_safe_baseline_is_not_shown_the_enable_affordance(perms):
                for c in welcome_components(tools_available=True))
 
 
-@needs_db
 def test_explicit_optout_user_still_reaches_the_enable_affordance(perms):
     """…and it is still reachable, and honest, for the opt-out population.
 
@@ -142,8 +146,12 @@ def test_explicit_optout_user_still_reaches_the_enable_affordance(perms):
     """
     manager, user_id = perms
     agent_id = f"pytest-030-optout-{uuid.uuid4().hex[:10]}"
-    manager.db.upsert_agent_safe(agent_id, True, marked_by="pytest")
-    manager.db.set_agent_ownership(agent_id, "o@e.com", is_public=True)
+    manager.user_agent_registry.upsert_agent_safe(agent_id, True, marked_by="pytest")
+    manager.user_agent_registry.set_agent_ownership(
+        agent_id,
+        "o@e.com",
+        is_public=True,
+    )
     manager.register_tool_scopes(agent_id, {"web_search": "tools:search"})
     manager.set_agent_scopes(user_id, agent_id, {"tools:search": False})
 
@@ -152,21 +160,18 @@ def test_explicit_optout_user_still_reaches_the_enable_affordance(perms):
     assert "Agents are off" in card["title"]
 
 
-@needs_db
 def test_has_any_enabled_scope_false_when_all_rows_disabled(perms):
     manager, user_id = perms
     manager.set_agent_scopes(user_id, "agent-x", {"tools:read": False})
     assert manager.has_any_enabled_scope(user_id) is False
 
 
-@needs_db
 def test_has_any_enabled_scope_true_after_grant(perms):
     manager, user_id = perms
     manager.set_agent_scopes(user_id, "agent-x", {"tools:read": True})
     assert manager.has_any_enabled_scope(user_id) is True
 
 
-@needs_db
 def test_scopes_required_by_tools_excludes_write(perms):
     manager, _ = perms
     manager.register_tool_scopes("agent-w", {
@@ -177,7 +182,6 @@ def test_scopes_required_by_tools_excludes_write(perms):
         "tools:read", "tools:search", "tools:system"]
 
 
-@needs_db
 def test_scopes_required_by_tools_defaults_to_read_for_unmapped_agent(perms):
     manager, _ = perms
     assert manager.scopes_required_by_tools("never-registered") == ["tools:read"]
@@ -191,8 +195,9 @@ def test_scopes_required_by_tools_defaults_to_read_for_unmapped_agent(perms):
 def _enable_fake(manager, agent_ids, ownership_rows, drafts=()):
     fake = types.SimpleNamespace(
         agent_cards={aid: object() for aid in agent_ids},
-        history=types.SimpleNamespace(db=types.SimpleNamespace(
-            get_all_agent_ownership=lambda: ownership_rows)),
+        user_agent_registry=types.SimpleNamespace(
+            get_all_agent_ownership=lambda: ownership_rows
+        ),
         tool_permissions=manager,
         _is_draft_agent=lambda aid: aid in drafts,
     )
@@ -201,7 +206,6 @@ def _enable_fake(manager, agent_ids, ownership_rows, drafts=()):
     return fake
 
 
-@needs_db
 def test_consent_enable_grants_nonwrite_scopes_for_public_agents(perms):
     manager, user_id = perms
     manager.register_tool_scopes("pub-1", {"get": "tools:read", "put": "tools:write"})
@@ -217,7 +221,6 @@ def test_consent_enable_grants_nonwrite_scopes_for_public_agents(perms):
     assert manager.get_agent_scopes(user_id, "priv-1")["tools:read"] is False
 
 
-@needs_db
 def test_consent_enable_skips_drafts_and_honors_requested_subset(perms):
     manager, user_id = perms
     fake = _enable_fake(manager, ["pub-1", "pub-2", "draft-1"], [
@@ -273,8 +276,9 @@ def _draft_fake(draft, ownership):
     fake = types.SimpleNamespace(
         lifecycle_manager=types.SimpleNamespace(
             _find_draft_by_agent_id=lambda aid: draft),
-        history=types.SimpleNamespace(db=types.SimpleNamespace(
-            get_agent_ownership=lambda aid: ownership)),
+        user_agent_registry=types.SimpleNamespace(
+            get_agent_ownership=lambda aid: ownership
+        ),
     )
     fake._is_draft_agent = types.MethodType(Orchestrator._is_draft_agent, fake)
     return fake
@@ -329,54 +333,50 @@ def test_delegation_override_wins_both_ways(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Database._migrate_agent_visibility_030 — idempotent backfill
+# Current Plane-backed catalog visibility policy
 # ---------------------------------------------------------------------------
 
 
-@needs_db
-def test_visibility_migration_flips_only_listed_agents_and_is_idempotent():
-    import psycopg2
-    from shared.database import Database, _build_database_url
+def test_visibility_policy_flips_only_listed_agents_and_is_idempotent(plane_runtime):
+    from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
+    from orchestrator.user_agents import UserAgentRegistry
 
-    listed = f"pytest-030-listed-{uuid.uuid4().hex[:8]}"
+    registry = UserAgentRegistry(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    listed = "web-research-1"
     unlisted = f"pytest-030-unlisted-{uuid.uuid4().hex[:8]}"
-    conn = psycopg2.connect(_build_database_url())
+    owner_email = f"pytest-030-{uuid.uuid4().hex[:8]}@example.invalid"
+    registry.set_agent_ownership(listed, owner_email, is_public=False)
+    registry.set_agent_ownership(unlisted, owner_email, is_public=False)
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO agent_ownership (agent_id, owner_email, is_public) "
-            "VALUES (%s, %s, FALSE), (%s, %s, FALSE)",
-            (listed, "op@test", unlisted, "op@test"),
-        )
-        fake_db = types.SimpleNamespace(_FIRST_PARTY_PUBLIC_AGENT_IDS=(listed,))
-        migrate = types.MethodType(Database._migrate_agent_visibility_030, fake_db)
-        for _ in range(2):  # idempotent on re-run
-            migrate(cursor)
-        cursor.execute(
-            "SELECT agent_id, is_public FROM agent_ownership "
-            "WHERE agent_id IN (%s, %s)", (listed, unlisted))
-        state = dict(cursor.fetchall())
-        assert state[listed] is True
-        assert state[unlisted] is False
-        conn.commit()
+        for _ in range(2):
+            for agent_id in (listed, unlisted):
+                if agent_id in FIRST_PARTY_PUBLIC_AGENT_IDS:
+                    assert registry.set_agent_visibility(agent_id, True) is True
+        assert registry.get_agent_ownership(listed)["is_public"] is True
+        assert registry.get_agent_ownership(unlisted)["is_public"] is False
     finally:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM agent_ownership WHERE agent_id IN (%s, %s)",
-                       (listed, unlisted))
-        conn.commit()
-        conn.close()
+        with plane_runtime.transaction() as transaction:
+            for agent_id in (listed, unlisted):
+                plane_runtime.repositories.agents.remove_ownership(
+                    transaction,
+                    agent_id=agent_id,
+                    owner_email=owner_email,
+                )
 
 
-@needs_db
 def test_first_party_catalog_constants_match_post_029_catalog():
-    from shared.database import Database
+    from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
+    from orchestrator.orchestrator import RETIRED_AGENT_IDS
 
-    ids = set(Database._FIRST_PARTY_PUBLIC_AGENT_IDS)
+    ids = set(FIRST_PARTY_PUBLIC_AGENT_IDS)
     # The two 029 plug-and-play agents the walkthrough found invisible MUST
     # be in the visibility backfill.
     assert {"web-research-1", "summarizer-1"} <= ids
     # Drafts / retired ids must never be listed.
-    assert not any(a in ids for a in Database._RETIRED_AGENT_IDS)
+    assert not any(agent_id in ids for agent_id in RETIRED_AGENT_IDS)
 
 
 # ---------------------------------------------------------------------------
@@ -440,8 +440,8 @@ def test_detect_for_notice_empty_text_clean():
 # ---------------------------------------------------------------------------
 
 
-def _sched_fake(manager, history_db, agent_ids=("web-research-1",)):
-    """Fake orchestrator self for scheduling_chat — real DB-backed pieces."""
+def _sched_fake(manager, scheduled_job_store, agent_ids=("web-research-1",)):
+    """Fake orchestrator self for scheduling_chat over the typed Plane store."""
     renders = []
 
     async def send_ui_render(ws, components, target="canvas"):
@@ -449,7 +449,7 @@ def _sched_fake(manager, history_db, agent_ids=("web-research-1",)):
 
     fake = types.SimpleNamespace(
         agent_cards={aid: object() for aid in agent_ids},
-        history=types.SimpleNamespace(db=history_db),
+        scheduled_job_store=scheduled_job_store,
         tool_permissions=manager,
         _is_draft_agent=lambda aid: False,
         send_ui_render=send_ui_render,
@@ -459,22 +459,25 @@ def _sched_fake(manager, history_db, agent_ids=("web-research-1",)):
 
 
 @pytest.fixture
-def sched_env(perms):
-    """Scheduling fixture: real db + perms manager + job-row cleanup."""
+def sched_env(perms, plane_runtime):
+    """Scheduling fixture over the same isolated application Plane."""
+    from scheduler.store import ScheduledJobStore
+
     manager, user_id = perms
-    db = manager.db
-    yield manager, db, user_id
-    db.execute("DELETE FROM scheduled_job WHERE user_id = ?", (user_id,))
+    store = ScheduledJobStore(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    return manager, store, user_id
 
 
-@needs_db
 def test_schedule_meta_tool_returns_consent_card_and_creates_nothing(sched_env):
     import asyncio
 
     from orchestrator import scheduling_chat
 
-    manager, db, user_id = sched_env
-    fake = _sched_fake(manager, db)
+    manager, store, user_id = sched_env
+    fake = _sched_fake(manager, store)
     resp = asyncio.run(scheduling_chat.handle_meta_tool(
         fake, "schedule_recurring_task",
         {"name": "Weekly digest", "instruction": "Compile new publications",
@@ -487,20 +490,17 @@ def test_schedule_meta_tool_returns_consent_card_and_creates_nothing(sched_env):
                if c.get("type") == "button"]
     assert actions == ["approve", "discard"]
     # NOTHING persisted before consent.
-    row = db.fetch_one("SELECT COUNT(*) AS n FROM scheduled_job WHERE user_id = ?",
-                       (user_id,))
-    assert int(row["n"]) == 0
+    assert store.list_jobs(user_id) == []
     assert len(fake._schedule_proposals) == 1
 
 
-@needs_db
 def test_schedule_meta_tool_rejects_bad_proposals(sched_env):
     import asyncio
 
     from orchestrator import scheduling_chat
 
-    manager, db, user_id = sched_env
-    fake = _sched_fake(manager, db)
+    manager, store, user_id = sched_env
+    fake = _sched_fake(manager, store)
     for args in (
         {"name": "", "instruction": "x", "schedule_kind": "interval", "schedule_expr": "1d"},
         {"name": "n", "instruction": "x", "schedule_kind": "weekly", "schedule_expr": "1d"},
@@ -514,16 +514,15 @@ def test_schedule_meta_tool_rejects_bad_proposals(sched_env):
         assert resp.error is not None, args
 
 
-@needs_db
 def test_schedule_decision_approve_creates_job_with_bounded_scopes(sched_env):
     import asyncio
 
     from orchestrator import scheduling_chat
 
-    manager, db, user_id = sched_env
+    manager, store, user_id = sched_env
     manager.register_tool_scopes("web-research-1", {"web_search": "tools:search"})
     manager.set_agent_scopes(user_id, "web-research-1", {"tools:search": True})
-    fake = _sched_fake(manager, db)
+    fake = _sched_fake(manager, store)
     asyncio.run(scheduling_chat.handle_meta_tool(
         fake, "schedule_recurring_task",
         {"name": "Weekly digest", "instruction": "Compile new publications",
@@ -534,17 +533,15 @@ def test_schedule_decision_approve_creates_job_with_bounded_scopes(sched_env):
     asyncio.run(scheduling_chat.handle_decision(
         fake, object(), user_id,
         {"proposal_id": proposal_id, "decision": "approve"}))
-    row = db.fetch_one(
-        "SELECT name, status, consented_scopes, target_chat_id, offline_grant_id "
-        "FROM scheduled_job WHERE user_id = ?", (user_id,))
-    assert row is not None and row["name"] == "Weekly digest"
+    jobs = store.list_jobs(user_id)
+    assert len(jobs) == 1
+    row = jobs[0]
+    assert row["name"] == "Weekly digest"
     assert row["status"] == "active"
     assert row["target_chat_id"] == "chat-1"
     assert row["offline_grant_id"] is None
-    scopes = row["consented_scopes"]
-    scopes = scopes if isinstance(scopes, list) else __import__("json").loads(scopes)
     # Bounded to CURRENT grants — only the search scope that was enabled.
-    assert scopes == ["tools:search"]
+    assert row["consented_scopes"] == ["tools:search"]
     assert fake._schedule_proposals == {}
     # Success alert + manage button rendered to chat.
     components, target = fake._renders[-1]
@@ -552,14 +549,13 @@ def test_schedule_decision_approve_creates_job_with_bounded_scopes(sched_env):
     assert components[0]["variant"] == "success"
 
 
-@needs_db
 def test_schedule_decision_discard_and_foreign_user_refused(sched_env):
     import asyncio
 
     from orchestrator import scheduling_chat
 
-    manager, db, user_id = sched_env
-    fake = _sched_fake(manager, db)
+    manager, store, user_id = sched_env
+    fake = _sched_fake(manager, store)
     asyncio.run(scheduling_chat.handle_meta_tool(
         fake, "schedule_recurring_task",
         {"name": "n", "instruction": "x", "schedule_kind": "interval",
@@ -576,19 +572,16 @@ def test_schedule_decision_discard_and_foreign_user_refused(sched_env):
         fake, object(), user_id, {"proposal_id": proposal_id,
                                   "decision": "discard"}))
     assert fake._schedule_proposals == {}
-    row = db.fetch_one("SELECT COUNT(*) AS n FROM scheduled_job WHERE user_id = ?",
-                       (user_id,))
-    assert int(row["n"]) == 0
+    assert store.list_jobs(user_id) == []
 
 
-@needs_db
 def test_schedule_decision_expired_proposal_refused(sched_env):
     import asyncio
 
     from orchestrator import scheduling_chat
 
-    manager, db, user_id = sched_env
-    fake = _sched_fake(manager, db)
+    manager, store, user_id = sched_env
+    fake = _sched_fake(manager, store)
     asyncio.run(scheduling_chat.handle_meta_tool(
         fake, "schedule_recurring_task",
         {"name": "n", "instruction": "x", "schedule_kind": "interval",
@@ -601,9 +594,7 @@ def test_schedule_decision_expired_proposal_refused(sched_env):
         fake, object(), user_id, {"proposal_id": proposal_id,
                                   "decision": "approve"}))
     assert fake._schedule_proposals == {}
-    row = db.fetch_one("SELECT COUNT(*) AS n FROM scheduled_job WHERE user_id = ?",
-                       (user_id,))
-    assert int(row["n"]) == 0
+    assert store.list_jobs(user_id) == []
 
 
 def test_schedule_human_cadence_lines():
@@ -637,12 +628,22 @@ def test_welcome_buttons_have_unique_accessible_names():
 # ---------------------------------------------------------------------------
 
 
-@needs_db
-def test_orphan_draft_permission_sweep_and_delete_purge(perms, tmp_path):
+def test_orphan_draft_permission_sweep_and_delete_purge(
+    perms,
+    plane_runtime,
+    tmp_path,
+):
     from orchestrator.agent_lifecycle import AgentLifecycleManager
+    from orchestrator.draft_plane_store import PlaneDraftStore
 
     manager, user_id = perms
-    fake = types.SimpleNamespace(db=manager.db, _agents_dir=str(tmp_path))
+    fake = types.SimpleNamespace(
+        draft_store=PlaneDraftStore(
+            plane_runtime=plane_runtime,
+            plane_repositories=plane_runtime.repositories,
+        ),
+        _agents_dir=str(tmp_path),
+    )
     purge = types.MethodType(
         AgentLifecycleManager._purge_agent_permission_rows, fake)
     fake._purge_agent_permission_rows = purge  # the sweep calls it via self
@@ -664,7 +665,10 @@ def test_orphan_draft_permission_sweep_and_delete_purge(perms, tmp_path):
     assert manager.get_agent_scopes(user_id, marked)["tools:read"] is False
     assert manager.get_agent_scopes(user_id, keeper)["tools:read"] is True
 
-    purge(keeper)  # the delete-time purge helper removes rows directly
+    purge(
+        keeper,
+        owner_user_id=user_id,
+    )  # the delete-time purge helper removes rows through Plane
     assert manager.get_agent_scopes(user_id, keeper)["tools:read"] is False
 
 

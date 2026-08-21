@@ -1,252 +1,147 @@
-"""
-Audit log repository — psycopg2-backed, append-only, hash-chained.
+"""Product-facing audit facade over AstralPlane's typed audit repositories."""
 
-Provides three primary operations:
-
-* :meth:`AuditRepository.insert` — atomic per-user hash-chained insert.
-  Wraps the row in a transaction that ``SELECT … FOR UPDATE`` locks the
-  user's most recent entry, computes the new ``prev_hash`` and HMAC
-  ``entry_hash``, and INSERTs. Concurrent inserts for the same user
-  serialize through the row-level lock; concurrent inserts for
-  different users do not contend.
-* :meth:`AuditRepository.list_for_user` — cursor-paged, filterable list
-  scoped to a single ``actor_user_id``. The repository never accepts a
-  user_id from external input on this method; callers always pass the
-  authenticated principal.
-* :meth:`AuditRepository.get_for_user` — single-row fetch, scoped per
-  user; returns ``None`` for either non-existence or cross-user access.
-
-Other helpers:
-
-* :meth:`AuditRepository.verify_chain` — walks a user's chain forward
-  and returns the first event_id whose computed hash diverges from the
-  stored ``entry_hash``. Used by the verify-chain CLI.
-* :meth:`AuditRepository.purge_older_than` — DELETEs rows whose
-  ``recorded_at`` is older than the retention window. Caller MUST set
-  the ``audit.allow_purge`` session GUC; application code never does.
-
-The repository never updates rows — there is no ``update`` method. The
-in-progress → terminal transition is modeled as a *new* row sharing
-``correlation_id``.
-"""
 from __future__ import annotations
 
+import hashlib
 import json
-import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-import psycopg2
-from psycopg2.extras import Json
+from astralplane.repositories.audit import (
+    AuditCursor,
+    AuditEvent,
+    AuditRecord,
+)
+from orchestrator.plane_repository_context import PlaneRepositoryContext, repository_from
 
-from .pii import chain_hmac, get_active_key_id
+from .pii import AuditAnchorAuthenticator, chain_hmac, get_active_key_id
 from .schemas import AuditEventCreate, AuditEventDTO, ArtifactPointer
 
-logger = logging.getLogger("Audit.Repository")
 
-GENESIS_PREV_HASH = bytes(32)
+def _authenticate(key_id: str, payload: bytes) -> bytes:
+    """Adapt Deep's key custody to Plane's complete chain-payload callback."""
 
-
-# ---------------------------------------------------------------------------
-# Canonicalization helpers
-# ---------------------------------------------------------------------------
-
-def _canonical_row_bytes(row: Dict[str, Any]) -> bytes:
-    """Produce a deterministic byte string for hash-chain HMAC input.
-
-    Excludes the chain fields themselves (``prev_hash``, ``entry_hash``,
-    ``key_id``) and the ``recorded_at`` column, which is server-clocked
-    after canonicalization. ``schema_version`` is included so a future
-    canonicalization change cannot retroactively break old rows that
-    used the old shape.
-    """
-    canonical = {
-        "schema_version": row["schema_version"],
-        "event_id": row["event_id"],
-        "actor_user_id": row["actor_user_id"],
-        "auth_principal": row["auth_principal"],
-        "agent_id": row.get("agent_id"),
-        "event_class": row["event_class"],
-        "action_type": row["action_type"],
-        "description": row["description"],
-        "conversation_id": row.get("conversation_id"),
-        "correlation_id": row["correlation_id"],
-        "outcome": row["outcome"],
-        "outcome_detail": row.get("outcome_detail"),
-        "inputs_meta": row["inputs_meta"],
-        "outputs_meta": row["outputs_meta"],
-        "artifact_pointers": row["artifact_pointers"],
-        "started_at": row["started_at"],
-        "completed_at": row.get("completed_at"),
-    }
-    return json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    if len(payload) < 32:
+        raise ValueError("audit chain payload is missing its previous digest")
+    digest, _used_key = chain_hmac(payload[:32], payload[32:], key_id=key_id)
+    return digest
 
 
-def _row_to_dto(row: Dict[str, Any], availability_resolver=None) -> AuditEventDTO:
-    """Map a DB row to the public DTO. Computes pointer availability."""
-    pointers_raw = row.get("artifact_pointers") or []
-    if isinstance(pointers_raw, str):
-        pointers_raw = json.loads(pointers_raw)
+def _record_to_dto(
+    record: AuditRecord,
+    availability_resolver=None,
+) -> AuditEventDTO:
+    event = record.event
+    pointers_raw = json.loads(event.artifact_pointers_json)
     pointers: List[ArtifactPointer] = []
-    for p in pointers_raw:
-        item = dict(p)
+    for value in pointers_raw:
+        item = dict(value)
         if availability_resolver is not None:
             try:
                 item["available"] = bool(availability_resolver(item))
-            except Exception:  # pragma: no cover — never block a read
+            except Exception:  # pragma: no cover - availability is advisory
                 item["available"] = True
         else:
             item.setdefault("available", True)
-        pointers.append(ArtifactPointer(**{k: item.get(k) for k in ("artifact_id", "store", "extension", "size_bytes", "available")}))
-    inputs = row.get("inputs_meta") or {}
-    outputs = row.get("outputs_meta") or {}
-    if isinstance(inputs, str):
-        inputs = json.loads(inputs)
-    if isinstance(outputs, str):
-        outputs = json.loads(outputs)
+        pointers.append(
+            ArtifactPointer(
+                **{
+                    key: item.get(key)
+                    for key in (
+                        "artifact_id",
+                        "store",
+                        "extension",
+                        "size_bytes",
+                        "available",
+                    )
+                }
+            )
+        )
     return AuditEventDTO(
-        event_id=str(row["event_id"]),
-        event_class=row["event_class"],
-        action_type=row["action_type"],
-        description=row["description"],
-        agent_id=row.get("agent_id"),
-        conversation_id=row.get("conversation_id"),
-        correlation_id=str(row["correlation_id"]),
-        outcome=row["outcome"],
-        outcome_detail=row.get("outcome_detail"),
-        inputs_meta=inputs,
-        outputs_meta=outputs,
+        event_id=event.event_id,
+        event_class=event.event_class,
+        action_type=event.action_type,
+        description=event.description,
+        agent_id=event.agent_id,
+        conversation_id=event.conversation_id,
+        correlation_id=event.correlation_id,
+        outcome=event.outcome,
+        outcome_detail=event.outcome_detail,
+        inputs_meta=json.loads(event.inputs_json),
+        outputs_meta=json.loads(event.outputs_json),
         artifact_pointers=pointers,
-        started_at=row["started_at"],
-        completed_at=row.get("completed_at"),
-        recorded_at=row["recorded_at"],
+        started_at=event.started_at,
+        completed_at=event.completed_at,
+        recorded_at=record.recorded_at,
     )
 
 
-# ---------------------------------------------------------------------------
-# Repository
-# ---------------------------------------------------------------------------
-
 class AuditRepository:
-    """Append-only audit log access. Owned by ``Recorder``.
+    """Keep audit policy and DTO shaping in Deep; delegate durability to Plane."""
 
-    The repository exposes ``insert`` / ``list_for_user`` / ``get_for_user``
-    plus the operator helpers ``verify_chain`` and ``purge_older_than``.
-    All writes go through ``insert``; all reads are filtered on
-    ``actor_user_id``.
-    """
-
-    def __init__(self, db):
-        self._db = db  # shared.database.Database instance
-
-    # ------------------------------------------------------------------
-    # Insert (write path)
-    # ------------------------------------------------------------------
+    def __init__(
+        self,
+        db=None,
+        *,
+        plane_runtime=None,
+        plane_repositories=None,
+        audit_repository=None,
+        audit_retention_repository=None,
+    ) -> None:
+        audit, runtime = repository_from(
+            "audit",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        retention, retention_runtime = repository_from(
+            "audit_retention",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._audit = PlaneRepositoryContext(
+            repository=audit_repository or audit,
+            plane_runtime=runtime,
+            legacy_database=db,
+        )
+        self._retention = PlaneRepositoryContext(
+            repository=audit_retention_repository or retention,
+            plane_runtime=retention_runtime,
+            legacy_database=db,
+        )
 
     def insert(self, event: AuditEventCreate) -> AuditEventDTO:
-        """Insert a new audit row, hash-chained to the user's previous row.
-
-        Returns the DTO of the inserted row (with ``recorded_at``
-        populated by the database). Raises if the underlying DB
-        operation fails — callers in ``Recorder`` decide whether to
-        retry from the disk queue.
-        """
-        event_id = str(uuid.uuid4())
-        key_id = get_active_key_id()
-        schema_version = 1
-
-        conn = self._db._get_connection()
-        try:
-            conn.autocommit = False
-            with conn.cursor() as cur:
-                # Serialize chain insertion per user via an advisory
-                # transaction-scoped lock keyed on hash(user_id). Held until
-                # COMMIT/ROLLBACK. Using an advisory lock (rather than
-                # SELECT ... FOR UPDATE on the most-recent row) covers the
-                # genesis case where there is no prior row to lock.
-                cur.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
-                    (f"audit_events:{event.actor_user_id}",),
-                )
-                cur.execute(
-                    """
-                    SELECT entry_hash
-                    FROM audit_events
-                    WHERE actor_user_id = %s
-                    ORDER BY recorded_at DESC, event_id DESC
-                    LIMIT 1
-                    """,
-                    (event.actor_user_id,),
-                )
-                row = cur.fetchone()
-                prev_hash = bytes(row["entry_hash"]) if row else GENESIS_PREV_HASH
-
-                row_for_chain = {
-                    "schema_version": schema_version,
-                    "event_id": event_id,
-                    "actor_user_id": event.actor_user_id,
-                    "auth_principal": event.auth_principal,
-                    "agent_id": event.agent_id,
-                    "event_class": event.event_class,
-                    "action_type": event.action_type,
-                    "description": event.description,
-                    "conversation_id": event.conversation_id,
-                    "correlation_id": event.correlation_id,
-                    "outcome": event.outcome,
-                    "outcome_detail": event.outcome_detail,
-                    "inputs_meta": event.inputs_meta,
-                    "outputs_meta": event.outputs_meta,
-                    "artifact_pointers": [p.model_dump() for p in event.artifact_pointers],
-                    "started_at": event.started_at.astimezone(timezone.utc).isoformat(),
-                    "completed_at": event.completed_at.astimezone(timezone.utc).isoformat() if event.completed_at else None,
-                }
-                entry_hash, used_kid = chain_hmac(
-                    prev_hash, _canonical_row_bytes(row_for_chain), key_id=key_id
-                )
-
-                cur.execute(
-                    """
-                    INSERT INTO audit_events (
-                        event_id, actor_user_id, auth_principal, agent_id,
-                        event_class, action_type, description, conversation_id,
-                        correlation_id, outcome, outcome_detail,
-                        inputs_meta, outputs_meta, artifact_pointers,
-                        started_at, completed_at,
-                        prev_hash, entry_hash, key_id, schema_version
-                    ) VALUES (
-                        %s, %s, %s, %s,
-                        %s, %s, %s, %s,
-                        %s, %s, %s,
-                        %s, %s, %s,
-                        %s, %s,
-                        %s, %s, %s, %s
-                    )
-                    RETURNING *
-                    """,
-                    (
-                        event_id, event.actor_user_id, event.auth_principal, event.agent_id,
-                        event.event_class, event.action_type, event.description, event.conversation_id,
-                        event.correlation_id, event.outcome, event.outcome_detail,
-                        Json(event.inputs_meta), Json(event.outputs_meta),
-                        Json([p.model_dump() for p in event.artifact_pointers]),
-                        event.started_at, event.completed_at,
-                        psycopg2.Binary(prev_hash), psycopg2.Binary(entry_hash),
-                        used_kid, schema_version,
-                    ),
-                )
-                inserted = cur.fetchone()
-                conn.commit()
-                return _row_to_dto(inserted)
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-    # ------------------------------------------------------------------
-    # Reads (filtered by authenticated user)
-    # ------------------------------------------------------------------
+        durable_event = AuditEvent(
+            event_id=str(uuid.uuid4()),
+            chain_id=event.actor_user_id,
+            auth_principal=event.auth_principal,
+            agent_id=event.agent_id,
+            event_class=event.event_class,
+            action_type=event.action_type,
+            description=event.description,
+            conversation_id=event.conversation_id,
+            correlation_id=event.correlation_id,
+            outcome=event.outcome,
+            outcome_detail=event.outcome_detail,
+            inputs_json=json.dumps(event.inputs_meta),
+            outputs_json=json.dumps(event.outputs_meta),
+            artifact_pointers_json=json.dumps(
+                [pointer.model_dump() for pointer in event.artifact_pointers]
+            ),
+            started_at=event.started_at,
+            completed_at=event.completed_at,
+            key_id=get_active_key_id(),
+            schema_version=2,
+        )
+        with self._audit.transaction() as transaction:
+            record = self._audit.repository.append(
+                transaction,
+                durable_event,
+                _authenticate,
+            )
+        return _record_to_dto(record)
 
     def list_for_user(
         self,
@@ -261,73 +156,43 @@ class AuditRepository:
         keyword: Optional[str] = None,
         availability_resolver=None,
     ) -> Tuple[List[AuditEventDTO], Optional[str]]:
-        """Return at most ``limit`` events for a user plus a next-cursor.
-
-        Cursor encodes ``(recorded_at_iso, event_id)`` of the last
-        returned row; pagination is keyset, not offset, so it stays
-        stable under concurrent inserts.
-        """
-        if limit < 1 or limit > 200:
-            raise ValueError("limit out of range")
-
-        clauses = ["actor_user_id = %s"]
-        params: List[Any] = [actor_user_id]
-
+        typed_cursor = None
         if cursor:
             try:
-                ts_iso, eid = cursor.split("|", 1)
-                cursor_ts = datetime.fromisoformat(ts_iso)
-                # Validate the UUID shape before passing it through (psycopg2
-                # doesn't adapt uuid.UUID by default for ad-hoc queries).
-                uuid.UUID(eid)
+                recorded_at, event_id = cursor.split("|", 1)
+                uuid.UUID(event_id)
+                typed_cursor = AuditCursor(
+                    recorded_at=datetime.fromisoformat(recorded_at),
+                    event_id=event_id,
+                )
             except Exception as exc:
                 raise ValueError(f"invalid cursor: {exc}") from exc
-            clauses.append("(recorded_at, event_id) < (%s, %s::uuid)")
-            params.extend([cursor_ts, eid])
-
-        if event_classes:
-            clauses.append("event_class = ANY(%s)")
-            params.append(list(event_classes))
-        if outcomes:
-            clauses.append("outcome = ANY(%s)")
-            params.append(list(outcomes))
-        if from_ts:
-            clauses.append("recorded_at >= %s")
-            params.append(from_ts)
-        if to_ts:
-            clauses.append("recorded_at < %s")
-            params.append(to_ts)
-        if keyword:
-            kw = f"%{keyword.lower()}%"
-            clauses.append("(LOWER(description) LIKE %s OR LOWER(action_type) LIKE %s)")
-            params.extend([kw, kw])
-
-        where_sql = " AND ".join(clauses)
-        # Fetch limit+1 to detect whether more pages exist
-        params.append(limit + 1)
-
-        conn = self._db._get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT * FROM audit_events
-                    WHERE {where_sql}
-                    ORDER BY recorded_at DESC, event_id DESC
-                    LIMIT %s
-                    """,
-                    tuple(params),
-                )
-                rows = cur.fetchall()
-        finally:
-            conn.close()
-
-        next_cursor: Optional[str] = None
-        if len(rows) > limit:
-            last = rows[limit - 1]
-            next_cursor = f"{last['recorded_at'].isoformat()}|{last['event_id']}"
-            rows = rows[:limit]
-        return [_row_to_dto(r, availability_resolver) for r in rows], next_cursor
+        page = self._audit.call(
+            self._audit.repository.list_page,
+            owner_id=actor_user_id,
+            event_classes=event_classes,
+            outcomes=outcomes,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            keyword=keyword,
+            cursor=typed_cursor,
+            limit=limit,
+        )
+        next_cursor = (
+            None
+            if page.next_cursor is None
+            else (
+                f"{page.next_cursor.recorded_at.isoformat()}|"
+                f"{page.next_cursor.event_id}"
+            )
+        )
+        return (
+            [
+                _record_to_dto(record, availability_resolver)
+                for record in page.records
+            ],
+            next_cursor,
+        )
 
     def get_for_user(
         self,
@@ -335,98 +200,92 @@ class AuditRepository:
         event_id: str,
         availability_resolver=None,
     ) -> Optional[AuditEventDTO]:
-        """Fetch a single event by id, scoped to the authenticated user.
-
-        Returns ``None`` for either non-existence or wrong owner — this
-        indistinguishability is intentional (FR-007 / FR-019).
-        """
         try:
             uuid.UUID(event_id)
-        except (ValueError, TypeError):
+        except (TypeError, ValueError):
             return None
-        conn = self._db._get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT * FROM audit_events WHERE event_id = %s AND actor_user_id = %s",
-                    (event_id, actor_user_id),
-                )
-                row = cur.fetchone()
-        finally:
-            conn.close()
-        if not row:
-            return None
-        return _row_to_dto(row, availability_resolver)
-
-    # ------------------------------------------------------------------
-    # Operator helpers (NOT exposed via REST)
-    # ------------------------------------------------------------------
+        record = self._audit.call(
+            self._audit.repository.get,
+            chain_id=actor_user_id,
+            event_id=event_id,
+        )
+        return (
+            None
+            if record is None
+            else _record_to_dto(record, availability_resolver)
+        )
 
     def verify_chain(self, actor_user_id: str) -> Optional[str]:
-        """Walk the user's chain forward; return the first bad event_id or ``None``."""
-        conn = self._db._get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT * FROM audit_events
-                    WHERE actor_user_id = %s
-                    ORDER BY recorded_at ASC, event_id ASC
-                    """,
-                    (actor_user_id,),
-                )
-                rows = cur.fetchall()
-        finally:
-            conn.close()
-        prev = GENESIS_PREV_HASH
-        for r in rows:
-            row_for_chain = {
-                "schema_version": r["schema_version"],
-                "event_id": str(r["event_id"]),
-                "actor_user_id": r["actor_user_id"],
-                "auth_principal": r["auth_principal"],
-                "agent_id": r.get("agent_id"),
-                "event_class": r["event_class"],
-                "action_type": r["action_type"],
-                "description": r["description"],
-                "conversation_id": r.get("conversation_id"),
-                "correlation_id": str(r["correlation_id"]),
-                "outcome": r["outcome"],
-                "outcome_detail": r.get("outcome_detail"),
-                "inputs_meta": r["inputs_meta"],
-                "outputs_meta": r["outputs_meta"],
-                "artifact_pointers": r["artifact_pointers"],
-                "started_at": r["started_at"].astimezone(timezone.utc).isoformat() if r["started_at"] else None,
-                "completed_at": r["completed_at"].astimezone(timezone.utc).isoformat() if r["completed_at"] else None,
-            }
-            expected, _ = chain_hmac(prev, _canonical_row_bytes(row_for_chain), key_id=r["key_id"])
-            stored_prev = bytes(r["prev_hash"])
-            stored_entry = bytes(r["entry_hash"])
-            if stored_prev != prev or stored_entry != expected:
-                return str(r["event_id"])
-            prev = stored_entry
-        return None
+        with self._audit.transaction() as transaction:
+            result = self._retention.repository.verify_retained_chain(
+                transaction,
+                chain_id=actor_user_id,
+                audit_repository=self._audit.repository,
+                authenticate_event=_authenticate,
+                authenticate_anchor=AuditAnchorAuthenticator(),
+            )
+        return result.first_invalid_event_id
 
-    def purge_older_than(self, cutoff: datetime) -> int:
-        """DELETE rows older than ``cutoff``. Caller must hold the GUC.
+    def purge_older_than(self, actor_user_id: str, cutoff: datetime) -> int:
+        """Prune one owner's expired prefix after authenticating its boundary.
 
-        Returns the number of rows deleted. Raises if the protective
-        trigger fires — meaning the caller forgot to set
-        ``audit.allow_purge`` in its session.
+        At least one event is retained so the remaining chain has a concrete
+        authenticated boundary. The operator must name the owner explicitly;
+        cross-owner bulk deletion is intentionally unavailable.
         """
-        conn = self._db._get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SET LOCAL audit.allow_purge = 'true'")
-                cur.execute(
-                    "DELETE FROM audit_events WHERE recorded_at < %s",
-                    (cutoff,),
+
+        if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+            raise ValueError("cutoff must be timezone-aware")
+        after_sequence = 0
+        first_retained = None
+        last_record = None
+        with self._audit.transaction() as transaction:
+            while True:
+                records = self._audit.repository.list_for_chain(
+                    transaction,
+                    chain_id=actor_user_id,
+                    after_sequence=after_sequence,
+                    limit=1000,
                 )
-                count = cur.rowcount
-                conn.commit()
-                return count
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+                if not records:
+                    break
+                for record in records:
+                    last_record = record
+                    if record.recorded_at >= cutoff:
+                        first_retained = record
+                        break
+                if first_retained is not None or len(records) < 1000:
+                    break
+                after_sequence = records[-1].sequence
+            boundary = first_retained or last_record
+            if boundary is None or boundary.sequence <= 1:
+                return 0
+            policy = json.dumps(
+                {
+                    "cutoff": cutoff.astimezone(timezone.utc).isoformat(),
+                    "policy": "astraldeep-owner-prefix/v1",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            policy_digest = hashlib.sha256(policy).digest()
+            result = self._retention.repository.prune_prefix(
+                transaction,
+                chain_id=actor_user_id,
+                first_retained_sequence=boundary.sequence,
+                anchor_id=str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        "astraldeep:audit-retention:"
+                        f"{actor_user_id}:{boundary.sequence}:{policy_digest.hex()}",
+                    )
+                ),
+                policy_digest=policy_digest,
+                created_at=datetime.now(timezone.utc),
+                key_id=get_active_key_id(),
+                authenticator=AuditAnchorAuthenticator(),
+            )
+        return result.deleted_events
+
+
+__all__ = ("AuditRepository",)

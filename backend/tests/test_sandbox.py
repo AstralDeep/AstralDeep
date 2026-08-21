@@ -159,7 +159,7 @@ _MUST_SCRUB = [
 ]
 
 #: The child MUST keep these: the framework needs AGENT_API_KEY to register, and
-#: a parser agent resolves its attachment through shared.database (DB_*).
+#: a parser agent composes its typed AstralPlane boundary from DB_*.
 _MUST_KEEP = {
     "AGENT_API_KEY": "keep-me", "PATH": "/usr/bin", "PYTHONPATH": "/app",
     "DB_HOST": "db", "DB_PORT": "5432", "DB_NAME": "astral",

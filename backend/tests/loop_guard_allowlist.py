@@ -1,7 +1,7 @@
 """Transitional allowlist for the event-loop blocking detector (feature 052).
 
 Each entry is a ``"module:function"`` caller site temporarily permitted to
-call the synchronous ``Database`` methods from the asyncio event-loop thread
+enter a synchronous AstralPlane transaction from the asyncio event-loop thread
 during the migration window, optionally followed by `` -- <justification>``
 (data, not a comment). This list MUST be empty at feature completion
 (SC-005).

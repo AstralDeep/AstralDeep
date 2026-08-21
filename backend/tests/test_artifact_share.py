@@ -27,6 +27,7 @@ import asyncio
 import os
 import sys
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -50,25 +51,8 @@ from orchestrator.artifact_share import (  # noqa: E402
     set_share_store,
 )
 from personalization.phi_gate import PHIGate, set_phi_gate  # noqa: E402
-from shared.database import Database  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
-)
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -96,21 +80,31 @@ PHI_SNAPSHOT = [{"type": "card", "title": "Patient record", "content": "SSN 123-
 
 
 @pytest.fixture(scope="module")
-def db():
-    return Database()
+def plane_runtime():
+    with isolated_plane_runtime("artifact_share") as runtime:
+        yield runtime
 
 
 @pytest.fixture()
-def store(db):
-    return ShareGrantStore(db)
+def store(plane_runtime):
+    return ShareGrantStore(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
 
 
 @pytest.fixture()
-def recorder(db, tmp_path):
+def recorder(plane_runtime, tmp_path):
     """A REAL Recorder over the live audit_events table, wired into the
     process-global slot that audit.hooks reads."""
     prev = get_recorder()
-    rec = Recorder(AuditRepository(db), retry_queue=tmp_path / "audit-retry.jsonl")
+    rec = Recorder(
+        AuditRepository(
+            plane_runtime=plane_runtime,
+            plane_repositories=plane_runtime.repositories,
+        ),
+        retry_queue=tmp_path / "audit-retry.jsonl",
+    )
     set_recorder(rec)
     yield rec
     set_recorder(prev)
@@ -133,43 +127,52 @@ def clean_phi_gate():
     set_phi_gate(None)
 
 
-def _purge_audit(db, *user_ids):
-    conn = db._get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SET LOCAL audit.allow_purge = 'true'")
-            for uid in user_ids:
-                cur.execute("DELETE FROM audit_events WHERE actor_user_id = %s", (uid,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
 @pytest.fixture()
-def user(db):
+def user(plane_runtime):
     uid = f"pytest-share-{uuid.uuid4().hex[:12]}"
     yield uid
-    db.execute("DELETE FROM share_grant WHERE user_id = ?", (uid,))
-    _purge_audit(db, uid)
-
-
-def _audit_rows(db, user_id, action_type=None):
-    if action_type:
-        return db.fetch_all(
-            "SELECT * FROM audit_events WHERE actor_user_id = ? AND action_type = ? "
-            "ORDER BY recorded_at ASC, event_id ASC",
-            (user_id, action_type),
+    with plane_runtime.transaction() as transaction:
+        transaction.execute("DELETE FROM share_grant WHERE user_id = %s", (uid,))
+        transaction.execute("SET LOCAL audit.allow_purge = 'true'")
+        transaction.execute(
+            "DELETE FROM audit_events WHERE actor_user_id = %s",
+            (uid,),
         )
-    return db.fetch_all(
-        "SELECT * FROM audit_events WHERE actor_user_id = ? "
-        "ORDER BY recorded_at ASC, event_id ASC",
-        (user_id,),
-    )
 
 
-def _grant_rows(db, user_id):
-    return db.fetch_all(
-        "SELECT * FROM share_grant WHERE user_id = ? ORDER BY id ASC", (user_id,))
+def _audit_rows(plane_runtime, user_id, action_type=None):
+    with plane_runtime.transaction() as transaction:
+        if action_type is not None:
+            rows = transaction.fetch_all(
+                "SELECT * FROM audit_events "
+                "WHERE actor_user_id = %s AND action_type = %s "
+                "ORDER BY recorded_at ASC, event_id ASC",
+                (user_id, action_type),
+            )
+        else:
+            rows = transaction.fetch_all(
+                "SELECT * FROM audit_events WHERE actor_user_id = %s "
+                "ORDER BY recorded_at ASC, event_id ASC",
+                (user_id,),
+            )
+    return [_plain(row) for row in rows]
+
+
+def _plain(value):
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _grant_rows(plane_runtime, user_id):
+    with plane_runtime.transaction() as transaction:
+        rows = transaction.fetch_all(
+            "SELECT * FROM share_grant WHERE user_id = %s ORDER BY id ASC",
+            (user_id,),
+        )
+    return [_plain(row) for row in rows]
 
 
 def _mint(store, user_id, **overrides):
@@ -186,7 +189,7 @@ def _mint(store, user_id, **overrides):
 # ---------------------------------------------------------------------------
 
 
-def test_mint_stores_hash_only_and_snapshots(db, store, recorder, user):
+def test_mint_stores_hash_only_and_snapshots(plane_runtime, store, recorder, user):
     res = _mint(store, user)
 
     assert res["token"]
@@ -194,7 +197,7 @@ def test_mint_stores_hash_only_and_snapshots(db, store, recorder, user):
     assert res["id"] and res["created_at"] is not None
     assert res["expires_at"] is None
 
-    rows = _grant_rows(db, user)
+    rows = _grant_rows(plane_runtime, user)
     assert len(rows) == 1
     row = rows[0]
     # Only the digest is persisted — the raw token appears in no column.
@@ -207,7 +210,7 @@ def test_mint_stores_hash_only_and_snapshots(db, store, recorder, user):
     assert row["open_count"] == 0
     assert row["revoked_at"] is None
 
-    minted = _audit_rows(db, user, "share.minted")
+    minted = _audit_rows(plane_runtime, user, "share.minted")
     assert len(minted) == 1
     assert minted[0]["event_class"] == "conversation"
     assert minted[0]["outcome"] == "success"
@@ -215,12 +218,12 @@ def test_mint_stores_hash_only_and_snapshots(db, store, recorder, user):
     assert minted[0]["inputs_meta"]["scope"] == "canvas"
 
 
-def test_mint_component_scope_carries_component_id(db, store, recorder, user):
+def test_mint_component_scope_carries_component_id(plane_runtime, store, recorder, user):
     res = _mint(store, user, scope="component", component_id="wc_abc123")
-    row = _grant_rows(db, user)[0]
+    row = _grant_rows(plane_runtime, user)[0]
     assert row["scope"] == "component"
     assert row["component_id"] == "wc_abc123"
-    minted = _audit_rows(db, user, "share.minted")
+    minted = _audit_rows(plane_runtime, user, "share.minted")
     assert minted[0]["inputs_meta"]["component_id"] == "wc_abc123"
     assert res["id"] == row["id"]
 
@@ -234,11 +237,11 @@ def test_mint_argument_validation(store, user):
         _mint(store, user, snapshot_html="")
 
 
-def test_mint_refused_when_flag_off(db, store, user):
+def test_mint_refused_when_flag_off(plane_runtime, store, user):
     flags._flags["artifact_sharing"] = False
     with pytest.raises(SharingDisabledError):
         _mint(store, user)
-    assert _grant_rows(db, user) == []
+    assert _grant_rows(plane_runtime, user) == []
 
 
 # ---------------------------------------------------------------------------
@@ -246,38 +249,38 @@ def test_mint_refused_when_flag_off(db, store, user):
 # ---------------------------------------------------------------------------
 
 
-def test_mint_refuses_phi_prefilter_hit(db, store, recorder, user):
+def test_mint_refuses_phi_prefilter_hit(plane_runtime, store, recorder, user):
     """An SSN in the snapshot trips the regex prefilter: no row, audited refusal."""
     with pytest.raises(SharePHIRefusedError):
         _mint(store, user, snapshot_json=PHI_SNAPSHOT)
 
-    assert _grant_rows(db, user) == []
-    refused = _audit_rows(db, user, "share.refused_phi")
+    assert _grant_rows(plane_runtime, user) == []
+    refused = _audit_rows(plane_runtime, user, "share.refused_phi")
     assert len(refused) == 1
     assert refused[0]["event_class"] == "conversation"
     assert refused[0]["outcome"] == "failure"
     # Refusal rows carry scope metadata but never snapshot content.
     assert refused[0]["inputs_meta"]["scope"] == "canvas"
     assert "123-45-6789" not in str(refused[0])
-    assert _audit_rows(db, user, "share.minted") == []
+    assert _audit_rows(plane_runtime, user, "share.minted") == []
 
 
-def test_mint_refuses_phi_analyzer_hit(db, store, recorder, user):
+def test_mint_refuses_phi_analyzer_hit(plane_runtime, store, recorder, user):
     """Content clean of prefilter patterns still refuses when Presidio flags it."""
     set_phi_gate(PHIGate(analyzer=_HitAnalyzer(), build_if_missing=False))
     with pytest.raises(SharePHIRefusedError):
         _mint(store, user)
-    assert _grant_rows(db, user) == []
-    assert len(_audit_rows(db, user, "share.refused_phi")) == 1
+    assert _grant_rows(plane_runtime, user) == []
+    assert len(_audit_rows(plane_runtime, user, "share.refused_phi")) == 1
 
 
-def test_mint_fail_closed_when_analyzer_unavailable(db, store, recorder, user):
+def test_mint_fail_closed_when_analyzer_unavailable(plane_runtime, store, recorder, user):
     """No analyzer ⇒ clean content is still refused — never mint blind."""
     set_phi_gate(PHIGate(analyzer=None, build_if_missing=False))
     with pytest.raises(SharePHIRefusedError):
         _mint(store, user)
-    assert _grant_rows(db, user) == []
-    assert len(_audit_rows(db, user, "share.refused_phi")) == 1
+    assert _grant_rows(plane_runtime, user) == []
+    assert len(_audit_rows(plane_runtime, user, "share.refused_phi")) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +288,7 @@ def test_mint_fail_closed_when_analyzer_unavailable(db, store, recorder, user):
 # ---------------------------------------------------------------------------
 
 
-def test_list_grants_owner_scoped_metadata_only(db, store, recorder, user):
+def test_list_grants_owner_scoped_metadata_only(store, recorder, user):
     a = _mint(store, user)
     b = _mint(store, user, scope="component", component_id="wc_xyz")
 
@@ -312,7 +315,7 @@ def test_resolve_serves_snapshot_and_refuses_unknown(store, recorder, user):
     grant = asyncio.run(store.resolve(res["token"]))
     assert grant is not None
     assert grant["snapshot_html"] == CLEAN_HTML
-    assert grant["snapshot_json"] == CLEAN_SNAPSHOT
+    assert _plain(grant["snapshot_json"]) == CLEAN_SNAPSHOT
     assert grant["user_id"] == user
 
     assert asyncio.run(store.resolve("not-a-real-token")) is None
@@ -329,7 +332,9 @@ def test_resolve_refuses_expired(store, recorder, user):
     assert asyncio.run(store.resolve(res2["token"])) is not None
 
 
-def test_revoke_is_immediate_owner_scoped_and_idempotent(db, store, recorder, user):
+def test_revoke_is_immediate_owner_scoped_and_idempotent(
+    plane_runtime, store, recorder, user
+):
     res = _mint(store, user)
 
     # A stranger cannot revoke; the grant keeps serving.
@@ -340,14 +345,14 @@ def test_revoke_is_immediate_owner_scoped_and_idempotent(db, store, recorder, us
     assert asyncio.run(store.revoke(user, res["id"])) is True
     # Revoked grants never serve again.
     assert asyncio.run(store.resolve(res["token"])) is None
-    first_revoked_at = _grant_rows(db, user)[0]["revoked_at"]
+    first_revoked_at = _grant_rows(plane_runtime, user)[0]["revoked_at"]
     assert first_revoked_at is not None
 
     # Idempotent: second revoke succeeds, keeps the original timestamp,
     # and does not audit a second transition.
     assert asyncio.run(store.revoke(user, res["id"])) is True
-    assert _grant_rows(db, user)[0]["revoked_at"] == first_revoked_at
-    revoked = _audit_rows(db, user, "share.revoked")
+    assert _grant_rows(plane_runtime, user)[0]["revoked_at"] == first_revoked_at
+    revoked = _audit_rows(plane_runtime, user, "share.revoked")
     assert len(revoked) == 1
     assert revoked[0]["inputs_meta"]["share_id"] == res["id"]
 
@@ -355,15 +360,17 @@ def test_revoke_is_immediate_owner_scoped_and_idempotent(db, store, recorder, us
     assert asyncio.run(store.revoke(user, 999_999_999)) is False
 
 
-def test_record_open_increments_and_audits_share_principal(db, store, recorder, user):
+def test_record_open_increments_and_audits_share_principal(
+    plane_runtime, store, recorder, user
+):
     res = _mint(store, user)
     grant = asyncio.run(store.resolve(res["token"]))
 
     asyncio.run(store.record_open(grant))
     asyncio.run(store.record_open(grant))
 
-    assert _grant_rows(db, user)[0]["open_count"] == 2
-    opened = _audit_rows(db, user, "share.opened")
+    assert _grant_rows(plane_runtime, user)[0]["open_count"] == 2
+    opened = _audit_rows(plane_runtime, user, "share.opened")
     assert len(opened) == 2
     for row in opened:
         # Actor = share owner; principal identifies the grant, not a visitor.
@@ -378,10 +385,11 @@ def test_record_open_increments_and_audits_share_principal(db, store, recorder, 
 
 
 def test_get_share_store_singleton_and_override(store):
-    prev = get_share_store()
+    set_share_store(None)
+    with pytest.raises(RuntimeError, match="not been bound"):
+        get_share_store()
     try:
-        assert get_share_store() is prev
         set_share_store(store)
         assert get_share_store() is store
     finally:
-        set_share_store(prev)
+        set_share_store(None)

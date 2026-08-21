@@ -235,19 +235,31 @@ def test_rote_unstamped_components_gain_no_field():
 
 
 @pytest.fixture
-def env():
+async def env():
     from orchestrator.orchestrator import Orchestrator
     try:
-        orch = Orchestrator()
+        orch = await asyncio.to_thread(Orchestrator)
     except Exception as exc:  # pragma: no cover - environment guard
         pytest.skip(f"orchestrator/database unavailable: {exc}")
     user_id = f"prov-stamp-{uuid.uuid4().hex[:8]}"
-    chat_id = orch.history.create_chat(user_id=user_id)
-    yield orch, chat_id, user_id
     try:
-        orch.history.delete_chat(chat_id, user_id=user_id)
-    except Exception:
-        pass
+        chat_id = await asyncio.to_thread(
+            orch.history.create_chat,
+            user_id=user_id,
+        )
+        try:
+            yield orch, chat_id, user_id
+        finally:
+            try:
+                await asyncio.to_thread(
+                    orch.history.delete_chat,
+                    chat_id,
+                    user_id=user_id,
+                )
+            except Exception:
+                pass
+    finally:
+        await orch._close_started_services()
 
 
 async def test_model_forged_value_overwritten_before_persist(env):

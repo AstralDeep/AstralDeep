@@ -9,7 +9,6 @@ generation/revision compare-and-swap fences before changing state.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import re
 import uuid
 from collections.abc import Iterator, Mapping
@@ -22,6 +21,11 @@ from shared.voice_transcript import (
     TranscriptProofBinding,
     TranscriptProofError,
     verify_transcript_proof,
+)
+
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    repository_from,
 )
 
 from orchestrator.voice_coordinator import (
@@ -619,20 +623,31 @@ class ChatUnavailableMutation:
 
 
 class VoiceSessionRepository:
-    """Transactional PostgreSQL repository for Feature 065 session/turn state."""
+    """Deep voice policy over Plane-owned session and turn persistence."""
 
     def __init__(
         self,
-        database: Any,
         *,
+        plane_runtime: Any,
+        plane_repositories: Any | None = None,
         uuid_factory: Any = uuid.uuid4,
         control_lease_ttl_seconds: int = 15,
     ) -> None:
-        if database is None or not callable(getattr(database, "_get_connection", None)):
-            raise TypeError("database must provide _get_connection()")
         if not callable(uuid_factory):
             raise TypeError("uuid_factory must be callable")
-        self._database = database
+        if not callable(getattr(plane_runtime, "transaction", None)):
+            raise TypeError("plane_runtime must provide transaction()")
+        repository, runtime = repository_from(
+            "voice",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=None,
+        )
+        self._plane = PlaneRepositoryContext(
+            repository=repository,
+            plane_runtime=runtime,
+        )
+        self._voice = repository
         self._uuid_factory = uuid_factory
         self._control_leases = ControlLeaseAdapter(
             ttl_seconds=control_lease_ttl_seconds
@@ -643,28 +658,20 @@ class VoiceSessionRepository:
 
     @contextmanager
     def _transaction(self) -> Iterator[Any]:
-        connection = self._database._get_connection()
-        cursor = connection.cursor()
-        try:
-            yield cursor
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            try:
-                cursor.close()
-            finally:
-                connection.close()
+        with self._plane.transaction() as transaction:
+            yield transaction
 
     @contextmanager
-    def _transaction_or_existing(self, cursor: Any | None) -> Iterator[Any]:
-        """Join a caller-owned PostgreSQL transaction or open one locally."""
+    def _transaction_or_existing(self, transaction: Any | None) -> Iterator[Any]:
+        """Join a caller-owned Plane transaction or open an application transaction."""
 
-        if cursor is not None:
-            if not callable(getattr(cursor, "execute", None)):
-                raise TypeError("transaction must be a PostgreSQL cursor")
-            yield cursor
+        if transaction is not None:
+            required = ("execute", "fetch_one", "fetch_all")
+            if not all(callable(getattr(transaction, name, None)) for name in required):
+                raise TypeError(
+                    "transaction must provide execute(), fetch_one(), and fetch_all()"
+                )
+            yield transaction
             return
         with self._transaction() as owned:
             yield owned
@@ -678,24 +685,23 @@ class VoiceSessionRepository:
             raise TypeError("request must be CreateSession")
         now = _aware(now, "invalid_current_time")
         self._validate_create_lifetimes(request, now)
-        with self._transaction() as cursor:
-            self._lock_identity(cursor, "owner", request.user_id)
+        with self._transaction() as transaction:
+            self._lock_identity(transaction, "owner", request.user_id)
             existing = self._activation_row(
-                cursor, request.user_id, request.activation_id
+                transaction, request.user_id, request.activation_id
             )
             if existing is not None:
                 self._assert_activation_replay(existing, request, takeover_of=None)
                 return SessionMutation(_session(existing), replayed=True)
-            cursor.execute(
-                "SELECT * FROM voice_session WHERE user_id = %s "
-                "AND ended_at IS NULL FOR UPDATE",
-                (request.user_id,),
+            current = self._voice.get_live_session_record(
+                transaction,
+                owner_id=request.user_id,
+                for_update=True,
             )
-            current = cursor.fetchone()
             if current is not None:
                 raise TakeoverRequired(_session(current))
             row = self._insert_session(
-                cursor,
+                transaction,
                 request,
                 generation=1,
                 takeover_of=None,
@@ -716,10 +722,10 @@ class VoiceSessionRepository:
         now = _aware(now, "invalid_current_time")
         create = request.create
         self._validate_create_lifetimes(create, now)
-        with self._transaction() as cursor:
-            self._lock_identity(cursor, "owner", create.user_id)
+        with self._transaction() as transaction:
+            self._lock_identity(transaction, "owner", create.user_id)
             existing = self._activation_row(
-                cursor, create.user_id, create.activation_id
+                transaction, create.user_id, create.activation_id
             )
             if existing is not None:
                 self._assert_activation_replay(
@@ -729,17 +735,16 @@ class VoiceSessionRepository:
                 )
                 return SessionMutation(_session(existing), replayed=True)
             previous = self._session_for_update(
-                cursor,
+                transaction,
                 create.user_id,
                 request.previous_session_id,
             )
             if previous.get("ended_at") is not None:
-                cursor.execute(
-                    "SELECT generation FROM voice_session "
-                    "WHERE user_id = %s AND ended_at IS NULL FOR UPDATE",
-                    (create.user_id,),
+                current = self._voice.get_live_session_record(
+                    transaction,
+                    owner_id=create.user_id,
+                    for_update=True,
                 )
-                current = cursor.fetchone()
                 if current is not None and int(current["generation"]) > (
                     request.expected_generation
                 ):
@@ -751,13 +756,13 @@ class VoiceSessionRepository:
                 request.expected_media_grant_revision,
             )
             self._end_session_row(
-                cursor,
+                transaction,
                 previous,
                 reason="takeover",
                 now=now,
             )
             row = self._insert_session(
-                cursor,
+                transaction,
                 create,
                 generation=int(previous["generation"]) + 1,
                 takeover_of=request.previous_session_id,
@@ -770,12 +775,12 @@ class VoiceSessionRepository:
 
         user_id = _user_id(user_id)
         session_id = _uuid4(session_id, "invalid_session_id")
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_session WHERE user_id = %s AND session_id = %s",
-                (user_id, session_id),
+        with self._transaction() as transaction:
+            row = self._voice.get_session_record(
+                transaction,
+                owner_id=user_id,
+                session_id=session_id,
             )
-            row = cursor.fetchone()
             if row is None:
                 raise VoiceSessionNotFound("voice_session_not_found")
         return _session(row)
@@ -784,12 +789,11 @@ class VoiceSessionRepository:
         """Return the user's sole unended session, if present."""
 
         user_id = _user_id(user_id)
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_session WHERE user_id = %s AND ended_at IS NULL",
-                (user_id,),
+        with self._transaction() as transaction:
+            row = self._voice.get_live_session_record(
+                transaction,
+                owner_id=user_id,
             )
-            row = cursor.fetchone()
         return None if row is None else _session(row)
 
     def mark_chat_unavailable(
@@ -822,15 +826,15 @@ class VoiceSessionRepository:
         session_end_reason = (
             "chat_deleted" if reason == "deleted" else "chat_unauthorized"
         )
-        with self._transaction() as cursor:
-            self._lock_identity(cursor, "owner_chat", user_id, chat_id)
-            cursor.execute(
-                "SELECT id FROM chats WHERE id = %s AND user_id = %s "
-                "FOR UPDATE",
-                (chat_id, user_id),
+        with self._transaction() as transaction:
+            self._lock_identity(transaction, "owner_chat", user_id, chat_id)
+            chat_available = self._voice.chat_exists(
+                transaction,
+                owner_id=user_id,
+                chat_id=chat_id,
+                for_update=True,
             )
-            chat = cursor.fetchone()
-            if chat is None:
+            if not chat_available:
                 return ChatUnavailableMutation(
                     user_id=user_id,
                     chat_id=chat_id,
@@ -847,26 +851,25 @@ class VoiceSessionRepository:
             # Match the turn-before-session order used by transcript
             # admission and atomic message acceptance. The owner/chat row lock
             # prevents a new publication from entering behind this fence.
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND chat_id = %s "
-                "ORDER BY created_at, turn_id FOR UPDATE",
-                (user_id, chat_id),
+            turns = list(
+                self._voice.list_chat_turn_records_for_update(
+                    transaction,
+                    owner_id=user_id,
+                    chat_id=chat_id,
+                )
             )
-            turns = list(cursor.fetchall())
-            cursor.execute(
-                "SELECT * FROM voice_session WHERE user_id = %s "
-                "AND visible_chat_id = %s ORDER BY started_at, session_id "
-                "FOR UPDATE",
-                (user_id, chat_id),
+            affected_sessions = self._voice.list_chat_session_records_for_update(
+                transaction,
+                owner_id=user_id,
+                chat_id=chat_id,
             )
-            affected_sessions = tuple(cursor.fetchall())
             ended_sessions = tuple(
                 ended
                 for row in affected_sessions
                 if row.get("ended_at") is None
                 for ended in (
                     self._end_session_row(
-                        cursor,
+                        transaction,
                         row,
                         reason=session_end_reason,
                         now=now,
@@ -893,104 +896,40 @@ class VoiceSessionRepository:
                 )
             )
             if unaccepted_turn_ids:
-                cursor.execute(
-                    """
-                    UPDATE voice_turn
-                    SET state = 'abandoned', terminal_kind = 'abandoned',
-                        rejection_reason = 'chat_unavailable',
-                        rejection_retry_policy = 'explicit_user_retry',
-                        origin_chat_unavailable_at = NULL,
-                        origin_chat_unavailable_reason = NULL,
-                        is_foreground = FALSE,
-                        next_announcement_due_at = NULL,
-                        announcement_claim_id = NULL,
-                        announcement_claim_expires_at = NULL,
-                        terminal_at = %s, updated_at = %s
-                    WHERE user_id = %s AND turn_id = ANY(%s::uuid[])
-                      AND state IN ('recognizing', 'submitting')
-                    """,
-                    (now, now, user_id, list(unaccepted_turn_ids)),
+                self._voice.abandon_chat_turns(
+                    transaction,
+                    owner_id=user_id,
+                    turn_ids=unaccepted_turn_ids,
+                    reason=reason,
+                    now=now,
+                    accepted=False,
                 )
             if accepted_turn_ids:
-                cursor.execute(
-                    """
-                    UPDATE voice_turn
-                    SET state = 'abandoned', terminal_kind = 'abandoned',
-                        rejection_reason = NULL,
-                        rejection_retry_policy = NULL,
-                        origin_chat_unavailable_at = %s,
-                        origin_chat_unavailable_reason = %s,
-                        is_foreground = FALSE,
-                        next_announcement_due_at = NULL,
-                        announcement_claim_id = NULL,
-                        announcement_claim_expires_at = NULL,
-                        terminal_at = %s, updated_at = %s
-                    WHERE user_id = %s AND turn_id = ANY(%s::uuid[])
-                      AND origin_chat_unavailable_at IS NULL
-                      AND (
-                        accepted_at IS NOT NULL
-                        OR state IN (
-                            'accepted', 'processing', 'waiting_on_user'
-                        )
-                      )
-                    """,
-                    (
-                        now,
-                        reason,
-                        now,
-                        now,
-                        user_id,
-                        list(accepted_turn_ids),
-                    ),
+                self._voice.abandon_chat_turns(
+                    transaction,
+                    owner_id=user_id,
+                    turn_ids=accepted_turn_ids,
+                    reason=reason,
+                    now=now,
+                    accepted=True,
                 )
 
-            cursor.execute(
-                """
-                SELECT commit_id
-                FROM conversation_commit
-                WHERE chat_id = %s AND owner_user_id = %s
-                  AND publication_role = 'assistant_result'
-                  AND state = 'staged'
-                ORDER BY started_at, commit_id
-                FOR UPDATE
-                """,
-                (chat_id, user_id),
+            aborted_result_commit_ids = (
+                self._voice.abort_staged_chat_result_commits(
+                    transaction,
+                    owner_id=user_id,
+                    chat_id=chat_id,
+                    now=now,
+                )
             )
-            aborted_result_commit_ids = tuple(
-                str(row["commit_id"]) for row in cursor.fetchall()
-            )
-            for commit_id in aborted_result_commit_ids:
-                cursor.execute(
-                    "DELETE FROM saved_components "
-                    "WHERE conversation_commit_id = %s",
-                    (commit_id,),
-                )
-                cursor.execute(
-                    "DELETE FROM workspace_layout "
-                    "WHERE conversation_commit_id = %s",
-                    (commit_id,),
-                )
-                cursor.execute(
-                    "DELETE FROM messages WHERE conversation_commit_id = %s",
-                    (commit_id,),
-                )
-                cursor.execute(
-                    """
-                    UPDATE conversation_commit
-                    SET state = 'aborted', aborted_at = %s,
-                        execution_base_commit_id = NULL
-                    WHERE commit_id = %s AND state = 'staged'
-                    """,
-                    (now, commit_id),
-                )
 
             deleted = False
             if delete_chat:
-                cursor.execute(
-                    "DELETE FROM chats WHERE id = %s AND user_id = %s",
-                    (chat_id, user_id),
+                deleted = self._voice.delete_owned_chat(
+                    transaction,
+                    owner_id=user_id,
+                    chat_id=chat_id,
                 )
-                deleted = cursor.rowcount == 1
 
         announcement_session_keys = tuple(
             sorted(
@@ -1035,11 +974,11 @@ class VoiceSessionRepository:
         if not isinstance(control, SessionControl):
             raise TypeError("control must be SessionControl")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             self._assert_fences(row, expected_generation, expected_media_grant_revision)
-            row = self._apply_control_binding(cursor, row, control, now)
+            row = self._apply_control_binding(transaction, row, control, now)
         return _session(row)
 
     def update_session(
@@ -1053,15 +992,24 @@ class VoiceSessionRepository:
         if not isinstance(request, SessionUpdate):
             raise TypeError("request must be SessionUpdate")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, request.user_id, request.session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(
+                transaction,
+                request.user_id,
+                request.session_id,
+            )
             self._assert_live(row)
             self._assert_fences(
                 row,
                 request.expected_generation,
                 request.expected_media_grant_revision,
             )
-            row = self._apply_control_binding(cursor, row, request.control, now)
+            row = self._apply_control_binding(
+                transaction,
+                row,
+                request.control,
+                now,
+            )
 
             visible_chat_id = row["visible_chat_id"]
             chat_context_revision = int(row["chat_context_revision"])
@@ -1107,32 +1055,25 @@ class VoiceSessionRepository:
             )
             last_interaction_at = now if interaction else row["last_interaction_at"]
             idle_started_at = None if interaction else row.get("idle_started_at")
-            cursor.execute(
-                """
-                UPDATE voice_session
-                SET visible_chat_id = %s, chat_context_revision = %s,
-                    speech_muted = %s, microphone_enabled = %s,
-                    foreground_active = %s, foreground_reason = %s,
-                    state = %s, last_interaction_at = %s,
-                    idle_started_at = %s, updated_at = %s
-                WHERE session_id = %s
-                RETURNING *
-                """,
-                (
-                    visible_chat_id,
-                    chat_context_revision,
-                    speech_muted,
-                    microphone_enabled,
-                    foreground_active,
-                    foreground_reason,
-                    state,
-                    last_interaction_at,
-                    idle_started_at,
-                    now,
-                    request.session_id,
-                ),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=request.user_id,
+                session_id=request.session_id,
+                updates={
+                    "visible_chat_id": visible_chat_id,
+                    "chat_context_revision": chat_context_revision,
+                    "speech_muted": speech_muted,
+                    "microphone_enabled": microphone_enabled,
+                    "foreground_active": foreground_active,
+                    "foreground_reason": foreground_reason,
+                    "state": state,
+                    "last_interaction_at": last_interaction_at,
+                    "idle_started_at": idle_started_at,
+                    "updated_at": now,
+                },
             )
-            updated = cursor.fetchone()
+            if updated is None:  # pragma: no cover - locked row invariant.
+                raise RuntimeError("voice_session_update_failed")
         return _session(updated)
 
     def end_session(
@@ -1153,8 +1094,8 @@ class VoiceSessionRepository:
         if reason not in _END_REASONS:
             raise ValueError("invalid_end_reason")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             if row.get("ended_at") is not None:
                 self._assert_fences(
                     row,
@@ -1184,9 +1125,9 @@ class VoiceSessionRepository:
                 return _session(row)
             self._assert_live(row)
             self._assert_fences(row, expected_generation, expected_media_grant_revision)
-            row = self._apply_control_binding(cursor, row, control, now)
+            row = self._apply_control_binding(transaction, row, control, now)
             ended = self._end_session_row(
-                cursor,
+                transaction,
                 row,
                 reason=reason,
                 now=now,
@@ -1213,18 +1154,17 @@ class VoiceSessionRepository:
         if reason not in {"logout", "auth_expired"}:
             raise ValueError("invalid_identity_end_reason")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            self._lock_identity(cursor, "owner", user_id)
-            cursor.execute(
-                "SELECT * FROM voice_session WHERE user_id = %s "
-                "AND ended_at IS NULL FOR UPDATE",
-                (user_id,),
+        with self._transaction() as transaction:
+            self._lock_identity(transaction, "owner", user_id)
+            row = self._voice.get_live_session_record(
+                transaction,
+                owner_id=user_id,
+                for_update=True,
             )
-            row = cursor.fetchone()
             if row is None:
                 return None
             ended = self._end_session_row(
-                cursor,
+                transaction,
                 row,
                 reason=reason,
                 now=now,
@@ -1251,21 +1191,15 @@ class VoiceSessionRepository:
             or not 1 <= batch_size <= 1_000
         ):
             raise ValueError("invalid_owned_end_batch_size")
-        with self._transaction() as cursor:
-            cursor.execute(
-                """
-                SELECT * FROM voice_session
-                WHERE ended_at IS NULL AND control_owner_id = %s
-                ORDER BY started_at, session_id
-                FOR UPDATE SKIP LOCKED
-                LIMIT %s
-                """,
-                (owner_id, batch_size),
+        with self._transaction() as transaction:
+            rows = self._voice.list_owned_live_session_records_for_administration(
+                transaction,
+                control_owner_id=owner_id,
+                limit=batch_size,
             )
-            rows = tuple(cursor.fetchall())
             ended = tuple(
                 self._end_session_row(
-                    cursor,
+                    transaction,
                     row,
                     reason=reason,
                     now=now,
@@ -1279,20 +1213,15 @@ class VoiceSessionRepository:
 
         now = _aware(now, "invalid_current_time")
         expired: list[VoiceSessionRecord] = []
-        with self._transaction() as cursor:
-            cursor.execute(
-                """
-                SELECT * FROM voice_session
-                WHERE ended_at IS NULL AND lease_expires_at <= %s
-                ORDER BY lease_expires_at, session_id
-                FOR UPDATE SKIP LOCKED
-                """,
-                (now,),
+        with self._transaction() as transaction:
+            rows = self._voice.list_expired_session_records_for_administration(
+                transaction,
+                now=now,
             )
-            for row in cursor.fetchall():
+            for row in rows:
                 expired.append(
                     self._end_session_row(
-                        cursor,
+                        transaction,
                         row,
                         reason="lease_expired",
                         now=now,
@@ -1315,32 +1244,12 @@ class VoiceSessionRepository:
             or not 1 <= batch_size <= 1_000
         ):
             raise ValueError("invalid_reconciliation_batch_size")
-        with self._transaction() as cursor:
-            cursor.execute(
-                """
-                WITH candidates AS (
-                    SELECT turn.turn_id
-                    FROM voice_turn AS turn
-                    JOIN voice_session AS session
-                      ON session.session_id = turn.session_id
-                    WHERE session.ended_at IS NOT NULL
-                      AND turn.state IN ('recognizing', 'submitting')
-                    ORDER BY turn.updated_at, turn.turn_id
-                    FOR UPDATE OF turn SKIP LOCKED
-                    LIMIT %s
-                )
-                UPDATE voice_turn AS turn
-                SET state = 'abandoned', terminal_kind = 'abandoned',
-                    rejection_reason = 'stale_session',
-                    rejection_retry_policy = 'explicit_user_retry',
-                    terminal_at = %s, updated_at = %s
-                FROM candidates
-                WHERE turn.turn_id = candidates.turn_id
-                RETURNING turn.*
-                """,
-                (batch_size, now, now),
+        with self._transaction() as transaction:
+            rows = self._voice.reconcile_ended_unaccepted_turns_for_administration(
+                transaction,
+                now=now,
+                limit=batch_size,
             )
-            rows = cursor.fetchall()
         return tuple(_turn(row) for row in rows)
 
     def reconcile_ended_terminal_operation_turns(
@@ -1368,99 +1277,12 @@ class VoiceSessionRepository:
             or not 1 <= batch_size <= 1_000
         ):
             raise ValueError("invalid_reconciliation_batch_size")
-        with self._transaction() as cursor:
-            cursor.execute(
-                """
-                WITH operation_candidates AS (
-                    SELECT
-                        turn.turn_id,
-                        operation.state AS operation_state,
-                        (
-                            acceptance.state = 'committed'
-                            AND acceptance.publication_role = 'user_acceptance'
-                            AND acceptance.owner_user_id = turn.user_id
-                            AND acceptance.chat_id = turn.chat_id
-                            AND acceptance.request_generation
-                                = turn.request_generation
-                            AND acceptance.operation_id = turn.operation_id
-                            AND acceptance.operation_execution_generation
-                                = operation.execution_generation
-                            AND result.state = 'committed'
-                            AND result.publication_role = 'assistant_result'
-                            AND result.owner_user_id = turn.user_id
-                            AND result.chat_id = turn.chat_id
-                            AND result.request_generation
-                                = turn.result_request_generation
-                            AND result.operation_id = turn.operation_id
-                            AND result.operation_execution_generation
-                                = operation.execution_generation
-                            AND result.parent_commit_id
-                                = turn.acceptance_commit_id
-                        ) AS exact_result_committed,
-                        turn.result_commit_id
-                    FROM voice_turn AS turn
-                    JOIN voice_session AS session
-                      ON session.session_id = turn.session_id
-                    JOIN operation_record AS operation
-                      ON operation.operation_id = turn.operation_id
-                    LEFT JOIN conversation_commit AS acceptance
-                      ON acceptance.commit_id = turn.acceptance_commit_id
-                    LEFT JOIN conversation_commit AS result
-                      ON result.commit_id = turn.result_commit_id
-                    WHERE session.ended_at IS NOT NULL
-                      AND turn.state IN (
-                          'accepted', 'processing', 'waiting_on_user'
-                      )
-                      AND operation.state IN (
-                          'completed', 'failed', 'cancelled', 'retryable'
-                      )
-                      AND operation.operation_kind = 'voice_chat_message'
-                      AND operation.owner_scope = 'user'
-                      AND operation.owner_user_id = turn.user_id
-                      AND operation.chat_id = turn.chat_id
-                      AND operation.request_generation
-                          = turn.request_generation
-                      AND operation.connection_generation
-                          = turn.accepted_connection_generation
-                    ORDER BY turn.updated_at, turn.turn_id
-                    FOR UPDATE OF turn SKIP LOCKED
-                    LIMIT %s
-                ), candidates AS (
-                    SELECT
-                        turn_id,
-                        CASE
-                            WHEN operation_state = 'completed'
-                             AND exact_result_committed
-                                THEN 'succeeded'
-                            WHEN operation_state = 'cancelled'
-                                THEN 'cancelled'
-                            ELSE 'failed'
-                        END AS terminal_kind,
-                        CASE
-                            WHEN exact_result_committed THEN result_commit_id
-                            ELSE NULL
-                        END AS terminal_result_commit_id
-                    FROM operation_candidates
-                )
-                UPDATE voice_turn AS turn
-                SET state = candidates.terminal_kind,
-                    terminal_kind = candidates.terminal_kind,
-                    result_commit_id = candidates.terminal_result_commit_id,
-                    recap_source = 'terminal_status',
-                    sensitivity = 'unknown',
-                    is_foreground = FALSE,
-                    next_announcement_due_at = NULL,
-                    announcement_claim_id = NULL,
-                    announcement_claim_expires_at = NULL,
-                    terminal_at = %s,
-                    updated_at = %s
-                FROM candidates
-                WHERE turn.turn_id = candidates.turn_id
-                RETURNING turn.*
-                """,
-                (batch_size, now, now),
+        with self._transaction() as transaction:
+            rows = self._voice.reconcile_ended_terminal_operation_turns_for_administration(
+                transaction,
+                now=now,
+                limit=batch_size,
             )
-            rows = cursor.fetchall()
         return tuple(_turn(row) for row in rows)
 
     def mark_session_active(
@@ -1475,8 +1297,8 @@ class VoiceSessionRepository:
         """Move a prepared foreground session to active under both fences."""
 
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             self._assert_fences(row, expected_generation, expected_media_grant_revision)
             if row["state"] == "active":
@@ -1486,12 +1308,15 @@ class VoiceSessionRepository:
                 or not row["foreground_active"]
             ):
                 raise VoiceSessionRepositoryError("invalid_session_transition")
-            cursor.execute(
-                "UPDATE voice_session SET state = 'active', updated_at = %s "
-                "WHERE session_id = %s RETURNING *",
-                (now, row["session_id"]),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=user_id,
+                session_id=str(row["session_id"]),
+                updates={"state": "active", "updated_at": now},
+                require_live=True,
             )
-            updated = cursor.fetchone()
+            if updated is None:
+                raise StaleSessionFence("session_ended")
         return _session(updated)
 
     def renew_session_lease(
@@ -1508,16 +1333,19 @@ class VoiceSessionRepository:
 
         now = _aware(now, "invalid_current_time")
         duration = _duration(lease_duration, "invalid_lease_duration", 5, 300)
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             self._assert_fences(row, expected_generation, expected_media_grant_revision)
-            cursor.execute(
-                "UPDATE voice_session SET lease_expires_at = %s, updated_at = %s "
-                "WHERE session_id = %s RETURNING *",
-                (now + duration, now, row["session_id"]),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=user_id,
+                session_id=str(row["session_id"]),
+                updates={"lease_expires_at": now + duration, "updated_at": now},
+                require_live=True,
             )
-            updated = cursor.fetchone()
+            if updated is None:
+                raise StaleSessionFence("session_ended")
         return _session(updated)
 
     def refresh_media_grant(
@@ -1535,8 +1363,12 @@ class VoiceSessionRepository:
             raise ValueError("invalid_grant_issued_at")
         if request.expires_at <= now:
             raise ValueError("invalid_media_grant_expiry")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, request.user_id, request.session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(
+                transaction,
+                request.user_id,
+                request.session_id,
+            )
             self._assert_live(row)
             if _uuid_text(row.get("last_media_refresh_id")) == request.refresh_id:
                 self._assert_refresh_replay(row, request, now)
@@ -1546,31 +1378,24 @@ class VoiceSessionRepository:
                 request.expected_generation,
                 request.expected_media_grant_revision,
             )
-            cursor.execute(
-                """
-                UPDATE voice_session
-                SET media_grant_revision = media_grant_revision + 1,
-                    participant_identity = %s,
-                    media_grant_nonce_hash = %s,
-                    media_grant_issued_at = %s,
-                    media_grant_expires_at = %s,
-                    media_grant_consumed_at = NULL,
-                    last_media_refresh_id = %s,
-                    updated_at = %s
-                WHERE session_id = %s
-                RETURNING *
-                """,
-                (
-                    request.participant_identity,
-                    request.nonce_hash,
-                    request.issued_at,
-                    request.expires_at,
-                    request.refresh_id,
-                    now,
-                    request.session_id,
-                ),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=request.user_id,
+                session_id=request.session_id,
+                updates={
+                    "media_grant_revision": int(row["media_grant_revision"]) + 1,
+                    "participant_identity": request.participant_identity,
+                    "media_grant_nonce_hash": request.nonce_hash,
+                    "media_grant_issued_at": request.issued_at,
+                    "media_grant_expires_at": request.expires_at,
+                    "media_grant_consumed_at": None,
+                    "last_media_refresh_id": request.refresh_id,
+                    "updated_at": now,
+                },
+                require_live=True,
             )
-            updated = cursor.fetchone()
+            if updated is None:
+                raise StaleSessionFence("session_ended")
         return SessionMutation(_session(updated))
 
     def assign_worker(
@@ -1600,8 +1425,8 @@ class VoiceSessionRepository:
             or expires_at > issued_at + timedelta(minutes=5)
         ):
             raise ValueError("invalid_worker_grant_expiry")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             if int(row["generation"]) != expected_generation:
                 raise StaleSessionFence("stale_generation")
@@ -1615,26 +1440,21 @@ class VoiceSessionRepository:
                 ):
                     return SessionMutation(_session(row), replayed=True)
                 raise IdempotencyConflict("worker_assignment_owned")
-            cursor.execute(
-                """
-                UPDATE voice_session
-                SET worker_assignment_id = %s, worker_identity = %s,
-                    worker_rtc_grant_issued_at = %s,
-                    worker_rtc_grant_expires_at = %s,
-                    updated_at = %s
-                WHERE session_id = %s
-                RETURNING *
-                """,
-                (
-                    assignment_id,
-                    worker_identity,
-                    issued_at,
-                    expires_at,
-                    now,
-                    session_id,
-                ),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=user_id,
+                session_id=session_id,
+                updates={
+                    "worker_assignment_id": assignment_id,
+                    "worker_identity": worker_identity,
+                    "worker_rtc_grant_issued_at": issued_at,
+                    "worker_rtc_grant_expires_at": expires_at,
+                    "updated_at": now,
+                },
+                require_live=True,
             )
-            updated = cursor.fetchone()
+            if updated is None:
+                raise StaleSessionFence("session_ended")
         return SessionMutation(_session(updated))
 
     async def claim_control_lease(
@@ -1667,8 +1487,8 @@ class VoiceSessionRepository:
         now: datetime,
     ) -> ControlLeaseState:
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             state = ControlLeaseState(
                 generation=int(row["generation"]),
@@ -1681,15 +1501,19 @@ class VoiceSessionRepository:
                 owner_id=owner_id,
                 now=now,
             )
-            cursor.execute(
-                """
-                UPDATE voice_session
-                SET control_owner_id = %s, control_lease_expires_at = %s,
-                    updated_at = %s
-                WHERE session_id = %s
-                """,
-                (claimed.owner_id, claimed.expires_at, now, row["session_id"]),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=user_id,
+                session_id=str(row["session_id"]),
+                updates={
+                    "control_owner_id": claimed.owner_id,
+                    "control_lease_expires_at": claimed.expires_at,
+                    "updated_at": now,
+                },
+                require_live=True,
             )
+            if updated is None:
+                raise StaleSessionFence("session_ended")
         return claimed
 
     def renew_owned_control_leases(
@@ -1715,20 +1539,14 @@ class VoiceSessionRepository:
         ):
             raise ValueError("invalid_control_lease_batch_size")
         renewed: list[VoiceSessionRecord] = []
-        with self._transaction() as cursor:
-            cursor.execute(
-                """
-                SELECT * FROM voice_session
-                WHERE ended_at IS NULL
-                  AND control_owner_id = %s
-                  AND control_lease_expires_at > %s
-                ORDER BY control_lease_expires_at, session_id
-                FOR UPDATE SKIP LOCKED
-                LIMIT %s
-                """,
-                (owner_id, now, batch_size),
+        with self._transaction() as transaction:
+            rows = self._voice.list_renewable_control_session_records_for_administration(
+                transaction,
+                control_owner_id=owner_id,
+                now=now,
+                limit=batch_size,
             )
-            for row in cursor.fetchall():
+            for row in rows:
                 claimed = self._control_leases.claim(
                     ControlLeaseState(
                         generation=int(row["generation"]),
@@ -1739,26 +1557,21 @@ class VoiceSessionRepository:
                     owner_id=owner_id,
                     now=now,
                 )
-                cursor.execute(
-                    """
-                    UPDATE voice_session
-                    SET control_lease_expires_at = %s, updated_at = %s
-                    WHERE session_id = %s
-                      AND ended_at IS NULL
-                      AND control_owner_id = %s
-                      AND control_lease_expires_at > %s
-                    RETURNING *
-                    """,
-                    (
-                        claimed.expires_at,
-                        now,
-                        row["session_id"],
-                        owner_id,
-                        now,
-                    ),
+                updated = self._voice.patch_session_record(
+                    transaction,
+                    owner_id=str(row["user_id"]),
+                    session_id=str(row["session_id"]),
+                    updates={
+                        "control_lease_expires_at": claimed.expires_at,
+                        "updated_at": now,
+                    },
+                    require_live=True,
                 )
-                updated = cursor.fetchone()
-                if updated is not None:
+                if (
+                    updated is not None
+                    and updated.get("control_owner_id") == owner_id
+                    and updated.get("control_lease_expires_at") == claimed.expires_at
+                ):
                     renewed.append(_session(updated))
         return tuple(renewed)
 
@@ -1788,8 +1601,8 @@ class VoiceSessionRepository:
         generation: int,
         owner_id: str,
     ) -> bool:
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             state = ControlLeaseState(
                 generation=int(row["generation"]),
@@ -1803,15 +1616,13 @@ class VoiceSessionRepository:
             )
             if released == state:
                 return False
-            cursor.execute(
-                """
-                UPDATE voice_session
-                SET control_owner_id = NULL, control_lease_expires_at = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE session_id = %s
-                """,
-                (row["session_id"],),
+            released_record = self._voice.release_control_lease_record(
+                transaction,
+                owner_id=user_id,
+                session_id=str(row["session_id"]),
             )
+            if not released_record:  # pragma: no cover - locked row invariant.
+                raise RuntimeError("voice_control_release_failed")
         return True
 
     async def claim_announcement(
@@ -1841,17 +1652,17 @@ class VoiceSessionRepository:
         if not isinstance(request, AnnouncementClaimRequest):
             raise TypeError("request must be AnnouncementClaimRequest")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND turn_id = %s "
-                "FOR UPDATE",
-                (user_id, request.turn_id),
+        with self._transaction() as transaction:
+            row = self._voice.get_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=request.turn_id,
+                for_update=True,
             )
-            row = cursor.fetchone()
             if row is None or str(row["session_id"]) != request.session_id:
                 raise VoiceSessionNotFound("voice_turn_not_found")
             session = self._session_for_update(
-                cursor,
+                transaction,
                 user_id,
                 request.session_id,
             )
@@ -1862,11 +1673,11 @@ class VoiceSessionRepository:
                 or int(session["media_grant_revision"]) != expected_revision
             ):
                 raise StaleSessionFence("stale_media_grant_revision")
-            cursor.execute(
-                "SELECT 1 FROM chats WHERE id = %s AND user_id = %s",
-                (row["chat_id"], user_id),
+            chat_available = self._voice.chat_exists(
+                transaction,
+                owner_id=user_id,
+                chat_id=str(row["chat_id"]),
             )
-            chat_available = cursor.fetchone() is not None
             rejection_reason = request.authorized_preacceptance_rejection_reason
             preacceptance_authorized = rejection_reason is not None
             if preacceptance_authorized:
@@ -1933,36 +1744,27 @@ class VoiceSessionRepository:
                 if request.kind in {"acknowledgement", "progress"}
                 else None
             )
-            cursor.execute(
-                """
-                UPDATE voice_turn
-                SET announcement_sequence = %s,
-                    result_reserved_samples = %s,
-                    result_quantum_count = %s,
-                    last_announcement_kind = %s,
-                    last_phrase_key = %s,
-                    next_announcement_due_at = %s,
-                    announcement_claim_id = %s,
-                    announcement_claim_expires_at = %s,
-                    last_announcement_started_at = %s,
-                    updated_at = %s
-                WHERE user_id = %s AND turn_id = %s
-                """,
-                (
-                    claimed.announcement_sequence,
-                    claimed.result_reserved_samples,
-                    claimed.result_quantum_count,
-                    claimed.last_announcement_kind,
-                    claimed.last_phrase_key,
-                    next_due_at,
-                    claimed.announcement_claim_id,
-                    claimed.announcement_claim_expires_at,
-                    now,
-                    now,
-                    user_id,
-                    request.turn_id,
-                ),
+            updated = self._voice.patch_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=request.turn_id,
+                updates={
+                    "announcement_sequence": claimed.announcement_sequence,
+                    "result_reserved_samples": claimed.result_reserved_samples,
+                    "result_quantum_count": claimed.result_quantum_count,
+                    "last_announcement_kind": claimed.last_announcement_kind,
+                    "last_phrase_key": claimed.last_phrase_key,
+                    "next_announcement_due_at": next_due_at,
+                    "announcement_claim_id": claimed.announcement_claim_id,
+                    "announcement_claim_expires_at": (
+                        claimed.announcement_claim_expires_at
+                    ),
+                    "last_announcement_started_at": now,
+                    "updated_at": now,
+                },
             )
+            if updated is None:  # pragma: no cover - locked row invariant.
+                raise RuntimeError("voice_announcement_claim_failed")
         return mutation
 
     async def complete_announcement(
@@ -1999,13 +1801,13 @@ class VoiceSessionRepository:
         turn_id = _uuid4(turn_id, "invalid_turn_id")
         claim_id = _uuid4(claim_id, "invalid_announcement_claim_id")
         _positive(generation, "invalid_generation")
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND turn_id = %s "
-                "FOR UPDATE",
-                (user_id, turn_id),
+        with self._transaction() as transaction:
+            row = self._voice.get_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                for_update=True,
             )
-            row = cursor.fetchone()
             if row is None or str(row["session_id"]) != session_id:
                 raise VoiceSessionNotFound("voice_turn_not_found")
             if row.get("announcement_claim_id") is None:
@@ -2030,21 +1832,15 @@ class VoiceSessionRepository:
                 generation=generation,
                 claim_id=claim_id,
             )
-            cursor.execute(
-                """
-                UPDATE voice_turn
-                SET announcement_claim_id = %s,
-                    announcement_claim_expires_at = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = %s AND turn_id = %s
-                """,
-                (
-                    completed.announcement_claim_id,
-                    completed.announcement_claim_expires_at,
-                    user_id,
-                    turn_id,
-                ),
+            updated = self._voice.complete_announcement_claim(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                claim_id=completed.announcement_claim_id,
+                claim_expires_at=completed.announcement_claim_expires_at,
             )
+            if not updated:  # pragma: no cover - locked row invariant.
+                raise RuntimeError("voice_announcement_completion_failed")
         return True
 
     def request_chat_context_update(
@@ -2062,8 +1858,8 @@ class VoiceSessionRepository:
 
         visible_chat_id = _uuid4(visible_chat_id, "invalid_visible_chat_id")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             self._assert_fences(row, expected_generation, expected_media_grant_revision)
             if int(row["chat_context_revision"]) != expected_chat_context_revision:
@@ -2072,19 +1868,20 @@ class VoiceSessionRepository:
                 return SessionMutation(_session(row), replayed=True)
             if not _context_synced(row):
                 raise ContextSyncPending("chat_context_sync_pending")
-            cursor.execute(
-                """
-                UPDATE voice_session
-                SET visible_chat_id = %s,
-                    chat_context_revision = chat_context_revision + 1,
-                    last_interaction_at = %s, idle_started_at = NULL,
-                    updated_at = %s
-                WHERE session_id = %s
-                RETURNING *
-                """,
-                (visible_chat_id, now, now, row["session_id"]),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=user_id,
+                session_id=str(row["session_id"]),
+                updates={
+                    "visible_chat_id": visible_chat_id,
+                    "chat_context_revision": int(row["chat_context_revision"]) + 1,
+                    "last_interaction_at": now,
+                    "idle_started_at": None,
+                    "updated_at": now,
+                },
             )
-            updated = cursor.fetchone()
+            if updated is None:  # pragma: no cover - locked row invariant.
+                raise RuntimeError("voice_chat_context_update_failed")
         return SessionMutation(_session(updated))
 
     def apply_chat_context(
@@ -2109,8 +1906,8 @@ class VoiceSessionRepository:
         visible_chat_id = _uuid4(visible_chat_id, "invalid_visible_chat_id")
         _positive(chat_context_revision, "invalid_chat_context_revision")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             self._assert_fences(row, expected_generation, expected_media_grant_revision)
             if (
@@ -2129,18 +1926,18 @@ class VoiceSessionRepository:
                 and row.get("applied_chat_context_revision") == chat_context_revision
             ):
                 return SessionMutation(_session(row), replayed=True)
-            cursor.execute(
-                """
-                UPDATE voice_session
-                SET applied_visible_chat_id = %s,
-                    applied_chat_context_revision = %s,
-                    updated_at = %s
-                WHERE session_id = %s
-                RETURNING *
-                """,
-                (visible_chat_id, chat_context_revision, now, row["session_id"]),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=user_id,
+                session_id=str(row["session_id"]),
+                updates={
+                    "applied_visible_chat_id": visible_chat_id,
+                    "applied_chat_context_revision": chat_context_revision,
+                    "updated_at": now,
+                },
             )
-            updated = cursor.fetchone()
+            if updated is None:  # pragma: no cover - locked row invariant.
+                raise RuntimeError("voice_chat_context_apply_failed")
         return SessionMutation(_session(updated))
 
     def bind_recognition_turn(
@@ -2154,20 +1951,25 @@ class VoiceSessionRepository:
         if not isinstance(request, RecognitionBinding):
             raise TypeError("request must be RecognitionBinding")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            self._lock_identity(cursor, "turn", request.user_id, request.client_turn_id)
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND client_turn_id = %s "
-                "FOR UPDATE",
-                (request.user_id, request.client_turn_id),
+        with self._transaction() as transaction:
+            self._lock_identity(
+                transaction,
+                "turn",
+                request.user_id,
+                request.client_turn_id,
             )
-            existing = cursor.fetchone()
+            existing = self._voice.get_client_turn_record(
+                transaction,
+                owner_id=request.user_id,
+                client_turn_id=request.client_turn_id,
+                for_update=True,
+            )
             if existing is not None:
                 if not _turn_binding_matches(existing, request):
                     raise IdempotencyConflict("client_turn_binding_mismatch")
                 return TurnMutation(_turn(existing), replayed=True)
             session = self._session_for_update(
-                cursor,
+                transaction,
                 request.user_id,
                 request.session_id,
             )
@@ -2198,39 +2000,29 @@ class VoiceSessionRepository:
             result_request_generation = self._new_uuid4(
                 "result_request_generation"
             )
-            cursor.execute(
-                """
-                INSERT INTO voice_turn (
-                    turn_id, client_turn_id, session_id, session_generation,
-                    media_grant_revision, user_id, chat_id,
-                    chat_context_revision, execution_base_render_revision,
-                    submission_id, request_generation,
-                    result_request_generation, state, is_foreground,
-                    created_at, updated_at
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    'recognizing', FALSE, %s, %s
-                )
-                RETURNING *
-                """,
-                (
-                    turn_id,
-                    request.client_turn_id,
-                    request.session_id,
-                    request.session_generation,
-                    request.media_grant_revision,
-                    request.user_id,
-                    request.chat_id,
-                    request.chat_context_revision,
-                    request.execution_base_render_revision,
-                    submission_id,
-                    request_generation,
-                    result_request_generation,
-                    now,
-                    now,
-                ),
+            row = self._voice.insert_turn_record(
+                transaction,
+                values={
+                    "turn_id": turn_id,
+                    "client_turn_id": request.client_turn_id,
+                    "session_id": request.session_id,
+                    "session_generation": request.session_generation,
+                    "media_grant_revision": request.media_grant_revision,
+                    "user_id": request.user_id,
+                    "chat_id": request.chat_id,
+                    "chat_context_revision": request.chat_context_revision,
+                    "execution_base_render_revision": (
+                        request.execution_base_render_revision
+                    ),
+                    "submission_id": submission_id,
+                    "request_generation": request_generation,
+                    "result_request_generation": result_request_generation,
+                    "state": "recognizing",
+                    "is_foreground": False,
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-            row = cursor.fetchone()
         return TurnMutation(_turn(row))
 
     async def bind_worker_recognition(
@@ -2264,12 +2056,12 @@ class VoiceSessionRepository:
             max_length=128,
         )
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_session WHERE session_id = %s FOR UPDATE",
-                (start.session_id,),
+        with self._transaction() as transaction:
+            session = self._voice.get_session_record_for_administration(
+                transaction,
+                session_id=start.session_id,
+                for_update=True,
             )
-            session = cursor.fetchone()
             if session is None:
                 raise VoiceSessionNotFound("voice_session_not_found")
             self._assert_live(session)
@@ -2300,13 +2092,18 @@ class VoiceSessionRepository:
             ):
                 raise StaleSessionFence("stale_chat_context_revision")
             user_id = str(session["user_id"])
-            self._lock_identity(cursor, "turn", user_id, start.client_turn_id)
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s "
-                "AND client_turn_id = %s FOR UPDATE",
-                (user_id, start.client_turn_id),
+            self._lock_identity(
+                transaction,
+                "turn",
+                user_id,
+                start.client_turn_id,
             )
-            existing = cursor.fetchone()
+            existing = self._voice.get_client_turn_record(
+                transaction,
+                owner_id=user_id,
+                client_turn_id=start.client_turn_id,
+                for_update=True,
+            )
             if existing is not None:
                 if (
                     str(existing["session_id"]) != start.session_id
@@ -2319,13 +2116,13 @@ class VoiceSessionRepository:
                 ):
                     raise IdempotencyConflict("client_turn_binding_mismatch")
                 return TurnMutation(_turn(existing), replayed=True)
-            cursor.execute(
-                "SELECT id, render_revision FROM chats "
-                "WHERE id = %s AND user_id = %s FOR SHARE",
-                (start.chat_id, user_id),
+            render_revision = self._voice.get_chat_render_revision(
+                transaction,
+                owner_id=user_id,
+                chat_id=start.chat_id,
+                for_share=True,
             )
-            chat = cursor.fetchone()
-            if chat is None:
+            if render_revision is None:
                 raise VoiceSessionNotFound("voice_chat_not_found")
             turn_id = self._new_uuid4("turn_id")
             submission_id = self._new_uuid4("submission_id")
@@ -2333,39 +2130,27 @@ class VoiceSessionRepository:
             result_request_generation = self._new_uuid4(
                 "result_request_generation"
             )
-            cursor.execute(
-                """
-                INSERT INTO voice_turn (
-                    turn_id, client_turn_id, session_id, session_generation,
-                    media_grant_revision, user_id, chat_id,
-                    chat_context_revision, execution_base_render_revision,
-                    submission_id, request_generation,
-                    result_request_generation, state, is_foreground,
-                    created_at, updated_at
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    'recognizing', FALSE, %s, %s
-                )
-                RETURNING *
-                """,
-                (
-                    turn_id,
-                    start.client_turn_id,
-                    start.session_id,
-                    start.generation,
-                    start.media_grant_revision,
-                    user_id,
-                    start.chat_id,
-                    start.chat_context_revision,
-                    int(chat.get("render_revision") or 0),
-                    submission_id,
-                    request_generation,
-                    result_request_generation,
-                    now,
-                    now,
-                ),
+            row = self._voice.insert_turn_record(
+                transaction,
+                values={
+                    "turn_id": turn_id,
+                    "client_turn_id": start.client_turn_id,
+                    "session_id": start.session_id,
+                    "session_generation": start.generation,
+                    "media_grant_revision": start.media_grant_revision,
+                    "user_id": user_id,
+                    "chat_id": start.chat_id,
+                    "chat_context_revision": start.chat_context_revision,
+                    "execution_base_render_revision": render_revision,
+                    "submission_id": submission_id,
+                    "request_generation": request_generation,
+                    "result_request_generation": result_request_generation,
+                    "state": "recognizing",
+                    "is_foreground": False,
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-            row = cursor.fetchone()
         return TurnMutation(_turn(row))
 
     async def reject_worker_recognition(
@@ -2420,12 +2205,12 @@ class VoiceSessionRepository:
             max_length=128,
         )
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_session WHERE session_id = %s FOR UPDATE",
-                (binding.session_id,),
+        with self._transaction() as transaction:
+            session = self._voice.get_session_record_for_administration(
+                transaction,
+                session_id=binding.session_id,
+                for_update=True,
             )
-            session = cursor.fetchone()
             if session is None:
                 raise VoiceSessionNotFound("voice_session_not_found")
             self._assert_live(session)
@@ -2443,11 +2228,11 @@ class VoiceSessionRepository:
                 or now >= session["control_lease_expires_at"]
             ):
                 raise ClaimUnavailable("control_lease_not_owned")
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE turn_id = %s FOR UPDATE",
-                (binding.turn_id,),
+            row = self._voice.get_turn_record_for_administration(
+                transaction,
+                turn_id=binding.turn_id,
+                for_update=True,
             )
-            row = cursor.fetchone()
             if row is None:
                 raise VoiceSessionNotFound("voice_turn_not_found")
             expected = {
@@ -2482,19 +2267,22 @@ class VoiceSessionRepository:
                 raise IdempotencyConflict("transcript_rejection_conflict")
             if row["state"] != "recognizing":
                 raise VoiceSessionRepositoryError("voice_turn_already_accepted")
-            cursor.execute(
-                """
-                UPDATE voice_turn
-                SET state = 'abandoned', terminal_kind = 'abandoned',
-                    rejection_reason = 'malformed_final',
-                    rejection_retry_policy = %s,
-                    terminal_at = %s, updated_at = %s
-                WHERE turn_id = %s
-                RETURNING *
-                """,
-                (retry_policy, now, now, binding.turn_id),
+            row = self._voice.patch_turn_record(
+                transaction,
+                owner_id=str(row["user_id"]),
+                turn_id=binding.turn_id,
+                updates={
+                    "state": "abandoned",
+                    "terminal_kind": "abandoned",
+                    "rejection_reason": "malformed_final",
+                    "rejection_retry_policy": retry_policy,
+                    "terminal_at": now,
+                    "updated_at": now,
+                },
+                expected_states=("recognizing",),
             )
-            row = cursor.fetchone()
+            if row is None:
+                raise StaleSessionFence("voice_turn_rejection_lost")
         return TurnMutation(_turn(row))
 
     def admit_transcript(
@@ -2509,24 +2297,24 @@ class VoiceSessionRepository:
         if not isinstance(request, TranscriptSubmission):
             raise TypeError("request must be TranscriptSubmission")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND turn_id = %s "
-                "FOR UPDATE",
-                (request.user_id, request.turn_id),
+        with self._transaction() as transaction:
+            row = self._voice.get_turn_record(
+                transaction,
+                owner_id=request.user_id,
+                turn_id=request.turn_id,
+                for_update=True,
             )
-            row = cursor.fetchone()
             if row is None:
                 raise TranscriptSubmissionRejected(
                     "invalid_binding",
                     "explicit_user_retry",
                 )
-            cursor.execute(
-                "SELECT * FROM voice_session WHERE user_id = %s "
-                "AND session_id = %s FOR UPDATE",
-                (request.user_id, request.session_id),
+            session = self._voice.get_session_record(
+                transaction,
+                owner_id=request.user_id,
+                session_id=request.session_id,
+                for_update=True,
             )
-            session = cursor.fetchone()
             if session is None:
                 raise TranscriptSubmissionRejected("stale_session", "none")
             self._assert_transcript_binding(row, session, request)
@@ -2577,25 +2365,22 @@ class VoiceSessionRepository:
                     _uuid_text(row.get("result_request_generation"))
                     or self._new_uuid4("result_request_generation")
                 )
-                cursor.execute(
-                    """
-                    UPDATE voice_turn
-                    SET state = 'submitting', detected_language = %s,
-                        spoken_output_policy = %s, output_reason = %s,
-                        result_request_generation = %s, updated_at = %s
-                    WHERE turn_id = %s
-                    RETURNING *
-                    """,
-                    (
-                        request.detected_language,
-                        policy,
-                        output_reason,
-                        result_request_generation,
-                        now,
-                        request.turn_id,
-                    ),
+                row = self._voice.patch_turn_record(
+                    transaction,
+                    owner_id=request.user_id,
+                    turn_id=request.turn_id,
+                    updates={
+                        "state": "submitting",
+                        "detected_language": request.detected_language,
+                        "spoken_output_policy": policy,
+                        "output_reason": output_reason,
+                        "result_request_generation": result_request_generation,
+                        "updated_at": now,
+                    },
+                    expected_states=("recognizing",),
                 )
-                row = cursor.fetchone()
+                if row is None:
+                    raise TranscriptSubmissionRejected("invalid_binding", "none")
             elif row["state"] != "submitting":
                 raise TranscriptSubmissionRejected("invalid_binding", "none")
             elif row.get("detected_language") != request.detected_language:
@@ -2604,16 +2389,20 @@ class VoiceSessionRepository:
                     "explicit_user_retry",
                 )
             elif row.get("result_request_generation") is None:
-                cursor.execute(
-                    "UPDATE voice_turn SET result_request_generation = %s, "
-                    "updated_at = %s WHERE turn_id = %s RETURNING *",
-                    (
-                        self._new_uuid4("result_request_generation"),
-                        now,
-                        request.turn_id,
-                    ),
+                row = self._voice.patch_turn_record(
+                    transaction,
+                    owner_id=request.user_id,
+                    turn_id=request.turn_id,
+                    updates={
+                        "result_request_generation": self._new_uuid4(
+                            "result_request_generation"
+                        ),
+                        "updated_at": now,
+                    },
+                    expected_states=("submitting",),
                 )
-                row = cursor.fetchone()
+                if row is None:
+                    raise TranscriptSubmissionRejected("invalid_binding", "none")
         return TranscriptAdmission(
             canonical_text=canonical,
             turn=_turn(row),
@@ -2647,13 +2436,13 @@ class VoiceSessionRepository:
         if retry_policy not in {"explicit_user_retry", "none"}:
             raise ValueError("invalid_retry_policy")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND turn_id = %s "
-                "FOR UPDATE",
-                (user_id, turn_id),
+        with self._transaction() as transaction:
+            row = self._voice.get_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                for_update=True,
             )
-            row = cursor.fetchone()
             if row is None:
                 raise VoiceSessionNotFound("voice_turn_not_found")
             if row["state"] == "abandoned":
@@ -2665,18 +2454,22 @@ class VoiceSessionRepository:
                 raise IdempotencyConflict("transcript_rejection_conflict")
             if row["state"] not in {"recognizing", "submitting"}:
                 raise VoiceSessionRepositoryError("voice_turn_already_accepted")
-            cursor.execute(
-                """
-                UPDATE voice_turn
-                SET state = 'abandoned', terminal_kind = 'abandoned',
-                    rejection_reason = %s, rejection_retry_policy = %s,
-                    terminal_at = %s, updated_at = %s
-                WHERE turn_id = %s
-                RETURNING *
-                """,
-                (reason, retry_policy, now, now, turn_id),
+            row = self._voice.patch_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                updates={
+                    "state": "abandoned",
+                    "terminal_kind": "abandoned",
+                    "rejection_reason": reason,
+                    "rejection_retry_policy": retry_policy,
+                    "terminal_at": now,
+                    "updated_at": now,
+                },
+                expected_states=("recognizing", "submitting"),
             )
-            row = cursor.fetchone()
+            if row is None:
+                raise VoiceSessionRepositoryError("voice_turn_already_accepted")
         return TurnMutation(_turn(row))
 
     def accept_transcript(
@@ -2695,9 +2488,9 @@ class VoiceSessionRepository:
         """Atomically bind ordinary message acceptance and foreground work.
 
         ``transaction`` is the narrow publication integration seam: the
-        conversation repository may supply its already-fenced cursor so the
+        conversation repository may supply its already-fenced transaction so the
         user bubble, linked private result stage, and voice correlation either
-        all commit or all roll back. No caller may supply a non-cursor object.
+        all commit or all roll back.
         """
 
         user_id = _user_id(user_id)
@@ -2728,13 +2521,13 @@ class VoiceSessionRepository:
             else _uuid4(result_commit_id, "invalid_result_commit_id")
         )
         now = _aware(now, "invalid_current_time")
-        with self._transaction_or_existing(transaction) as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND turn_id = %s "
-                "FOR UPDATE",
-                (user_id, turn_id),
+        with self._transaction_or_existing(transaction) as plane_transaction:
+            row = self._voice.get_turn_record(
+                plane_transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                for_update=True,
             )
-            row = cursor.fetchone()
             if row is None:
                 raise VoiceSessionNotFound("voice_turn_not_found")
             replay_fields = (
@@ -2752,7 +2545,7 @@ class VoiceSessionRepository:
                     return TurnMutation(_turn(row), replayed=True)
                 raise VoiceSessionRepositoryError("voice_turn_not_submitting")
             session = self._session_for_update(
-                cursor,
+                plane_transaction,
                 user_id,
                 str(row["session_id"]),
             )
@@ -2768,43 +2561,31 @@ class VoiceSessionRepository:
                 != int(row["chat_context_revision"])
             ):
                 raise StaleSessionFence("stale_chat_context_revision")
-            cursor.execute(
-                """
-                UPDATE voice_turn
-                SET is_foreground = FALSE, updated_at = %s
-                WHERE session_id = %s AND is_foreground
-                  AND turn_id <> %s
-                  AND state NOT IN (
-                    'succeeded', 'failed', 'refused', 'cancelled', 'abandoned'
-                  )
-                """,
-                (now, row["session_id"], turn_id),
+            self._voice.clear_foreground_turns(
+                plane_transaction,
+                owner_id=user_id,
+                session_id=str(row["session_id"]),
+                now=now,
+                except_turn_id=turn_id,
             )
-            cursor.execute(
-                """
-                UPDATE voice_turn
-                SET message_id = %s, accepted_connection_generation = %s,
-                    acceptance_commit_id = %s, result_commit_id = %s,
-                    operation_id = %s,
-                    state = 'processing', is_foreground = TRUE,
-                    accepted_at = %s, processing_started_at = %s,
-                    updated_at = %s
-                WHERE turn_id = %s AND state = 'submitting'
-                RETURNING *
-                """,
-                (
-                    message_id,
-                    accepted_connection_generation,
-                    acceptance_commit_id,
-                    result_commit_id,
-                    operation_id,
-                    now,
-                    now,
-                    now,
-                    turn_id,
-                ),
+            accepted = self._voice.patch_turn_record(
+                plane_transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                updates={
+                    "message_id": message_id,
+                    "accepted_connection_generation": accepted_connection_generation,
+                    "acceptance_commit_id": acceptance_commit_id,
+                    "result_commit_id": result_commit_id,
+                    "operation_id": operation_id,
+                    "state": "processing",
+                    "is_foreground": True,
+                    "accepted_at": now,
+                    "processing_started_at": now,
+                    "updated_at": now,
+                },
+                expected_states=("submitting",),
             )
-            accepted = cursor.fetchone()
             if accepted is None:
                 raise StaleSessionFence("voice_turn_acceptance_lost")
         return TurnMutation(_turn(accepted))
@@ -2824,13 +2605,13 @@ class VoiceSessionRepository:
             request_generation,
             "invalid_request_generation",
         )
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s "
-                "AND submission_id = %s AND request_generation = %s",
-                (user_id, submission_id, request_generation),
+        with self._transaction() as transaction:
+            row = self._voice.get_submission_record(
+                transaction,
+                owner_id=user_id,
+                submission_id=submission_id,
+                request_generation=request_generation,
             )
-            row = cursor.fetchone()
             if row is None:
                 raise VoiceSessionNotFound("voice_turn_not_found")
         return _turn(row)
@@ -2848,42 +2629,41 @@ class VoiceSessionRepository:
 
         turn_id = _uuid4(turn_id, "invalid_turn_id")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            session = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            session = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(session)
             if int(session["generation"]) != expected_generation:
                 raise StaleSessionFence("stale_generation")
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND session_id = %s "
-                "AND turn_id = %s FOR UPDATE",
-                (_user_id(user_id), _uuid4(session_id, "invalid_session_id"), turn_id),
+            target = self._voice.get_turn_record(
+                transaction,
+                owner_id=_user_id(user_id),
+                turn_id=turn_id,
+                for_update=True,
             )
-            target = cursor.fetchone()
-            if target is None:
+            if target is None or str(target["session_id"]) != _uuid4(
+                session_id,
+                "invalid_session_id",
+            ):
                 raise VoiceSessionNotFound("voice_turn_not_found")
             if target["state"] in _TERMINAL_TURN_STATES:
                 raise VoiceSessionRepositoryError("voice_turn_terminal")
             # Clear before setting: PostgreSQL's immediate partial-unique check
             # can otherwise observe the new foreground row before it visits the
             # previous one within a single CASE update.
-            cursor.execute(
-                """
-                UPDATE voice_turn
-                SET is_foreground = FALSE, updated_at = %s
-                WHERE session_id = %s AND is_foreground
-                  AND state NOT IN (
-                    'succeeded', 'failed', 'refused', 'cancelled', 'abandoned'
-                  )
-                """,
-                (now, session_id),
+            self._voice.clear_foreground_turns(
+                transaction,
+                owner_id=user_id,
+                session_id=session_id,
+                now=now,
             )
-            cursor.execute(
-                "UPDATE voice_turn SET is_foreground = TRUE, updated_at = %s "
-                "WHERE turn_id = %s",
-                (now, turn_id),
+            updated = self._voice.patch_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                updates={"is_foreground": True, "updated_at": now},
             )
-            cursor.execute("SELECT * FROM voice_turn WHERE turn_id = %s", (turn_id,))
-            updated = cursor.fetchone()
+            if updated is None:  # pragma: no cover - locked row invariant.
+                raise VoiceSessionNotFound("voice_turn_not_found")
         return _turn(updated)
 
     def get_turn(self, *, user_id: str, turn_id: str) -> VoiceTurnRecord:
@@ -2891,12 +2671,12 @@ class VoiceSessionRepository:
 
         user_id = _user_id(user_id)
         turn_id = _uuid4(turn_id, "invalid_turn_id")
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND turn_id = %s",
-                (user_id, turn_id),
+        with self._transaction() as transaction:
+            row = self._voice.get_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
             )
-            row = cursor.fetchone()
             if row is None:
                 raise VoiceSessionNotFound("voice_turn_not_found")
         return _turn(row)
@@ -2995,8 +2775,8 @@ class VoiceSessionRepository:
         else:
             raise ValueError("invalid_quantum_role")
 
-        with self._transaction() as cursor:
-            session = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            session = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(session)
             self._assert_fences(
                 session,
@@ -3023,13 +2803,13 @@ class VoiceSessionRepository:
                     raise StaleSessionFence("playout_fence_mismatch")
                 return None
 
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s "
-                "AND session_id = %s AND turn_id = %s FOR UPDATE",
-                (user_id, session_id, turn_id),
+            row = self._voice.get_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                for_update=True,
             )
-            row = cursor.fetchone()
-            if row is None:
+            if row is None or str(row["session_id"]) != session_id:
                 raise VoiceSessionNotFound("voice_turn_not_found")
             if (
                 int(row["session_generation"]) != generation
@@ -3061,60 +2841,27 @@ class VoiceSessionRepository:
                 or quantum_index >= int(row["result_quantum_count"])
             ):
                 raise StaleSessionFence("result_reservation_mismatch")
-            cursor.execute(
-                "SELECT COALESCE(MAX(last_client_playout_sequence), -1) "
-                "AS sequence FROM voice_turn WHERE user_id = %s "
-                "AND session_id = %s",
-                (user_id, session_id),
+            maximum = self._voice.max_client_playout_sequence(
+                transaction,
+                owner_id=user_id,
+                session_id=session_id,
             )
-            maximum = cursor.fetchone()
-            if int(maximum["sequence"]) >= client_sequence:
+            if maximum >= client_sequence:
                 raise StaleSessionFence("client_sequence_out_of_order")
+            updates: dict[str, Any] = {
+                "last_client_playout_sequence": client_sequence,
+                "updated_at": received_at,
+            }
             if phase == "started":
-                cursor.execute(
-                    """
-                    UPDATE voice_turn
-                    SET last_client_playout_started_at = %s,
-                        last_client_playout_sequence = %s, updated_at = %s
-                    WHERE user_id = %s AND turn_id = %s
-                    RETURNING *
-                    """,
-                    (
-                        received_at,
-                        client_sequence,
-                        received_at,
-                        user_id,
-                        turn_id,
-                    ),
-                )
+                updates["last_client_playout_started_at"] = received_at
             elif phase == "finished":
-                cursor.execute(
-                    """
-                    UPDATE voice_turn
-                    SET last_client_playout_finished_at = %s,
-                        last_client_playout_sequence = %s, updated_at = %s
-                    WHERE user_id = %s AND turn_id = %s
-                    RETURNING *
-                    """,
-                    (
-                        received_at,
-                        client_sequence,
-                        received_at,
-                        user_id,
-                        turn_id,
-                    ),
-                )
-            else:
-                cursor.execute(
-                    """
-                    UPDATE voice_turn
-                    SET last_client_playout_sequence = %s, updated_at = %s
-                    WHERE user_id = %s AND turn_id = %s
-                    RETURNING *
-                    """,
-                    (client_sequence, received_at, user_id, turn_id),
-                )
-            updated = cursor.fetchone()
+                updates["last_client_playout_finished_at"] = received_at
+            updated = self._voice.patch_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                updates=updates,
+            )
             if updated is None:  # pragma: no cover - locked row is retained.
                 raise RuntimeError("voice_playout_update_failed")
         return _turn(updated)
@@ -3152,13 +2899,13 @@ class VoiceSessionRepository:
         if sensitivity not in {"unknown", "sensitive", "non_sensitive"}:
             raise ValueError("invalid_sensitivity")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            cursor.execute(
-                "SELECT * FROM voice_turn WHERE user_id = %s AND turn_id = %s "
-                "FOR UPDATE",
-                (user_id, turn_id),
+        with self._transaction() as transaction:
+            row = self._voice.get_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                for_update=True,
             )
-            row = cursor.fetchone()
             if row is None:
                 raise VoiceSessionNotFound("voice_turn_not_found")
             if str(row["state"]) in _TERMINAL_TURN_STATES:
@@ -3177,30 +2924,25 @@ class VoiceSessionRepository:
                 "waiting_on_user",
             }:
                 raise VoiceSessionRepositoryError("voice_turn_not_accepted")
-            cursor.execute(
-                """
-                UPDATE voice_turn
-                SET state = %s, terminal_kind = %s,
-                    result_commit_id = %s, recap_source = %s,
-                    sensitivity = %s, is_foreground = FALSE,
-                    next_announcement_due_at = NULL,
-                    terminal_at = %s, updated_at = %s
-                WHERE user_id = %s AND turn_id = %s
-                RETURNING *
-                """,
-                (
-                    terminal_kind,
-                    terminal_kind,
-                    result_commit_id,
-                    recap_source,
-                    sensitivity,
-                    now,
-                    now,
-                    user_id,
-                    turn_id,
-                ),
+            updated = self._voice.patch_turn_record(
+                transaction,
+                owner_id=user_id,
+                turn_id=turn_id,
+                updates={
+                    "state": terminal_kind,
+                    "terminal_kind": terminal_kind,
+                    "result_commit_id": result_commit_id,
+                    "recap_source": recap_source,
+                    "sensitivity": sensitivity,
+                    "is_foreground": False,
+                    "next_announcement_due_at": None,
+                    "terminal_at": now,
+                    "updated_at": now,
+                },
+                expected_states=("accepted", "processing", "waiting_on_user"),
             )
-            updated = cursor.fetchone()
+            if updated is None:
+                raise VoiceSessionRepositoryError("voice_turn_not_accepted")
         return TurnMutation(_turn(updated))
 
     def set_true_idle(
@@ -3218,19 +2960,19 @@ class VoiceSessionRepository:
         if not isinstance(listening, bool) or not isinstance(user_input_gate, bool):
             raise ValueError("invalid_idle_state")
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             if int(row["generation"]) != expected_generation:
                 raise StaleSessionFence("stale_generation")
             eligible = listening and not user_input_gate and row["state"] == "active"
             if eligible:
-                cursor.execute(
-                    "SELECT 1 FROM voice_turn WHERE session_id = %s "
-                    "AND state = ANY(%s) LIMIT 1",
-                    (row["session_id"], list(_ACTIVE_TURN_STATES)),
+                eligible = not self._voice.has_turn_in_states(
+                    transaction,
+                    owner_id=user_id,
+                    session_id=str(row["session_id"]),
+                    states=tuple(_ACTIVE_TURN_STATES),
                 )
-                eligible = cursor.fetchone() is None
             idle_started_at = (
                 (
                     row.get("idle_started_at")
@@ -3240,12 +2982,14 @@ class VoiceSessionRepository:
                 if eligible
                 else None
             )
-            cursor.execute(
-                "UPDATE voice_session SET idle_started_at = %s, updated_at = %s "
-                "WHERE session_id = %s RETURNING *",
-                (idle_started_at, now, row["session_id"]),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=user_id,
+                session_id=str(row["session_id"]),
+                updates={"idle_started_at": idle_started_at, "updated_at": now},
             )
-            updated = cursor.fetchone()
+            if updated is None:  # pragma: no cover - locked row invariant.
+                raise RuntimeError("voice_idle_update_failed")
         return _session(updated)
 
     def record_interaction(
@@ -3259,24 +3003,25 @@ class VoiceSessionRepository:
         """Stamp authenticated receipt time; no client wall clock is accepted."""
 
         now = _aware(now, "invalid_current_time")
-        with self._transaction() as cursor:
-            row = self._session_for_update(cursor, user_id, session_id)
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             if int(row["generation"]) != expected_generation:
                 raise StaleSessionFence("stale_generation")
-            cursor.execute(
-                """
-                UPDATE voice_session
-                SET last_interaction_at = %s,
-                    idle_started_at = CASE
-                        WHEN idle_started_at IS NULL THEN NULL ELSE %s END,
-                    updated_at = %s
-                WHERE session_id = %s
-                RETURNING *
-                """,
-                (now, now, now, row["session_id"]),
+            updated = self._voice.patch_session_record(
+                transaction,
+                owner_id=user_id,
+                session_id=str(row["session_id"]),
+                updates={
+                    "last_interaction_at": now,
+                    "idle_started_at": (
+                        None if row.get("idle_started_at") is None else now
+                    ),
+                    "updated_at": now,
+                },
             )
-            updated = cursor.fetchone()
+            if updated is None:  # pragma: no cover - locked row invariant.
+                raise RuntimeError("voice_interaction_update_failed")
         return _session(updated)
 
     def expire_true_idle(self, *, now: datetime) -> tuple[VoiceSessionRecord, ...]:
@@ -3285,34 +3030,29 @@ class VoiceSessionRepository:
         now = _aware(now, "invalid_current_time")
         cutoff = now - IDLE_TIMEOUT
         expired: list[VoiceSessionRecord] = []
-        with self._transaction() as cursor:
-            cursor.execute(
-                """
-                SELECT * FROM voice_session
-                WHERE ended_at IS NULL AND state = 'active'
-                  AND idle_started_at IS NOT NULL
-                  AND idle_started_at <= %s
-                ORDER BY idle_started_at, session_id
-                FOR UPDATE SKIP LOCKED
-                """,
-                (cutoff,),
+        with self._transaction() as transaction:
+            rows = self._voice.list_true_idle_session_records_for_administration(
+                transaction,
+                cutoff=cutoff,
             )
-            for row in cursor.fetchall():
-                cursor.execute(
-                    "SELECT 1 FROM voice_turn WHERE session_id = %s "
-                    "AND state = ANY(%s) LIMIT 1",
-                    (row["session_id"], list(_ACTIVE_TURN_STATES)),
+            for row in rows:
+                has_active_turn = self._voice.has_turn_in_states(
+                    transaction,
+                    owner_id=str(row["user_id"]),
+                    session_id=str(row["session_id"]),
+                    states=tuple(_ACTIVE_TURN_STATES),
                 )
-                if cursor.fetchone() is not None:
-                    cursor.execute(
-                        "UPDATE voice_session SET idle_started_at = NULL, updated_at = %s "
-                        "WHERE session_id = %s",
-                        (now, row["session_id"]),
+                if has_active_turn:
+                    self._voice.patch_session_record(
+                        transaction,
+                        owner_id=str(row["user_id"]),
+                        session_id=str(row["session_id"]),
+                        updates={"idle_started_at": None, "updated_at": now},
                     )
                     continue
                 expired.append(
                     self._end_session_row(
-                        cursor,
+                        transaction,
                         row,
                         reason="idle",
                         now=now,
@@ -3322,7 +3062,7 @@ class VoiceSessionRepository:
 
     def _insert_session(
         self,
-        cursor: Any,
+        transaction: Any,
         request: CreateSession,
         *,
         generation: int,
@@ -3330,50 +3070,33 @@ class VoiceSessionRepository:
         now: datetime,
     ) -> Mapping[str, Any]:
         session_id = self._new_uuid4("session_id")
-        cursor.execute(
-            """
-            INSERT INTO voice_session (
-                session_id, user_id, activation_id, device_id, device_kind,
-                transport, room_name, participant_identity, visible_chat_id,
-                generation, media_grant_revision,
-                owner_connection_generation, control_binding_id,
-                control_binding_expires_at, lease_expires_at,
-                last_interaction_at, started_at, updated_at,
-                takeover_of_session_id, media_grant_nonce_hash,
-                media_grant_expires_at, media_grant_issued_at
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-            )
-            RETURNING *
-            """,
-            (
-                session_id,
-                request.user_id,
-                request.activation_id,
-                request.device_id,
-                request.device_kind,
-                request.transport,
-                request.room_name,
-                request.participant_identity,
-                request.visible_chat_id,
-                generation,
-                request.owner_connection_generation,
-                request.control_binding_id,
-                request.control_binding_expires_at,
-                request.lease_expires_at,
-                now,
-                now,
-                now,
-                takeover_of,
-                request.media_grant_nonce_hash,
-                request.media_grant_expires_at,
-                request.media_grant_issued_at,
-            ),
+        row = self._voice.insert_session_record(
+            transaction,
+            values={
+                "session_id": session_id,
+                "user_id": request.user_id,
+                "activation_id": request.activation_id,
+                "device_id": request.device_id,
+                "device_kind": request.device_kind,
+                "transport": request.transport,
+                "room_name": request.room_name,
+                "participant_identity": request.participant_identity,
+                "visible_chat_id": request.visible_chat_id,
+                "generation": generation,
+                "media_grant_revision": 1,
+                "owner_connection_generation": request.owner_connection_generation,
+                "control_binding_id": request.control_binding_id,
+                "control_binding_expires_at": request.control_binding_expires_at,
+                "lease_expires_at": request.lease_expires_at,
+                "last_interaction_at": now,
+                "started_at": now,
+                "updated_at": now,
+                "takeover_of_session_id": takeover_of,
+                "media_grant_nonce_hash": request.media_grant_nonce_hash,
+                "media_grant_expires_at": request.media_grant_expires_at,
+                "media_grant_issued_at": request.media_grant_issued_at,
+            },
         )
-        row = cursor.fetchone()
-        if row is None:  # pragma: no cover - PostgreSQL RETURNING invariant.
-            raise RuntimeError("voice_session_insert_failed")
         return row
 
     @staticmethod
@@ -3385,14 +3108,18 @@ class VoiceSessionRepository:
         if request.media_grant_expires_at <= now:
             raise ValueError("invalid_media_grant_expiry")
 
-    @staticmethod
-    def _activation_row(cursor: Any, user_id: str, activation_id: str) -> Any:
-        cursor.execute(
-            "SELECT * FROM voice_session WHERE user_id = %s AND activation_id = %s "
-            "FOR UPDATE",
-            (user_id, activation_id),
+    def _activation_row(
+        self,
+        transaction: Any,
+        user_id: str,
+        activation_id: str,
+    ) -> Any:
+        return self._voice.get_activation_record(
+            transaction,
+            owner_id=user_id,
+            activation_id=activation_id,
+            for_update=True,
         )
-        return cursor.fetchone()
 
     @staticmethod
     def _assert_activation_replay(
@@ -3439,47 +3166,46 @@ class VoiceSessionRepository:
         if now > request.issued_at + GRANT_REPLAY_WINDOW:
             raise IdempotencyConflict("refresh_replay_expired")
 
-    @staticmethod
-    def _session_for_update(cursor: Any, user_id: str, session_id: str) -> Any:
+    def _session_for_update(
+        self,
+        transaction: Any,
+        user_id: str,
+        session_id: str,
+    ) -> Any:
         user_id = _user_id(user_id)
         session_id = _uuid4(session_id, "invalid_session_id")
-        cursor.execute(
-            "SELECT * FROM voice_session WHERE user_id = %s AND session_id = %s "
-            "FOR UPDATE",
-            (user_id, session_id),
+        row = self._voice.get_session_record(
+            transaction,
+            owner_id=user_id,
+            session_id=session_id,
+            for_update=True,
         )
-        row = cursor.fetchone()
         if row is None:
             raise VoiceSessionNotFound("voice_session_not_found")
         return row
 
-    @staticmethod
     def _abandon_unaccepted_session_turns(
-        cursor: Any,
+        self,
+        transaction: Any,
         *,
+        owner_id: str,
         session_id: str,
         generation: int,
         now: datetime,
     ) -> None:
         """Terminalize pre-acceptance rows while preserving accepted work."""
 
-        cursor.execute(
-            """
-            UPDATE voice_turn
-            SET state = 'abandoned', terminal_kind = 'abandoned',
-                rejection_reason = 'stale_session',
-                rejection_retry_policy = 'explicit_user_retry',
-                terminal_at = %s, updated_at = %s
-            WHERE session_id = %s AND session_generation = %s
-              AND state IN ('recognizing', 'submitting')
-            """,
-            (now, now, session_id, generation),
+        self._voice.abandon_unaccepted_session_turns(
+            transaction,
+            owner_id=owner_id,
+            session_id=session_id,
+            generation=generation,
+            now=now,
         )
 
-    @classmethod
     def _end_session_row(
-        cls,
-        cursor: Any,
+        self,
+        transaction: Any,
         row: Mapping[str, Any],
         *,
         reason: str,
@@ -3493,32 +3219,35 @@ class VoiceSessionRepository:
             raise ValueError("invalid_end_reason")
         if row.get("ended_at") is not None:
             return _session(row)
-        cursor.execute(
-            """
-            UPDATE voice_session
-            SET state = 'ended', microphone_enabled = FALSE,
-                foreground_active = FALSE,
-                foreground_reason = 'connection_lost', ended_at = %s,
-                end_reason = %s, chat_unavailable_at = COALESCE(%s, chat_unavailable_at),
-                idle_started_at = NULL, updated_at = %s,
-                control_owner_id = NULL, control_lease_expires_at = NULL
-            WHERE session_id = %s AND ended_at IS NULL
-            RETURNING *
-            """,
-            (
-                now,
-                reason,
-                chat_unavailable_at,
-                now,
-                row["session_id"],
-            ),
+        updated = self._voice.patch_session_record(
+            transaction,
+            owner_id=str(row["user_id"]),
+            session_id=str(row["session_id"]),
+            updates={
+                "state": "ended",
+                "microphone_enabled": False,
+                "foreground_active": False,
+                "foreground_reason": "connection_lost",
+                "ended_at": now,
+                "end_reason": reason,
+                "chat_unavailable_at": (
+                    chat_unavailable_at
+                    if chat_unavailable_at is not None
+                    else row.get("chat_unavailable_at")
+                ),
+                "idle_started_at": None,
+                "updated_at": now,
+                "control_owner_id": None,
+                "control_lease_expires_at": None,
+            },
+            require_live=True,
         )
-        updated = cursor.fetchone()
         if updated is None:  # pragma: no cover - row lock/WHERE invariant.
             raise RuntimeError("voice_session_end_failed")
         if abandon_unaccepted:
-            cls._abandon_unaccepted_session_turns(
-                cursor,
+            self._abandon_unaccepted_session_turns(
+                transaction,
+                owner_id=str(row["user_id"]),
                 session_id=str(row["session_id"]),
                 generation=int(row["generation"]),
                 now=now,
@@ -3544,9 +3273,9 @@ class VoiceSessionRepository:
         if control.binding_expires_at <= now:
             raise VoiceSessionRepositoryError("binding_expired")
 
-    @staticmethod
     def _apply_control_binding(
-        cursor: Any,
+        self,
+        transaction: Any,
         row: Mapping[str, Any],
         control: SessionControl,
         now: datetime,
@@ -3563,23 +3292,17 @@ class VoiceSessionRepository:
             and row["control_binding_expires_at"] == control.binding_expires_at
         ):
             return row
-        cursor.execute(
-            """
-            UPDATE voice_session
-            SET owner_connection_generation = %s, control_binding_id = %s,
-                control_binding_expires_at = %s, updated_at = %s
-            WHERE session_id = %s
-            RETURNING *
-            """,
-            (
-                control.connection_generation,
-                control.binding_id,
-                control.binding_expires_at,
-                now,
-                row["session_id"],
-            ),
+        updated = self._voice.patch_session_record(
+            transaction,
+            owner_id=str(row["user_id"]),
+            session_id=str(row["session_id"]),
+            updates={
+                "owner_connection_generation": control.connection_generation,
+                "control_binding_id": control.binding_id,
+                "control_binding_expires_at": control.binding_expires_at,
+                "updated_at": now,
+            },
         )
-        updated = cursor.fetchone()
         if updated is None:  # pragma: no cover - locked row cannot disappear.
             raise RuntimeError("voice_control_rebind_failed")
         return updated
@@ -3654,17 +3377,17 @@ class VoiceSessionRepository:
                     "explicit_user_retry",
                 )
 
-    @staticmethod
-    def _lock_identity(cursor: Any, namespace: str, *parts: str) -> None:
-        digest = hashlib.sha256()
-        digest.update(b"astraldeep.voice.repository.v1\0")
-        digest.update(namespace.encode("ascii"))
-        for part in parts:
-            encoded = part.encode("utf-8")
-            digest.update(len(encoded).to_bytes(4, "big"))
-            digest.update(encoded)
-        lock_id = int.from_bytes(digest.digest()[:8], "big", signed=True)
-        cursor.execute("SELECT pg_advisory_xact_lock(%s)", (lock_id,))
+    def _lock_identity(
+        self,
+        transaction: Any,
+        namespace: str,
+        *parts: str,
+    ) -> None:
+        self._voice.lock_identity(
+            transaction,
+            namespace=namespace,
+            parts=parts,
+        )
 
     def _new_uuid4(self, field_name: str) -> str:
         value = self._uuid_factory()

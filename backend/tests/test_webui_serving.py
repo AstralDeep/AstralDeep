@@ -3,21 +3,23 @@
 The full interactive real-browser parity pass (T030) needs a live stack + browser
 and runs separately. This test verifies, headlessly via FastAPI's TestClient, the
 HTTP serving the orchestrator wires up: the shell route (with token injection) and
-the StaticFiles mount that serve `client.js` / `astral.css` from `backend/webrender/static`.
+the StaticFiles mount that serves `client.js` / `astral.css` from Projection's
+packaged static-resource root.
 It builds a minimal app mirroring the orchestrator's mount (orchestrator.py:5347+),
 so it exercises the real shell template + static assets without booting the DB.
 """
-import os
 import re
+from pathlib import Path
 
 import pytest
+from astralprojection.resources import static_root, template_path, vendor_path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
-WEBRENDER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webrender")
-SHELL = os.path.join(WEBRENDER, "templates", "shell.html")
+STATIC_ROOT = Path(str(static_root()))
+SHELL = template_path("shell.html")
 
 
 @pytest.fixture
@@ -30,12 +32,12 @@ def client(monkeypatch):
 
     @app.get("/", response_class=HTMLResponse)
     async def shell(request: Request):
-        html = open(SHELL, encoding="utf-8").read()
+        html = SHELL.read_text(encoding="utf-8")
         html = html.replace("%%ASTRAL_TOKEN%%", session_token(request) or "")
         # Feature 052: mirror serve_shell's per-file content-hash substitution.
-        return HTMLResponse(_apply_asset_versions(html, os.path.join(WEBRENDER, "static")))
+        return HTMLResponse(_apply_asset_versions(html, str(STATIC_ROOT)))
 
-    app.mount("/static", StaticFiles(directory=os.path.join(WEBRENDER, "static")), name="static")
+    app.mount("/static", StaticFiles(directory=str(STATIC_ROOT)), name="static")
     return TestClient(app)
 
 
@@ -82,5 +84,5 @@ def test_astral_css_served(client):
 
 def test_vendor_assets_present():
     # self-hosted (no external CDN at runtime)
-    assert os.path.getsize(os.path.join(WEBRENDER, "static", "vendor", "tailwind.js")) > 10000
-    assert os.path.getsize(os.path.join(WEBRENDER, "static", "vendor", "plotly.min.js")) > 100000
+    assert len(vendor_path("tailwind.js").read_bytes()) > 10000
+    assert len(vendor_path("plotly.min.js").read_bytes()) > 100000

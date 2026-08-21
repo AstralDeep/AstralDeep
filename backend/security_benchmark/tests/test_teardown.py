@@ -1,94 +1,135 @@
-"""Teardown transaction hygiene (spec 047 FR-008).
+"""Plane-owned benchmark cleanup boundary (spec 047 FR-008)."""
 
-A failed per-table DELETE must not poison the run's teardown: each successful
-table commits on its own, a failure rolls back, and later tables still purge —
-``deleted`` counts only committed work. Modeled on psycopg2 semantics where a
-failed statement aborts the shared transaction (subsequent statements raise
-InFailedSqlTransaction until a rollback).
-"""
 from __future__ import annotations
 
+import inspect
+from types import SimpleNamespace
+
 import pytest
+import security_benchmark.isolation as isolation_module
+from astralplane.repositories.harness_cleanup import HarnessCleanupProfile
 
-from security_benchmark.isolation import (
-    _DELETABLE_USER_TABLES,
-    assert_namespaced,
-    teardown,
-)
+from security_benchmark.isolation import assert_namespaced, teardown
 
 
-class FakeCursor:
-    def __init__(self, conn):
-        self._conn = conn
-        self.rowcount = 0
+class _TransactionScope:
+    def __init__(self) -> None:
+        self.transaction = object()
+        self.committed = False
+        self.rolled_back = False
 
     def __enter__(self):
-        return self
+        return self.transaction
 
-    def __exit__(self, *exc):
+    def __exit__(self, exc_type, _exc, _tb):
+        self.committed = exc_type is None
+        self.rolled_back = exc_type is not None
         return False
 
-    def execute(self, sql, params):
-        table = sql.split()[2]
-        if self._conn.in_failed_tx:
-            raise RuntimeError("InFailedSqlTransaction: transaction is aborted")
-        if table in self._conn.fail_tables:
-            self._conn.in_failed_tx = True
-            raise RuntimeError(f"relation {table} does not exist")
-        self.rowcount = self._conn.rowcounts.get(table, 0)
-        self._conn.pending.append((table, self.rowcount))
+
+class _Runtime:
+    def __init__(self) -> None:
+        self.scope = _TransactionScope()
+        self.transaction_calls = 0
+
+    def transaction(self):
+        self.transaction_calls += 1
+        return self.scope
 
 
-class FakeConn:
-    """psycopg2-shaped connection: an aborted tx makes commit() a rollback."""
+class _CleanupRepository:
+    def __init__(self, *, deleted: object = 7, error: Exception | None = None) -> None:
+        self.deleted = deleted
+        self.error = error
+        self.calls = []
 
-    def __init__(self, rowcounts, fail_tables=()):
-        self.rowcounts = dict(rowcounts)
-        self.fail_tables = set(fail_tables)
-        self.in_failed_tx = False
-        self.pending = []           # uncommitted (table, rowcount) work
-        self.committed = []         # committed (table, rowcount) work
-        self.rollbacks = 0
-
-    def cursor(self):
-        return FakeCursor(self)
-
-    def commit(self):
-        if not self.in_failed_tx:
-            self.committed.extend(self.pending)
-        self.pending = []
-        self.in_failed_tx = False
-
-    def rollback(self):
-        self.pending = []
-        self.in_failed_tx = False
-        self.rollbacks += 1
+    def purge_run(self, transaction, *, profile, run_id):
+        self.calls.append((transaction, profile, run_id))
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(total_deleted=self.deleted)
 
 
-def test_teardown_counts_and_commits_every_table_when_clean():
-    conn = FakeConn(rowcounts={t: 2 for t in _DELETABLE_USER_TABLES})
-    deleted = teardown(conn, "run-1")
-    assert deleted == 2 * len(_DELETABLE_USER_TABLES)
-    assert [t for t, _ in conn.committed] == list(_DELETABLE_USER_TABLES)
-    assert conn.pending == []
+def _catalog(repository: object) -> SimpleNamespace:
+    return SimpleNamespace(harness_cleanup=repository)
 
 
-def test_failed_table_rolls_back_and_later_tables_still_purge():
-    fail = _DELETABLE_USER_TABLES[2]  # a mid-loop failure
-    conn = FakeConn(rowcounts={t: 3 for t in _DELETABLE_USER_TABLES},
-                    fail_tables={fail})
-    deleted = teardown(conn, "run-2")
-    committed_tables = [t for t, _ in conn.committed]
-    # Every OTHER table was still deleted and committed…
-    expected = [t for t in _DELETABLE_USER_TABLES if t != fail]
-    assert committed_tables == expected
-    # …and `deleted` reports ONLY committed work.
-    assert deleted == 3 * len(expected)
-    assert conn.rollbacks == 1
-    assert conn.pending == [] and conn.in_failed_tx is False
+def test_teardown_uses_one_application_plane_transaction() -> None:
+    runtime = _Runtime()
+    cleanup = _CleanupRepository(deleted=23)
+
+    deleted = teardown(
+        plane_runtime=runtime,
+        plane_repositories=_catalog(cleanup),
+        run_id="__bench__run-1",
+    )
+
+    assert deleted == 23
+    assert runtime.transaction_calls == 1
+    assert runtime.scope.committed and not runtime.scope.rolled_back
+    assert cleanup.calls == [
+        (
+            runtime.scope.transaction,
+            HarnessCleanupProfile.SECURITY_BENCHMARK,
+            "__bench__run-1",
+        )
+    ]
 
 
-def test_assert_namespaced_guards_real_principals():
+def test_teardown_failure_rolls_back_and_propagates() -> None:
+    runtime = _Runtime()
+    cleanup = _CleanupRepository(error=RuntimeError("schema drift"))
+
+    with pytest.raises(RuntimeError, match="schema drift"):
+        teardown(
+            plane_runtime=runtime,
+            plane_repositories=_catalog(cleanup),
+            run_id="run-2",
+        )
+
+    assert runtime.scope.rolled_back and not runtime.scope.committed
+
+
+@pytest.mark.parametrize(
+    ("runtime", "repositories", "message"),
+    [
+        (object(), SimpleNamespace(harness_cleanup=object()), "application Plane runtime"),
+        (_Runtime(), SimpleNamespace(), "harness_cleanup repository"),
+    ],
+)
+def test_teardown_fails_closed_without_application_plane(
+    runtime: object,
+    repositories: object,
+    message: str,
+) -> None:
+    with pytest.raises(TypeError, match=message):
+        teardown(
+            plane_runtime=runtime,
+            plane_repositories=repositories,
+            run_id="run-3",
+        )
+
+
+def test_invalid_plane_report_rolls_back() -> None:
+    runtime = _Runtime()
+
+    with pytest.raises(RuntimeError, match="invalid deletion count"):
+        teardown(
+            plane_runtime=runtime,
+            plane_repositories=_catalog(_CleanupRepository(deleted=-1)),
+            run_id="run-4",
+        )
+
+    assert runtime.scope.rolled_back and not runtime.scope.committed
+
+
+def test_assert_namespaced_guards_real_principals() -> None:
     assert_namespaced("__bench__run__agentdojo__primary")
     with pytest.raises(ValueError):
         assert_namespaced("real-user-42")
+
+
+def test_benchmark_isolation_source_has_no_sql_or_driver_boundary() -> None:
+    source = inspect.getsource(isolation_module)
+    for forbidden in ("shared.database", "psycopg", "DELETE FROM", ".cursor(", ".execute("):
+        assert forbidden not in source

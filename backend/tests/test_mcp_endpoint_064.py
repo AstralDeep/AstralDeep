@@ -46,14 +46,6 @@ META = {
 }
 
 
-class _DB:
-    def __init__(self):
-        self.disabled: dict[str, list[str]] = {}
-
-    def get_user_disabled_agents(self, user_id):
-        return self.disabled.get(user_id, [])
-
-
 class _Permissions:
     def __init__(self):
         self.allowed = True
@@ -68,10 +60,13 @@ class _Permissions:
     def get_enabled_scope_names(self, user_id, agent_id):
         return ["tools:read"] if self.allowed else []
 
+    def list_disabled_agents(self, _user_id):
+        return ()
+
 
 class _Orchestrator:
     def __init__(self):
-        self.history = SimpleNamespace(db=_DB())
+        self.history = SimpleNamespace(db=SimpleNamespace())
         self.tool_permissions = _Permissions()
         self.security_flags = {}
         self.agents = {"reader-1": object()}

@@ -1,0 +1,95 @@
+{
+  "format": "astral.primitive-decision/v1",
+  "observedAtUtc": "2026-08-14T05:28:31.4021916Z",
+  "decision": "reuse-existing-vocabulary",
+  "changeRequired": false,
+  "composition": {
+    "astralDeepCommit": "275129a83bcf5e5b0cb98e669cce09681f10fadc",
+    "astralProjectionCommit": "330bc85d07cac8fabc5cf8e1f7d313d2eb47e7d8",
+    "astralPrimitivesCommit": "03870e55563f7522e95e298490e6a8638f2b8385",
+    "astralPrimitivesVersion": "0.3.0"
+  },
+  "inputs": {
+    "uiProtocolPath": "components/AstralProjection/contracts/ui_protocol.json",
+    "uiProtocolVersion": 1,
+    "uiProtocolRawSha256": "6845547c7f9dddec5aed018fcbe8cb6900fc0dec1eae7a560276d8a269e58738",
+    "uiProtocolCanonicalJsonSha256": "cf30e7a25087cef4dc9bcff4d272d501eef6b128fa48582d2bdb753a68caf904",
+    "primitiveSourcePath": "components/AstralPrimitives/src/astralprims/primitives.py",
+    "primitiveSourceSha256": "b7ee3ca3c4dc94c1579cb7ea923b68d7b2121d0585bb7622b605f73e8f819034",
+    "minimumPackageVersion": "0.3.0"
+  },
+  "coverage": {
+    "publicPrimitiveTypes": [
+      "alert",
+      "audio",
+      "badge",
+      "bar_chart",
+      "button",
+      "card",
+      "chat_history",
+      "code",
+      "collapsible",
+      "color_picker",
+      "container",
+      "divider",
+      "file_download",
+      "file_upload",
+      "grid",
+      "hero",
+      "image",
+      "input",
+      "keyvalue",
+      "line_chart",
+      "list",
+      "metric",
+      "param_picker",
+      "pie_chart",
+      "plotly_chart",
+      "progress",
+      "rating",
+      "table",
+      "tabs",
+      "text",
+      "theme_apply",
+      "timeline"
+    ],
+    "projectionLocalTypes": [
+      {
+        "type": "download_card",
+        "reason": "Projection-owned verified desktop-release chrome"
+      },
+      {
+        "type": "generative",
+        "reason": "Projection-owned bounded grammar; never raw model HTML"
+      },
+      {
+        "type": "skeleton",
+        "reason": "Projection-owned transient loading state"
+      }
+    ],
+    "unknownTypes": [],
+    "missingManifestTypes": []
+  },
+  "evidence": [
+    {
+      "id": "primitive-vocabulary-inventory",
+      "command": "python scripts/verify_primitive_coverage.py --manifest components/AstralProjection/contracts/ui_protocol.json --primitives-root components/AstralPrimitives --minimum-version 0.3.0",
+      "exitCode": 0,
+      "stdoutFraming": "UTF-8 command stdout followed by one LF",
+      "stdoutSha256": "918a199adda7aca0e2ec5361da1167743364cdcea86c3062daca5bae0218730a",
+      "summary": "32 public primitives, 3 bounded Projection-local types, 0 unknown types, and 0 missing manifest types"
+    },
+    {
+      "id": "projection-producer-client-coverage",
+      "path": "components/AstralProjection/provenance/checks.json",
+      "sha256": "f3dae4c0237301719ec6a45a3edc8322e70314aea6a9dd4a21f48f3ce093690a",
+      "summary": "Projection checkpoint binds protocol, renderer, client-vocabulary, package-resource, and primitive-vocabulary checks to the extracted component"
+    }
+  ],
+  "outcome": {
+    "astralPrimitivesRuntimeChanged": false,
+    "astralPrimitivesReleaseRequired": false,
+    "packageVersionRemains": "0.3.0",
+    "scope": "Primitive vocabulary only; final native-client and composed-system qualification remain separate feature gates"
+  }
+}

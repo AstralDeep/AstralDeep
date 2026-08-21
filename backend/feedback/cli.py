@@ -14,10 +14,25 @@ Invoked from the orchestrator container, e.g.::
 from __future__ import annotations
 
 import argparse
+import atexit
 import asyncio
 import logging
+from pathlib import Path
 import sys
 from typing import Optional
+
+
+_COMPOSITION = None
+
+
+def _close_plane_runtime() -> None:
+    global _COMPOSITION
+    if _COMPOSITION is not None:
+        _COMPOSITION.close()
+        _COMPOSITION = None
+
+
+atexit.register(_close_plane_runtime)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -29,10 +44,17 @@ def _setup_logging(verbose: bool) -> None:
 
 def _build_repo():
     # Lazy imports — avoids pulling FastAPI / orchestrator deps when unused.
-    from shared.database import Database
+    global _COMPOSITION
+    from orchestrator.plane_composition import compose_plane_from_environment
     from .repository import FeedbackRepository
-    db = Database()
-    return FeedbackRepository(db)
+
+    if _COMPOSITION is None:
+        manifest = Path(__file__).resolve().parents[2] / "config" / "astral-composition.json"
+        _COMPOSITION = compose_plane_from_environment(manifest)
+    return FeedbackRepository(
+        plane_runtime=_COMPOSITION.runtime,
+        plane_repositories=_COMPOSITION.repositories,
+    )
 
 
 async def _cmd_compute_quality(args: argparse.Namespace) -> int:

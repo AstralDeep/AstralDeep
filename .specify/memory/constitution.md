@@ -71,7 +71,7 @@
          secret-scan contract now names the checksum-pinned, secret-free CLI
       ✅ docs/production-deployment.md and
          specs/053-apple-production-release/contracts/release-pipeline.md and
-         apple-clients/README.md — Apple manual release is documented as
+         components/AstralProjection/apple-clients/README.md — Apple manual release is documented as
          default-ref-only
       ✅ specs/060-runtime-reliability-hardening/quickstart.md — manual
          readiness reruns dispatch protected default-branch workflow bytes and
@@ -216,7 +216,7 @@
         (c) FUNCTIONALITY — capability/chrome parity as already required
             by this principle.
         Enforcement named: the committed UI-protocol manifest
-        (backend/shared/ui_protocol.json) plus the parity/drift-guard
+        (components/AstralProjection/contracts/ui_protocol.json) plus the parity/drift-guard
         suites in every client test stack; a change to shared UI behavior
         (frames, component types, chrome, theming) lands on all in-scope
         clients in the same feature or records an explicit, justified
@@ -996,12 +996,12 @@ orchestrator+ROTE backend is a requirement, not an aspiration.
   web beside the desktop client) MUST receive equivalent layout
   and arrangement for the same content. Per-device adaptation is
   keyed on the declared ROTE device profile and its capabilities
-  (`backend/rote/capabilities.py`), never on which client
+  (`components/AstralProjection/backend/rote/capabilities.py`), never on which client
   codebase is connecting; any layout divergence between two
   similarly sized devices MUST trace to a declared capability
   difference, not an ad-hoc client choice.
 - **Enforcement**: the committed UI-protocol manifest
-  (`backend/shared/ui_protocol.json`) and the parity/drift-guard
+  (`components/AstralProjection/contracts/ui_protocol.json`) and the parity/drift-guard
   suites in every client test stack are the mechanical
   enforcement of this principle. A change to shared UI behavior
   — protocol frames, component types, chrome, or theming — MUST

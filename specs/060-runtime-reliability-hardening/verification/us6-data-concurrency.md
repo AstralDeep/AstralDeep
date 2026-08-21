@@ -32,12 +32,18 @@ docker run --rm --env-file .env \
   tests/test_byo_offserver.py \
   tests/test_byo_orchestrator_runtime_wiring_060.py \
   tests/test_draft_archive.py tests/test_draft_archive_wiring.py \
-  tests/test_maintenance_claims_060.py tests/test_migrations_060.py \
-  tests/test_runtime_registry.py tests/test_schema_fastpath.py \
+  tests/test_maintenance_claims_060.py \
+  tests/test_runtime_registry.py \
   tests/test_schema_revision_guard.py tests/test_start_wait.py \
   orchestrator/tests/test_knowledge_guard.py \
   tests/perf/test_runtime_reliability_060.py -q -s
 ```
+
+Feature 074 moved the schema-owner proofs to AstralPlane. Run the pinned
+component's `tests/test_schema_migrations.py` and
+`tests/integration/test_empty_database_startup.py`, including
+`test_fifty_two_starter_migration_trials_converge_once`, alongside this Deep
+policy/concurrency group.
 
 Result: **282 passed in 8.65 seconds**.
 

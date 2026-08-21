@@ -14,20 +14,6 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
-def _can_connect():
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-needs_db = pytest.mark.skipif(not _can_connect(), reason="Postgres unavailable")
-
-
 class _CleanGate:
     def contains_phi(self, value):
         return False
@@ -61,45 +47,50 @@ def client(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from shared.database import Database
     from personalization.service import PersonalizationService
     from orchestrator.auth import get_current_user_payload, require_user_id
     from personalization import api as papi
     from onboarding import api as oapi
+    from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
     # Avoid the heavy Presidio gate in tests — values here are clean.
     monkeypatch.setattr(papi, "get_phi_gate", lambda: _CleanGate())
 
     user_id = f"pytest-pms-{uuid.uuid4().hex[:8]}"
-    db = Database()
-    svc = PersonalizationService(db)
-    tp = _FakeTP(authorized=True)
+    with isolated_plane_runtime("personalization_api") as runtime:
+        svc = PersonalizationService(
+            None,
+            plane_runtime=runtime,
+            plane_repositories=runtime.repositories,
+        )
+        tp = _FakeTP(authorized=True)
 
-    import types
-    orch = types.SimpleNamespace(personalization_service=svc, tool_permissions=tp)
+        import types
 
-    app = FastAPI()
-    app.state.orchestrator = orch
-    app.include_router(papi.personalization_router)
-    app.include_router(papi.memory_router)
-    app.include_router(papi.skills_router)
-    app.include_router(oapi.onboarding_user_router)
+        orch = types.SimpleNamespace(
+            personalization_service=svc,
+            tool_permissions=tp,
+        )
 
-    payload = {"sub": user_id, "preferred_username": user_id,
-               "realm_access": {"roles": ["user"]}}
-    app.dependency_overrides[require_user_id] = lambda: user_id
-    app.dependency_overrides[get_current_user_payload] = lambda: payload
+        app = FastAPI()
+        app.state.orchestrator = orch
+        app.include_router(papi.personalization_router)
+        app.include_router(papi.memory_router)
+        app.include_router(papi.skills_router)
+        app.include_router(oapi.onboarding_user_router)
 
-    yield TestClient(app), svc, user_id, tp
+        payload = {
+            "sub": user_id,
+            "preferred_username": user_id,
+            "realm_access": {"roles": ["user"]},
+        }
+        app.dependency_overrides[require_user_id] = lambda: user_id
+        app.dependency_overrides[get_current_user_payload] = lambda: payload
 
-    try:
-        db.execute("DELETE FROM memory_item WHERE user_id = ?", (user_id,))
-        db.execute("DELETE FROM user_personalization WHERE user_id = ?", (user_id,))
-    except Exception:
-        pass
+        with TestClient(app) as test_client:
+            yield test_client, svc, user_id, tp
 
 
-@needs_db
 def test_profile_get_put_roundtrip(client):
     tc, svc, user_id, tp = client
     # default empty profile
@@ -114,7 +105,6 @@ def test_profile_get_put_roundtrip(client):
     assert tc.get("/api/personalization/profile").json()["goals"] == ["grants"]
 
 
-@needs_db
 def test_memory_list_and_delete(client):
     tc, svc, user_id, tp = client
     item = svc.repo.create_memory(user_id, "preference", "concise", source="explicit")
@@ -126,7 +116,6 @@ def test_memory_list_and_delete(client):
     assert tc.delete(f"/api/memory/{item['id']}").status_code == 404
 
 
-@needs_db
 def test_skills_catalog_and_scope_gating(client):
     tc, svc, user_id, tp = client
     r = tc.get("/api/skills")
@@ -143,7 +132,6 @@ def test_skills_catalog_and_scope_gating(client):
     assert r.status_code == 403
 
 
-@needs_db
 def test_personalize_step_returns_param_picker(client):
     tc, svc, user_id, tp = client
     r = tc.get("/api/onboarding/personalize/profession")

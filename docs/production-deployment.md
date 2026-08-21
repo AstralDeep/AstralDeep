@@ -4,7 +4,7 @@ AstralDeep is a **server-driven UI (SDUI) backend service**: one Python
 process serves the web shell, static assets, REST API, WebSocket channel, and
 the rendered UI itself on port **8001**. There is no frontend build step, no
 Node toolchain, and no separate static server — `astralprims` defines the
-primitives, the orchestrator renders them (`backend/webrender/`), and ROTE
+primitives, the orchestrator renders them (`components/AstralProjection/backend/webrender/`), and ROTE
 adapts the output per device.
 
 Companion docs: [keycloak-realm-settings.md](keycloak-realm-settings.md)
@@ -266,8 +266,8 @@ Both are ungated (no user data) and excluded from access logs.
 
 ## Native clients (Windows, Android, Apple) & device sign-in
 
-- The native clients (feature 044/041/051: `windows-client/`, `android-client/`,
-  `apple-clients/` iOS + macOS + watchOS) consume the same public origin as the
+- The native clients (feature 044/041/051: `components/AstralProjection/windows-client/`, `components/AstralProjection/android-client/`,
+  `components/AstralProjection/apple-clients/` iOS + macOS + watchOS) consume the same public origin as the
   browser — no extra ports or services. They authenticate as **public PKCE
   clients**: `astral-desktop` (Windows + macOS), `astral-mobile`
   (Android + iOS), `astral-watch` (watch). All must appear in
@@ -293,7 +293,7 @@ Both are ungated (no user data) and excluded from access logs.
 
 ## Apple clients (App Store)
 
-Feature 053 ships the `apple-clients/` family — iOS + macOS (one multiplatform
+Feature 053 ships the `components/AstralProjection/apple-clients/` family — iOS + macOS (one multiplatform
 `AstralApp` target) plus an embedded watchOS companion (`AstralWatch`) — to the
 App Store as a single Universal Purchase record (bundle id
 `com.personalailabs.astraldeep`). Two things are operator-facing: the backend
@@ -303,7 +303,7 @@ App Store as a single Universal Purchase record (bundle id
 
 A stock App Store build compiles in `https://sandbox.ai.uky.edu` and
 `https://iam.ai.uky.edu/realms/Astral` as its endpoint
-(`apple-clients/Config/Release.xcconfig` → both Info.plists → `AstralConfig`).
+(`components/AstralProjection/apple-clients/Config/Release.xcconfig` → both Info.plists → `AstralConfig`).
 The endpoint can be repointed at runtime (FR-011 override) or by rebuilding, but
 a stock build talks to that exact host — so the production posture there must
 satisfy:
@@ -343,30 +343,29 @@ clients):
 
 ### Apple release runbook
 
-The Apple release pipeline is `.github/workflows/apple-release.yml` — a separate
-workflow from `ci.yml` (the six backend gates are untouched; `apple-ci.yml`
-gains only a `generate_app_icons.py --check` step). It runs on `macos-15` and
-does **archive → sign → export → validate → upload**. It does **not** submit for
-review (see below).
+AstralProjection owns active native pull-request evidence. Its own
+`.github/workflows/android-ci.yml` and `.github/workflows/apple-ci.yml` qualify
+the Android, iOS, macOS, and watchOS sources; AstralDeep does not duplicate
+those workflows or fetch private Projection source in hosted pull-request jobs.
 
-**Trigger.** Three ways in:
-1. **Merge to `main` that changes `apple-clients/**`** — auto-releases. A cheap
-   `gate` job checks the push's diff; if `apple-clients/**` changed it runs the
-   full archive → upload, building the project's current `MARKETING_VERSION`.
-   Ordinary backend-only merges do NOT upload. This is the everyday path — bump
-   `MARKETING_VERSION` in the Xcode project as part of the client change and the
-   new build uploads on merge.
-2. **Push a tag `apple-v*`** that equals `apple-v$MARKETING_VERSION` exactly
+Release activation remains parked during Feature 074. The retained Deep
+`.github/workflows/apple-release.yml` describes the separately protected
+archive/sign/export/validate/upload path, but Deep owner CI neither activates it
+nor treats Projection pull-request evidence as release authorization. The
+pipeline does not submit for review (see below).
+
+**Activation contract.** A merge never activates this release path. A later,
+separately approved release task must use one of two explicit events:
+1. **Push a tag `apple-v*`** that equals `apple-v$MARKETING_VERSION` exactly
    (a mismatched tag fails the guard) — a versioned release of record.
-3. **`workflow_dispatch`** — manual release from the `main`/default ref only
+2. **`workflow_dispatch`** — manual release from the `main`/default ref only
    (e.g. to re-upload a build for an already-merged version).
 
 The `apple-v*` namespace is deliberately disjoint from the Windows release's
 `v*` trigger — a `v-apple-*` tag would double-fire that workflow — so do not
-rename it. A `paths:` filter is intentionally NOT used (it interacts unreliably
-with tag pushes); the `apple-clients/**` check lives in the `gate` job so tag
-and dispatch runs are never path-filtered. The tag-vs-`MARKETING_VERSION` guard
-runs only on tag pushes. The build number is `$GITHUB_RUN_NUMBER`, passed to
+rename it. A `paths:` filter is intentionally not used because tag pushes can
+be silently skipped by path filters. The tag-vs-`MARKETING_VERSION` guard runs
+only on tag pushes. The build number is `$GITHUB_RUN_NUMBER`, passed to
 `xcodebuild` as `CURRENT_PROJECT_VERSION` (both Info.plists already read it — no
 agvtool rewrite), so every run gets a unique, monotonic build number.
 
@@ -415,15 +414,16 @@ provisioning profiles / ASC API key, and the on-device verification evidence.
 ## Database
 
 - Postgres 17 (compose service `postgres`, named volume `pgdata`).
-- Schema migrations are idempotent and run automatically at boot
-  (`shared/database.py::_init_db`) — no migration step to operate. Since
-  feature 052 a `schema_meta` revision marker lets boots with a current
-  schema skip the full migration pass; to force a full re-run once, execute
-  `DELETE FROM schema_meta WHERE key='revision';` and restart.
-- Connections are pooled (feature 052): `DB_POOL_MIN` (default 2) and
-  `DB_POOL_MAX` (default 10) size the shared pool; `DB_POOL_DISABLE=1`
-  reverts to the legacy connection-per-query behavior as a kill switch.
-- Back up `pgdata` and the `backend/data` bind mount (uploads, agent keys).
+- AstralPlane owns baseline initialization, guarded migrations, current-schema
+  verification, and recovery. They run before the orchestrator admits traffic;
+  an incompatible marker, digest, or live structure fails startup closed. Never
+  delete or rewrite `schema_meta` by hand. Follow
+  [migration-rollback-074.md](migration-rollback-074.md) with a verified backup.
+- `DB_POOL_MIN` (default 2), `DB_POOL_MAX` (default 10), and
+  `DB_POOL_ACQUIRE_TIMEOUT_SECONDS` size and bound the single application Plane
+  pool. There is no legacy connection-per-query fallback.
+- Back up `pgdata`, `ATTACHMENT_UPLOAD_ROOT`, and every configured key or
+  external authority state needed by the deployment.
 
 ## Performance knobs (feature 052)
 
@@ -453,13 +453,17 @@ provisioning profiles / ASC API key, and the on-device verification evidence.
   `GET /api/audit` (per-user) and verifiable server-side:
   `python -m audit.cli verify-chain --user-id <id>`.
 
-## Deploying to sandbox.ai.uky.edu (GHCR pull)
+## Deploying to sandbox.ai.uky.edu (parked GHCR path)
 
-CI (feature 029, `.github/workflows/ci.yml`) publishes the production image
-to GitHub Container Registry on every push to `main` that passes all gates:
-an immutable `ghcr.io/<owner>/<repo>:sha-<commit>` tag plus a moving
-`:latest`. The sandbox host **pulls the verified image** instead of building
-locally — the bytes that passed CI are the bytes that serve.
+During Feature 074, AstralDeep hosted CI validates only Deep-owned source and
+the four exact composition declarations. It does not initialize the private
+composition, build or upload a composed product image, publish to GitHub
+Container Registry, or authorize release. Full private composition remains a
+mandatory local qualification, and release activation remains parked.
+
+The GHCR procedure below applies only after a separately approved release task
+has produced and published an immutable, fully qualified composed image. A
+green Deep owner-CI run alone is not such an artifact.
 
 ### 1. Pull the image
 
@@ -468,7 +472,8 @@ docker login ghcr.io -u <github-username>        # PAT with read:packages
 docker pull ghcr.io/<owner>/<repo>:sha-<commit>  # always pin the immutable tag
 ```
 
-Deploy by `sha-<commit>` (the tag CI stamped on the exact verified build);
+Deploy by `sha-<commit>` (the tag the protected publisher stamped on the exact
+verified build);
 treat `:latest` as a convenience pointer only — never as the deployed ref.
 
 ### 2. Compose override — `image:` instead of `build:`

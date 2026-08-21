@@ -50,9 +50,13 @@ FIXTURE_ROOT = (
 )
 
 CI_WORKFLOW = WORKFLOWS / "ci.yml"
-APPLE_CI = WORKFLOWS / "apple-ci.yml"
+PROJECTION_WORKFLOWS = (
+    REPO_ROOT / "components" / "AstralProjection" / ".github" / "workflows"
+)
+APPLE_CI = PROJECTION_WORKFLOWS / "apple-ci.yml"
 READINESS = WORKFLOWS / "release-readiness.yml"
 APPLE_NORMALIZER = WORKFLOWS / "release-apple-evidence-normalizer.yml"
+WINDOWS_CANDIDATE = WORKFLOWS / "build-windows-candidate.yml"
 PROTECTED_TRIGGER = WORKFLOWS / "release-readiness-protected.yml"
 TRUSTED_BUILDER = WORKFLOWS / "release-trusted-builder.yml"
 EXCEPTION = WORKFLOWS / "release-evidence-exception.yml"
@@ -85,6 +89,13 @@ RAW_APPLE_PRODUCER_JOBS = (
     "macos-raw-producer",
     "ios-raw-producer",
     "watchos-raw-producer",
+)
+COMPONENT_CONSUMER_JOBS = (
+    "backend-producer",
+    "web-producer",
+    "windows-producer",
+    "android-producer",
+    *RAW_APPLE_PRODUCER_JOBS,
 )
 PRODUCER_JOBS = (
     *EVIDENCE_PRODUCER_JOBS,
@@ -157,6 +168,27 @@ def _job_ids(workflow: str) -> list[str]:
     jobs = workflow.partition("\njobs:\n")[2]
     assert jobs, "workflow does not define jobs"
     return re.findall(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", jobs)
+
+
+def _assert_immediate_exact_component_checkout(
+    job: str,
+    *,
+    checkout_name: str = "Check out the exact candidate",
+    expected_ref: str = "ref: ${{ inputs.candidate_sha }}",
+) -> None:
+    """Require an exact recursive checkout followed immediately by verification."""
+
+    marker = f"- name: {checkout_name}"
+    assert marker in job
+    checkout_and_tail = job.partition(marker)[2]
+    checkout, separator, tail = checkout_and_tail.partition("\n      - ")
+    assert separator, f"{checkout_name} is the final workflow step"
+    assert expected_ref in checkout
+    assert "submodules: recursive" in checkout
+    assert "persist-credentials: false" in checkout
+    assert tail.startswith("name: Verify the exact initialized component composition\n")
+    verification, _separator, _remaining = tail.partition("\n      - ")
+    assert "scripts/verify_composition.py --root ." in verification
 
 
 def _permission_lines(scope: str) -> set[str]:
@@ -356,6 +388,15 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
     web = _workflow_job(workflow, "web-producer")
     assert "playwright-image.txt" in web
     assert "browser:release" in web
+    assert "NODE_V8_COVERAGE" in web
+    assert "test:coverage-conversion:node" in web
+    assert "test:coverage-union" in web
+    assert web.count("corepack npm run coverage:node") == 2
+    assert "corepack npm run coverage:union" in web
+    assert "--coverage-istanbul-output \"$BROWSER_COVERAGE\"" in web
+    assert "--node \"$NODE_COVERAGE\"" in web
+    assert "--browser \"$BROWSER_COVERAGE\"" in web
+    assert "--repo-root ../.." in web
     assert "web-istanbul.json" in web
     windows = _workflow_job(workflow, "windows-producer")
     assert "windows-candidate" in windows
@@ -397,6 +438,42 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
     assert "environment:" not in cleanup
     assert "runner_name_pattern='^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$'" in cleanup
     assert 'test "$RUNNER_NAME" = "$ASTRAL_STAGING_EXPECTED_RUNNER_NAME"' in cleanup
+
+
+@pytest.mark.parametrize("job_id", COMPONENT_CONSUMER_JOBS)
+def test_release_readiness_component_consumers_verify_exact_initialized_gitlinks(
+    job_id: str,
+) -> None:
+    """A component consumer must not execute against an empty gitlink directory."""
+
+    workflow = _workflow_text(READINESS)
+    _assert_immediate_exact_component_checkout(_workflow_job(workflow, job_id))
+
+
+def test_release_readiness_backend_producer_mounts_plane_source_read_only() -> None:
+    """The replayed Plane-owned migration test must exist inside the container."""
+
+    backend = _workflow_job(_workflow_text(READINESS), "backend-producer")
+    assert (
+        '-v "$PWD/components/AstralPlane:/app/components/AstralPlane:ro"'
+        in backend
+    )
+
+
+def test_delegated_component_consumers_verify_exact_initialized_gitlinks() -> None:
+    """Reusable Windows and Apple jobs must enforce the same candidate composition."""
+
+    windows = _workflow_job(_workflow_text(WINDOWS_CANDIDATE), "windows-candidate")
+    _assert_immediate_exact_component_checkout(
+        windows,
+        expected_ref="ref: ${{ env.CANDIDATE_SHA }}",
+    )
+
+    apple = _workflow_job(_workflow_text(APPLE_NORMALIZER), "normalize")
+    _assert_immediate_exact_component_checkout(
+        apple,
+        checkout_name="Check out the exact candidate as normalization data",
+    )
 
 
 def test_release_readiness_candidate_jobs_never_carry_write_authority() -> None:
@@ -585,15 +662,14 @@ def test_release_readiness_protected_coverage_includes_voice_worker_report() -> 
         r"\s*--voice-worker-python\s+build/060/coverage-inputs/voice-worker/voice-worker\.xml",
         decision,
     )
-    assert "--ios build/060/release-evidence/coverage/apple-ios-xccov.json" in decision
-    assert (
-        "--macos build/060/release-evidence/coverage/apple-macos-xccov.json"
-        in decision
-    )
-    assert (
-        "--watchos build/060/release-evidence/coverage/apple-watchos-xccov.json"
-        in decision
-    )
+    coverage_step = decision.partition(
+        "- name: Run the protected changed-code coverage gate"
+    )[2].partition("- name: Assemble the canonical evidence set")[0]
+    assert "--repository-profile deep" in coverage_step
+    assert "--windows-python" not in coverage_step
+    assert "--ios" not in coverage_step
+    assert "--macos" not in coverage_step
+    assert "--watchos" not in coverage_step
     assert "--apple " not in decision
     assert "--coverage-mode strict" in decision
     assert (
@@ -825,7 +901,7 @@ def test_release_evidence_exception_registrar_is_environment_gated() -> None:
 def test_release_windows_signing_identity_surface_matches_the_shipped_client() -> None:
     """The Fulcio SAN the ALREADY-SHIPPED v0.3.0 updater pins must not drift.
 
-    windows-client/astral_client/integrity.py hard-codes the signing workflow
+    components/AstralProjection/windows-client/astral_client/integrity.py hard-codes the signing workflow
     path and fails closed, so the workflow FILE PATH, its ``name:``, and the
     fact that signing runs at a TAG ref are load-bearing for clients already in
     the field — a drift here bricks updates for every installed client.
@@ -859,13 +935,18 @@ def test_release_windows_signing_identity_surface_matches_the_shipped_client() -
 
     # Both halves of the contract must name the same workflow.
     integrity = (
-        REPO_ROOT / "windows-client" / "astral_client" / "integrity.py"
+        REPO_ROOT
+        / "components"
+        / "AstralProjection"
+        / "windows-client"
+        / "astral_client"
+        / "integrity.py"
     ).read_text(encoding="utf-8")
     assert (
         '"https://github.com/AstralDeep/AstralDeep'
         '/.github/workflows/release-windows.yml"' in integrity
-    ), "windows-client/astral_client/integrity.py no longer pins this workflow"
-    assert 'f"{_SIGNING_WORKFLOW}@refs/tags/{tag}"' in integrity
+    ), "components/AstralProjection/windows-client/astral_client/integrity.py no longer pins this workflow"
+    assert 'f"{signing_workflow}@refs/tags/{tag}"' in integrity
 
 @bridge_parked
 def test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority() -> None:
@@ -1199,11 +1280,11 @@ def test_release_windows_publisher_isolates_candidate_code_and_exact_dispatch() 
     assert 'actions/runs/$BRIDGE_RUN_ID' in body
 
     assert "pip install --require-hashes" in body
-    assert "protected-policy/windows-client/requirements-release.lock.txt" in body
-    assert "candidate-source/windows-client/requirements-release.lock.txt" not in body
+    assert "protected-policy/components/AstralProjection/windows-client/requirements-release.lock.txt" in body
+    assert "candidate-source/components/AstralProjection/windows-client/requirements-release.lock.txt" not in body
     assert "protected-policy/scripts/validate_release_evidence.py" in body
     assert "protected-policy/specs/060-runtime-reliability-hardening/" in body
-    assert "protected-policy/windows-client/astral_client/integrity.py" in body
+    assert "protected-policy/components/AstralProjection/windows-client/astral_client/integrity.py" in body
     assert 'git -C candidate-source show "$CANDIDATE_SHA:' in body
 
     for match in re.finditer(r"(?<![A-Za-z0-9_-])(python3?|python)(?=\s)", body):
@@ -1295,17 +1376,23 @@ def test_ci_release_tooling_lane_covers_the_new_release_test_files() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "release-tooling-tests")
     for test_path in (
+        "backend/tests/test_changed_coverage_060.py",
+        "backend/tests/test_release_tooling_coverage_060.py",
+        "backend/tests/test_documentation_060.py",
+        "backend/tests/test_quickstart_commands.py",
+        "backend/tests/test_python_ci_supply_chain_060.py",
+        "backend/tests/test_android_next_major_canary.py",
+        "backend/tests/test_candidate_staging_060.py",
+        "backend/tests/test_release_evidence_validator.py",
         "backend/tests/test_prepare_release_evidence_060.py",
         "backend/tests/test_extract_release_artifact_060.py",
         "backend/tests/test_release_evidence_bootstrap.py",
-        "backend/tests/test_release_workflows_060.py",
-        "backend/tests/test_release_evidence_producers.py",
-        "backend/tests/test_voice_dependency_locks_065.py",
-        "backend/tests/test_voice_dependency_supply_chain_065.py",
-        "backend/tests/test_apple_livekit_dependency_065.py",
-        "backend/tests/test_voice_deployment_topology_065.py",
-        "backend/tests/test_voice_release_evidence_producers_065.py",
-        "backend/tests/test_voice_worker_packaging_065.py",
+        "scripts/tests/test_component_build_surfaces_074.py",
+        "scripts/tests/test_install_local_components.py",
+        "scripts/tests/test_verify_component_ownership.py",
+        "scripts/tests/test_verify_composition.py",
+        "scripts/tests/test_verify_migration_provenance.py",
+        "scripts/tests/test_verify_primitive_coverage.py",
     ):
         assert test_path in job, f"RELEASE_TOOL_TESTS must include {test_path}"
 
@@ -1339,7 +1426,11 @@ def test_ci_voice_worker_is_distribution_disabled_but_keeps_test_lane() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "voice-worker-test")
 
+    job_header = job.split("    steps:", 1)[0]
+    assert "if:" not in job_header
+    assert "if: vars.VOICE_WORKER_CLOSURE_APPROVED != 'true'" in job
     assert "if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'" in job
+    assert "succeeding as a no-op" in job
     assert "Dockerfile.voice" in job
     assert "--target runtime" in job
     assert "--target test" in job
@@ -1361,23 +1452,16 @@ def test_ci_voice_worker_is_distribution_disabled_but_keeps_test_lane() -> None:
     assert "name: voice-worker-coverage" in job
     assert "continue-on-error" not in job
 
-    # Publication depends on the worker gate TRANSITIVELY through the
-    # unprivileged `gates` aggregation: publish's own guard must stay inside
-    # the draft-bootstrap push-only grammar (no always()), while gates
-    # converts "every verification succeeded — voice-worker-test may be its
-    # sanctioned VOICE_WORKER_CLOSURE_APPROVED skip" into one dependable
-    # success (a skipped need would otherwise skip publish silently).
-    publish = _workflow_job(workflow, "publish")
-    assert "- gates" in publish
     gates = _workflow_job(workflow, "gates")
     assert "- voice-worker-test" in gates
-    assert "- coverage-gate" in gates
     assert "needs.voice-worker-test.result }}' == 'success'" in gates
-    assert "needs.voice-worker-test.result }}' == 'skipped'" in gates
-    assert "needs.coverage-gate.result }}' == 'success'" in gates
+    assert "needs.component-contract-tests.result }}' == 'success'" in gates
+    assert "skipped" not in gates
+    assert "exit 1" not in gates
+    assert "publish" not in _job_ids(workflow)
 
 
-def test_ci_draft_151_coverage_diagnostic_cannot_waive_merge_gate() -> None:
+def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     head = _workflow_head(workflow)
     assert (
@@ -1385,39 +1469,34 @@ def test_ci_draft_151_coverage_diagnostic_cannot_waive_merge_gate() -> None:
         "converted_to_draft]" in head
     )
 
-    job = _workflow_job(workflow, "coverage-gate")
-    job_header = job.split("    steps:", 1)[0]
-    assert "continue-on-error" not in job_header
-
-    coverage_step = job.split("- name: Enforce 90% on changed Python lines", 1)[
-        1
-    ].split("- name:", 1)[0]
-    assert "id: backend_diff_coverage" in coverage_step
-    assert "continue-on-error:" in coverage_step
-    assert "github.event_name == 'pull_request'" in coverage_step
-    assert "github.event.pull_request.draft == true" in coverage_step
-    assert "github.event.pull_request.number == 151" in coverage_step
-    assert "github.head_ref == '065-conversational-voice'" in coverage_step
-    assert "--fail-under 90" in coverage_step
-    assert "voice_agent" not in coverage_step
-
-    warning_step = job.split(
-        "- name: Report the draft-only backend coverage diagnostic", 1
-    )[1]
-    assert "always()" in warning_step
-    assert "steps.backend_diff_coverage.outcome == 'failure'" in warning_step
-    assert "::warning title=Draft-only backend coverage diagnostic::" in warning_step
-    assert '>> "$GITHUB_STEP_SUMMARY"' in warning_step
-    assert "canonical multi-lane coverage" in warning_step
-
-    # Same transitive-gate rationale as the voice-worker pin above: publish
-    # depends on coverage-gate THROUGH the `gates` aggregation so its own
-    # guard stays inside the draft-bootstrap push-only grammar.
-    publish = _workflow_job(workflow, "publish")
-    assert "- gates" in publish
-    gates = _workflow_job(workflow, "gates")
-    assert "- coverage-gate" in gates
-    assert "needs.coverage-gate.result }}' == 'success'" in gates
+    job_ids = set(_job_ids(workflow))
+    assert job_ids == {
+        "lint",
+        "release-tooling-tests",
+        "component-contract-tests",
+        "composition-declarations",
+        "voice-worker-test",
+        "secret-scan",
+        "gates",
+    }
+    assert not job_ids & {
+        "javascript-lint",
+        "voice-contract-validator",
+        "voice-web-conformance",
+        "windows-client",
+        "build",
+        "test",
+        "test-flags-off",
+        "coverage-gate",
+        "smoke",
+        "publish",
+    }
+    assert "packages: write" not in workflow
+    assert "id-token: write" not in workflow
+    assert "secrets." not in workflow
+    assert "actions/download-artifact" not in workflow
+    assert "docker save" not in workflow
+    assert "name: voice-worker-image" not in workflow
 
 
 def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:

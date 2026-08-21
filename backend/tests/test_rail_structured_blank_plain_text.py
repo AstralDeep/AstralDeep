@@ -44,6 +44,8 @@ from shared.protocol import ConversationSnapshot, ProtocolValidationError
 ROOT = Path(__file__).resolve().parents[2]
 APPLE_CONTINUITY = (
     ROOT
+    / "components"
+    / "AstralProjection"
     / "apple-clients"
     / "AstralCore"
     / "Sources"
@@ -153,6 +155,14 @@ class TestRenderableContentIsUnaffected:
         # "[]" is a real, visible rendition of an empty result — not blank.
         assert _content_parts(json.dumps([])) == [
             {"type": "structured", "value": [], "plain_text": "[]"}
+        ]
+
+    def test_typed_repository_string_is_not_decoded_twice(self) -> None:
+        assert _content_parts("[]", already_decoded=True) == [
+            {"type": "text", "text": "[]"}
+        ]
+        assert _content_parts("null", already_decoded=True) == [
+            {"type": "text", "text": "null"}
         ]
 
     def test_an_empty_object_still_commits_its_brace_rendition(self) -> None:

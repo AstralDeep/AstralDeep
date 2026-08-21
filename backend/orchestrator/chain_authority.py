@@ -197,13 +197,20 @@ class MachineTurnAuthority:
                                  "no durable consent (offline grant) on record")
 
         # FR-006: revocation is part of authority derivation, not only expiry.
-        if not await asyncio.to_thread(self.grants.is_valid, resolved_grant):
+        if not await asyncio.to_thread(
+            self.grants.is_valid,
+            resolved_grant,
+            user_id=user_id,
+        ):
             self._log_skip(turn_class, user_id, "revoked_or_expired")
             return AuthoritySkip("revoked_or_expired",
                                  "consent revoked or expired; re-consent required")
 
         try:
-            access_token = await self.grants.mint_access_token(resolved_grant)
+            access_token = await self.grants.mint_access_token(
+                resolved_grant,
+                user_id=user_id,
+            )
         except Exception as exc:
             self._log_skip(turn_class, user_id, "mint_failed")
             return AuthoritySkip("mint_failed", str(exc)[:200])

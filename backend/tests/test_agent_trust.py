@@ -8,47 +8,39 @@ exercised through the real ``agent_trust`` storage path.
 from __future__ import annotations
 
 import asyncio
-import sys
 import uuid
-from pathlib import Path
 
 import pytest
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+pytest.importorskip("psycopg2")
 
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(), reason="Postgres unavailable in this environment"
-)
+from orchestrator.user_agents import UserAgentRegistry  # noqa: E402
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def db():
-    from orchestrator.history import HistoryManager
+def plane_runtime():
+    with isolated_plane_runtime("agent_trust") as runtime:
+        yield runtime
 
-    history = HistoryManager(data_dir=f"/tmp/trust-test-{uuid.uuid4().hex[:8]}")
-    return history.db
+
+@pytest.fixture(scope="module")
+def db(plane_runtime):
+    return UserAgentRegistry(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
 
 
 @pytest.fixture
-def pm(db):
+def pm(db, plane_runtime):
     from orchestrator.tool_permissions import ToolPermissionManager
 
-    return ToolPermissionManager(db=db)
+    return ToolPermissionManager(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+        user_agent_registry=db,
+    )
 
 
 def _fresh_ids():
@@ -241,15 +233,16 @@ async def test_seed_safe_idempotent(db):
 # ── denial over a baseline that has no row to carry forward ───────────────
 
 
-def _kind_rows(db, user_id, agent_id):
+def _kind_rows(pm, user_id, agent_id):
     """The per-(tool, kind) override rows that actually exist."""
     return {
-        (r["tool_name"], r["permission_kind"], bool(r["enabled"]))
-        for r in db.fetch_all(
-            """SELECT tool_name, permission_kind, enabled FROM tool_overrides
-               WHERE user_id = ? AND agent_id = ? AND permission_kind IS NOT NULL""",
-            (user_id, agent_id),
+        (row.tool_name, row.permission_kind, bool(row.enabled))
+        for row in pm._policy.call(
+            pm._policy.repository.list_overrides,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
+        if row.permission_kind is not None
     }
 
 
@@ -275,7 +268,7 @@ def test_backfill_writes_nothing_when_user_has_no_scope_rows(db, pm):
     assert pm.is_tool_allowed(user_id, agent_id, "web_search") is True
 
     assert pm.backfill_per_tool_rows(user_id, agent_id) == 0
-    assert _kind_rows(db, user_id, agent_id) == set()
+    assert _kind_rows(pm, user_id, agent_id) == set()
     # Still allowed — the baseline survived the read.
     assert pm.is_tool_allowed(user_id, agent_id, "web_search") is True
     assert pm.get_enabled_scope_names(user_id, agent_id) == [
@@ -290,7 +283,7 @@ def test_backfill_carries_forward_explicit_scope_rows(db, pm):
         user_id, agent_id, {"tools:read": True, "tools:search": False})
 
     assert pm.backfill_per_tool_rows(user_id, agent_id) == 2
-    assert _kind_rows(db, user_id, agent_id) == {
+    assert _kind_rows(pm, user_id, agent_id) == {
         ("fetch_page", "tools:read", True),
         ("web_search", "tools:search", False),
     }
@@ -313,7 +306,7 @@ def test_backfill_skips_only_the_scopes_with_no_row(db, pm):
     pm.set_agent_scopes(user_id, agent_id, {"tools:read": True})
 
     assert pm.backfill_per_tool_rows(user_id, agent_id) == 1
-    assert _kind_rows(db, user_id, agent_id) == {
+    assert _kind_rows(pm, user_id, agent_id) == {
         ("fetch_page", "tools:read", True)}
     assert pm.is_tool_allowed(user_id, agent_id, "web_search") is True
 
@@ -324,5 +317,5 @@ def test_backfill_still_leaves_non_safe_agent_denied(db, pm):
     pm.register_tool_scopes(agent_id, {"web_search": "tools:search"})
 
     assert pm.backfill_per_tool_rows(user_id, agent_id) == 0
-    assert _kind_rows(db, user_id, agent_id) == set()
+    assert _kind_rows(pm, user_id, agent_id) == set()
     assert pm.is_tool_allowed(user_id, agent_id, "web_search") is False

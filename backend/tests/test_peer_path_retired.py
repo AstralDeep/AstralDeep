@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import os
+from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -49,7 +50,7 @@ def test_no_live_call_sites_repo_wide():
     backend_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     offenders = []
     for dirpath, _dirnames, filenames in os.walk(backend_root):
-        if any(part in dirpath for part in ("__pycache__", "/tests")):
+        if any(part in {"__pycache__", "tests"} for part in Path(dirpath).parts):
             continue
         for fn in filenames:
             if not fn.endswith(".py"):

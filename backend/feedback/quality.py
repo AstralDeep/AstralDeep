@@ -72,42 +72,25 @@ def _fetch_agent_trajectories(
 
     Returns ``{agent_id: [[tool_name, ...], ...]}`` — one inner list per
     distinct ``correlation_id`` (a turn), tools in ``recorded_at`` order. Reads
-    through the repository's DB handle (no schema change). Best-effort: any
-    error yields an empty mapping so the quality job is never broken by it.
+    through Plane's fixed administration query. Best-effort: any error yields
+    an empty mapping so the quality job is never broken by it.
     """
     try:
-        conn = repo._db._get_connection()
-    except Exception:
-        logger.debug("agent_eval: could not open DB connection", exc_info=True)
-        return {}
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT agent_id, correlation_id,
-                   REPLACE(REPLACE(action_type, 'tool.', ''), '.end', '') AS tool_name
-            FROM audit_events
-            WHERE event_class = 'agent_tool_call'
-              AND action_type LIKE 'tool.%%.end'
-              AND agent_id IS NOT NULL
-              AND recorded_at >= %s AND recorded_at <= %s
-            ORDER BY agent_id, correlation_id, recorded_at ASC, event_id ASC
-            LIMIT %s
-            """,
-            (window_start, window_end, cap),
+        rows = repo._audit.call(
+            repo._audit.repository.list_tool_trajectory_events_for_administration,
+            from_ts=window_start,
+            to_ts=window_end,
+            limit=cap,
         )
-        rows = cur.fetchall()
     except Exception:
         logger.debug("agent_eval: trajectory query failed", exc_info=True)
         return {}
-    finally:
-        conn.close()
 
     by_agent: Dict[str, Dict[Any, List[str]]] = {}
     for r in rows:
-        agent_id = r["agent_id"]
-        corr = r["correlation_id"]
-        tool = r["tool_name"]
+        agent_id = r.agent_id
+        corr = r.correlation_id
+        tool = r.tool_name
         by_agent.setdefault(agent_id, {}).setdefault(corr, []).append(tool)
     return {a: list(turns.values()) for a, turns in by_agent.items()}
 

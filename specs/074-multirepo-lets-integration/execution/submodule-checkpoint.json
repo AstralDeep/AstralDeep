@@ -1,0 +1,43 @@
+{
+  "format": "astral.submodule-checkpoint/v1",
+  "recordedAtUtc": "2026-08-14T04:38:36.3342413Z",
+  "parentRepository": "https://github.com/AstralDeep/AstralDeep.git",
+  "parentBranch": "074-multirepo-lets-integration",
+  "components": [
+    {
+      "name": "AstralPlane",
+      "path": "components/AstralPlane",
+      "url": "https://github.com/AstralDeep/AstralPlane.git",
+      "commit": "c1182c09ca767c7c8b3396fae91aa27d0b1c56ce"
+    },
+    {
+      "name": "AstralPrimitives",
+      "path": "components/AstralPrimitives",
+      "url": "https://github.com/AstralDeep/AstralPrimitives.git",
+      "commit": "03870e55563f7522e95e298490e6a8638f2b8385"
+    },
+    {
+      "name": "AstralProjection",
+      "path": "components/AstralProjection",
+      "url": "https://github.com/AstralDeep/AstralProjection.git",
+      "commit": "330bc85d07cac8fabc5cf8e1f7d313d2eb47e7d8"
+    },
+    {
+      "name": "LETS",
+      "path": "components/LETS",
+      "url": "https://github.com/AstralDeep/LETS.git",
+      "commit": "82dbe4f5ddf410cc86778784bb612440725ec66d",
+      "release": "v1.0.10",
+      "signedReleaseAnchor": true
+    }
+  ],
+  "floatingBranchSelectors": 0,
+  "dirtyComponentWorktrees": 0,
+  "qualification": {
+    "submoduleMappingsVerified": true,
+    "exactGitlinksVerified": true,
+    "compositionContractPending": true,
+    "runtimeCutoverPending": true,
+    "productionActivated": false
+  }
+}
