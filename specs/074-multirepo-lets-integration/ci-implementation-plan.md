@@ -45,7 +45,9 @@
 
 - Create `.github/workflows/ci.yml`: quality/security, PostgreSQL, package compatibility, and aggregate gates.
 - Create `tests/architecture/test_ci_workflow.py`: structural workflow contract.
+- Create `tooling/python-ci/build-requirements.lock.txt`: hash-lock the isolated build backend.
 - Modify `pyproject.toml` and `uv.lock`: add a locked CI-only dependency group.
+- Modify `tests/test_blob_store.py`: remove an `os.scandir()` ordering assumption from the purge retry test.
 - Delete `workflows-disabled/ci.yml` and update `README.md` to name the active owner workflow.
 
 ### AstralPrimitives
@@ -449,9 +451,11 @@ git commit -m "ci: activate Projection native client gates"
 **Files:**
 - Create: `/Users/sam/Desktop/Work/AstralPlane/tests/architecture/test_ci_workflow.py`
 - Create: `/Users/sam/Desktop/Work/AstralPlane/.github/workflows/ci.yml`
+- Create: `/Users/sam/Desktop/Work/AstralPlane/tooling/python-ci/build-requirements.lock.txt`
 - Modify: `/Users/sam/Desktop/Work/AstralPlane/pyproject.toml`
 - Modify: `/Users/sam/Desktop/Work/AstralPlane/uv.lock`
 - Modify: `/Users/sam/Desktop/Work/AstralPlane/README.md`
+- Modify: `/Users/sam/Desktop/Work/AstralPlane/tests/test_blob_store.py`
 - Delete: `/Users/sam/Desktop/Work/AstralPlane/workflows-disabled/ci.yml`
 
 **Interfaces:**
@@ -473,7 +477,7 @@ ci = [
 ]
 ```
 
-Create a test asserting the four job IDs, read-only permissions, SHA-pinned actions, no hard-false/continue-on-error/stale component paths, mandatory DSN, digest-pinned PostgreSQL, 90% coverage/diff coverage, and all-success aggregate.
+Create a test asserting the four job IDs, read-only permissions, SHA-pinned actions, no hard-false/continue-on-error/stale component paths, mandatory DSN, digest-pinned PostgreSQL, the measured 88.75% combined branch-coverage non-regression floor, 90% changed-line coverage, a hash-constrained build backend, and the all-success aggregate. Pin `setuptools==80.10.2` and generate a hash-locked build constraint without adding it to runtime dependencies.
 
 ```bash
 uv lock
@@ -493,7 +497,7 @@ Use full-history checkout `3d3c42e5aac5ba805825da76410c181273ba90b1`, setup-uv `
 - run: uv run --frozen --group ci python tests/architecture/test_dependency_direction.py
 ```
 
-Package compatibility uses Python 3.11 and 3.14, `uv build --frozen`, a clean venv, wheel install, and:
+Package compatibility uses Python 3.11 and 3.14, `uv lock --check`, a hash-constrained `uv build`, a clean venv, wheel install, and:
 
 ```bash
 python -c "import astralplane; assert astralplane.CONTRACT_VERSION == 'astralplane.contract/v1'"
@@ -517,13 +521,19 @@ Checkout public Deep at the exact provenance commit into `source-deep`, set `AST
 
 ```bash
 uv run --frozen --group ci pytest -q -p no:cacheprovider \
-  --cov=astralplane --cov-branch --cov-report=xml --cov-fail-under=90
+  --cov=astralplane --cov-branch --cov-report=xml --cov-fail-under=88.75
 uv run --frozen --group ci diff-cover coverage.xml --compare-branch origin/main --fail-under=90
 ```
 
 Do not permit the eight DSN-bearing test modules to skip in this job.
 
 - [ ] **Step 4: Add the fail-closed aggregate, update docs, and run local gates**
+
+First make the existing filesystem-denial test deterministic: its injected first
+unlink must fail before either the payload or persistent publication fence can be
+removed, then the successful retry must report both files and the replay zero.
+This preserves the product's bounded, idempotent recovery semantics without
+depending on unspecified `os.scandir()` order.
 
 ```bash
 uv lock --check
@@ -534,19 +544,29 @@ uv run --frozen --group ci python tests/architecture/test_dependency_direction.p
 ASTRALDEEP_SOURCE_REPO=/Users/sam/Desktop/Work/AstralDeep \
 ASTRALPLANE_TEST_POSTGRES_DSN='postgresql://astralplane:astralplane_ci@127.0.0.1:5432/astralplane' \
   uv run --frozen --group ci pytest -q -p no:cacheprovider \
-  --cov=astralplane --cov-branch --cov-report=xml --cov-fail-under=90
+  --cov=astralplane --cov-branch --cov-report=xml --cov-fail-under=88.75
 uv run --frozen --group ci diff-cover coverage.xml --compare-branch origin/main --fail-under=90
-uv build --frozen
+uv lock --check
+uv build --build-constraints tooling/python-ci/build-requirements.lock.txt --require-hashes
 actionlint .github/workflows/ci.yml
 ```
+
+Because this Mac's Darwin descriptor/filesystem behavior is not the hosted Linux
+environment, repeat the full PostgreSQL/coverage command in the digest-pinned
+`ghcr.io/astral-sh/uv@sha256:58683a39536f1f4ed2e1dd79cf155edccfb47731aba8964bd0312aac942126cf`
+Python 3.11 Bookworm image with a container-native temporary directory and the
+disposable PostgreSQL 17 service network. Require 2,021 passes, only the nine
+Windows-specific skips, at least 88.75% combined branch coverage, and at least
+90% changed-line coverage.
 
 Do not add `ruff format --check`; it would mechanically rewrite provenance-bound files outside this task.
 
 - [ ] **Step 5: Commit Plane locally**
 
 ```bash
-git add .github/workflows/ci.yml tests/architecture/test_ci_workflow.py pyproject.toml \
-  uv.lock README.md workflows-disabled/ci.yml
+git add .github/workflows/ci.yml tests/architecture/test_ci_workflow.py \
+  tooling/python-ci/build-requirements.lock.txt pyproject.toml uv.lock README.md \
+  tests/test_blob_store.py workflows-disabled/ci.yml
 git commit -m "ci: qualify Plane with PostgreSQL owner gates"
 ```
 
