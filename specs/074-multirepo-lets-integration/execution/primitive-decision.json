@@ -13,7 +13,7 @@
     "uiProtocolPath": "components/AstralProjection/contracts/ui_protocol.json",
     "uiProtocolVersion": 1,
     "uiProtocolRawSha256": "6845547c7f9dddec5aed018fcbe8cb6900fc0dec1eae7a560276d8a269e58738",
-    "uiProtocolCanonicalJsonSha256": "cf30e75dc040e3efdeeb00e1d04a80cce3d2a27a28b9b8a8823d708dfc379538",
+    "uiProtocolCanonicalJsonSha256": "cf30e7a25087cef4dc9bcff4d272d501eef6b128fa48582d2bdb753a68caf904",
     "primitiveSourcePath": "components/AstralPrimitives/src/astralprims/primitives.py",
     "primitiveSourceSha256": "b7ee3ca3c4dc94c1579cb7ea923b68d7b2121d0585bb7622b605f73e8f819034",
     "minimumPackageVersion": "0.3.0"

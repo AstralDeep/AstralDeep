@@ -20,23 +20,9 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from orchestrator.workspace import WorkspaceManager  # noqa: E402
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
+from tests.helpers.voice_plane_runtime import (  # noqa: E402
+    history_manager,
+    isolated_voice_plane_runtime,
 )
 
 
@@ -46,15 +32,23 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def history(tmp_path_factory):
-    from orchestrator.history import HistoryManager
-
-    return HistoryManager(data_dir=str(tmp_path_factory.mktemp("snap-data")))
+def plane_runtime():
+    with isolated_voice_plane_runtime("workspace_snapshots") as runtime:
+        yield runtime
 
 
 @pytest.fixture(scope="module")
-def ws(history):
-    return WorkspaceManager(history)
+def history(plane_runtime):
+    return history_manager(plane_runtime)
+
+
+@pytest.fixture(scope="module")
+def ws(history, plane_runtime):
+    return WorkspaceManager(
+        history,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
 
 
 @pytest.fixture
@@ -197,11 +191,5 @@ def test_delete_chat_cascades_snapshots_and_workspace(ws, history, chat):
 
     history.delete_chat(chat_id, user_id)
 
-    snap_count = ws.db.fetch_one(
-        "SELECT COUNT(*) as count FROM workspace_snapshot WHERE chat_id = ?", (chat_id,)
-    )
-    comp_count = ws.db.fetch_one(
-        "SELECT COUNT(*) as count FROM saved_components WHERE chat_id = ?", (chat_id,)
-    )
-    assert snap_count["count"] == 0, "workspace_snapshot rows must CASCADE with the chat"
-    assert comp_count["count"] == 0, "saved_components rows must CASCADE with the chat"
+    assert ws.count_snapshots(chat_id, user_id) == 0
+    assert ws.live_rows(chat_id, user_id) == []

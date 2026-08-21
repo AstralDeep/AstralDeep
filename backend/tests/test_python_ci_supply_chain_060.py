@@ -137,9 +137,9 @@ def test_ci_uses_one_hash_lock_for_every_python_test_tool_install() -> None:
     assert LOCK_INSTALL in windows
     assert (
         "python -m pip install --require-hashes -r "
-        "windows-client/requirements-release.lock.txt"
+        "components/AstralProjection/windows-client/requirements-release.lock.txt"
     ) in windows
-    assert "windows-client/requirements.txt" not in windows
+    assert "components/AstralProjection/windows-client/requirements.txt" not in windows
     assert "sudo apt-get" not in windows
 
     backend = _workflow_job(workflow, "test")
@@ -200,10 +200,15 @@ def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> N
         "check_doc_links.py",
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",
+        "install_local_components.py",
         "prepare_release_evidence.py",
         "run_android_next_major_canary.py",
         "run_candidate_staging.py",
         "validate_release_evidence.py",
+        "verify_component_ownership.py",
+        "verify_composition.py",
+        "verify_migration_provenance.py",
+        "verify_primitive_coverage.py",
         "verify_release_evidence_bootstrap.py",
         "windows_release_candidate.py",
     }
@@ -224,7 +229,13 @@ def test_release_tooling_job_covers_every_maintained_script_non_vacuously() -> N
         "backend/tests/test_extract_release_artifact_060.py",
         "backend/tests/test_release_workflows_060.py",
         "backend/tests/test_release_evidence_producers.py",
-        "windows-client/tests/test_release_lock_060.py",
+        "scripts/tests/test_component_build_surfaces_074.py",
+        "scripts/tests/test_install_local_components.py",
+        "scripts/tests/test_verify_component_ownership.py",
+        "scripts/tests/test_verify_composition.py",
+        "scripts/tests/test_verify_migration_provenance.py",
+        "scripts/tests/test_verify_primitive_coverage.py",
+        "components/AstralProjection/windows-client/tests/test_release_lock_060.py",
     ):
         assert test_path in job
 
@@ -282,10 +293,10 @@ def test_ci_only_python_manifest_cannot_enter_product_artifacts() -> None:
     product_inputs = (
         REPO_ROOT / "Dockerfile",
         REPO_ROOT / "backend" / "requirements.txt",
-        REPO_ROOT / "windows-client" / "AstralDeep.spec",
-        REPO_ROOT / "windows-client" / "requirements.in",
-        REPO_ROOT / "apple-clients" / "AstralCore" / "Package.swift",
-        REPO_ROOT / "android-client" / "settings.gradle.kts",
+        REPO_ROOT / "components/AstralProjection/windows-client/AstralDeep.spec",
+        REPO_ROOT / "components/AstralProjection/windows-client/requirements.in",
+        REPO_ROOT / "components/AstralProjection/apple-clients/AstralCore/Package.swift",
+        REPO_ROOT / "components/AstralProjection/android-client/settings.gradle.kts",
     )
     for path in product_inputs:
         assert "tooling/python-ci" not in path.read_text(encoding="utf-8"), path
@@ -316,9 +327,9 @@ def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> N
     for line in installs:
         assert "--require-hashes" in line, f"unhashed pip install: {line}"
         assert (
-            "windows-client/requirements-release.lock.txt" in line
+            "components/AstralProjection/windows-client/requirements-release.lock.txt" in line
         ), f"install is not from the release lock: {line}"
     assert "pip install --upgrade" not in workflow
     assert "sigstore>=" not in workflow
     # The lock's own exactness (every line hashed, sigstore/pyinstaller present)
-    # is enforced by windows-client/tests/test_release_lock_060.py.
+    # is enforced by components/AstralProjection/windows-client/tests/test_release_lock_060.py.

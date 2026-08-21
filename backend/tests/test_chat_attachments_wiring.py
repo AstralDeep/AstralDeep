@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import sys
+import asyncio
+import threading
 import types
 
 import pytest
@@ -20,15 +22,31 @@ if _BACKEND not in sys.path:
 
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from orchestrator.attachments.repository import AttachmentRepository  # noqa: E402
+from orchestrator.attachments.message_attachment_repo import (  # noqa: E402
+    MessageAttachmentRepository,
+)
+from orchestrator.attachments.parser_repo import (  # noqa: E402
+    AttachmentParserRepository,
+)
 from tests.attachments._fake_db_031 import FakeDB  # noqa: E402
+from tests.attachments.conftest import (  # noqa: E402
+    attachment_plane_source,
+    seed_attachment_for_test,
+)
 
 
 def _seed(db, *, user_id, attachment_id, category, extension, filename):
-    AttachmentRepository(db).insert(
-        attachment_id=attachment_id, user_id=user_id, filename=filename,
-        content_type="application/octet-stream", category=category,
-        extension=extension, size_bytes=10, sha256="0" * 64,
-        storage_path=f"{user_id}/{attachment_id}/{filename}",
+    repo = AttachmentRepository.from_plane_source(attachment_plane_source(db))
+    seed_attachment_for_test(
+        repo,
+        attachment_id=attachment_id,
+        user_id=user_id,
+        filename=filename,
+        content_type="application/octet-stream",
+        category=category,
+        extension=extension,
+        size_bytes=10,
+        sha256="0" * 64,
     )
 
 
@@ -39,7 +57,7 @@ def _fake_self(db):
         sent.append(data)
 
     self_ns = types.SimpleNamespace(
-        history=types.SimpleNamespace(db=db),
+        plane_repository_source=attachment_plane_source(db),
         _safe_send=_safe_send,
         _sent=sent,
     )
@@ -65,8 +83,8 @@ async def test_valid_attachments_are_linked_and_surfaced():
     assert 'id=a-pq name="data.parquet" category=data (readable: pending parser)' in out
     # both linked to the persisted message m1
     links = db.message_attachment
-    assert {r["attachment_id"] for r in links} == {"a-pdf", "a-pq"}
-    assert all(r["message_id"] == "m1" and r["user_id"] == "u1" for r in links)
+    assert {r.attachment_id for r in links} == {"a-pdf", "a-pq"}
+    assert all(r.message_id == "m1" and r.owner_id == "u1" for r in links)
 
 
 @pytest.mark.asyncio
@@ -94,3 +112,78 @@ async def test_duplicate_ids_collapse():
     ]
     await Orchestrator._attach_turn_attachments(me, object(), "x", "c1", "u1", "m1", payload)
     assert len(db.message_attachment) == 1
+
+
+@pytest.mark.asyncio
+async def test_turn_attachment_plane_reads_and_parser_coverage_stay_off_loop(
+    monkeypatch,
+):
+    loop_thread = threading.get_ident()
+    worker_threads = []
+    attachment = types.SimpleNamespace(
+        attachment_id="a1",
+        filename="data.parquet",
+        category="data",
+        extension="parquet",
+    )
+
+    class _Attachments:
+        def get_by_id(self, *_args):
+            raise AssertionError("sync attachment read reached the event loop")
+
+        async def aget_by_id(self, *_args):
+            def _read():
+                worker_threads.append(threading.get_ident())
+                return attachment
+
+            return await asyncio.to_thread(_read)
+
+    class _Links:
+        def insert(self, **_kwargs):
+            raise AssertionError("sync attachment link reached the event loop")
+
+        async def ainsert(self, **_kwargs):
+            def _write():
+                worker_threads.append(threading.get_ident())
+                return "link-1"
+
+            return await asyncio.to_thread(_write)
+
+    class _Parsers:
+        def get_by_gap(self, _fingerprint):
+            worker_threads.append(threading.get_ident())
+            return None
+
+    monkeypatch.setattr(
+        AttachmentRepository,
+        "from_plane_source",
+        classmethod(lambda _cls, _source: _Attachments()),
+    )
+    monkeypatch.setattr(
+        MessageAttachmentRepository,
+        "from_plane_source",
+        classmethod(lambda _cls, _source: _Links()),
+    )
+    monkeypatch.setattr(
+        AttachmentParserRepository,
+        "from_plane_source",
+        classmethod(lambda _cls, _source: _Parsers()),
+    )
+    me = types.SimpleNamespace(
+        plane_repository_source=types.SimpleNamespace(),
+        _safe_send=lambda *_args: None,
+    )
+
+    result = await Orchestrator._attach_turn_attachments(
+        me,
+        object(),
+        "inspect",
+        "c1",
+        "u1",
+        "m1",
+        [{"attachment_id": "a1"}],
+    )
+
+    assert "id=a1" in result
+    assert len(worker_threads) == 3
+    assert all(thread_id != loop_thread for thread_id in worker_threads)

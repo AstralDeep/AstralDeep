@@ -86,6 +86,7 @@ def orch():
     m._component_action_allowed = MagicMock(return_value=(True, ""))
     m.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     m._execute_with_retry = AsyncMock(return_value=None)
+    m.execute_authorized_tool = AsyncMock(return_value=None)
     return m
 
 
@@ -177,7 +178,7 @@ def _full_result():
 
 def test_csv_paginated_reinvokes_source_full_range(client, orch):
     orch.workspace.aget_by_component_id.return_value = _row(_paginated_cd())
-    orch._execute_with_retry.return_value = _full_result()
+    orch.execute_authorized_tool.return_value = _full_result()
     r = _csv_get(client)
     assert r.status_code == 200
     lines = r.text.splitlines()
@@ -185,8 +186,10 @@ def test_csv_paginated_reinvokes_source_full_range(client, orch):
     # Same gate + params the component_action pipeline applies.
     orch._component_action_allowed.assert_called_once_with(
         USER_ID, "data-agent-1", "list_rows")
-    ws, agent_id, tool, args = orch._execute_with_retry.await_args.args
-    assert (ws, agent_id, tool) == (None, "data-agent-1", "list_rows")
+    call = orch.execute_authorized_tool.await_args.kwargs
+    assert (call["agent_id"], call["tool_name"], call["channel"]) == (
+        "data-agent-1", "list_rows", "rest")
+    args = call["arguments"]
     assert args["limit"] == 5 and args["offset"] == 0 and args["q"] == "all"
 
 
@@ -200,7 +203,7 @@ def test_csv_stored_only_skips_reinvoke(client, orch):
 
 def test_csv_reinvoke_failure_is_503_partial_data(client, orch):
     orch.workspace.aget_by_component_id.return_value = _row(_paginated_cd())
-    orch._execute_with_retry.return_value = SimpleNamespace(
+    orch.execute_authorized_tool.return_value = SimpleNamespace(
         error={"message": "agent down"}, ui_components=[])
     r = _csv_get(client)
     assert r.status_code == 503
@@ -216,7 +219,7 @@ def test_csv_permission_denied_is_403(client, orch):
     r = _csv_get(client)
     assert r.status_code == 403
     assert r.json()["error"] == "forbidden"
-    orch._execute_with_retry.assert_not_awaited()
+    orch.execute_authorized_tool.assert_not_awaited()
 
 
 def test_csv_retired_source_is_503(client, orch):
@@ -227,7 +230,7 @@ def test_csv_retired_source_is_503(client, orch):
     r = _csv_get(client)
     assert r.status_code == 503
     assert r.json()["error"] == "source_retired"
-    orch._execute_with_retry.assert_not_awaited()
+    orch.execute_authorized_tool.assert_not_awaited()
 
 
 def test_csv_export_audited(client, orch, monkeypatch):

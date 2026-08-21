@@ -402,7 +402,15 @@ GetSessionFn = Callable[["WebSocket"], Optional[Dict[str, Any]]]
 #: stream manager can populate ``_request_to_key``. Raises if the agent is
 #: not connected.
 AgentDispatchFn = Callable[
-    [str, str, Dict[str, Any], str, Optional[str]],  # agent_id, tool_name, args, stream_id, user_id
+    [
+        str,
+        str,
+        Dict[str, Any],
+        str,
+        Optional[str],
+        "WebSocket",
+        str,
+    ],  # agent_id, tool_name, args, stream_id, user_id, ws, chat_id
     Awaitable[str],  # returns request_id
 ]
 
@@ -590,6 +598,7 @@ class StreamManager:
                     request_id = await self._agent_dispatcher(
                         dormant_existing.agent_id, dormant_existing.tool_name,
                         dormant_existing.params, dormant_existing.stream_id, user_id,
+                        ws, dormant_existing.chat_id,
                     )
                     dormant_existing.request_id = request_id
                     self._request_to_key[request_id] = key
@@ -646,6 +655,7 @@ class StreamManager:
         try:
             request_id = await self._agent_dispatcher(
                 agent_id, tool_name, params, stream_id, user_id,
+                ws, chat_id,
             )
         except Exception as e:
             # Dispatch failed (agent disconnected, etc.). Tear down the
@@ -927,6 +937,7 @@ class StreamManager:
                         request_id = await self._agent_dispatcher(
                             sub.agent_id, sub.tool_name, sub.params,
                             sub.stream_id, user_id,
+                            ws, sub.chat_id,
                         )
                         sub.request_id = request_id
                         self._request_to_key[request_id] = sub.key
@@ -1250,6 +1261,7 @@ class StreamManager:
             request_id = await self._agent_dispatcher(
                 sub.agent_id, sub.tool_name, sub.params,
                 sub.stream_id, sub.user_id,
+                sub.subscribers[0], sub.chat_id,
             )
             sub.request_id = request_id
             self._request_to_key[request_id] = sub.key

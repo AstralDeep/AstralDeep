@@ -1,0 +1,35 @@
+{
+  "format": "astral.delivery-authority/v1",
+  "recordedOn": "2026-08-21",
+  "source": "explicit owner direction in the active Feature 074 implementation task",
+  "pullRequests": {
+    "creationAuthorized": true,
+    "initialPosture": "draft-until-repository-gates-pass",
+    "deduplicationRequired": true
+  },
+  "merges": {
+    "authorized": true,
+    "method": "merge-commit",
+    "conditions": [
+      "all Feature 074 local gates applicable to the repository have passed",
+      "the exact remote PR head matches the locally qualified commit",
+      "all repository-required CI checks are green",
+      "all repository-required independent reviews are satisfied",
+      "no administrator or branch-protection bypass is used",
+      "dependency repositories merge before dependent AstralDeep pins",
+      "dependent compositions are re-pinned and requalified after component merges"
+    ]
+  },
+  "notAuthorized": [
+    "production deployment or cutover",
+    "release publication or privileged release workflow activation",
+    "app-store submission",
+    "paper publication or submission",
+    "branch-protection, required-review, or CI bypass",
+    "gate weakening"
+  ],
+  "separateDecisions": {
+    "accountRetirementT241": "not satisfied by this delivery authorization",
+    "macOSQualificationT226": "still required before final PR delivery"
+  }
+}

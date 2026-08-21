@@ -12,7 +12,8 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TOOLING_ROOT = REPO_ROOT / "tooling" / "web-ci"
+PROJECTION_ROOT = REPO_ROOT / "components" / "AstralProjection"
+TOOLING_ROOT = PROJECTION_ROOT / "tooling" / "web-ci"
 PACKAGE_PATH = TOOLING_ROOT / "package.json"
 LOCK_PATH = TOOLING_ROOT / "package-lock.json"
 ESLINT_CONFIG_PATH = TOOLING_ROOT / "eslint.config.mjs"
@@ -20,9 +21,7 @@ PLAYWRIGHT_IMAGE_PATH = TOOLING_ROOT / "playwright-image.txt"
 RELEASE_RUNNER_PATH = TOOLING_ROOT / "release-runner.mjs"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
-if not (
-    (REPO_ROOT / "tooling").is_dir() and (REPO_ROOT / ".github").is_dir()
-):  # repo root absent inside the product image
+if not (TOOLING_ROOT.is_dir() and (REPO_ROOT / ".github").is_dir()):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -89,6 +88,7 @@ def test_web_ci_manifest_is_private_exact_and_ci_only() -> None:
         "test:coverage-conversion",
         "test:coverage-conversion:browser",
         "test:coverage-conversion:node",
+        "test:product-isolation",
     }
     assert "eslint" in scripts["lint"]
     assert "--max-warnings=0" in scripts["lint"]
@@ -106,8 +106,7 @@ def test_web_ci_manifest_is_private_exact_and_ci_only() -> None:
     assert "node-v8-cli.test.mjs" in scripts["test:coverage-conversion:node"]
     assert "coverage-conversion-cli.mjs" in scripts["coverage:node"]
     assert "npm 11.16.0" in scripts["check:package-manager"]
-    assert "Dockerfile" in scripts["check:product-isolation"]
-    assert "backend/requirements.txt" in scripts["check:product-isolation"]
+    assert scripts["check:product-isolation"] == "node product-isolation.mjs"
 
 
 def test_package_lock_exactly_matches_manifest_and_pins_transitives() -> None:
@@ -169,14 +168,15 @@ def test_eslint_flat_config_covers_maintained_web_js_and_excludes_vendor() -> No
     assert "globals.node" in config
 
 
-def test_ci_runs_lock_install_isolation_and_lint_as_an_independent_job() -> None:
+def test_ci_retains_migrated_lint_definition_but_disables_public_job() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "javascript-lint")
 
+    assert "if: ${{ false }}" in job
     assert "actions/setup-node@" in job
     assert re.search(r'node-version:\s*["\']?24["\']?', job)
     assert re.search(r"cache:\s*[\"']?npm[\"']?", job)
-    assert "cache-dependency-path: tooling/web-ci/package-lock.json" in job
+    assert "cache-dependency-path: components/AstralProjection/tooling/web-ci/package-lock.json" in job
 
     version = job.index("corepack npm --version")
     assert '"11.16.0"' in job or "'11.16.0'" in job
@@ -185,7 +185,12 @@ def test_ci_runs_lock_install_isolation_and_lint_as_an_independent_job() -> None
     isolation = job.index("corepack npm run check:product-isolation")
     lint = job.index("corepack npm run lint")
     assert version < install < manager < isolation < lint
-    assert job.count("working-directory: tooling/web-ci") >= 3
+    assert (
+        job.count(
+            "working-directory: components/AstralProjection/tooling/web-ci"
+        )
+        >= 3
+    )
 
     # Transitive through the unprivileged `gates` aggregation (see
     # test_release_workflows_060 for the publish/gates chain rationale).
@@ -193,14 +198,14 @@ def test_ci_runs_lock_install_isolation_and_lint_as_an_independent_job() -> None
     assert "- gates" in publish
     gates = _workflow_job(workflow, "gates")
     assert "- javascript-lint" in gates
-    assert "needs.javascript-lint.result }}' == 'success'" in gates
+    assert "needs.javascript-lint.result }}' == 'skipped'" in gates
     assert "- release-tooling-tests" in gates
-    assert "needs.release-tooling-tests.result }}' == 'success'" in gates
+    assert "needs.release-tooling-tests.result }}' == 'skipped'" in gates
 
 
 def test_web_ci_packages_cannot_enter_product_manifests_or_image() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "tooling/web-ci" not in dockerfile
+    assert "components/AstralProjection/tooling/web-ci" not in dockerfile
     assert re.search(r"(?mi)^\s*COPY\s+\.\s", dockerfile) is None
 
     tracked = subprocess.run(
@@ -210,13 +215,26 @@ def test_web_ci_packages_cannot_enter_product_manifests_or_image() -> None:
         capture_output=True,
         text=True,
     )
-    package_manifests = {line for line in tracked.stdout.splitlines() if line}
-    assert package_manifests == {"tooling/web-ci/package.json"}
+    package_manifests = {
+        line
+        for line in tracked.stdout.splitlines()
+        if line and (REPO_ROOT / line).is_file()
+    }
+    assert package_manifests == set()
+
+    projection_tracked = subprocess.run(
+        ["git", "ls-files", "--", "tooling/web-ci/package.json"],
+        cwd=PROJECTION_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert projection_tracked.stdout.splitlines() == ["tooling/web-ci/package.json"]
 
     forbidden = tuple(EXPECTED_DEV_DEPENDENCIES)
     for relative in (
         "backend/requirements.txt",
-        "windows-client/requirements.txt",
+        "components/AstralProjection/windows-client/requirements.txt",
     ):
         contents = (REPO_ROOT / relative).read_text(encoding="utf-8")
         assert not any(name in contents for name in forbidden)

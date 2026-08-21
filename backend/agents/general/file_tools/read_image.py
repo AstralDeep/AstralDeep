@@ -7,7 +7,7 @@ import io
 import logging
 from typing import Any, Dict, Optional
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import read_attachment_bytes
 
 logger = logging.getLogger("FileTools.read_image")
 
@@ -20,7 +20,7 @@ def read_image(
     **_ignored: Any,
 ) -> Dict[str, Any]:
     """Decode, resize, and base64-encode an image for the vision model."""
-    att, path, err = resolve_attachment(attachment_id, user_id)
+    att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err
 
@@ -30,7 +30,7 @@ def read_image(
         return {"error": {"code": "parse_failed", "message": f"Pillow unavailable: {exc}"}}
 
     try:
-        with Image.open(path) as img:
+        with Image.open(io.BytesIO(payload)) as img:
             img.load()
             original_format = img.format or att.extension.upper()
             w, h = img.size

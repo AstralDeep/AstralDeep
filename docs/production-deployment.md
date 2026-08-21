@@ -4,7 +4,7 @@ AstralDeep is a **server-driven UI (SDUI) backend service**: one Python
 process serves the web shell, static assets, REST API, WebSocket channel, and
 the rendered UI itself on port **8001**. There is no frontend build step, no
 Node toolchain, and no separate static server — `astralprims` defines the
-primitives, the orchestrator renders them (`backend/webrender/`), and ROTE
+primitives, the orchestrator renders them (`components/AstralProjection/backend/webrender/`), and ROTE
 adapts the output per device.
 
 Companion docs: [keycloak-realm-settings.md](keycloak-realm-settings.md)
@@ -266,8 +266,8 @@ Both are ungated (no user data) and excluded from access logs.
 
 ## Native clients (Windows, Android, Apple) & device sign-in
 
-- The native clients (feature 044/041/051: `windows-client/`, `android-client/`,
-  `apple-clients/` iOS + macOS + watchOS) consume the same public origin as the
+- The native clients (feature 044/041/051: `components/AstralProjection/windows-client/`, `components/AstralProjection/android-client/`,
+  `components/AstralProjection/apple-clients/` iOS + macOS + watchOS) consume the same public origin as the
   browser — no extra ports or services. They authenticate as **public PKCE
   clients**: `astral-desktop` (Windows + macOS), `astral-mobile`
   (Android + iOS), `astral-watch` (watch). All must appear in
@@ -293,7 +293,7 @@ Both are ungated (no user data) and excluded from access logs.
 
 ## Apple clients (App Store)
 
-Feature 053 ships the `apple-clients/` family — iOS + macOS (one multiplatform
+Feature 053 ships the `components/AstralProjection/apple-clients/` family — iOS + macOS (one multiplatform
 `AstralApp` target) plus an embedded watchOS companion (`AstralWatch`) — to the
 App Store as a single Universal Purchase record (bundle id
 `com.personalailabs.astraldeep`). Two things are operator-facing: the backend
@@ -303,7 +303,7 @@ App Store as a single Universal Purchase record (bundle id
 
 A stock App Store build compiles in `https://sandbox.ai.uky.edu` and
 `https://iam.ai.uky.edu/realms/Astral` as its endpoint
-(`apple-clients/Config/Release.xcconfig` → both Info.plists → `AstralConfig`).
+(`components/AstralProjection/apple-clients/Config/Release.xcconfig` → both Info.plists → `AstralConfig`).
 The endpoint can be repointed at runtime (FR-011 override) or by rebuilding, but
 a stock build talks to that exact host — so the production posture there must
 satisfy:
@@ -350,8 +350,8 @@ does **archive → sign → export → validate → upload**. It does **not** su
 review (see below).
 
 **Trigger.** Three ways in:
-1. **Merge to `main` that changes `apple-clients/**`** — auto-releases. A cheap
-   `gate` job checks the push's diff; if `apple-clients/**` changed it runs the
+1. **Merge to `main` that changes `components/AstralProjection/apple-clients/**`** — auto-releases. A cheap
+   `gate` job checks the push's diff; if `components/AstralProjection/apple-clients/**` changed it runs the
    full archive → upload, building the project's current `MARKETING_VERSION`.
    Ordinary backend-only merges do NOT upload. This is the everyday path — bump
    `MARKETING_VERSION` in the Xcode project as part of the client change and the
@@ -364,7 +364,7 @@ review (see below).
 The `apple-v*` namespace is deliberately disjoint from the Windows release's
 `v*` trigger — a `v-apple-*` tag would double-fire that workflow — so do not
 rename it. A `paths:` filter is intentionally NOT used (it interacts unreliably
-with tag pushes); the `apple-clients/**` check lives in the `gate` job so tag
+with tag pushes); the `components/AstralProjection/apple-clients/**` check lives in the `gate` job so tag
 and dispatch runs are never path-filtered. The tag-vs-`MARKETING_VERSION` guard
 runs only on tag pushes. The build number is `$GITHUB_RUN_NUMBER`, passed to
 `xcodebuild` as `CURRENT_PROJECT_VERSION` (both Info.plists already read it — no
@@ -415,15 +415,16 @@ provisioning profiles / ASC API key, and the on-device verification evidence.
 ## Database
 
 - Postgres 17 (compose service `postgres`, named volume `pgdata`).
-- Schema migrations are idempotent and run automatically at boot
-  (`shared/database.py::_init_db`) — no migration step to operate. Since
-  feature 052 a `schema_meta` revision marker lets boots with a current
-  schema skip the full migration pass; to force a full re-run once, execute
-  `DELETE FROM schema_meta WHERE key='revision';` and restart.
-- Connections are pooled (feature 052): `DB_POOL_MIN` (default 2) and
-  `DB_POOL_MAX` (default 10) size the shared pool; `DB_POOL_DISABLE=1`
-  reverts to the legacy connection-per-query behavior as a kill switch.
-- Back up `pgdata` and the `backend/data` bind mount (uploads, agent keys).
+- AstralPlane owns baseline initialization, guarded migrations, current-schema
+  verification, and recovery. They run before the orchestrator admits traffic;
+  an incompatible marker, digest, or live structure fails startup closed. Never
+  delete or rewrite `schema_meta` by hand. Follow
+  [migration-rollback-074.md](migration-rollback-074.md) with a verified backup.
+- `DB_POOL_MIN` (default 2), `DB_POOL_MAX` (default 10), and
+  `DB_POOL_ACQUIRE_TIMEOUT_SECONDS` size and bound the single application Plane
+  pool. There is no legacy connection-per-query fallback.
+- Back up `pgdata`, `ATTACHMENT_UPLOAD_ROOT`, and every configured key or
+  external authority state needed by the deployment.
 
 ## Performance knobs (feature 052)
 

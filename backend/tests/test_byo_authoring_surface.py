@@ -1,5 +1,5 @@
 """Feature 058 — the BYO authoring/management SURFACE
-(``webrender.chrome.surfaces.authoring``).
+(``orchestrator.projection_surfaces.authoring``).
 
 ``test_byo_authoring_flow`` pins the phase machine and ``test_byo_lifecycle``
 drives the lifecycle handlers against a live ``Orchestrator``. This file pins the
@@ -25,13 +25,14 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.database import Database  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 from orchestrator import agent_authoring as aa  # noqa: E402
 from orchestrator import agent_analyze  # noqa: E402
 from orchestrator import user_agents as ua  # noqa: E402
-from webrender.chrome.surfaces import authoring  # noqa: E402
+from orchestrator.projection_surfaces import authoring  # noqa: E402
 from webrender.chrome.surfaces import _sdui  # noqa: E402
+from tests.helpers.draft_store_double import InMemoryDraftStore  # noqa: E402
+from tests.helpers.user_agent_registry import make_user_agent_registry  # noqa: E402
 
 OWNER = "byosurf-owner"
 
@@ -50,33 +51,41 @@ def _byo_on(monkeypatch):
 
 @pytest.fixture()
 def db():
-    d = Database()
-    d._init_db()
-    yield d
-    d.execute("DELETE FROM draft_agents WHERE user_id LIKE 'byosurf-%'")
-    d.execute("DELETE FROM user_agent WHERE owner_user_id LIKE 'byosurf-%'")
+    return InMemoryDraftStore()
 
 
 def make_orch(db, llm=None):
-    """Fake orchestrator with a REAL database (the phase machine's whole job is
-    persisting/reading state) and mocked LLM/codegen seams."""
+    """Fake orchestrator with typed stores and mocked LLM/codegen seams."""
     o = MagicMock()
     o.history.db = db
+    draft_store = db
+    o.lifecycle_manager.draft_store = draft_store
+    o.user_agent_registry = make_user_agent_registry()
 
     async def _create_draft(user_id, agent_name, description, tools_spec=None, **kw):
         did = str(uuid.uuid4())
 
         def _insert():
-            db.create_draft_agent(draft_id=did, user_id=user_id, agent_name=agent_name,
-                                  agent_slug="byosurf-" + did[:8], description=description,
-                                  tools_spec=None)
-            return db.get_draft_agent(did)
+            draft_store.create_draft_agent(
+                draft_id=did,
+                user_id=user_id,
+                agent_name=agent_name,
+                agent_slug="byosurf-" + did[:8],
+                description=description,
+                tools_spec=None,
+                origin=kw.get("origin", "manual"),
+                revises_agent_id=kw.get("revises_agent_id"),
+            )
+            return draft_store.get_draft_agent(did)
 
         return await asyncio.to_thread(_insert)
 
     o.lifecycle_manager.create_draft = AsyncMock(side_effect=_create_draft)
     o.lifecycle_manager.generate_code = AsyncMock(
         return_value={"status": "generated", "files": dict(BUNDLE)})
+    o.lifecycle_manager.generated_agent_publication_service.load_published = (
+        AsyncMock(return_value=None)
+    )
     o.deliver_agent_bundle = AsyncMock(return_value=1)
     o.delete_user_agent = AsyncMock(return_value=True)
     o._call_llm_json = AsyncMock(return_value=llm)
@@ -298,7 +307,8 @@ async def test_h_generate_reports_no_host_when_nothing_is_connected(db):
                                                      {"draft_id": row["id"]})
     assert params["draft_id"] == row["id"]
     assert "no desktop client is connected" in notice
-    assert "Generate again" in notice                          # honest: nothing re-delivers
+    assert "Generate again" in notice
+    assert "same verified bundle" in notice
 
 
 async def test_h_generate_refused_before_analyze(db):
@@ -321,6 +331,64 @@ async def test_h_generate_reports_a_codegen_failure(db):
     assert params["draft_id"] == row["id"]
     assert "Code generation failed" in notice and "boom" in notice
     orch.deliver_agent_bundle.assert_not_awaited()
+
+
+async def test_h_generate_reports_terminal_host_activation_failure(
+    db,
+    monkeypatch,
+):
+    orch = make_orch(db)
+    row = await _passed_session(orch, db, name="Host Activation Failure")
+    monkeypatch.setattr(
+        aa,
+        "generate_from_session",
+        AsyncMock(
+            return_value={
+                "status": "delivery_failed",
+                "failure_code": "child_start_failed",
+            }
+        ),
+    )
+
+    _surface, params, notice = await authoring._h_generate(
+        orch,
+        None,
+        OWNER,
+        ["user"],
+        {"draft_id": row["id"]},
+    )
+
+    assert params["draft_id"] == row["id"]
+    assert "could not activate this revision" in notice
+    assert "new revision" in notice
+
+
+async def test_h_generate_reports_pending_activation_recovery(db, monkeypatch):
+    orch = make_orch(db)
+    row = await _passed_session(orch, db, name="Activation Recovery")
+    monkeypatch.setattr(
+        aa,
+        "generate_from_session",
+        AsyncMock(
+            return_value={
+                "status": "delivery_pending",
+                "failure_code": "revision_promotion_recovery_pending",
+            }
+        ),
+    )
+
+    _surface, params, notice = await authoring._h_generate(
+        orch,
+        None,
+        OWNER,
+        ["user"],
+        {"draft_id": row["id"]},
+    )
+
+    assert params["draft_id"] == row["id"]
+    assert "still needs recovery" in notice
+    assert "run Generate again" in notice
+    assert "reuse the exact verified revision" in notice
 
 
 async def test_h_generate_fails_closed_if_the_constitution_moves_after_the_pass(db,
@@ -350,6 +418,75 @@ async def test_h_list_returns_to_the_empty_list_view(db):
     orch = make_orch(db)
     surface, params, notice = await authoring._h_list(orch, None, OWNER, ["user"], {})
     assert surface == "agent_authoring" and params == {} and notice == ""
+
+
+@pytest.mark.parametrize(
+    "delivery_result",
+    [
+        {"status": "no_host"},
+        {
+            "status": "delivery_pending",
+            "failure_code": "revision_delivery_capacity_pending",
+        },
+    ],
+    ids=["no-host", "delivery-pending"],
+)
+async def test_generate_ready_session_remains_listed_until_revision_is_live(
+    db,
+    monkeypatch,
+    delivery_result,
+):
+    """A durable authoring row is not a delivered/live revision by itself."""
+
+    orch = make_orch(db)
+    row = await _passed_session(orch, db, name="Retryable Delivery")
+    generate_ready = await _t(aa.get_session, orch, OWNER, row["id"])
+    assert generate_ready is not None
+    assert aa.phase_of(generate_ready) == "generate"
+
+    agent_id = generate_ready["target_agent_id"]
+    await _t(
+        ua.create_user_agent,
+        orch.user_agent_registry,
+        agent_id=agent_id,
+        owner_user_id=OWNER,
+        display_name="Retryable Delivery",
+        draft_id=row["id"],
+        declared_tools=["sort_inbox"],
+        declared_scopes=["tools:read"],
+    )
+    await _t(
+        ua.mark_validated,
+        orch.user_agent_registry,
+        agent_id,
+        "test-constitution",
+    )
+    persisted_agent = await _t(
+        ua.get_user_agent,
+        orch.user_agent_registry,
+        agent_id,
+    )
+    assert persisted_agent["status"] == "validated"
+    assert persisted_agent["active_revision_id"] is None
+
+    monkeypatch.setattr(
+        aa,
+        "generate_from_session",
+        AsyncMock(return_value=dict(delivery_result)),
+    )
+    _surface, params, _notice = await authoring._h_generate(
+        orch,
+        None,
+        OWNER,
+        ["user"],
+        {"draft_id": row["id"]},
+    )
+    assert params["draft_id"] == row["id"]
+
+    context = await authoring._list_context(orch, OWNER)
+    visible = [item for item in context["sessions"] if item["id"] == row["id"]]
+    assert len(visible) == 1
+    assert aa.phase_of(visible[0]) == "generate"
 
 
 # ── render(): the guided-session web view with populated artifacts ───────────
@@ -479,10 +616,16 @@ async def test_components_session_unavailable_for_a_bad_draft_id(db):
 async def test_components_list_renders_agent_cards_and_a_revalidation_warning(db):
     orch = make_orch(db)
     aid = "ua-native-byosurfo"
-    await _t(ua.create_user_agent, db, agent_id=aid, owner_user_id=OWNER,
+    await _t(ua.create_user_agent, orch.user_agent_registry,
+             agent_id=aid, owner_user_id=OWNER,
              display_name="Native Card", declared_tools=["t"], declared_scopes=["tools:read"])
-    await _t(ua.mark_validated, db, aid, "0.1.0")
-    await _t(ua.mark_revalidation_required, db, aid, True)
+    await _t(ua.mark_validated, orch.user_agent_registry, aid, "0.1.0")
+    await _t(
+        ua.mark_revalidation_required,
+        orch.user_agent_registry,
+        aid,
+        True,
+    )
     comps = await authoring.components(orch, OWNER, ["user"], {})
     card = next(c for c in comps if c["type"] == "card" and c.get("title") == "Native Card")
     body = card.get("content") or card.get("children") or []

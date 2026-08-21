@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -48,6 +49,16 @@ def _load_xccov_exporter() -> ModuleType:
 
 
 xccov_exporter = _load_xccov_exporter()
+
+
+def test_report_reader_preserves_physical_crlf_bytes(tmp_path: Path) -> None:
+    """The bound identity must cover exact bytes on Windows as on POSIX."""
+
+    content = b'{"coverage":"physical"}\r\n{"line":2}\r\n'
+    report = tmp_path / "crlf-report.json"
+    report.write_bytes(content)
+
+    assert collector._read_report(report) == content
 
 
 @pytest.fixture(autouse=True)
@@ -261,24 +272,24 @@ def test_null_delimited_diff_and_explicit_path_mapping(
         "backend/orchestrator/a.py": "backend_python",
         "backend/voice_agent/main.py": "backend_python",
         "scripts/release.py": "tooling_python",
-        "windows-client/win_agent/host.py": "windows_python",
-        "backend/webrender/static/client.js": "javascript",
-        "tooling/web-ci/eslint.config.mjs": "javascript",
-        "android-client/app/src/main/kotlin/x/App.kt": "android_app",
-        "android-client/app/src/main/java/x/Compat.kt": "android_app",
-        "android-client/core/src/main/kotlin/x/Core.kt": "android_core",
-        "apple-clients/AstralApp/AstralApp/AppModel.swift": "apple",
-        "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift": "apple",
-        "apple-clients/AstralWatch/WatchModel.swift": "apple",
+        "components/AstralProjection/windows-client/win_agent/host.py": "windows_python",
+        "components/AstralProjection/backend/webrender/static/client.js": "javascript",
+        "components/AstralProjection/tooling/web-ci/eslint.config.mjs": "javascript",
+        "components/AstralProjection/android-client/app/src/main/kotlin/x/App.kt": "android_app",
+        "components/AstralProjection/android-client/app/src/main/java/x/Compat.kt": "android_app",
+        "components/AstralProjection/android-client/core/src/main/kotlin/x/Core.kt": "android_core",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift": "apple",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift": "apple",
+        "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift": "apple",
     }
     assert {path: collector.classify_path(path).key for path in expected} == expected
     for excluded in (
         "backend/tests/test_a.py",
-        "backend/webrender/static/vendor/plotly.min.js",
-        "tooling/web-ci/tests/release.spec.js",
-        "android-client/app/src/test/kotlin/x/AppTest.kt",
-        "apple-clients/AstralCore/Tests/AstralCoreTests/CoreTests.swift",
-        "android-client/build.gradle.kts",
+        "components/AstralProjection/backend/webrender/static/vendor/plotly.min.js",
+        "components/AstralProjection/tooling/web-ci/tests/release.spec.js",
+        "components/AstralProjection/android-client/app/src/test/kotlin/x/AppTest.kt",
+        "components/AstralProjection/apple-clients/AstralCore/Tests/AstralCoreTests/CoreTests.swift",
+        "components/AstralProjection/android-client/build.gradle.kts",
     ):
         assert collector.classify_path(excluded) is None
 
@@ -381,7 +392,7 @@ def test_report_inputs_reject_global_path_inode_and_content_aliases(
 
 
 def test_semantic_identity_ignores_irrelevant_json_metadata(tmp_path: Path) -> None:
-    swift_path = "apple-clients/AstralWatch/WatchModel.swift"
+    swift_path = "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift"
     observations = [
         {"line": 1, "isExecutable": True, "executionCount": 1}
     ]
@@ -470,7 +481,7 @@ def test_overwritten_voice_shims_have_explicit_backend_ownership() -> None:
 
 
 def test_apple_core_uses_ios_or_macos_ownership_not_watchos() -> None:
-    core_path = "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift"
+    core_path = "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift"
     assert collector._producer_applies_to_path("ios", core_path) is True
     assert collector._producer_applies_to_path("macos", core_path) is True
     assert collector._producer_applies_to_path("watchos", core_path) is False
@@ -534,7 +545,15 @@ def test_per_language_gate_cannot_be_hidden_by_combined_coverage(
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
     python_path = repo / "backend" / "service.py"
-    js_path = repo / "backend" / "webrender" / "static" / "client.js"
+    js_path = (
+        repo
+        / "components"
+        / "AstralProjection"
+        / "backend"
+        / "webrender"
+        / "static"
+        / "client.js"
+    )
     python_path.parent.mkdir(parents=True)
     js_path.parent.mkdir(parents=True)
     python_path.write_text(
@@ -555,8 +574,8 @@ def test_per_language_gate_cannot_be_hidden_by_combined_coverage(
         json.dumps(
             _javascript_envelope(
                 {
-                    "backend/webrender/static/client.js": {
-                        "path": "backend/webrender/static/client.js",
+                    "components/AstralProjection/backend/webrender/static/client.js": {
+                        "path": "components/AstralProjection/backend/webrender/static/client.js",
                         "statementMap": {
                             "0": {
                                 "start": {"line": 1, "column": 0},
@@ -598,7 +617,7 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     kotlin = collector.parse_coverage_report(kover, "android_app")
-    kotlin_path = "android-client/app/src/main/kotlin/com/example/App.kt"
+    kotlin_path = "components/AstralProjection/android-client/app/src/main/kotlin/com/example/App.kt"
     assert kotlin.observed == {
         (kotlin_path, 3),
         (kotlin_path, 4),
@@ -607,7 +626,7 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
     assert kotlin.executable == {(kotlin_path, 3), (kotlin_path, 4)}
     assert kotlin.covered == {(kotlin_path, 3)}
 
-    js_path = "backend/webrender/static/client.js"
+    js_path = "components/AstralProjection/backend/webrender/static/client.js"
     istanbul = tmp_path / "istanbul.json"
     istanbul.write_text(
         json.dumps(
@@ -637,7 +656,7 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
     assert javascript.covered == {(js_path, 2)}
 
     xccov = tmp_path / "apple.json"
-    swift_path = "apple-clients/AstralWatch/WatchModel.swift"
+    swift_path = "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift"
     xccov.write_text(
         json.dumps(
             {
@@ -659,7 +678,7 @@ def test_kover_istanbul_and_xccov_line_observations_parse(tmp_path: Path) -> Non
 def test_istanbul_statement_ranges_are_supported(
     tmp_path: Path,
 ) -> None:
-    js_path = "tooling/web-ci/eslint.config.mjs"
+    js_path = "components/AstralProjection/tooling/web-ci/eslint.config.mjs"
     istanbul = tmp_path / "statements.json"
     istanbul.write_text(
         json.dumps(
@@ -705,7 +724,7 @@ def test_realistic_xccov_report_summary_is_not_misused_as_line_proof(
                         "lineCoverage": 0.8,
                         "files": [
                             {
-                                "path": "/work/apple-clients/AstralWatch/WatchModel.swift",
+                                "path": "/work/components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift",
                                 "coveredLines": 8,
                                 "executableLines": 10,
                                 "lineCoverage": 0.8,
@@ -740,9 +759,9 @@ def _apple_export_repo(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
     sources = {
-        "app": "apple-clients/AstralApp/AstralApp/AppModel.swift",
-        "core": "apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
-        "watch": "apple-clients/AstralWatch/WatchModel.swift",
+        "app": "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift",
+        "core": "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
+        "watch": "components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift",
     }
     for relative_path in sources.values():
         path = repo / relative_path
@@ -752,6 +771,10 @@ def _apple_export_repo(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     bundle = repo / "build" / "fixture.xcresult"
     bundle.mkdir(parents=True)
     return repo, bundle, sources
+
+
+def _local_archive_source(repo: Path, relative_path: str) -> str:
+    return f"{xccov_exporter._local_archive_repo_root(repo)}/{relative_path}"
 
 
 def _install_fake_xcrun(
@@ -768,7 +791,15 @@ def _install_fake_xcrun(
     calls = tmp_path / "fake-xccov-calls.jsonl"
     binary_dir = tmp_path / "bin"
     binary_dir.mkdir(exist_ok=True)
-    xcrun = binary_dir / "xcrun"
+    # POSIX can execute the shebang fixture directly. On Windows, place the
+    # script at the first argument (``xccov``) and expose a hard-linked Python
+    # launcher as xcrun.exe; CreateProcess does not execute extensionless
+    # shebang files.
+    xcrun = (
+        tmp_path / "repo" / "xccov"
+        if os.name == "nt"
+        else binary_dir / "xcrun"
+    )
     xcrun.write_text(
         """#!/usr/bin/env python3
 import json
@@ -776,20 +807,31 @@ import os
 import sys
 
 fixture = json.load(open(os.environ["FAKE_XCCOV_FIXTURE"], encoding="utf-8"))
-with open(os.environ["FAKE_XCCOV_CALLS"], "a", encoding="utf-8") as stream:
-    stream.write(json.dumps(sys.argv[1:]) + "\\n")
 args = sys.argv[1:]
+if not args or args[0] != "xccov":
+    args = ["xccov", *args]
+with open(os.environ["FAKE_XCCOV_CALLS"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps(args) + "\\n")
 if args[:4] == ["xccov", "view", "--archive", "--file-list"]:
-    sys.stdout.write("\\n".join(fixture["file_list"]) + "\\n")
+    payload = "\\n".join(fixture["file_list"]) + "\\n"
+    sys.stdout.buffer.write(payload.encode("utf-8"))
 elif args[:4] == ["xccov", "view", "--archive", "--file"] and args[5] == "--json":
     value = fixture["files"][args[4]]
-    sys.stdout.write(value if isinstance(value, str) else json.dumps(value))
+    payload = value if isinstance(value, str) else json.dumps(value)
+    sys.stdout.buffer.write(payload.encode("utf-8"))
 else:
     raise SystemExit(7)
 """,
         encoding="utf-8",
     )
-    xcrun.chmod(0o755)
+    if os.name == "nt":
+        os.link(sys.executable, binary_dir / "xcrun.exe")
+        shutil.copyfile(
+            Path(sys.executable).parents[1] / "pyvenv.cfg",
+            tmp_path / "pyvenv.cfg",
+        )
+    else:
+        xcrun.chmod(0o755)
     monkeypatch.setenv("FAKE_XCCOV_FIXTURE", str(fixture))
     monkeypatch.setenv("FAKE_XCCOV_CALLS", str(calls))
     monkeypatch.setenv("PATH", f"{binary_dir}{os.pathsep}{os.environ['PATH']}")
@@ -812,7 +854,10 @@ def test_xccov_exporter_uses_real_per_file_subprocess_contract_and_platform_filt
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = {name: (repo / path).as_posix() for name, path in sources.items()}
+    raw = {
+        name: _local_archive_source(repo, path)
+        for name, path in sources.items()
+    }
     dependency = "/tmp/checkouts/LiveKit/Sources/LiveKit/Room.swift"
     calls_path = _install_fake_xcrun(
         tmp_path,
@@ -1026,8 +1071,8 @@ def test_xccov_exporter_enforces_file_count_and_output_bounds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = (repo / sources["app"]).as_posix()
-    raw_core = (repo / sources["core"]).as_posix()
+    raw = _local_archive_source(repo, sources["app"])
+    raw_core = _local_archive_source(repo, sources["core"])
     _install_fake_xcrun(
         tmp_path,
         monkeypatch,
@@ -1058,7 +1103,10 @@ def test_xccov_exporter_observation_budget_aborts_before_all_selected_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = {name: (repo / path).as_posix() for name, path in sources.items()}
+    raw = {
+        name: _local_archive_source(repo, path)
+        for name, path in sources.items()
+    }
     calls_path = _install_fake_xcrun(
         tmp_path,
         monkeypatch,
@@ -1085,7 +1133,10 @@ def test_xccov_exporter_cumulative_input_budget_stops_before_second_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = {name: (repo / path).as_posix() for name, path in sources.items()}
+    raw = {
+        name: _local_archive_source(repo, path)
+        for name, path in sources.items()
+    }
     files = {path: {path: _xccov_lines()} for path in raw.values()}
     calls_path = _install_fake_xcrun(
         tmp_path,
@@ -1115,7 +1166,7 @@ def test_xccov_exporter_overall_deadline_covers_inventory_and_all_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, bundle, sources = _apple_export_repo(tmp_path)
-    raw = (repo / sources["app"]).as_posix()
+    raw = _local_archive_source(repo, sources["app"])
     _install_fake_xcrun(
         tmp_path,
         monkeypatch,
@@ -1153,7 +1204,11 @@ def test_xccov_exporter_command_and_json_bounds_fail_closed(
 ) -> None:
     with pytest.raises(xccov_exporter.ExportError) as failed:
         xccov_exporter._bounded_command(
-            [sys.executable, "-c", "print('x'); raise SystemExit(7)"],
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'x'); raise SystemExit(7)",
+            ],
             cwd=tmp_path,
             max_stdout_bytes=2,
         )
@@ -1214,9 +1269,9 @@ def test_xccov_exporter_inventory_path_and_observation_edge_contracts(
             xccov_exporter._safe_repo_path(value)
     assert (
         xccov_exporter._normalize_archive_path(
-            "apple-clients/AstralApp/AstralApp/AppModel.swift"
+            "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift"
         )
-        == "apple-clients/AstralApp/AstralApp/AppModel.swift"
+        == "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift"
     )
     assert xccov_exporter._normalize_archive_path("/tmp/dependency.swift") is None
 
@@ -1447,7 +1502,15 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
-    source_path = repo / "backend" / "webrender" / "static" / "client.js"
+    source_path = (
+        repo
+        / "components"
+        / "AstralProjection"
+        / "backend"
+        / "webrender"
+        / "static"
+        / "client.js"
+    )
     source_path.parent.mkdir(parents=True)
     source_path.write_text("", encoding="utf-8")
     base = _commit(repo, "base")
@@ -1461,8 +1524,8 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
         json.dumps(
             _javascript_envelope(
                 {
-                    "backend/webrender/static/client.js": {
-                        "path": "backend/webrender/static/client.js",
+                    "components/AstralProjection/backend/webrender/static/client.js": {
+                        "path": "components/AstralProjection/backend/webrender/static/client.js",
                         "statementMap": {
                             "0": {
                                 "start": {"line": 10, "column": 0},
@@ -1496,7 +1559,7 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
     "hidden_record",
     [
         {
-            "path": "backend/webrender/static/hidden.js",
+            "path": "components/AstralProjection/backend/webrender/static/hidden.js",
             "l": {},
             "statementMap": {
                 "0": {
@@ -1507,7 +1570,7 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
             "s": {"0": 0},
         },
         {
-            "path": "backend/webrender/static/hidden.js",
+            "path": "components/AstralProjection/backend/webrender/static/hidden.js",
             "l": {"1": 1},
             "statementMap": {
                 "0": {
@@ -1518,12 +1581,12 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
             "s": {"0": 0},
         },
         {
-            "path": "backend/webrender/static/hidden.js",
+            "path": "components/AstralProjection/backend/webrender/static/hidden.js",
             "statementMap": {},
             "s": {},
         },
         {
-            "path": "backend/webrender/static/hidden.js",
+            "path": "components/AstralProjection/backend/webrender/static/hidden.js",
             "statementMap": {
                 "0": {
                     "start": {"line": 1, "column": 0},
@@ -1537,13 +1600,13 @@ def test_istanbul_comment_padding_cannot_mask_uncovered_statement(
 def test_malformed_istanbul_cannot_hide_uncovered_file_behind_covered_peer(
     tmp_path: Path, hidden_record: dict[str, object]
 ) -> None:
-    peer_path = "backend/webrender/static/peer.js"
+    peer_path = "components/AstralProjection/backend/webrender/static/peer.js"
     report = tmp_path / "malformed-istanbul.json"
     report.write_text(
         json.dumps(
             _javascript_envelope(
                 {
-                    "backend/webrender/static/hidden.js": hidden_record,
+                    "components/AstralProjection/backend/webrender/static/hidden.js": hidden_record,
                     peer_path: {
                         "path": peer_path,
                         "statementMap": {
@@ -1776,7 +1839,7 @@ def test_xccov_empty_partial_and_duplicate_physical_lines_fail_closed(
 ) -> None:
     report = tmp_path / "invalid-archive.json"
     report.write_text(
-        json.dumps({"/work/apple-clients/AstralWatch/WatchModel.swift": observations}),
+        json.dumps({"/work/components/AstralProjection/apple-clients/AstralWatch/WatchModel.swift": observations}),
         encoding="utf-8",
     )
     with pytest.raises(collector.CoveragePolicyError) as failure:
@@ -1792,8 +1855,9 @@ def test_xccov_non_executable_changed_line_is_observed_but_not_counted(
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
-    hidden = repo / "apple-clients" / "AstralWatch" / "Hidden.swift"
-    peer = repo / "apple-clients" / "AstralWatch" / "Peer.swift"
+    apple = repo / "components" / "AstralProjection" / "apple-clients"
+    hidden = apple / "AstralWatch" / "Hidden.swift"
+    peer = apple / "AstralWatch" / "Peer.swift"
     hidden.parent.mkdir(parents=True)
     hidden.write_text("// old\n", encoding="utf-8")
     peer.write_text("let peer = 0\n", encoding="utf-8")
@@ -1820,7 +1884,7 @@ def test_xccov_non_executable_changed_line_is_observed_but_not_counted(
     assert decision["languages"]["swift"]["executable_lines"] == 1
     assert decision["lines"] == [
         {
-            "path": "apple-clients/AstralWatch/Peer.swift",
+            "path": "components/AstralProjection/apple-clients/AstralWatch/Peer.swift",
             "line": 1,
             "target": "apple",
             "language": "swift",
@@ -1837,7 +1901,14 @@ def test_xccov_must_observe_each_changed_physical_line(
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
-    source = repo / "apple-clients" / "AstralWatch" / "WatchModel.swift"
+    source = (
+        repo
+        / "components"
+        / "AstralProjection"
+        / "apple-clients"
+        / "AstralWatch"
+        / "WatchModel.swift"
+    )
     source.parent.mkdir(parents=True)
     source.write_text("// first\n// old\n", encoding="utf-8")
     base = _commit(repo, "base")
@@ -1858,7 +1929,7 @@ def test_xccov_must_observe_each_changed_physical_line(
 
 
 def test_bare_unfiltered_istanbul_output_is_rejected(tmp_path: Path) -> None:
-    path = "backend/webrender/static/client.js"
+    path = "components/AstralProjection/backend/webrender/static/client.js"
     report = tmp_path / "unfiltered-v8-to-istanbul.json"
     report.write_text(
         json.dumps(

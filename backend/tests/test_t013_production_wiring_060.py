@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from astralplane import create_work_admission_repository
 from orchestrator.async_tasks import (
     BackgroundTask,
     BackgroundTaskManager,
@@ -39,7 +40,7 @@ from orchestrator.work_admission import (
     OperationRequest,
     OperationState,
     OwnerScope,
-    PostgresWorkAdmissionRepository,
+    PlaneWorkAdmissionRepository,
     PurgeResult,
     WorkAdmissionCoordinator,
     load_admission_class_configs,
@@ -66,7 +67,7 @@ def _call_supplies_shared_authority(call: ast.Call) -> bool:
     )
 
 
-def test_production_constructor_loads_one_postgres_authority_for_both_managers() -> None:
+def test_production_constructor_loads_one_plane_authority_for_both_managers() -> None:
     """The production object graph must not create process-local authorities."""
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(Orchestrator.__init__)))
@@ -75,16 +76,22 @@ def test_production_constructor_loads_one_postgres_authority_for_both_managers()
         call
         for call in calls
         if _dotted_name(call.func)
-        in {"WorkAdmissionCoordinator", "WorkAdmissionCoordinator.from_database"}
+        in {"WorkAdmissionCoordinator", "WorkAdmissionCoordinator.from_plane"}
     ]
 
     assert len(coordinator_calls) == 1
     coordinator_call = coordinator_calls[0]
-    assert any(
-        keyword.arg == "database"
-        and _dotted_name(keyword.value) == "self.history.db"
+    constructor_arguments = {
+        keyword.arg: _dotted_name(keyword.value)
         for keyword in coordinator_call.keywords
-    ), "production must select Postgres through the shared Database"
+    }
+    assert constructor_arguments["plane_runtime"] == (
+        "self.runtime_composition.plane.runtime"
+    )
+    assert constructor_arguments["plane_repositories"] == (
+        "self.runtime_composition.plane.repositories"
+    )
+    assert "database" not in constructor_arguments
 
     assigned_names = {
         _dotted_name(target)
@@ -97,7 +104,7 @@ def test_production_constructor_loads_one_postgres_authority_for_both_managers()
     }
     assert assigned_names == {"self.work_admission"}
 
-    assert _dotted_name(coordinator_call.func) == "WorkAdmissionCoordinator.from_database"
+    assert _dotted_name(coordinator_call.func) == "WorkAdmissionCoordinator.from_plane"
 
     manager_bindings = {"background": False, "task": False}
     for call in calls:
@@ -115,13 +122,13 @@ def test_production_constructor_loads_one_postgres_authority_for_both_managers()
     assert manager_bindings == {"background": True, "task": True}
 
     factory_tree = ast.parse(
-        textwrap.dedent(inspect.getsource(WorkAdmissionCoordinator.from_database))
+        textwrap.dedent(inspect.getsource(WorkAdmissionCoordinator.from_plane))
     )
     factory_calls = [
         node for node in ast.walk(factory_tree) if isinstance(node, ast.Call)
     ]
     assert sum(
-        _dotted_name(call.func).split(".")[-1] == "PostgresWorkAdmissionRepository"
+        _dotted_name(call.func).split(".")[-1] == "PlaneWorkAdmissionRepository"
         for call in factory_calls
     ) == 1
     assert sum(
@@ -155,11 +162,28 @@ def test_production_binds_runtime_observability_and_bounded_shutdown_drain() -> 
         and _dotted_name(keyword.value) == "self.runtime_observability"
         for keyword in bind_calls[0].keywords
     )
+    assert any(
+        keyword.arg == "plane_runtime"
+        and _dotted_name(keyword.value)
+        == "self.runtime_composition.plane.runtime"
+        for keyword in bind_calls[0].keywords
+    )
+    assert any(
+        keyword.arg == "plane_repositories"
+        and _dotted_name(keyword.value)
+        == "self.runtime_composition.plane.repositories"
+        for keyword in bind_calls[0].keywords
+    )
+    assert all(keyword.arg != "db" for keyword in bind_calls[0].keywords)
 
-    startup = ast.parse(textwrap.dedent(inspect.getsource(Orchestrator.start)))
+    shutdown = ast.parse(
+        textwrap.dedent(
+            inspect.getsource(Orchestrator._close_started_services_once)
+        )
+    )
     drain_calls = [
         node
-        for node in ast.walk(startup)
+        for node in ast.walk(shutdown)
         if isinstance(node, ast.Call)
         and _dotted_name(node.func) == "self.async_task_manager.drain"
     ]
@@ -173,17 +197,51 @@ def test_production_binds_runtime_observability_and_bounded_shutdown_drain() -> 
     assert timeout.value == 5.0
 
 
-class _ReadOnlyConfigDatabase:
+class _ConfigTransaction:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self.rows = rows
-        self.queries: list[str] = []
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
 
-    def fetch_all(self, query: str):
-        self.queries.append(query)
-        return list(self.rows)
+    def execute(
+        self, statement: str, parameters: tuple[object, ...] = ()
+    ) -> SimpleNamespace:
+        self.calls.append((statement, parameters))
+        return SimpleNamespace(
+            rowcount=len(self.rows),
+            status_message="SELECT",
+            returned_records=tuple(self.rows),
+        )
 
-    def __getattr__(self, name: str):
-        raise AssertionError(f"configuration loading attempted an unexpected DB call: {name}")
+    def fetch_one(self, statement: str, parameters=()):
+        raise AssertionError("repository must use detached command results")
+
+    def fetch_all(self, statement: str, parameters=()):
+        raise AssertionError("repository must use detached command results")
+
+    @contextmanager
+    def savepoint(self, name: str):
+        del name
+        yield self
+
+
+class _ConfigPlaneRuntime:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+        self.transactions: list[_ConfigTransaction] = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    @contextmanager
+    def transaction(self):
+        transaction = _ConfigTransaction(self.rows)
+        self.transactions.append(transaction)
+        try:
+            yield transaction
+        except BaseException:
+            self.rollbacks += 1
+            raise
+        else:
+            self.commits += 1
 
 
 class _ConfigurationCaptureRepository:
@@ -261,9 +319,13 @@ def test_all_effective_rows_and_operator_retention_are_loaded_read_only() -> Non
             "config_revision": "operator-2026-07",
         },
     ]
-    database = _ReadOnlyConfigDatabase(rows)
+    runtime = _ConfigPlaneRuntime(rows)
+    catalog = SimpleNamespace(work_admission=create_work_admission_repository())
 
-    configs = load_admission_class_configs(database)
+    configs = load_admission_class_configs(
+        plane_runtime=runtime,
+        plane_repositories=catalog,
+    )
 
     assert {config.class_name for config in configs} == set(AdmissionClass)
     effective = {config.class_name: config for config in configs}
@@ -277,8 +339,17 @@ def test_all_effective_rows_and_operator_retention_are_loaded_read_only() -> Non
     assert effective[AdmissionClass.VOICE_INTERACTIVE].queue_limit == 0
     assert effective[AdmissionClass.VOICE_INTERACTIVE].max_wait_ms is None
     assert {config.config_revision for config in configs} == {"operator-2026-07"}
-    assert len(database.queries) == 1
-    assert "operation_admission_class" in database.queries[0]
+    assert len(runtime.transactions) == 1
+    assert runtime.commits == 1
+    assert runtime.rollbacks == 0
+    assert len(runtime.transactions[0].calls) == 1
+    statement, parameters = runtime.transactions[0].calls[0]
+    assert parameters == ()
+    assert "operation_admission_class" in statement
+    assert "FOR SHARE" in statement
+    assert not {"INSERT", "UPDATE", "DELETE", "UPSERT"} & set(
+        statement.upper().split()
+    )
 
     capture = _ConfigurationCaptureRepository()
     coordinator = WorkAdmissionCoordinator(
@@ -290,55 +361,7 @@ def test_all_effective_rows_and_operator_retention_are_loaded_read_only() -> Non
     assert coordinator.operation_retention == timedelta(hours=31)
 
 
-class _ConfigCursor:
-    def __init__(self, rows: list[dict[str, object]]) -> None:
-        self.rows = rows
-        self.queries: list[str] = []
-        self.closed = False
-
-    def execute(self, query: str, params=None) -> None:
-        assert params is None
-        self.queries.append(query)
-
-    def fetchall(self):
-        return list(self.rows)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class _ConfigConnection:
-    def __init__(self, cursor: _ConfigCursor) -> None:
-        self._cursor = cursor
-        self.commits = 0
-        self.rollbacks = 0
-        self.closed = False
-
-    def cursor(self) -> _ConfigCursor:
-        return self._cursor
-
-    def commit(self) -> None:
-        self.commits += 1
-
-    def rollback(self) -> None:
-        self.rollbacks += 1
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class _ConfigPostgresDatabase:
-    def __init__(self, rows: list[dict[str, object]]) -> None:
-        self.cursor = _ConfigCursor(rows)
-        self.connection = _ConfigConnection(self.cursor)
-        self.connections = 0
-
-    def _get_connection(self) -> _ConfigConnection:
-        self.connections += 1
-        return self.connection
-
-
-def test_from_database_binds_operator_snapshot_without_upsert() -> None:
+def test_from_plane_binds_operator_snapshot_without_upsert() -> None:
     rows = [
         {
             "class_name": member.value,
@@ -368,14 +391,16 @@ def test_from_database_binds_operator_snapshot_without_upsert() -> None:
         }
         for member in AdmissionClass
     ]
-    database = _ConfigPostgresDatabase(rows)
+    runtime = _ConfigPlaneRuntime(rows)
+    catalog = SimpleNamespace(work_admission=create_work_admission_repository())
 
-    coordinator = WorkAdmissionCoordinator.from_database(
-        database=database,
+    coordinator = WorkAdmissionCoordinator.from_plane(
+        plane_runtime=runtime,
+        plane_repositories=catalog,
         operation_retention=timedelta(hours=27),
     )
 
-    assert isinstance(coordinator._repository, PostgresWorkAdmissionRepository)
+    assert isinstance(coordinator._repository, PlaneWorkAdmissionRepository)
     assert coordinator.operation_retention == timedelta(hours=27)
     assert coordinator._repository._configs[AdmissionClass.GLOBAL].active_limit == 47
     assert coordinator._repository._configs[AdmissionClass.BACKGROUND].queue_limit == 23
@@ -389,13 +414,13 @@ def test_from_database_binds_operator_snapshot_without_upsert() -> None:
         coordinator._repository._configs[AdmissionClass.VOICE_INTERACTIVE].queue_limit
         == 0
     )
-    assert database.connections == 1
-    assert database.connection.commits == 1
-    assert database.connection.rollbacks == 0
-    assert database.connection.closed is True
-    assert database.cursor.closed is True
-    assert len(database.cursor.queries) == 1
-    normalized_query = " ".join(database.cursor.queries[0].split()).upper()
+    assert len(runtime.transactions) == 1
+    assert runtime.commits == 1
+    assert runtime.rollbacks == 0
+    assert len(runtime.transactions[0].calls) == 1
+    statement, parameters = runtime.transactions[0].calls[0]
+    assert parameters == ()
+    normalized_query = " ".join(statement.split()).upper()
     assert normalized_query.startswith("SELECT ")
     assert " FOR SHARE" in normalized_query
     assert not {"INSERT", "UPDATE", "DELETE", "UPSERT"} & set(
@@ -642,39 +667,37 @@ def test_handle_chat_message_reuses_managed_socket_authority_at_real_callsite() 
 async def test_retryable_background_rows_replay_as_terminal_completion() -> None:
     completed_at = datetime(2026, 7, 15, 12, 30, tzinfo=UTC)
 
-    class ReplayDatabase:
-        def __init__(self) -> None:
-            self.select_query = ""
-            self.update_query = ""
-            self.update_params: tuple[object, ...] = ()
-
-        async def afetch_all(self, query, params):
-            self.select_query = query
-            assert params == ("user-t013",)
-            return [
-                {
-                    "task_id": "retryable-task",
-                    "chat_id": "chat-t013",
-                    "status": "retryable",
-                    "summary": "Try again",
-                    "completed_at": completed_at,
-                }
-            ]
-
-        async def aexecute(self, query, params):
-            self.update_query = query
-            self.update_params = params
-
     class EmptyTaskManager:
         async def list_for_user(self, user_id):
             assert user_id == "user-t013"
             return []
 
-    database = ReplayDatabase()
+    replay_requests: list[str] = []
+    notified: list[tuple[str, tuple[str, ...]]] = []
     sent: list[dict[str, object]] = []
     orchestrator = Orchestrator.__new__(Orchestrator)
     orchestrator.async_task_manager = EmptyTaskManager()
-    orchestrator.history = SimpleNamespace(db=database)
+
+    def background_tasks_for_replay(user_id: str):
+        replay_requests.append(user_id)
+        return (
+            SimpleNamespace(
+                task_id="retryable-task",
+                conversation_id="chat-t013",
+                status=TaskStatus.RETRYABLE,
+                summary="Try again",
+                completed_at=completed_at,
+            ),
+        )
+
+    def mark_background_tasks_notified(
+        user_id: str,
+        task_ids: tuple[str, ...],
+    ) -> None:
+        notified.append((user_id, task_ids))
+
+    orchestrator._background_tasks_for_replay = background_tasks_for_replay
+    orchestrator._mark_background_tasks_notified = mark_background_tasks_notified
 
     async def safe_send(_websocket, payload):
         sent.append(json.loads(payload))
@@ -683,7 +706,7 @@ async def test_retryable_background_rows_replay_as_terminal_completion() -> None
     orchestrator._safe_send = safe_send
     await orchestrator._replay_user_tasks(object(), "user-t013")
 
-    assert "'retryable'" in database.select_query
+    assert replay_requests == ["user-t013"]
     assert sent == [
         {
             "type": "task_completed",
@@ -697,50 +720,48 @@ async def test_retryable_background_rows_replay_as_terminal_completion() -> None
             },
         }
     ]
-    assert "notified = TRUE" in database.update_query
-    assert database.update_params == ("retryable-task",)
+    assert notified == [("user-t013", ("retryable-task",))]
 
 
 @pytest.mark.asyncio
 async def test_failed_replay_delivery_remains_unnotified_then_marks_once() -> None:
     completed_at = datetime(2026, 7, 15, 12, 30, tzinfo=UTC)
 
-    class ReplayDatabase:
-        def __init__(self) -> None:
-            self.notified = False
-            self.update_count = 0
-
-        async def afetch_all(self, query, params):
-            assert "notified = FALSE" in query
-            assert params == ("user-t013",)
-            if self.notified:
-                return []
-            return [
-                {
-                    "task_id": "retryable-task",
-                    "chat_id": "chat-t013",
-                    "status": "retryable",
-                    "summary": "Try again",
-                    "completed_at": completed_at,
-                }
-            ]
-
-        async def aexecute(self, query, params):
-            assert "notified = TRUE" in query
-            assert params == ("retryable-task",)
-            self.update_count += 1
-            self.notified = True
-
     class EmptyTaskManager:
         async def list_for_user(self, _user_id):
             return []
 
-    database = ReplayDatabase()
+    notification_state = {"notified": False, "update_count": 0}
     delivery_outcomes = iter((False, True))
     attempts: list[dict[str, object]] = []
     orchestrator = Orchestrator.__new__(Orchestrator)
     orchestrator.async_task_manager = EmptyTaskManager()
-    orchestrator.history = SimpleNamespace(db=database)
+
+    def background_tasks_for_replay(user_id: str):
+        assert user_id == "user-t013"
+        if notification_state["notified"]:
+            return ()
+        return (
+            SimpleNamespace(
+                task_id="retryable-task",
+                conversation_id="chat-t013",
+                status=TaskStatus.RETRYABLE,
+                summary="Try again",
+                completed_at=completed_at,
+            ),
+        )
+
+    def mark_background_tasks_notified(
+        user_id: str,
+        task_ids: tuple[str, ...],
+    ) -> None:
+        assert user_id == "user-t013"
+        assert task_ids == ("retryable-task",)
+        notification_state["update_count"] += 1
+        notification_state["notified"] = True
+
+    orchestrator._background_tasks_for_replay = background_tasks_for_replay
+    orchestrator._mark_background_tasks_notified = mark_background_tasks_notified
 
     async def safe_send(_websocket, payload):
         attempts.append(json.loads(payload))
@@ -750,13 +771,11 @@ async def test_failed_replay_delivery_remains_unnotified_then_marks_once() -> No
     websocket = object()
 
     await orchestrator._replay_user_tasks(websocket, "user-t013")
-    assert database.notified is False
-    assert database.update_count == 0
+    assert notification_state == {"notified": False, "update_count": 0}
     await orchestrator._replay_user_tasks(websocket, "user-t013")
-    assert database.notified is True
-    assert database.update_count == 1
+    assert notification_state == {"notified": True, "update_count": 1}
     await orchestrator._replay_user_tasks(websocket, "user-t013")
-    assert database.update_count == 1
+    assert notification_state["update_count"] == 1
     assert [attempt["payload"]["status"] for attempt in attempts] == [
         "retryable",
         "retryable",
@@ -865,26 +884,48 @@ async def test_maintenance_sweep_is_admitted_fenced_bounded_and_off_loop() -> No
     assert maintenance_projection.state is OperationState.COMPLETED
 
 
-class _CleanupCursor:
+class _CleanupBackgroundRepository:
     def __init__(self, deleted_rows: int) -> None:
         self.deleted_rows = deleted_rows
-        self.query = ""
-        self.params: tuple[object, ...] = ()
+        self.projection_records = []
+        self.oldest_calls: list[tuple[object, datetime]] = []
+        self.purge_calls: list[tuple[object, datetime, int]] = []
 
-    def execute(self, query: str, params) -> None:
-        self.query = query
-        self.params = tuple(params)
+    def apply_operation_projection(self, transaction, record):
+        self.projection_records.append((transaction, record))
+        return record
 
-    def fetchall(self):
-        return [{"task_id": f"expired-{index}"} for index in range(self.deleted_rows)]
+    def oldest_overdue_for_administration(self, transaction, *, cutoff_at):
+        self.oldest_calls.append((transaction, cutoff_at))
+        return None
+
+    def purge_overdue_for_administration(
+        self,
+        transaction,
+        *,
+        cutoff_at,
+        limit,
+    ):
+        self.purge_calls.append((transaction, cutoff_at, limit))
+        return tuple(
+            f"expired-{index}"
+            for index in range(min(self.deleted_rows, limit))
+        )
+
+
+class _FakePlaneRuntime:
+    @contextmanager
+    def transaction(self, *, isolation=None):
+        del isolation
+        yield object()
 
 
 class _FencedCursorAuthority(_ThreadRecordingAuthority):
     def __init__(
-        self, delegate: WorkAdmissionCoordinator, cursor: _CleanupCursor
+        self, delegate: WorkAdmissionCoordinator
     ) -> None:
         super().__init__(delegate)
-        self.cursor = cursor
+        self.transactions: list[object] = []
 
     @contextmanager
     def fenced_transaction(self, fence):
@@ -892,7 +933,9 @@ class _FencedCursorAuthority(_ThreadRecordingAuthority):
             ("fenced_transaction", threading.get_ident(), (fence,), {})
         )
         with self.delegate.fenced_transaction(fence):
-            yield self.cursor
+            transaction = object()
+            self.transactions.append(transaction)
+            yield transaction
 
 
 class _SaturatedPurgeAuthority(_ThreadRecordingAuthority):
@@ -915,9 +958,13 @@ async def test_restart_sweep_bulk_cleans_fk_null_rows_under_same_fence() -> None
     coordinator = _maintenance_coordinator(
         clock, retention=timedelta(hours=24)
     )
-    cursor = _CleanupCursor(deleted_rows=2)
-    authority = _FencedCursorAuthority(coordinator, cursor)
+    repository = _CleanupBackgroundRepository(deleted_rows=2)
+    authority = _FencedCursorAuthority(coordinator)
     manager = BackgroundTaskManager(authority)
+    manager.bind(
+        plane_runtime=_FakePlaneRuntime(),
+        background_repository=repository,
+    )
     assert manager._tasks == {}, "restart cleanup must not depend on process cache"
 
     result = await manager.run_retention_sweep_once(
@@ -937,28 +984,12 @@ async def test_restart_sweep_bulk_cleans_fk_null_rows_under_same_fence() -> None
         call for call in authority.calls if call[0] == "fenced_transaction"
     )
     assert purge_call[3]["fence"] == transaction_call[2][0]
-    normalized_query = " ".join(cursor.query.split())
-    assert "operation_id IS NULL" in normalized_query
-    assert "COALESCE(completed_at, created_at) <" in normalized_query
-    assert "FOR UPDATE SKIP LOCKED" in normalized_query
-    managed_or_legacy_eligibility = (
-        "AND ( operation_execution_generation IS NOT NULL "
-        "OR task_id ~* "
-        "'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
-        "[89ab][0-9a-f]{3}-[0-9a-f]{12}$' "
-        "OR ( task_id ~* '^[0-9a-f]{8}$' "
-        "AND status IN ( 'completed', 'failed', 'cancelled', 'retryable' ) ) )"
-    )
-    assert managed_or_legacy_eligibility in normalized_query
-    prefix_before_managed_evidence = normalized_query.split(
-        managed_or_legacy_eligibility, maxsplit=1
-    )[0]
-    assert "status IN" not in prefix_before_managed_evidence, (
-        "an aged FK-null full-UUID managed row must purge even when its "
-        "compatibility status is stale queued; only ambiguous legacy IDs "
-        "may require a terminal status"
-    )
-    assert cursor.params == (24 * 60 * 60, 3)
+    assert len(repository.oldest_calls) == 1
+    assert len(repository.purge_calls) == 1
+    purge_transaction, cutoff_at, purge_limit = repository.purge_calls[0]
+    assert purge_transaction is authority.transactions[-1]
+    assert cutoff_at == clock.current - timedelta(hours=24)
+    assert purge_limit == 3
 
 
 @pytest.mark.asyncio

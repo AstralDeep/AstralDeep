@@ -92,6 +92,7 @@ def _map_document() -> dict[str, Any]:
                 "owner": "deep",
                 "ownedPaths": ["adapters/**"],
                 "forbiddenCopies": [],
+                "scanExactDuplicates": True,
             },
             {
                 "id": "presentation",
@@ -100,6 +101,7 @@ def _map_document() -> dict[str, Any]:
                 "forbiddenCopies": [
                     {"repository": "deep", "paths": ["legacy/render/**"]}
                 ],
+                "scanExactDuplicates": True,
             },
         ],
         "compatibilityAdapters": [
@@ -365,6 +367,14 @@ def test_owner_map_domain_invariants_are_enforced(tmp_path: Path) -> None:
     cases.append((document, "ownedPaths collide"))
 
     document = _map_document()
+    document["ownershipDomains"][0]["scanExactDuplicates"] = "yes"
+    cases.append((document, "scanExactDuplicates must be a boolean"))
+
+    document = _map_document()
+    document["ownershipDomains"][1]["scanExactDuplicates"] = False
+    cases.append((document, "cannot be false when forbiddenCopies are declared"))
+
+    document = _map_document()
     document["ownershipDomains"][1]["forbiddenCopies"][0]["repository"] = "missing"
     cases.append((document, "names missing repository"))
 
@@ -579,6 +589,50 @@ def test_same_repository_blob_copy_is_not_a_cross_owner_duplicate(
     )
 
     report = _audit(_load_map(tmp_path), component_repositories)
+
+    assert report["ok"] is True
+    assert "unmanaged_exact_duplicate" not in _codes(report)
+
+
+def test_empty_cross_repository_blob_is_not_source_duplication(
+    tmp_path: Path,
+    component_repositories: dict[str, Path],
+) -> None:
+    _commit_files(
+        component_repositories["projection"],
+        {"src/render/empty.py": ""},
+        "Add an empty presentation package marker",
+    )
+    _commit_files(
+        component_repositories["deep"],
+        {"adapters/empty.py": ""},
+        "Add an empty host package marker",
+    )
+
+    report = _audit(_load_map(tmp_path), component_repositories)
+
+    assert report["ok"] is True
+    assert "unmanaged_exact_duplicate" not in _codes(report)
+
+
+def test_domain_can_exclude_repository_support_from_exact_duplicate_scan(
+    tmp_path: Path,
+    component_repositories: dict[str, Path],
+) -> None:
+    source = (component_repositories["projection"] / "src/render/view.py").read_text(
+        encoding="utf-8"
+    )
+    _commit_files(
+        component_repositories["deep"],
+        {"adapters/reused_fixture.py": source},
+        "Reuse bytes in an independently owned support domain",
+    )
+    document = _map_document()
+    document["ownershipDomains"][0]["scanExactDuplicates"] = False
+    document["ownershipDomains"][1]["scanExactDuplicates"] = False
+    document["ownershipDomains"][1]["forbiddenCopies"] = []
+
+    report = _audit(_load_map(tmp_path, document), component_repositories)
 
     assert report["ok"] is True
     assert "unmanaged_exact_duplicate" not in _codes(report)
@@ -851,7 +905,7 @@ def test_valid_generated_copy_can_match_a_nonowner_domain_without_duplication(
     assert report["violations"] == []
 
 
-def test_wrong_repository_owner_and_forbidden_copy_are_both_reported(
+def test_owned_paths_are_owner_relative_and_forbidden_copy_is_reported(
     tmp_path: Path,
     component_repositories: dict[str, Path],
 ) -> None:
@@ -865,7 +919,8 @@ def test_wrong_repository_owner_and_forbidden_copy_are_both_reported(
 
     report = _audit(_load_map(tmp_path, document), component_repositories)
 
-    assert {"wrong_repository_owner", "forbidden_copy"} <= _codes(report)
+    assert {"unowned_mutable_path", "forbidden_copy"} <= _codes(report)
+    assert "wrong_repository_owner" not in _codes(report)
 
 
 def test_nonmutable_exact_duplicate_is_not_a_source_owner_violation(
@@ -1197,15 +1252,15 @@ def test_inventory_rejects_invalid_object_identity_and_tree_records(
     with pytest.raises(ownership_tool.OwnershipError, match="invalid Git tree record"):
         ownership_tool.inventory_repository("fixture", repository)
 
-    record = b"100644 blob " + b"c" * 40 + b"\tfile.py\0"
+    record = b"100644 blob " + b"c" * 40 + b" 1\tfile.py\0"
     responses["records"] = record + record
     with pytest.raises(ownership_tool.OwnershipError, match="repeats tracked path"):
         ownership_tool.inventory_repository("fixture", repository)
 
-    responses["records"] = b"100644 blob " + b"z" * 40 + b"\tfile.py\0"
+    responses["records"] = b"100644 blob " + b"z" * 40 + b" 1\tfile.py\0"
     with pytest.raises(ownership_tool.OwnershipError, match="invalid object ID"):
         ownership_tool.inventory_repository("fixture", repository)
 
-    responses["records"] = b"160000 commit " + b"c" * 40 + b"\tsubmodule\0"
+    responses["records"] = b"160000 commit " + b"c" * 40 + b" -\tsubmodule\0"
     inventory = ownership_tool.inventory_repository("fixture", repository)
     assert inventory.blobs == {}

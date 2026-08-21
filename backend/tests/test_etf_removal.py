@@ -1,17 +1,14 @@
 """Feature 040 (US3) — etf_tracker_1 retirement.
 
 Verifies the agent is removed from every surface (directory, first-party public
-catalog, retirement sets, history glyphs, knowledge index) and that the
-idempotent ``_init_db`` cleanup purges orphaned permission/ownership rows for
-the retired id without error on re-run.
+catalog, retirement sets, history glyphs, and knowledge index. Historical
+schema cleanup is part of Plane's supported 066.001 predecessor baseline and
+is not re-run by Deep at application startup.
 """
 from __future__ import annotations
 
 import sys
-import uuid
 from pathlib import Path
-
-import pytest
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -27,8 +24,9 @@ def test_etf_agent_directory_removed():
 
 
 def test_etf_not_in_first_party_public_catalog():
-    from shared.database import Database
-    assert "etf-tracker-1-1" not in Database._FIRST_PARTY_PUBLIC_AGENT_IDS
+    from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
+
+    assert "etf-tracker-1-1" not in FIRST_PARTY_PUBLIC_AGENT_IDS
 
 
 def test_etf_in_retired_agent_ids():
@@ -45,45 +43,3 @@ def test_etf_knowledge_stem_retired():
 def test_etf_history_icon_removed():
     from orchestrator.history_surface import _AGENT_ICONS
     assert "etf_tracker_1" not in _AGENT_ICONS
-
-
-# ---------------------------------------------------------------------------
-# DB-backed idempotent cleanup — FR-018
-# ---------------------------------------------------------------------------
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-@pytest.mark.skipif(not _can_connect_to_db(), reason="Postgres unavailable in this environment")
-def test_etf_orphan_rows_purged_idempotently():
-    from orchestrator.history import HistoryManager
-
-    history = HistoryManager(data_dir=f"/tmp/etf-test-{uuid.uuid4().hex[:8]}")
-    db = history.db
-
-    def _force_full_init():
-        """Clear the 052 schema_meta fast-path marker so ``_init_db`` runs the
-        full migration set (it re-upserts the marker afterward)."""
-        db.execute("DELETE FROM schema_meta WHERE key = 'revision'")
-        db._init_db()
-
-    # Seed an orphaned ownership row for the retired agent.
-    db.set_agent_ownership("etf-tracker-1-1", "pytest-etf@example.com", is_public=True)
-    assert db.get_agent_ownership("etf-tracker-1-1"), "precondition: row seeded"
-
-    # First boot runs _cleanup_retired_agents_040 → row purged.
-    _force_full_init()
-    assert not db.get_agent_ownership("etf-tracker-1-1"), "orphan row purged on boot"
-
-    # Re-run is a no-op (Constitution IX idempotency).
-    _force_full_init()
-    assert not db.get_agent_ownership("etf-tracker-1-1"), "idempotent on re-run"

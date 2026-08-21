@@ -21,10 +21,10 @@ class _Grants:
     def __init__(self, valid=True):
         self._valid = valid
 
-    def is_valid(self, grant_id):
+    def is_valid(self, grant_id, *, user_id):
         return self._valid
 
-    async def mint_access_token(self, grant_id):
+    async def mint_access_token(self, grant_id, *, user_id):
         return f"tok-{grant_id}"
 
 

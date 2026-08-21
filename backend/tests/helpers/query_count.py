@@ -35,7 +35,7 @@ def count_queries(db):
     """Count every execute/fetch_one/fetch_all round trip made through ``db``.
 
     Yields a :class:`QueryCounter` whose ``count`` and ``queries`` update as
-    calls happen. Accepts any object exposing the ``shared.database.Database``
+    calls happen. Accepts any object exposing the bounded query-counting
     call surface. Nesting is safe; the instance is restored on exit.
     """
     counter = QueryCounter()

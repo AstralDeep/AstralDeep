@@ -136,6 +136,12 @@ class BaseA2AAgent:
         # wrapper before it registers its runner_task in _active_streams.
         self._stream_wrapper_tasks: set = set()
 
+        # LETS protected-executor state is initialized lazily only when a
+        # typed permit arrives.  Flag-off agents therefore import/call no LETS
+        # runtime code and retain their pre-integration behavior.
+        self._lets_executor_runtime = None
+        self._lets_executor_initialization_error: str | None = None
+
         self._logger = logging.getLogger(self.__class__.__name__)
 
     def _init_crypto(self):
@@ -366,6 +372,23 @@ class BaseA2AAgent:
                 ).to_json()
             )
             return
+        # Retain the exact transport arguments for the executor mutation
+        # fence. Credential decryption is a trusted local rewrite performed
+        # after this ciphertext-bound snapshot and before the actuator.
+        protected_tool_arguments = dict(
+            (msg.params.get("arguments", {}) if msg.params else {}) or {}
+        )
+        protected_wire_arguments = protected_tool_arguments
+        if msg.params and msg.params.get("_stream") is True:
+            protected_wire_arguments = {
+                "arguments": protected_tool_arguments,
+                "_stream": True,
+                "_stream_id": msg.params.get("_stream_id"),
+            }
+        # Process-local executor metadata: never serialized and never exposed
+        # through a tool schema/argument mapping. Generated final actuators use
+        # this immutable transport snapshot after trusted local rewrites.
+        msg._protected_wire_arguments = protected_wire_arguments
         self._decrypt_credentials_if_needed(msg)
         if msg.method == "tools/call" and msg.params is not None:
             from shared.agent_runtime import AgentRuntime
@@ -376,6 +399,77 @@ class BaseA2AAgent:
                 agent_id=self.agent_id,
                 loop=asyncio.get_running_loop(),
             )
+
+        # Generated servers carrying the reviewed marker claim inside their
+        # MCPServer immediately before ``tool_fn(**arguments)``.  The shared
+        # seam remains authoritative for streaming tools, whose actuator is
+        # driven here rather than by MCPServer, and for every unmarked server.
+        server_claims_at_actuator = (
+            getattr(self.mcp_server, "protected_executor_at_actuator", False)
+            is True
+        )
+        caller_capabilities = msg.caller_capabilities
+        protected_metadata_present = bool(
+            isinstance(caller_capabilities, dict)
+            and "astraldeep.lets/v1" in caller_capabilities
+        )
+        protected_executor_required = (
+            os.getenv("LETS_MODE", "off").strip().lower() == "enforce"
+            and os.getenv("ASTRAL_RUNTIME_COHORT", "").strip()
+            in {"server_dynamic", "byo_user"}
+        )
+        streaming_actuator = False
+        if (
+            server_claims_at_actuator
+            and flags.is_enabled("tool_streaming")
+            and msg.method == "tools/call"
+            and msg.params.get("_stream") is True
+        ):
+            candidate_name = msg.params.get("name", "")
+            candidate_info = (
+                self.mcp_server.tools.get(candidate_name)
+                if hasattr(self.mcp_server, "tools")
+                else None
+            )
+            candidate_fn = candidate_info.get("function") if candidate_info else None
+            streaming_actuator = bool(
+                candidate_fn is not None and is_streaming_tool(candidate_fn)
+            )
+        try:
+            if (
+                protected_metadata_present or protected_executor_required
+            ) and (not server_claims_at_actuator or streaming_actuator):
+                self._verify_and_claim_protected_request(
+                    msg,
+                    final_wire_arguments=protected_wire_arguments,
+                )
+        except Exception as exc:
+            from orchestrator.lets_gateway import LetsGatewayError
+
+            code = exc.code if isinstance(exc, LetsGatewayError) else "protected_executor_failed"
+            retryable = bool(
+                isinstance(exc, LetsGatewayError) and exc.retryable
+            )
+            self._logger.warning(
+                "Protected executor refused request %s: %s",
+                msg.request_id,
+                code,
+            )
+            await ws.send_text(
+                MCPResponse(
+                    request_id=msg.request_id,
+                    error={
+                        "code": code,
+                        "message": "Protected tool authorization was refused",
+                        "retryable": retryable,
+                    },
+                    responder_info={
+                        "name": self.agent_id,
+                        "version": self.card.version,
+                    },
+                ).to_json()
+            )
+            return
 
         # --- Streaming dispatch (001-tool-stream-ui) ---
         if (
@@ -700,6 +794,88 @@ class BaseA2AAgent:
             args["_credentials_stale"] = True
         args.pop("_credentials_encrypted", None)
 
+    def _verify_and_claim_protected_request(
+        self,
+        msg: MCPRequest,
+        *,
+        final_wire_arguments: Dict[str, Any],
+    ) -> None:
+        """Claim a typed LETS permit or fail a governed runtime closed."""
+
+        from orchestrator.lets_gateway import (
+            LetsGatewayError,
+            create_executor_gateway,
+            extract_lets_metadata,
+        )
+
+        metadata = extract_lets_metadata(msg.caller_capabilities)
+        runtime_cohort = os.getenv("ASTRAL_RUNTIME_COHORT", "").strip()
+        mode = os.getenv("LETS_MODE", "off").strip().lower() or "off"
+        required = (
+            mode == "enforce"
+            and runtime_cohort in {"server_dynamic", "byo_user"}
+        )
+        if metadata is None:
+            if required:
+                raise LetsGatewayError("missing_protected_permit")
+            return
+        if mode != "enforce":
+            raise LetsGatewayError("unexpected_protected_permit")
+
+        if self._lets_executor_runtime is None:
+            if self._lets_executor_initialization_error is not None:
+                raise LetsGatewayError(self._lets_executor_initialization_error)
+            try:
+                from orchestrator.lets_config import load_lets_config
+
+                loaded = load_lets_config()
+                if loaded.config is None or loaded.config.mode != "enforce":
+                    raise LetsGatewayError("executor_not_configured")
+                self._lets_executor_runtime = create_executor_gateway(loaded.config)
+            except LetsGatewayError as exc:
+                self._lets_executor_initialization_error = exc.code
+                raise
+            except Exception:
+                self._lets_executor_initialization_error = "executor_initialization_failed"
+                raise LetsGatewayError("executor_initialization_failed") from None
+
+        owner_id = os.getenv("ASTRAL_AUTHORITY_OWNER_ID", "").strip()
+        binding_id = os.getenv("ASTRAL_AUTHORITY_BINDING_ID", "").strip()
+        lease_id = os.getenv("ASTRAL_AUTHORITY_LEASE_ID", "").strip()
+        lineage_id = os.getenv("ASTRAL_AUTHORITY_LINEAGE_ID", "").strip()
+        runtime_id = os.getenv("ASTRAL_RUNTIME_ID", "").strip()
+        generation_raw = os.getenv("ASTRAL_RUNTIME_GENERATION", "").strip()
+        audience = os.getenv("LETS_EXECUTOR_INSTANCE_ID", "").strip()
+        try:
+            generation = int(generation_raw)
+        except ValueError:
+            generation = 0
+        if (
+            not owner_id
+            or not binding_id
+            or not lease_id
+            or not lineage_id
+            or not runtime_id
+            or generation < 1
+            or not audience
+        ):
+            raise LetsGatewayError("executor_host_context_unavailable")
+
+        tool_id = str((msg.params or {}).get("name", ""))
+        self._lets_executor_runtime.gateway.verify_and_claim(
+            metadata=metadata,
+            final_arguments=final_wire_arguments,
+            owner_id=owner_id,
+            binding_id=binding_id,
+            lease_id=lease_id,
+            lineage_id=lineage_id,
+            agent_id=self.agent_id,
+            runtime_id=runtime_id,
+            runtime_generation=generation,
+            tool_id=tool_id,
+            executor_audience=audience,
+        )
+
     def _decrypt_with_fallbacks(self, value: str) -> str:
         """Decrypt an E2E blob with this agent's key, then any predecessor keys.
 
@@ -768,7 +944,21 @@ class BaseA2AAgent:
             )
 
             a2a_card = self._build_a2a_card()
-            executor = MCPAgentExecutor(self.mcp_server, self._security_validator, private_key=self._private_key)
+            executor = MCPAgentExecutor(
+                self.mcp_server,
+                self._security_validator,
+                private_key=self._private_key,
+                protected_request_verifier=(
+                    None
+                    if getattr(
+                        self.mcp_server,
+                        "protected_executor_at_actuator",
+                        False,
+                    )
+                    is True
+                    else self._verify_and_claim_protected_request
+                ),
+            )
             handler = DefaultRequestHandler(
                 agent_executor=executor,
                 task_store=InMemoryTaskStore(),

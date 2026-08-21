@@ -12,8 +12,8 @@ import pytest
 
 from orchestrator.credential_manager import CredentialUndecryptable
 from orchestrator.remote_transport import MachineTarget, RemoteResult, Verdict
-from webrender.chrome.surfaces import get_surface
-from webrender.chrome.surfaces import remote_machines as rm
+from orchestrator.projection_surfaces import get_surface
+from orchestrator.projection_surfaces import remote_machines as rm
 
 # Captured at import — the _no_db fixture patches rm._enabled to a constant, so
 # the flag-reading original is only reachable from a reference taken beforehand.
@@ -41,7 +41,7 @@ class FakeCM:
 
 
 def _orch(cm=None):
-    return SimpleNamespace(history=SimpleNamespace(db=object()),
+    return SimpleNamespace(plane_repository_source=object(),
                            credential_manager=cm or FakeCM())
 
 
@@ -322,7 +322,7 @@ class TrackingCM(FakeCM):
         self.deleted = []
         self._delete_raises = delete_raises
 
-    def delete_machine_credential(self, machine_id):
+    def delete_machine_credential(self, machine_id, user_id=None):
         self.deleted.append(machine_id)
         if self._delete_raises:
             raise RuntimeError("vault unavailable")

@@ -33,12 +33,13 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.database import Database  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 from orchestrator import agent_authoring as aa  # noqa: E402
 from orchestrator import user_agents as ua  # noqa: E402
 from webrender.chrome.menu_model import build_menu_model  # noqa: E402
-from webrender.chrome.surfaces import authoring  # noqa: E402
+from orchestrator.projection_surfaces import authoring  # noqa: E402
+from tests.helpers.draft_store_double import InMemoryDraftStore  # noqa: E402
+from tests.helpers.user_agent_registry import make_user_agent_registry  # noqa: E402
 
 BUNDLE = {"agent_main.py": "print('x')", "mcp_tools.py": "TOOL_REGISTRY = {}",
           "manifest.json": "{}"}
@@ -58,33 +59,41 @@ def _byo_on(monkeypatch):
 
 @pytest.fixture()
 def db():
-    d = Database()
-    d._init_db()
-    yield d
-    d.execute("DELETE FROM draft_agents WHERE user_id LIKE 'byoflow-%'")
-    d.execute("DELETE FROM user_agent WHERE owner_user_id LIKE 'byoflow-%'")
+    return InMemoryDraftStore()
 
 
 def make_orch(db, llm=None):
-    """A fake orchestrator with a REAL database — the phase machine's whole job is
-    persisting/reading state, so an in-memory stub would test nothing."""
+    """A fake orchestrator with explicit typed draft and user-agent stores."""
     o = MagicMock()
     o.history.db = db
+    draft_store = db
+    o.lifecycle_manager.draft_store = draft_store
+    o.user_agent_registry = make_user_agent_registry()
 
     async def _create_draft(user_id, agent_name, description, tools_spec=None, **kw):
         did = str(uuid.uuid4())
 
         def _insert():
-            db.create_draft_agent(draft_id=did, user_id=user_id, agent_name=agent_name,
-                                  agent_slug="byoflow-" + did[:8], description=description,
-                                  tools_spec=None)
-            return db.get_draft_agent(did)
+            draft_store.create_draft_agent(
+                draft_id=did,
+                user_id=user_id,
+                agent_name=agent_name,
+                agent_slug="byoflow-" + did[:8],
+                description=description,
+                tools_spec=None,
+                origin=kw.get("origin", "manual"),
+                revises_agent_id=kw.get("revises_agent_id"),
+            )
+            return draft_store.get_draft_agent(did)
 
         return await asyncio.to_thread(_insert)
 
     o.lifecycle_manager.create_draft = AsyncMock(side_effect=_create_draft)
     o.lifecycle_manager.generate_code = AsyncMock(
         return_value={"status": "generated", "files": dict(BUNDLE)})
+    o.lifecycle_manager.generated_agent_publication_service.load_published = (
+        AsyncMock(return_value=None)
+    )
     o.deliver_agent_bundle = AsyncMock(return_value=1)
     o.delete_user_agent = AsyncMock(return_value=True)
     o._call_llm_json = AsyncMock(return_value=llm)
@@ -320,7 +329,7 @@ async def test_generate_after_a_pass_delivers_the_bundle_and_never_popens(db):
     assert kw["agent_id"] == result["agent_id"]      # owner-namespaced identity
     files = orch.deliver_agent_bundle.await_args.args[2]
     assert set(files) == set(BUNDLE)
-    agent = await _t(ua.get_user_agent, db, result["agent_id"])
+    agent = await _t(ua.get_user_agent, orch.user_agent_registry, result["agent_id"])
     assert agent["status"] == "validated" and agent["owner_user_id"] == OWNER
     assert agent["is_public"] is False
 
@@ -361,7 +370,7 @@ async def test_a_generated_tool_that_was_never_approved_is_not_delivered(db):
     assert result["status"] == "generation_failed"
     assert "exfiltrate" in result["error"]
     orch.deliver_agent_bundle.assert_not_awaited()
-    agent = await _t(ua.get_user_agent, db, result["agent_id"])
+    agent = await _t(ua.get_user_agent, orch.user_agent_registry, result["agent_id"])
     assert agent["status"] != "validated"      # 'validated' still means Analyze passed
 
 
@@ -405,7 +414,7 @@ async def test_a_bundle_that_failed_spec_validation_is_not_delivered(db):
     assert result["status"] == "generation_failed"
     assert "_ui_components" in result["error"]
     orch.deliver_agent_bundle.assert_not_awaited()
-    agent = await _t(ua.get_user_agent, db, result["agent_id"])
+    agent = await _t(ua.get_user_agent, orch.user_agent_registry, result["agent_id"])
     assert agent["status"] != "validated"
 
 
@@ -457,9 +466,9 @@ def test_handlers_are_reachable_through_the_chrome_dispatcher():
     ``chrome_`` prefix puts these in the chrome namespace, and ``collect_handlers``
     aggregates them from SURFACE_MODULES."""
     from orchestrator.chrome_events import _is_chrome_action
-    from webrender.chrome.surfaces import SURFACE_MODULES, collect_handlers, get_surface
+    from orchestrator.projection_surfaces import SURFACE_MODULES, collect_handlers, get_surface
 
-    assert SURFACE_MODULES["agent_authoring"] == "webrender.chrome.surfaces.authoring"
+    assert SURFACE_MODULES["agent_authoring"] == "orchestrator.projection_surfaces.authoring"
     assert get_surface("agent_authoring") is authoring
     handlers = collect_handlers()
     for action in authoring.HANDLERS:

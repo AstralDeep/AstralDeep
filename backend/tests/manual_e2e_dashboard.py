@@ -53,6 +53,7 @@ async def main():
                 ops = msg.get("ops") or []
                 summary["upserts"].append({
                     "ops": len(ops),
+                    "component_ids": [o.get("component_id") for o in ops],
                     "distinct_ids": len({o.get("component_id") for o in ops}),
                     "types": [(o.get("component") or {}).get("type") for o in ops],
                 })
@@ -92,21 +93,17 @@ async def main():
         print(f"  {'PASS' if ok else 'FAIL'}  {name}")
 
     if chat_id:
-        import psycopg2
-        from shared.database import _build_database_url
-        conn = psycopg2.connect(_build_database_url())
-        cur = conn.cursor()
-        cur.execute("SELECT component_id, component_type FROM saved_components "
-                    "WHERE chat_id=%s ORDER BY position", (chat_id,))
-        rows = cur.fetchall()
-        cur.execute("SELECT COUNT(*) FROM workspace_layout WHERE chat_id=%s", (chat_id,))
-        layouts = cur.fetchone()[0]
-        print(f"db: {len(rows)} components ({[r[1] for r in rows]}), {layouts} layout(s)")
-        # "Rich": ≥2 distinct persisted components and at least 3 of the 4
+        component_ids = [
+            component_id
+            for upsert in summary["upserts"]
+            for component_id in upsert["component_ids"]
+            if component_id
+        ]
+        # "Rich": ≥2 distinct server-issued component identities and at least 3 of the 4
         # visual marker groups on the final canvas (router variance on the
         # weak dev LLM decides HOW MANY tool calls happen; the designer's
         # garnish fills the gaps).
-        ok = (len(rows) >= 2 and len({r[0] for r in rows}) == len(rows)
+        ok = (len(set(component_ids)) >= 2
               and rich >= 3 and markers["no unsupported"] and markers["no render errors"])
         print("E2E VERDICT:", "RICH DASHBOARD OK" if ok else "NOT RICH ENOUGH — investigate")
         return 0 if ok else 1

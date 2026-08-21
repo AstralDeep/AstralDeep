@@ -26,6 +26,7 @@ from orchestrator.work_admission import (
     OperationState,
     OwnerScope,
     StaleExecutionFenceError,
+    WorkAdmissionConflictError,
     WorkAdmissionCoordinator,
 )
 
@@ -173,6 +174,50 @@ def test_acceptance_preselects_free_capacity_with_a_durable_execution() -> None:
     assert claim.fence.operation_id == accepted.operation_id
     assert claim.fence.execution_generation == 1
     assert claim.fence.execution_lease_token.version == 4
+
+
+def test_in_memory_admin_read_and_request_generation_binding_match_plane() -> None:
+    clock = _FakeClock()
+    coordinator = _coordinator(clock)
+    request = dataclasses.replace(_request("request-bind"), request_generation=None)
+    accepted = coordinator.submit(request)
+    assert accepted.accepted
+    claim = coordinator.claim_next(AdmissionClass.INTERACTIVE)
+    assert claim is not None
+    repository = coordinator.repository
+
+    missing = repository.get_operation_for_administration(uuid.uuid4())
+    assert missing is None
+    administrative = repository.get_operation_for_administration(
+        accepted.operation_id,
+        for_update=True,
+    )
+    assert administrative is not None
+    assert administrative.owner_user_id == "owner-a"
+    assert administrative.request_generation is None
+
+    request_generation = uuid.uuid4()
+    with coordinator.fenced_transaction(claim.fence) as transaction:
+        bound = repository.bind_request_generation(
+            claim.fence,
+            request_generation,
+            transaction=transaction,
+        )
+        replay = repository.bind_request_generation(
+            claim.fence,
+            request_generation,
+            transaction=transaction,
+        )
+        with pytest.raises(WorkAdmissionConflictError, match="different request"):
+            repository.bind_request_generation(
+                claim.fence,
+                uuid.uuid4(),
+                transaction=transaction,
+            )
+
+    assert bound.request_generation == request_generation
+    assert bound.state_revision == administrative.state_revision + 1
+    assert replay == bound
 
 
 def test_exact_handoff_never_consumes_an_older_preselection() -> None:
@@ -751,6 +796,7 @@ def test_generation_and_lease_token_jointly_fence_execution() -> None:
 def test_terminal_records_are_queryable_for_24h_and_purged_by_25h() -> None:
     clock = _FakeClock()
     coordinator = _coordinator(clock, active_limit=1, queue_limit=1)
+    assert coordinator.current_time() == clock.current
     terminal_request = _request("terminal")
     terminal_acceptance = coordinator.submit(terminal_request)
     terminal_claim = coordinator.claim_next(AdmissionClass.INTERACTIVE)
@@ -764,6 +810,7 @@ def test_terminal_records_are_queryable_for_24h_and_purged_by_25h() -> None:
     assert terminal.purge_after == clock.current + timedelta(hours=24)
 
     clock.advance(timedelta(hours=24))
+    assert coordinator.oldest_purge_eligible_due_at() is None
     purge_at_boundary = coordinator.purge_expired(limit=100)
     assert purge_at_boundary.operations == 0
     assert purge_at_boundary.submissions == 0
@@ -783,6 +830,7 @@ def test_terminal_records_are_queryable_for_24h_and_purged_by_25h() -> None:
     )
 
     clock.advance(timedelta(hours=1))
+    assert coordinator.oldest_purge_eligible_due_at() == terminal.purge_after
     purged = coordinator.purge_expired(limit=100)
     assert purged.operations == 1
     assert purged.submissions == 2

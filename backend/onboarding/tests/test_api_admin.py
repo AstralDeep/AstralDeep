@@ -17,6 +17,21 @@ from orchestrator.auth import (
 )
 
 
+def _onboarding_repository(database):
+    return OnboardingRepository(
+        None,
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
+
+
+def _audit_repository(database):
+    return AuditRepository(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
+
+
 def _build_app(database, *, is_admin: bool, user_id: str = "pytest-admin"):
     app = FastAPI()
 
@@ -24,7 +39,7 @@ def _build_app(database, *, is_admin: bool, user_id: str = "pytest-admin"):
         pass
 
     orch = _Orch()
-    orch.onboarding_repo = OnboardingRepository(database)
+    orch.onboarding_repo = _onboarding_repository(database)
     app.state.orchestrator = orch
 
     payload = {
@@ -55,7 +70,7 @@ def _build_app(database, *, is_admin: bool, user_id: str = "pytest-admin"):
 
 @pytest.fixture
 def wire_audit(database):
-    rec = Recorder(AuditRepository(database))
+    rec = Recorder(_audit_repository(database))
     set_recorder(rec)
     yield rec
     set_recorder(None)
@@ -91,15 +106,14 @@ def test_create_step_201(database, wire_audit):
     assert body["slug"] == slug
     assert body["title"] == "Hello"
     # Audit row should now exist
-    conn = database._get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT count(*) FROM audit_events WHERE event_class = 'tutorial_step_edited' AND inputs_meta->>'step_slug' = %s",
-        (slug,),
-    )
-    row = cur.fetchone()
-    conn.close()
-    assert (row.get("count") if isinstance(row, dict) else row[0]) == 1
+    with database.transaction() as transaction:
+        row = transaction.fetch_one(
+            "SELECT count(*) AS count FROM audit_events "
+            "WHERE event_class = 'tutorial_step_edited' "
+            "AND inputs_meta->>'step_slug' = %s",
+            (slug,),
+        )
+    assert row["count"] == 1
 
 
 def test_duplicate_slug_409(database, wire_audit):
@@ -153,14 +167,15 @@ def test_update_step_changed_fields_minimal(database, wire_audit):
     assert r2.status_code == 200
     assert r2.json()["title"] == "Renamed"
     # Audit row's changed_fields should contain title but NOT body
-    conn = database._get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT inputs_meta FROM audit_events WHERE event_class = 'tutorial_step_edited' AND inputs_meta->>'change_kind' = 'update' AND inputs_meta->>'step_id' = %s ORDER BY recorded_at DESC LIMIT 1",
-        (str(step_id),),
-    )
-    row = cur.fetchone()
-    conn.close()
+    with database.transaction() as transaction:
+        row = transaction.fetch_one(
+            "SELECT inputs_meta FROM audit_events "
+            "WHERE event_class = 'tutorial_step_edited' "
+            "AND inputs_meta->>'change_kind' = 'update' "
+            "AND inputs_meta->>'step_id' = %s "
+            "ORDER BY recorded_at DESC LIMIT 1",
+            (str(step_id),),
+        )
     assert row is not None
     changed = row["inputs_meta"]["changed_fields"]
     assert "title" in changed

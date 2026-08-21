@@ -1,4 +1,4 @@
-"""Feature-066 PostgreSQL pins for ``PostgresWorkAdmissionRepository.bind_chat``.
+"""Feature-066 PostgreSQL pins for Plane-owned work-admission ``bind_chat``.
 
 The coordinator + in-memory twin are pinned by ``test_bind_chat_066.py``;
 these cases prove the DURABLE variant honors the same contract against a real
@@ -12,15 +12,14 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Iterator
 
-import psycopg2
 import pytest
-from psycopg2 import sql
+
+from astralplane.repositories import work_admission as plane_admission
 
 from orchestrator.work_admission import (
     AdmissionClass,
@@ -29,10 +28,11 @@ from orchestrator.work_admission import (
     OperationRequest,
     OperationState,
     OwnerScope,
+    PlaneWorkAdmissionRepository,
     StaleExecutionFenceError,
     WorkAdmissionCoordinator,
 )
-from shared.database import Database, _build_database_url
+from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
 
 
 @dataclass
@@ -89,50 +89,13 @@ def _request(label: str, *, chat_id: str | None = None) -> OperationRequest:
 
 
 @pytest.fixture(scope="module")
-def postgres_database() -> Iterator[Database]:
-    base_dsn = _build_database_url()
-    try:
-        params = psycopg2.extensions.parse_dsn(base_dsn)
-        name = f"astraldeep_bind_chat_{uuid.uuid4().hex}"
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    dsn = psycopg2.extensions.make_dsn(**database_params)
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(dsn)
-    finally:
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name))
-                )
-            admin.close()
-        except Exception:
-            pass
+def postgres_database() -> Iterator[PlaneTestRuntime]:
+    with isolated_plane_runtime("bind_chat") as runtime:
+        yield runtime
 
 
 @pytest.fixture
-def clean_database(postgres_database: Database) -> Database:
+def clean_database(postgres_database: PlaneTestRuntime) -> PlaneTestRuntime:
     postgres_database.execute("DELETE FROM operation_submission_result")
     postgres_database.execute(
         """
@@ -144,9 +107,17 @@ def clean_database(postgres_database: Database) -> Database:
     return postgres_database
 
 
-def _coordinator(clean_database: Database, clock: _FakeClock) -> WorkAdmissionCoordinator:
+def _coordinator(
+    clean_database: PlaneTestRuntime,
+    clock: _FakeClock,
+) -> WorkAdmissionCoordinator:
     return WorkAdmissionCoordinator(
-        admission_classes=_classes(), database=clean_database, clock=clock
+        admission_classes=_classes(),
+        repository=PlaneWorkAdmissionRepository(
+            plane_runtime=clean_database,
+            plane_repositories=clean_database.repositories,
+        ),
+        clock=clock,
     )
 
 
@@ -161,7 +132,7 @@ def _claimed(coordinator, request):
 
 
 def test_postgres_bind_chat_adopts_the_created_conversation(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinator = _coordinator(clean_database, clock)
@@ -183,7 +154,7 @@ def test_postgres_bind_chat_adopts_the_created_conversation(
 
 
 def test_postgres_bind_chat_same_chat_rebind_is_a_no_op(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinator = _coordinator(clean_database, clock)
@@ -205,7 +176,7 @@ def test_postgres_bind_chat_same_chat_rebind_is_a_no_op(
 
 
 def test_postgres_bind_chat_refuses_a_cross_conversation_rebind(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinator = _coordinator(clean_database, clock)
@@ -226,29 +197,35 @@ def test_postgres_bind_chat_refuses_a_cross_conversation_rebind(
 
 
 def test_postgres_bind_chat_converts_a_lost_fenced_update_to_stale(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     """A row the fenced UPDATE no longer matches surfaces as a stale fence.
 
     The UPDATE's WHERE clause re-checks the fence, so a superseded lease can
     never bind even when the row-lock assert raced ahead of it. Simulate that
-    narrow race by letting the cursor-level assert see the CURRENT fence
+    narrow race by letting the Plane transaction assert see the CURRENT fence
     while the UPDATE itself runs with a stale lease token: zero rows return
     and the repository must convert that to ``StaleExecutionFenceError``.
     """
     clock = _FakeClock()
     coordinator = _coordinator(clean_database, clock)
     _, claim = _claimed(coordinator, _request("pg-raced", chat_id=None))
-    repository = coordinator._repository  # noqa: SLF001 - race simulation
+    adapter = coordinator._repository  # noqa: SLF001 - race simulation
+    repository = adapter._plane_repository  # noqa: SLF001 - Plane race simulation
     stale = dataclasses.replace(claim.fence, execution_lease_token=uuid.uuid4())
-    current_assert = repository._assert_current_execution_cursor  # noqa: SLF001
-    repository._assert_current_execution_cursor = (  # noqa: SLF001
-        lambda cursor, fence: current_assert(cursor, claim.fence)
+    current_fence = plane_admission.ExecutionFence(
+        claim.fence.operation_id,
+        claim.fence.execution_generation,
+        claim.fence.execution_lease_token,
+    )
+    current_assert = repository._assert_current_execution_session  # noqa: SLF001
+    repository._assert_current_execution_session = (  # noqa: SLF001
+        lambda session, fence: current_assert(session, current_fence)
     )
     try:
         with pytest.raises(StaleExecutionFenceError, match="stale"):
-            repository.bind_chat(stale, "chat-raced", now=clock.current)
+            adapter.bind_chat(stale, "chat-raced", now=clock.current)
     finally:
-        del repository._assert_current_execution_cursor  # noqa: SLF001
+        del repository._assert_current_execution_session  # noqa: SLF001
     # The losing write bound nothing.
     assert coordinator.assert_current_execution(claim.fence).chat_id is None

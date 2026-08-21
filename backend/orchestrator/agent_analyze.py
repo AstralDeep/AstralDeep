@@ -19,7 +19,7 @@ from orchestrator.tool_permissions import VALID_SCOPES
 # This is intentionally independent from the baked constitution version. Any
 # deterministic change to the Analyze rules below must increment this positive
 # integer so already-validated user agents are rechecked on the next boot.
-ANALYZE_POLICY_REVISION = "1"
+ANALYZE_POLICY_REVISION = "2"
 
 # Reserved / non-user identity prefixes and stems a user agent may not take
 # (Constitution H — non-colliding identity). Meta pseudo-agents use "__".
@@ -65,9 +65,18 @@ class AnalyzeResult:
     violations: List[Violation] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, Any]:
+        policy_revision = (
+            None
+            if self.constitution_version is None
+            else (
+                f"constitution={self.constitution_version};"
+                f"analyze={ANALYZE_POLICY_REVISION}"
+            )
+        )
         return {
             "passed": self.passed,
             "constitution_version": self.constitution_version,
+            "policy_revision": policy_revision,
             "violations": [
                 {"principle": v.principle, "title": v.title,
                  "plain_language": v.plain_language, "offending_field": v.offending_field}
@@ -130,20 +139,53 @@ def check(draft_spec: Dict[str, Any], *, constitution_version: Optional[str] = N
                            f"The plan uses tools that were not declared: {undeclared}. Declare "
                            f"every tool the agent will use.", "plan.tools_used"))
 
-    # C — least privilege: every declared scope must be justified by a declared
-    # capability (decidable only when the plan maps tools→scopes).
+    # B/C — every used capability has one valid, explicitly declared scope, and
+    # every declared scope is justified by at least one capability.  Treat a
+    # missing mapping as a denial: code generation otherwise supplies a default
+    # that the owner never approved.
     tool_scopes = plan.get("tool_scopes")
-    if isinstance(tool_scopes, dict) and declared_scopes:
+    if isinstance(tool_scopes, dict):
+        missing_scope = [tool for tool in used if tool not in tool_scopes]
+        if missing_scope:
+            v.append(Violation(
+                "B",
+                "Declared capability surface",
+                f"These used tools have no declared permission: {missing_scope}.",
+                "plan.tool_scopes",
+            ))
+        mapped_scopes = {str(name): str(scope) for name, scope in tool_scopes.items()}
+        invalid_mapped = sorted({
+            scope for scope in mapped_scopes.values() if scope not in VALID_SCOPES
+        })
+        if invalid_mapped:
+            v.append(Violation(
+                "A",
+                "Owner-delegated authority only",
+                f"The plan maps tools to invalid permissions: {invalid_mapped}.",
+                "plan.tool_scopes",
+            ))
+        undeclared_mapped = sorted({
+            scope
+            for scope in mapped_scopes.values()
+            if scope not in declared_scopes
+        })
+        if undeclared_mapped:
+            v.append(Violation(
+                "B",
+                "Declared capability surface",
+                f"The plan uses permissions that were not declared: {undeclared_mapped}.",
+                "plan.tool_scopes",
+            ))
         used_scopes = {str(s) for s in tool_scopes.values()}
         unused = [s for s in declared_scopes if s not in used_scopes]
         if unused:
             v.append(Violation("C", "Least privilege",
                                f"These requested permissions are not used by any capability: "
                                f"{unused}. Request only what the agent needs.", "declared_scopes"))
-    elif declared_scopes and not declared_tools:
+    elif used or declared_scopes:
         v.append(Violation("C", "Least privilege",
-                           "Permissions were requested but the agent declares no capabilities that "
-                           "use them.", "declared_scopes"))
+                           "Every used capability must map to one explicitly declared permission.",
+                           "plan.tool_scopes"))
 
     # D — no cross-user reach.
     if _CROSS_USER.search(text):

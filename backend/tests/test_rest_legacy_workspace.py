@@ -37,13 +37,16 @@ from fastapi import HTTPException
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from orchestrator import api as rest_api
-from orchestrator.history import HistoryManager
 from orchestrator.models import (
     ComponentCombineRequest,
     ComponentCondenseRequest,
     ComponentSaveRequest,
 )
 from orchestrator.workspace import WorkspaceManager
+from tests.helpers.voice_plane_runtime import (
+    history_manager,
+    isolated_plane_runtime,
+)
 
 
 class _FakeWS:
@@ -57,11 +60,18 @@ class _FakeWS:
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="module")
+def plane_runtime():
+    """One managed application Plane runtime for this integration module."""
+    with isolated_plane_runtime("rest_legacy_workspace") as runtime:
+        yield runtime
+
+
 @pytest.fixture
-def chat_env(tmp_path):
+def chat_env(plane_runtime):
     """Real HistoryManager + a unique user/chat pair; chat deleted on teardown
     (FK CASCADE clears messages, saved_components and workspace_snapshot)."""
-    history = HistoryManager(data_dir=str(tmp_path))
+    history = history_manager(plane_runtime)
     user_id = f"test-user-{uuid.uuid4()}"
     chat_id = history.create_chat(user_id=user_id)
     yield history, user_id, chat_id
@@ -229,7 +239,7 @@ def test_rest_delete_component_removes_workspace_identity_everywhere(
     assert ops == [{"op": "remove", "component_id": ws_component_id}]
 
     # Snapshot recorded with cause='remove' (post-removal state: empty).
-    snaps = history.db.fetch_all(
+    snaps = history.plane_runtime.fetch_all(
         "SELECT * FROM workspace_snapshot WHERE chat_id = ? AND user_id = ? "
         "AND cause = 'remove'", (chat_id, user_id))
     assert len(snaps) == 1

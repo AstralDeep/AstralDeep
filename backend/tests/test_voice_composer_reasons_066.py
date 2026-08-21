@@ -10,13 +10,11 @@ permission-shaped reason instead of ``network_interrupted``.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
+from astralprojection.resources import static_path
 from webrender.chrome.composer_model import VOICE_REASONS
 
-CLIENT_JS = (
-    Path(__file__).resolve().parents[1] / "webrender" / "static" / "client.js"
-).read_text(encoding="utf-8")
+CLIENT_JS = static_path("client.js").read_text(encoding="utf-8")
 
 # ``ready`` is not a refusal; ``internal_error`` deliberately falls through to
 # the generic error line because it has no more-specific honest wording.

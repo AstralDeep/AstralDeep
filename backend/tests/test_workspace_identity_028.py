@@ -35,24 +35,7 @@ from orchestrator.workspace import (  # noqa: E402
     fingerprint,
     iter_layout_refs,
 )
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
-)
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 # ----------------------------------------------------------------------
@@ -61,10 +44,19 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def history(tmp_path_factory):
+def plane_runtime():
+    with isolated_plane_runtime("workspace_identity") as runtime:
+        yield runtime
+
+
+@pytest.fixture(scope="module")
+def history(plane_runtime):
     from orchestrator.history import HistoryManager
 
-    return HistoryManager(data_dir=str(tmp_path_factory.mktemp("ws-id-data")))
+    return HistoryManager(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
 
 
 @pytest.fixture(scope="module")

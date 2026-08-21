@@ -1,22 +1,19 @@
 name: android-ci
 
 # Additive, independent of the backend Principle XI gates. Scoped to the
-# android-client/ tree so backend changes don't trigger an Android build.
+# Projection Gitlink so backend changes don't trigger an Android build.
 on:
   push:
     branches: [main]
     paths:
-      - 'android-client/**'
-      - 'backend/shared/ui_protocol.json'
-      - 'backend/tests/fixtures/voice_065/client_conformance.json'
+      # Component updates are represented by the parent Gitlink, not child paths.
+      - 'components/AstralProjection'
       - 'scripts/run_android_next_major_canary.py'
       - 'backend/tests/test_android_next_major_canary.py'
       - '.github/workflows/android-ci.yml'
   pull_request:
     paths:
-      - 'android-client/**'
-      - 'backend/shared/ui_protocol.json'
-      - 'backend/tests/fixtures/voice_065/client_conformance.json'
+      - 'components/AstralProjection'
       - 'scripts/run_android_next_major_canary.py'
       - 'backend/tests/test_android_next_major_canary.py'
       - '.github/workflows/android-ci.yml'
@@ -36,7 +33,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: android-client
+    working-directory: components/AstralProjection/android-client
 
 jobs:
   build-test:
@@ -82,8 +79,8 @@ jobs:
         with:
           name: android-kover-xml
           path: |
-            android-client/app/build/reports/kover/report.xml
-            android-client/core/build/reports/kover/report.xml
+            components/AstralProjection/android-client/app/build/reports/kover/report.xml
+            components/AstralProjection/android-client/core/build/reports/kover/report.xml
           if-no-files-found: error
           retention-days: 14
 
@@ -93,7 +90,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: app-debug-apk
-          path: android-client/app/build/outputs/apk/debug/app-debug.apk
+          path: components/AstralProjection/android-client/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: warn
 
   next-major-readiness:
@@ -114,7 +111,7 @@ jobs:
         working-directory: .
         run: >-
           python3 scripts/run_android_next_major_canary.py
-          android-client/gradle/next-major-canary.properties
+          components/AstralProjection/android-client/gradle/next-major-canary.properties
           --allow-unreleased
           --verify-official-availability
           --output build/060/android-next-major-readiness.json
@@ -164,7 +161,7 @@ jobs:
         with:
           api-level: 34
           arch: x86_64
-          working-directory: android-client
+          working-directory: components/AstralProjection/android-client
           script: gradle :app:connectedDebugAndroidTest --no-daemon --stacktrace
 
   android-required:

@@ -16,6 +16,8 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
@@ -39,19 +41,48 @@ class RemoteComputeAgent(BaseA2AAgent):
                    "operations always ask you to confirm first.")
     skill_tags = ["remote", "cluster", "slurm", "hpc", "ssh", "control"]
 
-    def __init__(self, port: int = None):
+    def __init__(
+        self,
+        port: int = None,
+        *,
+        plane_runtime,
+        plane_repositories=None,
+        plane_blobs=None,
+    ):
+        repositories = plane_repositories or getattr(
+            plane_runtime, "repositories", None
+        )
+        if plane_runtime is None or repositories is None or plane_blobs is None:
+            raise RuntimeError(
+                "RemoteComputeAgent requires the initialized AstralPlane runtime, catalog, and blobs"
+            )
+
         super().__init__(MCPServer(), port=port, port_env_var="REMOTE_COMPUTE_AGENT_PORT")
-        # In-process pattern: wire a shared Database + a CredentialManager (same
-        # CREDENTIAL_ENCRYPTION_KEY) into both verb libraries so the verbs can read
-        # the owner's remote_machine rows and decrypt per-machine credentials.
-        try:
-            from shared.database import Database
-            from orchestrator.credential_manager import CredentialManager
-            from agents.remote_compute import mcp_tools
-            db = Database()
-            mcp_tools.register_deps(db, CredentialManager(db=db))
-        except Exception:
-            logger.warning("remote-compute-1 dependency wiring failed", exc_info=True)
+        # The verb libraries retain their small host-object API while every
+        # durable call resolves a typed repository on the injected Plane runtime.
+        # This binding owns no driver or pool.
+        from orchestrator.credential_manager import CredentialManager
+        from agents.remote_compute import mcp_tools
+
+        binding = SimpleNamespace(
+            plane_runtime=plane_runtime,
+            plane_repositories=repositories,
+        )
+        credential_manager = CredentialManager(
+            db=binding,
+            plane_runtime=plane_runtime,
+            plane_repositories=repositories,
+        )
+        mcp_tools.register_deps(binding, credential_manager, plane_blobs)
+
+
+def _compose_standalone_plane():
+    """Compose the one Plane runtime owned by a networked agent process."""
+
+    from orchestrator.plane_composition import compose_plane_from_environment
+
+    manifest = Path(__file__).resolve().parents[3] / "config" / "astral-composition.json"
+    return compose_plane_from_environment(manifest)
 
 
 if __name__ == "__main__":
@@ -59,5 +90,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Remote Compute Agent')
     parser.add_argument('--port', type=int, default=None, help='Port to run the agent on')
     args = parser.parse_args()
-    agent = RemoteComputeAgent(port=args.port)
-    asyncio.run(agent.run())
+    composition = _compose_standalone_plane()
+    try:
+        agent = RemoteComputeAgent(
+            port=args.port,
+            plane_runtime=composition.runtime,
+            plane_repositories=composition.repositories,
+            plane_blobs=composition.blobs,
+        )
+        asyncio.run(agent.run())
+    finally:
+        composition.close()

@@ -24,14 +24,14 @@ WORKFLOW_ROOT = Path(
 )
 PRODUCERS = {
     "backend": REPO_ROOT / "backend/tests/perf/release_backend_060.py",
-    "web": REPO_ROOT / "tooling/web-ci/tests/release-060.spec.js",
-    "windows": REPO_ROOT / "windows-client/tests/release_evidence_060.py",
+    "web": REPO_ROOT / "components/AstralProjection/tooling/web-ci/tests/release-060.spec.js",
+    "windows": REPO_ROOT / "components/AstralProjection/windows-client/tests/release_evidence_060.py",
     "android": REPO_ROOT
-    / "android-client/app/src/androidTest/kotlin/com/personalailabs/astraldeep/app"
+    / "components/AstralProjection/android-client/app/src/androidTest/kotlin/com/personalailabs/astraldeep/app"
     / "ReleaseEvidenceInstrumentedTest.kt",
     "ios_macos": REPO_ROOT
-    / "apple-clients/AstralApp/AstralAppUITests/ReleaseEvidenceUITests.swift",
-    "watchos": REPO_ROOT / "apple-clients/AstralWatchTests/ReleaseEvidenceTests.swift",
+    / "components/AstralProjection/apple-clients/AstralApp/AstralAppUITests/ReleaseEvidenceUITests.swift",
+    "watchos": REPO_ROOT / "components/AstralProjection/apple-clients/AstralWatchTests/ReleaseEvidenceTests.swift",
 }
 
 if not all(path.is_file() for path in PRODUCERS.values()):
@@ -113,12 +113,12 @@ def test_windows_coverage_producer_uses_one_unambiguous_source_root() -> None:
     # Coverage.py emits class filenames relative to each --cov source. Multiple
     # roots collapse astral_client/app.py and win_agent/agent.py to basenames,
     # which the fail-closed cross-language parser correctly rejects as
-    # ambiguous. Running from the repository root with one windows-client
-    # source preserves both package prefixes without sweeping synthetic Qt
-    # support-module filenames into the canonical Cobertura report.
+    # ambiguous. Running from the repository root with one Projection-owned
+    # Windows source preserves both package prefixes without sweeping synthetic
+    # Qt support-module filenames into the canonical Cobertura report.
     assert "working-directory: windows-client" not in step
-    assert "-m pytest windows-client\\tests -q" in step
-    assert "--cov=windows-client `" in step
+    assert r"-m pytest components\AstralProjection\windows-client\tests -q" in step
+    assert "--cov=components/AstralProjection/windows-client `" in step
     assert "--cov=astral_client" not in step
     assert "--cov=win_agent" not in step
     assert "--cov=main" not in step
@@ -131,7 +131,7 @@ def test_standard_ci_gates_contract_validation_windows_and_web_coverage() -> Non
     assert "tooling/contract-ci/requirements.lock.txt" in workflow
     assert "tooling/contract-ci/validate_voice_contracts.py" in workflow
     assert "--require-hashes" in workflow
-    assert "python -m pytest windows-client/tests -q" in workflow
+    assert "python -m pytest components/AstralProjection/windows-client/tests -q" in workflow
     assert "voice-web-conformance:" in workflow
     assert "tests/voice-conversation-065.spec.js" in workflow
     assert "ASTRAL_VOICE_COVERAGE_ISTANBUL_OUTPUT" in workflow
@@ -161,7 +161,9 @@ def test_standard_ci_gates_contract_validation_windows_and_web_coverage() -> Non
         "windows-client",
     ):
         assert f"- {required_job}" in gates_job
-        assert f"needs.{required_job}.result }}}}' == 'success'" in gates_job
+    assert "needs.voice-contract-validator.result }}' == 'success'" in gates_job
+    assert "needs.voice-web-conformance.result }}' == 'skipped'" in gates_job
+    assert "needs.windows-client.result }}' == 'skipped'" in gates_job
 
 
 def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only() -> None:
@@ -172,9 +174,18 @@ def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only()
     )[0]
 
     required_mounts = (
-        'android-client:/app/android-client:ro"',
-        'apple-clients:/app/apple-clients:ro"',
-        'windows-client:/app/windows-client:ro"',
+        (
+            "components/AstralProjection/android-client:"
+            '/app/components/AstralProjection/android-client:ro"'
+        ),
+        (
+            "components/AstralProjection/apple-clients:"
+            '/app/components/AstralProjection/apple-clients:ro"'
+        ),
+        (
+            "components/AstralProjection/windows-client:"
+            '/app/components/AstralProjection/windows-client:ro"'
+        ),
         'deploy/livekit:/app/deploy/livekit:ro"',
         (
             "tooling/contract-ci/validate_voice_contracts.py:"
@@ -185,8 +196,8 @@ def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only()
             '/app/tooling/evaluate_voice_recap_matrix_065.py:ro"'
         ),
         (
-            "tooling/web-ci/tests/release-060.spec.js:"
-            '/app/tooling/web-ci/tests/release-060.spec.js:ro"'
+            "components/AstralProjection/tooling/web-ci/tests/release-060.spec.js:"
+            '/app/components/AstralProjection/tooling/web-ci/tests/release-060.spec.js:ro"'
         ),
         (
             "tooling/voice-worker/closure_manifest.py:"
@@ -263,12 +274,12 @@ def test_backend_root_jobs_mount_only_required_voice_contract_inputs_read_only()
 def test_android_ci_gates_all_voice_suites_and_kover_inputs() -> None:
     workflow = (WORKFLOW_ROOT / "android-ci.yml").read_text(encoding="utf-8")
 
-    assert "backend/tests/fixtures/voice_065/client_conformance.json" in workflow
-    assert "backend/shared/ui_protocol.json" in workflow
+    assert "backend/tests/fixtures/voice_065/client_conformance.json" not in workflow
+    assert "components/AstralProjection" in workflow
     assert "gradle :core:test :app:testDebugUnitTest" in workflow
     assert "gradle :app:koverXmlReport :core:koverXmlReport" in workflow
-    assert "android-client/app/build/reports/kover/report.xml" in workflow
-    assert "android-client/core/build/reports/kover/report.xml" in workflow
+    assert "components/AstralProjection/android-client/app/build/reports/kover/report.xml" in workflow
+    assert "components/AstralProjection/android-client/core/build/reports/kover/report.xml" in workflow
 
     instrumented = workflow.split("  instrumented:", 1)[1].split(
         "  android-required:", 1
@@ -289,8 +300,8 @@ def test_android_ci_gates_all_voice_suites_and_kover_inputs() -> None:
 def test_apple_ci_gates_voice_suites_and_every_xccov_input() -> None:
     workflow = (WORKFLOW_ROOT / "apple-ci.yml").read_text(encoding="utf-8")
 
-    assert "backend/tests/fixtures/voice_065/client_conformance.json" in workflow
-    assert "swift test --package-path apple-clients/AstralCore" in workflow
+    assert "backend/tests/fixtures/voice_065/client_conformance.json" not in workflow
+    assert "swift test --package-path components/AstralProjection/apple-clients/AstralCore" in workflow
     assert "-only-testing:AstralAppTests" in workflow
     assert "-only-testing:AstralAppUITests/VoiceConversationUITests" in workflow
     first_login_job = workflow.split("  first-login-ui:", 1)[1].split(

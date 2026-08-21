@@ -10,90 +10,82 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
-def _can_connect():
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
+def _scheduled_job_store(runtime):
+    from scheduler.store import ScheduledJobStore
 
-
-needs_db = pytest.mark.skipif(not _can_connect(), reason="Postgres unavailable")
+    return ScheduledJobStore(
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+    )
 
 
 @pytest.fixture
 def db():
-    from shared.database import Database
-    database = Database()
-    user = f"pytest-dreaming-{uuid.uuid4().hex[:8]}"
-    yield database, user
-    try:
-        # scheduled_job first (FK references user_offline_grant), then grants.
-        database.execute("DELETE FROM scheduled_job WHERE user_id = ?", (user,))
-        database.execute("DELETE FROM user_offline_grant WHERE user_id = ?", (user,))
-    except Exception:
-        pass
+    from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+
+    with isolated_plane_runtime("dreaming_scheduling") as runtime:
+        yield runtime, f"pytest-dreaming-{uuid.uuid4().hex[:8]}"
 
 
-@needs_db
 def test_ensure_creates_then_is_idempotent(db):
     from dreaming.scheduling import DREAMING_AGENT_ID, ensure_dreaming_job
-    from scheduler.store import ScheduledJobStore
-    database, user = db
-    store = ScheduledJobStore(database)
+    runtime, user = db
+    source = type("PlaneSource", (), {
+        "plane_runtime": runtime,
+        "plane_repositories": runtime.repositories,
+    })()
+    store = _scheduled_job_store(runtime)
 
-    job = ensure_dreaming_job(database, user)
+    job = ensure_dreaming_job(source, user)
     assert job["agent_id"] == DREAMING_AGENT_ID
     assert job["schedule_kind"] == "cron"
     # idempotent: a second call returns the same active job (no duplicate)
-    again = ensure_dreaming_job(database, user)
+    again = ensure_dreaming_job(source, user)
     assert again["id"] == job["id"]
     actives = [j for j in store.list_jobs(user)
                if j["agent_id"] == DREAMING_AGENT_ID and j["status"] == "active"]
     assert len(actives) == 1
 
 
-@needs_db
 def test_remove_then_resume(db):
     from dreaming.scheduling import (DREAMING_AGENT_ID, ensure_dreaming_job,
                                      remove_dreaming_job)
-    from scheduler.store import ScheduledJobStore
-    database, user = db
-    store = ScheduledJobStore(database)
+    runtime, user = db
+    source = type("PlaneSource", (), {
+        "plane_runtime": runtime,
+        "plane_repositories": runtime.repositories,
+    })()
+    store = _scheduled_job_store(runtime)
 
-    created = ensure_dreaming_job(database, user)
-    assert remove_dreaming_job(database, user) == 1
+    created = ensure_dreaming_job(source, user)
+    assert remove_dreaming_job(source, user) == 1
     actives = [j for j in store.list_jobs(user)
                if j["agent_id"] == DREAMING_AGENT_ID and j["status"] == "active"]
     assert actives == []
     # re-enable reactivates the SAME job rather than creating a duplicate
-    resumed = ensure_dreaming_job(database, user)
+    resumed = ensure_dreaming_job(source, user)
     assert resumed["id"] == created["id"]
     assert resumed["status"] == "active"
 
 
-@needs_db
 def test_set_offline_grant(db):
     import time
 
-    from scheduler.store import ScheduledJobStore
-    database, user = db
+    runtime, user = db
     # A real grant must exist — scheduled_job.offline_grant_id is FK-constrained.
     # Insert a minimal user_offline_grant row directly (avoids crypto/env setup).
     grant_id = str(uuid.uuid4())
     now = int(time.time() * 1000)
-    database.execute(
-        """INSERT INTO user_offline_grant
-               (id, user_id, agent_id, refresh_token_enc, issued_at, expires_at,
-                revoked_at, created_at, updated_at)
-           VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?)""",
-        (grant_id, user, b"x", now, now + 10_000_000, now, now),
-    )
+    with runtime.transaction() as transaction:
+        transaction.execute(
+            """INSERT INTO user_offline_grant
+                   (id, user_id, agent_id, refresh_token_enc, issued_at, expires_at,
+                    revoked_at, created_at, updated_at)
+               VALUES (%s, %s, NULL, %s, %s, %s, NULL, %s, %s)""",
+            (grant_id, user, b"x", now, now + 10_000_000, now, now),
+        )
 
-    store = ScheduledJobStore(database)
+    store = _scheduled_job_store(runtime)
     job = store.create_job(
         user, name="t", instruction="i", schedule_kind="interval", schedule_expr="1d",
         timezone="UTC", consented_scopes=[], agent_id=None, target_chat_id=None,

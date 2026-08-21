@@ -5,10 +5,12 @@ The verifier reads repository content only through Git object inventories.  An
 ignored or untracked working-tree file therefore cannot create an owner, hide a
 duplicate, or satisfy a generated-copy declaration.
 
-``compatibilityAdapters`` are semantic host adapters.  They are validated for
-presence but never exempt copied bytes.  A byte-for-byte exception must be an
-explicit ``generatedCopies`` entry whose owner source and destination both
-match the declared SHA-256 digest.
+``ownedPaths`` are always relative to their declared owner repository.  This
+keeps common support paths such as ``docs/`` and ``tests/`` from becoming
+cross-repository ownership claims.  ``compatibilityAdapters`` are semantic
+host adapters.  They are validated for presence but never exempt copied bytes.
+A byte-for-byte exception must be an explicit ``generatedCopies`` entry whose
+owner source and destination both match the declared SHA-256 digest.
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ class TrackedBlob:
     path: str
     mode: str
     object_id: str
+    size: int
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,7 @@ class OwnershipDomain:
     owner: str
     owned_patterns: tuple[PathPattern, ...]
     forbidden_copies: tuple[ForbiddenCopy, ...]
+    scan_exact_duplicates: bool
 
 
 @dataclass(frozen=True)
@@ -191,6 +195,12 @@ def _exact_keys(value: Mapping[str, Any], expected: set[str], *, field: str) -> 
 def _nonempty_string(value: Any, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise OwnershipError(f"{field} must be a non-empty trimmed string")
+    return value
+
+
+def _boolean(value: Any, *, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise OwnershipError(f"{field} must be a boolean")
     return value
 
 
@@ -389,7 +399,17 @@ def load_ownership_map(path: str | Path) -> OwnershipMap:
     ):
         field = f"ownershipDomains[{domain_index}]"
         raw = _mapping(item, field=field)
-        _exact_keys(raw, {"id", "owner", "ownedPaths", "forbiddenCopies"}, field=field)
+        _exact_keys(
+            raw,
+            {
+                "id",
+                "owner",
+                "ownedPaths",
+                "forbiddenCopies",
+                "scanExactDuplicates",
+            },
+            field=field,
+        )
         identifier = _nonempty_string(raw["id"], field=f"{field}.id")
         if _DOMAIN_ID.fullmatch(identifier) is None:
             raise OwnershipError(f"{field}.id is not normalized")
@@ -440,8 +460,22 @@ def load_ownership_map(path: str | Path) -> OwnershipMap:
             raise OwnershipError(
                 f"{field}.forbiddenCopies repeats repositories: {duplicates!r}"
             )
+        scan_exact_duplicates = _boolean(
+            raw["scanExactDuplicates"], field=f"{field}.scanExactDuplicates"
+        )
+        if not scan_exact_duplicates and forbidden:
+            raise OwnershipError(
+                f"{field}.scanExactDuplicates cannot be false when "
+                "forbiddenCopies are declared"
+            )
         domains.append(
-            OwnershipDomain(identifier, owner, owned_patterns, tuple(forbidden))
+            OwnershipDomain(
+                identifier,
+                owner,
+                owned_patterns,
+                tuple(forbidden),
+                scan_exact_duplicates,
+            )
         )
         domain_ids.append(identifier)
     if not domains:
@@ -625,14 +659,14 @@ def inventory_repository(
     )
     if _GIT_OBJECT_ID.fullmatch(tree) is None:
         raise OwnershipError(f"repository {identifier} resolved an invalid tree ID")
-    raw = _git(exact_root, ("ls-tree", "-r", "-z", "--full-tree", commit))
+    raw = _git(exact_root, ("ls-tree", "-r", "-l", "-z", "--full-tree", commit))
     blobs: dict[str, TrackedBlob] = {}
     for record in raw.split(b"\0"):
         if not record:
             continue
         try:
             metadata, path_bytes = record.split(b"\t", 1)
-            mode_bytes, kind, object_bytes = metadata.split(b" ", 2)
+            mode_bytes, kind, object_bytes, size_bytes = metadata.split(b" ", 3)
             mode = mode_bytes.decode("ascii", "strict")
             object_id = object_bytes.decode("ascii", "strict")
             path = path_bytes.decode("utf-8", "strict")
@@ -642,6 +676,12 @@ def inventory_repository(
             ) from exc
         if kind != b"blob":
             continue
+        try:
+            size = int(size_bytes.decode("ascii", "strict"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise OwnershipError(
+                f"repository {identifier} emitted an invalid Git blob size"
+            ) from exc
         normalized = _normalized_path(path, field=f"{identifier} tracked path")
         if normalized != path:
             raise OwnershipError(
@@ -655,7 +695,11 @@ def inventory_repository(
             raise OwnershipError(
                 f"repository {identifier} has invalid object ID for {path!r}"
             )
-        blobs[path] = TrackedBlob(path, mode, object_id)
+        if size < 0:
+            raise OwnershipError(
+                f"repository {identifier} has invalid blob size for {path!r}"
+            )
+        blobs[path] = TrackedBlob(path, mode, object_id, size)
     return RepositoryInventory(identifier, exact_root, commit, tree, blobs)
 
 
@@ -667,11 +711,16 @@ def _mutable(spec: RepositorySpec, path: str) -> bool:
     return any(_under_root(path, root) for root in spec.mutable_roots)
 
 
-def _owned_domains(ownership: OwnershipMap, path: str) -> tuple[OwnershipDomain, ...]:
+def _owned_domains(
+    ownership: OwnershipMap, repository: str, path: str
+) -> tuple[OwnershipDomain, ...]:
+    """Return owner-local domains matching one repository-relative path."""
+
     return tuple(
         domain
         for domain in ownership.domains
-        if any(pattern.matches(path) for pattern in domain.owned_patterns)
+        if domain.owner == repository
+        and any(pattern.matches(path) for pattern in domain.owned_patterns)
     )
 
 
@@ -771,7 +820,9 @@ def audit_component_ownership(
         destination_inventory = inventories[copy.destination_repository]
         source = source_inventory.blobs.get(copy.source_path)
         destination = destination_inventory.blobs.get(copy.destination_path)
-        source_domains = _owned_domains(ownership, copy.source_path)
+        source_domains = _owned_domains(
+            ownership, copy.source_repository, copy.source_path
+        )
         if source is None:
             violations.append(
                 _violation(
@@ -871,7 +922,7 @@ def audit_component_ownership(
         for path in sorted(inventory.blobs):
             if not _mutable(spec, path):
                 continue
-            domains = _owned_domains(ownership, path)
+            domains = _owned_domains(ownership, repository, path)
             forbidden = _forbidden_domains(ownership, repository, path)
             generated = (repository, path) in valid_generated
             if len(domains) > 1:
@@ -899,19 +950,7 @@ def audit_component_ownership(
                         )
                     )
             if len(domains) == 1:
-                domain = domains[0]
-                if repository == domain.owner:
-                    managed_count += 1
-                elif not generated:
-                    violations.append(
-                        _violation(
-                            "wrong_repository_owner",
-                            repository=repository,
-                            path=path,
-                            domain=domain.identifier,
-                            detail=f"mutable owner is {domain.owner}",
-                        )
-                    )
+                managed_count += 1
             for domain in forbidden:
                 if not generated:
                     violations.append(
@@ -930,10 +969,17 @@ def audit_component_ownership(
     # bypass content ownership. Multiple owner paths for one blob use the
     # lexicographically first path so evidence remains deterministic.
     for domain in ownership.domains:
+        if not domain.scan_exact_duplicates:
+            continue
         owner_inventory = inventories[domain.owner]
         owner_blobs: dict[str, str] = {}
         for blob in sorted(owner_inventory.blobs.values(), key=lambda item: item.path):
-            source_domains = _owned_domains(ownership, blob.path)
+            # Empty files carry no implementation and are ubiquitous as package
+            # markers and typed-package sentinels.  Treating their shared Git
+            # empty-blob identity as copied source creates only false positives.
+            if blob.mode not in _REGULAR_MODES or blob.size == 0:
+                continue
+            source_domains = _owned_domains(ownership, domain.owner, blob.path)
             if len(source_domains) != 1 or source_domains[0] != domain:
                 continue
             owner_blobs.setdefault(blob.object_id, blob.path)
@@ -945,6 +991,8 @@ def audit_component_ownership(
             inventory = inventories[repository]
             destination_spec = ownership.repositories[repository]
             for blob in sorted(inventory.blobs.values(), key=lambda item: item.path):
+                if blob.mode not in _REGULAR_MODES:
+                    continue
                 if blob.object_id not in owner_blobs:
                     continue
                 if not _mutable(destination_spec, blob.path):

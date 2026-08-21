@@ -19,21 +19,33 @@ os.environ.setdefault("AUDIT_HMAC_KEY_ID", "k1")
 
 @pytest.fixture(scope="session")
 def database():
-    """Real Postgres-backed Database; schema initialised lazily."""
-    from shared.database import Database
-    return Database()
+    """Isolated current AstralPlane database for the onboarding module."""
+
+    from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+
+    with isolated_plane_runtime("onboarding_tests") as runtime:
+        yield runtime
 
 
 @pytest.fixture
 def audit_repo(database):
     from audit.repository import AuditRepository
-    return AuditRepository(database)
+
+    return AuditRepository(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
 
 
 @pytest.fixture
 def onboarding_repo(database):
     from onboarding.repository import OnboardingRepository
-    return OnboardingRepository(database)
+
+    return OnboardingRepository(
+        None,
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
 
 
 @pytest.fixture
@@ -50,19 +62,19 @@ def _purge_pytest_rows(database):
     tutorial_step slug with the ``pytest-`` prefix for this to catch them.
     """
     try:
-        conn = database._get_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM onboarding_state WHERE user_id LIKE 'pytest-%'")
-        cur.execute("DELETE FROM tutorial_step_revision WHERE editor_user_id LIKE 'pytest-%'")
-        cur.execute("DELETE FROM tutorial_step WHERE slug LIKE 'pytest-%'")
-        conn.commit()
+        with database.transaction() as transaction:
+            transaction.execute(
+                "DELETE FROM onboarding_state WHERE user_id LIKE 'pytest-%'"
+            )
+            transaction.execute(
+                "DELETE FROM tutorial_step_revision "
+                "WHERE editor_user_id LIKE 'pytest-%'"
+            )
+            transaction.execute(
+                "DELETE FROM tutorial_step WHERE slug LIKE 'pytest-%'"
+            )
     except Exception:
         pass
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -83,26 +95,20 @@ def _isolate_onboarding_state(database, request):
     """
     yield
     try:
-        conn = database._get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "DELETE FROM onboarding_state WHERE user_id LIKE %s",
-            (f"pytest-{request.node.name}-%",),
-        )
-        cur.execute(
-            "DELETE FROM tutorial_step_revision WHERE editor_user_id LIKE %s",
-            (f"pytest-{request.node.name}-%",),
-        )
-        # Test-created steps use slugs prefixed with the test name
-        cur.execute(
-            "DELETE FROM tutorial_step WHERE slug LIKE %s",
-            (f"pytest-{request.node.name}-%",),
-        )
-        conn.commit()
+        with database.transaction() as transaction:
+            transaction.execute(
+                "DELETE FROM onboarding_state WHERE user_id LIKE %s",
+                (f"pytest-{request.node.name}-%",),
+            )
+            transaction.execute(
+                "DELETE FROM tutorial_step_revision "
+                "WHERE editor_user_id LIKE %s",
+                (f"pytest-{request.node.name}-%",),
+            )
+            # Test-created steps use slugs prefixed with the test name.
+            transaction.execute(
+                "DELETE FROM tutorial_step WHERE slug LIKE %s",
+                (f"pytest-{request.node.name}-%",),
+            )
     except Exception:
         pass
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass

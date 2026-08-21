@@ -3,51 +3,54 @@
 from __future__ import annotations
 
 import csv
+import io
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import read_attachment_bytes
 
 logger = logging.getLogger("FileTools.read_spreadsheet")
 
 
-def _read_xlsx(path: Path, sheet_name: Optional[str], max_rows: int) -> Dict[str, Any]:
+def _read_xlsx(payload: bytes, sheet_name: Optional[str], max_rows: int) -> Dict[str, Any]:
     import openpyxl  # type: ignore
 
-    wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
-    sheet_names = wb.sheetnames
-    selected = sheet_name or sheet_names[0]
-    if selected not in sheet_names:
-        return {"error": {"code": "parse_failed", "message": f"sheet {selected!r} not found"}}
-    ws = wb[selected]
+    wb = openpyxl.load_workbook(io.BytesIO(payload), read_only=True, data_only=True)
+    try:
+        sheet_names = wb.sheetnames
+        selected = sheet_name or sheet_names[0]
+        if selected not in sheet_names:
+            return {"error": {"code": "parse_failed", "message": f"sheet {selected!r} not found"}}
+        ws = wb[selected]
 
-    rows: List[List[Any]] = []
-    columns: List[str] = []
-    truncated = False
-    for i, row in enumerate(ws.iter_rows(values_only=True)):
-        if i == 0:
-            columns = ["" if c is None else str(c) for c in row]
-            continue
-        if len(rows) >= max_rows:
-            truncated = True
-            break
-        rows.append(list(row))
-    row_count = ws.max_row - 1 if ws.max_row else len(rows)
-    return {
-        "sheet_name": selected,
-        "sheet_names": sheet_names,
-        "columns": columns,
-        "rows": rows,
-        "row_count": row_count,
-        "truncated": truncated,
-    }
+        rows: List[List[Any]] = []
+        columns: List[str] = []
+        truncated = False
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i == 0:
+                columns = ["" if c is None else str(c) for c in row]
+                continue
+            if len(rows) >= max_rows:
+                truncated = True
+                break
+            rows.append(list(row))
+        row_count = ws.max_row - 1 if ws.max_row else len(rows)
+        return {
+            "sheet_name": selected,
+            "sheet_names": sheet_names,
+            "columns": columns,
+            "rows": rows,
+            "row_count": row_count,
+            "truncated": truncated,
+        }
+    finally:
+        wb.close()
 
 
-def _read_xls(path: Path, sheet_name: Optional[str], max_rows: int) -> Dict[str, Any]:
+def _read_xls(payload: bytes, sheet_name: Optional[str], max_rows: int) -> Dict[str, Any]:
     import xlrd  # type: ignore
 
-    book = xlrd.open_workbook(str(path))
+    book = xlrd.open_workbook(file_contents=payload)
     sheet_names = book.sheet_names()
     selected = sheet_name or sheet_names[0]
     if selected not in sheet_names:
@@ -71,12 +74,12 @@ def _read_xls(path: Path, sheet_name: Optional[str], max_rows: int) -> Dict[str,
     }
 
 
-def _read_ods(path: Path, sheet_name: Optional[str], max_rows: int) -> Dict[str, Any]:
+def _read_ods(payload: bytes, sheet_name: Optional[str], max_rows: int) -> Dict[str, Any]:
     from odf.opendocument import load  # type: ignore
     from odf.table import Table, TableRow, TableCell  # type: ignore
     from odf import text as odftext  # type: ignore
 
-    doc = load(str(path))
+    doc = load(io.BytesIO(payload))
     tables = doc.getElementsByType(Table)
     sheet_names = [t.getAttribute("name") for t in tables]
     if not tables:
@@ -109,12 +112,15 @@ def _read_ods(path: Path, sheet_name: Optional[str], max_rows: int) -> Dict[str,
     }
 
 
-def _read_delimited(path: Path, delimiter: str, max_rows: int) -> Dict[str, Any]:
+def _read_delimited(payload: bytes, delimiter: str, max_rows: int) -> Dict[str, Any]:
     columns: List[str] = []
     rows: List[List[Any]] = []
     truncated = False
     total = 0
-    with open(path, "r", encoding="utf-8", errors="replace", newline="") as fh:
+    with io.StringIO(
+        payload.decode("utf-8", errors="replace"),
+        newline="",
+    ) as fh:
         reader = csv.reader(fh, delimiter=delimiter)
         for i, row in enumerate(reader):
             if i == 0:
@@ -143,21 +149,21 @@ def read_spreadsheet(
     **_ignored: Any,
 ) -> Dict[str, Any]:
     """Read a spreadsheet attachment (XLSX/XLS/ODS/TSV/CSV) and return rows."""
-    att, path, err = resolve_attachment(attachment_id, user_id)
+    att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err
     base = {"filename": att.filename}
     try:
         if att.extension == "xlsx":
-            base.update(_read_xlsx(path, sheet_name, max_rows))
+            base.update(_read_xlsx(payload, sheet_name, max_rows))
         elif att.extension == "xls":
-            base.update(_read_xls(path, sheet_name, max_rows))
+            base.update(_read_xls(payload, sheet_name, max_rows))
         elif att.extension == "ods":
-            base.update(_read_ods(path, sheet_name, max_rows))
+            base.update(_read_ods(payload, sheet_name, max_rows))
         elif att.extension == "tsv":
-            base.update(_read_delimited(path, "\t", max_rows))
+            base.update(_read_delimited(payload, "\t", max_rows))
         elif att.extension == "csv":
-            base.update(_read_delimited(path, ",", max_rows))
+            base.update(_read_delimited(payload, ",", max_rows))
         else:
             return {"error": {
                 "code": "unsupported",

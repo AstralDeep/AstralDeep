@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -61,12 +63,31 @@ def _autoparse_orch(authority=None):
     from orchestrator import attachment_autoparse  # noqa: F401
 
     orch = _Orch(authority)
-    db = MagicMock()
-    db.fetch_one = MagicMock(side_effect=[
-        {"message_id": "m1"},                    # message_attachment link
-        {"content": "read my file please"},      # original user text
-    ])
-    orch.history.db = db
+    attachment = SimpleNamespace(filename="data.xyz", category="data")
+    plane = SimpleNamespace(
+        runtime=SimpleNamespace(transaction=lambda: nullcontext(object())),
+        repositories=SimpleNamespace(
+            artifacts=SimpleNamespace(
+                message_attachments=SimpleNamespace(
+                    list_for_conversation=lambda *a, **k: (
+                        SimpleNamespace(
+                            attachment_id="att-123456",
+                            message_id="1",
+                        ),
+                    )
+                ),
+                attachments=SimpleNamespace(get=lambda *a, **k: attachment),
+            ),
+            history=SimpleNamespace(
+                messages=SimpleNamespace(
+                    get=lambda *a, **k: SimpleNamespace(
+                        content="read my file please"
+                    )
+                )
+            ),
+        ),
+    )
+    orch.runtime_composition = SimpleNamespace(plane=plane)
     return orch
 
 

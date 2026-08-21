@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Set
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from shared.attachment_materializer import materialize_text_attachment
-from shared.attachment_resolver import resolve_attachment_path
+from shared.attachment_resolver import open_attachment_blob_reader
 from shared.external_http import BadRequestError, ExternalHttpError
 from astralprims import Alert, Card, Table, Text
 
@@ -201,13 +201,13 @@ def forecaster_submit_dataset(file_handle: Optional[str] = None,
                 "Provide either file_handle (the attachment_id of an uploaded "
                 "CSV) or inline_data (the raw CSV text the user pasted in chat)."
             )
-        local_path = resolve_attachment_path(file_handle, user_id)
-        filename = os.path.basename(local_path)
-        with open(local_path, "rb") as fh:
-            resp = client.post(
-                "/dataset/submit",
-                files={"file": (filename, fh, "text/csv")},
-            )
+        with open_attachment_blob_reader(file_handle, user_id) as (attachment, reader):
+            filename = attachment.filename
+            payload_bytes = b"".join(reader.iter_chunks())
+        resp = client.post(
+            "/dataset/submit",
+            files={"file": (filename, payload_bytes, "text/csv")},
+        )
         payload = _safe_json(resp)
         uuid = payload.get("uuid")
         columns = payload.get("columns") or []

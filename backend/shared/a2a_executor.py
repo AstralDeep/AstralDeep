@@ -7,6 +7,7 @@ and results are published back as A2A events.
 """
 import asyncio
 import logging
+import os
 import uuid
 from typing import Optional
 
@@ -42,7 +43,13 @@ class MCPAgentExecutor(AgentExecutor):
     4. Converts the MCPResponse to A2A events and publishes them
     """
 
-    def __init__(self, mcp_server, security_validator: Optional[A2ASecurityValidator] = None, private_key=None):
+    def __init__(
+        self,
+        mcp_server,
+        security_validator: Optional[A2ASecurityValidator] = None,
+        private_key=None,
+        protected_request_verifier=None,
+    ):
         """
         Args:
             mcp_server: The agent's MCPServer instance (has .process_request() and .tools).
@@ -52,6 +59,7 @@ class MCPAgentExecutor(AgentExecutor):
         self.mcp_server = mcp_server
         self.security_validator = security_validator or A2ASecurityValidator()
         self._private_key = private_key
+        self._protected_request_verifier = protected_request_verifier
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Execute an incoming A2A request by dispatching to MCP tools."""
@@ -71,8 +79,36 @@ class MCPAgentExecutor(AgentExecutor):
             mcp_request = a2a_message_to_mcp_request(message)
 
             if mcp_request:
+                if await self._validated_bearer_claims(context) is None:
+                    raise PermissionError("a2a_authentication_failed")
+                mcp_request.validate_protocol_metadata(allow_legacy=True)
+                protected_wire_arguments = dict(
+                    (mcp_request.params.get("arguments", {}) or {})
+                )
+                # Preserve the exact host-authorized wire mapping across
+                # trusted executor-local credential decryption and signature
+                # filtering. Generated MCP servers claim at their final
+                # actuator seam and read this process-local snapshot there.
+                mcp_request._protected_wire_arguments = protected_wire_arguments
                 # Decrypt E2E credentials if present
                 self._decrypt_credentials_if_needed(mcp_request)
+                caller_capabilities = mcp_request.caller_capabilities
+                protected_metadata_present = bool(
+                    isinstance(caller_capabilities, dict)
+                    and "astraldeep.lets/v1" in caller_capabilities
+                )
+                protected_executor_required = (
+                    os.getenv("LETS_MODE", "off").strip().lower() == "enforce"
+                    and os.getenv("ASTRAL_RUNTIME_COHORT", "").strip()
+                    in {"server_dynamic", "byo_user"}
+                )
+                if self._protected_request_verifier is not None and (
+                    protected_metadata_present or protected_executor_required
+                ):
+                    self._protected_request_verifier(
+                        mcp_request,
+                        final_wire_arguments=protected_wire_arguments,
+                    )
                 # Tool call: dispatch via MCP server
                 await self._execute_tool_call(mcp_request, updater, context)
             else:
@@ -93,6 +129,30 @@ class MCPAgentExecutor(AgentExecutor):
         """Cancel an ongoing task."""
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         await updater.cancel()
+
+    async def _validated_bearer_claims(self, context: RequestContext):
+        """Validate the HTTP bearer exposed by the A2A SDK call context."""
+
+        call_context = getattr(context, "call_context", None)
+        state = getattr(call_context, "state", {}) or {}
+        headers = state.get("headers", {}) if isinstance(state, dict) else {}
+        authorization = ""
+        if isinstance(headers, dict):
+            authorization = next(
+                (
+                    str(value)
+                    for key, value in headers.items()
+                    if str(key).lower() == "authorization"
+                ),
+                "",
+            )
+        scheme, separator, token = authorization.partition(" ")
+        if not separator or scheme.lower() != "bearer" or not token.strip():
+            return None
+        claims = await self.security_validator.validate_token(token.strip())
+        if not isinstance(claims, dict) or not isinstance(claims.get("sub"), str):
+            return None
+        return claims
 
     async def _execute_tool_call(self, mcp_request, updater: TaskUpdater, context: RequestContext):
         """Dispatch an MCP tool call and publish results."""

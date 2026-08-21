@@ -5,6 +5,11 @@ Covers turn→attachment linking + the dedup-safe global parser registry DAO.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from types import SimpleNamespace
+
+import pytest
+
 from orchestrator.attachments.message_attachment_repo import MessageAttachmentRepository
 from orchestrator.attachments.parser_repo import (
     AttachmentParserRepository, STATUS_PENDING, STATUS_LIVE, STATUS_FAILED,
@@ -12,9 +17,63 @@ from orchestrator.attachments.parser_repo import (
 from tests.attachments._fake_db_031 import FakeDB
 
 
+class _PlaneRuntime:
+    @contextmanager
+    def transaction(self):
+        yield object()
+
+
+def _plane_source(db: FakeDB) -> SimpleNamespace:
+    return SimpleNamespace(
+        plane_runtime=_PlaneRuntime(),
+        plane_repositories=db.plane_repositories,
+    )
+
+
+def _message_repository(db: FakeDB) -> MessageAttachmentRepository:
+    return MessageAttachmentRepository.from_plane_source(_plane_source(db))
+
+
+def _parser_repository(db: FakeDB) -> AttachmentParserRepository:
+    return AttachmentParserRepository.from_plane_source(_plane_source(db))
+
+
+def test_message_attachment_from_plane_source_requires_application_binding():
+    db = FakeDB()
+    runtime = _PlaneRuntime()
+    repo = MessageAttachmentRepository.from_plane_source(
+        SimpleNamespace(
+            plane_runtime=runtime,
+            plane_repositories=db.plane_repositories,
+        )
+    )
+    repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id="m1")
+    assert repo.db is None
+    assert [row["attachment_id"] for row in repo.list_for_chat("c1", "u1")] == ["a1"]
+
+    with pytest.raises(RuntimeError, match="application Plane runtime"):
+        MessageAttachmentRepository.from_plane_source(SimpleNamespace())
+
+
+def test_parser_repository_from_plane_source_requires_application_binding():
+    db = FakeDB()
+    runtime = _PlaneRuntime()
+    repo = AttachmentParserRepository.from_plane_source(
+        SimpleNamespace(
+            plane_runtime=runtime,
+            plane_repositories=db.plane_repositories,
+        )
+    )
+    assert repo.db is None
+    assert repo.get_by_gap("missing") is None
+
+    with pytest.raises(RuntimeError, match="application Plane runtime"):
+        AttachmentParserRepository.from_plane_source(SimpleNamespace())
+
+
 def test_message_attachment_insert_and_list_for_message():
     db = FakeDB()
-    repo = MessageAttachmentRepository(db)
+    repo = _message_repository(db)
     repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id="m1")
     repo.insert(chat_id="c1", attachment_id="a2", user_id="u1", message_id="m1")
     repo.insert(chat_id="c1", attachment_id="a3", user_id="u2", message_id="m1")  # other user
@@ -26,7 +85,7 @@ def test_message_attachment_insert_and_list_for_message():
 
 def test_message_attachment_list_for_chat():
     db = FakeDB()
-    repo = MessageAttachmentRepository(db)
+    repo = _message_repository(db)
     repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id="m1")
     repo.insert(chat_id="c1", attachment_id="a2", user_id="u1", message_id="m2")
     assert len(repo.list_for_chat("c1", "u1")) == 2
@@ -41,7 +100,7 @@ def test_list_for_chat_grouped_by_message_matches_per_message_reads():
     per-message result exactly — same attachments, same order, same scoping.
     """
     db = FakeDB()
-    repo = MessageAttachmentRepository(db)
+    repo = _message_repository(db)
     repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id="m1")
     repo.insert(chat_id="c1", attachment_id="a2", user_id="u1", message_id="m1")
     repo.insert(chat_id="c1", attachment_id="a3", user_id="u1", message_id="m2")
@@ -70,7 +129,7 @@ def test_list_for_chat_reports_message_id_as_text():
     the bulk grouping silently matches nothing.
     """
     db = FakeDB()
-    repo = MessageAttachmentRepository(db)
+    repo = _message_repository(db)
     repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id=4242)
 
     (link,) = repo.list_for_chat("c1", "u1")
@@ -79,7 +138,7 @@ def test_list_for_chat_reports_message_id_as_text():
 
 def test_parser_repo_create_pending_is_dedup_safe():
     db = FakeDB()
-    repo = AttachmentParserRepository(db)
+    repo = _parser_repository(db)
     row1 = repo.create_pending(
         gap_fingerprint="gap1", category="data", extension="parquet",
         draft_agent_id="d1", source_attachment_id="a1", source_chat_id="c1",
@@ -98,7 +157,7 @@ def test_parser_repo_create_pending_is_dedup_safe():
 
 def test_parser_repo_mark_live_and_lookup():
     db = FakeDB()
-    repo = AttachmentParserRepository(db)
+    repo = _parser_repository(db)
     repo.create_pending(
         gap_fingerprint="gap2", category="archive", extension="zip",
         draft_agent_id="d1", source_attachment_id="a1", source_chat_id="c1",
@@ -110,17 +169,21 @@ def test_parser_repo_mark_live_and_lookup():
     assert row["status"] == STATUS_LIVE
     assert row["live_agent_id"] == "parser-zip-1"
     assert row["tool_name"] == "parse_zip"
-    assert row["approved_by"] == "admin1"
-    assert repo.get_by_draft("d1")["gap_fingerprint"] == "gap2"
+    admin_row = repo.get_by_draft("d1", for_administration=True)
+    assert admin_row["approved_by"] == "admin1"
+    assert admin_row["gap_fingerprint"] == "gap2"
 
 
 def test_parser_repo_mark_status_and_list():
     db = FakeDB()
-    repo = AttachmentParserRepository(db)
+    repo = _parser_repository(db)
     repo.create_pending(gap_fingerprint="g", category="data", extension="avro",
                         draft_agent_id=None, source_attachment_id=None,
                         source_chat_id=None, requested_by="u1")
-    repo.mark_status("g", STATUS_FAILED)
+    repo.mark_status("g", STATUS_FAILED, owner_user_id="u1")
     assert repo.get_by_gap("g")["status"] == STATUS_FAILED
-    assert [r["gap_fingerprint"] for r in repo.list_by_status(STATUS_FAILED)] == ["g"]
-    assert repo.list_by_status(STATUS_PENDING) == []
+    assert [
+        r["gap_fingerprint"]
+        for r in repo.list_by_status(STATUS_FAILED, owner_user_id="u1")
+    ] == ["g"]
+    assert repo.list_by_status(STATUS_PENDING, owner_user_id="u1") == []

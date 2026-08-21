@@ -6,8 +6,6 @@ import os
 import urllib.request
 import uuid
 
-from orchestrator.agent_constitution import UserAgentPolicyOutcome
-from shared.database import Database
 from shared.process_supervision import (
     ProcessOwner,
     ProcessSupervisor,
@@ -21,14 +19,17 @@ except ImportError:
     pass
 
 
+EX_UNAVAILABLE = getattr(os, "EX_UNAVAILABLE", 69)
+
+
 def _wait_for_orchestrator(port: int, process, timeout_s: float = 60.0,
                            interval_s: float = 0.5) -> bool:
     """Poll the orchestrator's /healthz until it answers, dies, or times out.
 
     Proceeds on the first successful response (fast path); stops early if
     the orchestrator process exits so the supervisor loop can propagate its
-    exit code. Returns True when healthy, False otherwise — callers always
-    continue either way (feature 052, FR-029).
+    exit code. Returns ``False`` on either failure; callers must fail closed
+    before spawning any dependent agent process.
     """
     url = f"http://localhost:{port}/healthz"
     started = time.monotonic()
@@ -48,22 +49,6 @@ def _wait_for_orchestrator(port: int, process, timeout_s: float = 60.0,
         time.sleep(interval_s)
     print(f" Orchestrator /healthz not ready after {timeout_s:.0f}s; continuing anyway.")
     return False
-
-
-def _report_user_agent_policy_outcome(database: Database) -> None:
-    """Print only the bounded aggregate result of the guarded policy check."""
-
-    outcome = getattr(database, "user_agent_policy_outcome", None)
-    if not isinstance(outcome, UserAgentPolicyOutcome):
-        raise RuntimeError("guarded database initialization omitted policy outcome")
-    fields = outcome.public_fields()
-    print(
-        "  User-agent policy check: "
-        f"revision={fields['policy_revision']} "
-        f"marker_changed={str(fields['marker_changed']).lower()} "
-        "agents_marked_for_revalidation="
-        f"{fields['agents_marked_for_revalidation']}"
-    )
 
 
 def main(process_supervisor=None):
@@ -105,38 +90,6 @@ def main(process_supervisor=None):
                     if agent_scripts:
                         valid_agents.append(item)
         
-        # One unconditional guarded initializer owns schema/policy startup.
-        # Reuse that instance for optional first-boot ownership initialization
-        # so start.py never grows a parallel migration or policy path.
-        db = Database()
-        try:
-            _report_user_agent_policy_outcome(db)
-            default_owner = os.environ.get("DEFAULT_AGENT_OWNER")
-            if default_owner:
-                all_agents = []
-                if os.path.exists(agents_dir):
-                    for item in os.listdir(agents_dir):
-                        item_path = os.path.join(agents_dir, item)
-                        if os.path.isdir(item_path) and not item.startswith("__"):
-                            agent_scripts = [
-                                f
-                                for f in os.listdir(item_path)
-                                if f.endswith("_agent.py")
-                            ]
-                            if agent_scripts:
-                                all_agents.append(item)
-                for agent_name in all_agents:
-                    ownership = db.get_agent_ownership(agent_name)
-                    if not ownership:
-                        # Feature 030: bundled (non-draft) agents default to
-                        # public so they are discoverable in the Agents
-                        # surface; drafts stay private until approved.
-                        is_draft = os.path.exists(os.path.join(agents_dir, agent_name, ".draft"))
-                        db.set_agent_ownership(agent_name, default_owner, is_public=not is_draft)
-                        print(f"  Assigned owner '{default_owner}' to agent: {agent_name}")
-        finally:
-            db.close()
-
         # Set MAX_AGENTS based on what we found, defaulting to 1 if none found to avoid errors
         max_agents = max(1, len(valid_agents))
         env = os.environ.copy()
@@ -150,7 +103,11 @@ def main(process_supervisor=None):
             argv=(python_exe, orchestrator_script),
             env=env,
         )
-        _wait_for_orchestrator(orch_port, p_orch)
+        if not _wait_for_orchestrator(orch_port, p_orch):
+            returncode = p_orch.poll()
+            if isinstance(returncode, int) and returncode != 0:
+                raise SystemExit(returncode)
+            raise SystemExit(EX_UNAVAILABLE)
 
         # Feature 040 (US1): when in-process agents are enabled (default), the
         # orchestrator runs the bundled first-party agents itself — don't spawn

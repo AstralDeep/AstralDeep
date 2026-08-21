@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sqlite3
 import sys
 
 import pytest
@@ -161,47 +160,22 @@ def test_scanner_does_not_flag_benign_topical_mentions(benign):
 
 
 # ---------------------------------------------------------------------------
-# Finding 15 — teardown LIKE pattern must not over-match sibling runs
-# ---------------------------------------------------------------------------
-
-from verification.isolation import (  # noqa: E402
-    NAMESPACE_PREFIX, _like_escape, principal_id,
-)
-
-
-def test_teardown_like_pattern_excludes_prefix_sibling_run():
-    con = sqlite3.connect(":memory:")
-    cur = con.cursor()
-    cur.execute("CREATE TABLE t(user_id TEXT)")
-    mine = [principal_id("abc", "alice", "primary"), principal_id("abc", "bob", "viewer")]
-    sibling = principal_id("abcd", "eve", "primary")   # a DIFFERENT run
-    cur.executemany("INSERT INTO t VALUES(?)", [(u,) for u in mine + [sibling]])
-    like = f"{_like_escape(f'{NAMESPACE_PREFIX}abc_')}%"
-    matched = {r[0] for r in cur.execute(
-        "SELECT user_id FROM t WHERE user_id LIKE ? ESCAPE '\\'", (like,))}
-    assert matched == set(mine)
-    assert sibling not in matched
-
-
-def test_like_escape_neutralizes_metacharacters():
-    assert _like_escape("a_b%c") == r"a\_b\%c"
-
-
-# ---------------------------------------------------------------------------
 # Findings 7 & 10 — parallel dispatch records taint + fires POST hooks, like
 # the single path (previously only the single-tool path did either).
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_parallel_wrapper_records_taint_and_fires_posthook(monkeypatch):
+async def test_parallel_wrapper_records_taint_and_fires_posthook(
+    monkeypatch,
+    orchestrator_factory,
+):
     from unittest.mock import AsyncMock, MagicMock
 
     from orchestrator import taint as taint_mod
-    from orchestrator.orchestrator import Orchestrator
     from shared.feature_flags import flags
     from shared.protocol import MCPResponse
 
-    orch = await asyncio.to_thread(Orchestrator)
+    orch = await asyncio.to_thread(orchestrator_factory)
     orch._execute_with_retry = AsyncMock(return_value=MCPResponse(
         result={"x": 1}, ui_components=[{"type": "text", "content": "hi"}]))
     tracker = MagicMock()

@@ -11,33 +11,177 @@ Verifies:
 """
 import os
 import sys
-import tempfile
+from contextlib import contextmanager
+from types import SimpleNamespace
+
 import pytest
 
 # Ensure backend is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from orchestrator.tool_permissions import ToolPermissionManager, VALID_SCOPES
+from orchestrator.tool_permissions import (
+    VALID_SCOPES,
+    ToolPermissionManager,
+    resolve_effective_tool_permissions,
+)
+from astralplane.repositories.tool_policy import ScopeState, ToolOverrideState
+
+
+class _ToolPolicyRepository:
+    """Small in-memory implementation of Plane's typed policy repository."""
+
+    def __init__(self):
+        self.scopes = {}
+        self.overrides = {}
+
+    def list_scopes(self, _transaction, *, owner_id, agent_id):
+        return tuple(
+            row
+            for key, row in sorted(self.scopes.items())
+            if key[:2] == (owner_id, agent_id)
+        )
+
+    def list_all_scopes(self, _transaction, *, owner_id):
+        return tuple(
+            row
+            for key, row in sorted(self.scopes.items())
+            if key[0] == owner_id
+        )
+
+    def set_scopes(
+        self, _transaction, *, owner_id, agent_id, scopes, updated_at
+    ):
+        rows = []
+        for scope, enabled in sorted(scopes.items()):
+            row = ScopeState(
+                owner_id=owner_id,
+                agent_id=agent_id,
+                scope=scope,
+                enabled=enabled,
+                updated_at=updated_at,
+            )
+            self.scopes[(owner_id, agent_id, scope)] = row
+            rows.append(row)
+        return tuple(rows)
+
+    def list_overrides(self, _transaction, *, owner_id, agent_id):
+        return tuple(
+            row
+            for key, row in sorted(
+                self.overrides.items(),
+                key=lambda item: (
+                    item[0][0],
+                    item[0][1],
+                    item[0][2],
+                    item[0][3] or "",
+                ),
+            )
+            if key[:2] == (owner_id, agent_id)
+        )
+
+    def set_tool_override(
+        self,
+        _transaction,
+        *,
+        owner_id,
+        agent_id,
+        tool_name,
+        permission_kind,
+        enabled,
+        updated_at,
+    ):
+        row = ToolOverrideState(
+            owner_id=owner_id,
+            agent_id=agent_id,
+            tool_name=tool_name,
+            permission_kind=permission_kind,
+            enabled=enabled,
+            updated_at=updated_at,
+        )
+        self.overrides[(owner_id, agent_id, tool_name, permission_kind)] = row
+        return row
+
+    def remove_owner_state(self, _transaction, *, owner_id):
+        scope_keys = [key for key in self.scopes if key[0] == owner_id]
+        override_keys = [key for key in self.overrides if key[0] == owner_id]
+        for key in scope_keys:
+            del self.scopes[key]
+        for key in override_keys:
+            del self.overrides[key]
+        return len(scope_keys) + len(override_keys)
+
+    def remove_agent_state(self, _transaction, *, owner_id, agent_id):
+        scope_keys = [key for key in self.scopes if key[:2] == (owner_id, agent_id)]
+        override_keys = [
+            key for key in self.overrides if key[:2] == (owner_id, agent_id)
+        ]
+        for key in scope_keys:
+            del self.scopes[key]
+        for key in override_keys:
+            del self.overrides[key]
+        return len(scope_keys) + len(override_keys)
+
+    def prune_agent_overrides(self, _transaction, *, agent_id, live_tool_names):
+        live = set(live_tool_names)
+        stale = [
+            key
+            for key in self.overrides
+            if key[1] == agent_id and key[2] not in live
+        ]
+        for key in stale:
+            del self.overrides[key]
+        return len(stale)
+
+
+class _AgentRepository:
+    def __init__(self):
+        self.user_agents = {}
+
+    def get_agent_for_administration(self, _transaction, *, agent_id):
+        return self.user_agents.get(agent_id)
+
+    def get_trust(self, _transaction, *, agent_id):
+        return None
+
+    def get_ownership(self, _transaction, *, agent_id):
+        return None
+
+
+class _PlaneRuntime:
+    def __init__(self):
+        self.repositories = SimpleNamespace(
+            tool_policy_state=_ToolPolicyRepository(),
+            agents=_AgentRepository(),
+        )
+
+    @contextmanager
+    def transaction(self):
+        yield object()
+
+
+def _manager(runtime):
+    return ToolPermissionManager(
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+    )
+
+
+def _override_rows(manager, owner_id, agent_id):
+    return manager._policy.call(  # noqa: SLF001 - verify through the typed seam
+        manager._policy.repository.list_overrides,  # noqa: SLF001
+        owner_id=owner_id,
+        agent_id=agent_id,
+    )
 
 
 @pytest.fixture
-def tmp_dir():
-    """Create a temporary directory for test data."""
-    d = tempfile.mkdtemp()
-    yield d
-    import glob
-    for f in glob.glob(os.path.join(d, "*")):
-        os.remove(f)
-    if os.path.exists(d):
-        os.rmdir(d)
+def plane_runtime():
+    return _PlaneRuntime()
 
 
 @pytest.fixture
-def manager(tmp_dir):
-    m = ToolPermissionManager(data_dir=tmp_dir)
-    # Clean up any stale data from previous runs (shared Postgres DB)
-    for uid in ("user1", "user2"):
-        m.remove_user_permissions(uid)
+def manager(plane_runtime):
+    m = _manager(plane_runtime)
     # Register tool→scope mapping for a test agent
     m.register_tool_scopes("agent1", {
         "get_system_status": "tools:system",
@@ -47,10 +191,7 @@ def manager(tmp_dir):
         "search_arxiv": "tools:search",
         "generate_chart": "tools:read",
     })
-    yield m
-    # Tear down: remove test data
-    for uid in ("user1", "user2"):
-        m.remove_user_permissions(uid)
+    return m
 
 
 TOOLS = ["get_system_status", "get_cpu_info", "modify_data", "search_wikipedia", "search_arxiv", "generate_chart"]
@@ -79,6 +220,20 @@ class TestDefaultScopes:
         result = manager.get_effective_permissions("user1", "agent1", TOOLS)
         assert all(v is False for v in result.values())
         assert set(result.keys()) == set(TOOLS)
+
+
+class TestOwnerIsolation:
+    def test_foreign_user_denied_even_with_stray_scope_grant(
+        self, manager, plane_runtime
+    ):
+        plane_runtime.repositories.agents.user_agents["agent1"] = SimpleNamespace(
+            owner_id="user1",
+            deleted_at=None,
+        )
+        manager.set_agent_scopes("user2", "agent1", {"tools:read": True})
+
+        assert manager.is_tool_allowed("user2", "agent1", "generate_chart") is False
+        assert manager.is_tool_allowed("user1", "agent1", "generate_chart") is True
 
 
 class TestSetGetScopes:
@@ -143,6 +298,113 @@ class TestEffectivePermissions:
         assert result["search_wikipedia"] is False   # search (not enabled)
         assert result["search_arxiv"] is False       # search (not enabled)
 
+    def test_detached_snapshot_uses_canonical_precedence(self):
+        """Legacy deny wins, then kind override, scope, and safe baseline."""
+        scopes = (
+            ScopeState("user1", "agent1", "tools:read", True, None),
+            ScopeState("user1", "agent1", "tools:write", False, None),
+        )
+        overrides = (
+            ToolOverrideState(
+                "user1", "agent1", "read", "tools:read", True, None
+            ),
+            ToolOverrideState("user1", "agent1", "read", None, False, None),
+            ToolOverrideState(
+                "user1", "agent1", "write", "tools:write", True, None
+            ),
+        )
+
+        assert resolve_effective_tool_permissions(
+            {
+                "read": "tools:read",
+                "write": "tools:write",
+                "search": "tools:search",
+            },
+            owner_id="user1",
+            agent_id="agent1",
+            scope_rows=scopes,
+            override_rows=overrides,
+            safe_default=True,
+        ) == {
+            "read": {"tools:read": False},
+            "write": {"tools:write": True},
+            "search": {"tools:search": True},
+        }
+
+    def test_detached_snapshot_rejects_cross_owner_rows(self):
+        """A foreign principal's durable grant fails closed before resolution."""
+        foreign = ScopeState(
+            "user2", "agent1", "tools:read", True, None
+        )
+
+        with pytest.raises(RuntimeError, match="owner fence"):
+            resolve_effective_tool_permissions(
+                {"read": "tools:read"},
+                owner_id="user1",
+                agent_id="agent1",
+                scope_rows=(foreign,),
+                override_rows=(),
+            )
+
+    @pytest.mark.parametrize(
+        ("scope_rows", "override_rows", "message"),
+        [
+            (
+                (SimpleNamespace(
+                    owner_id="user1",
+                    agent_id="agent1",
+                    scope="tools:read",
+                    enabled="yes",
+                ),),
+                (),
+                "scope snapshot is invalid",
+            ),
+            (
+                (),
+                (ToolOverrideState(
+                    "user2", "agent1", "read", "tools:read", True, None
+                ),),
+                "owner fence",
+            ),
+            (
+                (),
+                (SimpleNamespace(
+                    owner_id="user1",
+                    agent_id="agent1",
+                    tool_name="read",
+                    permission_kind=7,
+                    enabled=True,
+                ),),
+                "override snapshot is invalid",
+            ),
+        ],
+    )
+    def test_detached_snapshot_rejects_invalid_typed_rows(
+        self, scope_rows, override_rows, message
+    ):
+        with pytest.raises(RuntimeError, match=message):
+            resolve_effective_tool_permissions(
+                {"read": "tools:read"},
+                owner_id="user1",
+                agent_id="agent1",
+                scope_rows=scope_rows,
+                override_rows=override_rows,
+            )
+
+    @pytest.mark.parametrize(
+        ("owner_id", "agent_id"),
+        [("", "agent1"), ("user1", "")],
+    )
+    def test_detached_snapshot_requires_exact_identity(self, owner_id, agent_id):
+        with pytest.raises(ValueError, match="non-empty string"):
+            resolve_effective_tool_permissions(
+                {},
+                owner_id=owner_id,
+                agent_id=agent_id,
+                scope_rows=(),
+                override_rows=(),
+            )
+
 
 class TestGetAllowedTools:
     def test_filter_by_scope(self, manager):
@@ -194,21 +456,21 @@ class TestToolScopeMapping:
 
 
 class TestPersistence:
-    def test_save_and_reload(self, tmp_dir):
-        """Scopes persist across manager instances."""
-        m1 = ToolPermissionManager(data_dir=tmp_dir)
+    def test_save_and_reload(self, plane_runtime):
+        """Typed repository state is visible across manager instances."""
+        m1 = _manager(plane_runtime)
         m1.register_tool_scopes("agent1", {"modify_data": "tools:write"})
         m1.set_agent_scopes("user1", "agent1", {"tools:write": True})
 
-        m2 = ToolPermissionManager(data_dir=tmp_dir)
+        m2 = _manager(plane_runtime)
         m2.register_tool_scopes("agent1", {"modify_data": "tools:write"})
         assert m2.is_scope_enabled("user1", "agent1", "tools:write") is True
         assert m2.is_tool_allowed("user1", "agent1", "modify_data") is True
 
-    def test_db_connected(self, tmp_dir):
-        m = ToolPermissionManager(data_dir=tmp_dir)
+    def test_typed_repository_connected(self, plane_runtime):
+        m = _manager(plane_runtime)
         m.set_agent_scopes("user1", "agent1", {"tools:read": True})
-        # Verify data was persisted by reading it back
+        # Verify state was persisted through Plane's typed repository contract.
         assert m.is_scope_enabled("user1", "agent1", "tools:read") is True
 
 
@@ -232,11 +494,8 @@ class TestCleanup:
         live_tools = ["modify_data", "search_wikipedia", "generate_chart"]
         deleted = manager.cleanup_stale_tool_overrides("agent1", live_tools)
         assert deleted >= 1
-        rows = manager.db.fetch_all(
-            "SELECT tool_name FROM tool_overrides WHERE user_id = ? AND agent_id = ?",
-            ("user1", "agent1"),
-        )
-        names = {r['tool_name'] for r in rows}
+        rows = _override_rows(manager, "user1", "agent1")
+        names = {row.tool_name for row in rows}
         assert "removed_tool" not in names
         assert "modify_data" in names
 
@@ -245,11 +504,7 @@ class TestCleanup:
         manager.set_tool_permission("user1", "agent1", "modify_data", "tools:write", False)
         manager.set_tool_permission("user1", "agent1", "search_arxiv", "tools:search", False)
         manager.cleanup_stale_tool_overrides("agent1", [])
-        rows = manager.db.fetch_all(
-            "SELECT tool_name FROM tool_overrides WHERE user_id = ? AND agent_id = ?",
-            ("user1", "agent1"),
-        )
-        assert rows == []
+        assert _override_rows(manager, "user1", "agent1") == ()
 
     def test_cleanup_stale_tool_overrides_preserves_other_agents(self, manager):
         """Cleanup is scoped to the given agent_id; other agents untouched."""
@@ -257,16 +512,10 @@ class TestCleanup:
         manager.set_tool_permission("user1", "agent1", "modify_data", "tools:write", False)
         manager.set_tool_permission("user1", "agent2", "some_tool", "tools:read", False)
         manager.cleanup_stale_tool_overrides("agent1", [])
-        agent1_rows = manager.db.fetch_all(
-            "SELECT tool_name FROM tool_overrides WHERE user_id = ? AND agent_id = ?",
-            ("user1", "agent1"),
-        )
-        agent2_rows = manager.db.fetch_all(
-            "SELECT tool_name FROM tool_overrides WHERE user_id = ? AND agent_id = ?",
-            ("user1", "agent2"),
-        )
-        assert agent1_rows == []
-        assert {r['tool_name'] for r in agent2_rows} == {"some_tool"}
+        agent1_rows = _override_rows(manager, "user1", "agent1")
+        agent2_rows = _override_rows(manager, "user1", "agent2")
+        assert agent1_rows == ()
+        assert {row.tool_name for row in agent2_rows} == {"some_tool"}
 
     def test_cleanup_stale_tool_overrides_idempotent(self, manager):
         """Running cleanup twice yields zero deletions on the second call."""

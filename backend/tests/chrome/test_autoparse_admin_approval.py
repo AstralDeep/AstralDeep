@@ -18,10 +18,12 @@ if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
 from orchestrator import agentic_creation  # noqa: E402
+from tests.helpers.draft_store_double import InMemoryDraftStore  # noqa: E402
 
 
 class _FakeLifecycle:
-    def __init__(self):
+    def __init__(self, draft_store: InMemoryDraftStore):
+        self.draft_store = draft_store
         self.approve_called_with = None
 
     async def approve_agent(self, draft_id, websocket=None):
@@ -30,23 +32,19 @@ class _FakeLifecycle:
         return {"status": "pending_review"}
 
 
-class _FakeDB:
-    def __init__(self, draft):
-        self._draft = draft
-
-    def get_draft_agent(self, draft_id):
-        return dict(self._draft) if draft_id == self._draft["id"] else None
-
-
 def _fake_orch(draft):
     sent = []
 
     async def send_ui_render(ws, components, target=None):
         sent.append((target, components))
 
-    lifecycle = _FakeLifecycle()
+    draft_values = dict(draft)
+    draft_values["draft_id"] = draft_values.pop("id")
+    draft_values.setdefault("description", "Parser draft awaiting approval")
+    draft_store = InMemoryDraftStore()
+    draft_store.create_draft_agent(**draft_values)
+    lifecycle = _FakeLifecycle(draft_store)
     orch = types.SimpleNamespace(
-        history=types.SimpleNamespace(db=_FakeDB(draft)),
         lifecycle_manager=lifecycle,
         send_ui_render=send_ui_render,
         _ws_active_chat={},

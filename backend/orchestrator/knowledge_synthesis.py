@@ -27,9 +27,16 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from openai import OpenAI
 from httpx import Timeout
+from astralplane.repositories import RepositoryConflictError
+from astralplane.repositories.maintenance import (
+    MaintenanceInputRecord,
+    MaintenanceState,
+    MaintenanceUnitRecord,
+)
 
 from orchestrator.hooks import HookContext, HookResponse
 from orchestrator.bounded_work import run_maintenance
+from orchestrator.plane_repository_context import PlaneRepositoryContext, repository_from
 from orchestrator.work_admission import (
     AdmissionClass,
     ExecutionFence,
@@ -72,6 +79,18 @@ GENERATION_CONTEXT_MAX_CHARS = 2000
 STALENESS_DAYS = 7
 
 
+def _fsync_parent_directory(path: Path) -> None:
+    """Persist a rename barrier where the host exposes POSIX directory fsync."""
+
+    if os.name == "nt":
+        return
+    descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 @dataclass(frozen=True)
 class MaintenanceClaim:
     """One exact maintenance-unit attempt and its operation fence."""
@@ -89,6 +108,20 @@ class MaintenanceClaim:
 
 class MaintenanceClaimError(RuntimeError):
     """The selected maintenance attempt no longer owns its durable fence."""
+
+
+def _interaction_payload(record: Any) -> Dict[str, Any]:
+    """Detach one typed Plane interaction into the synthesis input contract."""
+
+    return {
+        "id": record.interaction_id,
+        "agent_id": record.agent_id,
+        "tool_name": record.tool_name,
+        "success": record.success,
+        "error_message": record.error_message,
+        "response_time_ms": record.response_time_ms,
+        "created_at": record.created_at,
+    }
 
 
 class MaintenanceOutputPublisher:
@@ -197,11 +230,7 @@ class MaintenanceOutputPublisher:
             fault("before_replace")
             os.replace(temporary, target)
             fault("after_replace")
-            directory_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            _fsync_parent_directory(target)
             fault("after_directory_fsync")
         finally:
             try:
@@ -216,22 +245,46 @@ class MaintenanceUnitRepository:
 
     def __init__(
         self,
-        db,
+        db=None,
         *,
         coordinator: Optional[WorkAdmissionCoordinator] = None,
         lease_seconds: int = 600,
         max_attempts: int = 5,
+        plane_runtime=None,
+        plane_repositories=None,
+        maintenance_repository=None,
+        knowledge_repository=None,
     ) -> None:
         if type(lease_seconds) is not int or not 5 <= lease_seconds <= 3600:
             raise ValueError("maintenance lease must be between 5 and 3600 seconds")
         if type(max_attempts) is not int or not 1 <= max_attempts <= 20:
             raise ValueError("maintenance max attempts must be between 1 and 20")
-        self.db = db
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
-        self.coordinator = coordinator or WorkAdmissionCoordinator.from_database(
-            database=db,
-            slot_lease=timedelta(seconds=lease_seconds),
+        if coordinator is None:
+            raise ValueError("maintenance requires the application work coordinator")
+        self.coordinator = coordinator
+        maintenance, runtime = repository_from(
+            "maintenance",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._maintenance = PlaneRepositoryContext(
+            repository=maintenance_repository or maintenance,
+            plane_runtime=runtime,
+            legacy_database=db,
+        )
+        knowledge, knowledge_runtime = repository_from(
+            "knowledge",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._interactions = PlaneRepositoryContext(
+            repository=(knowledge_repository or knowledge).interactions,
+            plane_runtime=knowledge_runtime,
+            legacy_database=db,
         )
 
     @staticmethod
@@ -283,105 +336,73 @@ class MaintenanceUnitRepository:
             units.append(("agent_capability", agent_id[:256], rows))
         units.append(("cross_agent_synthesis", "system", interactions))
 
-        connection = self.db._get_connection()
-        cursor = connection.cursor()
         unit_ids: list[str] = []
-        try:
+        with self._maintenance.transaction() as transaction:
             for unit_kind, scope_key, rows in units:
                 idempotency_key = self._unit_key(unit_kind, scope_key, rows)
                 unit_id = str(uuid.uuid4())
-                output_generation = str(uuid.uuid4())
-                cursor.execute(
-                    """
-                    INSERT INTO maintenance_unit (
-                        unit_id, unit_kind, scope_key, idempotency_key, state,
-                        max_attempts, output_generation
-                    ) VALUES (%s, %s, %s, %s, 'pending', %s, %s)
-                    ON CONFLICT (unit_kind, idempotency_key) DO NOTHING
-                    RETURNING unit_id
-                    """,
-                    (
-                        unit_id,
-                        unit_kind,
-                        scope_key,
-                        idempotency_key,
-                        self.max_attempts,
-                        output_generation,
+                stable = self._maintenance.repository.create_unit(
+                    transaction,
+                    MaintenanceUnitRecord(
+                        unit_id=unit_id,
+                        unit_kind=unit_kind,
+                        scope_key=scope_key,
+                        idempotency_key=idempotency_key,
+                        state=MaintenanceState.PENDING,
+                        max_attempts=self.max_attempts,
+                        output_generation=str(uuid.uuid4()),
+                    ),
+                    inputs=tuple(
+                        MaintenanceInputRecord(
+                            unit_id=unit_id,
+                            input_kind="interaction",
+                            input_id=str(row["id"]),
+                            input_digest=self._input_digest(row),
+                        )
+                        for row in rows
                     ),
                 )
-                inserted = cursor.fetchone()
-                if inserted is None:
-                    cursor.execute(
-                        """
-                        SELECT unit_id FROM maintenance_unit
-                        WHERE unit_kind = %s AND idempotency_key = %s
-                        """,
-                        (unit_kind, idempotency_key),
-                    )
-                    inserted = cursor.fetchone()
-                stable_unit_id = str(inserted["unit_id"])
-                unit_ids.append(stable_unit_id)
-                for row in rows:
-                    cursor.execute(
-                        """
-                        INSERT INTO maintenance_unit_input (
-                            unit_id, input_kind, input_id, input_digest, state
-                        ) VALUES (%s, 'interaction', %s, %s, 'pending')
-                        ON CONFLICT (unit_id, input_kind, input_id) DO NOTHING
-                        """,
-                        (
-                            stable_unit_id,
-                            str(row["id"]),
-                            self._input_digest(row),
-                        ),
-                    )
-            connection.commit()
-            return tuple(unit_ids)
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            try:
-                cursor.close()
-            finally:
-                connection.close()
+                unit_ids.append(stable.unit_id)
+        return tuple(unit_ids)
 
     def has_pending(self) -> bool:
-        row = self.db.fetch_one(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM maintenance_unit
-                WHERE unit_kind IN (
-                    'agent_synthesis', 'agent_capability',
-                    'cross_agent_synthesis'
-                )
-                  AND state IN ('pending', 'claimed', 'running', 'failed_retryable')
-            ) AS pending
-            """
+        return self._maintenance.call(
+            self._maintenance.repository.has_pending_for_administration,
+            unit_kinds=(
+                "agent_synthesis",
+                "agent_capability",
+                "cross_agent_synthesis",
+            ),
         )
-        return bool(row and row["pending"])
 
     def _release_claim(
         self, unit_id: str, lease_token: str, claim_generation: int, code: str
     ) -> None:
-        self.db.execute(
-            """
-            UPDATE maintenance_unit
-            SET state = CASE WHEN attempt_count >= max_attempts
-                             THEN 'failed_terminal' ELSE 'failed_retryable' END,
-                lease_token = NULL, claimed_by = NULL, lease_expires_at = NULL,
-                last_error_code = ?,
-                next_attempt_at = CASE WHEN attempt_count >= max_attempts
-                                       THEN NULL ELSE clock_timestamp() + interval '1 second' END,
-                terminal_at = CASE WHEN attempt_count >= max_attempts
-                                   THEN clock_timestamp() ELSE NULL END,
-                state_revision = state_revision + 1,
-                updated_at = clock_timestamp()
-            WHERE unit_id = ? AND lease_token = ? AND claim_generation = ?
-              AND state = 'claimed'
-            """,
-            (code[:128], unit_id, lease_token, claim_generation),
-        )
+        observed = datetime.now(timezone.utc)
+        try:
+            with self._maintenance.transaction() as transaction:
+                existing = self._maintenance.repository.get_for_administration(
+                    transaction,
+                    unit_id=unit_id,
+                )
+                if existing is None:
+                    return
+                self._maintenance.repository.fail_for_administration(
+                    transaction,
+                    unit_id=unit_id,
+                    lease_token=lease_token,
+                    claim_generation=claim_generation,
+                    expected_state_revision=existing.state_revision,
+                    error_code=code[:64],
+                    observed_at=observed,
+                    next_attempt_at=(
+                        None
+                        if existing.attempt_count >= existing.max_attempts
+                        else observed + timedelta(seconds=1)
+                    ),
+                )
+        except RepositoryConflictError:
+            return
 
     def claim_next(
         self,
@@ -402,103 +423,33 @@ class MaintenanceUnitRepository:
         # Expire operation slots before attempting a new domain claim so a
         # crashed worker cannot consume the maintenance lane indefinitely.
         self.coordinator.expire_execution_leases()
-        connection = self.db._get_connection()
-        cursor = connection.cursor()
-        try:
-            cursor.execute(
-                """
-                UPDATE maintenance_unit
-                SET state = CASE WHEN attempt_count >= max_attempts
-                                 THEN 'failed_terminal' ELSE 'failed_retryable' END,
-                    lease_token = NULL, claimed_by = NULL,
-                    lease_expires_at = NULL, last_error_code = 'lease_expired',
-                    next_attempt_at = CASE WHEN attempt_count >= max_attempts
-                                           THEN NULL ELSE clock_timestamp() END,
-                    terminal_at = CASE WHEN attempt_count >= max_attempts
-                                       THEN clock_timestamp() ELSE NULL END,
-                    state_revision = state_revision + 1,
-                    updated_at = clock_timestamp()
-                WHERE state IN ('claimed', 'running')
-                  AND lease_expires_at <= clock_timestamp()
-                """
+        observed = datetime.now(timezone.utc)
+        with self._maintenance.transaction() as transaction:
+            self._maintenance.repository.recover_expired_for_administration(
+                transaction,
+                observed_at=observed,
             )
-            eligible_sql = (
-                "" if eligible_ids is None
-                else "AND candidate.unit_id = ANY(%s::uuid[])"
-            )
-            cursor.execute(
-                f"""
-                SELECT candidate.* FROM maintenance_unit AS candidate
-                WHERE candidate.unit_kind IN (
-                    'agent_synthesis', 'agent_capability',
-                    'cross_agent_synthesis'
-                )
-                  {eligible_sql}
-                  AND candidate.state IN ('pending', 'failed_retryable')
-                  AND candidate.attempt_count < candidate.max_attempts
-                  AND (candidate.next_attempt_at IS NULL
-                       OR candidate.next_attempt_at <= clock_timestamp())
-                  AND NOT EXISTS (
-                      SELECT 1 FROM maintenance_unit AS older
-                      WHERE older.unit_kind = candidate.unit_kind
-                        AND older.scope_key = candidate.scope_key
-                        AND older.created_at < candidate.created_at
-                        AND older.state NOT IN (
-                            'succeeded', 'failed_terminal', 'cancelled'
-                        )
-                  )
-                ORDER BY candidate.created_at, candidate.unit_id
-                FOR UPDATE SKIP LOCKED
-                LIMIT 1
-                """
-                ,
-                () if eligible_ids is None else (eligible_ids,),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                connection.commit()
-                return None
-            lease_token = str(uuid.uuid4())
-            claim_generation = int(row["claim_generation"]) + 1
-            attempt_count = int(row["attempt_count"]) + 1
-            cursor.execute(
-                """
-                UPDATE maintenance_unit
-                SET state = 'claimed', lease_token = %s,
-                    claim_generation = %s, claimed_by = %s,
-                    lease_expires_at = clock_timestamp()
-                        + (%s * interval '1 second'),
-                    attempt_count = %s, last_error_code = NULL,
-                    next_attempt_at = NULL, terminal_at = NULL,
-                    state_revision = state_revision + 1,
-                    updated_at = clock_timestamp()
-                WHERE unit_id = %s AND state_revision = %s
-                RETURNING *
-                """,
-                (
-                    lease_token,
-                    claim_generation,
-                    worker_id,
-                    self.lease_seconds,
-                    attempt_count,
-                    row["unit_id"],
-                    row["state_revision"],
+            durable_claim = self._maintenance.repository.claim_next_for_administration(
+                transaction,
+                worker_id=worker_id,
+                now=observed,
+                lease_expires_at=observed + timedelta(seconds=self.lease_seconds),
+                unit_kinds=(
+                    "agent_synthesis",
+                    "agent_capability",
+                    "cross_agent_synthesis",
                 ),
+                eligible_unit_ids=eligible_ids,
             )
-            claimed = cursor.fetchone()
-            if claimed is None:
-                raise MaintenanceClaimError("maintenance claim CAS was lost")
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            try:
-                cursor.close()
-            finally:
-                connection.close()
-
-        unit_id = str(claimed["unit_id"])
+        if durable_claim is None:
+            return None
+        claimed = durable_claim.unit
+        unit_id = claimed.unit_id
+        lease_token = claimed.lease_token
+        if lease_token is None:
+            raise MaintenanceClaimError("Plane returned an unleased maintenance claim")
+        claim_generation = claimed.claim_generation
+        attempt_count = claimed.attempt_count
         attempt_key = f"{unit_id}:{attempt_count}"
         request = OperationRequest(
             operation_kind="maintenance",
@@ -536,47 +487,45 @@ class MaintenanceUnitRepository:
             )
             return None
 
-        connection = self.db._get_connection()
-        cursor = connection.cursor()
         try:
-            cursor.execute(
-                """
-                UPDATE maintenance_unit
-                SET state = 'running', operation_id = %s,
-                    operation_execution_generation = %s,
-                    state_revision = state_revision + 1,
-                    updated_at = clock_timestamp()
-                WHERE unit_id = %s AND state = 'claimed'
-                  AND lease_token = %s AND claim_generation = %s
-                  AND lease_expires_at > clock_timestamp()
-                RETURNING *
-                """,
-                (
-                    str(operation_claim.fence.operation_id),
-                    operation_claim.fence.execution_generation,
-                    unit_id,
-                    lease_token,
-                    claim_generation,
-                ),
-            )
-            running = cursor.fetchone()
-            if running is None:
-                raise MaintenanceClaimError("maintenance claim expired before handoff")
-            cursor.execute(
-                """
-                SELECT source.* FROM maintenance_unit_input AS membership
-                JOIN interaction_log AS source
-                  ON source.id::text = membership.input_id
-                WHERE membership.unit_id = %s
-                  AND membership.input_kind = 'interaction'
-                ORDER BY source.id
-                """,
-                (unit_id,),
-            )
-            inputs = tuple(dict(item) for item in cursor.fetchall())
-            connection.commit()
+            with self._maintenance.transaction() as transaction:
+                running = self._maintenance.repository.bind_operation_for_administration(
+                    transaction,
+                    unit_id=unit_id,
+                    lease_token=lease_token,
+                    claim_generation=claim_generation,
+                    expected_state_revision=claimed.state_revision,
+                    operation_id=str(operation_claim.fence.operation_id),
+                    operation_execution_generation=(
+                        operation_claim.fence.execution_generation
+                    ),
+                    observed_at=datetime.now(timezone.utc),
+                )
+                memberships = self._maintenance.repository.list_inputs_for_administration(
+                    transaction,
+                    unit_id=unit_id,
+                )
+                interaction_ids = tuple(
+                    int(member.input_id)
+                    for member in memberships
+                    if member.input_kind == "interaction"
+                )
+                interaction_records = (
+                    self._interactions.repository.get_many_for_administration(
+                        transaction,
+                        interaction_ids=interaction_ids,
+                    )
+                )
+            inputs = tuple(_interaction_payload(record) for record in interaction_records)
+            digest_by_id = {
+                member.input_id: member.input_digest for member in memberships
+            }
+            if any(
+                self._input_digest(row) != digest_by_id.get(str(row["id"]))
+                for row in inputs
+            ):
+                raise MaintenanceClaimError("maintenance input digest changed")
         except BaseException:
-            connection.rollback()
             self.coordinator.terminalize(
                 operation_claim.fence,
                 state=OperationState.RETRYABLE,
@@ -585,44 +534,17 @@ class MaintenanceUnitRepository:
                 retry_after_ms=1000,
             )
             raise
-        finally:
-            try:
-                cursor.close()
-            finally:
-                connection.close()
         return MaintenanceClaim(
             unit_id=unit_id,
-            unit_kind=str(running["unit_kind"]),
-            scope_key=str(running["scope_key"]),
+            unit_kind=running.unit_kind,
+            scope_key=running.scope_key,
             lease_token=lease_token,
             claim_generation=claim_generation,
             attempt_count=attempt_count,
-            output_generation=str(running["output_generation"]),
+            output_generation=str(running.output_generation),
             inputs=inputs,
             fence=operation_claim.fence,
         )
-
-    @staticmethod
-    def _assert_claim(cursor, claim: MaintenanceClaim) -> None:
-        cursor.execute(
-            """
-            SELECT unit_id FROM maintenance_unit
-            WHERE unit_id = %s AND state = 'running'
-              AND lease_token = %s AND claim_generation = %s
-              AND operation_id = %s AND operation_execution_generation = %s
-              AND lease_expires_at > clock_timestamp()
-            FOR UPDATE
-            """,
-            (
-                claim.unit_id,
-                claim.lease_token,
-                claim.claim_generation,
-                str(claim.fence.operation_id),
-                claim.fence.execution_generation,
-            ),
-        )
-        if cursor.fetchone() is None:
-            raise MaintenanceClaimError("maintenance execution fence is stale")
 
     def complete(
         self, claim: MaintenanceClaim, *, output_relative_path: str, output_digest: str
@@ -633,63 +555,59 @@ class MaintenanceUnitRepository:
             raise ValueError("maintenance output digest is invalid")
         with self.coordinator.repository.fenced_transaction(
             claim.fence
-        ) as cursor:
-            self._assert_claim(cursor, claim)
-            cursor.execute(
-                """
-                UPDATE maintenance_unit_input
-                SET state = 'completed', operation_id = %s,
-                    operation_execution_generation = %s,
-                    completed_at = clock_timestamp()
-                WHERE unit_id = %s AND state = 'pending'
-                """,
-                (
-                    str(claim.fence.operation_id),
-                    claim.fence.execution_generation,
-                    claim.unit_id,
-                ),
+        ) as transaction:
+            unit = self._maintenance.repository.get_for_administration(
+                transaction,
+                unit_id=claim.unit_id,
             )
-            if claim.unit_kind == "agent_synthesis":
-                cursor.execute(
-                    """
-                    UPDATE interaction_log AS source SET synthesized = TRUE
-                    FROM maintenance_unit_input AS membership
-                    WHERE membership.unit_id = %s
-                      AND membership.input_kind = 'interaction'
-                      AND membership.input_id = source.id::text
-                      AND membership.state = 'completed'
-                    """,
-                    (claim.unit_id,),
+            if unit is None:
+                raise MaintenanceClaimError("maintenance unit is missing")
+            inputs = self._maintenance.repository.list_inputs_for_administration(
+                transaction,
+                unit_id=claim.unit_id,
+            )
+            completed_at = datetime.now(timezone.utc)
+            for item in inputs:
+                if item.state != "pending":
+                    continue
+                self._maintenance.repository.complete_input_for_administration(
+                    transaction,
+                    unit_id=claim.unit_id,
+                    input_kind=item.input_kind,
+                    input_id=item.input_id,
+                    lease_token=claim.lease_token,
+                    claim_generation=claim.claim_generation,
+                    operation_id=str(claim.fence.operation_id),
+                    operation_execution_generation=claim.fence.execution_generation,
+                    completed_at=completed_at,
                 )
-            cursor.execute(
-                """
-                UPDATE maintenance_unit
-                SET state = 'succeeded', lease_token = NULL,
-                    claimed_by = NULL, lease_expires_at = NULL,
-                    output_relative_path = %s, output_digest = %s,
-                    last_error_code = NULL, terminal_at = clock_timestamp(),
-                    next_attempt_at = NULL, state_revision = state_revision + 1,
-                    updated_at = clock_timestamp()
-                WHERE unit_id = %s AND state = 'running'
-                  AND lease_token = %s AND claim_generation = %s
-                """,
-                (
-                    output_relative_path,
-                    output_digest,
-                    claim.unit_id,
-                    claim.lease_token,
-                    claim.claim_generation,
-                ),
+            if claim.unit_kind == "agent_synthesis":
+                self._interactions.repository.mark_synthesized_for_administration(
+                    transaction,
+                    interaction_ids=tuple(
+                        int(item.input_id)
+                        for item in inputs
+                        if item.input_kind == "interaction"
+                    ),
+                )
+            self._maintenance.repository.complete_for_administration(
+                transaction,
+                unit_id=claim.unit_id,
+                lease_token=claim.lease_token,
+                claim_generation=claim.claim_generation,
+                expected_state_revision=unit.state_revision,
+                output_generation=claim.output_generation,
+                output_relative_path=output_relative_path,
+                output_digest=output_digest,
+                completed_at=completed_at,
             )
-            if cursor.rowcount != 1:
-                raise MaintenanceClaimError("maintenance completion CAS was lost")
             self.coordinator.terminalize(
                 claim.fence,
                 state=OperationState.COMPLETED,
                 terminal_code=None,
                 safe_summary="Maintenance unit completed.",
                 retry_after_ms=None,
-                transaction=cursor,
+                transaction=transaction,
             )
 
     def fail(
@@ -703,48 +621,41 @@ class MaintenanceUnitRepository:
             raise ValueError("maintenance retry delay is invalid")
         with self.coordinator.repository.fenced_transaction(
             claim.fence
-        ) as cursor:
-            self._assert_claim(cursor, claim)
-            cursor.execute(
-                "SELECT attempt_count, max_attempts FROM maintenance_unit "
-                "WHERE unit_id = %s FOR UPDATE",
-                (claim.unit_id,),
+        ) as transaction:
+            unit = self._maintenance.repository.get_for_administration(
+                transaction,
+                unit_id=claim.unit_id,
             )
-            unit = cursor.fetchone()
-            terminal = int(unit["attempt_count"]) >= int(unit["max_attempts"])
-            cursor.execute(
-                """
-                UPDATE maintenance_unit
-                SET state = %s, lease_token = NULL, claimed_by = NULL,
-                    lease_expires_at = NULL, last_error_code = %s,
-                    next_attempt_at = CASE WHEN %s THEN NULL
-                        ELSE clock_timestamp() + (%s * interval '1 second') END,
-                    terminal_at = CASE WHEN %s THEN clock_timestamp() ELSE NULL END,
-                    state_revision = state_revision + 1,
-                    updated_at = clock_timestamp()
-                WHERE unit_id = %s AND state = 'running'
-                  AND lease_token = %s AND claim_generation = %s
-                """,
-                (
-                    "failed_terminal" if terminal else "failed_retryable",
-                    error_code,
-                    terminal,
-                    retry_after_seconds,
-                    terminal,
-                    claim.unit_id,
-                    claim.lease_token,
-                    claim.claim_generation,
+            if unit is None:
+                raise MaintenanceClaimError("maintenance unit is missing")
+            terminal = unit.attempt_count >= unit.max_attempts
+            observed = datetime.now(timezone.utc)
+            self._maintenance.repository.fail_for_administration(
+                transaction,
+                unit_id=claim.unit_id,
+                lease_token=claim.lease_token,
+                claim_generation=claim.claim_generation,
+                expected_state_revision=unit.state_revision,
+                error_code=error_code,
+                observed_at=observed,
+                next_attempt_at=(
+                    None
+                    if terminal
+                    else observed
+                    + (
+                        timedelta(microseconds=1)
+                        if retry_after_seconds == 0
+                        else timedelta(seconds=retry_after_seconds)
+                    )
                 ),
             )
-            if cursor.rowcount != 1:
-                raise MaintenanceClaimError("maintenance failure CAS was lost")
             self.coordinator.terminalize(
                 claim.fence,
                 state=OperationState.FAILED if terminal else OperationState.RETRYABLE,
                 terminal_code=error_code,
                 safe_summary="Maintenance unit failed.",
                 retry_after_ms=None if terminal else retry_after_seconds * 1000,
-                transaction=cursor,
+                transaction=transaction,
             )
 
 
@@ -755,9 +666,59 @@ class MaintenanceUnitRepository:
 class InteractionCollector:
     """Lightweight hook handler that logs tool call outcomes to the database."""
 
-    def __init__(self, db):
-        self.db = db
+    def __init__(
+        self,
+        db=None,
+        *,
+        plane_runtime=None,
+        plane_repositories=None,
+        knowledge_repository=None,
+    ):
+        knowledge, runtime = repository_from(
+            "knowledge",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._interactions = PlaneRepositoryContext(
+            repository=(knowledge_repository or knowledge).interactions,
+            plane_runtime=runtime,
+            legacy_database=db,
+        )
         self._start_times: Dict[str, float] = {}  # request key -> start time
+
+    def _record(
+        self,
+        *,
+        owner_id: str,
+        conversation_id: str | None,
+        agent_id: str,
+        tool_name: str,
+        success: bool,
+        error_message: str | None,
+        response_time_ms: int | None,
+    ) -> None:
+        with self._interactions.transaction() as transaction:
+            values = {
+                "agent_id": agent_id,
+                "tool_name": tool_name,
+                "success": success,
+                "error_message": error_message,
+                "response_time_ms": response_time_ms,
+                "created_at": int(time.time() * 1000),
+            }
+            if owner_id and conversation_id:
+                self._interactions.repository.record_for_owner(
+                    transaction,
+                    owner_id=owner_id,
+                    conversation_id=conversation_id,
+                    **values,
+                )
+            else:
+                self._interactions.repository.record_for_administration(
+                    transaction,
+                    **values,
+                )
 
     def record_start(self, agent_id: str, tool_name: str) -> str:
         """Record when a tool call begins. Returns a key for matching the end."""
@@ -780,13 +741,14 @@ class InteractionCollector:
             chat_id = ctx.metadata.get("chat_id")
 
             await run_maintenance(
-                self.db.log_interaction,
+                self._record,
+                owner_id=ctx.user_id,
+                conversation_id=chat_id,
                 agent_id=ctx.agent_id,
                 tool_name=ctx.tool_name,
                 success=success,
                 error_message=error_message,
                 response_time_ms=response_time_ms,
-                chat_id=chat_id,
             )
         except Exception as e:
             logger.error(f"InteractionCollector failed to log: {e}")
@@ -803,11 +765,15 @@ class KnowledgeSynthesizer:
 
     def __init__(
         self,
-        db,
+        db=None,
         knowledge_dir: str = None,
         knowledge_index: "KnowledgeIndex" = None,
         config_resolver=None,
         *,
+        coordinator: Optional[WorkAdmissionCoordinator] = None,
+        plane_runtime=None,
+        plane_repositories=None,
+        knowledge_repository=None,
         maintenance_repository: Optional[MaintenanceUnitRepository] = None,
         maintenance_publisher: Optional[MaintenanceOutputPublisher] = None,
         maintenance_fault_hook: Optional[Callable[[str], None]] = None,
@@ -822,7 +788,6 @@ class KnowledgeSynthesizer:
                 gone). No resolver, or no stored record, means each cycle
                 logs and skips with data preserved.
         """
-        self.db = db
         self.knowledge_dir = knowledge_dir or DEFAULT_KNOWLEDGE_DIR
         self.knowledge_index = knowledge_index
         self._config_resolver = config_resolver
@@ -832,6 +797,21 @@ class KnowledgeSynthesizer:
         self._maintenance_worker_id = (
             f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4()}"[:128]
         )
+        knowledge, runtime = repository_from(
+            "knowledge",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._interactions = (
+            PlaneRepositoryContext(
+                repository=(knowledge_repository or knowledge).interactions,
+                plane_runtime=runtime,
+                legacy_database=db,
+            )
+            if runtime is not None or db is not None
+            else None
+        )
 
         self.model = None
         self.client = None
@@ -839,8 +819,14 @@ class KnowledgeSynthesizer:
         self.min_interactions = int(os.getenv("KNOWLEDGE_MIN_INTERACTIONS", str(DEFAULT_MIN_INTERACTIONS)))
 
         self._ensure_dirs()
-        if self.db is not None and self._maintenance_repository is None:
-            self._maintenance_repository = MaintenanceUnitRepository(self.db)
+        if self._maintenance_repository is None and self._interactions is not None:
+            self._maintenance_repository = MaintenanceUnitRepository(
+                db,
+                coordinator=coordinator,
+                plane_runtime=plane_runtime,
+                plane_repositories=plane_repositories,
+                knowledge_repository=knowledge_repository,
+            )
         if self._maintenance_publisher is None:
             self._maintenance_publisher = MaintenanceOutputPublisher(
                 self.knowledge_dir
@@ -908,11 +894,14 @@ class KnowledgeSynthesizer:
 
     async def _synthesis_cycle(self):
         """Claim and settle independent synthesis units with durable retry truth."""
-        if self.db is None or self._maintenance_repository is None:
+        if self._interactions is None or self._maintenance_repository is None:
             return
-        interactions = await run_maintenance(
-            self.db.get_unsynthesized_interactions, limit=500
+        records = await run_maintenance(
+            self._interactions.call,
+            self._interactions.repository.list_unsynthesized_for_administration,
+            limit=500,
         )
+        interactions = tuple(_interaction_payload(record) for record in records)
         pending = await run_maintenance(self._maintenance_repository.has_pending)
         if len(interactions) < self.min_interactions and not pending:
             logger.debug(
@@ -1331,11 +1320,7 @@ Be concise and data-driven."""
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
-            directory_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            _fsync_parent_directory(target)
         finally:
             try:
                 temporary.unlink()
@@ -1423,11 +1408,7 @@ Be concise and data-driven."""
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
-            directory_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            _fsync_parent_directory(target)
         finally:
             try:
                 temporary.unlink()
@@ -1702,31 +1683,13 @@ async def run_safety_pre_pass_once(repo) -> int:
         logger.info("loop pre-pass: no synthesizer available; skipping")
         return 0
 
-    # Pull a bounded set of recent clean records to screen. We re-use the
-    # repository's underlying connection directly here because the volume
-    # at this scale is small (≤ a few hundred per cycle).
-    conn = repo._db._get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, comment_raw
-            FROM component_feedback
-            WHERE lifecycle = 'active'
-              AND comment_safety = 'clean'
-              AND comment_raw IS NOT NULL
-              AND comment_raw <> ''
-              AND created_at >= now() - interval '14 days'
-            ORDER BY created_at DESC
-            LIMIT 500
-            """
-        )
-        candidates = [(str(r["id"]), r["comment_raw"]) for r in cur.fetchall()]
-    finally:
-        conn.close()
+    candidates = repo.list_clean_comment_candidates(
+        since=datetime.now(timezone.utc) - timedelta(days=14),
+        limit=500,
+    )
 
     flagged = 0
-    for fb_id, comment in candidates:
+    for fb_id, owner_user_id, comment in candidates:
         try:
             ok = await synth.classify_comment_safe(comment)
         except Exception as exc:  # pragma: no cover
@@ -1734,24 +1697,14 @@ async def run_safety_pre_pass_once(repo) -> int:
             continue
         if ok:
             continue
-        # Flip the record + create / replace the quarantine_entry atomically.
-        conn = repo._db._get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                UPDATE component_feedback
-                SET comment_safety = 'quarantined',
-                    comment_safety_reason = 'pre_pass_disagreement',
-                    updated_at = now()
-                WHERE id = %s
-                """,
-                (fb_id,),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        repo.upsert_quarantine(fb_id, reason="pre_pass_disagreement", detector="loop_pre_pass")
+        # Plane atomically binds the safety transition and quarantine row to
+        # the same feedback owner; a stale/cross-owner candidate cannot flip.
+        repo.upsert_quarantine(
+            fb_id,
+            owner_user_id=owner_user_id,
+            reason="pre_pass_disagreement",
+            detector="loop_pre_pass",
+        )
         await emit_quarantine_audit(
             action_type="quarantine.flag",
             feedback_id=fb_id, reason="pre_pass_disagreement", detector="loop_pre_pass",

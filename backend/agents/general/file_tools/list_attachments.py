@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from agents.general.file_tools import _get_database
-from orchestrator.attachments.repository import AttachmentRepository
+from agents.general.file_tools import _get_repository
 
 logger = logging.getLogger("FileTools.list_attachments")
 
@@ -21,7 +20,7 @@ def list_attachments(
     if not user_id:
         return {"error": {"code": "not_found", "message": "user context required"}}
     try:
-        repo = AttachmentRepository(_get_database())
+        repo = _get_repository()
     except RuntimeError as exc:
         return {"error": {"code": "not_found", "message": str(exc)}}
     items, next_cursor = repo.list_for_user(user_id, category=category, limit=limit)

@@ -13,34 +13,35 @@ Covers the two halves of the verified UX bug:
   lands. The per-chat return shape is unchanged (the no-build web client
   consumes it as-is).
 
-Runs against the live Postgres inside the astraldeep container, like the
-other HistoryManager suites (see tests/test_database.py).
+Runs against an isolated PostgreSQL database initialized by AstralPlane.
 """
-import os
-import sys
 import uuid
 
 import pytest
 
-# Add backend to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from orchestrator.history import HistoryManager, PREVIEW_MAX_CHARS
+from tests.helpers.voice_plane_runtime import (
+    history_manager,
+    isolated_voice_plane_runtime,
+)
 
 
 @pytest.fixture(scope="module")
-def hm(tmp_path_factory):
-    """A HistoryManager backed by the live test Postgres."""
-    return HistoryManager(data_dir=str(tmp_path_factory.mktemp("hist-prev-data")))
+def plane_runtime():
+    """One application-scoped Plane runtime over an isolated database."""
+    with isolated_voice_plane_runtime("history_previews") as runtime:
+        yield runtime
+
+
+@pytest.fixture(scope="module")
+def hm(plane_runtime) -> HistoryManager:
+    return history_manager(plane_runtime)
 
 
 @pytest.fixture
-def user_id(hm):
-    """A unique per-test user id; rows are cleaned up on teardown."""
-    uid = f"hist-prev-{uuid.uuid4().hex[:12]}"
-    yield uid
-    hm.db.execute("DELETE FROM messages WHERE user_id = ?", (uid,))
-    hm.db.execute("DELETE FROM chats WHERE user_id = ?", (uid,))
+def user_id():
+    """A unique per-test owner; the isolated database is dropped afterward."""
+    return f"hist-prev-{uuid.uuid4().hex[:12]}"
 
 
 def _listing_entry(hm, user_id, chat_id):

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import attachment_parser_scope, resolve_attachment
 from agents.general.file_tools.medical import _common
 
 logger = logging.getLogger("FileTools.read_volume_itk")
 
 
+@attachment_parser_scope
 def read_volume_itk(
     attachment_id: str,
     user_id: Optional[str] = None,
@@ -28,7 +30,7 @@ def read_volume_itk(
         return _common.missing_dep("SimpleITK", exc)
 
     try:
-        img = sitk.ReadImage(str(path))
+        img = sitk.ReadImage(os.fspath(path))
     except Exception as exc:
         logger.exception("itk read failed")
         return _common.error("parse_failed", f"Failed to read volume: {exc}")

@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import attachment_parser_scope, resolve_attachment
 from agents.general.file_tools.medical import _common
 
 logger = logging.getLogger("FileTools.read_bio_tiff")
 
 
+@attachment_parser_scope
 def read_bio_tiff(
     attachment_id: str,
     user_id: Optional[str] = None,
@@ -29,7 +31,7 @@ def read_bio_tiff(
         return _common.missing_dep("tifffile", exc)
 
     try:
-        tf = tifffile.TiffFile(str(path))
+        tf = tifffile.TiffFile(os.fspath(path))
     except Exception as exc:
         logger.exception("tiff open failed")
         return _common.error("parse_failed", f"Failed to read TIFF: {exc}")

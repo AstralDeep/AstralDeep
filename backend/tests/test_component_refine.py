@@ -27,27 +27,12 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from orchestrator import artifact_versions as av
-from orchestrator.history import HistoryManager
 from orchestrator.workspace import WorkspaceManager
 from orchestrator.orchestrator import Orchestrator
 from shared.feature_flags import flags
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
+from tests.helpers.voice_plane_runtime import (
+    history_manager,
+    isolated_plane_runtime,
 )
 
 
@@ -70,12 +55,18 @@ def refine_flag_on(monkeypatch):
 
 
 @pytest.fixture
-def chat_env(tmp_path):
-    history = HistoryManager(data_dir=str(tmp_path))
+def chat_env(plane_runtime):
+    history = history_manager(plane_runtime)
     user_id = f"test-user-{uuid.uuid4()}"
     chat_id = history.create_chat(user_id=user_id)
     yield history, user_id, chat_id
     history.delete_chat(chat_id, user_id=user_id)
+
+
+@pytest.fixture(scope="module")
+def plane_runtime():
+    with isolated_plane_runtime("component_refine") as runtime:
+        yield runtime
 
 
 @pytest.fixture
@@ -119,8 +110,20 @@ def _make_fake(history, user_id, *, allowed=True, security_flags=None,
         unconfig_calls.append(kwargs)
 
     fake = types.SimpleNamespace(
-        workspace=WorkspaceManager(history),
+        workspace=WorkspaceManager(
+            history,
+            plane_runtime=history.plane_runtime,
+            plane_repositories=history.plane_repositories,
+        ),
         history=history,
+        plane_runtime=history.plane_runtime,
+        plane_repositories=history.plane_repositories,
+        runtime_composition=types.SimpleNamespace(
+            plane=types.SimpleNamespace(
+                runtime=history.plane_runtime,
+                repositories=history.plane_repositories,
+            )
+        ),
         _ws_active_chat={},
         _ws_timeline_mode={},
         _workspace_locks={},
@@ -221,7 +224,7 @@ def test_refine_happy_path(chat_env, audit_events):
     assert "Alice" in messages[-1]["content"]
 
     # v1 archived with the ORIGINAL content, reason 'refine'.
-    v1 = av.get_version(history.db, chat_id, user_id, cid, 1)
+    v1 = av.get_version(history, chat_id, user_id, cid, 1)
     assert v1 is not None and v1["reason"] == "refine"
     assert v1["component"]["rows"] == [["Alice"]]
 
@@ -250,9 +253,11 @@ def test_refine_happy_path(chat_env, audit_events):
     assert statuses and statuses[-1]["status"] == "done"
 
     # Snapshot with the refine cause; audit row present.
-    snaps = history.db.fetch_all(
-        "SELECT id FROM workspace_snapshot WHERE chat_id = ? AND user_id = ? "
-        "AND cause = 'component_refine'", (chat_id, user_id))
+    snaps = [
+        snapshot
+        for snapshot in fake.workspace.list_snapshots(chat_id, user_id)
+        if snapshot["cause"] == "component_refine"
+    ]
     assert len(snaps) == 1
     refined_events = [e for e in audit_events if e.get("action") == "component_refined"]
     assert len(refined_events) == 1
@@ -304,7 +309,7 @@ def test_refine_flag_off_refused(chat_env, audit_events, monkeypatch):
     denials = [e for e in audit_events if e.get("action") == "action_denied"]
     assert len(denials) == 1
     assert denials[0]["detail"]["reason"] == "feature_disabled"
-    assert av.list_versions(history.db, chat_id, user_id, cid) == []
+    assert av.list_versions(history, chat_id, user_id, cid) == []
     data = fake.workspace.get_by_component_id(chat_id, user_id, cid)["component_data"]
     assert data["rows"] == [["Alice"]]
 
@@ -363,7 +368,7 @@ def test_refine_unconfigured_llm_refused_by_054_gate(chat_env, audit_events):
     assert fake._unconfig_calls[0]["feature"] == "ui_event:component_refine"
     alerts = _alerts(fake)
     assert alerts and "Set up your AI provider" in alerts[0]["message"]
-    assert av.list_versions(history.db, chat_id, user_id, cid) == []
+    assert av.list_versions(history, chat_id, user_id, cid) == []
 
 
 def test_refine_permission_denied(chat_env, audit_events):
@@ -471,7 +476,7 @@ def test_refine_type_change_rejected(chat_env):
     assert len(fake._llm_calls) == 1
     data = fake.workspace.get_by_component_id(chat_id, user_id, cid)["component_data"]
     assert data["rows"] == [["Alice"]]
-    assert av.list_versions(history.db, chat_id, user_id, cid) == []
+    assert av.list_versions(history, chat_id, user_id, cid) == []
     alerts = _alerts(fake)
     assert alerts and "left unchanged" in alerts[0]["message"]
 
@@ -488,7 +493,7 @@ def test_refine_unusable_llm_output_rejected(chat_env):
 
     data = fake.workspace.get_by_component_id(chat_id, user_id, cid)["component_data"]
     assert data["rows"] == [["Alice"]]
-    assert av.list_versions(history.db, chat_id, user_id, cid) == []
+    assert av.list_versions(history, chat_id, user_id, cid) == []
 
 
 # ---------------------------------------------------------------------------
@@ -506,7 +511,7 @@ def test_version_cycle_refine_list_restore_audit(chat_env, audit_events):
     _run(fake._handle_component_refine(_FakeWS(), user_id, {
         "chat_id": chat_id, "component_id": cid, "instruction": "add a totals row",
     }))
-    listed = av.list_versions(history.db, chat_id, user_id, cid)
+    listed = av.list_versions(history, chat_id, user_id, cid)
     assert [v["version_no"] for v in listed] == [1]
     assert listed[0]["reason"] == "refine"
 
@@ -515,10 +520,10 @@ def test_version_cycle_refine_list_restore_audit(chat_env, audit_events):
     }))
 
     # The refined state was archived as v2 before the restore overwrite.
-    listed = av.list_versions(history.db, chat_id, user_id, cid)
+    listed = av.list_versions(history, chat_id, user_id, cid)
     assert [v["version_no"] for v in listed] == [2, 1]
     assert listed[0]["reason"] == "restore"
-    v2 = av.get_version(history.db, chat_id, user_id, cid, 2)
+    v2 = av.get_version(history, chat_id, user_id, cid, 2)
     assert v2["component"]["rows"] == [["Alice"], ["TOTAL: 1"]]
 
     # Live row is v1's content again, same identity, single row.
@@ -539,9 +544,11 @@ def test_version_cycle_refine_list_restore_audit(chat_env, audit_events):
     assert restored[0]["component_id"] == cid
     assert restored[0]["detail"] == {"restored_version": 1, "archived_version": 2}
     # Restore snapshot cause recorded too.
-    snaps = history.db.fetch_all(
-        "SELECT id FROM workspace_snapshot WHERE chat_id = ? AND user_id = ? "
-        "AND cause = 'component_restore'", (chat_id, user_id))
+    snaps = [
+        snapshot
+        for snapshot in fake.workspace.list_snapshots(chat_id, user_id)
+        if snapshot["cause"] == "component_restore"
+    ]
     assert len(snaps) == 1
 
 
@@ -555,7 +562,7 @@ def test_restore_needs_no_llm(chat_env, audit_events):
     current = fake.workspace.get_by_component_id(chat_id, user_id, cid)["component_data"]
     old = dict(current)
     old["rows"] = [["Old Bob"]]
-    av.archive(history.db, chat_id, user_id, cid, old, "refine")
+    av.archive(history, chat_id, user_id, cid, old, "refine")
 
     _run(fake._handle_component_restore(_FakeWS(), user_id, {
         "chat_id": chat_id, "component_id": cid, "version_no": 1,

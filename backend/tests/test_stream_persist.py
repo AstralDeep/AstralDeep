@@ -48,7 +48,15 @@ def _install_dispatcher(orch):
     calls = []
     counter = itertools.count(1)
 
-    async def _dispatch(agent_id, tool_name, params, stream_id, user_id):
+    async def _dispatch(
+        agent_id,
+        tool_name,
+        params,
+        stream_id,
+        user_id,
+        _websocket,
+        _chat_id,
+    ):
         rid = f"req-{next(counter)}"
         calls.append({"agent_id": agent_id, "tool_name": tool_name,
                       "params": params, "stream_id": stream_id,
@@ -96,11 +104,11 @@ def stream_artifacts_off():
 
 
 @pytest.fixture()
-def env(push_flags):
+async def env(push_flags):
     """A real Orchestrator + registered socket + fresh chat + fake push tool."""
     from orchestrator.orchestrator import Orchestrator
     try:
-        orch = Orchestrator()
+        orch = await asyncio.to_thread(Orchestrator)
     except Exception as exc:
         pytest.skip(f"orchestrator/database unavailable: {exc}")
     user_id = f"stream-persist-{uuid.uuid4().hex[:8]}"
@@ -108,22 +116,32 @@ def env(push_flags):
     orch.ui_sessions[ws] = {"sub": user_id}
     orch.ui_clients.append(ws)
     orch.rote.register_device(ws, {})
-    chat_id = orch.history.create_chat(user_id=user_id)
+    chat_id = await asyncio.to_thread(
+        orch.history.create_chat,
+        user_id=user_id,
+    )
     orch._ws_active_chat[id(ws)] = chat_id
     orch._streamable_tools[TOOL] = {
         "agent_id": AGENT, "kind": "push", "max_fps": 30, "min_fps": 5,
         "max_chunk_bytes": 65536, "default_interval": 2,
         "min_interval": 1, "max_interval": 30,
     }
-    yield orch, ws, chat_id, user_id
     try:
-        orch.stream_manager.shutdown()
-    except Exception:
-        pass
-    try:
-        orch.history.delete_chat(chat_id, user_id=user_id)
-    except Exception:
-        pass
+        yield orch, ws, chat_id, user_id
+    finally:
+        try:
+            orch.stream_manager.shutdown()
+        except Exception:
+            pass
+        try:
+            await asyncio.to_thread(
+                orch.history.delete_chat,
+                chat_id,
+                user_id=user_id,
+            )
+        except Exception:
+            pass
+        await orch._close_started_services()
 
 
 async def _auto_subscribed(orch, ws, chat_id, user_id, params=PARAMS):

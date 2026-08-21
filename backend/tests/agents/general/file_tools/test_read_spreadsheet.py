@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import io
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from agents.general.file_tools import read_spreadsheet as spreadsheet_module
 from agents.general.file_tools.read_spreadsheet import read_spreadsheet
 from conftest import _persist, make_csv, make_xlsx
 
@@ -77,3 +82,43 @@ def test_read_tsv(repo, upload_root):
     out = read_spreadsheet(attachment_id=aid, user_id="alice")
     assert out["columns"] == ["a", "b"]
     assert out["rows"] == [["1", "2"], ["3", "4"]]
+
+
+def test_xls_parser_receives_original_bytes(monkeypatch):
+    import xlrd
+
+    sheet = SimpleNamespace(nrows=2, ncols=2)
+    sheet.cell_value = lambda row, col: (("a", "b"), (1, 2))[row][col]
+    book = MagicMock()
+    book.sheet_names.return_value = ["Sheet1"]
+    book.sheet_by_name.return_value = sheet
+    open_workbook = MagicMock(return_value=book)
+    monkeypatch.setattr(xlrd, "open_workbook", open_workbook)
+
+    result = spreadsheet_module._read_xls(b"legacy-xls", None, 10)
+
+    open_workbook.assert_called_once_with(file_contents=b"legacy-xls")
+    assert result["rows"] == [[1, 2]]
+
+
+def test_ods_parser_accepts_bytes_io():
+    from odf import table, text
+    from odf.opendocument import OpenDocumentSpreadsheet
+
+    document = OpenDocumentSpreadsheet()
+    sheet = table.Table(name="Sheet1")
+    for values in (("a", "b"), ("1", "2")):
+        row = table.TableRow()
+        for value in values:
+            cell = table.TableCell()
+            cell.addElement(text.P(text=value))
+            row.addElement(cell)
+        sheet.addElement(row)
+    document.spreadsheet.addElement(sheet)
+    payload = io.BytesIO()
+    document.write(payload)
+
+    result = spreadsheet_module._read_ods(payload.getvalue(), None, 10)
+
+    assert result["columns"] == ["a", "b"]
+    assert result["rows"] == [["1", "2"]]

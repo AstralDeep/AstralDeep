@@ -130,6 +130,7 @@ AstralDeep retains original file history. The destination's normal legacy ancest
 - Use merge commits rather than squash/rebase when later qualified and authorized.
 - Retain feature branches until AstralDeep Gitlinks point to commits reachable from component `main`.
 - A pushed draft is not a merge, release, or deployment claim.
+- The owner's 2026-08-21 direction authorizes qualified merges after all local gates, repository CI, and required independent reviews pass. It does not authorize an admin/protection bypass, deployment, release, store submission, paper submission, or activation of privileged workflows.
 
 ## AstralDeep submodules
 

@@ -11,6 +11,9 @@ are called directly (post-confirmation state, as in test_remote_control_verbs).
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from types import SimpleNamespace
+
 import pytest
 
 from agents.remote_control import mcp_tools as ctl
@@ -112,7 +115,13 @@ def _target():
 @pytest.fixture(autouse=True)
 def _wire(monkeypatch):
     obs.register_deps(object(), object())
-    ctl.register_deps(object(), object())
+    repositories = SimpleNamespace(artifacts=object())
+    runtime = SimpleNamespace(repositories=repositories)
+    source = SimpleNamespace(
+        plane_runtime=runtime,
+        plane_repositories=repositories,
+    )
+    ctl.register_deps(source, object(), object())
     monkeypatch.setattr("orchestrator.remote_machines.resolve_machine",
                         lambda db, uid, ref: {"machine_id": "m1", "label": "dgx"})
     monkeypatch.setattr("orchestrator.remote_machines.build_target",
@@ -135,14 +144,18 @@ def _fn(key):
 def _setup(key, monkeypatch, tmp_path):
     # upload_file resolves the attachment before it touches the transport.
     if key == "control:upload_file":
-        from types import SimpleNamespace
-        blob = tmp_path / "payload.bin"
-        blob.write_bytes(b"abc")
         monkeypatch.setattr("orchestrator.attachments.repository.AttachmentRepository.get_by_id",
                             lambda self, aid, uid: SimpleNamespace(filename="payload.bin",
                                                                    size_bytes=3))
-        monkeypatch.setattr("orchestrator.attachments.store.read_path",
-                            lambda uid, aid, fn: blob)
+
+        @contextmanager
+        def _reader(*_args, **_kwargs):
+            yield SimpleNamespace(iter_chunks=lambda: iter((b"abc",)))
+
+        monkeypatch.setattr(
+            "orchestrator.attachments.blob_access.open_attachment_reader",
+            _reader,
+        )
 
 
 def _assert_vocab_failure(key, res, expected=None):

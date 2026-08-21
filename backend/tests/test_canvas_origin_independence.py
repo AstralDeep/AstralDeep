@@ -121,7 +121,7 @@ def _shapes(nodes):
 
 
 @pytest.fixture()
-def env(monkeypatch):
+async def env(monkeypatch):
     """A real Orchestrator + one user on two sockets — browser and android —
     each viewing its own fresh chat."""
     monkeypatch.setenv("FF_UI_DESIGNER", "true")
@@ -135,7 +135,7 @@ def env(monkeypatch):
                             lambda draft_agent_id: False)
     from orchestrator.orchestrator import Orchestrator
     try:
-        orch = Orchestrator()
+        orch = await asyncio.to_thread(Orchestrator)
     except Exception as exc:
         pytest.skip(f"orchestrator/database unavailable: {exc}")
     orch.audit_recorder = MagicMock()
@@ -173,15 +173,25 @@ def env(monkeypatch):
         orch.ui_sessions[ws] = {"sub": user_id, "preferred_username": user_id}
         orch.ui_clients.append(ws)
         orch.rote.register_device(ws, {"device_type": device})
-        chat_id = orch.history.create_chat(user_id=user_id)
+        chat_id = await asyncio.to_thread(
+            orch.history.create_chat,
+            user_id=user_id,
+        )
         orch._ws_active_chat[id(ws)] = chat_id
         sockets[device], chats[device] = ws, chat_id
-    yield orch, sockets, chats, user_id
-    for chat_id in chats.values():
-        try:
-            orch.history.delete_chat(chat_id, user_id=user_id)
-        except Exception:
-            pass
+    try:
+        yield orch, sockets, chats, user_id
+    finally:
+        for chat_id in chats.values():
+            try:
+                await asyncio.to_thread(
+                    orch.history.delete_chat,
+                    chat_id,
+                    user_id=user_id,
+                )
+            except Exception:
+                pass
+        await orch._close_started_services()
 
 
 def _install_llm(orch, final_text="All set."):

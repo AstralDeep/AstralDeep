@@ -16,7 +16,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VALIDATOR_PATH = REPO_ROOT / "tooling/contract-ci/validate_voice_contracts.py"
 FIXTURE_PATH = (
-    REPO_ROOT / "backend/tests/fixtures/voice_065/client_conformance.json"
+    REPO_ROOT
+    / "components/AstralProjection/contracts/fixtures/voice_065/client_conformance.json"
 )
 
 

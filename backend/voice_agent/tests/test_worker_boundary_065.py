@@ -354,6 +354,8 @@ def test_runtime_import_guard_rejects_forbidden_boundaries() -> None:
     guard = RuntimeImportGuard()
     with pytest.raises(ForbiddenRuntimeImport, match="orchestrator"):
         guard.assert_clean({"asyncio", "orchestrator", "voice_agent.main"})
+    with pytest.raises(ForbiddenRuntimeImport, match="astralplane"):
+        guard.find_spec("astralplane.repositories", None)
     with pytest.raises(ForbiddenRuntimeImport, match="livekit.api"):
         guard.find_spec("livekit.api", None)
     assert guard.find_spec("livekit.rtc", None) is None
@@ -366,12 +368,15 @@ def test_runtime_distribution_guard_rejects_agents_api_llm_and_database() -> Non
         assert_runtime_distributions({"livekit": "1.1.14", "livekit-api": "1.2.0"})
     with pytest.raises(ForbiddenRuntimeImport, match="openai"):
         assert_runtime_distributions({"openai": "2.0.0"})
+    with pytest.raises(ForbiddenRuntimeImport, match="astralplane"):
+        assert_runtime_distributions({"astralplane": "1.0.0"})
 
 
 def test_worker_runtime_sources_do_not_import_product_authority_modules() -> None:
     root = Path(__file__).resolve().parents[1]
     forbidden = {
         "agents",
+        "astralplane",
         "orchestrator",
         "shared.database",
         "shared.external_http",

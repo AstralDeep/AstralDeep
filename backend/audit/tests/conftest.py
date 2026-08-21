@@ -20,16 +20,23 @@ os.environ.setdefault("AUDIT_HMAC_KEY_ID", "k1")
 
 @pytest.fixture(scope="session")
 def database():
-    """Real Postgres-backed Database; schema initialised lazily."""
-    from shared.database import Database
-    return Database()
+    """Isolated current AstralPlane database for the audit module."""
+
+    from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+
+    with isolated_plane_runtime("audit_tests") as runtime:
+        yield runtime
 
 
 @pytest.fixture
 def repo(database):
-    """Fresh AuditRepository against the shared DB."""
+    """Fresh AuditRepository against the isolated Plane runtime."""
     from audit.repository import AuditRepository
-    return AuditRepository(database)
+
+    return AuditRepository(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
 
 
 @pytest.fixture

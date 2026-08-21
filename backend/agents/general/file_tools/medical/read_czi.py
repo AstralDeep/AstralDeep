@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
 import numpy as np
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import attachment_parser_scope, resolve_attachment
 from agents.general.file_tools.medical import _common
 
 logger = logging.getLogger("FileTools.read_czi")
@@ -23,6 +24,7 @@ def _flatten_to_2d(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
+@attachment_parser_scope
 def read_czi(
     attachment_id: str,
     user_id: Optional[str] = None,
@@ -40,7 +42,7 @@ def read_czi(
         return _common.missing_dep("aicspylibczi", exc)
 
     try:
-        czi = CziFile(str(path))
+        czi = CziFile(os.fspath(path))
     except Exception as exc:
         logger.exception("czi open failed")
         return _common.error("parse_failed", f"Failed to read CZI: {exc}")

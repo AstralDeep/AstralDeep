@@ -8,6 +8,20 @@ dependencies = []
 [tool.astraldeep.local-components]
 format = "astraldeep.local-components/v1"
 manifest = "config/astral-composition.json"
+installer = "pip-wheel/v1"
+wheel-lock-format = "astraldeep.component-wheel-lock/v1"
+install-order = [
+  "astral-primitives",
+  "astral-projection",
+  "astral-plane",
+  "lets",
+]
+build-tools = [
+  "setuptools==80.9.0",
+  "wheel==0.45.1",
+  "hatchling==1.27.0",
+  "uv_build==0.11.21",
+]
 
 [tool.astraldeep.local-components.astral-projection]
 distribution = "astralprojection"
@@ -17,6 +31,26 @@ contract = "astralprojection.contract/v1"
 availability = "required-embedded"
 import = "astralprojection"
 extras = []
+build-inputs = [
+  "pyproject.toml",
+  "README.md",
+  "LICENSE.md",
+  "NOTICE",
+  "backend/webrender",
+  "backend/rote",
+  "contracts",
+  "src/astralprojection",
+]
+required-wheel-paths = [
+  "astralprojection/__init__.py",
+  "astralprojection/NOTICE",
+  "contracts/ui_protocol.json",
+  "contracts/fixtures/voice_065/client_conformance.json",
+  "webrender/static/astral.css",
+  "webrender/static/vendor/livekit-client.umd.min.js",
+  "webrender/templates/shell.html",
+  "rote/__init__.py",
+]
 
 [tool.astraldeep.local-components.astral-plane]
 distribution = "astralplane"
@@ -26,6 +60,17 @@ contract = "astralplane.contract/v1"
 availability = "required-embedded"
 import = "astralplane"
 extras = []
+build-inputs = [
+  "pyproject.toml",
+  "README.md",
+  "LICENSE",
+  "src/astralplane",
+]
+required-wheel-paths = [
+  "astralplane/__init__.py",
+  "astralplane/api.py",
+  "astralplane/database/migrations.py",
+]
 
 [tool.astraldeep.local-components.astral-primitives]
 distribution = "astralprims"
@@ -35,6 +80,16 @@ contract = "0.3.0"
 availability = "required-embedded"
 import = "astralprims"
 extras = []
+build-inputs = [
+  "pyproject.toml",
+  "README.md",
+  "LICENSE",
+  "src/astralprims",
+]
+required-wheel-paths = [
+  "astralprims/__init__.py",
+  "astralprims/py.typed",
+]
 
 [tool.astraldeep.local-components.lets]
 distribution = "lets-agent"
@@ -44,3 +99,17 @@ contract = "1.0.10"
 availability = "external-feature-gated"
 import = "lets"
 extras = ["client"]
+build-inputs = [
+  "pyproject.toml",
+  "README.md",
+  "LICENSE",
+  "NOTICE",
+  "src/lets",
+]
+required-wheel-paths = [
+  "lets/__init__.py",
+  "lets/client.py",
+  "lets/executor.py",
+  "lets/integrations/astraldeep.py",
+  "lets/py.typed",
+]

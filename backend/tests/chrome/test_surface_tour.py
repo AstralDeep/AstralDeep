@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from webrender.chrome.surfaces import tour
+from orchestrator.projection_surfaces import tour
 
 
 # ---------------------------------------------------------------------------

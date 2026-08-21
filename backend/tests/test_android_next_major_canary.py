@@ -14,11 +14,13 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+PROJECTION_ROOT = REPO_ROOT / "components" / "AstralProjection"
 SCRIPT = REPO_ROOT / "scripts" / "run_android_next_major_canary.py"
-PINS = REPO_ROOT / "android-client" / "gradle" / "next-major-canary.properties"
+PINS = PROJECTION_ROOT / "android-client" / "gradle" / "next-major-canary.properties"
 
 if not (
-    (REPO_ROOT / "scripts").is_dir() and (REPO_ROOT / "android-client").is_dir()
+    (REPO_ROOT / "scripts").is_dir()
+    and (PROJECTION_ROOT / "android-client").is_dir()
 ):  # repo root absent inside the product image
     pytest.skip(
         "repo-root tooling files are not part of the product image",

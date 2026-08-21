@@ -279,26 +279,33 @@ class ParamikoTransport:
 
     def _verdict_for_exception(self, exc: Exception) -> Optional[Verdict]:
         """Map a KNOWN exception to a vocabulary verdict, else None (=> unexpected)."""
-        import paramiko
-
         if isinstance(exc, net_guard.BlockedTargetError):
             return Verdict.BLOCKED_ADDRESS
         if isinstance(exc, net_guard.HostResolutionError):
             return Verdict.UNREACHABLE
-        if isinstance(exc, HostKeyMismatch) or isinstance(exc, paramiko.BadHostKeyException):
+        if isinstance(exc, HostKeyMismatch):
             return Verdict.HOST_KEY_MISMATCH
-        if isinstance(exc, (paramiko.AuthenticationException, paramiko.PasswordRequiredException)):
-            return Verdict.AUTH_FAILED
         if isinstance(exc, (socket.timeout, TimeoutError)):
             return Verdict.TIMEOUT
         # A remote permission failure (SFTP EACCES/EPERM => PermissionError) must be
         # distinguished from a network failure — check it BEFORE the OSError catch-all.
         if isinstance(exc, PermissionError):
             return Verdict.PERMISSION_DENIED_REMOTE
-        if isinstance(exc, paramiko.SSHException):
-            return Verdict.UNREACHABLE  # negotiation/protocol failure
         if isinstance(exc, (ConnectionError, OSError)):
             return Verdict.UNREACHABLE
+        try:
+            import paramiko
+        except ModuleNotFoundError:
+            return None
+        if isinstance(exc, paramiko.BadHostKeyException):
+            return Verdict.HOST_KEY_MISMATCH
+        if isinstance(
+            exc,
+            (paramiko.AuthenticationException, paramiko.PasswordRequiredException),
+        ):
+            return Verdict.AUTH_FAILED
+        if isinstance(exc, paramiko.SSHException):
+            return Verdict.UNREACHABLE  # negotiation/protocol failure
         return None
 
     def _result_for_exception(self, target: MachineTarget, exc: Exception,

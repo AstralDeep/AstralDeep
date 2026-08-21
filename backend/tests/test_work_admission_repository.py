@@ -9,16 +9,13 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Iterator
 
-import psycopg2
 import pytest
-from psycopg2 import sql
 
 from orchestrator.work_admission import (
     AdmissionClass,
@@ -31,11 +28,31 @@ from orchestrator.work_admission import (
     OperationRequest,
     OperationState,
     OwnerScope,
-    PostgresWorkAdmissionRepository,
+    PlaneWorkAdmissionRepository,
     StaleExecutionFenceError,
+    WorkAdmissionConflictError,
     WorkAdmissionCoordinator,
 )
-from shared.database import Database, _build_database_url
+from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
+
+
+def _plane_repository(runtime: PlaneTestRuntime) -> PlaneWorkAdmissionRepository:
+    return PlaneWorkAdmissionRepository(
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+    )
+
+
+def _plane_coordinator_from_existing(
+    runtime: PlaneTestRuntime,
+    *,
+    slot_lease: timedelta = timedelta(seconds=30),
+) -> WorkAdmissionCoordinator:
+    return WorkAdmissionCoordinator.from_plane(
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+        slot_lease=slot_lease,
+    )
 
 
 @dataclass
@@ -94,50 +111,13 @@ def _request(label: str, *, owner: OperationOwner | None = None) -> OperationReq
 
 
 @pytest.fixture(scope="module")
-def postgres_database() -> Iterator[Database]:
-    base_dsn = _build_database_url()
-    try:
-        params = psycopg2.extensions.parse_dsn(base_dsn)
-        name = f"astraldeep_admission_{uuid.uuid4().hex}"
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    dsn = psycopg2.extensions.make_dsn(**database_params)
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(dsn)
-    finally:
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name))
-                )
-            admin.close()
-        except Exception:
-            pass
+def postgres_database() -> Iterator[PlaneTestRuntime]:
+    with isolated_plane_runtime("work_admission") as runtime:
+        yield runtime
 
 
 @pytest.fixture
-def clean_database(postgres_database: Database) -> Database:
+def clean_database(postgres_database: PlaneTestRuntime) -> PlaneTestRuntime:
     postgres_database.execute("DELETE FROM operation_submission_result")
     postgres_database.execute(
         """
@@ -151,7 +131,7 @@ def clean_database(postgres_database: Database) -> Database:
 
 def test_production_construction_requires_an_explicit_durable_dependency() -> None:
     clock = _FakeClock()
-    with pytest.raises(ValueError, match="inject exactly one"):
+    with pytest.raises(ValueError, match="explicit work-admission repository"):
         WorkAdmissionCoordinator(admission_classes=_classes(), clock=clock)
 
     memory = InMemoryWorkAdmissionRepository()
@@ -270,7 +250,7 @@ def test_boundary_values_and_graphs_fail_closed() -> None:
             slot_lease=timedelta(0),
         )
     with pytest.raises(TypeError):
-        PostgresWorkAdmissionRepository(object())
+        PlaneWorkAdmissionRepository(plane_runtime=object())
 
 
 def test_in_memory_phase_and_lease_seams_are_explicit_and_fenced() -> None:
@@ -460,11 +440,13 @@ def test_in_memory_repository_corruption_and_unknown_inputs_fail_closed() -> Non
 
 
 def test_postgres_truth_survives_coordinator_reconstruction_and_fences_commits(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     first = WorkAdmissionCoordinator(
-        admission_classes=_classes(), database=clean_database, clock=clock
+        admission_classes=_classes(),
+        repository=_plane_repository(clean_database),
+        clock=clock,
     )
     request = _request("durable")
     acceptance = first.submit(request)
@@ -472,7 +454,7 @@ def test_postgres_truth_survives_coordinator_reconstruction_and_fences_commits(
 
     second = WorkAdmissionCoordinator(
         admission_classes=tuple(reversed(_classes())),
-        database=clean_database,
+        repository=_plane_repository(clean_database),
         clock=clock,
     )
     assert second.submit(request) == acceptance
@@ -582,13 +564,73 @@ def test_postgres_truth_survives_coordinator_reconstruction_and_fences_commits(
     )
 
 
+def test_postgres_request_generation_binding_reuses_and_rolls_back_caller_tx(
+    clean_database: PlaneTestRuntime,
+) -> None:
+    clock = _FakeClock()
+    repository = _plane_repository(clean_database)
+    coordinator = WorkAdmissionCoordinator(
+        admission_classes=_classes(),
+        repository=repository,
+        clock=clock,
+    )
+    request = dataclasses.replace(
+        _request("request-generation-transaction"),
+        request_generation=None,
+    )
+    accepted = coordinator.submit(request)
+    claim = coordinator.claim_next(AdmissionClass.INTERACTIVE)
+    assert claim is not None
+    request_generation = uuid.uuid4()
+
+    with pytest.raises(RuntimeError, match="rollback-request-generation"):
+        with coordinator.fenced_transaction(claim.fence) as transaction:
+            administrative = repository.get_operation_for_administration(
+                accepted.operation_id,
+                for_update=True,
+                transaction=transaction,
+            )
+            assert administrative is not None
+            assert administrative.owner_user_id == "owner-a"
+            assert administrative.request_generation is None
+            repository.bind_request_generation(
+                claim.fence,
+                request_generation,
+                transaction=transaction,
+            )
+            raise RuntimeError("rollback-request-generation")
+
+    after_rollback = repository.get_operation_for_administration(
+        accepted.operation_id
+    )
+    assert after_rollback is not None
+    assert after_rollback.request_generation is None
+
+    with coordinator.fenced_transaction(claim.fence) as transaction:
+        bound = repository.bind_request_generation(
+            claim.fence,
+            request_generation,
+            transaction=transaction,
+        )
+        replay = repository.bind_request_generation(
+            claim.fence,
+            request_generation,
+            transaction=transaction,
+        )
+    assert bound.request_generation == request_generation
+    assert replay == bound
+
+    with pytest.raises(WorkAdmissionConflictError, match="different request"):
+        repository.bind_request_generation(claim.fence, uuid.uuid4())
+
+
 def test_cold_pool_and_zero_queue_preselect_once_then_refuse_at_capacity(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinator = WorkAdmissionCoordinator(
         admission_classes=_classes(queue_limit=0, max_wait_ms=None),
-        database=clean_database,
+        repository=_plane_repository(clean_database),
         clock=clock,
     )
     first = coordinator.submit(_request("zero-queue-first"))
@@ -621,12 +663,12 @@ def test_cold_pool_and_zero_queue_preselect_once_then_refuse_at_capacity(
 
 
 def test_pre_handoff_cancel_and_expiry_revoke_effect_authority(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinator = WorkAdmissionCoordinator(
         admission_classes=_classes(queue_limit=0, max_wait_ms=None),
-        database=clean_database,
+        repository=_plane_repository(clean_database),
         clock=clock,
     )
     cancel_request = _request("cancel-before-handoff")
@@ -679,12 +721,12 @@ def test_pre_handoff_cancel_and_expiry_revoke_effect_authority(
 
 
 def test_incomplete_parent_child_handoff_marker_fails_closed_and_recovers(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinator = WorkAdmissionCoordinator(
         admission_classes=_classes(queue_limit=0, max_wait_ms=None),
-        database=clean_database,
+        repository=_plane_repository(clean_database),
         clock=clock,
     )
     request = _request("incomplete-handoff")
@@ -715,13 +757,13 @@ def test_incomplete_parent_child_handoff_marker_fails_closed_and_recovers(
 
 
 def test_postgres_queue_and_slot_limits_hold_across_coordinators(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinators = tuple(
         WorkAdmissionCoordinator(
             admission_classes=_classes(active_limit=1, queue_limit=2),
-            database=clean_database,
+        repository=_plane_repository(clean_database),
             clock=clock,
         )
         for _ in range(2)
@@ -763,13 +805,13 @@ def test_postgres_queue_and_slot_limits_hold_across_coordinators(
 
 
 def test_postgres_exact_handoff_is_targeted_and_one_time_across_coordinators(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinators = tuple(
         WorkAdmissionCoordinator(
             admission_classes=_classes(active_limit=2, queue_limit=2),
-            database=clean_database,
+        repository=_plane_repository(clean_database),
             clock=clock,
         )
         for _ in range(2)
@@ -803,12 +845,12 @@ def test_postgres_exact_handoff_is_targeted_and_one_time_across_coordinators(
 
 
 def test_postgres_exact_queued_claim_cannot_bypass_fifo_or_capacity(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinator = WorkAdmissionCoordinator(
         admission_classes=_classes(active_limit=1, queue_limit=3),
-        database=clean_database,
+        repository=_plane_repository(clean_database),
         clock=clock,
     )
     blocker = coordinator.submit(_request("postgres-exact-blocker"))
@@ -857,13 +899,13 @@ def test_postgres_exact_queued_claim_cannot_bypass_fifo_or_capacity(
 
 
 def test_postgres_terminalize_unselected_is_atomic_and_matches_memory(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinators = tuple(
         WorkAdmissionCoordinator(
             admission_classes=_classes(active_limit=1, queue_limit=2),
-            database=clean_database,
+        repository=_plane_repository(clean_database),
             clock=clock,
             operation_retention=timedelta(hours=24),
         )
@@ -972,12 +1014,12 @@ def test_postgres_terminalize_unselected_is_atomic_and_matches_memory(
 
 
 def test_postgres_cancellation_queue_expiry_and_owner_partitions(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinator = WorkAdmissionCoordinator(
         admission_classes=_classes(active_limit=1, queue_limit=3),
-        database=clean_database,
+        repository=_plane_repository(clean_database),
         clock=clock,
     )
     running_request = _request("cancel-running")
@@ -1088,12 +1130,12 @@ def test_postgres_cancellation_queue_expiry_and_owner_partitions(
 
 
 def test_postgres_lease_recovery_and_strict_retention_boundary(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     clock = _FakeClock()
     coordinator = WorkAdmissionCoordinator(
         admission_classes=_classes(active_limit=1, queue_limit=1, max_wait_ms=60_000),
-        database=clean_database,
+        repository=_plane_repository(clean_database),
         clock=clock,
         operation_retention=timedelta(hours=24),
     )
@@ -1116,16 +1158,22 @@ def test_postgres_lease_recovery_and_strict_retention_boundary(
     assert coordinator.claim_next(AdmissionClass.INTERACTIVE) is not None
 
     clock.advance(timedelta(hours=24) - timedelta(seconds=30))
+    assert coordinator.oldest_purge_eligible_due_at() is None
     assert coordinator.purge_expired(limit=100).operations == 0
     clock.advance(timedelta(hours=1))
+    oldest_due = coordinator.oldest_purge_eligible_due_at()
+    assert oldest_due is not None and oldest_due < clock.current
     purged = coordinator.purge_expired(limit=100)
     assert purged.operations == 1
     assert purged.submissions == 2
 
 
-def test_postgres_default_clock_is_database_owned(clean_database: Database) -> None:
+def test_postgres_default_clock_is_database_owned(
+    clean_database: PlaneTestRuntime,
+) -> None:
     coordinator = WorkAdmissionCoordinator(
-        admission_classes=_classes(), database=clean_database
+        admission_classes=_classes(),
+        repository=_plane_repository(clean_database),
     )
     before = clean_database.fetch_one("SELECT CURRENT_TIMESTAMP AS current_time")[
         "current_time"

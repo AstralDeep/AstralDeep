@@ -9,8 +9,9 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WINDOWS_INPUT = REPO_ROOT / "windows-client" / "requirements.in"
-WINDOWS_LOCK = REPO_ROOT / "windows-client" / "requirements-release.lock.txt"
+WINDOWS_ROOT = REPO_ROOT / "components" / "AstralProjection" / "windows-client"
+WINDOWS_INPUT = WINDOWS_ROOT / "requirements.in"
+WINDOWS_LOCK = WINDOWS_ROOT / "requirements-release.lock.txt"
 CONTRACT_ROOT = REPO_ROOT / "tooling" / "contract-ci"
 CONTRACT_INPUT = CONTRACT_ROOT / "requirements.in"
 CONTRACT_LOCK = CONTRACT_ROOT / "requirements.lock.txt"
@@ -116,8 +117,8 @@ def test_contract_validator_lock_is_exact_complete_and_hash_locked() -> None:
 def test_contract_validator_dependencies_stay_out_of_product_manifests() -> None:
     product_manifests = (
         REPO_ROOT / "backend" / "requirements.txt",
-        REPO_ROOT / "windows-client" / "requirements.in",
-        REPO_ROOT / "windows-client" / "AstralDeep.spec",
+        WINDOWS_ROOT / "requirements.in",
+        WINDOWS_ROOT / "AstralDeep.spec",
         REPO_ROOT / "Dockerfile",
         REPO_ROOT / "Dockerfile.voice",
     )

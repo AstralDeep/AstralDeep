@@ -29,10 +29,8 @@ def test_execution_loop_is_flag_gated():
     assert 'flags.is_enabled("scheduler_execution")' in src
 
 
-def test_flag_off_starts_no_scheduler_loop():
-    from orchestrator.orchestrator import Orchestrator
-
-    o = Orchestrator()
+def test_flag_off_starts_no_scheduler_loop(orchestrator_factory):
+    o = orchestrator_factory()
     # Nothing constructs a scheduler loop at init; it is created only inside
     # the flag-gated start path.
     assert getattr(o, "_scheduler_loop", None) is None

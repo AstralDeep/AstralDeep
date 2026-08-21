@@ -1,7 +1,7 @@
 # Keycloak setup for the native Windows client (`astral-desktop`)
 
 > Operator guide. Create a **dedicated public Keycloak client** for the native
-> Windows desktop client (`windows-client/`) and tell the orchestrator to accept
+> Windows desktop client (`components/AstralProjection/windows-client/`) and tell the orchestrator to accept
 > it. This is the by-the-book native-app posture (RFC 8252 / OAuth 2.0 for Native
 > Apps) and keeps the desktop and web auth surfaces isolated.
 >

@@ -105,7 +105,7 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: |
-            windows-client/requirements-release.lock.txt
+            components/AstralProjection/windows-client/requirements-release.lock.txt
             tooling/python-ci/requirements.lock.txt
 
       - name: Create two clean locked release environments
@@ -114,12 +114,12 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python -c "import sys; assert sys.version_info[:2] == (3, 11), sys.version"
-          python -m venv windows-client\.venv-release-a
-          python -m venv windows-client\.venv-release-b
-          & windows-client\.venv-release-a\Scripts\python -m pip install --require-hashes -r windows-client\requirements-release.lock.txt
-          & windows-client\.venv-release-b\Scripts\python -m pip install --require-hashes -r windows-client\requirements-release.lock.txt
-          & windows-client\.venv-release-a\Scripts\python -m pip check
-          & windows-client\.venv-release-b\Scripts\python -m pip check
+          python -m venv components\AstralProjection\windows-client\.venv-release-a
+          python -m venv components\AstralProjection\windows-client\.venv-release-b
+          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python -m pip install --require-hashes -r components\AstralProjection\windows-client\requirements-release.lock.txt
+          & components\AstralProjection\windows-client\.venv-release-b\Scripts\python -m pip install --require-hashes -r components\AstralProjection\windows-client\requirements-release.lock.txt
+          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python -m pip check
+          & components\AstralProjection\windows-client\.venv-release-b\Scripts\python -m pip check
 
       - name: Prove the clean runtime sets are identical
         shell: pwsh
@@ -127,19 +127,19 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force build\windows-candidate | Out-Null
-          & windows-client\.venv-release-a\Scripts\python scripts\windows_release_candidate.py environment-manifest `
-            --lock windows-client\requirements-release.lock.txt `
+          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python scripts\windows_release_candidate.py environment-manifest `
+            --lock components\AstralProjection\windows-client\requirements-release.lock.txt `
             --output build\windows-candidate\environment-a.json
-          & windows-client\.venv-release-b\Scripts\python scripts\windows_release_candidate.py environment-manifest `
-            --lock windows-client\requirements-release.lock.txt `
+          & components\AstralProjection\windows-client\.venv-release-b\Scripts\python scripts\windows_release_candidate.py environment-manifest `
+            --lock components\AstralProjection\windows-client\requirements-release.lock.txt `
             --output build\windows-candidate\environment-b.json
-          & windows-client\.venv-release-a\Scripts\python scripts\windows_release_candidate.py compare-environments `
+          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python scripts\windows_release_candidate.py compare-environments `
             --first build\windows-candidate\environment-a.json `
             --second build\windows-candidate\environment-b.json `
             --output build\windows-candidate\reproducibility.json
 
       - name: Build the unsigned executable exactly once
-        working-directory: windows-client
+        working-directory: components/AstralProjection/windows-client
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -169,7 +169,7 @@ jobs:
           # even finished writing its report — the report it did write said
           # "status": "valid". Start-Process -Wait is the only form that both
           # waits for a windowed process and yields its real exit code.
-          $exe = Join-Path $PWD 'windows-client\dist\AstralDeep.exe'
+          $exe = Join-Path $PWD 'components\AstralProjection\windows-client\dist\AstralDeep.exe'
           $report = Join-Path $PWD 'build\windows-candidate\deployment-validation.json'
           New-Item -ItemType Directory -Force -Path (Split-Path -Parent $report) | Out-Null
           $validate = Start-Process -FilePath $exe `
@@ -205,7 +205,7 @@ jobs:
           # Authority and client id come from the SAME release profile that is
           # baked into the exe, so CI can never authenticate against a different
           # realm than the client it is testing.
-          $profile = Get-Content windows-client\deployment\release-profile.json -Raw | ConvertFrom-Json
+          $profile = Get-Content components\AstralProjection\windows-client\deployment\release-profile.json -Raw | ConvertFrom-Json
           $authority = $profile.authority
           $clientId = $profile.client_id
           if ([string]::IsNullOrWhiteSpace($authority) -or [string]::IsNullOrWhiteSpace($clientId)) {
@@ -241,16 +241,16 @@ jobs:
       - name: Run frozen worker, no-dialog, rendered-chat, offline, and termination smoke
         shell: pwsh
         env:
-          ASTRAL_WINDOWS_EXE: ${{ github.workspace }}\windows-client\dist\AstralDeep.exe
+          ASTRAL_WINDOWS_EXE: ${{ github.workspace }}\components\AstralProjection\windows-client\dist\AstralDeep.exe
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           # The candidate bytes were built above from the pristine release
           # environment. Test-only packages enter that environment only now,
           # from the separate complete hash lock, so they cannot affect the exe.
-          & windows-client\.venv-release-a\Scripts\python -m pip install --require-hashes -r tooling\python-ci\requirements.lock.txt
-          & windows-client\.venv-release-a\Scripts\python -m pytest `
-            windows-client\tests\test_packaged_release.py -q `
+          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python -m pip install --require-hashes -r tooling\python-ci\requirements.lock.txt
+          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python -m pytest `
+            components\AstralProjection\windows-client\tests\test_packaged_release.py -q `
             --junitxml=build\windows-candidate\packaged-release.junit.xml
 
       # The connected GUI smokes report ONLY through a JSON file written by the
@@ -297,8 +297,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          & windows-client\.venv-release-a\Scripts\python -m pytest windows-client\tests -q `
-            --cov=windows-client `
+          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python -m pytest components\AstralProjection\windows-client\tests -q `
+            --cov=components/AstralProjection/windows-client `
             --cov-report=xml:build\windows-candidate\windows-coverage.xml `
             --junitxml=build\windows-candidate\windows-source.junit.xml
 
@@ -310,12 +310,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          & windows-client\.venv-release-a\Scripts\python scripts\windows_release_candidate.py artifact-manifest `
-            --executable windows-client\dist\AstralDeep.exe `
-            --profile windows-client\deployment\release-profile.json `
-            --runtime-manifest windows-client\deployment\runtime-manifest.json `
-            --requirements-input windows-client\requirements.in `
-            --lock windows-client\requirements-release.lock.txt `
+          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python scripts\windows_release_candidate.py artifact-manifest `
+            --executable components\AstralProjection\windows-client\dist\AstralDeep.exe `
+            --profile components\AstralProjection\windows-client\deployment\release-profile.json `
+            --runtime-manifest components\AstralProjection\windows-client\deployment\runtime-manifest.json `
+            --requirements-input components\AstralProjection\windows-client\requirements.in `
+            --lock components\AstralProjection\windows-client\requirements-release.lock.txt `
             --source-sha $env:CANDIDATE_SHA `
             --run-id "${{ github.run_id }}" `
             --run-attempt "${{ github.run_attempt }}" `
@@ -324,7 +324,7 @@ jobs:
           $manifest = Get-Content build\windows-candidate\candidate-manifest.json -Raw | ConvertFrom-Json
           "artifact_name=$env:ARTIFACT_NAME" >> $env:GITHUB_OUTPUT
           "executable_sha256=$($manifest.executable_sha256)" >> $env:GITHUB_OUTPUT
-          Copy-Item windows-client\dist\AstralDeep.exe build\windows-candidate\AstralDeep.exe
+          Copy-Item components\AstralProjection\windows-client\dist\AstralDeep.exe build\windows-candidate\AstralDeep.exe
 
       # actions/upload-artifact v4, pinned to immutable action bytes.
       - name: Archive the exact matrix-input executable and provenance
@@ -342,7 +342,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          & windows-client\.venv-release-a\Scripts\python scripts\windows_release_candidate.py artifact-reference `
+          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python scripts\windows_release_candidate.py artifact-reference `
             --manifest build\windows-candidate\candidate-manifest.json `
             --artifact-id "${{ steps.upload.outputs.artifact-id }}" `
             --artifact-digest "${{ steps.upload.outputs.artifact-digest }}" `

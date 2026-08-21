@@ -1,6 +1,6 @@
 """Tests for the save-time `_credentials_check` invocation in api.set_agent_credentials (T017).
 
-These tests stub `Orchestrator._dispatch_tool_call` and the credential manager
+These tests stub `Orchestrator.execute_authorized_tool` and the credential manager
 so the route handler can be invoked directly without a full FastAPI lifecycle.
 """
 from types import SimpleNamespace
@@ -36,7 +36,7 @@ def _orch_stub(card: AgentCard, dispatch_response):
     orch.credential_manager.set_bulk_credentials = MagicMock()
     orch.credential_manager.list_credential_keys = MagicMock(return_value=["FOO", "BAR"])
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={"FOO": "x", "BAR": "y"})
-    orch._dispatch_tool_call = AsyncMock(return_value=dispatch_response)
+    orch.execute_authorized_tool = AsyncMock(return_value=dispatch_response)
     return orch
 
 
@@ -47,7 +47,7 @@ async def test_credential_test_omitted_when_agent_has_no_check_skill() -> None:
     body = CredentialSetRequest(credentials={"FOO": "v"})
     resp = await set_agent_credentials(_make_request_with_orch(orch), "nocheck-1", body, user_id="alice")
     assert resp.credential_test is None
-    orch._dispatch_tool_call.assert_not_called()
+    orch.execute_authorized_tool.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -58,9 +58,11 @@ async def test_credential_test_ok_when_check_returns_ok() -> None:
     body = CredentialSetRequest(credentials={"CLASSIFY_URL": "https://x", "CLASSIFY_API_KEY": "k"})
     resp = await set_agent_credentials(_make_request_with_orch(orch), "classify-1", body, user_id="alice")
     assert resp.credential_test == "ok"
-    orch._dispatch_tool_call.assert_awaited_once()
-    call_args = orch._dispatch_tool_call.call_args
+    orch.execute_authorized_tool.assert_awaited_once()
+    call_args = orch.execute_authorized_tool.call_args
     assert call_args.kwargs["tool_name"] == "_credentials_check"
+    assert call_args.kwargs["channel"] == "rest"
+    assert call_args.kwargs["arguments"] == {}
     assert call_args.kwargs["timeout"] == 5.0
 
 
@@ -103,7 +105,7 @@ async def test_credential_test_failure_does_not_block_save() -> None:
     """Even when the probe blows up, the credential save itself must succeed."""
     card = _make_card("classify-1", skill_names=["_credentials_check"], required_credentials=[])
     orch = _orch_stub(card, dispatch_response=None)
-    orch._dispatch_tool_call = AsyncMock(side_effect=RuntimeError("disconnected"))
+    orch.execute_authorized_tool = AsyncMock(side_effect=RuntimeError("disconnected"))
     body = CredentialSetRequest(credentials={"X": "Y"})
     resp = await set_agent_credentials(_make_request_with_orch(orch), "classify-1", body, user_id="alice")
     assert resp.agent_id == "classify-1"

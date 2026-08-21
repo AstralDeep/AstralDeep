@@ -2,34 +2,19 @@
 
 Every harness identity, chat, attachment, and draft is namespaced under a
 ``__verif__`` prefix so runs never collide with — or pollute — real user data.
-Teardown deletes the deletable rows + blobs for a run. ``audit_events`` are
-append-only by design and remain, but only ever under namespaced principals.
+Qualification teardown delegates the fixed deletion manifest and SQL to
+AstralPlane using the composed application's transaction. ``audit_events`` are
+append-only by design and remain, but only under namespaced principals.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List
+from typing import Any, List
 
 logger = logging.getLogger("verification.isolation")
 
 NAMESPACE_PREFIX = "__verif__"
-
-# Tables with a user_id column that the harness writes to via the product path
-# and may safely purge for its namespaced principals on teardown. Order matters
-# only loosely (no hard FKs across these in the schema).
-_DELETABLE_USER_TABLES: tuple[str, ...] = (
-    "message_attachment",
-    "saved_components",
-    "workspace_layout",
-    "workspace_snapshot",
-    "messages",
-    "chats",
-    "user_attachments",
-    "draft_agents",
-    "user_llm_config",  # 054: harness-seeded BYO-LLM rows (never the system row)
-)
-
 
 @dataclass
 class Principal:
@@ -59,13 +44,6 @@ def principal_id(run_id: str, persona: str, role: str = "primary") -> str:
     return f"{NAMESPACE_PREFIX}{safe_run}_{persona}_{role}"
 
 
-def _like_escape(s: str) -> str:
-    """Escape SQL ``LIKE`` metacharacters so a literal prefix is matched
-    literally (paired with ``ESCAPE '\\'``). Without this, the underscores in
-    the ``__verif__`` prefix and the run separator are single-char wildcards."""
-    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 def make_principal(run_id: str, persona: str, role: str = "primary",
                    roles: List[str] | None = None) -> Principal:
     return Principal(user_id=principal_id(run_id, persona, role), roles=roles or ["user"])
@@ -75,29 +53,41 @@ def is_harness_principal(user_id: str) -> bool:
     return bool(user_id) and user_id.startswith(NAMESPACE_PREFIX)
 
 
-def teardown(db, run_id: str) -> int:
-    """Delete deletable rows for every principal of ``run_id``.
+def teardown(
+    *,
+    plane_runtime: Any,
+    plane_repositories: Any,
+    run_id: str,
+) -> int:
+    """Atomically purge every namespaced principal for ``run_id``.
 
-    Args:
-        db: A ``Database``-like handle with ``execute`` (DELETE ... ?) +
-            ``fetch_all``. The project DB uses ``?`` placeholders.
-        run_id: The run whose namespaced rows to purge.
-
-    Returns:
-        The number of DELETE statements that ran without error (best-effort;
-        never raises — a failed teardown must not fail a run).
+    This qualification boundary accepts only the application's composed Plane
+    runtime and catalog. It intentionally has no ``Database``/driver fallback:
+    missing dependencies, invalid identities, schema drift, or cleanup failure
+    must fail the verification run rather than leave state behind silently.
+    Returns the number of rows AstralPlane reports deleted.
     """
-    safe_run = run_id.replace(NAMESPACE_PREFIX, "")
-    # Match the exact ``<prefix><run>_`` boundary then any suffix, with LIKE
-    # metacharacters in the literal escaped — otherwise ``__verif__abc_%``
-    # (every ``_`` a wildcard) also matched run "abcd"'s principals, so a
-    # teardown for one run silently deleted a concurrent run's rows.
-    like = f"{_like_escape(f'{NAMESPACE_PREFIX}{safe_run}_')}%"
-    ran = 0
-    for table in _DELETABLE_USER_TABLES:
-        try:
-            db.execute(f"DELETE FROM {table} WHERE user_id LIKE ? ESCAPE '\\'", (like,))
-            ran += 1
-        except Exception:  # pragma: no cover - table may not exist in a given schema
-            logger.debug("teardown: skipped %s", table, exc_info=True)
-    return ran
+
+    # External/API-only verification can still construct principals without a
+    # local data-plane package; only in-process cleanup needs this typed enum.
+    from astralplane.repositories.harness_cleanup import HarnessCleanupProfile
+
+    if not callable(getattr(plane_runtime, "transaction", None)):
+        raise TypeError("verification teardown requires the application Plane runtime")
+    cleanup = getattr(plane_repositories, "harness_cleanup", None)
+    if not callable(getattr(cleanup, "purge_run", None)):
+        raise TypeError(
+            "verification teardown requires the application Plane "
+            "harness_cleanup repository"
+        )
+    with plane_runtime.transaction() as transaction:
+        report = cleanup.purge_run(
+            transaction,
+            profile=HarnessCleanupProfile.VERIFICATION,
+            run_id=run_id,
+        )
+        deleted = getattr(report, "total_deleted", None)
+        if isinstance(deleted, bool) or not isinstance(deleted, int) or deleted < 0:
+            raise RuntimeError("Plane harness cleanup returned an invalid deletion count")
+    logger.info("teardown removed %d row(s) for verification run %s", deleted, run_id)
+    return deleted

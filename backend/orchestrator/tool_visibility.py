@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from orchestrator.agent_identity import identity_requirement_satisfied
+from orchestrator.plane_repository_context import plane_source_from_orchestrator
 
 ExclusionLogger = Callable[[str, str | None, str], None]
 
@@ -62,7 +63,7 @@ def eligible_tool_pairs(
 
             try:
                 machineless = not remote_machines.owns_any_machine(
-                    orchestrator.history.db,
+                    plane_source_from_orchestrator(orchestrator),
                     user_id,
                 )
             except Exception:

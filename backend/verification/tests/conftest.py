@@ -22,9 +22,9 @@ def _db_ok() -> bool:
     try:
         import psycopg2
 
-        from shared.database import _build_database_url
+        from tests.helpers.voice_plane_runtime import build_test_database_url
 
-        conn = psycopg2.connect(_build_database_url())
+        conn = psycopg2.connect(build_test_database_url())
         conn.close()
         return True
     except Exception:

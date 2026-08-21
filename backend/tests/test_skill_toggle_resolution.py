@@ -1,28 +1,30 @@
 """027 click-through fix: skill toggles must write the permission row that
 ``is_tool_allowed`` actually honors (per-kind first, legacy NULL outranked)."""
-import types
-
 from orchestrator.tool_permissions import VALID_SCOPES, ToolPermissionManager
 
 
-class FakeDB:
+class FakePolicyRepository:
     def __init__(self):
-        self.executed = []
+        self.calls = []
 
-    def execute(self, sql, params=()):
-        self.executed.append((" ".join(sql.split()), params))
-        return types.SimpleNamespace(rowcount=1)
+    def set_tool_override(self, _transaction, **kwargs):
+        self.calls.append(("set_tool_override", kwargs))
 
-    def fetch_one(self, sql, params=()):
-        return None
+    def clear_tool_override(self, _transaction, **kwargs):
+        self.calls.append(("clear_tool_override", kwargs))
 
-    def fetch_all(self, sql, params=()):
-        return []
+
+class FakePolicyContext:
+    def __init__(self):
+        self.repository = FakePolicyRepository()
+
+    def call(self, method, **kwargs):
+        return method(None, **kwargs)
 
 
 def _manager(scope_map):
     tp = ToolPermissionManager.__new__(ToolPermissionManager)
-    tp.db = FakeDB()
+    tp._policy = FakePolicyContext()
     tp._tool_scope_map = scope_map
     return tp
 
@@ -35,17 +37,34 @@ def test_valid_scopes_include_files():
 def test_set_skill_enabled_writes_per_kind_row_and_clears_legacy():
     tp = _manager({"general-1": {"search_wikipedia": "tools:search"}})
     tp.set_skill_enabled("u1", "general-1", "search_wikipedia", False)
-    sqls = [sql for sql, _ in tp.db.executed]
-    assert any("INSERT INTO tool_overrides" in s for s in sqls), "per-kind upsert missing"
-    insert_params = next(p for s, p in tp.db.executed if "INSERT INTO tool_overrides" in s)
-    assert "tools:search" in insert_params  # the kind row, not NULL
-    assert any("DELETE FROM tool_overrides" in s and "permission_kind IS NULL" in s
-               for s in sqls), "legacy NULL row not cleared"
+    assert tp._policy.repository.calls == [
+        (
+            "set_tool_override",
+            {
+                "owner_id": "u1",
+                "agent_id": "general-1",
+                "tool_name": "search_wikipedia",
+                "permission_kind": "tools:search",
+                "enabled": False,
+                "updated_at": tp._policy.repository.calls[0][1]["updated_at"],
+            },
+        ),
+        (
+            "clear_tool_override",
+            {
+                "owner_id": "u1",
+                "agent_id": "general-1",
+                "tool_name": "search_wikipedia",
+                "permission_kind": None,
+            },
+        ),
+    ]
 
 
 def test_set_skill_enabled_falls_back_for_unknown_scope():
     tp = _manager({"weird-1": {"odd_tool": "tools:quantum"}})
-    tp.set_skill_enabled("u1", "weird-1", "odd_tool", True)
-    sqls = [sql for sql, _ in tp.db.executed]
-    # unknown scope -> legacy tool-wide path only (no invalid kind insert)
-    assert not any("'tools:quantum'" in s for s in sqls)
+    tp.set_skill_enabled("u1", "weird-1", "odd_tool", False)
+    [call] = tp._policy.repository.calls
+    assert call[0] == "set_tool_override"
+    assert call[1]["permission_kind"] is None
+    assert call[1]["enabled"] is False

@@ -115,7 +115,7 @@ async def test_derive_success_shape():
     assert claims == {"sub": "u1", "machine_class": "scheduled_job",
                       "consent_ref": "g1"}
     assert "fresh-token" not in str(claims)  # no token bytes in the marker
-    grants.mint_access_token.assert_awaited_once_with("g1")
+    grants.mint_access_token.assert_awaited_once_with("g1", user_id="u1")
 
 
 @pytest.mark.asyncio

@@ -58,8 +58,9 @@ support from its platform name.
 Mac App Store sandboxed builds are author/manage-only. A separately distributed
 macOS host becomes eligible only when its feature-059 implementation is present
 and the server advertises that exact capability. See the
-[Apple client notes](../apple-clients/README.md) and the
-[Windows deployment guide](../windows-client/README.md) for client packaging.
+[Apple client notes](https://github.com/AstralDeep/AstralProjection/blob/main/apple-clients/README.md)
+and the [Windows deployment guide](https://github.com/AstralDeep/AstralProjection/blob/main/windows-client/README.md)
+for client packaging.
 
 ## Lifecycle shown to users
 
@@ -108,7 +109,7 @@ canonical bundle SHA-256, and the exact reviewed desktop runtime-lock SHA-256.
 The backend source of truth is
 [`agent_generator.py`](../backend/orchestrator/agent_generator.py), and the
 official Windows lock is
-[`requirements-release.lock.txt`](../windows-client/requirements-release.lock.txt).
+[`requirements-release.lock.txt`](https://github.com/AstralDeep/AstralProjection/blob/main/windows-client/requirements-release.lock.txt).
 
 A host accepts only a supported contract version and exact required lock digest.
 Incompatible registration or delivery fails explicitly with

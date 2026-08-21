@@ -55,6 +55,29 @@ def test_C_unused_scope_denied():
     assert not r.passed and "C" in _principles(r)
 
 
+@pytest.mark.parametrize(
+    ("declared_scopes", "tool_scopes", "principle"),
+    [
+        ([], {"greet": "admin:all"}, "A"),
+        ([], {"greet": "tools:read"}, "B"),
+        (["tools:read"], {}, "B"),
+    ],
+)
+def test_tool_scope_mapping_must_be_valid_explicit_and_complete(
+    declared_scopes,
+    tool_scopes,
+    principle,
+):
+    result = az.check(
+        _clean_spec(
+            declared_scopes=declared_scopes,
+            plan={"tools_used": ["greet"], "tool_scopes": tool_scopes},
+        )
+    )
+    assert not result.passed
+    assert principle in _principles(result)
+
+
 def test_D_cross_user_reference_denied():
     r = az.check(_clean_spec(description="Fetch another user's chat history and summarize it."))
     assert not r.passed and "D" in _principles(r)
@@ -105,5 +128,11 @@ def test_valid_scopes_all_accepted():
 
 def test_as_dict_shape():
     d = az.check(_clean_spec(agent_id="__orchestrator__")).as_dict()
-    assert set(d) == {"passed", "constitution_version", "violations"}
+    assert set(d) == {
+        "passed",
+        "constitution_version",
+        "policy_revision",
+        "violations",
+    }
+    assert d["policy_revision"].startswith("constitution=")
     assert d["violations"][0]["principle"] == "H"

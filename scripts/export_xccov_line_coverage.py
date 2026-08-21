@@ -12,10 +12,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import selectors
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -36,19 +38,19 @@ COMMAND_TIMEOUT_SECONDS = 120
 COMMAND_STOP_TIMEOUT_SECONDS = 2
 EXPORT_TIMEOUT_SECONDS = 15 * 60
 
-APPLE_ROOT = "apple-clients/"
+APPLE_ROOT = "components/AstralProjection/apple-clients/"
 PLATFORM_ROOTS = {
     "ios": (
-        "apple-clients/AstralApp/AstralApp",
-        "apple-clients/AstralCore/Sources",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp",
+        "components/AstralProjection/apple-clients/AstralCore/Sources",
     ),
     "macos": (
-        "apple-clients/AstralApp/AstralApp",
-        "apple-clients/AstralCore/Sources",
+        "components/AstralProjection/apple-clients/AstralApp/AstralApp",
+        "components/AstralProjection/apple-clients/AstralCore/Sources",
     ),
     "watchos": (
-        "apple-clients/AstralWatch",
-        "apple-clients/AstralCore/Sources",
+        "components/AstralProjection/apple-clients/AstralWatch",
+        "components/AstralProjection/apple-clients/AstralCore/Sources",
     ),
 }
 
@@ -85,6 +87,12 @@ def _bounded_command(
     except OSError as exc:
         raise ExportError("producer_unavailable", "coverage producer did not run") from exc
     assert process.stdout is not None and process.stderr is not None
+    if os.name == "nt":
+        return _bounded_windows_process_output(
+            process,
+            max_stdout_bytes=max_stdout_bytes,
+            export_deadline=export_deadline,
+        )
     stream_limits = {
         process.stdout: max_stdout_bytes,
         process.stderr: MAX_FILE_LIST_BYTES,
@@ -159,6 +167,122 @@ def _bounded_command(
     stdout = b"".join(chunks[process.stdout])
     if not stdout:
         raise ExportError("producer_output_too_large", "coverage producer stdout is empty")
+    return stdout
+
+
+def _bounded_windows_process_output(
+    process: subprocess.Popen[bytes],
+    *,
+    max_stdout_bytes: int,
+    export_deadline: float | None,
+) -> bytes:
+    """Drain Windows pipe handles concurrently without socket selectors."""
+
+    assert process.stdout is not None and process.stderr is not None
+    streams = (process.stdout, process.stderr)
+    limits = (max_stdout_bytes, MAX_FILE_LIST_BYTES)
+    chunks: list[list[bytes]] = [[], []]
+    totals = [0, 0]
+    events: queue.Queue[tuple[int, bytes | None, BaseException | None]] = queue.Queue()
+
+    def read_stream(index: int) -> None:
+        stream = streams[index]
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    events.put((index, None, None))
+                    return
+                events.put((index, chunk, None))
+        except BaseException as exc:  # pragma: no cover - exceptional OS seam
+            events.put((index, None, exc))
+
+    readers = tuple(
+        threading.Thread(
+            target=read_stream,
+            args=(index,),
+            name=f"xccov-pipe-{index}",
+            daemon=True,
+        )
+        for index in range(2)
+    )
+    for reader in readers:
+        reader.start()
+
+    command_deadline = time.monotonic() + COMMAND_TIMEOUT_SECONDS
+    deadline = (
+        min(command_deadline, export_deadline)
+        if export_deadline is not None
+        else command_deadline
+    )
+    timeout_code = (
+        "export_timeout"
+        if export_deadline is not None and export_deadline <= command_deadline
+        else "producer_timeout"
+    )
+    timeout_message = (
+        "coverage export exceeded its overall deadline"
+        if timeout_code == "export_timeout"
+        else "coverage producer timed out"
+    )
+
+    def stop() -> None:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=COMMAND_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+    open_streams = len(streams)
+    try:
+        while open_streams:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stop()
+                raise ExportError(timeout_code, timeout_message)
+            try:
+                index, chunk, error = events.get(timeout=remaining)
+            except queue.Empty as exc:
+                stop()
+                raise ExportError(timeout_code, timeout_message) from exc
+            if error is not None:
+                stop()
+                raise ExportError(
+                    "producer_unavailable",
+                    "coverage producer could not be read",
+                ) from error
+            if chunk is None:
+                open_streams -= 1
+                continue
+            totals[index] += len(chunk)
+            if totals[index] > limits[index]:
+                stop()
+                raise ExportError(
+                    "producer_output_too_large",
+                    "coverage producer exceeded its byte bound",
+                )
+            chunks[index].append(chunk)
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            stop()
+            raise ExportError(timeout_code, timeout_message) from exc
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+        for reader in readers:
+            reader.join(timeout=COMMAND_STOP_TIMEOUT_SECONDS)
+    if returncode != 0:
+        raise ExportError("producer_failed", "coverage producer returned a failure")
+    stdout = b"".join(chunks[0])
+    if not stdout:
+        raise ExportError(
+            "producer_output_too_large",
+            "coverage producer stdout is empty",
+        )
     return stdout
 
 
@@ -312,6 +436,15 @@ def _canonical_archive_repo_root(value: str | Path) -> str:
     return raw
 
 
+def _local_archive_repo_root(repo: Path) -> str:
+    """Render a local checkout as the absolute POSIX path xccov records."""
+
+    raw = repo.as_posix()
+    if repo.drive and not raw.startswith("/"):
+        raw = f"/{raw}"
+    return _canonical_archive_repo_root(raw)
+
+
 def _read_source_line_count(
     repo: Path, relative_path: str, *, export_deadline: float | None = None
 ) -> int:
@@ -324,7 +457,12 @@ def _read_source_line_count(
         raise ExportError("source_unavailable", "tracked source is unavailable") from exc
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise ExportError("unsafe_source", "tracked source must be a regular non-symlink file")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
     try:
         descriptor = os.open(path, flags)
         opened = os.fstat(descriptor)
@@ -526,7 +664,9 @@ def export_xccov(
     destination = _validate_output(output, repo=repo)
     deadline = time.monotonic() + EXPORT_TIMEOUT_SECONDS
     archive_root = _canonical_archive_repo_root(
-        repo.as_posix() if archive_repo_root is None else archive_repo_root
+        _local_archive_repo_root(repo)
+        if archive_repo_root is None
+        else archive_repo_root
     )
     tracked = _tracked_swift_sources(repo, platform, export_deadline=deadline)
     archive_paths = _archive_file_list(repo, bundle, export_deadline=deadline)

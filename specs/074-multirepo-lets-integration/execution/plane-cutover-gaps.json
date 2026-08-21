@@ -1,0 +1,206 @@
+{
+  "format": "astral.plane-cutover-gaps/v1",
+  "status": "deep-product-choice-blocked",
+  "statusReason": "AstralPlane 074.004 supplies the stable pending-first attachment materialization, durable prefix/owner purge, generated-agent immutable publication, bounded recovery, global-incomplete readiness, and validation-policy reconciliation contracts. Deep starts one initialized Plane runtime, publishes and deletes attachments only through typed Plane coordinators, and has deleted both the shared database facade and duplicate attachment and generated-agent bundle-store mechanics. The existing draft_artifact_publication journal now has replay-stable begin/finalize/recovery operations, exact operation/fence validation, bounded recurring reconciliation, commit-uncertainty reselection, process-kill recovery, and multi-replica fencing. Production scans contain no direct psycopg, raw SQL, schema DDL, connection borrowing, or unfenced blob mutation. The exact pushed Plane evidence commit is staged in Deep together with its matching composition declaration, and the offline composition and five-repository provenance verifiers pass. One product decision remains deliberately unresolved: the typed owner-retirement service is not mounted to any account-deletion workflow until product authority defines the account-removal trigger; logout remains explicitly out of scope. plane_repository_context.py remains only a declared SQL-free runtime/catalog semantic adapter.",
+  "blockingPlaneCapabilityCount": 0,
+  "remainingBlockingProductDecisionCount": 1,
+  "blockingCompositionPinCount": 0,
+  "deepCompatibilityBoundary": "backend/orchestrator/plane_composition.py",
+  "observedPlanePublicSurface": {
+    "sourceCommit": "75a28dd48ff1116050ba2e2c78cbf9be46d35d9b",
+    "evidenceCommit": "3516dd52e1b49d078e12d90b965fa0f304a3f1ca",
+    "evidencePath": "provenance/checks.json",
+    "evidenceSha256": "2dc068564cbf2002bc9d0be3980741fccc7eea1e45651683bb6a31a0088dcd68",
+    "evidenceCheckCount": 8,
+    "evidenceStatus": "passed",
+    "schemaRevision": "074.004",
+    "migrationRegistryDigest": "31495e9b916301e5d9d5011f256224e62e0a0822e25fdf3b9c339beb695eff50",
+    "structureDigest": "2e95879e293dbac3018a5c3fea92662b2939390bb12195f5a9f8d1eca03d6ec3",
+    "currentVerifierDigest": "bd5ff43f781e08fe127a6e28ae9bd9b57a796190360215ee485941bc56870e69",
+    "predecessorVerifierDigest": "e8eecf5c403b73f2d6f0678de6bbf0e9cfc219c10e89d59a961b8c6d63fa9c7e",
+    "migrationEdgeDigest": "c46e2f8ca8060f7ed5ca48da8ac33d2f7078a1b141185d9c843ace66821f01df",
+    "repositoryFactories": [
+      "create_agent_repository",
+      "create_agent_management_repository",
+      "create_artifact_repository",
+      "create_attachment_parser_repository",
+      "create_attachment_materialization_coordinator",
+      "create_audit_repository",
+      "create_audit_retention_repository",
+      "create_authority_repository",
+      "create_background_task_repository",
+      "create_chat_step_repository",
+      "create_conversation_file_repository",
+      "create_credential_repository",
+      "create_draft_agent_repository",
+      "create_durable_purge_executor",
+      "create_encrypted_llm_config_repository",
+      "create_generated_agent_publication_repository",
+      "create_history_repository",
+      "create_harness_cleanup_repository",
+      "create_identity_repository",
+      "create_knowledge_repository",
+      "create_maintenance_repository",
+      "create_offline_grant_repository",
+      "create_outbox_store",
+      "create_preferences_repository",
+      "create_personalization_graph_repository",
+      "create_purge_store",
+      "create_quality_audit_repository",
+      "create_remote_repository",
+      "create_remote_operation_proposal_repository",
+      "create_repository_catalog",
+      "create_revocation_repository",
+      "create_saved_component_repository",
+      "create_scheduler_repository",
+      "create_share_grant_repository",
+      "create_streaming_blob_store",
+      "create_tool_policy_state_repository",
+      "create_tracked_job_repository",
+      "create_tutorial_repository",
+      "create_voice_repository",
+      "create_work_admission_repository",
+      "create_workspace_repository"
+    ],
+    "runtimeFactory": "create_postgres_runtime",
+    "asyncRuntimeAdapter": "AsyncPlaneRuntime",
+    "runtimeFactoryOwnsDriverPool": true,
+    "supportsEmptyDatabase": true
+  },
+  "blockingPlaneCapabilities": [],
+  "blockingCompositionPins": [],
+  "blockingProductDecisions": [
+    {
+      "id": "account-deletion-reachability",
+      "requiredProductDecision": [
+        "the authoritative account-retirement event and owner identity",
+        "the user-visible asynchronous deletion status contract",
+        "the operator recovery and manual-review disposition"
+      ],
+      "reason": "The owner-scoped purge service is implemented and tested but intentionally unmounted. Mapping logout or inventing a new account-deletion route would expand product authority without user approval; until an authoritative account-retirement workflow is chosen, no production caller may retire the whole attachment namespace.",
+      "blocks": [
+        "account-attachment-retirement"
+      ]
+    }
+  ],
+  "resolvedPlaneCapabilities": [
+    {
+      "id": "generated-agent-artifact-publication-recovery",
+      "requiredPublicSurface": [
+        "create_generated_agent_publication_repository",
+        "ImmutableBundleStore",
+        "GeneratedAgentPublicationRepository",
+        "GeneratedAgentPublicationOperationBinding",
+        "generated_agent_publication_recovery_operation_binding"
+      ],
+      "resolution": "Plane owns immutable bundle staging, promotion, exact digest/path validation, journal transitions, recovery operation binding, and cross-process fencing. Deep is only the policy/lifecycle coordinator: it validates full persisted operation identity, uses commit-uncertainty reselection with a fresh execution generation/token, starts bounded reconciliation at application startup, and fails closed on ambiguous identity, terminal state, cancellation, or concurrent reselection. Focused Plane unit/fault/live-PostgreSQL evidence passed 190 tests with three Windows-inapplicable POSIX skips; Deep publication/ownership tests passed 145 at 90.34% line coverage and two live-PostgreSQL service cases passed.",
+      "blocks": [
+        "generated-agent-artifact-publication-and-recovery"
+      ]
+    },
+    {
+      "id": "knowledge-and-personalization-extended-state",
+      "requiredPublicSurface": [
+        "create_knowledge_repository",
+        "create_personalization_graph_repository"
+      ],
+      "resolution": "KnowledgeRepository now groups interaction, quality-signal, quarantine, and proposal state; PersonalizationGraphRepository owns same-owner memory links, short-term signals, and consolidation sweeps.",
+      "blocks": [
+        "knowledge-synthesis",
+        "feedback-quality",
+        "personalization-repository-removal"
+      ]
+    },
+    {
+      "id": "scheduler-extended-state",
+      "requiredPublicSurface": [
+        "create_background_task_repository",
+        "create_maintenance_repository",
+        "create_tracked_job_repository"
+      ],
+      "resolution": "BackgroundTaskRepository, MaintenanceRepository, and TrackedJobRepository expose typed owner/admin methods with status, timestamp, lease-generation, and operation-generation fences.",
+      "blocks": [
+        "async-tasks",
+        "scheduler-store-removal",
+        "work-admission"
+      ]
+    },
+    {
+      "id": "async-transaction-adapter",
+      "requiredPublicSurface": [
+        "AsyncPlaneRuntime"
+      ],
+      "resolution": "AsyncPlaneRuntime runs whole caller-owned transactions on bounded worker capacity and exposes no generic async SQL facade.",
+      "blocks": [
+        "orchestrator-async-callers",
+        "event-loop-guard"
+      ]
+    },
+    {
+      "id": "user-agent-validation-policy-reconciliation",
+      "requiredPublicSurface": [
+        "catalog.agents.reconcile_validation_policy_for_administration"
+      ],
+      "resolution": "AgentRepository now reconciles the durable policy marker and live stale-agent revalidation flags under one advisory-locked caller transaction; Deep runs it after Plane health and before returning the application composition.",
+      "blocks": [
+        "user-agent-policy-startup-enforcement"
+      ]
+    },
+    {
+      "id": "streaming-attachment-blob-store",
+      "requiredPublicSurface": [
+        "create_streaming_blob_store",
+        "StreamingBlobStore",
+        "BlobReadStream",
+        "BlobParserLease"
+      ],
+      "resolution": "Plane owns bounded sync/async streaming, descriptor-bound size and SHA-256 validation, atomic publish/cleanup, owner and case isolation, reparse-safe roots, revocable parser leases, and verified owner/prefix deletion. Deep callers use streams by default and request a scoped parser lease only for filename-only libraries; the duplicate Deep store implementation is deleted.",
+      "blocks": [
+        "attachment-blob-store-removal"
+      ]
+    },
+    {
+      "id": "pending-first-attachment-materialization",
+      "requiredPublicSurface": [
+        "create_attachment_materialization_coordinator",
+        "BlobStagingSession",
+        "BlobStagedWrite"
+      ],
+      "resolution": "Every live Deep publisher begins an owner-fenced PENDING intent, obtains Plane's cross-process staging capability, streams into unpublished storage, validates bounded content policy, and lets Plane atomically publish and finalize READY metadata under the locked lease. Commit-uncertain begin, renew, and publish outcomes use exact replay; failures and cancellation durably abandon through the purge coordinator.",
+      "blocks": [
+        "attachment-upload-route",
+        "shared-attachment-materializer",
+        "verification-upload"
+      ]
+    },
+    {
+      "id": "streaming-durable-purge-composition",
+      "requiredPublicSurface": [
+        "create_purge_store",
+        "create_durable_purge_executor"
+      ],
+      "resolution": "Deep atomically soft-deletes metadata and schedules deterministic attachment-prefix or owner-namespace tombstones, returns explicit asynchronous acceptance, and runs bounded startup/background reconciliation through the one application StreamingBlobStore. Global readiness uses Plane's single-snapshot aggregate over every incomplete tombstone and expired pending materialization.",
+      "blocks": [
+        "attachment-delete-route",
+        "projection-attachment-delete",
+        "attachment-materialization-rollback-reconciliation"
+      ]
+    }
+  ],
+  "planeOwnedImplementationsRemainingInDeep": [],
+  "observedDeepLegacyCallers": [],
+  "directPsycopgProductionPaths": [],
+  "completionCriteria": [
+    "AstralPlane owns PostgreSQL driver-pool construction and empty-database baseline initialization.",
+    "Every observed Deep legacy caller uses a typed Plane repository through a caller-owned transaction.",
+    "Deep production modules contain no psycopg imports, raw SQL, schema DDL, or connection borrowing.",
+    "Every planeOwnedImplementationsRemainingInDeep path is removed; durable byte-stream mechanics may not be relabeled as a Deep compatibility adapter.",
+    "backend/shared/database.py is deleted and focused fixtures inject Plane runtimes or explicit fakes directly.",
+    "plane_repository_context.py remains a declared SQL-free application runtime/catalog semantic adapter; its temporary legacy_database keyword may only carry an already-created Plane runtime/catalog and may never borrow a connection or translate placeholders.",
+    "Attachment callers use Plane's pending-first bounded streaming and durable purge contracts; backend/orchestrator/attachments/store.py is deleted.",
+    "Generated-agent publication uses Plane's immutable bundle store and durable journal coordinator with bounded startup/background reconciliation, exact replay identity, commit-uncertainty recovery, and multi-replica fencing.",
+    "Startup initializes and reconciles one application-scoped Plane runtime before admitting traffic.",
+    "The account-retirement product decision is authorized and the currently unmounted owner-purge boundary is wired without treating logout as account deletion.",
+    "The embedded AstralPlane Gitlink and composition commit identify the pushed evidence commit whose sole parent is the exact qualified 074.004 source."
+  ]
+}

@@ -24,7 +24,21 @@ def test_mcp_flag_defaults_off(monkeypatch):
 def test_phase_b_modules_are_not_imported_when_flag_is_absent():
     environment = dict(os.environ)
     environment.pop("FF_MCP_SERVER", None)
-    environment["PYTHONPATH"] = str(ROOT / "backend")
+
+    def component_source(name: str, suffix: str = "") -> Path:
+        sibling = ROOT.parent / name / suffix
+        embedded = ROOT / "components" / name / suffix
+        return sibling if sibling.is_dir() else embedded
+
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (
+            str(ROOT / "backend"),
+            str(component_source("AstralPlane", "src")),
+            str(component_source("AstralProjection", "backend")),
+            str(component_source("AstralPrimitives")),
+            str(component_source("LETS", "src")),
+        )
+    )
     probe = (
         "import sys; import orchestrator.orchestrator; "
         "names=('orchestrator.mcp_server_endpoint','orchestrator.mcp_authz',"

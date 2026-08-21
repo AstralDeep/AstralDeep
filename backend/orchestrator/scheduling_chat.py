@@ -25,6 +25,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from astralprims import Alert, Button, Card, Text
+from orchestrator.plane_repository_context import plane_source_from_orchestrator
 from shared.feature_flags import flags
 
 logger = logging.getLogger("Orchestrator.SchedulingChat")
@@ -122,6 +123,22 @@ def _proposals(orch) -> Dict[str, Dict[str, Any]]:
     return orch._schedule_proposals
 
 
+def _scheduler_store(orch):
+    """Bind scheduling policy to the one application Plane runtime."""
+
+    from scheduler.store import ScheduledJobStore
+
+    injected = getattr(orch, "scheduled_job_store", None)
+    if injected is not None:
+        return injected
+    source = plane_source_from_orchestrator(orch)
+    return ScheduledJobStore(
+        coordinator=getattr(orch, "work_admission", None),
+        plane_runtime=source.plane_runtime,
+        plane_repositories=source.plane_repositories,
+    )
+
+
 def human_cadence(schedule_kind: str, schedule_expr: str, tz: str) -> str:
     """Plain-language cadence line for the consent card."""
     if schedule_kind == "interval":
@@ -143,7 +160,6 @@ def _validate_proposal(orch, user_id: str, args: Dict[str, Any]):
                                   SCHEDULE_MIN_INTERVAL_SECONDS)
     from scheduler.cron import ScheduleError, compute_next_run_ms
     from scheduler.governance import GovernanceError, validate_new_job
-    from scheduler.store import ScheduledJobStore
 
     name = str(args.get("name") or "").strip()[:120]
     instruction = str(args.get("instruction") or "").strip()[:2000]
@@ -162,7 +178,7 @@ def _validate_proposal(orch, user_id: str, args: Dict[str, Any]):
         if agent_id not in getattr(orch, "agent_cards", {}) or orch._is_draft_agent(agent_id):
             raise ValueError(f"Unknown agent '{agent_id}' — omit agent_id or use a live agent.")
 
-    store = ScheduledJobStore(orch.history.db)
+    store = _scheduler_store(orch)
     try:
         validate_new_job(
             active_job_count=store.count_active(user_id),
@@ -270,17 +286,14 @@ async def _capture_consent(orch, user_id: str, agent_id: str,
     authority rather than pretending it has some.
     """
     try:
-        from orchestrator.offline_grant import OfflineGrantStore
-        from orchestrator.session_store import WebSessionStore
-
-        sessions = WebSessionStore(orch.history.db)
+        sessions = orch.web_sessions
         refresh_token = await asyncio.to_thread(
             sessions.latest_refresh_token_for, user_id)
         if not refresh_token:
             logger.info("consent_capture: no live session refresh token for user=%s "
                         "— job created without unattended authority", user_id)
             return None
-        grants = OfflineGrantStore(orch.history.db)
+        grants = orch.offline_grants
         grant_id = await asyncio.to_thread(
             grants.capture, user_id, refresh_token, agent_id)
         logger.info("consent_capture: durable grant created user=%s agent=%s "
@@ -367,8 +380,7 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     if cleaned["agent_id"]:
         grant_id = await _capture_consent(orch, user_id, cleaned["agent_id"], consented)
 
-    from scheduler.store import ScheduledJobStore
-    store = ScheduledJobStore(orch.history.db)
+    store = _scheduler_store(orch)
     job = await asyncio.to_thread(
         store.create_job,
         user_id, name=cleaned["name"], instruction=cleaned["instruction"],

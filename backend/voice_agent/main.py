@@ -1,4 +1,10 @@
-"""Executable entrypoint for the isolated Feature 065 direct-RTC worker."""
+"""Executable entrypoint for the isolated Feature 065 direct-RTC worker.
+
+This production worker is intentionally outside the application data plane.
+It receives bounded, authenticated session assignments over the worker-control
+channel and must never import AstralPlane, a database driver, or Deep product
+authority code.
+"""
 
 from __future__ import annotations
 
@@ -38,6 +44,7 @@ _FORBIDDEN_MODULE_PREFIXES = frozenset(
     {
         "agents",
         "anthropic",
+        "astralplane",
         "asyncpg",
         "langchain",
         "litellm",
@@ -58,6 +65,7 @@ _FORBIDDEN_MODULE_PREFIXES = frozenset(
 _FORBIDDEN_DISTRIBUTIONS = frozenset(
     {
         "anthropic",
+        "astralplane",
         "asyncpg",
         "langchain",
         "litellm",

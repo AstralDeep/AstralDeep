@@ -1,4 +1,0 @@
-// Feature 053 — Debug: talk to the local orchestrator.
-#include "Base.xcconfig"
-
-ASTRAL_SERVER_BASE_URL = http:/$()/localhost:8001

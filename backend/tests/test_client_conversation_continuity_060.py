@@ -1,7 +1,7 @@
 """Source-contract guard for the feature-060 web continuity reducer.
 
 The deterministic executable behavior is covered in
-``tooling/web-ci/tests/continuity-contract-060.spec.js`` with a real Chromium
+``components/AstralProjection/tooling/web-ci/tests/continuity-contract-060.spec.js`` with a real Chromium
 DOM and a synthetic transport. The separate release harness uses real
 Keycloak and WebSocket transport. These assertions keep the shipped classic
 script's security- and ordering-critical seams discoverable from the normal
@@ -14,12 +14,19 @@ import re
 from pathlib import Path
 
 import pytest
+from astralprojection.resources import static_path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CLIENT = ROOT / "backend" / "webrender" / "static" / "client.js"
+CLIENT = static_path("client.js")
 BROWSER_SPEC = (
-    ROOT / "tooling" / "web-ci" / "tests" / "continuity-contract-060.spec.js"
+    ROOT
+    / "components"
+    / "AstralProjection"
+    / "tooling"
+    / "web-ci"
+    / "tests"
+    / "continuity-contract-060.spec.js"
 )
 
 

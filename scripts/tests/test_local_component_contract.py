@@ -18,6 +18,26 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "availability": "required-embedded",
         "import": "astralprojection",
         "extras": [],
+        "build-inputs": [
+            "pyproject.toml",
+            "README.md",
+            "LICENSE.md",
+            "NOTICE",
+            "backend/webrender",
+            "backend/rote",
+            "contracts",
+            "src/astralprojection",
+        ],
+        "required-wheel-paths": [
+            "astralprojection/__init__.py",
+            "astralprojection/NOTICE",
+            "contracts/ui_protocol.json",
+            "contracts/fixtures/voice_065/client_conformance.json",
+            "webrender/static/astral.css",
+            "webrender/static/vendor/livekit-client.umd.min.js",
+            "webrender/templates/shell.html",
+            "rote/__init__.py",
+        ],
     },
     "astral-plane": {
         "distribution": "astralplane",
@@ -27,6 +47,17 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "availability": "required-embedded",
         "import": "astralplane",
         "extras": [],
+        "build-inputs": [
+            "pyproject.toml",
+            "README.md",
+            "LICENSE",
+            "src/astralplane",
+        ],
+        "required-wheel-paths": [
+            "astralplane/__init__.py",
+            "astralplane/api.py",
+            "astralplane/database/migrations.py",
+        ],
     },
     "astral-primitives": {
         "distribution": "astralprims",
@@ -36,6 +67,16 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "availability": "required-embedded",
         "import": "astralprims",
         "extras": [],
+        "build-inputs": [
+            "pyproject.toml",
+            "README.md",
+            "LICENSE",
+            "src/astralprims",
+        ],
+        "required-wheel-paths": [
+            "astralprims/__init__.py",
+            "astralprims/py.typed",
+        ],
     },
     "lets": {
         "distribution": "lets-agent",
@@ -45,6 +86,20 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "availability": "external-feature-gated",
         "import": "lets",
         "extras": ["client"],
+        "build-inputs": [
+            "pyproject.toml",
+            "README.md",
+            "LICENSE",
+            "NOTICE",
+            "src/lets",
+        ],
+        "required-wheel-paths": [
+            "lets/__init__.py",
+            "lets/client.py",
+            "lets/executor.py",
+            "lets/integrations/astraldeep.py",
+            "lets/py.typed",
+        ],
     },
 }
 
@@ -59,11 +114,35 @@ def test_local_component_contract_matches_manifest_and_package_metadata() -> Non
     local = root_metadata["tool"]["astraldeep"]["local-components"]
     assert local["format"] == "astraldeep.local-components/v1"
     assert local["manifest"] == "config/astral-composition.json"
+    assert local["installer"] == "pip-wheel/v1"
+    assert local["wheel-lock-format"] == "astraldeep.component-wheel-lock/v1"
+    assert local["install-order"] == [
+        "astral-primitives",
+        "astral-projection",
+        "astral-plane",
+        "lets",
+    ]
+    assert local["build-tools"] == [
+        "setuptools==80.9.0",
+        "wheel==0.45.1",
+        "hatchling==1.27.0",
+        "uv_build==0.11.21",
+    ]
 
     manifest_path = REPOSITORY_ROOT / local["manifest"]
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     entries = {
-        key: value for key, value in local.items() if key not in {"format", "manifest"}
+        key: value
+        for key, value in local.items()
+        if key
+        not in {
+            "format",
+            "manifest",
+            "installer",
+            "wheel-lock-format",
+            "install-order",
+            "build-tools",
+        }
     }
     assert entries == EXPECTED
     assert set(manifest["components"]) == set(EXPECTED)

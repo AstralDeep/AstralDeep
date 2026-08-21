@@ -33,14 +33,40 @@ def chaining_on(monkeypatch):
 
 @pytest.fixture
 def orch():
+    from orchestrator.concurrency_cap import ConcurrencyCap
+    from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
 
-    o = Orchestrator()
+    # Exercise the real delegation and dispatch methods without composing the
+    # application-scoped Plane graph; every touched collaborator is explicit.
+    o = Orchestrator.__new__(Orchestrator)
+    o.agents = {}
+    o.a2a_clients = {}
+    o.local_agents = {}
+    o.agent_cards = {}
+    o.ui_sessions = {}
+    o.security_flags = {}
+    o._dispatch_context = {}
+    o._chain_budgets = {}
+    o._pending_cap_entries = {}
+    o._hop_cap_entries = {}
+    o._job_context = {}
+    o._active_request = {}
+    o._taint_trackers = {}
+    o.concurrency_cap = ConcurrencyCap(max_per_user_agent=3)
+    o.hooks = HookManager()
+    o.stream_manager = None
+    o._llm_store = SimpleNamespace(
+        get=AsyncMock(return_value=None),
+        get_system=AsyncMock(return_value=None),
+    )
     o.send_ui_render = AsyncMock()
+    o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
     o._map_file_paths = lambda cid, a, **k: a
+    o.credential_manager = MagicMock()
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(
         side_effect=lambda u, a: f"cred-for-{a}")
     o.local_agents["initiator-1"] = MagicMock()
@@ -50,7 +76,7 @@ def orch():
 
     o._dispatched = {}
 
-    async def _capture(ws, agent_id, tool_name, args, max_retries=None):
+    async def _capture(ws, agent_id, tool_name, args, max_retries=None, **_kwargs):
         o._dispatched.update(agent_id=agent_id, tool_name=tool_name,
                              args=dict(args))
         return MCPResponse(result="peer-ok")

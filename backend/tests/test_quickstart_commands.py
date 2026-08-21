@@ -117,7 +117,7 @@ def test_quickstart_uses_only_the_isolated_lock_and_digest_pinned_browser() -> N
     assert "NODE_V8_COVERAGE" in quickstart
     assert quickstart.count("corepack npm run coverage:node") >= 2
     assert "tooling-javascript.json" in quickstart
-    assert 'PLAYWRIGHT_IMAGE="$(tr -d \'\\n\' < tooling/web-ci/playwright-image.txt)"' in quickstart
+    assert 'PLAYWRIGHT_IMAGE="$(tr -d \'\\n\' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"' in quickstart
     assert 'test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"' in quickstart
     assert 'docker pull "$PLAYWRIGHT_IMAGE"' in quickstart
     assert '"$PLAYWRIGHT_IMAGE" sh -lc \'test "$(corepack npm --version)"' in quickstart

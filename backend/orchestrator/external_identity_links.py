@@ -18,7 +18,12 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from astralplane.repositories.identity import (
+    ExternalIdentityAlreadyLinkedError,
+    ExternalIdentityNonceReplayError,
+)
 from orchestrator.agent_identity import normalize_orcid
+from orchestrator.plane_repository_context import PlaneRepositoryContext, repository_from
 
 LINK_SECRETS_ENV = "EXTERNAL_IDENTITY_LINK_SECRETS"
 PREFERENCES_KEY = "verified_external_identities"
@@ -225,9 +230,38 @@ def linked_identity_from_preferences(
     }
 
 
-def claims_with_saved_identities(db: Any, user_id: str, claims: Any) -> dict[str, Any]:
-    preferences = db.get_user_preferences(user_id)
-    return claims_with_identity_preferences(preferences, claims)
+def claims_with_saved_identities(
+    db: Any | None,
+    user_id: str,
+    claims: Any,
+    *,
+    plane_runtime: Any | None = None,
+    plane_repositories: Any | None = None,
+) -> dict[str, Any]:
+    context = _identity_context(
+        db,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_repositories,
+    )
+    records = context.call(
+        context.repository.list_external_identities,
+        owner_id=user_id,
+        limit=100,
+    )
+    safe_claims = dict(claims) if isinstance(claims, Mapping) else {}
+    if records:
+        safe_claims[INTERNAL_CLAIMS_KEY] = {
+            record.provider: {
+                "subject": record.subject,
+                "issuer": record.issuer,
+                "verified_by_agent": record.agent_id,
+                "verified_at": record.verified_at,
+            }
+            for record in records
+        }
+    else:
+        safe_claims.pop(INTERNAL_CLAIMS_KEY, None)
+    return safe_claims
 
 
 def claims_with_identity_preferences(preferences: Any, claims: Any) -> dict[str, Any]:
@@ -248,7 +282,7 @@ def public_user_preferences(preferences: Any) -> dict[str, Any]:
 
 
 def store_verified_identity(
-    db: Any,
+    db: Any | None,
     *,
     user_id: str,
     agent_id: str,
@@ -257,6 +291,8 @@ def store_verified_identity(
     issuer: str,
     state_nonce: str,
     now: int | None = None,
+    plane_runtime: Any | None = None,
+    plane_repositories: Any | None = None,
 ) -> None:
     """Atomically store a one-to-one verified link without replacing preferences."""
     canonical = normalize_orcid(subject) if provider == "orcid" else None
@@ -264,72 +300,50 @@ def store_verified_identity(
         raise IdentityLinkError("Invalid external identity")
     timestamp = int(time.time()) if now is None else int(now)
 
-    connection, pooled = db._borrow()
+    context = _identity_context(
+        db,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_repositories,
+    )
     try:
-        cursor = connection.cursor()
-        cursor.execute(
-            "SELECT pg_advisory_xact_lock(hashtext(%s))",
-            (f"external-identity:{provider}:{canonical}",),
-        )
-        cursor.execute(
-            "SELECT user_id, preferences FROM user_preferences FOR UPDATE"
-        )
-        rows = cursor.fetchall()
-        target_preferences: dict[str, Any] = {}
-        for row in rows:
-            prefs = _preferences_dict(row.get("preferences"))
-            entry = linked_identity_from_preferences(
-                prefs, agent_id=agent_id, provider=provider
+        with context.transaction() as transaction:
+            context.repository.store_verified_external_identity(
+                transaction,
+                owner_id=user_id,
+                agent_id=agent_id,
+                provider=provider,
+                subject=canonical,
+                issuer=issuer,
+                state_nonce=state_nonce,
+                observed_at=timestamp,
+                nonce_ttl_seconds=STATE_LIFETIME_SECONDS,
+                nonce_cap=10,
             )
-            if entry and entry["subject"] == canonical and row["user_id"] != user_id:
-                raise IdentityAlreadyLinkedError(
-                    "This external identity is linked to another Astral account"
-                )
-            if row["user_id"] == user_id:
-                target_preferences = prefs
+    except ExternalIdentityAlreadyLinkedError as exc:
+        raise IdentityAlreadyLinkedError(
+            "This external identity is linked to another Astral account"
+        ) from exc
+    except ExternalIdentityNonceReplayError as exc:
+        raise IdentityLinkError("This identity-link request was already used") from exc
 
-        links = target_preferences.get(PREFERENCES_KEY)
-        links = dict(links) if isinstance(links, Mapping) else {}
-        existing_entry = links.get(provider)
-        used_nonces = (
-            existing_entry.get("recent_link_nonces")
-            if isinstance(existing_entry, Mapping)
-            else []
-        )
-        recent_nonces = [
-            item
-            for item in used_nonces
-            if isinstance(item, Mapping)
-            and isinstance(item.get("nonce"), str)
-            and isinstance(item.get("used_at"), int)
-            and item["used_at"] >= timestamp - STATE_LIFETIME_SECONDS
-        ]
-        if any(item["nonce"] == state_nonce for item in recent_nonces):
-            raise IdentityLinkError("This identity-link request was already used")
-        recent_nonces.append({"nonce": state_nonce, "used_at": timestamp})
-        links[provider] = {
-            "subject": canonical,
-            "issuer": issuer,
-            "verified_by_agent": agent_id,
-            "verified_at": timestamp,
-            "recent_link_nonces": recent_nonces[-10:],
-        }
-        target_preferences[PREFERENCES_KEY] = links
-        encoded = json.dumps(target_preferences, separators=(",", ":"), sort_keys=True)
-        updated_ms = timestamp * 1000
-        cursor.execute(
-            """INSERT INTO user_preferences (user_id, preferences, updated_at)
-               VALUES (%s, %s, %s)
-               ON CONFLICT(user_id) DO UPDATE
-               SET preferences = EXCLUDED.preferences, updated_at = EXCLUDED.updated_at""",
-            (user_id, encoded, updated_ms),
-        )
-        connection.commit()
-    except BaseException:
-        connection.rollback()
-        raise
-    finally:
-        db._release(connection, pooled)
+
+def _identity_context(
+    db: Any | None,
+    *,
+    plane_runtime: Any | None = None,
+    plane_repositories: Any | None = None,
+) -> PlaneRepositoryContext:
+    repository, runtime = repository_from(
+        "identity",
+        plane_runtime=plane_runtime,
+        repositories=plane_repositories,
+        legacy_database=db,
+    )
+    return PlaneRepositoryContext(
+        repository=repository,
+        plane_runtime=runtime,
+        legacy_database=db,
+    )
 
 
 __all__ = [

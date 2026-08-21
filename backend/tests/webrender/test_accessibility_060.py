@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from html.parser import HTMLParser
-from pathlib import Path
 
-from webrender.chrome.surfaces import agents, authoring
+from astralprojection.resources import static_path
+from orchestrator.projection_surfaces import agents, authoring
 
-
-CLIENT_JS = Path(__file__).resolve().parents[2] / "webrender" / "static" / "client.js"
+CLIENT_JS = static_path("client.js")
 
 
 def _js_function(source: str, name: str) -> str:

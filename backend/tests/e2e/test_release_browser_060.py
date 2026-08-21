@@ -16,14 +16,13 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-if not (
-    (REPO_ROOT / "tooling").is_dir() and (REPO_ROOT / "scripts").is_dir()
-):  # repo root absent inside the product image
+PROJECTION_ROOT = REPO_ROOT / "components" / "AstralProjection"
+TOOL_ROOT = PROJECTION_ROOT / "tooling" / "web-ci"
+if not (TOOL_ROOT.is_dir() and (REPO_ROOT / "scripts").is_dir()):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
     )
-TOOL_ROOT = REPO_ROOT / "tooling" / "web-ci"
 PACKAGE = TOOL_ROOT / "package.json"
 LOCK = TOOL_ROOT / "package-lock.json"
 IMAGE = TOOL_ROOT / "playwright-image.txt"
@@ -229,7 +228,7 @@ def test_real_browser_release_lane_against_trusted_staging(tmp_path: Path) -> No
             "-v",
             f"{tmp_path}:/evidence",
             "-w",
-            "/work/tooling/web-ci",
+            "/work/components/AstralProjection/tooling/web-ci",
             *environment_flags,
             pinned,
             "sh",

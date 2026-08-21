@@ -61,7 +61,6 @@ def test_extracts_regular_members_and_allows_shared_directories(tmp_path: Path) 
     (
         "../escape.json",
         "/absolute.json",
-        "nested\\windows.json",
         "./relative.json",
         "nested//empty.json",
         "trailing-dot./report.json",
@@ -209,6 +208,14 @@ def test_member_validation_covers_path_size_flags_and_directory_payloads() -> No
     with pytest.raises(extractor.ExtractionError, match="segment exceeds"):
         extractor._member_path(long_segment, limits)
 
+    # ``zipfile`` normalizes a backslash in ``filename`` when writing an
+    # archive on Windows, so drive the validator against its preserved raw
+    # member name instead of relying on a platform-dependent archive fixture.
+    ambiguous = zipfile.ZipInfo("safe")
+    ambiguous.orig_filename = "nested\\windows.json"
+    with pytest.raises(extractor.ExtractionError, match="absolute or ambiguous"):
+        extractor._member_path(ambiguous, limits)
+
     encrypted = zipfile.ZipInfo("encrypted")
     encrypted.flag_bits = 1
     with pytest.raises(extractor.ExtractionError, match="encrypted"):
@@ -232,6 +239,7 @@ def test_member_validation_covers_path_size_flags_and_directory_payloads() -> No
 
 def test_rejects_nested_target_links_special_files_and_file_ancestors(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive = _archive(tmp_path / "artifact.zip", [("safe", b"safe")])
     linked_target = tmp_path / "linked-target"
@@ -242,7 +250,31 @@ def test_rejects_nested_target_links_special_files_and_file_ancestors(
 
     special_target = tmp_path / "special-target"
     special_target.mkdir()
-    os.mkfifo(special_target / "pipe")
+    special_file = special_target / "pipe"
+    mkfifo = getattr(os, "mkfifo", None)
+    if mkfifo is not None:
+        mkfifo(special_file)
+    else:
+        # Windows has no filesystem FIFO constructor. Keep this branch as a
+        # real traversal test and substitute only the entry's file-kind probe.
+        special_file.write_bytes(b"placeholder")
+        path_type = type(special_file)
+        original_is_file = path_type.is_file
+        original_is_dir = path_type.is_dir
+        monkeypatch.setattr(
+            path_type,
+            "is_file",
+            lambda path: False
+            if path == special_file
+            else original_is_file(path),
+        )
+        monkeypatch.setattr(
+            path_type,
+            "is_dir",
+            lambda path: False
+            if path == special_file
+            else original_is_dir(path),
+        )
     with pytest.raises(extractor.ExtractionError, match="special file"):
         extractor.extract_artifact(archive, special_target)
 

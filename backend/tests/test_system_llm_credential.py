@@ -32,9 +32,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from orchestrator import chrome_events  # noqa: E402
 
 SECRET = "sk-supersecret-system-key-1234567890123456"
-_SYS_COLS = ("provider", "base_url", "model", "api_key_enc", "updated_by")
-
-
 class FakeRecorder:
     def __init__(self):
         self.events = []
@@ -48,9 +45,8 @@ def _uid() -> str:
 
 
 @pytest.fixture(scope="module")
-def orch_module():
-    from orchestrator.orchestrator import Orchestrator
-    return Orchestrator()
+def orch_module(orchestrator_module_factory):
+    return orchestrator_module_factory()
 
 
 @pytest.fixture
@@ -78,21 +74,19 @@ def orch(orch_module):
 @pytest.fixture
 def clean_system_row(orch):
     """Snapshot + remove any pre-existing system row; restore afterwards."""
-    db = orch._llm_store.db
-    saved = db.fetch_one(
-        "SELECT provider, base_url, model, api_key_enc, updated_by "
-        "FROM system_llm_config WHERE id = 1")
-    db.execute("DELETE FROM system_llm_config WHERE id = 1")
-    orch._llm_store._cache.pop("__system__", None)
+    store = orch._llm_store
+    saved = store.get_system_sync()
+    store.clear_system_sync()
     yield
-    db.execute("DELETE FROM system_llm_config WHERE id = 1")
+    store.clear_system_sync()
     if saved:
-        db.execute(
-            "INSERT INTO system_llm_config "
-            "(id, provider, base_url, model, api_key_enc, updated_by, created_at, updated_at) "
-            "VALUES (1, ?, ?, ?, ?, ?, now(), now())",
-            tuple(saved[c] for c in _SYS_COLS))
-    orch._llm_store._cache.pop("__system__", None)
+        store.set_system_sync(
+            provider=saved.provider,
+            base_url=saved.base_url,
+            model=saved.model,
+            api_key=saved.api_key,
+            updated_by="pytest-restore",
+        )
 
 
 def _register(orch, uid, device="browser", roles=("user",)):
@@ -135,10 +129,10 @@ def _frames(orch, ftype):
 # ---------------------------------------------------------------------------
 
 def test_llm_system_surface_registered_and_admin_only():
-    from webrender.chrome.surfaces import SURFACE_MODULES, get_surface
-    from webrender.chrome.surfaces import llm_system
+    from orchestrator.projection_surfaces import SURFACE_MODULES, get_surface
+    from orchestrator.projection_surfaces import llm_system
 
-    assert SURFACE_MODULES["llm_system"] == "webrender.chrome.surfaces.llm_system"
+    assert SURFACE_MODULES["llm_system"] == "orchestrator.projection_surfaces.llm_system"
     mod = get_surface("llm_system")
     assert mod is llm_system
     assert mod.ADMIN_ONLY is True
@@ -198,7 +192,7 @@ async def test_non_admin_chrome_open_llm_system_refused(orch, monkeypatch):
 
 async def test_admin_save_persists_system_row_with_system_scope_audit(
         orch, clean_system_row, monkeypatch):
-    from webrender.chrome.surfaces import llm_system
+    from orchestrator.projection_surfaces import llm_system
 
     probed = {}
 
@@ -208,7 +202,7 @@ async def test_admin_save_persists_system_row_with_system_scope_audit(
 
     # llm_system imports probe_chat_completion directly — patch ITS binding.
     monkeypatch.setattr(
-        "webrender.chrome.surfaces.llm_system.probe_chat_completion", fake_probe)
+        "orchestrator.projection_surfaces.llm_system.probe_chat_completion", fake_probe)
     ws = _register(orch, "admin1", roles=("admin", "user"))
 
     result = await llm_system._handle_save(
@@ -328,10 +322,10 @@ class _RunnerStore:
 
 
 class _RunnerGrants:
-    def is_valid(self, grant_id):
+    def is_valid(self, grant_id, *, user_id):
         return True
 
-    async def mint_access_token(self, grant_id):
+    async def mint_access_token(self, grant_id, *, user_id):
         return "minted-token"
 
 
@@ -451,7 +445,7 @@ async def test_system_context_never_resolves_a_user_record(
 # ---------------------------------------------------------------------------
 
 async def test_render_unconfigured_custom_vs_preset(orch, clean_system_row):
-    from webrender.chrome.surfaces import llm_system
+    from orchestrator.projection_surfaces import llm_system
 
     # Preset provider: endpoint caption shown; the (always-present) custom
     # base_url input is hidden and toggled client-side.
@@ -472,7 +466,7 @@ async def test_render_unconfigured_custom_vs_preset(orch, clean_system_row):
 
 async def test_render_configured_shows_badge_and_never_the_key(
         orch, clean_system_row):
-    from webrender.chrome.surfaces import llm_system
+    from orchestrator.projection_surfaces import llm_system
 
     await _seed_system(orch)
     html = await llm_system.render(orch, "admin1", ["admin"], {})
@@ -487,7 +481,7 @@ async def test_render_configured_shows_badge_and_never_the_key(
 
 
 async def test_sys_models_validation_and_success(orch, clean_system_row, monkeypatch):
-    from webrender.chrome.surfaces import llm_system
+    from orchestrator.projection_surfaces import llm_system
 
     # custom without a URL -> field error, no upstream call
     surface, keep, notice = await llm_system._handle_models(
@@ -513,7 +507,7 @@ async def test_sys_models_validation_and_success(orch, clean_system_row, monkeyp
 
 
 async def test_sys_models_failure_and_empty(orch, clean_system_row, monkeypatch):
-    from webrender.chrome.surfaces import llm_system
+    from orchestrator.projection_surfaces import llm_system
 
     async def fail_list(*, body, request, user_id, user_payload):
         return SimpleNamespace(ok=False, models=[], error_class="transport_error",
@@ -538,7 +532,7 @@ async def test_sys_models_failure_and_empty(orch, clean_system_row, monkeypatch)
 
 async def test_sys_test_validation_success_and_failure(
         orch, clean_system_row, monkeypatch):
-    from webrender.chrome.surfaces import llm_system
+    from orchestrator.projection_surfaces import llm_system
 
     # missing model -> error before any upstream call
     _s, _k, notice = await llm_system._handle_test(
@@ -573,7 +567,7 @@ async def test_sys_saved_key_reused_on_blank_submission(
         orch, clean_system_row, monkeypatch):
     """Write-only semantics: a blank key submission keeps the saved system key
     (the probe must receive the SAVED key)."""
-    from webrender.chrome.surfaces import llm_system
+    from orchestrator.projection_surfaces import llm_system
 
     await _seed_system(orch)
     probed = {}
@@ -583,7 +577,7 @@ async def test_sys_saved_key_reused_on_blank_submission(
         return True, None, None
 
     monkeypatch.setattr(
-        "webrender.chrome.surfaces.llm_system.probe_chat_completion", fake_probe)
+        "orchestrator.projection_surfaces.llm_system.probe_chat_completion", fake_probe)
     _s, _k, notice = await llm_system._handle_save(
         orch, None, "admin1", ["admin"],
         {"fields": {"provider": "custom",

@@ -24,6 +24,10 @@ Inventory captured on 2026-08-13 before repository replacement work began. Only 
 
 The two Android property files are present, untracked, and ignored. Removing the original `android-client/` source directory is prohibited until both files have been copied to the Projection worktree, independently confirmed ignored there, and the signed-build continuity check has passed. The source files remain the recovery copy throughout extraction.
 
+## Post-restart availability
+
+On 2026-08-14, after the workstation restart, the recorded `Y:` volume was unavailable and the current LETS checkout did not contain `paper/submission/`, `results/generated/`, or `results/astraldeep-case-study/`. No manuscript or result directory was reconstructed, synthesized, or overwritten. Tasks that require those ignored artifacts remain blocked until the original storage is restored or the owner explicitly authorizes a separate reconstruction procedure.
+
 ## Safety boundary
 
 - Replacement work occurs only in fresh Plane and Projection worktrees.

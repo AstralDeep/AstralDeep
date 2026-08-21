@@ -1,15 +1,13 @@
 """Feature 063 US1 — cross-user machine isolation (T021, SC-012/FR-010/FR-018).
 
 User B can neither list, name, address, probe, nor act on user A's registered
-machine through ANY verb path. The fake DB here is a thin sqlite3 shim that runs
-``remote_machines``'s REAL owner-scoped SQL (its ``?`` placeholders are native
-sqlite), so the ``owner_user_id`` clause in every query is exercised as written
-rather than re-implemented by the fake. Transport is the FakeTransport seam —
+machine through ANY verb path. The fixture injects the same typed Plane
+repository boundary production uses; transport is the FakeTransport seam, and
 the sweep asserts a foreign-machine attempt performs ZERO transport operations.
 """
 from __future__ import annotations
 
-import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,47 +15,23 @@ from agents.remote_compute import mcp_tools as unified
 from agents.remote_observe import mcp_tools as obs
 from orchestrator import remote_machines
 from orchestrator.remote_transport import FakeTransport, set_transport
+from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 USER_A = "user-a"
 USER_B = "user-b"
 
 
-class _SqliteDB:
-    """Database stand-in executing the module's real SQL against in-memory
-    sqlite, so a query that dropped its owner scoping would visibly leak."""
-
-    def __init__(self):
-        self.conn = sqlite3.connect(":memory:")
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute(
-            """CREATE TABLE remote_machine (
-                machine_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
-                label TEXT, address TEXT, port INTEGER, username TEXT,
-                os_family TEXT, role TEXT,
-                last_verdict TEXT, last_checked_at INTEGER,
-                host_key_type TEXT, host_key_fingerprint TEXT, host_key_blob TEXT,
-                created_at INTEGER, updated_at INTEGER)""")
-
-    def execute(self, q, params=()):
-        self.conn.execute(q, params)
-        self.conn.commit()
-
-    def fetch_one(self, q, params=()):
-        row = self.conn.execute(q, params).fetchone()
-        return dict(row) if row else None
-
-    def fetch_all(self, q, params=()):
-        return [dict(r) for r in self.conn.execute(q, params).fetchall()]
-
-
 class _CredMgr:
-    def get_machine_credential(self, machine_id):
+    def get_machine_credential(self, machine_id, owner_user_id):
+        assert machine_id and owner_user_id
         return {"cred_type": "password", "secret": "x", "passphrase": None}
 
 
 @pytest.fixture
 def db():
-    return _SqliteDB()
+    return make_remote_plane_source(
+        SimpleNamespace(machines={}, credentials={}, jobs={})
+    )
 
 
 @pytest.fixture
@@ -65,14 +39,23 @@ def machines(db):
     """A owns 'dgx' + 'edge'; B owns their OWN machine also labelled 'dgx'
     (label collision must still resolve within the caller's inventory)."""
     a_dgx = remote_machines.create_machine(db, USER_A, "dgx", "10.0.0.5", 22, "alice", "linux", "cluster")
-    a_edge = remote_machines.create_machine(db, USER_A, "edge", "10.0.0.6", 22, "alice", "linux", "host")
+    a_edge = remote_machines.create_machine(
+        db,
+        USER_A,
+        "edge",
+        "10.0.0.6",
+        22,
+        "alice",
+        "linux",
+        "plain",
+    )
     b_dgx = remote_machines.create_machine(db, USER_B, "dgx", "10.0.9.9", 22, "bob", "linux", "cluster")
     return {"a_dgx": a_dgx, "a_edge": a_edge, "b_dgx": b_dgx}
 
 
 @pytest.fixture
 def transport(db):
-    unified.register_deps(db, _CredMgr())
+    unified.register_deps(db, _CredMgr(), object())
     t = FakeTransport(command_stdout='{"jobs":[]}', command_exit=0)
     set_transport(t)
     yield t

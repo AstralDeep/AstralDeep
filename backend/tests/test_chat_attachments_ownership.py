@@ -20,14 +20,24 @@ if _BACKEND not in sys.path:
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from orchestrator.attachments.repository import AttachmentRepository  # noqa: E402
 from tests.attachments._fake_db_031 import FakeDB  # noqa: E402
+from tests.attachments.conftest import (  # noqa: E402
+    attachment_plane_source,
+    seed_attachment_for_test,
+)
 
 
 def _seed(db, *, user_id, attachment_id, category="document", extension="pdf"):
-    AttachmentRepository(db).insert(
-        attachment_id=attachment_id, user_id=user_id, filename=f"{attachment_id}.{extension}",
-        content_type="application/pdf", category=category, extension=extension,
-        size_bytes=10, sha256="0" * 64,
-        storage_path=f"{user_id}/{attachment_id}/{attachment_id}.{extension}",
+    repo = AttachmentRepository.from_plane_source(attachment_plane_source(db))
+    seed_attachment_for_test(
+        repo,
+        attachment_id=attachment_id,
+        user_id=user_id,
+        filename=f"{attachment_id}.{extension}",
+        content_type="application/pdf",
+        category=category,
+        extension=extension,
+        size_bytes=10,
+        sha256="0" * 64,
     )
 
 
@@ -37,8 +47,11 @@ def _fake_self(db):
     async def _safe_send(ws, data):
         sent.append(data)
 
-    return types.SimpleNamespace(history=types.SimpleNamespace(db=db),
-                                 _safe_send=_safe_send, _sent=sent)
+    return types.SimpleNamespace(
+        plane_repository_source=attachment_plane_source(db),
+        _safe_send=_safe_send,
+        _sent=sent,
+    )
 
 
 @pytest.mark.asyncio
@@ -56,7 +69,7 @@ async def test_foreign_attachment_is_dropped_and_user_notified():
     # Only the owned attachment is surfaced + linked.
     assert "id=mine" in out
     assert "theirs" not in out
-    assert {r["attachment_id"] for r in db.message_attachment} == {"mine"}
+    assert {r.attachment_id for r in db.message_attachment} == {"mine"}
     # The user is told something was skipped.
     assert any("skipped" in s for s in me._sent)
 
@@ -114,4 +127,4 @@ async def test_unknown_attachment_id_is_dropped():
     ]
     out = await Orchestrator._attach_turn_attachments(me, object(), "x", "c1", "u1", "m1", payload)
     assert "id=real" in out and "ghost" not in out
-    assert {r["attachment_id"] for r in db.message_attachment} == {"real"}
+    assert {r.attachment_id for r in db.message_attachment} == {"real"}

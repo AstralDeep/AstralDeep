@@ -12,7 +12,6 @@ from typing import Any, Iterator
 
 import psycopg2
 import pytest
-from psycopg2 import sql
 
 from orchestrator.history import ConversationCommitRepository, HistoryManager
 from orchestrator.orchestrator import (
@@ -28,55 +27,24 @@ from orchestrator.work_admission import (
     OperationRequest,
     OperationState,
     OwnerScope,
-    PostgresWorkAdmissionRepository,
     WorkAdmissionCoordinator,
 )
-from shared.database import Database, _build_database_url
+from tests.helpers.voice_plane_runtime import (
+    VoicePlaneTestRuntime,
+    history_manager,
+    isolated_voice_plane_runtime,
+    plane_work_admission_repository,
+    voice_session_repository,
+)
 
 
 NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture(scope="module")
-def database() -> Iterator[Database]:
-    params = psycopg2.extensions.parse_dsn(_build_database_url())
-    name = f"astraldeep_voice_delete_{uuid.uuid4().hex}"
-    try:
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(psycopg2.extensions.make_dsn(**database_params))
-    finally:
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        Database.close()
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name))
-                )
-            admin.close()
-        except Exception:
-            pass
+def database() -> Iterator[VoicePlaneTestRuntime]:
+    with isolated_voice_plane_runtime("voice_delete_065") as runtime:
+        yield runtime
 
 
 def _classes() -> tuple[AdmissionClassConfig, ...]:
@@ -108,15 +76,20 @@ def _classes() -> tuple[AdmissionClassConfig, ...]:
     )
 
 
-def _coordinator(database: Database) -> WorkAdmissionCoordinator:
+def _coordinator(database: VoicePlaneTestRuntime) -> WorkAdmissionCoordinator:
     return WorkAdmissionCoordinator(
         admission_classes=_classes(),
-        repository=PostgresWorkAdmissionRepository(database),
+        repository=plane_work_admission_repository(database),
         operation_retention=timedelta(hours=24),
     )
 
 
-def _insert_chat(database: Database, *, user_id: str, chat_id: str) -> None:
+def _insert_chat(
+    database: VoicePlaneTestRuntime,
+    *,
+    user_id: str,
+    chat_id: str,
+) -> None:
     database.execute(
         "INSERT INTO chats (id, user_id, title, created_at, updated_at) "
         "VALUES (?, ?, 'Voice lifecycle', 1, 1)",
@@ -125,7 +98,7 @@ def _insert_chat(database: Database, *, user_id: str, chat_id: str) -> None:
 
 
 def _create_session(
-    database: Database,
+    database: VoicePlaneTestRuntime,
     repository: VoiceSessionRepository,
     *,
     user_id: str,
@@ -152,7 +125,7 @@ def _create_session(
 
 
 def _insert_turn(
-    database: Database,
+    database: VoicePlaneTestRuntime,
     repository: VoiceSessionRepository,
     *,
     session: Any,
@@ -231,7 +204,7 @@ def _claim(
 
 
 def _accept_and_stage(
-    database: Database,
+    database: VoicePlaneTestRuntime,
     repository: VoiceSessionRepository,
     coordinator: WorkAdmissionCoordinator,
     *,
@@ -245,7 +218,8 @@ def _accept_and_stage(
         request_generation=turn.request_generation,
     )
     commits = ConversationCommitRepository(
-        database,
+        plane_runtime=database,
+        plane_repositories=database.repositories,
         operation_coordinator=coordinator,
     )
 
@@ -259,7 +233,7 @@ def _accept_and_stage(
             result_commit_id=correlation["result_commit_id"],
             operation_id=str(claim.operation.operation_id),
             now=NOW + timedelta(seconds=2),
-            transaction=correlation["cursor"],
+            transaction=correlation["transaction"],
         )
 
     accepted = commits.accept_voice_turn(
@@ -329,10 +303,8 @@ def _accept_and_stage(
     )
 
 
-def _history(database: Database) -> HistoryManager:
-    history = object.__new__(HistoryManager)
-    history.db = database
-    return history
+def _history(database: VoicePlaneTestRuntime) -> HistoryManager:
+    return history_manager(database)
 
 
 def _replay_frame(turn: Any) -> _ConnectionIngressFrame:
@@ -394,12 +366,12 @@ async def _replay_disposition(
 
 
 def test_hard_delete_fences_voice_and_retains_replay_tombstones(
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     user_id = f"voice-delete-{uuid.uuid4().hex}"
     chat_id = str(uuid.uuid4())
     _insert_chat(database, user_id=user_id, chat_id=chat_id)
-    repository = VoiceSessionRepository(database)
+    repository = voice_session_repository(database)
     session = _create_session(
         database,
         repository,
@@ -523,12 +495,12 @@ def test_hard_delete_fences_voice_and_retains_replay_tombstones(
 
 
 def test_physical_delete_failure_rolls_back_the_voice_fence(
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     user_id = f"voice-delete-rollback-{uuid.uuid4().hex}"
     chat_id = str(uuid.uuid4())
     _insert_chat(database, user_id=user_id, chat_id=chat_id)
-    repository = VoiceSessionRepository(database)
+    repository = voice_session_repository(database)
     session = _create_session(
         database,
         repository,
@@ -621,14 +593,14 @@ def test_physical_delete_failure_rolls_back_the_voice_fence(
 
 
 def test_old_origin_revocation_preserves_current_session_and_other_stage(
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     user_id = f"voice-revoke-{uuid.uuid4().hex}"
     old_chat_id = str(uuid.uuid4())
     current_chat_id = str(uuid.uuid4())
     _insert_chat(database, user_id=user_id, chat_id=old_chat_id)
     _insert_chat(database, user_id=user_id, chat_id=current_chat_id)
-    repository = VoiceSessionRepository(database)
+    repository = voice_session_repository(database)
     session = _create_session(
         database,
         repository,

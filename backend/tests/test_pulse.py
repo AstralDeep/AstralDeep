@@ -12,10 +12,10 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-import webrender.chrome.surfaces.pulse as pulse_surface  # noqa: E402
+import orchestrator.projection_surfaces.pulse as pulse_surface  # noqa: E402
 
 from dreaming import pulse  # noqa: E402
-from webrender.chrome.surfaces import get_surface  # noqa: E402
+from orchestrator.projection_surfaces import get_surface  # noqa: E402
 
 
 def test_flag_default_off(monkeypatch):

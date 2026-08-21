@@ -24,10 +24,8 @@ from shared.protocol import MCPResponse  # noqa: E402
 
 
 @pytest.fixture
-def orch():
-    from orchestrator.orchestrator import Orchestrator
-
-    o = Orchestrator()
+def orch(orchestrator_factory):
+    o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
@@ -129,7 +127,7 @@ async def test_parallel_now_mints_delegation_token(orch, monkeypatch):
     the same delegation token a single call would (quickstart §US3 step 2)."""
     seen_args = {}
 
-    async def _capture(ws, agent_id, tool_name, args, max_retries=None):
+    async def _capture(ws, agent_id, tool_name, args, **_dispatch_context):
         seen_args[tool_name] = dict(args)
         return MCPResponse(result="ok")
 

@@ -9,8 +9,8 @@ and the FR-004 identity-provider pre-flight in ``/auth/login`` (503 bounded
 error page with a retry link when the IdP is unreachable; 60-second positive
 probe cache on success).
 
-Mirrors tests/test_logout_revocation.py: live Postgres via shared.database
-defaults, uuid-keyed rows cleaned up in ``finally`` blocks, fake
+Mirrors tests/test_logout_revocation.py: live PostgreSQL through one current
+AstralPlane runtime, uuid-keyed rows cleaned up in ``finally`` blocks, fake
 ``httpx.AsyncClient`` classes, and unsigned best-effort JWTs.
 """
 import asyncio
@@ -25,8 +25,11 @@ from cryptography.fernet import Fernet
 from fastapi.responses import HTMLResponse
 
 from orchestrator import web_auth
-from orchestrator.session_store import WebSessionStore
-from shared.database import Database
+from tests.helpers.session_plane_runtime import (
+    isolated_plane_runtime,
+    purge_revocations,
+    web_session_store,
+)
 
 # The canonical deep link used across these tests and its URL-encoded form
 # as it must appear inside ?next= (quote(DEEP_LINK, safe="")).
@@ -132,15 +135,16 @@ def _reset_web_auth():
 
 
 @pytest.fixture(scope="module")
-def db():
-    return Database()
+def plane_runtime():
+    with isolated_plane_runtime("auth_callback") as runtime:
+        yield runtime
 
 
 @pytest.fixture()
-def store(db, monkeypatch):
+def store(plane_runtime, monkeypatch):
     """A WebSessionStore with a real Fernet key, wired into web_auth."""
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
-    s = WebSessionStore(db=db)
+    s = web_session_store(plane_runtime)
     monkeypatch.setattr(web_auth, "_get_store", lambda: s)
     return s
 
@@ -154,20 +158,25 @@ def real_auth_env(monkeypatch):
     monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)
 
 
-def _purge_queue(db, *user_ids):
-    for uid in user_ids:
-        db.execute("DELETE FROM auth_revocation_queue WHERE user_id = ?", (uid,))
+def _purge_queue(plane_runtime, *user_ids):
+    purge_revocations(plane_runtime, user_ids)
 
 
-def _session_rows(db, user_id):
-    return db.fetch_all("SELECT * FROM web_session WHERE user_id = ?", (user_id,))
+def _session_rows(plane_runtime, user_id):
+    with plane_runtime.transaction() as transaction:
+        record = plane_runtime.repositories.history.sessions.get_latest_live_for_owner(
+            transaction,
+            owner_id=user_id,
+            observed_at=int(time.time()),
+        )
+    return () if record is None else (record,)
 
 
 # ---------------------------------------------------------------------------
 # /auth/callback — success path (FR-003: deep link honored)
 # ---------------------------------------------------------------------------
 
-def test_callback_success_redirects_to_deep_link(db, store, monkeypatch, real_auth_env):
+def test_callback_success_redirects_to_deep_link(store, monkeypatch, real_auth_env):
     """028 FR-003: a successful callback 303s to the exact non-'/' next that
     was seeded at /auth/login time (deep links are never dropped)."""
     user_id = f"u-{uuid.uuid4()}"
@@ -287,7 +296,9 @@ def test_callback_token_exchange_failure_preserves_next(monkeypatch, real_auth_e
 # /auth/callback — FR-005 role gate
 # ---------------------------------------------------------------------------
 
-def test_callback_no_access_role_refused(db, store, monkeypatch, real_auth_env):
+def test_callback_no_access_role_refused(
+    plane_runtime, store, monkeypatch, real_auth_env
+):
     """028 FR-005: a token with neither 'user' nor 'admin' gets the bounded
     403 no-access page; no session is established anywhere; the refresh
     credential is revoked-or-queued; the failure is audited."""
@@ -326,7 +337,7 @@ def test_callback_no_access_role_refused(db, store, monkeypatch, real_auth_env):
 
         # No session anywhere: cache unchanged, no durable row.
         assert set(web_auth._SESSIONS) == sessions_before
-        assert _session_rows(db, user_id) == []
+        assert _session_rows(plane_runtime, user_id) == ()
 
         # Refresh credential revoke-or-queue was attempted with OUR token.
         assert revoke_attempts == [refresh]
@@ -336,11 +347,13 @@ def test_callback_no_access_role_refused(db, store, monkeypatch, real_auth_env):
                    and a["sub"] == user_id for a in audits)
     finally:
         store.delete_for_user(user_id)
-        _purge_queue(db, user_id)
+        _purge_queue(plane_runtime, user_id)
         web_auth._PENDING.pop(state, None)
 
 
-def test_callback_user_role_passes_gate(db, store, monkeypatch, real_auth_env):
+def test_callback_user_role_passes_gate(
+    plane_runtime, store, monkeypatch, real_auth_env
+):
     """028 FR-005 (positive): realm_access.roles=['user'] is enough — the
     callback establishes a session (cache + durable row) and 303s onward."""
     user_id = f"u-{uuid.uuid4()}"
@@ -362,7 +375,7 @@ def test_callback_user_role_passes_gate(db, store, monkeypatch, real_auth_env):
         assert resp.headers["location"] == "/"
         new_sids = [s for s, v in web_auth._SESSIONS.items() if v.get("sub") == user_id]
         assert len(new_sids) == 1
-        assert len(_session_rows(db, user_id)) == 1
+        assert len(_session_rows(plane_runtime, user_id)) == 1
         assert any(a["action"] == "login_interactive" and a["outcome"] == "success"
                    for a in audits)
     finally:

@@ -274,6 +274,32 @@ def test_nonce_uses_128_bits_and_local_snapshot_uses_an_independent_256_bit_key(
     assert context.nonce == bytes(range(protected.NONCE_BYTES)).hex()
 
 
+def test_retry_attempt_can_supply_its_exact_128_bit_nonce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[int] = []
+
+    def generate(size: int) -> bytes:
+        requested.append(size)
+        return b"k" * size
+
+    monkeypatch.setattr(protected.secrets, "token_bytes", generate)
+    nonce = "0123456789abcdef" * 2
+    context = _build(nonce=nonce)
+
+    assert context.nonce == nonce
+    assert requested == [protected.SNAPSHOT_KEY_BYTES]
+
+
+@pytest.mark.parametrize(
+    "nonce",
+    ["", "a" * 31, "a" * 33, "A" * 32, "g" * 32, b"a" * 32],
+)
+def test_supplied_nonce_must_be_exact_lowercase_128_bit_hex(nonce: object) -> None:
+    with pytest.raises(protected.ProtectedDispatchError, match="128 bits"):
+        _build(nonce=nonce)
+
+
 @pytest.mark.parametrize("generated", [b"short", b"x" * 17, "x" * 16])
 def test_broken_nonce_generator_fails_closed(
     monkeypatch: pytest.MonkeyPatch, generated: object

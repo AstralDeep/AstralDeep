@@ -21,13 +21,12 @@ pipeline is intentionally split across multiple tools so the chat LLM can
 converse with the user between steps before kicking off the long-running job.
 """
 import json
+from io import BytesIO
 import logging
 import os
 import re
-import shutil
 import sys
 from collections import OrderedDict
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
@@ -35,7 +34,7 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from shared.attachment_materializer import materialize_text_attachment
-from shared.attachment_resolver import resolve_attachment_path
+from shared.attachment_resolver import open_attachment_blob_reader
 from shared.external_http import ExternalHttpError
 from astralprims import Alert, Card, ParamPicker, Table, Text
 
@@ -51,36 +50,40 @@ logger = logging.getLogger("MlServicesClassifyTools")
 
 LONG_RUNNING_TOOLS: Set[str] = {"classify_start_training_job"}
 
-# In-process cache: report_uuid -> local CSV path captured at submit time. Lets
-# set_column_types re-read the dataset with pandas (for missing-value detection)
-# without forcing the LLM to re-resolve the file_handle. Bounded so a long-lived
-# agent process can't accumulate paths forever; oldest entries are evicted.
-_REPORT_PATHS: "OrderedDict[str, str]" = OrderedDict()
-_REPORT_PATHS_MAX = 256
+# In-process cache: report_uuid -> (attachment_id, owner_id). It deliberately
+# retains no blob bytes; later calls repeat the metadata authorization check and
+# open a fresh bounded owner-scoped Plane reader.
+_REPORT_ATTACHMENTS: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
+_REPORT_ATTACHMENTS_MAX = 256
 
 
-def _remember_report_path(report_uuid: str, local_path: str) -> None:
-    """Stash the local CSV path for a report so later tools can re-read it.
+def _remember_report_attachment(
+    report_uuid: str,
+    attachment_id: str,
+    owner_id: str,
+) -> None:
+    """Stash authorized identities so later tools can reopen a fresh lease.
 
     Args:
         report_uuid: Upstream report identifier returned at submit time.
-        local_path: Resolved on-disk path of the uploaded CSV.
+        attachment_id: Typed attachment identity submitted upstream.
+        owner_id: Authenticated attachment owner.
     """
-    if not report_uuid or not local_path:
+    if not report_uuid or not attachment_id or not owner_id:
         return
-    _REPORT_PATHS[report_uuid] = local_path
-    _REPORT_PATHS.move_to_end(report_uuid)
-    while len(_REPORT_PATHS) > _REPORT_PATHS_MAX:
-        _REPORT_PATHS.popitem(last=False)
+    _REPORT_ATTACHMENTS[report_uuid] = (attachment_id, owner_id)
+    _REPORT_ATTACHMENTS.move_to_end(report_uuid)
+    while len(_REPORT_ATTACHMENTS) > _REPORT_ATTACHMENTS_MAX:
+        _REPORT_ATTACHMENTS.popitem(last=False)
 
 
-def _forget_report_path(report_uuid: str) -> None:
-    """Drop the stashed CSV path for a deleted report.
+def _forget_report_attachment(report_uuid: str) -> None:
+    """Drop the stashed attachment identities for a deleted report.
 
     Args:
         report_uuid: Upstream report identifier to evict from the cache.
     """
-    _REPORT_PATHS.pop(report_uuid, None)
+    _REPORT_ATTACHMENTS.pop(report_uuid, None)
 
 
 def make_client(credentials: Dict[str, str]) -> _wrapper.ExternalServiceClient:
@@ -166,54 +169,6 @@ def _format_models_list(models: Any, max_visible: int = 3) -> str:
     return rendered
 
 
-_SAFE_SEGMENT_RE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-def _sanitize_path_segment(value: Optional[str], fallback: str) -> str:
-    """Make a string safe to use as a single filesystem path segment.
-
-    Args:
-        value: The raw segment (user/session id).
-        fallback: Returned when the input is empty or sanitizes to nothing.
-
-    Returns:
-        A traversal-safe path segment.
-    """
-    if not value:
-        return fallback
-    cleaned = _SAFE_SEGMENT_RE.sub("_", str(value)).strip("._")
-    return cleaned or fallback
-
-
-def _save_debug_copy(local_path: str, filename: str,
-                     user_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
-    """Save a copy of the CSV being sent to CLASSify under ``/tmp/<user>/<session>/``.
-
-    Args:
-        local_path: Source path of the CSV about to be uploaded.
-        filename: Basename to save the copy under.
-        user_id: Requesting user id (sanitized into the path).
-        session_id: Chat/session id (sanitized into the path).
-
-    Returns:
-        The saved path on success, or ``None`` if the copy could not be
-        written for any reason — failures are logged but never propagated,
-        so a debug-copy problem can't break the actual upload.
-    """
-    try:
-        user_dir = _sanitize_path_segment(user_id, "unknown_user")
-        session_dir = _sanitize_path_segment(session_id, "unknown_session")
-        target_dir = Path("/tmp") / user_dir / session_dir
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / filename
-        shutil.copyfile(local_path, target)
-        logger.info("CLASSify debug-copy written: %s", target)
-        return str(target)
-    except Exception as e:
-        logger.warning("Failed to write CLASSify debug-copy: %s", e)
-        return None
-
-
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -280,30 +235,23 @@ def classify_submit_dataset(file_handle: Optional[str] = None,
                 "Provide either file_handle (the attachment_id of an uploaded "
                 "CSV) or inline_data (the raw CSV text the user pasted in chat)."
             )
-        local_path = resolve_attachment_path(file_handle, user_id)
-        filename = os.path.basename(local_path)
-        # Save a verbatim copy of what we're about to stream upstream so the
-        # bytes that left our process can be inspected if CLASSify reports
-        # corruption. Best-effort: never breaks the upload.
-        debug_copy_path = _save_debug_copy(
-            local_path, filename, user_id, kwargs.get("session_id"),
+        with open_attachment_blob_reader(file_handle, user_id) as (attachment, reader):
+            filename = attachment.filename
+            payload_bytes = b"".join(reader.iter_chunks())
+        resp = client.post(
+            "/reports/submit",
+            files={"file": (filename, payload_bytes, "text/csv")},
         )
-        with open(local_path, "rb") as fh:
-            resp = client.post(
-                "/reports/submit",
-                files={"file": (filename, fh, "text/csv")},
-            )
         payload = _safe_json(resp)
         report_uuid = payload.get("report_uuid")
         column_types_block = payload.get("column_types") or {}
         column_types = column_types_block.get("data_types") if isinstance(column_types_block, dict) else {}
         if not isinstance(column_types, dict):
             column_types = {}
-        # Stash so set_column_types can re-read the CSV without the LLM
-        # needing to forward file_handle (the LLM tends to pass the display
-        # filename instead, which fails attachment resolution).
+        # Retain typed identities, never the lease path, so a later call can
+        # repeat ownership validation and open a fresh scoped capability.
         if report_uuid:
-            _remember_report_path(report_uuid, local_path)
+            _remember_report_attachment(report_uuid, file_handle, user_id)
         header_text = (
             f"Report UUID: `{report_uuid}`\n\n"
             f"Detected **{len(column_types)} column(s)**:"
@@ -321,7 +269,7 @@ def classify_submit_dataset(file_handle: Optional[str] = None,
                 "report_uuid": report_uuid,
                 "column_types": column_types,
                 "filename": filename,
-                "debug_copy_path": debug_copy_path,
+                "debug_copy_path": None,
             },
         )
     except (ExternalHttpError, ValueError) as e:
@@ -378,21 +326,23 @@ def set_column_types(report_uuid: str,
         else:
             if not class_column:
                 raise ValueError("class_column is required to auto-build column_changes.")
-            # Prefer the path stashed during classify_submit_dataset; fall back
-            # to resolving file_handle only if the cache is cold (e.g., the
-            # agent process restarted between submit and set-column-types).
-            local_path = _REPORT_PATHS.get(report_uuid)
-            if not local_path:
+            cached = _REPORT_ATTACHMENTS.get(report_uuid)
+            if cached is None:
                 if not file_handle:
                     raise ValueError(
-                        "No local path on record for this report_uuid; call "
+                        "No attachment on record for this report_uuid; call "
                         "classify_submit_dataset first, or pass the original file_handle."
                     )
                 user_id = kwargs.get("user_id")
                 if not user_id:
                     raise ValueError("user_id is required to resolve attachments.")
-                local_path = resolve_attachment_path(file_handle, user_id)
-            df = pd.read_csv(local_path)
+                cached = (file_handle, user_id)
+            cached_attachment_id, cached_owner_id = cached
+            with open_attachment_blob_reader(
+                cached_attachment_id,
+                cached_owner_id,
+            ) as (_attachment, reader):
+                df = pd.read_csv(BytesIO(b"".join(reader.iter_chunks())))
             if not isinstance(column_types, dict) or not column_types:
                 column_types = {c: "string" for c in df.columns}
             excluded = set(excluded_columns or [])
@@ -1013,7 +963,7 @@ def classify_delete_dataset(report_uuid: str, **kwargs):
     try:
         client = _build_client(kwargs)
         resp = client.post("/reports/delete", data={"report_uuid": report_uuid})
-        _forget_report_path(report_uuid)
+        _forget_report_attachment(report_uuid)
         payload = _safe_json(resp)
         return _ui(
             [Card(

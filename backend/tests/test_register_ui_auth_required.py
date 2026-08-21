@@ -93,6 +93,7 @@ def _make_fake(*, validate=None):
         rote=ROTE(),
         history=types.SimpleNamespace(db=types.SimpleNamespace(
             get_user_preferences=lambda uid: None)),
+        _load_user_preferences=lambda uid: {},
         _save_user_profile=profiles.append,
         _safe_send=_safe_send,
         send_ui_render=send_ui_render,

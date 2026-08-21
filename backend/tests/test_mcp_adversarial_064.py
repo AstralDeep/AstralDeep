@@ -229,7 +229,7 @@ def test_projection_disambiguates_collisions_and_remote_destructive_metadata():
         scope="tools:read",
     )
     orchestrator = SimpleNamespace(
-        history=SimpleNamespace(db=SimpleNamespace(get_user_disabled_agents=lambda _user: [])),
+        history=SimpleNamespace(db=SimpleNamespace()),
         agent_cards={
             "a": AgentCard(name="a", description="", agent_id="a", skills=[skill_a]),
             "b": AgentCard(name="b", description="", agent_id="b", skills=[skill_b]),
@@ -238,7 +238,10 @@ def test_projection_disambiguates_collisions_and_remote_destructive_metadata():
         local_agents={},
         security_flags={},
         _is_draft_agent=lambda _agent_id: False,
-        tool_permissions=SimpleNamespace(is_tool_allowed=lambda *args: True),
+        tool_permissions=SimpleNamespace(
+            is_tool_allowed=lambda *args: True,
+            list_disabled_agents=lambda _user: (),
+        ),
     )
     tools = project_tools(orchestrator, "u1")
     assert [tool.name for tool in tools] == ["a__same", "b__same"]

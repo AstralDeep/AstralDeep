@@ -1,114 +1,163 @@
-"""Filesystem store: write/read/delete round-trips, oversize, collisions."""
+"""Deep attachment identity behavior at Plane's streaming capability boundary."""
 
 from __future__ import annotations
 
-import asyncio
+import hashlib
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
-from orchestrator.attachments import store
+from orchestrator.attachments.blob_access import (
+    AttachmentBlobReferenceError,
+    attachment_storage_key,
+    blob_key_for_attachment,
+    blob_key_from_storage_path,
+    blob_store_from_orchestrator,
+    metadata_storage_path,
+    open_attachment_parser_lease,
+    open_attachment_reader,
+)
 
 
-def _chunks(data: bytes, n: int = 16):
-    for i in range(0, len(data), n):
-        yield data[i : i + n]
+class _Reader:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def iter_chunks(self):
+        yield self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
 
 
-def test_write_creates_canonical_layout(upload_root, tmp_path):
-    path, size, sha = store.write(
-        user_id="user-A",
-        attachment_id="aid-1",
-        filename="hello.txt",
-        chunks=_chunks(b"hello world"),
-        max_bytes=1024,
-        root=upload_root,
+class _RecordingBlobs:
+    """Explicit fake for Deep's argument mapping, not Plane storage mechanics."""
+
+    def __init__(self, payload: bytes = b"trusted parser input") -> None:
+        self.payload = payload
+        self.reader_calls: list[dict[str, object]] = []
+        self.parser_calls: list[dict[str, object]] = []
+
+    def open_reader(self, **values):
+        self.reader_calls.append(dict(values))
+        return _Reader(self.payload)
+
+    @contextmanager
+    def open_parser_lease(self, **values):
+        self.parser_calls.append(dict(values))
+        yield "scoped-parser-capability"
+
+
+def _attachment(payload: bytes, **changes):
+    values = {
+        "attachment_id": "aid-1",
+        "filename": "data.bin",
+        "storage_path": "user-A/aid-1/data.bin",
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    values.update(changes)
+    return SimpleNamespace(**values)
+
+
+def test_deep_metadata_keys_are_canonical_and_owner_fenced():
+    assert attachment_storage_key("aid-1", "data.bin") == "aid-1/data.bin"
+    assert metadata_storage_path("user-A", "aid-1/data.bin") == (
+        "user-A/aid-1/data.bin"
     )
-    assert path == upload_root / "user-A" / "aid-1" / "hello.txt"
-    assert path.read_bytes() == b"hello world"
-    assert size == len(b"hello world")
-    assert len(sha) == 64
-
-
-def test_write_rejects_oversize_and_cleans_up(upload_root):
-    with pytest.raises(ValueError):
-        store.write(
-            user_id="u", attachment_id="aid-2", filename="big.bin",
-            chunks=_chunks(b"x" * 1000),
-            max_bytes=100,
-            root=upload_root,
-        )
-    # Partial blob and empty attachment dir should be gone.
-    assert not (upload_root / "u" / "aid-2").exists()
-
-
-def test_collision_safe_via_attachment_dir(upload_root):
-    """Same filename, different attachment_id, same user: no collision."""
-    store.write(user_id="u", attachment_id="a", filename="report.pdf",
-                chunks=_chunks(b"first"), max_bytes=1024, root=upload_root)
-    store.write(user_id="u", attachment_id="b", filename="report.pdf",
-                chunks=_chunks(b"second"), max_bytes=1024, root=upload_root)
-    assert (upload_root / "u" / "a" / "report.pdf").read_bytes() == b"first"
-    assert (upload_root / "u" / "b" / "report.pdf").read_bytes() == b"second"
-
-
-def test_read_path_raises_when_missing(upload_root):
-    with pytest.raises(FileNotFoundError):
-        store.read_path("u", "missing", "x.txt", root=upload_root)
-
-
-def test_delete_is_idempotent(upload_root):
-    store.write(user_id="u", attachment_id="a", filename="x.txt",
-                chunks=_chunks(b"hi"), max_bytes=1024, root=upload_root)
-    store.delete("u", "a", root=upload_root)
-    assert not (upload_root / "u" / "a").exists()
-    # Second call is a no-op.
-    store.delete("u", "a", root=upload_root)
-
-
-def test_delete_user_purges_all(upload_root):
-    store.write(user_id="u", attachment_id="a", filename="x.txt",
-                chunks=_chunks(b"hi"), max_bytes=1024, root=upload_root)
-    store.write(user_id="u", attachment_id="b", filename="y.txt",
-                chunks=_chunks(b"bye"), max_bytes=1024, root=upload_root)
-    store.delete_user("u", root=upload_root)
-    assert not (upload_root / "u").exists()
-
-
-# Async streaming variant ----------------------------------------------------
-
-
-async def _async_chunks(data: bytes, n: int = 16):
-    for i in range(0, len(data), n):
-        yield data[i : i + n]
-
-
-def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
-
-
-def test_awrite_streams_chunks_to_disk(upload_root):
-    payload = b"abc" * 1000
-    path, size, sha = _run(
-        store.awrite(
-            user_id="u", attachment_id="aid-async", filename="big.bin",
-            chunks=_async_chunks(payload),
-            max_bytes=len(payload) + 1,
-            root=upload_root,
-        )
+    assert blob_key_from_storage_path(
+        "user-A", "user-A/aid-1/data.bin"
+    ) == "aid-1/data.bin"
+    assert blob_key_from_storage_path(
+        "user-A", r"user-A\aid-1\data.bin"
+    ) == "aid-1/data.bin"
+    assert blob_key_from_storage_path(
+        "user-A", r"user-A\aid-1/data.bin"
+    ) == "aid-1/data.bin"
+    assert blob_key_for_attachment(_attachment(b"data"), "user-A") == (
+        "aid-1/data.bin"
     )
-    assert path.read_bytes() == payload
-    assert size == len(payload)
-    assert len(sha) == 64
 
 
-def test_awrite_rejects_oversize_and_cleans_up(upload_root):
-    with pytest.raises(ValueError):
-        _run(
-            store.awrite(
-                user_id="u", attachment_id="aid-async-big", filename="too.bin",
-                chunks=_async_chunks(b"x" * 1000),
-                max_bytes=100,
-                root=upload_root,
+@pytest.mark.parametrize(
+    ("function", "arguments"),
+    (
+        (attachment_storage_key, ("", "data.bin")),
+        (attachment_storage_key, ("aid-1", "")),
+        (metadata_storage_path, ("", "aid-1/data.bin")),
+        (metadata_storage_path, ("user-A", "../escape.bin")),
+        (metadata_storage_path, ("user-A", "/absolute.bin")),
+        (metadata_storage_path, ("user-A", "C:/escape.bin")),
+        (metadata_storage_path, ("user-A", "aid-1//data.bin")),
+        (blob_key_from_storage_path, ("", "user-A/aid-1/data.bin")),
+        (blob_key_from_storage_path, ("user-A", "user-B/aid-1/data.bin")),
+        (blob_key_from_storage_path, ("user-A", "user-A/only-two")),
+    ),
+)
+def test_deep_metadata_key_rejections(function, arguments):
+    with pytest.raises(AttachmentBlobReferenceError):
+        function(*arguments)
+
+
+def test_metadata_locator_drift_and_invalid_reader_metadata_fail_closed():
+    blobs = _RecordingBlobs()
+    with pytest.raises(AttachmentBlobReferenceError, match="disagrees"):
+        blob_key_for_attachment(
+            _attachment(b"data", storage_path="user-A/other/data.bin"),
+            "user-A",
+        )
+    for invalid_size in (True, "not-a-size", -1):
+        with pytest.raises(AttachmentBlobReferenceError, match="size_bytes"):
+            open_attachment_reader(
+                blobs,
+                _attachment(b"data", size_bytes=invalid_size),
+                "user-A",
+            )
+    with pytest.raises(AttachmentBlobReferenceError, match="SHA-256"):
+        open_attachment_reader(
+            blobs,
+            _attachment(b"data", sha256=""),
+            "user-A",
+        )
+    assert blobs.reader_calls == []
+
+
+def test_reader_and_parser_lease_receive_exact_typed_identity_fences():
+    payload = b"trusted parser input"
+    attachment = _attachment(payload)
+    blobs = _RecordingBlobs(payload)
+    expected = {
+        "owner_id": "user-A",
+        "key": "aid-1/data.bin",
+        "max_bytes": len(payload),
+        "expected_size_bytes": len(payload),
+        "expected_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+    with open_attachment_reader(blobs, attachment, "user-A") as reader:
+        assert b"".join(reader.iter_chunks()) == payload
+    with open_attachment_parser_lease(blobs, attachment, "user-A") as capability:
+        assert capability == "scoped-parser-capability"
+
+    assert blobs.reader_calls == [expected]
+    assert blobs.parser_calls == [expected]
+
+
+def test_blob_store_resolution_prefers_injection_then_application_composition():
+    blobs = _RecordingBlobs()
+    assert blob_store_from_orchestrator(
+        SimpleNamespace(attachment_blob_store=blobs)
+    ) is blobs
+    assert blob_store_from_orchestrator(
+        SimpleNamespace(
+            runtime_composition=SimpleNamespace(
+                plane=SimpleNamespace(blobs=blobs)
             )
         )
-    assert not (upload_root / "u" / "aid-async-big").exists()
+    ) is blobs
+    with pytest.raises(RuntimeError, match="not initialized"):
+        blob_store_from_orchestrator(SimpleNamespace())

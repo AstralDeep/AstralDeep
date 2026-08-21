@@ -81,6 +81,49 @@ _PROCESS_SECRET = secrets.token_hex(32)
 
 _STORE = None
 _STORE_FAILED = False
+_CREDENTIAL_MANAGER = None
+
+
+def bind_session_store(store) -> None:
+    """Bind the one application-scoped Plane-backed web-session store."""
+
+    global _STORE, _STORE_FAILED
+    if store is None:
+        raise ValueError("session store binding is required")
+    _STORE = store
+    _STORE_FAILED = False
+
+
+def unbind_session_store(store) -> None:
+    """Release only the exact application-scoped session-store binding."""
+
+    global _STORE, _STORE_FAILED
+    if _STORE is None:
+        return
+    if _STORE is not store:
+        raise RuntimeError("session store unbind does not own the binding")
+    _STORE = None
+    _STORE_FAILED = False
+
+
+def bind_credential_manager(manager) -> None:
+    """Bind the orchestrator's Plane-backed credential manager for logout cleanup."""
+
+    global _CREDENTIAL_MANAGER
+    if manager is None:
+        raise ValueError("credential manager binding is required")
+    _CREDENTIAL_MANAGER = manager
+
+
+def unbind_credential_manager(manager) -> None:
+    """Release only the exact application-scoped credential-manager binding."""
+
+    global _CREDENTIAL_MANAGER
+    if _CREDENTIAL_MANAGER is None:
+        return
+    if _CREDENTIAL_MANAGER is not manager:
+        raise RuntimeError("credential manager unbind does not own the binding")
+    _CREDENTIAL_MANAGER = None
 
 
 def _is_mock() -> bool:
@@ -155,22 +198,22 @@ def _state_is_bound(request: Request, state: str) -> bool:
 
 
 def _get_store():
-    """Lazily construct the durable session store (None when unavailable).
+    """Return the application-bound durable store (None when unavailable).
 
     The fail-closed production boot check lives in the orchestrator startup
-    (FR-015); here a missing store degrades to the in-memory cache so unit
-    tests and keyless dev environments keep working.
+    (FR-015).  This module never constructs a database or a second Plane
+    runtime; mock-auth tests and explicit development mode may still exercise
+    the process-local cache without a binding.
     """
     global _STORE, _STORE_FAILED
-    if _STORE is not None or _STORE_FAILED:
+    if _STORE is not None:
         return _STORE
-    try:
-        from orchestrator.session_store import WebSessionStore
-        _STORE = WebSessionStore()
-    except Exception as exc:
+    if not _STORE_FAILED:
         _STORE_FAILED = True
-        logger.warning("web_auth: durable session store unavailable (%s) — using in-memory sessions", exc)
-    return _STORE
+        logger.warning(
+            "web_auth: application session store is not bound — durable sessions unavailable"
+        )
+    return None
 
 
 def reset_store_for_tests() -> None:
@@ -723,9 +766,11 @@ async def auth_logout(request: Request):
         await _revoke_or_queue(user_id, sess.get("refresh_token", ""),
                                client_id=_session_client_id(sess) or None)
         try:
-            from orchestrator.offline_grant import OfflineGrantStore
+            from orchestrator.offline_grant import get_offline_grant_store
             revoked = await asyncio.to_thread(
-                lambda: OfflineGrantStore().revoke_for_user(user_id))
+                get_offline_grant_store().revoke_for_user,
+                user_id,
+            )
             if revoked:
                 logger.info("web_auth: revoked %d offline grant(s) for %s at sign-out", revoked, user_id)
         except Exception:
@@ -844,10 +889,13 @@ async def _destroy_machine_credentials(user_id: str, context: str) -> None:
     if not user_id:
         return
     try:
-        from orchestrator.credential_manager import CredentialManager
-        from shared.database import Database
+        manager = _CREDENTIAL_MANAGER
+        if manager is None:
+            raise RuntimeError("credential persistence is not bound to the application Plane")
         removed = await asyncio.to_thread(
-            lambda: CredentialManager(db=Database()).remove_machine_credentials_for_user(user_id))
+            manager.remove_machine_credentials_for_user,
+            user_id,
+        )
         if removed:
             logger.info("web_auth: destroyed %d machine credential(s) for %s at %s",
                         removed, user_id, context)
@@ -1017,9 +1065,12 @@ def _kiosk_flow_handle(request: Request) -> Optional[str]:
     return str(entry.get("handle", "")) or None
 
 
-def _kiosk_template_path() -> str:
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "webrender", "templates", "kiosk.html")
+def _kiosk_template_resource():
+    """Return the Projection-owned kiosk template without a Deep path guess."""
+
+    from astralprojection import template_path
+
+    return template_path("kiosk.html")
 
 
 @kiosk_router.get("/kiosk", response_class=HTMLResponse)
@@ -1028,10 +1079,9 @@ async def kiosk_page(request: Request):
     if await aget_session(request):
         return RedirectResponse("/", status_code=303)
     try:
-        with open(_kiosk_template_path(), "r", encoding="utf-8") as fh:
-            page = fh.read()
+        page = _kiosk_template_resource().read_text(encoding="utf-8")
     except Exception:
-        logger.exception("web_auth: kiosk template missing")
+        logger.exception("astralprojection: kiosk template missing")
         return _error_page("/", "The sign-in page is unavailable.", status=500)
     resp = HTMLResponse(page)
     resp.headers["Cache-Control"] = "no-store"

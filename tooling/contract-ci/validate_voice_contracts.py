@@ -262,7 +262,10 @@ def load_contract_bundle(repo_root: Path) -> ContractBundle:
     """Load the two schemas, OpenAPI document, and canonical shared fixture."""
 
     contract_root = repo_root / "specs/065-conversational-voice/contracts"
-    fixture_path = repo_root / "backend/tests/fixtures/voice_065/client_conformance.json"
+    fixture_path = (
+        repo_root
+        / "components/AstralProjection/contracts/fixtures/voice_065/client_conformance.json"
+    )
     return ContractBundle(
         voice_schema=strict_load_json(contract_root / "voice-control.schema.json"),
         worker_schema=strict_load_json(contract_root / "worker-control.schema.json"),

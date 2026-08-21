@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
+from astralplane.database.legacy_baseline_066 import _LegacyBaseline066Builder
 from shared.voice_transcript import (
     TranscriptProofBinding,
     TranscriptProofError,
@@ -222,8 +223,10 @@ def test_proof_types_and_representations_do_not_expose_or_persist_content() -> N
     )
     assert scope == BINDING.session_scope
 
-    migration_source = (Path(__file__).parents[1] / "shared" / "database.py").read_text(
-        encoding="utf-8"
+    # Schema ownership moved to AstralPlane in 074. Inspect its canonical
+    # fresh-install baseline rather than the removed Deep database facade.
+    migration_source = inspect.getsource(
+        _LegacyBaseline066Builder._migrate_conversational_voice_065
     )
     voice_turn_ddl = migration_source.split(
         "CREATE TABLE IF NOT EXISTS voice_turn (", 1

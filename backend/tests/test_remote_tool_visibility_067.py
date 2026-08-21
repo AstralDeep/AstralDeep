@@ -9,10 +9,12 @@ empty-state reply points at Settings → Remote machines) stays visible.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from agents.remote_compute.mcp_tools import TOOL_REGISTRY
 from orchestrator.mcp_projection import project_tools
+from orchestrator.plane_repository_context import ApplicationPlaneSource
 from orchestrator.tool_visibility import eligible_tool_pairs
 from shared.protocol import AgentCard, AgentSkill
 
@@ -21,20 +23,27 @@ REMOTE_AGENT_ID = "remote-compute-1"
 DISCOVERY_VERBS = {"list_machines"}
 
 
-class _MachineDb:
-    """fetch_one stub for owns_any_machine plus the MCP projection's read."""
+class _MachineRepository:
+    """Typed Plane remote-repository stub for the ownership projection."""
 
     def __init__(self, owns_machine: bool) -> None:
         self.owns_machine = owns_machine
-        self.fetch_one_calls: list[tuple[str, tuple]] = []
+        self.list_calls: list[tuple[str, int]] = []
 
-    def fetch_one(self, sql: str, params: tuple):
-        self.fetch_one_calls.append((sql, params))
-        assert "remote_machine" in sql and "owner_user_id" in sql
-        return {"1": 1} if self.owns_machine else None
+    def list_machines(self, _transaction, *, owner_id: str, limit: int):
+        self.list_calls.append((owner_id, limit))
+        return (object(),) if self.owns_machine else ()
 
-    def get_user_disabled_agents(self, user_id: str) -> list[str]:
-        return []
+
+class _PlaneRuntime:
+    """Minimal application-scoped transaction seam for the typed repository."""
+
+    def __init__(self, remote: _MachineRepository) -> None:
+        self.repositories = SimpleNamespace(remote=remote)
+
+    @contextmanager
+    def transaction(self):
+        yield object()
 
 
 def _orchestrator(owns_machine: bool) -> SimpleNamespace:
@@ -59,14 +68,20 @@ def _orchestrator(owns_machine: bool) -> SimpleNamespace:
             skills=[other_skill],
         ),
     }
+    remote = _MachineRepository(owns_machine)
+    runtime = _PlaneRuntime(remote)
+    machine_source = ApplicationPlaneSource(runtime, runtime.repositories)
     return SimpleNamespace(
         agent_cards=cards,
         agents={},
         local_agents={agent_id: object() for agent_id in cards},
         security_flags={},
         _is_draft_agent=lambda agent_id: False,
-        tool_permissions=SimpleNamespace(is_tool_allowed=lambda *args: True),
-        history=SimpleNamespace(db=_MachineDb(owns_machine)),
+        tool_permissions=SimpleNamespace(
+            is_tool_allowed=lambda *args: True,
+            list_disabled_agents=lambda _user_id: (),
+        ),
+        plane_repository_source=machine_source,
     )
 
 
@@ -119,14 +134,17 @@ def test_machine_owner_keeps_the_full_catalog():
 def test_ownership_is_checked_at_most_once_per_projection():
     orch = _orchestrator(owns_machine=False)
     eligible_tool_pairs(orch, "u1")
-    assert len(orch.history.db.fetch_one_calls) == 1
-    assert orch.history.db.fetch_one_calls[0][1] == ("u1",)
+    assert orch.plane_repository_source.plane_repositories.remote.list_calls == [
+        ("u1", 1)
+    ]
 
 
 def test_machine_owner_pays_one_existence_probe_not_eighteen():
     orch = _orchestrator(owns_machine=True)
     eligible_tool_pairs(orch, "u1")
-    assert len(orch.history.db.fetch_one_calls) == 1
+    assert orch.plane_repository_source.plane_repositories.remote.list_calls == [
+        ("u1", 1)
+    ]
 
 
 def test_probe_failure_fails_open_to_the_full_catalog():
@@ -134,10 +152,10 @@ def test_probe_failure_fails_open_to_the_full_catalog():
     # gate still runs. A transient DB error must not blank the tool list.
     orch = _orchestrator(owns_machine=True)
 
-    def _boom(sql, params):
+    def _boom(_transaction, **_kwargs):
         raise RuntimeError("db down")
 
-    orch.history.db.fetch_one = _boom
+    orch.plane_repository_source.plane_repositories.remote.list_machines = _boom
     pairs = eligible_tool_pairs(orch, "u1")
     remote_offered = {
         skill.id for agent_id, skill in pairs if agent_id == REMOTE_AGENT_ID

@@ -82,7 +82,6 @@ duration are:
 
 ```text
 python -m pytest \
-  tests/test_migrations_060.py \
   tests/test_schema_revision_guard.py \
   scheduler/tests/test_occurrence_claims_060.py \
   scheduler/tests/test_schedule_actions_060.py \
@@ -94,6 +93,11 @@ python -m pytest \
   tests/test_work_admission_repository.py \
   -q --tb=short
 ```
+
+The feature-060 migration proof was superseded by the extracted AstralPlane
+suite. Run the pinned component's `tests/test_schema_migrations.py` and live
+`tests/integration/test_empty_database_startup.py` in addition to the Deep
+runtime-policy tests above.
 
 Result: **184 passed in 80.95s** (81.55s container wall time). The gate used isolated throwaway
 databases created and dropped by the tests. It also proves a cancellation-resistant scheduled

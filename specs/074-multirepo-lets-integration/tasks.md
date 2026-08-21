@@ -9,8 +9,8 @@
 **Repository path legend**:
 
 - **Deep**: `Y:/WORK/MCP/AstralDeep`
-- **Projection worktree**: `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074`
-- **Plane worktree**: `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074`
+- **Projection sibling**: `Y:/WORK/MCP/AstralProjection`
+- **Plane sibling**: `Y:/WORK/MCP/AstralPlane`
 - **Primitives**: `Y:/WORK/MCP/AstralPrimitives`
 - **LETS**: `Y:/WORK/MCP/LETS`
 - **Vault**: `Y:/WORK/kos-wiki`
@@ -125,7 +125,7 @@
 - [X] T072 [P] [US4] Add literal, comment, wildcard, JSON operator, percent, and placeholder regression tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_sql_parameters.py`
 - [X] T073 [US4] Implement one explicit, concurrency-safe boot initializer instead of running schema initialization on every `Database()` construction in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/bootstrap.py`
 - [X] T074 [P] [US4] Add multi-instance, concurrent-start, already-current, interrupted-start, and failure-state tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_bootstrap.py`
-- [ ] T075 [US4] Implement one guarded repeat-safe schema runner in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/migrations.py` and declared `DataPlaneRevision` in `src/astralplane/database/revision.py`
+- [X] T075 [US4] Implement one guarded repeat-safe schema runner in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/migrations.py` and declared `DataPlaneRevision` in `src/astralplane/database/revision.py`
 - [X] T076 [US4] Remove agent/filesystem/UI reconciliation from schema DDL and expose explicit post-migration hooks in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/reconciliation.py`
 - [X] T077 [P] [US4] Add empty, representative legacy, repeated, concurrent, partially applied, and incompatible-revision migration tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_schema_migrations.py`
 
@@ -149,12 +149,12 @@
 - [X] T093 [P] [US4] Add database-success/blob-failure, blob-success/database-failure, retry, owner-isolation, and recovery tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_purge.py`
 - [X] T094 [US4] Replace imports of Deep policy/lifecycle modules with neutral IDs, enums, callbacks, and supplied context in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/domain.py`
 - [X] T095 [US4] Expose repository factories and one stable AstralPlane public façade in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/api.py`
-- [ ] T096 [P] [US4] Add owner-isolation, attribution, transaction rollback, concurrency, idempotency, and failure-visibility contract tests across all repositories in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/contract/`
+- [X] T096 [P] [US4] Add owner-isolation, attribution, transaction rollback, concurrency, idempotency, and failure-visibility contract tests across all repositories in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/contract/`
 - [X] T097 [US4] Define schema/API/minimum-consumer compatibility metadata and inspection in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/compatibility.py`
 - [X] T098 [P] [US4] Add producer-side compatibility schema and semantic-version tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/test_compatibility.py`
 - [X] T099 [US4] Document PostgreSQL plus blob/workspace state as one backup, upgrade, rollback, and recovery unit in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/docs/migration-and-recovery.md`
-- [ ] T100 [P] [US4] Create representative pre-split database/blob fixtures with synthetic non-PHI data in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/fixtures/pre_split/`
-- [ ] T101 [US4] Run upgrade, repeat-upgrade, transactional failure, blob failure, and documented recovery tests against the representative fixtures and save digests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/provenance/checks.json`
+- [X] T100 [P] [US4] Create representative pre-split database/blob fixtures with synthetic non-PHI data in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/fixtures/pre_split/`
+- [X] T101 [US4] Run upgrade, repeat-upgrade, transactional failure, blob failure, and documented recovery tests against the representative fixtures and save digests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/provenance/checks.json`
 - [X] T102 [US4] Complete canonical extraction provenance, legacy default baseline, selected paths/blob IDs, and manifest SHA-256 in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/provenance/extraction.json`
 - [X] T103 [US4] Run `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/architecture/test_dependency_direction.py` and prove the package imports no Deep, Projection, Primitives, LETS, UI, agent, media, or transport implementation
 - [X] T104 [US4] Run `Y:/WORK/MCP/AstralDeep/scripts/migration/check_staged_paths_074.py` against the exact Plane index and prove `app/app.db`, logs, venv, credentials, and user state are absent
@@ -178,16 +178,16 @@
 - [X] T113 [US1] Create the authoritative compatible revision, contract version, protocol digest, Plane revision, LETS profile, and availability-mode declaration in `Y:/WORK/MCP/AstralDeep/config/astral-composition.json`
 - [X] T114 [US1] Implement missing/uninitialized/dirty/wrong-SHA/wrong-URL/incompatible/private-access diagnostics in `Y:/WORK/MCP/AstralDeep/scripts/verify_composition.py`
 - [X] T115 [P] [US1] Add composition tests for exact pins, canonical URLs, no floating branch, inaccessible private component, dirty component, stale gitlink, incompatible contracts, and LETS v1.0.10 public exports (`LETSClient`, `ReplicaAuthorizer`, `AstralDeepAuthorizer`, `Receipt`, `ReceiptVerifier`) in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_composition.py`
-- [ ] T116 [US1] Install Projection, Plane, Primitives, and LETS from exact local component paths with no dependency resolver substitution in `Y:/WORK/MCP/AstralDeep/pyproject.toml`
-- [ ] T117 [US1] Update container build ordering and package-data copying for initialized components in `Y:/WORK/MCP/AstralDeep/Dockerfile`
+- [X] T116 [US1] Install Projection, Plane, Primitives, and LETS from exact local component paths with no dependency resolver substitution in `Y:/WORK/MCP/AstralDeep/pyproject.toml`
+- [X] T117 [US1] Update container build ordering and package-data copying for initialized components in `Y:/WORK/MCP/AstralDeep/Dockerfile`
 - [X] T118 [P] [US1] Include component sources while recursively excluding secrets/runtime state in `Y:/WORK/MCP/AstralDeep/.dockerignore`, and prove the exclusions with a synthetic nested-sentinel Docker-context test before any real image build
-- [ ] T119 [US1] Update local bootstrap/sync/preflight targets and submodule-aware CI paths for composition validation in `Y:/WORK/MCP/AstralDeep/Makefile` and `Y:/WORK/MCP/AstralDeep/.github/workflows/ci.yml`
-- [ ] T120 [US1] Replace hard-coded shell, kiosk, and static paths with AstralProjection resource accessors in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/orchestrator.py` and `backend/orchestrator/web_auth.py`
-- [ ] T121 [US1] Replace Deep durable-state imports with the AstralPlane public façade in `Y:/WORK/MCP/AstralDeep/backend/shared/database.py` and all consumers listed by `contracts/component-ownership.json`
+- [X] T119 [US1] Update local bootstrap/sync/preflight targets and submodule-aware CI paths for composition validation in `Y:/WORK/MCP/AstralDeep/Makefile` and `Y:/WORK/MCP/AstralDeep/.github/workflows/ci.yml`
+- [X] T120 [US1] Replace hard-coded shell, kiosk, and static paths with AstralProjection resource accessors in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/orchestrator.py` and `backend/orchestrator/web_auth.py`
+- [X] T121 [US1] Replace Deep durable-state imports with the AstralPlane public façade in `Y:/WORK/MCP/AstralDeep/backend/shared/database.py` and all consumers listed by `contracts/component-ownership.json`
 - [X] T122 [P] [US1] Add server UI protocol producer/consumer drift checks against the Projection submodule in `Y:/WORK/MCP/AstralDeep/backend/tests/test_projection_protocol_integration.py`
 - [X] T123 [P] [US1] Add Plane revision/startup compatibility and failure-attribution tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_plane_integration.py`
-- [ ] T124 [US1] Remove Projection-owned tracked source trees and mutable tooling from `Y:/WORK/MCP/AstralDeep/backend/webrender`, `backend/rote`, `windows-client`, `android-client`, `apple-clients`, and `tooling/web-ci` only after all runtime/build/test references use the submodule
-- [ ] T125 [US1] Remove Plane-owned tracked implementation from `Y:/WORK/MCP/AstralDeep/backend/shared/database.py` and extracted repositories only after all consumers use stable Plane contracts, retaining only deliberate compatibility adapters
+- [X] T124 [US1] Remove Projection-owned tracked source trees and mutable tooling from `Y:/WORK/MCP/AstralDeep/backend/webrender`, `backend/rote`, `windows-client`, `android-client`, `apple-clients`, and `tooling/web-ci` only after all runtime/build/test references use the submodule
+- [X] T125 [US1] Remove Plane-owned tracked implementation from `Y:/WORK/MCP/AstralDeep/backend/shared/database.py` and extracted repositories only after all consumers use stable Plane contracts, retaining only deliberate compatibility adapters
 - [ ] T126 [US1] Update `Y:/WORK/MCP/AstralDeep/contracts/component-ownership.json` and generated-copy rules so the ownership checker reports zero unmanaged duplicate source trees
 - [X] T127 [P] [US1] Add a clean-checkout bootstrap test using an isolated temporary clone in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_clean_composition_checkout.py`
 - [X] T128 [US1] Add composed product rollback ordering, component re-pin, schema compatibility, and private-submodule access recovery instructions in `Y:/WORK/MCP/AstralDeep/docs/component-composition.md`
@@ -213,7 +213,7 @@
 - [X] T137 [P] [US2] Add durable `ReceiptClaim` uniqueness, sequence watermark, and external-authority anchor metadata in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/claims.py`
 - [X] T138 [US2] Add guarded repeat-safe authority binding/operation/claim/outbox migrations in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/database/migrations.py` and bump `src/astralplane/database/revision.py`
 - [X] T139 [US2] Expose neutral owner-isolated authority repositories and transactions through `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/src/astralplane/authority/repository.py`
-- [ ] T140 [P] [US2] Add migration repeatability, active-binding uniqueness, owner isolation, request-fingerprint conflict, claim replay, sequence, and rollback tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/authority/`
+- [X] T140 [P] [US2] Add migration repeatability, active-binding uniqueness, owner isolation, request-fingerprint conflict, claim replay, sequence, and rollback tests in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/tests/authority/`
 
 ### Astral-owned configuration, lifecycle, and gateway
 
@@ -225,42 +225,42 @@
 - [X] T146 [P] [US2] Add strict response parsing, response-size, total-timeout, no-redirect, TLS, same-ID retry, fingerprint-conflict, and redacted error tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_client.py`
 - [X] T147 [US2] Implement canonical protected-effect context and digest generation after all argument/credential rewrites without sending raw arguments, credentials, PHI, or user content to LETS in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/protected_dispatch.py`
 - [X] T148 [P] [US2] Add canonicalization, exclusion, semantic-change, nonce entropy, and deterministic digest tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_protected_dispatch.py`
-- [ ] T149 [US2] Implement dynamic/user-authored root/spawn/renew/quiesce/resume/close/revoke/expire lifecycle convergence using durable Plane operations in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_lifecycle.py`
-- [ ] T150 [P] [US2] Wire governed dynamic-agent admission, revision supersession, runtime generation, pause, reconnect, deletion, and compromise events in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/agent_lifecycle.py`
-- [ ] T151 [P] [US2] Wire governed BYO runtime admission, host fencing, reconnect, retirement, and revocation in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/user_agents.py`
-- [ ] T152 [US2] Implement startup/background reconciliation for pending or indeterminate lifecycle and authorization operations in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_reconciler.py`
-- [ ] T153 [P] [US2] Add crash-before-call, commit-lost-response, restart, renewal, disconnect/reconnect, epoch rotation, close, revoke, and exhaustion lifecycle tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_lifecycle.py`
-- [ ] T154 [US2] Implement host-binding checks plus LETS `ReceiptVerifier.verify_and_claim()` immediately before the physical actuator in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_gateway.py`
-- [ ] T155 [US2] Enforce monotonic receipt ordering with a binding-scoped authorization-through-claim lock in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_gateway.py`
-- [ ] T156 [US2] Change retry handling so every physical attempt gets a distinct durable operation ID, nonce, and receipt while pre-response transport retries reuse exact canonical semantics in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/tool_retry.py`
-- [ ] T157 [US2] Represent lost non-idempotent results as `outcome_uncertain` and forbid blind replay in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/tool_retry.py`
-- [ ] T158 [P] [US2] Add retry-before-response, same-ID conflict, claimed-receipt replay, crash-after-claim, lost-result, idempotent recovery, and compensation tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_retry_semantics.py`
+- [X] T149 [US2] Implement dynamic/user-authored root/spawn/renew/quiesce/resume/close/revoke/expire lifecycle convergence using durable Plane operations in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_lifecycle.py`
+- [X] T150 [P] [US2] Wire governed dynamic-agent admission, revision supersession, runtime generation, pause, reconnect, deletion, and compromise events in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/agent_lifecycle.py`
+- [X] T151 [P] [US2] Wire governed BYO runtime admission, host fencing, reconnect, retirement, and revocation in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/user_agents.py`
+- [X] T152 [US2] Implement startup/background reconciliation for pending or indeterminate lifecycle and authorization operations in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_reconciler.py`
+- [X] T153 [P] [US2] Add crash-before-call, commit-lost-response, restart, renewal, disconnect/reconnect, epoch rotation, close, revoke, and exhaustion lifecycle tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_lifecycle.py`
+- [X] T154 [US2] Implement host-binding checks plus LETS `ReceiptVerifier.verify_and_claim()` immediately before the physical actuator in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_gateway.py`
+- [X] T155 [US2] Enforce monotonic receipt ordering with a binding-scoped authorization-through-claim lock in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_gateway.py`
+- [X] T156 [US2] Change retry handling so every physical attempt gets a distinct durable operation ID, nonce, and receipt while pre-response transport retries reuse exact canonical semantics in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/tool_retry.py`
+- [X] T157 [US2] Represent lost non-idempotent results as `outcome_uncertain` and forbid blind replay in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/tool_retry.py`
+- [X] T158 [P] [US2] Add retry-before-response, same-ID conflict, claimed-receipt replay, crash-after-claim, lost-result, idempotent recovery, and compensation tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_retry_semantics.py`
 
 ### Complete dispatch coverage
 
-- [ ] T159 [US2] Route normal single, parallel, chained, and recursive tool calls through one governed final gateway in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/orchestrator.py`
-- [ ] T160 [P] [US2] Route REST, WebSocket, component re-execution, and credential probes through the same protected dispatch context in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/api.py` and `backend/orchestrator/chrome_events.py`
-- [ ] T161 [P] [US2] Route inbound/outbound MCP tool calls through typed `astraldeep.lets/v1` caller-capability metadata outside tool arguments in `Y:/WORK/MCP/AstralDeep/backend/shared/mcp_client.py`
-- [ ] T162 [P] [US2] Route orchestrator and individual-agent A2A execution through the same protected gateway in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/a2a_orchestrator_executor.py` and `backend/shared/a2a_executor.py`
-- [ ] T163 [P] [US2] Route background, scheduled, and asynchronous work through the same protected gateway in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/background_dispatch.py`
-- [ ] T164 [P] [US2] Require bounded stream-open authorization and fresh poll/actuator authorization for polling and push streams in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/streaming.py`
-- [ ] T165 [US2] Verify in-process effects at the last call site before `tool_fn(**arguments)` in `Y:/WORK/MCP/AstralDeep/backend/shared/base_agent.py`
-- [ ] T166 [US2] Add the public LETS verifier, persistent replay store, signed trust manifest, and exact host-context checks to generated agent runtimes in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/agent_generator.py`
-- [ ] T167 [US2] Add the same verifier/replay/host-binding contract to `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/windows-client/win_agent/agent.py`, pin the exact LETS v1.0.10 protected-executor dependency in `windows-client/requirements.in`, and mechanically regenerate `windows-client/requirements-release.lock.txt`
-- [ ] T168 [US2] Label externally reachable agents without a conforming actuator as dispatch-mediated only and prevent protected-executor claims in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/external_agents.py`
-- [ ] T169 [US2] Correlate redacted Astral audit, Plane operation, LETS request, receipt digest, claim, denial, and effect outcome evidence in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_audit.py`
+- [X] T159 [US2] Route normal single, parallel, chained, and recursive tool calls through one governed final gateway in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/orchestrator.py`
+- [X] T160 [P] [US2] Route REST, WebSocket, component re-execution, and credential probes through the same protected dispatch context in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/api.py` and `backend/orchestrator/chrome_events.py`
+- [X] T161 [P] [US2] Route inbound/outbound MCP tool calls through typed `astraldeep.lets/v1` caller-capability metadata outside tool arguments in `Y:/WORK/MCP/AstralDeep/backend/shared/mcp_client.py`
+- [X] T162 [P] [US2] Route orchestrator and individual-agent A2A execution through the same protected gateway in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/a2a_orchestrator_executor.py` and `backend/shared/a2a_executor.py`
+- [X] T163 [P] [US2] Route background, scheduled, and asynchronous work through the same protected gateway in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/background_dispatch.py`
+- [X] T164 [P] [US2] Require bounded stream-open authorization and fresh poll/actuator authorization for polling and push streams in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/streaming.py`
+- [X] T165 [US2] Verify in-process effects at the last call site before `tool_fn(**arguments)` in `Y:/WORK/MCP/AstralDeep/backend/shared/base_agent.py`
+- [X] T166 [US2] Add the public LETS verifier, persistent replay store, signed trust manifest, and exact host-context checks to generated agent runtimes in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/agent_generator.py`
+- [X] T167 [US2] Add the same verifier/replay/host-binding contract to `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/windows-client/win_agent/agent.py`, pin the exact LETS v1.0.10 protected-executor dependency in `windows-client/requirements.in`, and mechanically regenerate `windows-client/requirements-release.lock.txt`
+- [X] T168 [US2] Label externally reachable agents without a conforming actuator as dispatch-mediated only and prevent protected-executor claims in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/external_agents.py`
+- [X] T169 [US2] Correlate redacted Astral audit, Plane operation, LETS request, receipt digest, claim, denial, and effect outcome evidence in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_audit.py`
 - [X] T170 [US2] Expose typed, redacted health/readiness and user-facing deny reason codes without secrets or raw receipts in `Y:/WORK/MCP/AstralDeep/backend/orchestrator/lets_health.py`
 
 ### Conformance and rollout evidence
 
-- [ ] T171 [P] [US2] Add byte/behavior parity tests proving master flag false and mode off make no LETS calls and fabricate no success evidence in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_off_parity.py`
-- [ ] T172 [P] [US2] Add shadow-versus-enforce tests proving shadow never blocks existing behavior and enforce fails closed in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_modes.py`
-- [ ] T173 [P] [US2] Add tests proving every pre-existing Astral identity, delegation, owner, permission, policy, security, taint, confirmation, PHI, egress, and audit denial occurs before LETS authorization in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_gate_ordering.py`
-- [ ] T174 [P] [US2] Add tamper/mismatch tests for issuer, key, signature, tenant, envelope, lease, lineage, subject, policy, machine, epoch, audience, operation, transition, cost, nonce, effect digest, sequence, time, and replay in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_receipt_binding.py`
-- [ ] T175 [P] [US2] Add timeout, unavailable warden, malformed response, stale receipt, key rotation, clock rollback, replay-store loss/fullness, and authority-anchor failure tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_fail_closed.py`
-- [ ] T176 [P] [US2] Add concurrent same-binding and multi-binding tests proving no out-of-order physical effects or cross-owner claims in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_concurrency.py`
-- [ ] T177 [P] [US2] Add a parameterized dispatch matrix covering REST, WebSocket, A2A, MCP, background, scheduled, chained, recursive, component, probe, poll, push, in-process, generated, BYO, remote, and external paths in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_dispatch_matrix.py`
-- [ ] T178 [US2] Add an end-to-end invariant test proving zero governed physical effects occur without exactly one successfully claimed matching receipt in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_effect_invariant.py`
+- [X] T171 [P] [US2] Add byte/behavior parity tests proving master flag false and mode off make no LETS calls and fabricate no success evidence in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_off_parity.py`
+- [X] T172 [P] [US2] Add shadow-versus-enforce tests proving shadow never blocks existing behavior and enforce fails closed in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_modes.py`
+- [X] T173 [P] [US2] Add tests proving every pre-existing Astral identity, delegation, owner, permission, policy, security, taint, confirmation, PHI, egress, and audit denial occurs before LETS authorization in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_gate_ordering.py`
+- [X] T174 [P] [US2] Add tamper/mismatch tests for issuer, key, signature, tenant, envelope, lease, lineage, subject, policy, machine, epoch, audience, operation, transition, cost, nonce, effect digest, sequence, time, and replay in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_receipt_binding.py`
+- [X] T175 [P] [US2] Add timeout, unavailable warden, malformed response, stale receipt, key rotation, clock rollback, replay-store loss/fullness, and authority-anchor failure tests in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_fail_closed.py`
+- [X] T176 [P] [US2] Add concurrent same-binding and multi-binding tests proving no out-of-order physical effects or cross-owner claims in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_concurrency.py`
+- [X] T177 [P] [US2] Add a parameterized dispatch matrix covering REST, WebSocket, A2A, MCP, background, scheduled, chained, recursive, component, probe, poll, push, in-process, generated, BYO, remote, and external paths in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_dispatch_matrix.py`
+- [X] T178 [US2] Add an end-to-end invariant test proving zero governed physical effects occur without exactly one successfully claimed matching receipt in `Y:/WORK/MCP/AstralDeep/backend/tests/test_lets_effect_invariant.py`
 - [X] T179 [US2] Close the primitive decision in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/primitive-decision.json`: record verified no-change when coverage is complete, or for every proven gap implement/export/document/serialize/test/version the primitive under `Y:/WORK/MCP/AstralPrimitives/src/astralprims`, `tests`, and `pyproject.toml`, push the coordinated release, and update Projection/Deep pins before compatibility is claimed
 - [ ] T180 [US2] Run Plane authority tests, LETS `v1.0.10` public-client/verifier tests, Deep conformance tests, and generated/BYO verifier tests; record command/output digests in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/us2-checks.json`
 - [ ] T181 [US2] Commit and push the Plane authority checkpoint on `codex/074-extract-data-plane`, verify its remote SHA/ancestry, and update `Y:/WORK/MCP/AstralDeep/config/astral-composition.json` to that exact commit
@@ -281,16 +281,16 @@
 - [X] T187 [P] [US5] Replace current operational old/case-mismatched repository URLs in `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/pyproject.toml`, `README.md`, and `docs/`
 - [X] T188 [P] [US5] Replace current operational old/case-mismatched repository URLs in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/pyproject.toml`, `README.md`, client metadata, and `docs/`
 - [X] T189 [P] [US5] Replace current operational old/case-mismatched repository URLs in `Y:/WORK/MCP/AstralPrimitives/pyproject.toml`, `CLAUDE.md`, and maintained documentation
-- [ ] T190 [US5] Implement canonical URL, redirect-dependence, exact gitlink, normal-ancestry, retained-master, provenance-schema, and source-blob verification in `Y:/WORK/MCP/AstralDeep/scripts/verify_migration_provenance.py`
-- [ ] T191 [P] [US5] Add wrong-case, redirect-only, orphan, force-divergence, missing blob, manifest tamper, changed legacy master, and archive-ref prohibition tests in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_migration_provenance.py`
-- [ ] T192 [US5] Create a machine-readable release trust transition with legacy repository/workflow fence, bridge maximum, new Projection identity, and identical artifact digest in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/contracts/windows-release-trust.json`
-- [ ] T193 [P] [US5] Add an offline dual-bundle/identical-byte verification harness without publishing a release in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/scripts/verify_windows_bridge.py`
-- [ ] T194 [P] [US5] Add tests for exact byte identity, old identity past bridge maximum, new identity before transition, wrong tag/repository/workflow, and downgrade in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/tests/release/test_windows_bridge.py`
-- [ ] T195 [US5] Inventory required Projection GitHub environments, secrets, variables, store identities, approval rules, and last Apple/Android build numbers without secret values in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/docs/release-environment-inventory.md`
-- [ ] T196 [US5] Keep release workflows inactive until final local qualification and encode their activation preconditions in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/docs/release-workflow-activation.md`
-- [ ] T197 [US5] Document normal-commit rollback for Projection, Plane, Deep gitlinks, and the prohibition on automatic Plane schema downgrade in `Y:/WORK/MCP/AstralDeep/docs/migration-rollback-074.md`
+- [X] T190 [US5] Implement canonical URL, redirect-dependence, exact gitlink, normal-ancestry, retained-master, provenance-schema, and source-blob verification in `Y:/WORK/MCP/AstralDeep/scripts/verify_migration_provenance.py`
+- [X] T191 [P] [US5] Add wrong-case, redirect-only, orphan, force-divergence, missing blob, manifest tamper, changed legacy master, and archive-ref prohibition tests in `Y:/WORK/MCP/AstralDeep/scripts/tests/test_verify_migration_provenance.py`
+- [X] T192 [US5] Create a machine-readable release trust transition with legacy repository/workflow fence, bridge maximum, new Projection identity, and identical artifact digest in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/contracts/windows-release-trust.json`
+- [X] T193 [P] [US5] Add an offline dual-bundle/identical-byte verification harness without publishing a release in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/scripts/verify_windows_bridge.py`
+- [X] T194 [P] [US5] Add tests for exact byte identity, old identity past bridge maximum, new identity before transition, wrong tag/repository/workflow, and downgrade in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/tests/release/test_windows_bridge.py`
+- [X] T195 [US5] Inventory required Projection GitHub environments, secrets, variables, store identities, approval rules, and last Apple/Android build numbers without secret values in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/docs/release-environment-inventory.md`
+- [X] T196 [US5] Keep release workflows inactive until final local qualification and encode their activation preconditions in `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/docs/release-workflow-activation.md`
+- [X] T197 [US5] Document normal-commit rollback for Projection, Plane, Deep gitlinks, and the prohibition on automatic Plane schema downgrade in `Y:/WORK/MCP/AstralDeep/docs/migration-rollback-074.md`
 - [ ] T198 [US5] Run provenance, ancestry, URL, retained-master, release-trust, source-ownership, and sensitive-path checks and save digests in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/us5-checks.json`
-- [ ] T199 [US5] Commit and push URL/provenance changes under `Y:/WORK/MCP/LETS`, `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074`, `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074`, and `Y:/WORK/MCP/AstralPrimitives` on their named branches; advance only changed compatible Plane/Projection/Primitives gitlinks in `Y:/WORK/MCP/AstralDeep/config/astral-composition.json`; retain the signed LETS v1.0.10 gitlink unless T212 requires a successor; then commit/push Deep
+- [ ] T199 [US5] Commit and push URL/provenance changes under `Y:/WORK/MCP/LETS`, `Y:/WORK/MCP/AstralPlane`, `Y:/WORK/MCP/AstralProjection`, and `Y:/WORK/MCP/AstralPrimitives` on their named branches; advance only changed compatible Plane/Projection/Primitives gitlinks in `Y:/WORK/MCP/AstralDeep/config/astral-composition.json`; retain the signed LETS v1.0.10 gitlink unless T212 requires a successor; then commit/push Deep
 - [ ] T200 [US5] Produce one exact five-repository `MigrationCheckpoint`, composition linkage, product feature refs, and manifest digest in `Y:/WORK/MCP/AstralDeep/migration/checkpoint-074.json`
 - [ ] T201 [US5] Verify every pushed feature ref equals local `HEAD`, every component replacement descends from its recorded baseline, and no feature-074 archive ref exists; update `Y:/WORK/MCP/AstralDeep/migration/checkpoint-074.json`
 - [ ] T202 [US5] Record and push all exact remote revisions, default branches, retained legacy refs, release-transition state, verification, and risks in `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
@@ -303,16 +303,16 @@
 
 **Independent Test**: Re-run the case study from the exact five-repository composition, validate all raw/result digests, rebuild named/anonymous manuscripts, and prove the anonymous artifact contains no prohibited identifying tokens.
 
-- [ ] T203 [P] [US6] Copy the canonical evidence schema from Deep into `Y:/WORK/MCP/LETS/benchmarks/astraldeep/case-study-evidence.schema.json` and implement the tracked off/shadow/enforce runner across six scopes, lifecycle, parallel/recursive dispatch, outage, replay, exhaustion, and revocation in `run_case_study.py`
-- [ ] T204 [P] [US6] Implement environment/machine/config/component revision capture plus semantic evidence validation for unique retained artifact paths, artifact-reference integrity, ordered timestamps, canonical digests, and secret/credential/PHI exclusion in `Y:/WORK/MCP/LETS/benchmarks/astraldeep/capture_environment.py`
-- [ ] T205 [P] [US6] Add tests for exact revision capture, schema validation, canonical digests, secret redaction, missing inputs, and refusal to mix baselines in `Y:/WORK/MCP/LETS/tests/benchmarks/test_astraldeep_case_study.py`
+- [X] T203 [P] [US6] Copy the canonical evidence schema from Deep into `Y:/WORK/MCP/LETS/benchmarks/astraldeep/case-study-evidence.schema.json` and implement the tracked off/shadow/enforce runner across six scopes, lifecycle, parallel/recursive dispatch, outage, replay, exhaustion, and revocation in `run_case_study.py`
+- [X] T204 [P] [US6] Implement environment/machine/config/component revision capture plus semantic evidence validation for unique retained artifact paths, artifact-reference integrity, ordered timestamps, canonical digests, and secret/credential/PHI exclusion in `Y:/WORK/MCP/LETS/benchmarks/astraldeep/capture_environment.py`
+- [X] T205 [P] [US6] Add tests for exact revision capture, schema validation, canonical digests, secret redaction, missing inputs, and refusal to mix baselines in `Y:/WORK/MCP/LETS/tests/benchmarks/test_astraldeep_case_study.py`
 - [ ] T206 [US6] Create an ignored local evidence root and run manifest in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/manifest.json` without staging any result or manuscript artifact
 - [ ] T207 [US6] Run flag-off baseline and v1.0.10 reference scenarios, retaining raw outputs and labeling them distinctly in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/baseline/`
 - [ ] T208 [US6] Run shadow and enforce Astral integration scenarios from exact component commits, retaining raw outputs in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/integration/`
 - [ ] T209 [US6] Measure p50/p95/p99 authorization/end-to-end latency, throughput, refusal reasons, lifecycle convergence, recovery, storage growth, budget conservation, and unreceipted effects in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/summary.json`
 - [ ] T210 [US6] Validate the complete evidence bundle against `Y:/WORK/MCP/LETS/benchmarks/astraldeep/case-study-evidence.schema.json` and record every file digest in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/manifest.json`
 - [ ] T211 [US6] Compare used LETS runtime/API behavior to the signed v1.0.10 source and record an evidence-backed unchanged-runtime or successor-required disposition in `Y:/WORK/MCP/LETS/results/astraldeep-case-study/version-disposition.json`
-- [ ] T212 [US6] Implement a fail-closed successor-release gate that blocks paper result finalization and emits a separately reviewable LETS defect/release handoff whenever `version-disposition.json` requires runtime or wire-semantic changes in `Y:/WORK/MCP/LETS/benchmarks/astraldeep/check_version_disposition.py`; never alter `v1.0.10`
+- [X] T212 [US6] Implement a fail-closed successor-release gate that blocks paper result finalization and emits a separately reviewable LETS defect/release handoff whenever `version-disposition.json` requires runtime or wire-semantic changes in `Y:/WORK/MCP/LETS/benchmarks/astraldeep/check_version_disposition.py`; never alter `v1.0.10`
 - [ ] T213 [US6] Add the accurate Armstrong, Klusty, Logan, Leach, and Bumgardner AMIA 2026 Astral citation with PMCID `PMC13274365` to `Y:/WORK/MCP/LETS/paper/submission/references.bib`
 - [ ] T214 [US6] Add the exact-revision Astral use-case method, architecture distinction, finite-authority profile, rollout posture, and limitations to the named manuscript in `Y:/WORK/MCP/LETS/paper/submission/main.tex`
 - [ ] T215 [US6] Replace draft result claims and tables only with validated values from `Y:/WORK/MCP/LETS/results/astraldeep-case-study/summary.json` in `Y:/WORK/MCP/LETS/paper/submission/main.tex`
@@ -327,15 +327,15 @@
 
 ## Phase 9: Final Local Qualification and Review Checkpoints
 
-**Purpose**: Run broad CI-equivalent and live checks only after narrow migration work is stable; no production deployment, release, store submission, paper submission, or merge is authorized.
+**Purpose**: Run broad CI-equivalent and live checks only after narrow migration work is stable. The owner's 2026-08-21 direction authorizes qualified PR merges where every gate and required independent review passes; it does not authorize production deployment, release, store submission, paper submission, protection bypass, or gate weakening.
 
-- [ ] T222 [P] Re-run AstralPlane unit, architecture, migration, PostgreSQL integration, recovery, outbox, purge, audit-retention, and authority suites from `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/pyproject.toml`
-- [ ] T223 [P] Re-run AstralProjection Python renderer/ROTE/architecture/resource/protocol suites from `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/pyproject.toml`
-- [ ] T224 [P] Run Projection Windows tests with `QT_QPA_PLATFORM=offscreen` from `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/windows-client/`
-- [ ] T225 [P] Run Projection Android `ktlintCheck`, lint, core/app unit coverage, and assemble gates from `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/android-client/gradlew`
-- [ ] T226 [P] Run Projection Apple Swift/Xcode gates on a qualified macOS host from `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/apple-clients/README.md`, or record the exact unavailable-host blocker and stop T236/T237 without weakening the gate
-- [ ] T227 [P] Run AstralPrimitives serialization, export, documentation, and version-floor suites from `Y:/WORK/MCP/AstralPrimitives/pyproject.toml`
-- [ ] T228 [P] Run the immutable LETS v1.0.10 acceptance, integration, protocol, executor, replay, and Astral case-study harness tests from `Y:/WORK/MCP/LETS/pyproject.toml`
+- [X] T222 [P] Re-run AstralPlane unit, architecture, migration, PostgreSQL integration, recovery, outbox, purge, audit-retention, and authority suites from `Y:/WORK/MCP/AstralPlane/pyproject.toml`
+- [X] T223 [P] Re-run AstralProjection Python renderer/ROTE/architecture/resource/protocol suites from `Y:/WORK/MCP/AstralProjection/pyproject.toml`
+- [X] T224 [P] Run Projection Windows tests with `QT_QPA_PLATFORM=offscreen` from `Y:/WORK/MCP/AstralProjection/windows-client/`
+- [X] T225 [P] Run Projection Android `ktlintCheck`, lint, core/app unit coverage, and assemble gates from `Y:/WORK/MCP/AstralProjection/android-client/gradlew`
+- [ ] T226 [P] Run Projection Apple Swift/Xcode gates on a qualified macOS host from `Y:/WORK/MCP/AstralProjection/apple-clients/README.md`, or record the exact unavailable-host blocker and stop T236/T237 without weakening the gate
+- [X] T227 [P] Run AstralPrimitives serialization, export, documentation, and version-floor suites from `Y:/WORK/MCP/AstralPrimitives/pyproject.toml`
+- [X] T228 [P] Run the immutable LETS v1.0.10 acceptance, integration, protocol, executor, replay, and Astral case-study harness tests from `Y:/WORK/MCP/LETS/pyproject.toml`
 - [ ] T229 Run the full local AstralDeep CI-equivalent backend and nested module suites, Ruff, coverage, composition, ownership, protocol, Plane, and LETS conformance checks from `Y:/WORK/MCP/AstralDeep/.github/workflows/ci.yml`
 - [ ] T230 Run a clean composed build/start against representative existing data and complete authenticated web plus available native-client golden flows, recording results in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/final-live-verification.json`
 - [ ] T231 Run bounded LETS outage, lost-response, replay, revocation, exhaustion, clock, concurrency, restart, and recovery fault/soak scenarios and record raw evidence under `Y:/WORK/MCP/LETS/results/astraldeep-case-study/final-qualification/`
@@ -343,11 +343,14 @@
 - [ ] T233 Recompute every component contract, provenance, source-owner, case-study, and system-composition digest and update `Y:/WORK/MCP/AstralDeep/config/astral-composition.json` and `migration/checkpoint-074.json` only when the exact pins match tested commits
 - [ ] T234 Verify all five product indexes exclude credentials, databases, logs, uploads, generated agents, ignored Android properties, manuscript sources, and evidence results; save the redacted report in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/final-sensitive-path-check.json`
 - [ ] T235 Verify Projection and Plane feature commits remain ordinary descendants of recorded baselines, `main` remains the default, `master` remains unchanged, and no archive or force-rewrite occurred; update `Y:/WORK/MCP/AstralDeep/migration/checkpoint-074.json`
-- [ ] T236 After every local gate passes, promote only unprivileged PR CI definitions into `Y:/WORK/MCP/.migration-worktrees/AstralPlane-074/.github/workflows/ci.yml` and `Y:/WORK/MCP/.migration-worktrees/AstralProjection-074/.github/workflows/ci.yml`, keep release workflows inactive, then commit/push final qualified Plane, Projection, Primitives-if-changed, LETS-tracked, and Deep changes in dependency order while verifying each remote SHA
-- [ ] T237 Search all PR states for each exact product head, create at most one draft PR per changed repository against `main`, and record URLs plus explicit no-merge/no-release posture in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/draft-prs.json`
+- [ ] T236 After every local gate passes, promote only unprivileged PR CI definitions into `Y:/WORK/MCP/AstralPlane/.github/workflows/ci.yml` and `Y:/WORK/MCP/AstralProjection/.github/workflows/ci.yml`, keep release workflows inactive, then commit/push final qualified Plane, Projection, Primitives-if-changed, LETS-tracked, and Deep changes in dependency order while verifying each remote SHA
+- [ ] T237 Search all PR states for each exact product head, create at most one PR per changed repository against `main` (draft until its repository gates are green), and record URLs plus exact merge-authorization/no-release posture in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/draft-prs.json`
 - [ ] T238 Keep production on the monorepo-derived deployment, permit only the newly qualified unprivileged PR CI, and keep signing/deployment/store/paper/release workflows inactive until separate owner decisions; record the verified posture in `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/delivery-boundary.json`
 - [ ] T239 Update and push final curated kos-wiki pages with exact product/wiki SHAs, test commands/results, live verification, paper/evidence state, fixed bugs, unresolved gates, and no-deployment status in `Y:/WORK/kos-wiki/wiki/synthesis-astral-repository-decomposition-lets-integration.md`, `Y:/WORK/kos-wiki/wiki/project-astral.md`, `Y:/WORK/kos-wiki/wiki/project-lets.md`, `Y:/WORK/kos-wiki/index.md`, and `Y:/WORK/kos-wiki/log.md`
 - [ ] T240 Verify the final pushed wiki SHA and all product feature SHAs from their remotes, then append the immutable checkpoint set to `Y:/WORK/MCP/AstralDeep/specs/074-multirepo-lets-integration/execution/final-checkpoint.json`
+- [ ] T241 Obtain explicit product authority for the authoritative account-retirement event and owner identity, the asynchronous deletion-status contract, and operator recovery/manual-review semantics; then either mount the typed owner-purge boundary without treating logout as deletion, or record an approved feature-074 deferral and remove the corresponding completion criterion; this decision blocks T236-T240
+- [X] T242 Move generated-agent immutable artifact storage mechanics into AstralPlane, wire the existing `draft_artifact_publication` journal through replay-stable begin/finalize/recovery APIs and a bounded recurring reconciler, retain Deep only as lifecycle/policy coordinator, and prove process-kill recovery plus multi-replica fencing before T236-T240
+- [ ] T243 After T226, T236, T237, and every repository-specific required review/check are green, merge authorized PRs in dependency order with merge commits only, never use an admin/protection bypass, re-pin and requalify dependent repositories after component merges, retain feature refs until Deep pins commits reachable from component `main`, and keep every deployment/release/store/paper workflow inactive
 
 ---
 
@@ -397,8 +400,8 @@ The first useful checkpoint is **US3 + US4 + US1**: Projection and Plane are ind
 4. Land LETS state and enforcement in Plane/Projection/Deep checkpoints, keeping v1.0.10 immutable.
 5. Audit canonical identity/provenance and the offline client release-trust bridge.
 6. Generate measured local case-study evidence and update only local manuscript artifacts.
-7. Run broad local CI/fault/live qualification, then push final checkpoints and open draft PRs only.
+7. Run broad local CI/fault/live qualification, push final checkpoints, open PRs, and merge only after every repository-specific required review/check passes.
 
 ## Completion Guard
 
-No task in this ledger authorizes merging a draft PR, changing production deployment, enabling release workflows, publishing a release, submitting to an app store, or publishing/submitting the paper. Any LETS runtime change discovered by T211 requires a successor release and rerun; it must never mutate or relabel `v1.0.10`.
+The owner's 2026-08-21 direction authorizes only the qualified PR merges bounded by T243. No task authorizes changing production deployment, bypassing branch protection or review, enabling release workflows, publishing a release, submitting to an app store, or publishing/submitting the paper. Any LETS runtime change discovered by T211 requires a successor release and rerun; it must never mutate or relabel `v1.0.10`.

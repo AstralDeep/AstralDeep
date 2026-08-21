@@ -313,6 +313,18 @@ class ToolDispatchAudit:
         """
         return self._correlation_id
 
+    @property
+    def actor_user_id(self) -> str:
+        return actor_principal_from_claims(self._claims)[0]
+
+    @property
+    def auth_principal(self) -> str:
+        return actor_principal_from_claims(self._claims)[1]
+
+    @property
+    def conversation_id(self) -> Optional[str]:
+        return self._chat_id
+
     async def __aenter__(self) -> "ToolDispatchAudit":
         rec = get_recorder()
         user, principal = actor_principal_from_claims(self._claims)

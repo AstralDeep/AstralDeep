@@ -24,9 +24,12 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from orchestrator.history import HistoryManager
 from orchestrator.workspace import WorkspaceManager
 from orchestrator.orchestrator import Orchestrator, PreparedDispatch
+from tests.helpers.voice_plane_runtime import (
+    history_manager,
+    isolated_plane_runtime,
+)
 
 
 class _FakeWS:
@@ -42,11 +45,18 @@ class _FakeWS:
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="module")
+def plane_runtime():
+    """One managed application Plane runtime for this integration module."""
+    with isolated_plane_runtime("component_action") as runtime:
+        yield runtime
+
+
 @pytest.fixture
-def chat_env(tmp_path):
+def chat_env(plane_runtime):
     """Real HistoryManager + a unique user/chat pair; chat deleted on teardown
     (FK CASCADE clears messages, saved_components and workspace_snapshot)."""
-    history = HistoryManager(data_dir=str(tmp_path))
+    history = history_manager(plane_runtime)
     user_id = f"test-user-{uuid.uuid4()}"
     chat_id = history.create_chat(user_id=user_id)
     yield history, user_id, chat_id
@@ -86,6 +96,19 @@ def _make_fake(history, user_id, *, allowed=True, security_flags=None, exec_resu
         exec_calls.append((agent_id, tool_name, args))
         return exec_result
 
+    async def _execute_with_retry_audited(
+        ws,
+        agent_id,
+        tool_name,
+        args,
+        chat_id=None,
+        user_id=None,
+        **_dispatch_context,
+    ):
+        """Test seam for the production audited-dispatch wrapper."""
+        del chat_id, user_id
+        return await fake._execute_with_retry(ws, agent_id, tool_name, args)
+
     # A deterministic component action now routes its dispatch through the
     # shared authorizer (FR-036 gate parity). The full gate stack needs the
     # whole orchestrator; this passthrough grants and returns the prepared
@@ -113,6 +136,7 @@ def _make_fake(history, user_id, *, allowed=True, security_flags=None, exec_resu
         _safe_send=_safe_send,
         send_ui_render=send_ui_render,
         _execute_with_retry=_execute_with_retry,
+        _execute_with_retry_audited=_execute_with_retry_audited,
         _authorize_and_prepare=_authorize_and_prepare,
     )
     for name in ("_send_or_replace_components", "send_ui_upsert",
@@ -215,7 +239,7 @@ def test_component_action_happy_path(chat_env, audit_events):
     assert op["html"] and f'data-component-id="{cid}"' in op["html"]
 
     # Workspace snapshot recorded with cause='component_action' (FR-039).
-    snaps = history.db.fetch_all(
+    snaps = history.plane_runtime.fetch_all(
         "SELECT * FROM workspace_snapshot WHERE chat_id = ? AND user_id = ? "
         "AND cause = 'component_action'", (chat_id, user_id))
     assert len(snaps) == 1
@@ -262,10 +286,10 @@ def test_component_action_permission_denied(chat_env, audit_events):
     assert "permissions" in denials[0]["detail"]["reason"]
     # Workspace untouched — no upsert, no snapshot.
     assert [m for _, m in fake._sent if m["type"] == "ui_upsert"] == []
-    snaps = history.db.fetch_all(
+    snaps = history.plane_runtime.fetch_all(
         "SELECT id FROM workspace_snapshot WHERE chat_id = ? AND cause = 'component_action'",
         (chat_id,))
-    assert snaps == []
+    assert snaps == ()
 
 
 def test_component_action_security_flag_block(chat_env, audit_events):

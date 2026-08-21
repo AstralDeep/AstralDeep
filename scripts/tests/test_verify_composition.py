@@ -818,12 +818,37 @@ def _expression(source: str) -> ast.AST:
 
 
 def test_static_literal_reader_supports_only_reviewed_expression_forms() -> None:
-    values = {"BASE": " value "}
+    values = {
+        "BASE": " value ",
+        "PREFIX": ("first", "second"),
+        "SUFFIX": ["third"],
+    }
     assert composition._safe_literal(_expression("BASE"), values) == " value "
     assert composition._safe_literal(_expression("(1, -2)"), values) == (1, -2)
     assert composition._safe_literal(_expression("[1, 2]"), values) == [1, 2]
     assert composition._safe_literal(_expression("{1, 2}"), values) == {1, 2}
     assert composition._safe_literal(_expression("{'a': 1}"), values) == {"a": 1}
+    assert composition._safe_literal(
+        _expression("(*PREFIX, *SUFFIX, 'fourth')"), values
+    ) == ("first", "second", "third", "fourth")
+    assert composition._safe_literal(_expression("[*PREFIX, 'third']"), values) == [
+        "first",
+        "second",
+        "third",
+    ]
+    assert composition._safe_literal(_expression("PREFIX[-1]"), values) == "second"
+    checksum = hashlib.sha256(b'["first","second"]').hexdigest()
+    assert (
+        composition._safe_literal(_expression("_statements_checksum(PREFIX)"), values)
+        == checksum
+    )
+    assert (
+        composition._safe_literal(
+            _expression("json.dumps(PREFIX, ensure_ascii=True, separators=(',', ':'))"),
+            values,
+        )
+        == '["first","second"]'
+    )
     assert composition._safe_literal(
         _expression("frozenset({1, 2})"), values
     ) == frozenset({1, 2})
@@ -832,6 +857,44 @@ def test_static_literal_reader_supports_only_reviewed_expression_forms() -> None
         composition._safe_literal(_expression("factory()"), values)
     with pytest.raises(composition.CompositionError, match="non-literal"):
         composition._safe_literal(_expression("BASE.strip('x')"), values)
+    with pytest.raises(composition.CompositionError, match="not a literal sequence"):
+        composition._safe_literal(_expression("(*BASE,)"), values)
+    with pytest.raises(composition.CompositionError, match="bounded item limit"):
+        composition._safe_literal(
+            _expression("(*TOO_LARGE,)"),
+            {"TOO_LARGE": (None,) * (composition._MAX_LITERAL_SEQUENCE_ITEMS + 1)},
+        )
+    with pytest.raises(composition.CompositionError, match="out of bounds"):
+        composition._safe_literal(_expression("PREFIX[9]"), values)
+    with pytest.raises(composition.CompositionError, match="sequence index"):
+        composition._safe_literal(_expression("BASE[0]"), values)
+    with pytest.raises(composition.CompositionError, match="reviewed canonical form"):
+        composition._safe_literal(
+            _expression("json.dumps(PREFIX, sort_keys=True)"), values
+        )
+    with pytest.raises(composition.CompositionError, match="keywords are ambiguous"):
+        composition._safe_literal(
+            _expression(
+                "json.dumps(PREFIX, ensure_ascii=True, ensure_ascii=True, "
+                "separators=(',', ':'))"
+            ),
+            values,
+        )
+    with pytest.raises(composition.CompositionError, match="keyword expansion"):
+        composition._safe_literal(
+            _expression(
+                "json.dumps(PREFIX, ensure_ascii=True, separators=(',', ':'), "
+                "**OPTIONS)"
+            ),
+            {**values, "OPTIONS": {}},
+        )
+    with pytest.raises(composition.CompositionError, match="serialization failed"):
+        composition._safe_literal(
+            _expression(
+                "json.dumps(UNSERIALIZABLE, ensure_ascii=True, separators=(',', ':'))"
+            ),
+            {**values, "UNSERIALIZABLE": ({"not-json"},)},
+        )
 
 
 def test_assignment_and_literal_resolution_are_bounded(tmp_path: Path) -> None:
@@ -943,6 +1006,70 @@ def _write_migration(root: Path, source: str) -> Path:
     return root
 
 
+def test_plane_migration_digest_includes_static_verifiers_and_starred_statements(
+    tmp_path: Path,
+) -> None:
+    source = (
+        'PREFIX = ("SELECT 1",)\n'
+        'REMAINDER = ("SELECT 2",)\n'
+        "STATEMENTS = (*PREFIX, *REMAINDER)\n"
+        'CURRENT = _statements_checksum(("VERIFY CURRENT",))\n'
+        'PREDECESSOR_DIGESTS = ("abc",)\n'
+        "PREDECESSOR = _statements_checksum((json.dumps("
+        "PREDECESSOR_DIGESTS, ensure_ascii=True, separators=(',', ':')),))\n"
+        'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+        "checksum=_statements_checksum(STATEMENTS), operation=_apply)\n"
+        "MIGRATION_REGISTRY = MigrationRegistry(\n"
+        "    (M,),\n"
+        "    current_schema_verifier=verify_current,\n"
+        "    current_schema_verifier_checksum=CURRENT,\n"
+        "    predecessor_schema_verifier=verify_predecessor,\n"
+        "    predecessor_schema_verifier_checksum=PREDECESSOR,\n"
+        ")\n"
+    )
+    root = _write_migration(tmp_path / "AstralPlane", source)
+    statement_checksum = hashlib.sha256(b'["SELECT 1","SELECT 2"]').hexdigest()
+    current_checksum = hashlib.sha256(b'["VERIFY CURRENT"]').hexdigest()
+    predecessor_document = json.dumps(
+        ("abc",), ensure_ascii=True, separators=(",", ":")
+    )
+    predecessor_checksum = hashlib.sha256(
+        json.dumps(
+            (predecessor_document,), ensure_ascii=True, separators=(",", ":")
+        ).encode("ascii")
+    ).hexdigest()
+    manifest = [
+        {
+            "checksum": statement_checksum,
+            "name": "x",
+            "source_revisions": ["<empty>"],
+            "target_revision": "1",
+        },
+        {
+            "checksum": current_checksum,
+            "name": "@current-schema-verifier",
+            "source_revisions": [],
+            "target_revision": "@current",
+        },
+        {
+            "checksum": predecessor_checksum,
+            "name": "@predecessor-schema-verifier",
+            "source_revisions": [],
+            "target_revision": "@predecessor",
+        },
+    ]
+    expected = hashlib.sha256(
+        json.dumps(
+            manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+    ).hexdigest()
+
+    assert composition._plane_migration_digest(root) == expected
+
+
 @pytest.mark.parametrize(
     ("source", "message"),
     [
@@ -952,52 +1079,121 @@ def _write_migration(root: Path, source: str) -> Path:
         ),
         (
             'S = ("SELECT 1",)\n'
-            'M = Migration(name="x", source_revisions=(None,), target_revision="1", checksum="bad")\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            'checksum="bad", operation=_apply)\n'
             "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
             "checksum is not derived",
         ),
         (
             'S = ["SELECT 1"]\n'
             'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
-            "checksum=_statements_checksum(S))\n"
+            "checksum=_statements_checksum(S), operation=_apply)\n"
             "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
             "statements are not a string tuple",
         ),
         (
             'S = ("SELECT 1",)\n'
             'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
-            "checksum=_statements_checksum(S))\n"
+            "checksum=_statements_checksum(S), operation=_apply)\n"
             "MIGRATION_REGISTRY = MigrationRegistry([M])\n",
             "registry is not an explicit tuple",
         ),
         (
             'S = ("SELECT 1",)\n'
             'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
-            "checksum=_statements_checksum(S))\n",
+            "checksum=_statements_checksum(S), operation=_apply)\n",
             "registry declaration is missing",
         ),
         (
             'S = ("SELECT 1",)\n'
             'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
-            "checksum=_statements_checksum(S))\n"
+            "checksum=_statements_checksum(S), operation=_apply)\n"
             "MIGRATION_REGISTRY = MigrationRegistry((M, M))\n",
             "registry contains duplicate declarations",
         ),
         (
             'S = ("SELECT 1",)\n'
             'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
-            "checksum=_statements_checksum(S))\n"
+            "checksum=_statements_checksum(S), operation=_apply)\n"
             'OTHER = Migration(name="y", source_revisions=(None,), target_revision="2", '
-            "checksum=_statements_checksum(S))\n"
+            "checksum=_statements_checksum(S), operation=_apply_other)\n"
             "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
             "registry and declarations disagree",
         ),
         (
             'S = ("SELECT 1",)\n'
             'M = Migration(name="x", source_revisions=(1,), target_revision="1", '
-            "checksum=_statements_checksum(S))\n"
+            "checksum=_statements_checksum(S), operation=_apply)\n"
             "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
             "source revisions are invalid",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S), operation=_apply)\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,), unsupported=True)\n",
+            "unsupported keywords",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S), operation=_apply)\n"
+            "MIGRATION_REGISTRY = MigrationRegistry("
+            "(M,), current_schema_verifier=verify)\n",
+            "verifier declaration is incomplete",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'C = "bad"\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S), operation=_apply)\n"
+            "MIGRATION_REGISTRY = MigrationRegistry("
+            "(M,), current_schema_verifier=verify, "
+            "current_schema_verifier_checksum=C)\n",
+            "verifier checksum is invalid",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S))\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "declaration is incomplete",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", name="x", source_revisions=(None,), '
+            'target_revision="1", checksum=_statements_checksum(S), '
+            "operation=_apply)\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "keywords are ambiguous",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S), operation=_apply, **OPTIONS)\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "keyword expansion",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S), operation=_apply, unsupported=True)\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "unsupported keywords",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration(name="x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S), operation=factory())\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "operation is not a static symbol",
+        ),
+        (
+            'S = ("SELECT 1",)\n'
+            'M = Migration("x", source_revisions=(None,), target_revision="1", '
+            "checksum=_statements_checksum(S), operation=_apply)\n"
+            "MIGRATION_REGISTRY = MigrationRegistry((M,))\n",
+            "must use exact keyword fields",
         ),
     ],
 )

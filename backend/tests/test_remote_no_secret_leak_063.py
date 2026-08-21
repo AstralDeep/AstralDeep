@@ -31,7 +31,8 @@ from agents.remote_observe import mcp_tools as obs
 from orchestrator import remote_jobs as rj
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.remote_transport import FakeTransport, set_transport
-from webrender.chrome.surfaces import remote_machines as surface
+from orchestrator.projection_surfaces import remote_machines as surface
+from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 USER = "user-1"
 
@@ -256,10 +257,25 @@ def env(monkeypatch, caplog):
     rec = _AuditRecorder()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: rec)
     db = _MemDB()
-    credmgr = CredentialManager(db=db)
-    orch = SimpleNamespace(history=SimpleNamespace(db=db), credential_manager=credmgr)
-    obs.register_deps(db, credmgr)
-    yield SimpleNamespace(db=db, credmgr=credmgr, orch=orch, audit=rec, caplog=caplog)
+    source = make_remote_plane_source(db)
+    credmgr = CredentialManager(
+        plane_runtime=source.plane_runtime,
+        plane_repositories=source.plane_repositories,
+    )
+    orch = SimpleNamespace(
+        history=SimpleNamespace(db=db),
+        plane_repository_source=source,
+        credential_manager=credmgr,
+    )
+    obs.register_deps(source, credmgr)
+    yield SimpleNamespace(
+        db=db,
+        source=source,
+        credmgr=credmgr,
+        orch=orch,
+        audit=rec,
+        caplog=caplog,
+    )
     obs.register_deps(None, None)
     set_transport(None)
 
@@ -312,7 +328,7 @@ async def test_register_probe_and_rendered_surfaces_leak_nothing(env):
     # Positive control: the sentinels really are in play — stored, decrypted, and
     # flowing into the MachineTarget the transport sees (otherwise this whole
     # sweep would pass vacuously).
-    cred = env.credmgr.get_machine_credential(mid)
+    cred = env.credmgr.get_machine_credential(mid, USER)
     assert SENTINEL_KEY in cred["secret"] and cred["passphrase"] == SENTINEL_PASSPHRASE
 
     probe_ret = await surface._h_machine_probe(env.orch, None, USER, ["user"],
@@ -398,7 +414,7 @@ async def test_password_credential_and_delete_leak_nothing(env):
     pieces = []
     mid, add_piece = await _register(env, cred_type="password")
     pieces.append(add_piece)
-    assert env.credmgr.get_machine_credential(mid)["secret"] == SENTINEL_PASSWORD
+    assert env.credmgr.get_machine_credential(mid, USER)["secret"] == SENTINEL_PASSWORD
     del_ret = await surface._h_machine_delete(env.orch, None, USER, ["user"],
                                               {"machine_id": mid})
     pieces.append(("chrome_machine_delete return", _dump(del_ret)))

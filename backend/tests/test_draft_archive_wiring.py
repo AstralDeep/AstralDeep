@@ -85,6 +85,17 @@ class FakeDB:
         d = self.drafts.get(draft_id)
         return dict(d) if d else None
 
+    def get_owned_draft_agent(self, user_id, draft_id):
+        draft = self.get_draft_agent(draft_id)
+        return draft if draft and draft.get("user_id") == user_id else None
+
+    def get_decidable_drafts(self, user_id):
+        return [
+            dict(draft)
+            for draft in self.drafts.values()
+            if draft.get("user_id") == user_id and draft.get("status") != "live"
+        ]
+
     def update_draft_agent(self, draft_id, **kw):
         self.drafts.setdefault(draft_id, {}).update(kw)
         return True
@@ -101,18 +112,22 @@ class FakeLifecycle:
 
     def __init__(self, db, agents_dir, code=HIGH_SURROGATE_CODE):
         self.db = db
+        self.draft_store = db
         self._agents_dir = agents_dir
         self._code = code
         self.calls = []
         self.approve_result = {"status": "live"}
 
     async def create_draft(self, user_id, agent_name, description, tools_spec=None,
-                           skill_tags=None, packages=None):
+                           skill_tags=None, packages=None, *, origin="manual",
+                           source_chat_id=None, gap_fingerprint=None, **kwargs):
         draft_id = str(uuid.uuid4())
         slug = agent_name.lower().replace(" ", "_").replace("(", "").replace(")", "")
         row = {"id": draft_id, "user_id": user_id, "agent_name": agent_name,
                "draft_uuid": draft_id, "state_revision": 0,
                "agent_slug": slug, "description": description, "status": "pending"}
+        row.update({"origin": origin, "source_chat_id": source_chat_id,
+                    "gap_fingerprint": gap_fingerprint})
         self.db.drafts[draft_id] = row
         self.calls.append(("create_draft", agent_name))
         return dict(row)

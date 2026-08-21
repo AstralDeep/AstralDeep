@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from typing import Any, Dict, Optional
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import attachment_parser_scope, resolve_attachment
 from agents.general.file_tools.medical import _common
 
 logger = logging.getLogger("FileTools.read_wsi")
@@ -22,6 +23,7 @@ _PROPS_OF_INTEREST = (
 )
 
 
+@attachment_parser_scope
 def read_wsi(
     attachment_id: str,
     user_id: Optional[str] = None,
@@ -38,7 +40,7 @@ def read_wsi(
         return _common.missing_dep("openslide", exc)
 
     try:
-        slide = openslide.OpenSlide(str(path))
+        slide = openslide.OpenSlide(os.fspath(path))
     except Exception as exc:
         logger.exception("wsi open failed")
         return _common.error("parse_failed", f"Failed to open WSI: {exc}")

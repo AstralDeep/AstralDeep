@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from astralplane.repositories.secrets import EncryptedLLMConfigRecord
 
 import llm_config.probe as probe_module
 import llm_config.ws_handlers as handlers
@@ -461,31 +462,55 @@ def test_deadline_after_insert_rolls_back_before_completed_cas(store) -> None:
 
     deadline = datetime.now(UTC) + timedelta(seconds=10)
 
-    class _Cursor:
-        rowcount = 0
-
+    class _Transaction:
         def __init__(self) -> None:
             self.staged = None
             self.committed = None
-            self._row = None
 
-        def execute(self, sql, params=()) -> None:
-            normalized = " ".join(sql.split()).lower()
-            if normalized.startswith("insert into user_llm_config"):
-                self.staged = params
-                self.rowcount = 1
-                return
-            if normalized.startswith("select clock_timestamp()"):
-                # The insert statement won just before the deadline; DB time
-                # crosses it before the completed compare-and-set.
-                self._row = {"current_time": deadline + timedelta(microseconds=1)}
-                return
-            raise AssertionError(sql)
+        def fetch_one(self, *_args, **_kwargs):
+            """Identify the production caller-owned Plane transaction seam."""
 
-        def fetchone(self):
-            return self._row
+            return None
 
-    cursor = _Cursor()
+    transaction = _Transaction()
+
+    class _Repository:
+        @staticmethod
+        def upsert_user_before_deadline(
+            observed_transaction,
+            *,
+            owner_id,
+            provider,
+            base_url,
+            model,
+            api_key_ciphertext,
+            deadline_at,
+        ):
+            assert observed_transaction is transaction
+            transaction.staged = {
+                "owner_id": owner_id,
+                "provider": provider,
+                "base_url": base_url,
+                "model": model,
+                "api_key_ciphertext": api_key_ciphertext,
+            }
+            # The deadline-fenced upsert won immediately before its bound, but
+            # the detached Plane record proves database time crossed the bound
+            # before the completed operation compare-and-set.
+            completed_at = deadline_at + timedelta(microseconds=1)
+            return EncryptedLLMConfigRecord(
+                scope="user",
+                owner_id=owner_id,
+                provider=provider,
+                base_url=base_url,
+                model=model,
+                api_key_ciphertext=api_key_ciphertext,
+                updated_by=None,
+                created_at=completed_at,
+                updated_at=completed_at,
+            )
+
+    store._repository.repository = _Repository()
 
     class _Coordinator:
         terminalize_calls = 0
@@ -493,12 +518,12 @@ def test_deadline_after_insert_rolls_back_before_completed_cas(store) -> None:
         @contextmanager
         def fenced_transaction(self, _fence):
             try:
-                yield cursor
+                yield transaction
             except Exception:
-                cursor.staged = None
+                transaction.staged = None
                 raise
             else:
-                cursor.committed = cursor.staged
+                transaction.committed = transaction.staged
 
         def terminalize(self, *_args, **_kwargs):
             self.terminalize_calls += 1
@@ -519,8 +544,8 @@ def test_deadline_after_insert_rolls_back_before_completed_cas(store) -> None:
             deadline_at_utc=deadline,
         )
 
-    assert cursor.staged is None
-    assert cursor.committed is None
+    assert transaction.staged is None
+    assert transaction.committed is None
     assert coordinator.terminalize_calls == 0
 
 

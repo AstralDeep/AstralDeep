@@ -52,7 +52,11 @@ SESSION = "00000000-0000-4000-8000-000000000006"
 NEXT_CHAT = "00000000-0000-4000-8000-000000000010"
 
 _MANIFEST = (
-    pathlib.Path(__file__).resolve().parents[2] / "shared" / "ui_protocol.json"
+    pathlib.Path(__file__).resolve().parents[3]
+    / "components"
+    / "AstralProjection"
+    / "contracts"
+    / "ui_protocol.json"
 )
 
 

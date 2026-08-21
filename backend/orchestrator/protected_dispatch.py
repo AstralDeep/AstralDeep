@@ -42,6 +42,7 @@ PROTECTED_CHANNELS: Final = frozenset(
 
 _CLASSIFICATION = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_NONCE = re.compile(r"[0-9a-f]{32}\Z")
 _EFFECT_CLASSES: Final = frozenset(
     {"read", "write", "search", "system", "files", "execute"}
 )
@@ -327,6 +328,11 @@ class ProtectedDispatchContext:
     nonce: str
     authorized_effect_sha256: str
     effect_sha256: str
+    # Executor-only mutation fence.  This value is transported only alongside
+    # the arguments to the actuator; it is deliberately excluded from
+    # ``lets_evidence`` so user content, PHI, and credential-derived bytes are
+    # never disclosed to the warden.
+    wire_arguments_sha256: str
     _local_arguments: _LocalArgumentSnapshot = field(repr=False, compare=False)
 
     def lets_evidence(self) -> Mapping[str, str | int]:
@@ -391,6 +397,7 @@ def build_protected_dispatch_context(
     expected_sequence: int,
     final_arguments: Mapping[str, object],
     authorized_effect: Mapping[str, object],
+    nonce: str | None = None,
 ) -> ProtectedDispatchContext:
     """Snapshot one rewritten effect and return strictly content-free LETS evidence."""
 
@@ -414,17 +421,25 @@ def build_protected_dispatch_context(
         raise ProtectedDispatchError("unknown protected tool scope") from exc
 
     canonical_arguments = _stable_canonical_bytes(final_arguments)
+    wire_arguments_sha256 = hashlib.sha256(canonical_arguments).hexdigest()
     authorized_effect_sha256 = _authorized_effect_digest(
         authorized_effect,
         expected_effect_class=binding.scope.removeprefix("tools:"),
     )
-    nonce_bytes = secrets.token_bytes(NONCE_BYTES)
+    nonce_bytes = secrets.token_bytes(NONCE_BYTES) if nonce is None else None
     snapshot_key = secrets.token_bytes(SNAPSHOT_KEY_BYTES)
-    if type(nonce_bytes) is not bytes or len(nonce_bytes) != NONCE_BYTES:
-        raise ProtectedDispatchError("secure nonce generation failed")
+    if nonce is None:
+        if type(nonce_bytes) is not bytes or len(nonce_bytes) != NONCE_BYTES:
+            raise ProtectedDispatchError("secure nonce generation failed")
+        protected_nonce = nonce_bytes.hex()
+    elif not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
+        raise ProtectedDispatchError(
+            "supplied nonce must encode exactly 128 bits as lowercase hexadecimal"
+        )
+    else:
+        protected_nonce = nonce
     if type(snapshot_key) is not bytes or len(snapshot_key) != SNAPSHOT_KEY_BYTES:
         raise ProtectedDispatchError("secure local snapshot generation failed")
-    nonce = nonce_bytes.hex()
 
     digest_document: dict[str, object] = {
         "type": CONTEXT_TYPE,
@@ -441,7 +456,7 @@ def build_protected_dispatch_context(
         "channel": channel,
         "audit_correlation_id": correlation,
         "expected_sequence": expected_sequence,
-        "nonce": nonce,
+        "nonce": protected_nonce,
         "authorized_effect_sha256": authorized_effect_sha256,
         "scope_profile_sha256": SCOPE_PROFILE_SHA256,
     }
@@ -459,11 +474,92 @@ def build_protected_dispatch_context(
         channel=channel,
         audit_correlation_id=correlation,
         expected_sequence=expected_sequence,
-        nonce=nonce,
+        nonce=protected_nonce,
         authorized_effect_sha256=authorized_effect_sha256,
         effect_sha256=effect_sha256,
+        wire_arguments_sha256=wire_arguments_sha256,
         _local_arguments=_LocalArgumentSnapshot(snapshot_key, canonical_arguments),
     )
+
+
+def canonical_wire_arguments_sha256(final_arguments: Mapping[str, object]) -> str:
+    """Return the executor-local digest for the exact transported arguments.
+
+    The digest is not LETS evidence and must not be logged or sent to the
+    warden.  It exists so a remote protected executor can recompute the same
+    mutation fence immediately before invoking its actuator.
+    """
+
+    if type(final_arguments) is not dict:
+        raise ProtectedDispatchError(
+            "final arguments must be one canonical mapping snapshot"
+        )
+    return hashlib.sha256(_stable_canonical_bytes(final_arguments)).hexdigest()
+
+
+def recompute_effect_sha256_from_evidence(
+    evidence: Mapping[str, object],
+    *,
+    expected_sequence: int,
+    nonce: str,
+) -> str:
+    """Recompute the protected-context digest at a remote executor.
+
+    ``lets_evidence`` intentionally omits the receipt nonce and expected
+    sequence because LETS receives those as first-class authorization fields.
+    The permit transport supplies them separately so the executor can bind the
+    signed receipt back to the exact canonical context.
+    """
+
+    if not isinstance(evidence, Mapping):
+        raise ProtectedDispatchError("protected evidence must be a mapping")
+    dimension = evidence.get("resource_dimension")
+    if type(dimension) is not int or not 0 <= dimension < 6:
+        raise ProtectedDispatchError("protected resource dimension is invalid")
+    if type(expected_sequence) is not int or expected_sequence < 0:
+        raise ProtectedDispatchError("expected sequence must be non-negative")
+    checked_nonce = _identifier(nonce, "nonce")
+    required = {
+        "type",
+        "operation_id",
+        "agent_id",
+        "runtime_id",
+        "tool_id",
+        "scope",
+        "capability",
+        "transition",
+        "resource_dimension",
+        "executor_audience",
+        "channel",
+        "audit_correlation_id",
+        "scope_profile_sha256",
+        "authorized_effect_sha256",
+        "effect_sha256",
+    }
+    if set(evidence) != required or evidence.get("type") != EVIDENCE_TYPE:
+        raise ProtectedDispatchError("protected evidence shape is invalid")
+    unit_cost = [0] * 6
+    unit_cost[dimension] = 1
+    document: dict[str, object] = {
+        "type": CONTEXT_TYPE,
+        "operation_id": evidence["operation_id"],
+        "agent_id": evidence["agent_id"],
+        "runtime_id": evidence["runtime_id"],
+        "tool_id": evidence["tool_id"],
+        "scope": evidence["scope"],
+        "capability": evidence["capability"],
+        "transition": evidence["transition"],
+        "resource_dimension": dimension,
+        "unit_cost": unit_cost,
+        "executor_audience": evidence["executor_audience"],
+        "channel": evidence["channel"],
+        "audit_correlation_id": evidence["audit_correlation_id"],
+        "expected_sequence": expected_sequence,
+        "nonce": checked_nonce,
+        "authorized_effect_sha256": evidence["authorized_effect_sha256"],
+        "scope_profile_sha256": evidence["scope_profile_sha256"],
+    }
+    return _effect_digest(document)
 
 
 __all__ = (
@@ -475,4 +571,6 @@ __all__ = (
     "ProtectedDispatchContext",
     "ProtectedDispatchError",
     "build_protected_dispatch_context",
+    "canonical_wire_arguments_sha256",
+    "recompute_effect_sha256_from_evidence",
 )

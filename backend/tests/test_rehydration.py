@@ -27,13 +27,24 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from orchestrator.history import HistoryManager
 from orchestrator.workspace import WorkspaceManager
+from tests.helpers.voice_plane_runtime import (
+    history_manager,
+    isolated_plane_runtime,
+)
+
+
+@pytest.fixture(scope="module")
+def plane_runtime():
+    """One managed application Plane runtime for this integration module."""
+    with isolated_plane_runtime("rehydration") as runtime:
+        yield runtime
 
 
 @pytest.fixture
-def chat_env(tmp_path):
+def chat_env(plane_runtime):
     """Real HistoryManager + unique user/chat; chat deleted on teardown
     (FK CASCADE clears messages, saved_components, workspace_snapshot)."""
-    history = HistoryManager(data_dir=str(tmp_path / "primary"))
+    history = history_manager(plane_runtime)
     user_id = f"test-user-{uuid.uuid4()}"
     chat_id = history.create_chat(user_id=user_id)
     yield history, user_id, chat_id
@@ -73,7 +84,11 @@ def test_workspace_round_trips_through_fresh_manager(chat_env, tmp_path):
     assert cid1 != cid2
 
     # Brand-new manager stack — nothing cached in memory.
-    fresh_history = HistoryManager(data_dir=str(tmp_path / "fresh"))
+    fresh_history = HistoryManager(
+        data_dir=str(tmp_path / "fresh"),
+        plane_runtime=history.plane_runtime,
+        plane_repositories=history.plane_repositories,
+    )
     fresh_workspace = WorkspaceManager(fresh_history)
 
     restored = fresh_workspace.live_components(chat_id, user_id)
@@ -111,14 +126,16 @@ def test_transcript_renders_only_text_not_rich_components(chat_env):
 
     # Replicate the orchestrator's load_chat 045 block: text-only transcript html.
     for m in chat.get("messages", []):
-        if not isinstance(m.get("content"), str) and isinstance(m.get("content"), list):
+        if not isinstance(m.get("content"), str) and isinstance(
+            m.get("content"), (list, tuple)
+        ):
             _h = Orchestrator._transcript_html(m["content"])
             if _h:
                 m["html"] = _h
 
     messages = chat["messages"]
     text_msg = next(m for m in messages if isinstance(m["content"], str))
-    comp_msg = next(m for m in messages if isinstance(m["content"], list))
+    comp_msg = next(m for m in messages if isinstance(m["content"], (list, tuple)))
 
     # Component message: the text primitive renders; the rich table does NOT.
     html = comp_msg.get("html")
@@ -141,7 +158,9 @@ def test_transcript_pure_rich_message_gets_no_html(chat_env):
         {"type": "metric", "title": "A1C", "value": "5.4"},
     ], user_id=user_id)
     chat = history.get_chat(chat_id, user_id=user_id)
-    comp_msg = next(m for m in chat["messages"] if isinstance(m["content"], list))
+    comp_msg = next(
+        m for m in chat["messages"] if isinstance(m["content"], (list, tuple))
+    )
     assert Orchestrator._transcript_html(comp_msg["content"]) == ""
 
 

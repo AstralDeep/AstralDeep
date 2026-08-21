@@ -61,6 +61,8 @@ LETS_PUBLIC_EXPORTS = {
 }
 
 _SECTION_PATTERN = re.compile(r'^submodule "(?P<name>[^"\r\n]+)"$')
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_MAX_LITERAL_SEQUENCE_ITEMS = 4096
 
 
 class CompositionError(RuntimeError):
@@ -375,15 +377,57 @@ def _parse_python(path: Path) -> ast.Module:
         ) from exc
 
 
+def _safe_sequence_items(
+    nodes: list[ast.expr], values: dict[str, object]
+) -> list[object]:
+    items: list[object] = []
+    for node in nodes:
+        if isinstance(node, ast.Starred):
+            expanded = _safe_literal(node.value, values)
+            if not isinstance(expanded, (tuple, list)):
+                raise CompositionError(
+                    "contract source starred expansion is not a literal sequence"
+                )
+            if len(items) + len(expanded) > _MAX_LITERAL_SEQUENCE_ITEMS:
+                raise CompositionError(
+                    "contract source literal sequence exceeds the bounded item limit"
+                )
+            items.extend(expanded)
+        else:
+            if len(items) >= _MAX_LITERAL_SEQUENCE_ITEMS:
+                raise CompositionError(
+                    "contract source literal sequence exceeds the bounded item limit"
+                )
+            items.append(_safe_literal(node, values))
+    return items
+
+
 def _safe_literal(node: ast.AST, values: dict[str, object]) -> object:
     if isinstance(node, ast.Constant):
         return node.value
     if isinstance(node, ast.Name) and node.id in values:
         return values[node.id]
     if isinstance(node, ast.Tuple):
-        return tuple(_safe_literal(item, values) for item in node.elts)
+        return tuple(_safe_sequence_items(node.elts, values))
     if isinstance(node, ast.List):
-        return [_safe_literal(item, values) for item in node.elts]
+        return _safe_sequence_items(node.elts, values)
+    if isinstance(node, ast.Subscript):
+        sequence = _safe_literal(node.value, values)
+        index = _safe_literal(node.slice, values)
+        if (
+            not isinstance(sequence, (tuple, list))
+            or not isinstance(index, int)
+            or isinstance(index, bool)
+        ):
+            raise CompositionError(
+                "contract source subscript is not a literal sequence index"
+            )
+        try:
+            return sequence[index]
+        except IndexError as exc:
+            raise CompositionError(
+                "contract source literal sequence index is out of bounds"
+            ) from exc
     if isinstance(node, ast.Set):
         return {_safe_literal(item, values) for item in node.elts}
     if isinstance(node, ast.Dict):
@@ -406,6 +450,62 @@ def _safe_literal(node: ast.AST, values: dict[str, object]) -> object:
         and not node.keywords
     ):
         return frozenset(_safe_literal(node.args[0], values))  # type: ignore[arg-type]
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_statements_checksum"
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        statements = _safe_literal(node.args[0], values)
+        if not isinstance(statements, tuple) or any(
+            not isinstance(item, str) for item in statements
+        ):
+            raise CompositionError(
+                "contract source checksum input is not a literal string tuple"
+            )
+        canonical = json.dumps(
+            statements,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        return hashlib.sha256(canonical).hexdigest()
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "json"
+        and node.func.attr == "dumps"
+        and len(node.args) == 1
+    ):
+        keyword_nodes: dict[str, ast.expr] = {}
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                raise CompositionError(
+                    "contract source JSON serialization does not allow keyword expansion"
+                )
+            if keyword.arg in keyword_nodes:
+                raise CompositionError(
+                    "contract source JSON serialization keywords are ambiguous"
+                )
+            keyword_nodes[keyword.arg] = keyword.value
+        keywords = {
+            name: _safe_literal(value, values) for name, value in keyword_nodes.items()
+        }
+        if keywords != {"ensure_ascii": True, "separators": (",", ":")}:
+            raise CompositionError(
+                "contract source JSON serialization is not the reviewed canonical form"
+            )
+        try:
+            return json.dumps(
+                _safe_literal(node.args[0], values),
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise CompositionError(
+                "contract source canonical JSON serialization failed"
+            ) from exc
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
@@ -561,6 +661,7 @@ def _plane_migration_digest(component_root: Path) -> str:
     literals = _literal_assignments(path)
     migrations: dict[str, dict[str, object]] = {}
     registry_names: tuple[str, ...] | None = None
+    registry_verifier_checksums: tuple[str | None, str | None] = (None, None)
 
     for statement in tree.body:
         target = _assignment_target(statement)
@@ -570,12 +671,39 @@ def _plane_migration_digest(component_root: Path) -> str:
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
             continue
         if node.func.id == "Migration":
-            keywords = {
-                keyword.arg: keyword.value for keyword in node.keywords if keyword.arg
+            if node.args:
+                raise CompositionError(
+                    "Plane migration declaration must use exact keyword fields"
+                )
+            keywords: dict[str, ast.expr] = {}
+            for keyword in node.keywords:
+                if keyword.arg is None:
+                    raise CompositionError(
+                        "Plane migration declaration does not allow keyword expansion"
+                    )
+                if keyword.arg in keywords:
+                    raise CompositionError(
+                        "Plane migration declaration keywords are ambiguous"
+                    )
+                keywords[keyword.arg] = keyword.value
+            required = {
+                "name",
+                "source_revisions",
+                "target_revision",
+                "checksum",
+                "operation",
             }
-            required = {"name", "source_revisions", "target_revision", "checksum"}
-            if not required.issubset(keywords):
+            unsupported = set(keywords) - required
+            if unsupported:
+                raise CompositionError(
+                    "Plane migration declaration has unsupported keywords"
+                )
+            if set(keywords) != required:
                 raise CompositionError("Plane migration declaration is incomplete")
+            if not isinstance(keywords["operation"], ast.Name):
+                raise CompositionError(
+                    "Plane migration operation is not a static symbol"
+                )
             checksum_node = keywords["checksum"]
             if not (
                 isinstance(checksum_node, ast.Call)
@@ -616,6 +744,54 @@ def _plane_migration_digest(component_root: Path) -> str:
                     "Plane migration registry is not an explicit tuple"
                 )
             registry_names = tuple(item.id for item in entries.elts)  # type: ignore[union-attr]
+            keyword_nodes: dict[str, ast.expr] = {}
+            for keyword in node.keywords:
+                if keyword.arg is None or keyword.arg in keyword_nodes:
+                    raise CompositionError(
+                        "Plane migration registry keywords are ambiguous"
+                    )
+                keyword_nodes[keyword.arg] = keyword.value
+            allowed_keywords = {
+                "current_schema_verifier",
+                "current_schema_verifier_checksum",
+                "predecessor_schema_verifier",
+                "predecessor_schema_verifier_checksum",
+            }
+            if not set(keyword_nodes).issubset(allowed_keywords):
+                raise CompositionError(
+                    "Plane migration registry has unsupported keywords"
+                )
+            checksum_values: list[str | None] = []
+            for verifier_name, checksum_name in (
+                ("current_schema_verifier", "current_schema_verifier_checksum"),
+                (
+                    "predecessor_schema_verifier",
+                    "predecessor_schema_verifier_checksum",
+                ),
+            ):
+                if (verifier_name in keyword_nodes) != (checksum_name in keyword_nodes):
+                    raise CompositionError(
+                        "Plane migration registry verifier declaration is incomplete"
+                    )
+                if verifier_name not in keyword_nodes:
+                    checksum_values.append(None)
+                    continue
+                if not isinstance(keyword_nodes[verifier_name], ast.Name):
+                    raise CompositionError(
+                        "Plane migration registry verifier is not a static symbol"
+                    )
+                checksum = _safe_literal(keyword_nodes[checksum_name], literals)
+                if not isinstance(checksum, str) or not _SHA256_PATTERN.fullmatch(
+                    checksum
+                ):
+                    raise CompositionError(
+                        "Plane migration registry verifier checksum is invalid"
+                    )
+                checksum_values.append(checksum)
+            registry_verifier_checksums = (
+                checksum_values[0],
+                checksum_values[1],
+            )
 
     if registry_names is None or not registry_names:
         raise CompositionError("Plane migration registry declaration is missing")
@@ -644,8 +820,28 @@ def _plane_migration_digest(component_root: Path) -> str:
                 "target_revision": migration["target_revision"],
             }
         )
+    manifest.sort(key=lambda item: str(item["name"]))
+    current_checksum, predecessor_checksum = registry_verifier_checksums
+    if current_checksum is not None:
+        manifest.append(
+            {
+                "checksum": current_checksum,
+                "name": "@current-schema-verifier",
+                "source_revisions": [],
+                "target_revision": "@current",
+            }
+        )
+    if predecessor_checksum is not None:
+        manifest.append(
+            {
+                "checksum": predecessor_checksum,
+                "name": "@predecessor-schema-verifier",
+                "source_revisions": [],
+                "target_revision": "@predecessor",
+            }
+        )
     canonical = json.dumps(
-        sorted(manifest, key=lambda item: str(item["name"])),
+        manifest,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,

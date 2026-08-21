@@ -175,9 +175,9 @@ def test_staging_requires_candidate_bound_worker_and_no_literal_credentials() ->
         "com.astraldeep.staging.run-attempt",
     ):
         assert label in document
-    # Seven services, two named volumes, and the explicit default network all
+    # Six services, two named volumes, and the explicit default network all
     # inherit the same protected-run ownership map.
-    assert document.count("labels: *staging-ownership") == 10
+    assert document.count("labels: *staging-ownership") == 9
 
     for compose_path in (LOCAL_COMPOSE, STAGING_COMPOSE):
         content = compose_path.read_text(encoding="utf-8")

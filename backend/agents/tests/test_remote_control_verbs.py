@@ -11,10 +11,14 @@ because ``if_exists`` is decided by the gate's read-only stat, not by the verb.)
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from types import SimpleNamespace
+
 import pytest
 
 from agents.remote_control import mcp_tools as ctl
 from orchestrator.remote_transport import FakeTransport, MachineTarget, Verdict, set_transport
+from tests.helpers.remote_plane_runtime import make_remote_confirmation_plane_source
 
 USER = "user-1"
 
@@ -26,7 +30,13 @@ def _target():
 
 @pytest.fixture(autouse=True)
 def _wire(monkeypatch):
-    ctl.register_deps(object(), object())
+    repositories = SimpleNamespace(artifacts=object())
+    runtime = SimpleNamespace(repositories=repositories)
+    source = SimpleNamespace(
+        plane_runtime=runtime,
+        plane_repositories=repositories,
+    )
+    ctl.register_deps(source, object(), object())
     monkeypatch.setattr("orchestrator.remote_machines.resolve_machine",
                         lambda db, uid, ref: {"machine_id": "m1", "label": "dgx"})
     monkeypatch.setattr("orchestrator.remote_machines.build_target",
@@ -240,14 +250,18 @@ def test_signal_process_rejects_unknown_signal():
 
 # ── upload_file (attachment → bytes → SFTP) ──────────────────────────────────────
 
-def test_upload_file_resolves_attachment_and_puts(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-    blob = tmp_path / "f.txt"
-    blob.write_bytes(b"hello")
+def test_upload_file_resolves_attachment_and_puts(monkeypatch):
     monkeypatch.setattr("orchestrator.attachments.repository.AttachmentRepository.get_by_id",
                         lambda self, aid, uid: SimpleNamespace(filename="f.txt", size_bytes=5))
-    monkeypatch.setattr("orchestrator.attachments.store.read_path",
-                        lambda uid, aid, fn: blob)
+
+    @contextmanager
+    def _reader(*_args, **_kwargs):
+        yield SimpleNamespace(iter_chunks=lambda: iter((b"hello",)))
+
+    monkeypatch.setattr(
+        "orchestrator.attachments.blob_access.open_attachment_reader",
+        _reader,
+    )
     t = _fake()
     res = ctl.upload_file(user_id=USER, machine_id="dgx", attachment_id="a1", remote_path="/dest/f.txt")
     assert res["_data"]["bytes"] == 5
@@ -269,7 +283,6 @@ def test_upload_file_without_an_attachment_id_is_invalid_argument():
 
 
 def test_upload_file_refuses_an_oversize_attachment(monkeypatch):
-    from types import SimpleNamespace
     monkeypatch.setattr(
         "orchestrator.attachments.repository.AttachmentRepository.get_by_id",
         lambda self, aid, uid: SimpleNamespace(filename="big.bin",
@@ -282,12 +295,21 @@ def test_upload_file_refuses_an_oversize_attachment(monkeypatch):
     assert _verdict(res) == Verdict.INVALID_ARGUMENT.value and t.calls == []
 
 
-def test_upload_file_with_a_missing_stored_blob_is_not_found(monkeypatch, tmp_path):
-    from types import SimpleNamespace
+def test_upload_file_with_a_missing_stored_blob_is_not_found(monkeypatch):
+    from astralplane.errors import PlaneError
+
     monkeypatch.setattr("orchestrator.attachments.repository.AttachmentRepository.get_by_id",
                         lambda self, aid, uid: SimpleNamespace(filename="gone.bin", size_bytes=5))
-    monkeypatch.setattr("orchestrator.attachments.store.read_path",
-                        lambda uid, aid, fn: tmp_path / "gone.bin")  # never written
+
+    @contextmanager
+    def _missing(*_args, **_kwargs):
+        raise PlaneError("missing", code="blob_not_found")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(
+        "orchestrator.attachments.blob_access.open_attachment_reader",
+        _missing,
+    )
     t = _fake()
     res = ctl.upload_file(user_id=USER, machine_id="dgx", attachment_id="a1",
                           remote_path="/dest/gone.bin")
@@ -471,24 +493,28 @@ def test_every_mutating_verb_is_classified_with_the_gate_own_object():
 # ── T052: upload_file if_exists — proposal path vs pass-through (US5-2) ─────────
 
 class _ProposalDB:
-    """Just enough of the proposal store for evaluate(): records the INSERT a
-    proposal makes; every lookup (machine label, marker) misses."""
+    """Typed in-memory proposal backing for the confirmation gate."""
 
     def __init__(self):
-        self.inserts = []
-
-    def execute(self, q, params):
-        assert q.strip().startswith("INSERT")
-        self.inserts.append(params)
-
-    def fetch_one(self, q, params):
-        return None
+        self.rows = {}
 
 
 def _gate_orch():
     from types import SimpleNamespace
-    return SimpleNamespace(history=SimpleNamespace(db=_ProposalDB()),
-                           credential_manager=object(), ui_sessions={})
+    db = _ProposalDB()
+    source = make_remote_confirmation_plane_source(db)
+    return SimpleNamespace(
+        history=SimpleNamespace(db=db),
+        plane_repository_source=source,
+        runtime_composition=SimpleNamespace(
+            plane=SimpleNamespace(
+                runtime=source.plane_runtime,
+                repositories=source.plane_repositories,
+            )
+        ),
+        credential_manager=object(),
+        ui_sessions={},
+    )
 
 
 def test_upload_file_overwriting_an_existing_path_takes_the_proposal_path():
@@ -499,7 +525,7 @@ def test_upload_file_overwriting_an_existing_path_takes_the_proposal_path():
                       {"machine_id": "m1", "attachment_id": "a1",
                        "remote_path": "/dest/exists.bin"}, "chat-1", USER)
     assert out is not None and "confirmation_required" in out[0]
-    assert len(orch.history.db.inserts) == 1          # a pending proposal was recorded
+    assert len(orch.history.db.rows) == 1             # a pending proposal was recorded
     # The gate decided via a READ-ONLY stat — the verb itself never ran.
     assert [c["op"] for c in t.calls] == ["stat"]
 
@@ -514,7 +540,7 @@ def test_upload_file_to_a_new_path_passes_the_gate_without_a_proposal():
     # None => dispatch proceeds straight to the verb (which the upload tests above
     # prove performs the put) — no proposal, no confirmation round-trip.
     assert out is None
-    assert orch.history.db.inserts == []
+    assert orch.history.db.rows == {}
     assert [c["op"] for c in t.calls] == ["stat"]
 
 
@@ -616,16 +642,19 @@ def test_windows_target_without_openssh_maps_to_unreachable_not_a_hang():
     assert res.retryable is False
 
 
-def test_unreachable_verdict_names_the_documented_next_action_on_every_verb(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
+def test_unreachable_verdict_names_the_documented_next_action_on_every_verb(monkeypatch):
     from orchestrator.remote_transport import _NEXT_ACTION
-    blob = tmp_path / "f.bin"
-    blob.write_bytes(b"x")
     monkeypatch.setattr("orchestrator.attachments.repository.AttachmentRepository.get_by_id",
                         lambda self, aid, uid: SimpleNamespace(filename="f.bin", size_bytes=1))
-    monkeypatch.setattr("orchestrator.attachments.store.read_path",
-                        lambda uid, aid, fn: blob)
+
+    @contextmanager
+    def _reader(*_args, **_kwargs):
+        yield SimpleNamespace(iter_chunks=lambda: iter((b"x",)))
+
+    monkeypatch.setattr(
+        "orchestrator.attachments.blob_access.open_attachment_reader",
+        _reader,
+    )
     expected = _NEXT_ACTION[Verdict.UNREACHABLE]
     for verb, base in _SWEEP_BASE.items():
         _fake(reachable=False)

@@ -10,9 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
-import psycopg2
 import pytest
-from psycopg2 import sql
 
 from orchestrator.async_tasks import DurableUserTurnWebSocket
 from orchestrator.conversation_publication import (
@@ -27,7 +25,6 @@ from orchestrator.conversation_publication import (
 )
 from orchestrator.history import (
     ConversationCommitRepository,
-    HistoryManager,
 )
 from orchestrator.history import ConversationSnapshotInvalid
 from orchestrator.voice_coordinator import RecognitionStart
@@ -43,10 +40,15 @@ from orchestrator.work_admission import (
     OperationRequest,
     OperationState,
     OwnerScope,
-    PostgresWorkAdmissionRepository,
     WorkAdmissionCoordinator,
 )
-from shared.database import Database, _build_database_url
+from tests.helpers.voice_plane_runtime import (
+    VoicePlaneTestRuntime,
+    history_manager,
+    isolated_voice_plane_runtime,
+    plane_work_admission_repository,
+    voice_session_repository,
+)
 from shared.voice_transcript import (
     TranscriptProofBinding,
     issue_transcript_proof,
@@ -57,49 +59,9 @@ NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture(scope="module")
-def database() -> Iterator[Database]:
-    params = psycopg2.extensions.parse_dsn(_build_database_url())
-    name = f"astraldeep_voice_publication_{uuid.uuid4().hex}"
-    try:
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(
-                sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name))
-            )
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(psycopg2.extensions.make_dsn(**database_params))
-    finally:
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        Database.close()
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(
-                        sql.Identifier(name)
-                    )
-                )
-            admin.close()
-        except Exception:
-            pass
+def database() -> Iterator[VoicePlaneTestRuntime]:
+    with isolated_voice_plane_runtime("voice_publication_065") as runtime:
+        yield runtime
 
 
 def _classes() -> tuple[AdmissionClassConfig, ...]:
@@ -131,17 +93,17 @@ def _classes() -> tuple[AdmissionClassConfig, ...]:
     )
 
 
-def _coordinator(database: Database) -> WorkAdmissionCoordinator:
+def _coordinator(database: VoicePlaneTestRuntime) -> WorkAdmissionCoordinator:
     return WorkAdmissionCoordinator(
         admission_classes=_classes(),
-        repository=PostgresWorkAdmissionRepository(database),
+        repository=plane_work_admission_repository(database),
         operation_retention=timedelta(hours=24),
     )
 
 
 def _create_active_session(
     repository: VoiceSessionRepository,
-    database: Database,
+    database: VoicePlaneTestRuntime,
     *,
     user_id: str,
     chat_id: str,
@@ -312,7 +274,7 @@ def _component(component_id: str, content: str) -> dict[str, str]:
 
 
 def _write_candidate(
-    database: Database,
+    database: VoicePlaneTestRuntime,
     *,
     commit_id: str,
     revision: int,
@@ -491,11 +453,11 @@ def test_atomic_completion_summary_requires_both_explicit_fields() -> None:
 
 
 def test_two_voice_results_overlap_and_publish_once_in_completion_order(
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     user_id = f"voice-publication-{uuid.uuid4().hex}"
     chat_id = str(uuid.uuid4())
-    voice = VoiceSessionRepository(database)
+    voice = voice_session_repository(database)
     session = _create_active_session(
         voice, database, user_id=user_id, chat_id=chat_id
     )
@@ -522,7 +484,9 @@ def test_two_voice_results_overlap_and_publish_once_in_completion_order(
 
     coordinator = _coordinator(database)
     commits = ConversationCommitRepository(
-        database, operation_coordinator=coordinator
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+        operation_coordinator=coordinator,
     )
     owner1, connection1, claim1 = _claim(
         coordinator,
@@ -550,7 +514,7 @@ def test_two_voice_results_overlap_and_publish_once_in_completion_order(
                 result_commit_id=correlation["result_commit_id"],
                 operation_id=str(claim.operation.operation_id),
                 now=NOW + timedelta(seconds=3),
-                transaction=correlation["cursor"],
+                transaction=correlation["transaction"],
             )
 
         return callback
@@ -584,8 +548,7 @@ def test_two_voice_results_overlap_and_publish_once_in_completion_order(
     assert first["acceptance"]["committed_render_revision"] == 1
     assert second["acceptance"]["committed_render_revision"] == 2
 
-    history = object.__new__(HistoryManager)
-    history.db = database
+    history = history_manager(database)
     stage = ConversationPublicationStage(
         history=history,
         commit_id=first["result"]["commit_id"],
@@ -727,7 +690,7 @@ def test_two_voice_results_overlap_and_publish_once_in_completion_order(
 
 
 def test_voice_acceptance_rolls_back_every_link_when_correlation_fails(
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     user_id = f"voice-rollback-{uuid.uuid4().hex}"
     chat_id = str(uuid.uuid4())
@@ -738,7 +701,9 @@ def test_voice_acceptance_rolls_back_every_link_when_correlation_fails(
     )
     coordinator = _coordinator(database)
     commits = ConversationCommitRepository(
-        database, operation_coordinator=coordinator
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+        operation_coordinator=coordinator,
     )
     request_generation = str(uuid.uuid4())
     owner, connection_generation, claim = _claim(
@@ -786,7 +751,7 @@ def test_voice_acceptance_rolls_back_every_link_when_correlation_fails(
 
 
 def test_acceptance_copies_full_workspace_and_abort_cleans_only_private_result(
-    database: Database,
+    database: VoicePlaneTestRuntime,
 ) -> None:
     user_id = f"voice-abort-{uuid.uuid4().hex}"
     chat_id = str(uuid.uuid4())
@@ -819,7 +784,9 @@ def test_acceptance_copies_full_workspace_and_abort_cleans_only_private_result(
     )
     coordinator = _coordinator(database)
     commits = ConversationCommitRepository(
-        database, operation_coordinator=coordinator
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+        operation_coordinator=coordinator,
     )
     request_generation = str(uuid.uuid4())
     owner, connection_generation, claim = _claim(

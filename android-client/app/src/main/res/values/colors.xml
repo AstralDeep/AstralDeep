@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Mirrors the web/Windows palette (indigo→purple accent on a near-black bg). -->
-    <color name="astral_bg">#FF0F1221</color>
-    <color name="astral_primary">#FF6366F1</color>
-    <color name="ic_launcher_background">#FF0F1221</color>
-</resources>

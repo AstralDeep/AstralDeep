@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import attachment_parser_scope, resolve_attachment
 from agents.general.file_tools.medical import _common
 
 logger = logging.getLogger("FileTools.read_nifti")
 
 
+@attachment_parser_scope
 def read_nifti(
     attachment_id: str,
     user_id: Optional[str] = None,
@@ -28,7 +30,7 @@ def read_nifti(
         return _common.missing_dep("nibabel", exc)
 
     try:
-        img = nib.load(str(path))
+        img = nib.load(os.fspath(path))
         data = img.get_fdata()
         header = img.header
     except Exception as exc:

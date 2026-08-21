@@ -112,9 +112,9 @@ def test_projection_manifest_matches_composition_and_parent_gitlink() -> None:
     assert index_entry[1] == component["commit"]  # type: ignore[index]
     assert manifest_path.is_relative_to(ROOT / component["path"])  # type: ignore[index]
 
-    transitional_copy = BACKEND / "shared" / "ui_protocol.json"
-    if transitional_copy.exists():
-        assert json.loads(transitional_copy.read_text(encoding="utf-8")) == manifest
+    assert not (BACKEND / "shared" / "ui_protocol.json").exists(), (
+        "AstralDeep must consume Projection's protocol owner, not retain a mirror"
+    )
 
 
 def test_server_push_literals_are_declared_by_projection() -> None:

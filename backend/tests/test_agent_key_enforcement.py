@@ -43,6 +43,28 @@ class _FakeAgentWS:
         self.close_calls.append((code, reason))
 
 
+class _FakeUserAgentRegistry:
+    """Typed ownership seam used by ``Orchestrator.register_agent``."""
+
+    def __init__(self, default_ownership=None):
+        self.default_ownership = default_ownership
+        self.ownership = {}
+        self.set_calls = []
+
+    def get_agent_ownership(self, agent_id):
+        return self.ownership.get(agent_id, self.default_ownership)
+
+    def set_agent_ownership(self, agent_id, owner_email, is_public=False):
+        self.set_calls.append((agent_id, owner_email, is_public))
+        record = {
+            "agent_id": agent_id,
+            "owner_email": owner_email,
+            "is_public": is_public,
+        }
+        self.ownership[agent_id] = record
+        return record
+
+
 def _make_card(agent_id: str = "fr016-agent") -> AgentCard:
     return AgentCard(
         name="FR016 Agent",
@@ -88,10 +110,13 @@ def _make_fake():
         security_analyzer=types.SimpleNamespace(analyze_agent=lambda card: {}),
         credential_manager=types.SimpleNamespace(
             register_agent_public_key=lambda *a, **kw: None),
-        history=types.SimpleNamespace(db=types.SimpleNamespace(
-            # Truthy ownership skips the DEFAULT_AGENT_OWNER auto-assign path.
-            get_agent_ownership=lambda aid: {"owner_email": "owner@example.com",
-                                             "is_public": False})),
+        # Truthy ownership skips the DEFAULT_AGENT_OWNER auto-assign path.
+        user_agent_registry=_FakeUserAgentRegistry(
+            default_ownership={
+                "owner_email": "owner@example.com",
+                "is_public": False,
+            }
+        ),
         hooks=types.SimpleNamespace(emit=_emit),
         _is_draft_agent=lambda aid: False,
         _get_user_id=lambda ws: "fr016-test-user",
@@ -241,27 +266,12 @@ def test_missing_key_refused_when_key_configured(monkeypatch):
 # 2b. Ownerless auto-assign default — built-in public, external private
 # ---------------------------------------------------------------------------
 
-def _ownerless_fake(builtin_ids):
-    """register_agent fake whose db is ownerless (no prior ownership row) and
-    records set_agent_ownership, exposing _FIRST_PARTY_PUBLIC_AGENT_IDS so the
-    built-in-vs-external default can be asserted."""
-    set_calls = []
-    stored = {}
-
-    def _get_ownership(aid):
-        return stored.get(aid)
-
-    def _set_ownership(aid, owner_email, is_public=False):
-        set_calls.append((aid, owner_email, is_public))
-        stored[aid] = {"owner_email": owner_email, "is_public": is_public}
-
+def _ownerless_fake():
+    """Return a fake whose typed ownership registry starts empty."""
     fake = _make_fake()
-    fake.history = types.SimpleNamespace(db=types.SimpleNamespace(
-        get_agent_ownership=_get_ownership,
-        set_agent_ownership=_set_ownership,
-        _FIRST_PARTY_PUBLIC_AGENT_IDS=tuple(builtin_ids),
-    ))
-    fake._set_ownership_calls = set_calls
+    registry = _FakeUserAgentRegistry()
+    fake.user_agent_registry = registry
+    fake._set_ownership_calls = registry.set_calls
     return fake
 
 
@@ -273,7 +283,7 @@ def test_ownerless_builtin_public_external_private(monkeypatch):
     monkeypatch.delenv("AGENT_API_KEY", raising=False)
     monkeypatch.setenv("DEFAULT_AGENT_OWNER", "op@test")
 
-    fake = _ownerless_fake(builtin_ids=("weather-1",))
+    fake = _ownerless_fake()
     asyncio.run(fake.register_agent(
         _FakeAgentWS(), RegisterAgent(agent_card=_make_card("weather-1"))))
     asyncio.run(fake.register_agent(

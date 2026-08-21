@@ -65,7 +65,7 @@ def stub_surface(monkeypatch):
     mod.render = render
     mod.HANDLERS = {"chrome_stub_save": _save, "chrome_stub_boom": _boom}
     sys.modules["tests.stub_surface"] = mod
-    from webrender.chrome import surfaces as reg
+    from orchestrator import projection_surfaces as reg
     monkeypatch.setitem(reg.SURFACE_MODULES, "stub", "tests.stub_surface")
     monkeypatch.setattr(chrome_events, "_HANDLERS", None)
     yield mod
@@ -258,6 +258,17 @@ class _ConvDB:
         d = self.drafts.get(draft_id)
         return dict(d) if d else None
 
+    def get_owned_draft_agent(self, user_id, draft_id):
+        draft = self.get_draft_agent(draft_id)
+        return draft if draft and draft.get("user_id") == user_id else None
+
+    def get_decidable_drafts(self, user_id):
+        return [
+            dict(draft)
+            for draft in self.drafts.values()
+            if draft.get("user_id") == user_id and draft.get("status") != "live"
+        ]
+
     def update_draft_agent(self, draft_id, **kw):
         self.drafts.setdefault(draft_id, {}).update(kw)
         return True
@@ -269,16 +280,22 @@ class _ConvDB:
 def test_chat_created_draft_appears_in_drafts_surface_and_discards(monkeypatch):
     from orchestrator import agentic_creation as ac
     from shared.feature_flags import flags
-    from webrender.chrome.surfaces import drafts as drafts_surface
+    from orchestrator.projection_surfaces import drafts as drafts_surface
     monkeypatch.setitem(flags._flags, "agentic_creation", True)
 
     db = _ConvDB()
     lifecycle_calls = []
 
     class _LC:
+        def __init__(self):
+            self.draft_store = db
+
         async def create_draft(self, user_id, agent_name, description, **kw):
             row = {"id": "d-conv", "user_id": user_id, "agent_name": agent_name,
-                   "agent_slug": "conv", "description": description, "status": "pending"}
+                   "agent_slug": "conv", "description": description, "status": "pending",
+                   "origin": kw.get("origin"),
+                   "source_chat_id": kw.get("source_chat_id"),
+                   "gap_fingerprint": kw.get("gap_fingerprint")}
             db.drafts["d-conv"] = row
             return dict(row)
 

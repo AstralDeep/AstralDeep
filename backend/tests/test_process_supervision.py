@@ -10,10 +10,10 @@ import subprocess
 import sys
 import time
 import uuid
-from pathlib import Path
 
 import pytest
 
+from astralprojection.resources import fixture_path
 from shared.process_supervision import (
     DEFAULT_PROCESS_SUPERVISION_LIMITS,
     BoundedStreamReader,
@@ -26,11 +26,8 @@ from shared.process_supervision import (
 )
 
 
-_VECTOR_PATH = (
-    Path(__file__).parent
-    / "fixtures"
-    / "runtime_reliability_060"
-    / "process-supervision-vectors.json"
+_VECTOR_PATH = fixture_path(
+    "runtime_reliability_060/process-supervision-vectors.json"
 )
 _CORPUS = json.loads(_VECTOR_PATH.read_text(encoding="utf-8"))
 _VECTORS = {item["id"]: item for item in _CORPUS["vectors"]}
@@ -423,9 +420,10 @@ def test_unobserved_exit_is_monitored_and_settled() -> None:
         "import os\nos.write(2, b'failure-before-exit\\n')\nraise SystemExit(17)\n",
     )
     deadline = time.monotonic() + 2
+    snapshot = process.snapshot()
     while time.monotonic() < deadline:
         snapshot = process.snapshot()
-        if snapshot.readers_joined:
+        if snapshot.state is ProcessState.FAILED and snapshot.readers_joined:
             break
         time.sleep(0.01)
 

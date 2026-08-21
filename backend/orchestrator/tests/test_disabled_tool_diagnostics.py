@@ -1,4 +1,5 @@
 """Tests for Orchestrator._diagnose_disabled_tool and _alert_for_disabled_tool."""
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -10,6 +11,7 @@ from orchestrator.orchestrator import (
     ToolDiagnosticStatus,
     _tool_names_from_leak,
 )
+from orchestrator.plane_repository_context import ApplicationPlaneSource
 from shared.protocol import AgentCard, AgentSkill
 
 
@@ -23,27 +25,65 @@ def _make_card(agent_id: str, tools: list, display_name: str = None) -> AgentCar
     )
 
 
+class _MachineRepository:
+    def __init__(self, owns_machine: bool, *, fail: bool = False) -> None:
+        self.owns_machine = owns_machine
+        self.fail = fail
+
+    def list_machines(self, _transaction, *, owner_id: str, limit: int):
+        assert owner_id
+        assert limit == 1
+        if self.fail:
+            raise RuntimeError("machine inventory unavailable")
+        return (object(),) if self.owns_machine else ()
+
+
+class _PlaneRuntime:
+    def __init__(self, remote: _MachineRepository) -> None:
+        self.repositories = SimpleNamespace(remote=remote)
+
+    @contextmanager
+    def transaction(self):
+        yield object()
+
+
 def _make_orch(cards: dict, *,
                disabled_agents: list = None,
                security_flags: dict = None,
                tool_permission_allowed: bool = True,
                saved_selection: dict = None,
-               chat_to_agent: dict = None) -> Orchestrator:
+               chat_to_agent: dict = None,
+               owns_remote_machine: bool = True,
+               remote_probe_fails: bool = False) -> Orchestrator:
     """Build a partially-initialized Orchestrator for unit tests."""
     orch = Orchestrator.__new__(Orchestrator)
     orch.agent_cards = cards
     orch.security_flags = security_flags or {}
 
-    db = MagicMock()
-    db.get_user_disabled_agents.return_value = disabled_agents or []
-    db.get_chat_agent.side_effect = lambda chat_id: (chat_to_agent or {}).get(chat_id)
-    db.get_user_tool_selection.side_effect = lambda user_id, agent_id: (
-        saved_selection or {}
-    ).get((user_id, agent_id))
-    orch.history = SimpleNamespace(db=db)
+    orch.history = MagicMock()
+    orch.history.get_chat_agent.side_effect = (
+        lambda chat_id, *, user_id: (chat_to_agent or {}).get(chat_id)
+    )
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=tool_permission_allowed)
+    orch.tool_permissions.list_disabled_agents.return_value = tuple(
+        disabled_agents or ()
+    )
+    orch.tool_permissions.get_tool_selection.side_effect = (
+        lambda user_id, agent_id: (saved_selection or {}).get(
+            (user_id, agent_id)
+        )
+    )
+    remote = _MachineRepository(
+        owns_remote_machine,
+        fail=remote_probe_fails,
+    )
+    runtime = _PlaneRuntime(remote)
+    orch.plane_repository_source = ApplicationPlaneSource(
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+    )
     return orch
 
 
@@ -157,8 +197,7 @@ def test_diagnose_machineless_remote_verb() -> None:
     cards = {"remote-compute-1": _make_card(
         "remote-compute-1", ["job_status", "list_machines"], display_name="Remote Compute"
     )}
-    orch = _make_orch(cards)
-    orch.history.db.fetch_one = lambda sql, params: None  # owns zero machines
+    orch = _make_orch(cards, owns_remote_machine=False)
     diag = orch._diagnose_disabled_tool("job_status", "alice", "chat-1")
     assert diag.status is ToolDiagnosticStatus.NO_REGISTERED_MACHINE
     assert diag.agent_id == "remote-compute-1"
@@ -166,28 +205,21 @@ def test_diagnose_machineless_remote_verb() -> None:
 
 def test_diagnose_machineless_list_machines_stays_enabled() -> None:
     cards = {"remote-compute-1": _make_card("remote-compute-1", ["list_machines"])}
-    orch = _make_orch(cards)
-    orch.history.db.fetch_one = lambda sql, params: None
+    orch = _make_orch(cards, owns_remote_machine=False)
     diag = orch._diagnose_disabled_tool("list_machines", "alice", "chat-1")
     assert diag.status is ToolDiagnosticStatus.ENABLED
 
 
 def test_diagnose_machine_owner_remote_verb_enabled() -> None:
     cards = {"remote-compute-1": _make_card("remote-compute-1", ["job_status"])}
-    orch = _make_orch(cards)
-    orch.history.db.fetch_one = lambda sql, params: {"1": 1}
+    orch = _make_orch(cards, owns_remote_machine=True)
     diag = orch._diagnose_disabled_tool("job_status", "alice", "chat-1")
     assert diag.status is ToolDiagnosticStatus.ENABLED
 
 
 def test_diagnose_machineless_probe_error_falls_through() -> None:
     cards = {"remote-compute-1": _make_card("remote-compute-1", ["job_status"])}
-    orch = _make_orch(cards)
-
-    def _boom(sql, params):
-        raise RuntimeError("db down")
-
-    orch.history.db.fetch_one = _boom
+    orch = _make_orch(cards, remote_probe_fails=True)
     diag = orch._diagnose_disabled_tool("job_status", "alice", "chat-1")
     assert diag.status is ToolDiagnosticStatus.ENABLED
 

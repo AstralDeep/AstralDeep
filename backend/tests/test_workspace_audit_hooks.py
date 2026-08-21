@@ -41,25 +41,7 @@ from audit.hooks import record_auth_event, record_workspace_event  # noqa: E402
 from audit.recorder import Recorder, get_recorder, set_recorder  # noqa: E402
 from audit.repository import AuditRepository  # noqa: E402
 from orchestrator import web_auth  # noqa: E402
-from shared.database import Database  # noqa: E402
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
-)
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +51,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def db():
-    return Database()
+    with isolated_plane_runtime("workspace_audit") as runtime:
+        yield runtime
 
 
 @pytest.fixture()
@@ -79,32 +62,36 @@ def recorder(db, tmp_path):
     at a tmp file so a transient DB failure can never leak rows into the
     running orchestrator's drain loop."""
     prev = get_recorder()
-    rec = Recorder(AuditRepository(db), retry_queue=tmp_path / "audit-retry.jsonl")
+    rec = Recorder(
+        AuditRepository(
+            plane_runtime=db,
+            plane_repositories=db.repositories,
+        ),
+        retry_queue=tmp_path / "audit-retry.jsonl",
+    )
     set_recorder(rec)
     yield rec
     set_recorder(prev)
 
 
 def _audit_rows(db, user_id):
-    return db.fetch_all(
+    return list(db.fetch_all(
         "SELECT * FROM audit_events WHERE actor_user_id = ? "
         "ORDER BY recorded_at ASC, event_id ASC",
         (user_id,),
-    )
+    ))
 
 
 def _purge_audit(db, *user_ids):
     """Delete this test's rows. audit_events is append-only behind a trigger;
     deletion requires the audit.allow_purge GUC (same path as the retention CLI)."""
-    conn = db._get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SET LOCAL audit.allow_purge = 'true'")
-            for uid in user_ids:
-                cur.execute("DELETE FROM audit_events WHERE actor_user_id = %s", (uid,))
-        conn.commit()
-    finally:
-        conn.close()
+    with db.transaction() as transaction:
+        transaction.execute("SET LOCAL audit.allow_purge = 'true'")
+        for uid in user_ids:
+            transaction.execute(
+                "DELETE FROM audit_events WHERE actor_user_id = %s",
+                (uid,),
+            )
 
 
 def _uid() -> str:

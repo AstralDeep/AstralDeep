@@ -5,17 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import uuid
 from datetime import timedelta
 from types import MethodType, SimpleNamespace
 from typing import Iterator
 
-import psycopg2
 import pytest
-from psycopg2 import sql
 
-from orchestrator.history import ConversationCommitRepository, HistoryManager
+from orchestrator.history import ConversationCommitRepository
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.workspace import WorkspaceManager
@@ -29,66 +26,35 @@ from orchestrator.work_admission import (
     WorkAdmissionCoordinator,
 )
 from scheduler.runner import JobRunner
+from scheduler.tests.plane_runtime import (
+    ensure_plane_runtime,
+    scheduled_job_store as ScheduledJobStore,
+    work_admission_repository,
+)
 from scheduler.store import (
     EffectIdempotencyConflictError,
     ScheduledAttempt,
-    ScheduledJobStore,
     StaleOccurrenceClaimError,
 )
-from shared.database import Database, _build_database_url
+from tests.helpers.voice_plane_runtime import (
+    PlaneTestRuntime,
+    history_manager,
+    isolated_plane_runtime,
+)
 
 
 @pytest.fixture(scope="module")
-def postgres_database() -> Iterator[Database]:
-    """Create one isolated, normally migrated PostgreSQL database."""
+def postgres_database() -> Iterator[PlaneTestRuntime]:
+    """Create one isolated database initialized only by AstralPlane."""
 
-    base_dsn = _build_database_url()
-    try:
-        params = psycopg2.extensions.parse_dsn(base_dsn)
-        name = f"astraldeep_atomic_chat_{uuid.uuid4().hex}"
-        admin = psycopg2.connect(**params)
-        admin.autocommit = True
-        with admin.cursor() as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-        admin.close()
-    except Exception as exc:  # pragma: no cover - environment gate
-        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-
-    database_params = dict(params)
-    database_params["dbname"] = name
-    dsn = psycopg2.extensions.make_dsn(**database_params)
-    prior_pool_setting = os.environ.get("DB_POOL_DISABLE")
-    os.environ["DB_POOL_DISABLE"] = "1"
-    try:
-        yield Database(dsn)
-    finally:
-        Database.close()
-        if prior_pool_setting is None:
-            os.environ.pop("DB_POOL_DISABLE", None)
-        else:
-            os.environ["DB_POOL_DISABLE"] = prior_pool_setting
-        try:
-            admin = psycopg2.connect(**params)
-            admin.autocommit = True
-            with admin.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = %s AND pid <> pg_backend_pid()",
-                    (name,),
-                )
-                cursor.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {}").format(
-                        sql.Identifier(name)
-                    )
-                )
-            admin.close()
-        except Exception:
-            pass
+    with isolated_plane_runtime("atomic_chat") as runtime:
+        yield runtime
 
 
 @pytest.fixture
-def clean_database(postgres_database: Database) -> Database:
+def clean_database(postgres_database: PlaneTestRuntime) -> PlaneTestRuntime:
     db = postgres_database
+    ensure_plane_runtime(db)
     db.execute("DELETE FROM effect_ledger")
     db.execute("DELETE FROM job_run")
     db.execute("DELETE FROM scheduled_occurrence")
@@ -108,7 +74,7 @@ def clean_database(postgres_database: Database) -> Database:
     return db
 
 
-def _coordinator(db: Database) -> WorkAdmissionCoordinator:
+def _coordinator(db: PlaneTestRuntime) -> WorkAdmissionCoordinator:
     return WorkAdmissionCoordinator(
         admission_classes=(
             AdmissionClassConfig(
@@ -128,14 +94,14 @@ def _coordinator(db: Database) -> WorkAdmissionCoordinator:
                 config_revision="atomic-chat-060-test",
             ),
         ),
-        database=db,
+        repository=work_admission_repository(db),
         operation_retention=timedelta(hours=24),
         slot_lease=timedelta(seconds=90),
     )
 
 
 def _started_attempt(
-    db: Database, *, label: str, explicit_chat: bool = True
+    db: PlaneTestRuntime, *, label: str, explicit_chat: bool = True
 ) -> tuple[ScheduledJobStore, ScheduledAttempt, str, str]:
     coordinator = _coordinator(db)
     store = ScheduledJobStore(db, coordinator=coordinator)
@@ -185,19 +151,16 @@ def _digest(attempt: ScheduledAttempt) -> str:
 
 
 def _orchestrator(
-    db: Database,
+    db: PlaneTestRuntime,
     store: ScheduledJobStore | None = None,
     *,
     visible_counts: list[int],
 ) -> Orchestrator:
-    history = HistoryManager.__new__(HistoryManager)
-    history.db = db
+    history = history_manager(db)
     orch = Orchestrator.__new__(Orchestrator)
     orch.history = history
     orch.workspace = WorkspaceManager(history)
-    orch.work_admission = (
-        store._require_coordinator() if store is not None else None
-    )
+    orch.work_admission = store._require_coordinator() if store is not None else None
     orch.conversation_commits = ConversationCommitRepository(
         db, operation_coordinator=orch.work_admission
     )
@@ -246,9 +209,7 @@ def _orchestrator(
                 )
             )
         )
-        await websocket.send_text(
-            json.dumps({"type": "text", "text": "staged answer"})
-        )
+        await websocket.send_text(json.dumps({"type": "text", "text": "staged answer"}))
 
     orch.handle_chat_message = MethodType(handle_chat_message, orch)
     return orch
@@ -256,11 +217,9 @@ def _orchestrator(
 
 @pytest.mark.asyncio
 async def test_scheduled_messages_are_invisible_until_effect_publish_commit(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
-    store, attempt, user_id, chat_id = _started_attempt(
-        clean_database, label="commit"
-    )
+    store, attempt, user_id, chat_id = _started_attempt(clean_database, label="commit")
     assert uuid.UUID(chat_id).version == 4
     digest = _digest(attempt)
     reservation = store.reserve_atomic_chat_effect(
@@ -303,9 +262,7 @@ async def test_scheduled_messages_are_invisible_until_effect_publish_commit(
         (chat_id,),
     )
     assert chat["render_revision"] == 1
-    assert str(chat["conversation_commit_id"]) == str(
-        rows[0]["conversation_commit_id"]
-    )
+    assert str(chat["conversation_commit_id"]) == str(rows[0]["conversation_commit_id"])
     snapshot = orch.conversation_commits.build_snapshot(
         chat_id=chat_id,
         owner_user_id=user_id,
@@ -328,7 +285,7 @@ async def test_scheduled_messages_are_invisible_until_effect_publish_commit(
 
 @pytest.mark.asyncio
 async def test_fault_before_publish_rolls_back_messages_and_reserved_replays(
-    clean_database: Database, monkeypatch: pytest.MonkeyPatch
+    clean_database: PlaneTestRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, attempt, user_id, chat_id = _started_attempt(
         clean_database, label="rollback"
@@ -340,12 +297,16 @@ async def test_fault_before_publish_rolls_back_messages_and_reserved_replays(
         payload_digest=digest,
     )
     orch = _orchestrator(clean_database, store, visible_counts=[])
-    original = store._mark_effect_published_cursor
+    original = store._plane.repository.publish_reserved_effect
 
     def crash_before_publish(*_args, **_kwargs):
         raise RuntimeError("injected pre-publication crash")
 
-    monkeypatch.setattr(store, "_mark_effect_published_cursor", crash_before_publish)
+    monkeypatch.setattr(
+        store._plane.repository,
+        "publish_reserved_effect",
+        crash_before_publish,
+    )
     with pytest.raises(RuntimeError, match="injected pre-publication crash"):
         await orch.run_scheduled_turn(
             user_id=user_id,
@@ -362,16 +323,19 @@ async def test_fault_before_publish_rolls_back_messages_and_reserved_replays(
             payload_digest=digest,
         )
 
-    assert clean_database.fetch_one(
-        "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
-    )["n"] == 0
+    assert (
+        clean_database.fetch_one(
+            "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
+        )["n"]
+        == 0
+    )
     assert clean_database.fetch_one(
         "SELECT state FROM effect_ledger WHERE occurrence_id = ? "
         "AND effect_kind = 'chat_history' AND effect_key = ?",
         (str(attempt.claim.occurrence_id), chat_id),
     ) == {"state": "reserved"}
 
-    monkeypatch.setattr(store, "_mark_effect_published_cursor", original)
+    monkeypatch.setattr(store._plane.repository, "publish_reserved_effect", original)
     clean_database.execute(
         "UPDATE scheduled_occurrence SET lease_expires_at = "
         "clock_timestamp() - INTERVAL '1 second' WHERE occurrence_id = ?",
@@ -408,9 +372,12 @@ async def test_fault_before_publish_rolls_back_messages_and_reserved_replays(
         effect_key=chat_id,
         payload_digest=digest,
     )
-    assert clean_database.fetch_one(
-        "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
-    )["n"] == 2
+    assert (
+        clean_database.fetch_one(
+            "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
+        )["n"]
+        == 2
+    )
 
     # Even a direct defensive replay cannot append a second visible turn.
     await orch.run_scheduled_turn(
@@ -427,14 +394,17 @@ async def test_fault_before_publish_rolls_back_messages_and_reserved_replays(
         effect_key=chat_id,
         payload_digest=digest,
     )
-    assert clean_database.fetch_one(
-        "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
-    )["n"] == 2
+    assert (
+        clean_database.fetch_one(
+            "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
+        )["n"]
+        == 2
+    )
 
 
 @pytest.mark.asyncio
 async def test_fallback_chat_is_created_only_in_atomic_publication(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     store, attempt, user_id, chat_id = _started_attempt(
         clean_database,
@@ -451,9 +421,10 @@ async def test_fallback_chat_is_created_only_in_atomic_publication(
     )
     orch = _orchestrator(clean_database, store, visible_counts=[])
 
-    assert clean_database.fetch_one(
-        "SELECT id FROM chats WHERE id = ?", (chat_id,)
-    ) is None
+    assert (
+        clean_database.fetch_one("SELECT id FROM chats WHERE id = ?", (chat_id,))
+        is None
+    )
     await orch.run_scheduled_turn(
         user_id=user_id,
         chat_id=None,
@@ -473,17 +444,19 @@ async def test_fallback_chat_is_created_only_in_atomic_publication(
         "SELECT user_id, title FROM chats WHERE id = ?", (chat_id,)
     )
     assert chat == {"user_id": user_id, "title": "publish fallback"}
-    assert clean_database.fetch_one(
-        "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
-    )["n"] == 2
+    assert (
+        clean_database.fetch_one(
+            "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
+        )["n"]
+        == 2
+    )
 
 
 @pytest.mark.asyncio
 async def test_history_projection_is_task_local_and_late_writes_fail_closed(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
-    history = HistoryManager.__new__(HistoryManager)
-    history.db = clean_database
+    history = history_manager(clean_database)
     user_id = "owner-stage"
     chat_id = "chat-stage"
     clean_database.execute(
@@ -527,9 +500,12 @@ async def test_history_projection_is_task_local_and_late_writes_fail_closed(
 
     batch = stage.batch()
     assert len(batch.messages) == 1
-    assert clean_database.fetch_one(
-        "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
-    )["n"] == 1
+    assert (
+        clean_database.fetch_one(
+            "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
+        )["n"]
+        == 1
+    )
     release_late_write.set()
     with pytest.raises(ScheduledPublicationEscapeError, match="sealed"):
         await inherited
@@ -539,7 +515,7 @@ async def test_history_projection_is_task_local_and_late_writes_fail_closed(
 
 
 def test_atomic_reservation_conflict_and_stale_claim_fail_closed(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     store, attempt, _user_id, chat_id = _started_attempt(
         clean_database, label="conflict"
@@ -573,11 +549,9 @@ def test_atomic_reservation_conflict_and_stale_claim_fail_closed(
 
 @pytest.mark.asyncio
 async def test_exact_identity_and_mutating_scope_defenses_run_before_handler(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
-    store, attempt, user_id, chat_id = _started_attempt(
-        clean_database, label="defense"
-    )
+    store, attempt, user_id, chat_id = _started_attempt(clean_database, label="defense")
     digest = _digest(attempt)
     store.reserve_atomic_chat_effect(
         attempt,
@@ -628,14 +602,17 @@ async def test_exact_identity_and_mutating_scope_defenses_run_before_handler(
             effect_key=chat_id,
             payload_digest=digest,
         )
-    assert clean_database.fetch_one(
-        "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
-    )["n"] == 0
+    assert (
+        clean_database.fetch_one(
+            "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
+        )["n"]
+        == 0
+    )
 
 
 @pytest.mark.asyncio
 async def test_legacy_turn_and_scheduled_workspace_suppression_are_preserved(
-    clean_database: Database,
+    clean_database: PlaneTestRuntime,
 ) -> None:
     user_id = "owner-legacy"
     chat_id = "chat-legacy"
@@ -660,9 +637,12 @@ async def test_legacy_turn_and_scheduled_workspace_suppression_are_preserved(
 
     assert summary == "staged answer"
     assert visible_counts == [2]
-    assert clean_database.fetch_one(
-        "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
-    )["n"] == 2
+    assert (
+        clean_database.fetch_one(
+            "SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?", (chat_id,)
+        )["n"]
+        == 2
+    )
 
     rendered: list[list[dict]] = []
 
@@ -700,9 +680,7 @@ async def test_legacy_turn_and_scheduled_workspace_suppression_are_preserved(
 
 
 def test_scheduler_observability_uses_only_bounded_dimensions() -> None:
-    observability = RuntimeObservability(
-        deployment_instance="atomic_chat_test"
-    )
+    observability = RuntimeObservability(deployment_instance="atomic_chat_test")
     runner = JobRunner(
         SimpleNamespace(runtime_observability=observability),
         SimpleNamespace(),

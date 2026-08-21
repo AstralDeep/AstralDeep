@@ -266,8 +266,8 @@ def a2a_message_to_mcp_request(msg: A2AMessage, request_id: Optional[str] = None
                     "name": data["name"],
                     "arguments": data.get("arguments", {}),
                 },
-                protocol_version=MCP_PROTOCOL_VERSION,
-                caller_capabilities={},
+                protocol_version=data.get("protocol_version", MCP_PROTOCOL_VERSION),
+                caller_capabilities=data.get("caller_capabilities", {}),
                 caller_info={"name": "AstralDeep A2A Bridge", "version": "1.0.0"},
             )
         if data.get("method") == "tools/list":

@@ -18,6 +18,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,25 +27,9 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
+
 os.environ["USE_MOCK_AUTH"] = "true"
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
-)
 
 
 MOCK_JWT_TOKEN = (
@@ -56,7 +41,7 @@ AUTH_HEADER = {"Authorization": f"Bearer {MOCK_JWT_TOKEN}"}
 
 
 @pytest.fixture
-def app_and_orch():
+def app_and_orch(plane_runtime):
     """Build a FastAPI test app with the chat router and a real History+TaskManager."""
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
@@ -75,15 +60,31 @@ def app_and_orch():
         allow_headers=["*"],
     )
 
-    history = HistoryManager(data_dir=".")
+    history = HistoryManager(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
     orch = MagicMock()
     orch.history = history
     orch.task_manager = TaskManager()
+    orch.plane_runtime = plane_runtime
+    orch.runtime_composition = SimpleNamespace(
+        plane=SimpleNamespace(
+            runtime=plane_runtime,
+            repositories=plane_runtime.repositories,
+        )
+    )
 
     app.state.orchestrator = orch
     app.include_router(chat_router)
     app.include_router(auth_router)
     return app, orch
+
+
+@pytest.fixture(scope="module")
+def plane_runtime():
+    with isolated_plane_runtime("chat_steps_api") as runtime:
+        yield runtime
 
 
 @pytest.fixture
@@ -105,36 +106,44 @@ def fresh_chat(orch):
     """Create a chat owned by the mock-auth user (dev-user-id)."""
     chat_id = orch.history.create_chat(user_id="dev-user-id")
     yield chat_id
-    orch.history.db.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    with orch.plane_runtime.transaction() as transaction:
+        orch.plane_runtime.repositories.history.conversations.delete(
+            transaction,
+            owner_id="dev-user-id",
+            conversation_id=chat_id,
+        )
 
 
-def _insert_step(db, *, chat_id, user_id, name, status, started_at, ended_at=None,
+def _insert_step(runtime, *, chat_id, user_id, name, status, started_at, ended_at=None,
                  args=None, result=None, error=None):
-    db.execute(
-        """
-        INSERT INTO chat_steps (
-            id, chat_id, user_id, kind, name, status,
-            args_truncated, args_was_truncated,
-            result_summary, result_was_truncated,
-            error_message, started_at, ended_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            uuid.uuid4().hex,
-            chat_id,
-            user_id,
-            "tool_call",
-            name,
-            status,
-            args,
-            False,
-            result,
-            False,
-            error,
-            started_at,
-            ended_at,
-        ),
-    )
+    step_id = uuid.uuid4().hex
+    with runtime.transaction() as transaction:
+        repository = runtime.repositories.chat_steps
+        record = repository.create_step(
+            transaction,
+            step_id=step_id,
+            owner_id=user_id,
+            conversation_id=chat_id,
+            turn_message_id=None,
+            kind="tool_call",
+            name=name,
+            args_truncated=args,
+            args_was_truncated=False,
+            started_at=started_at,
+        )
+        if status != "in_progress":
+            record = repository.finish_step(
+                transaction,
+                owner_id=user_id,
+                step_id=step_id,
+                expected_status="in_progress",
+                status=status,
+                ended_at=ended_at,
+                result_summary=result,
+                result_was_truncated=False,
+                error_message=error,
+            )
+    return record
 
 
 class TestAuth:
@@ -160,13 +169,13 @@ class TestPopulated:
     def test_returns_steps_in_started_at_order(self, client, orch, fresh_chat):
         now = int(time.time() * 1000)
         _insert_step(
-            orch.history.db,
+            orch.plane_runtime,
             chat_id=fresh_chat, user_id="dev-user-id",
             name="zeta", status="completed",
             started_at=now + 200, ended_at=now + 300,
         )
         _insert_step(
-            orch.history.db,
+            orch.plane_runtime,
             chat_id=fresh_chat, user_id="dev-user-id",
             name="alpha", status="completed",
             started_at=now, ended_at=now + 100,
@@ -194,7 +203,12 @@ class TestPermissions:
             )
             assert resp.status_code == 403
         finally:
-            orch.history.db.execute("DELETE FROM chats WHERE id = ?", (other_chat,))
+            with orch.plane_runtime.transaction() as transaction:
+                orch.plane_runtime.repositories.history.conversations.delete(
+                    transaction,
+                    owner_id="someone-else",
+                    conversation_id=other_chat,
+                )
 
 
 class TestInterruptedHealing:
@@ -202,7 +216,7 @@ class TestInterruptedHealing:
         # 60-second-old in-progress row, no active task on the chat.
         long_ago = int(time.time() * 1000) - 60_000
         _insert_step(
-            orch.history.db,
+            orch.plane_runtime,
             chat_id=fresh_chat, user_id="dev-user-id",
             name="stale", status="in_progress",
             started_at=long_ago,
@@ -214,8 +228,8 @@ class TestInterruptedHealing:
 
     def test_persisted_row_is_not_mutated_by_healing(self, client, orch, fresh_chat):
         long_ago = int(time.time() * 1000) - 60_000
-        _insert_step(
-            orch.history.db,
+        persisted = _insert_step(
+            orch.plane_runtime,
             chat_id=fresh_chat, user_id="dev-user-id",
             name="stale-2", status="in_progress",
             started_at=long_ago,
@@ -224,16 +238,19 @@ class TestInterruptedHealing:
         assert resp.json()["steps"][0]["status"] == "interrupted"
 
         # Underlying row still says in_progress.
-        row = orch.history.db.fetch_one(
-            "SELECT status FROM chat_steps WHERE chat_id = ? AND name = ?",
-            (fresh_chat, "stale-2"),
-        )
-        assert row["status"] == "in_progress"
+        with orch.plane_runtime.transaction() as transaction:
+            row = orch.plane_runtime.repositories.chat_steps.get_step(
+                transaction,
+                owner_id="dev-user-id",
+                step_id=persisted.step_id,
+            )
+        assert row is not None
+        assert row.status.value == "in_progress"
 
     def test_recent_in_progress_is_NOT_healed(self, client, orch, fresh_chat):
         recent = int(time.time() * 1000) - 1000  # 1 second old
         _insert_step(
-            orch.history.db,
+            orch.plane_runtime,
             chat_id=fresh_chat, user_id="dev-user-id",
             name="recent", status="in_progress",
             started_at=recent,
@@ -249,7 +266,7 @@ class TestDefenseInDepthRedaction:
         # column. The endpoint MUST scrub before returning.
         now = int(time.time() * 1000)
         _insert_step(
-            orch.history.db,
+            orch.plane_runtime,
             chat_id=fresh_chat, user_id="dev-user-id",
             name="legacy-row", status="completed",
             started_at=now, ended_at=now + 10,

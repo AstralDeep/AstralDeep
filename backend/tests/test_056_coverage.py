@@ -10,12 +10,51 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from types import SimpleNamespace
+from contextlib import contextmanager
+from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+
+class _PlaneRuntime:
+    def __init__(self, **repositories):
+        self.repositories = SimpleNamespace(**repositories)
+
+    @contextmanager
+    def transaction(self):
+        yield object()
+
+
+class _OfflineGrantRepository:
+    def __init__(self, reference):
+        self.reference = reference
+        self.calls = []
+
+    def find_latest_valid(self, _transaction, **values):
+        self.calls.append(values)
+        return self.reference
+
+
+class _RepositoryContext:
+    def __init__(self, repository):
+        self.repository = repository
+
+    @contextmanager
+    def transaction(self):
+        yield object()
+
+
+class _SessionRepository:
+    def __init__(self, record):
+        self.record = record
+        self.calls = []
+
+    def get_latest_live_for_owner(self, _transaction, **values):
+        self.calls.append(values)
+        return self.record
 
 
 # --------------------------------------------------------------------------- #
@@ -119,52 +158,90 @@ def test_summarize_fetched_empty_text_errors():
 def test_latest_valid_for_prefers_agent_grant():
     from orchestrator.offline_grant import OfflineGrantStore
 
-    db = MagicMock()
-    db.fetch_one = MagicMock(return_value={"id": "grant-agent"})
-    store = OfflineGrantStore(db=db)
+    repository = _OfflineGrantRepository(
+        SimpleNamespace(grant_id="grant-agent")
+    )
+    runtime = _PlaneRuntime(offline_grants=repository)
+    store = OfflineGrantStore(
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+    )
     assert store.latest_valid_for("u1", "web-research-1") == "grant-agent"
-    # First query is the agent-scoped one.
-    assert "agent_id = ?" in db.fetch_one.call_args_list[0].args[0]
+    assert repository.calls[0]["owner_id"] == "u1"
+    assert repository.calls[0]["agent_id"] == "web-research-1"
+    assert isinstance(repository.calls[0]["as_of"], int)
 
 
 def test_latest_valid_for_falls_back_to_any_grant():
     from orchestrator.offline_grant import OfflineGrantStore
 
-    db = MagicMock()
-    db.fetch_one = MagicMock(side_effect=[None, {"id": "grant-any"}])
-    store = OfflineGrantStore(db=db)
+    repository = _OfflineGrantRepository(SimpleNamespace(grant_id="grant-any"))
+    runtime = _PlaneRuntime(offline_grants=repository)
+    store = OfflineGrantStore(
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+    )
     assert store.latest_valid_for("u1", "web-research-1") == "grant-any"
+    assert len(repository.calls) == 1
+    assert repository.calls[0]["owner_id"] == "u1"
+    assert repository.calls[0]["agent_id"] == "web-research-1"
 
 
 def test_latest_valid_for_none_when_absent():
     from orchestrator.offline_grant import OfflineGrantStore
 
-    db = MagicMock()
-    db.fetch_one = MagicMock(return_value=None)
-    store = OfflineGrantStore(db=db)
+    repository = _OfflineGrantRepository(None)
+    runtime = _PlaneRuntime(offline_grants=repository)
+    store = OfflineGrantStore(
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+    )
     assert store.latest_valid_for("u1", None) is None
+    assert repository.calls[0]["agent_id"] is None
 
 
 # --------------------------------------------------------------------------- #
 # WebSessionStore.latest_refresh_token_for
 # --------------------------------------------------------------------------- #
 
-def test_latest_refresh_token_for_reads_live_session():
-    from orchestrator.session_store import WebSessionStore
+def test_latest_refresh_token_for_reads_live_session(monkeypatch):
+    from orchestrator import session_store
 
-    db = MagicMock()
-    db.fetch_one = MagicMock(return_value={"sid": "sid-1"})
-    store = WebSessionStore(db=db)
-    store.get = MagicMock(return_value={"refresh_token": "rt-abc"})
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.delenv("WEB_SESSION_ENC_KEY", raising=False)
+    monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
+    record = SimpleNamespace(
+        session_id="sid-1",
+        owner_id="u1",
+        access_token_ciphertext="at-abc",
+        refresh_token_ciphertext="rt-abc",
+        interactive_anchor=1,
+        hard_expires_at=10_000,
+        last_refresh_at=2,
+        resumed=False,
+        created_at=1,
+    )
+    repository = _SessionRepository(record)
+    store = session_store.WebSessionStore(
+        session_context=_RepositoryContext(repository),
+        revocation_context=_RepositoryContext(SimpleNamespace()),
+    )
     assert store.latest_refresh_token_for("u1") == "rt-abc"
+    assert repository.calls[0]["owner_id"] == "u1"
+    assert isinstance(repository.calls[0]["observed_at"], int)
 
 
-def test_latest_refresh_token_for_none_without_session():
-    from orchestrator.session_store import WebSessionStore
+def test_latest_refresh_token_for_none_without_session(monkeypatch):
+    from orchestrator import session_store
 
-    db = MagicMock()
-    db.fetch_one = MagicMock(return_value=None)
-    store = WebSessionStore(db=db)
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.delenv("WEB_SESSION_ENC_KEY", raising=False)
+    monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
+    repository = _SessionRepository(None)
+    store = session_store.WebSessionStore(
+        session_context=_RepositoryContext(repository),
+        revocation_context=_RepositoryContext(SimpleNamespace()),
+    )
     assert store.latest_refresh_token_for("u1") is None
 
 
@@ -256,7 +333,17 @@ def test_child_signing_key_prefers_env(monkeypatch):
 @pytest.fixture
 def orch():
     from orchestrator.orchestrator import Orchestrator
-    return Orchestrator()
+
+    fake = SimpleNamespace()
+    fake._deliver_hop_response = MethodType(
+        Orchestrator._deliver_hop_response,
+        fake,
+    )
+    fake.execute_parallel_tools = MethodType(
+        Orchestrator.execute_parallel_tools,
+        fake,
+    )
+    return fake
 
 
 @pytest.mark.asyncio

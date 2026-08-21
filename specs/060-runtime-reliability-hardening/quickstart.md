@@ -86,7 +86,7 @@ curl -fsS http://localhost:8001/readyz
 Run the affected existing suites plus the 060 migration suite first:
 
 ```bash
-docker exec astraldeep bash -c "cd /app/backend && python -m pytest tests/test_async_tasks.py tests/test_register_ui_pipeline.py tests/test_byo_tunnel.py tests/test_byo_lifecycle.py tests/test_byo_authoring_flow.py tests/test_progress_system.py tests/test_schema_revision_guard.py tests/test_migrations_060.py scheduler/tests -q"
+docker exec astraldeep bash -c "cd /app/backend && python -m pytest tests/test_async_tasks.py tests/test_register_ui_pipeline.py tests/test_byo_tunnel.py tests/test_byo_lifecycle.py tests/test_byo_authoring_flow.py tests/test_progress_system.py tests/test_schema_revision_guard.py scheduler/tests -q"
 ```
 
 Then mirror the backend CI's separate discovery roots. The first command alone does not collect the
@@ -108,23 +108,23 @@ test "$(cd tooling/web-ci && corepack npm --version)" = "11.16.0"
 (cd tooling/web-ci && corepack npm run check:package-manager)
 (cd tooling/web-ci && corepack npm run check:product-isolation)
 (cd tooling/web-ci && corepack npm run lint)
-(cd tooling/web-ci && corepack npm run test:coverage-conversion)
-(cd tooling/web-ci && corepack npm run test:coverage-conversion:node)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run test:coverage-conversion)
+(cd components/AstralProjection/tooling/web-ci && corepack npm run test:coverage-conversion:node)
 NODE_V8_DIR="$PWD/build/060/coverage/node-v8"
 mkdir -p "$NODE_V8_DIR"
-(cd tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run lint)
-(cd tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run test:coverage-conversion)
-(cd tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../.. --output "$NODE_V8_DIR/interim.json")
-(cd tooling/web-ci && corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../.. --output "$NODE_V8_DIR/tooling-javascript.json")
-PLAYWRIGHT_IMAGE="$(tr -d '\n' < tooling/web-ci/playwright-image.txt)"
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run lint)
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run test:coverage-conversion)
+(cd components/AstralProjection/tooling/web-ci && NODE_V8_COVERAGE="$NODE_V8_DIR" corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../../../.. --output "$NODE_V8_DIR/interim.json")
+(cd components/AstralProjection/tooling/web-ci && corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIR" --repo-root ../../../.. --output "$NODE_V8_DIR/tooling-javascript.json")
+PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
 test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"
 docker pull "$PLAYWRIGHT_IMAGE"
 docker image inspect "$PLAYWRIGHT_IMAGE" --format '{{json .RepoDigests}}'
-docker run --rm -v "$PWD:/work" -w /work/tooling/web-ci "$PLAYWRIGHT_IMAGE" sh -lc 'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm exec playwright -- --version && corepack npm run test:coverage-conversion:browser'
+docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web-ci "$PLAYWRIGHT_IMAGE" sh -lc 'test "$(corepack npm --version)" = "11.16.0" && corepack npm ci --ignore-scripts && corepack npm run check:package-manager && corepack npm exec playwright -- --version && corepack npm run test:coverage-conversion:browser'
 ```
 
 CI reports the JavaScript command separately from Ruff and runs it on pull requests and main pushes.
-The package cache is keyed to `tooling/web-ci/package-lock.json`; CI records both the Playwright
+The package cache is keyed to `components/AstralProjection/tooling/web-ci/package-lock.json`; CI records both the Playwright
 version, container digest, and pinned Chromium revision, and never falls back to a system browser.
 Each platform emits its native coverage format and the final merge gate maps an immutable event-aware
 base-to-candidate diff to backend, root-tooling, and Windows Python XML, Playwright V8 coverage
@@ -137,9 +137,11 @@ missing applicable report fails rather than becoming zero selected lines.
 
 ## 3. Guarded migration and representative-data proof
 
-Feature 060 schema evolution remains in `backend/shared/database.py::_init_db()`, with a bumped
-`SCHEMA_REVISION`, one PostgreSQL advisory-lock owner, a post-lock state recheck, idempotent DDL, and
-an independent `user_agent_policy_revision` marker.
+Feature 074 extracted schema evolution into AstralPlane. Its guarded lineage now
+owns `SCHEMA_REVISION`, the PostgreSQL advisory-lock owner, post-lock state
+rechecks, idempotent DDL, current-structure verification, and recovery. Deep
+retains the product policy revision and invokes Plane's atomic reconciliation
+repository before admitting traffic.
 
 Create a pre-migration backup before the first boot of 060 against representative data. This command
 uses the database container's existing environment and does not echo credentials:
@@ -155,7 +157,7 @@ an updater crash, repeat execution, and a policy-only revision change while the 
 already current:
 
 ```bash
-docker exec astraldeep bash -c "cd /app/backend && python -m pytest tests/test_migrations_060.py tests/test_schema_revision_guard.py -q"
+docker exec astraldeep bash -c "cd /app/backend && python -m pytest tests/test_schema_revision_guard.py ../components/AstralPlane/tests/test_schema_migrations.py ../components/AstralPlane/tests/integration/test_empty_database_startup.py -q"
 docker compose restart astraldeep
 curl -fsS http://localhost:8001/readyz
 docker compose restart astraldeep
@@ -222,8 +224,8 @@ injects a token or persists browser auth state, and writes a schema-valid report
 evidence. Until then the protected readiness caller remains fail-closed:
 
 ```bash
-PLAYWRIGHT_IMAGE="$(tr -d '\n' < tooling/web-ci/playwright-image.txt)"
-docker run --rm -v "$PWD:/work" -w /work/tooling/web-ci \
+PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
+docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web-ci \
   -e ASTRAL_PLAYWRIGHT_IMAGE="$PLAYWRIGHT_IMAGE" \
   -e STAGING_URL -e SHA \
   -e ASTRAL_RELEASE_USERNAME -e ASTRAL_RELEASE_PASSWORD \

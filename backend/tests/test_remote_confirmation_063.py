@@ -1,9 +1,8 @@
 """US3 destructive-operation confirmation gate — adversarial unit tests (SC-004).
 
-Exercises ``orchestrator/remote_confirmation.py`` in isolation with a fake,
-in-memory proposal store (the module touches exactly one table with simple,
-stable queries) and the transport test seam. No postgres, no network — runs the
-same in CI and in-container.
+Exercises ``orchestrator/remote_confirmation.py`` in isolation with a typed,
+in-memory AstralPlane proposal repository and the transport test seam. No
+PostgreSQL, no network — runs the same in CI and in-container.
 
 The security properties proved here (spec confirmation.md / FR-027..FR-033, FR-044):
 - a destructive verb NEVER executes on first reach — it produces a proposal + refusal;
@@ -33,6 +32,7 @@ import pytest
 from orchestrator import remote_confirmation as rc
 from orchestrator.chain_authority import MACHINE_TURN_CLASSES
 from orchestrator.remote_transport import FakeTransport, MachineTarget, Verdict, set_transport
+from tests.helpers.remote_plane_runtime import make_remote_confirmation_plane_source
 
 USER = "user-1"
 OTHER = "user-2"
@@ -47,66 +47,10 @@ def PAST():
 # ── fake proposal store (matches remote_confirmation's exact queries) ──────────
 
 class _FakeDB:
+    """Mutable state owned by the in-memory typed Plane repositories."""
+
     def __init__(self):
         self.rows: dict = {}
-
-    # sync (evaluate path)
-    def fetch_one(self, q, params):
-        qs = q.strip()
-        if qs.startswith("SELECT"):
-            r = self.rows.get(params[0])
-            return dict(r) if r else None
-        if qs.startswith("UPDATE") and "status='consumed'" in q:
-            ts, pid = params
-            r = self.rows.get(pid)
-            if r and r["status"] == "approved":
-                r["status"], r["consumed_at"] = "consumed", ts
-                return {"proposal_id": pid}
-            return None
-        raise AssertionError("unexpected fetch_one: " + q)
-
-    def execute(self, q, params):
-        if q.strip().startswith("INSERT"):
-            (pid, owner, chat, machine, agent, verb, args_json, fp, summary,
-             created, expires) = params
-            self.rows[pid] = {
-                "proposal_id": pid, "owner_user_id": owner, "chat_id": chat,
-                "machine_id": machine, "agent_id": agent, "verb": verb,
-                "args_json": args_json, "args_fingerprint": fp, "summary": summary,
-                "status": "pending", "created_at": created, "expires_at": expires,
-                "consumed_at": None, "decided_at": None,
-            }
-            return
-        raise AssertionError("unexpected execute: " + q)
-
-    # async (handle_decision path)
-    async def afetch_one(self, q, params):
-        qs = q.strip()
-        if qs.startswith("SELECT"):
-            r = self.rows.get(params[0])
-            return dict(r) if r else None
-        if qs.startswith("UPDATE") and "status='approved'" in q and "RETURNING" in q:
-            now, pid = params
-            r = self.rows.get(pid)
-            if r and r["status"] == "pending":
-                r["status"], r["decided_at"] = "approved", now
-                return {"proposal_id": pid}
-            return None
-        raise AssertionError("unexpected afetch_one: " + q)
-
-    async def aexecute(self, q, params):
-        if "status='expired'" in q:
-            r = self.rows.get(params[0])
-            if r and r["status"] == "pending":
-                r["status"] = "expired"
-            return
-        if "status='declined'" in q:
-            now, pid = params
-            r = self.rows.get(pid)
-            if r and r["status"] == "pending":
-                r["status"], r["decided_at"] = "declined", now
-            return
-        raise AssertionError("unexpected aexecute: " + q)
 
 
 class _Rec:
@@ -128,8 +72,15 @@ class _WS:
 
 
 def _orch(db):
+    source = make_remote_confirmation_plane_source(db)
     return SimpleNamespace(
-        history=SimpleNamespace(db=db),
+        plane_repository_source=source,
+        runtime_composition=SimpleNamespace(
+            plane=SimpleNamespace(
+                runtime=source.plane_runtime,
+                repositories=source.plane_repositories,
+            )
+        ),
         credential_manager=object(),
         ui_sessions={},
         send_ui_render=_Rec(),
@@ -623,10 +574,24 @@ def real_orch(monkeypatch):
     the fake proposal store, with the scope gate PASSING — so any refusal below is
     provably the confirmation gate's, not a missing grant's."""
     from orchestrator.orchestrator import Orchestrator
-    o = Orchestrator()
+
+    proposal_storage = _FakeDB()
+    source = make_remote_confirmation_plane_source(proposal_storage)
+    o = Orchestrator.__new__(Orchestrator)
+    o.proposal_storage = proposal_storage
+    o.plane_repository_source = source
+    o.runtime_composition = SimpleNamespace(
+        plane=SimpleNamespace(
+            runtime=source.plane_runtime,
+            repositories=source.plane_repositories,
+        )
+    )
+    o.security_flags = {}
+    o.ui_sessions = {}
+    o.agent_cards = {}
     o.send_ui_render = AsyncMock()
-    o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
-    o.history = SimpleNamespace(db=_FakeDB())
+    o.tool_permissions = MagicMock()
+    o.tool_permissions.is_tool_allowed.return_value = True
     o._record_hop_audit = AsyncMock()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     return o
@@ -648,7 +613,7 @@ async def test_parallel_batch_with_destructive_verbs_still_gates(real_orch):
         any(component.get("type") == "card" for component in components)
         for components in rendered
     ) == 2
-    db = real_orch.history.db
+    db = real_orch.proposal_storage
     assert len(db.rows) == 2
     assert all(row["status"] == "pending" for row in db.rows.values())
     assert _destructive_ops(t) == []
@@ -669,7 +634,7 @@ async def test_chained_hop_reaching_destructive_verb_still_gates(real_orch):
     real_orch._record_hop_audit.assert_awaited_once()
     kw = real_orch._record_hop_audit.await_args.kwargs
     assert kw["operation"] == "mint" and kw["outcome"] == "failure"
-    (row,) = real_orch.history.db.rows.values()
+    (row,) = real_orch.proposal_storage.rows.values()
     assert row["status"] == "pending" and row["verb"] == "remove_path"
     assert _destructive_ops(t) == []
 
@@ -771,7 +736,7 @@ async def test_machine_turn_refused_even_with_full_scope_grant(real_orch):
     assert resp.error and "unattended_refused" in resp.error["message"]
     # the scope gate PASSED first — the refusal is unconditional on grants
     assert real_orch.tool_permissions.is_tool_allowed.called
-    assert real_orch.history.db.rows == {}
+    assert real_orch.proposal_storage.rows == {}
     assert t.calls == []
 
 
@@ -787,7 +752,7 @@ async def test_machine_turn_submit_refused_even_with_full_scope_grant(real_orch)
         {"submit_job": "remote-compute-1"}, "chat-1", user_id=USER)
     assert resp.error and "unattended_refused" in resp.error["message"]
     assert real_orch.tool_permissions.is_tool_allowed.called
-    assert real_orch.history.db.rows == {}
+    assert real_orch.proposal_storage.rows == {}
     assert t.calls == []
 
 
@@ -994,13 +959,8 @@ class TestProposalStoreEdges:
         # The SELECT still reads 'pending' but a concurrent tab wins the guarded
         # UPDATE, so the atomic approve returns no row — this click must report
         # "already handled" and must NOT re-enter the tool.
-        class _RacyDB(_FakeDB):
-            async def afetch_one(self, q, params):
-                if q.strip().startswith("UPDATE"):
-                    return None  # the other tab already flipped it
-                return await super().afetch_one(q, params)
-
-        db = _RacyDB()
+        db = _FakeDB()
+        db.lose_next_decision = True
         o = _orch(db)
         _seed(db, "P1", owner=USER, verb="remove_path",
               args={"machine_id": "m", "path": "/data"}, status="pending")

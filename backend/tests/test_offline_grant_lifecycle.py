@@ -1,14 +1,15 @@
 """EC-3 — real offline-grant lifecycle (features 025/028), no OfflineGrantStore mocks.
 
-Exercises ``orchestrator.offline_grant.OfflineGrantStore`` against the live
-Postgres: capture (Fernet encryption at rest, fail-closed without a key),
+Exercises ``orchestrator.offline_grant.OfflineGrantStore`` against an isolated
+current Plane PostgreSQL runtime: capture (Fernet encryption at rest,
+fail-closed without a key),
 revoke_for_user, and the per-run ``mint_access_token`` gate — which must refuse
 revoked / expired / unknown grants BEFORE any Keycloak HTTP call. Also proves
 ``web_auth.auth_logout`` revokes the signing-out user's grants through the REAL
 store (only the Keycloak revoke HTTP is monkeypatched).
 
-Every row is keyed by a uuid4 user_id (the suite shares Postgres with a running
-orchestrator) and cleaned up in ``finally`` blocks.
+Every row is keyed by a uuid4 user_id and the database is dropped after the
+module.
 """
 import asyncio
 import json
@@ -21,8 +22,11 @@ from cryptography.fernet import Fernet
 from orchestrator import offline_grant as og
 from orchestrator import web_auth
 from orchestrator.offline_grant import OfflineGrantError, OfflineGrantStore
-from orchestrator.session_store import WebSessionStore
-from shared.database import Database
+from tests.helpers.session_plane_runtime import (
+    isolated_plane_runtime,
+    purge_revocations,
+    web_session_store,
+)
 
 _DAY_MS = 86_400_000
 
@@ -39,8 +43,9 @@ class _FakeRequest:
 
 
 @pytest.fixture(scope="module")
-def db():
-    return Database()
+def plane_runtime():
+    with isolated_plane_runtime("offline_grant") as runtime:
+        yield runtime
 
 
 @pytest.fixture()
@@ -54,20 +59,42 @@ def fernet_key(monkeypatch):
 
 
 @pytest.fixture()
-def grant_store(db, fernet_key):
-    return OfflineGrantStore(db=db)
-
-
-def _grant_rows(db, user_id):
-    return db.fetch_all(
-        "SELECT * FROM user_offline_grant WHERE user_id = ? ORDER BY created_at ASC",
-        (user_id,),
+def grant_store(plane_runtime, fernet_key):
+    return OfflineGrantStore(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
     )
 
 
-def _purge_grants(db, *user_ids):
-    for uid in user_ids:
-        db.execute("DELETE FROM user_offline_grant WHERE user_id = ?", (uid,))
+def _grant_record(plane_runtime, user_id, grant_id):
+    with plane_runtime.transaction() as transaction:
+        return plane_runtime.repositories.offline_grants.get_grant(
+            transaction,
+            owner_id=user_id,
+            grant_id=grant_id,
+        )
+
+
+def _has_live_grant(plane_runtime, user_id):
+    with plane_runtime.transaction() as transaction:
+        return (
+            plane_runtime.repositories.offline_grants.find_latest_valid(
+                transaction,
+                owner_id=user_id,
+                as_of=og._now_ms(),
+            )
+            is not None
+        )
+
+
+def _revoke_grants(plane_runtime, *user_ids):
+    with plane_runtime.transaction() as transaction:
+        for user_id in user_ids:
+            plane_runtime.repositories.offline_grants.revoke_owner(
+                transaction,
+                owner_id=user_id,
+                revoked_at=og._now_ms(),
+            )
 
 
 def _install_exploding_idp(monkeypatch):
@@ -130,32 +157,33 @@ def _install_fake_idp(monkeypatch, status=200, payload=None):
 # capture — encryption at rest, fail-closed posture
 # ---------------------------------------------------------------------------
 
-def test_capture_persists_encrypted_grant(db, grant_store, fernet_key):
+def test_capture_persists_encrypted_grant(
+    plane_runtime, grant_store, fernet_key
+):
     """025 FR-022: capture stores the refresh token Fernet-encrypted with a
     365-day expiry; the plaintext never lands in the row."""
     user_id = f"u-{uuid.uuid4()}"
     plaintext = f"offline-rt-{uuid.uuid4()}"
     try:
         grant_id = grant_store.capture(user_id, plaintext, agent_id="grants")
-        rows = _grant_rows(db, user_id)
-        assert len(rows) == 1
-        row = rows[0]
-        assert str(row["id"]) == grant_id
-        assert row["agent_id"] == "grants"
-        assert row["revoked_at"] is None
+        row = _grant_record(plane_runtime, user_id, grant_id)
+        assert row is not None
+        assert row.grant_id == grant_id
+        assert row.agent_id == "grants"
+        assert row.revoked_at is None
 
-        enc = bytes(row["refresh_token_enc"])
+        enc = row.encrypted_refresh_token
         assert plaintext.encode() not in enc                      # not plaintext at rest
         assert Fernet(fernet_key.encode()).decrypt(enc).decode() == plaintext
 
         cap_days = og.OFFLINE_GRANT_MAX_DAYS
-        assert int(row["expires_at"]) - int(row["issued_at"]) == cap_days * _DAY_MS
-        assert grant_store.is_valid(grant_id) is True
+        assert row.expires_at - row.issued_at == cap_days * _DAY_MS
+        assert grant_store.is_valid(grant_id, user_id=user_id) is True
     finally:
-        _purge_grants(db, user_id)
+        _revoke_grants(plane_runtime, user_id)
 
 
-def test_capture_fails_closed_without_key(db, monkeypatch):
+def test_capture_fails_closed_without_key(plane_runtime, monkeypatch):
     """025: with OFFLINE_GRANT_ENC_KEY unset, capture refuses — it never falls
     back to plaintext storage."""
     monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
@@ -163,28 +191,33 @@ def test_capture_fails_closed_without_key(db, monkeypatch):
     user_id = f"u-{uuid.uuid4()}"
     try:
         with pytest.raises(OfflineGrantError, match="OFFLINE_GRANT_ENC_KEY"):
-            OfflineGrantStore(db=db).capture(user_id, "rt-should-never-store")
-        assert _grant_rows(db, user_id) == []
+            OfflineGrantStore(
+                plane_runtime=plane_runtime,
+                plane_repositories=plane_runtime.repositories,
+            ).capture(user_id, "rt-should-never-store")
+        assert _has_live_grant(plane_runtime, user_id) is False
     finally:
-        _purge_grants(db, user_id)
+        _revoke_grants(plane_runtime, user_id)
 
 
-def test_capture_rejects_empty_refresh_token(db, grant_store):
+def test_capture_rejects_empty_refresh_token(plane_runtime, grant_store):
     """025: a session without offline_access yields no refresh token — refuse."""
     user_id = f"u-{uuid.uuid4()}"
     try:
         with pytest.raises(OfflineGrantError, match="no refresh token"):
             grant_store.capture(user_id, "")
-        assert _grant_rows(db, user_id) == []
+        assert _has_live_grant(plane_runtime, user_id) is False
     finally:
-        _purge_grants(db, user_id)
+        _revoke_grants(plane_runtime, user_id)
 
 
 # ---------------------------------------------------------------------------
 # revoke_for_user
 # ---------------------------------------------------------------------------
 
-def test_revoke_for_user_sets_revoked_at_and_returns_count(db, grant_store):
+def test_revoke_for_user_sets_revoked_at_and_returns_count(
+    plane_runtime, grant_store
+):
     """EC-3: revoke_for_user returns the number of live grants revoked and
     stamps revoked_at; a second call is a no-op (already revoked)."""
     user_id = f"u-{uuid.uuid4()}"
@@ -192,21 +225,23 @@ def test_revoke_for_user_sets_revoked_at_and_returns_count(db, grant_store):
         grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
 
         assert grant_store.revoke_for_user(user_id) == 1
-        row = _grant_rows(db, user_id)[0]
-        assert row["revoked_at"] is not None
-        assert int(row["revoked_at"]) > 0
-        assert grant_store.is_valid(grant_id) is False
+        row = _grant_record(plane_runtime, user_id, grant_id)
+        assert row is not None and row.revoked_at is not None
+        assert row.revoked_at > 0
+        assert grant_store.is_valid(grant_id, user_id=user_id) is False
 
         assert grant_store.revoke_for_user(user_id) == 0  # idempotent
     finally:
-        _purge_grants(db, user_id)
+        _revoke_grants(plane_runtime, user_id)
 
 
 # ---------------------------------------------------------------------------
 # mint_access_token — refusal BEFORE any IdP contact (FR-024)
 # ---------------------------------------------------------------------------
 
-def test_mint_refuses_revoked_grant_before_any_idp_call(db, grant_store, monkeypatch):
+def test_mint_refuses_revoked_grant_before_any_idp_call(
+    plane_runtime, grant_store, monkeypatch
+):
     """025 FR-024: a revoked grant is refused locally — Keycloak is never hit."""
     user_id = f"u-{uuid.uuid4()}"
     calls = _install_exploding_idp(monkeypatch)
@@ -215,46 +250,65 @@ def test_mint_refuses_revoked_grant_before_any_idp_call(db, grant_store, monkeyp
         assert grant_store.revoke_for_user(user_id) == 1
 
         with pytest.raises(OfflineGrantError, match="revoked"):
-            asyncio.run(grant_store.mint_access_token(grant_id))
+            asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))
         assert calls == []
     finally:
-        _purge_grants(db, user_id)
+        _revoke_grants(plane_runtime, user_id)
 
 
-def test_mint_refuses_expired_grant_before_any_idp_call(db, grant_store, monkeypatch):
+def test_mint_refuses_expired_grant_before_any_idp_call(
+    plane_runtime, grant_store, fernet_key, monkeypatch
+):
     """025 FR-024: past the 365-day cap, mint refuses without contacting the IdP."""
     user_id = f"u-{uuid.uuid4()}"
     calls = _install_exploding_idp(monkeypatch)
     try:
-        grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
-        db.execute(
-            "UPDATE user_offline_grant SET expires_at = ? WHERE id = ?",
-            (og._now_ms() - 1, grant_id),
+        grant_id = str(uuid.uuid4())
+        now = og._now_ms()
+        ciphertext = Fernet(fernet_key.encode()).encrypt(
+            f"rt-{uuid.uuid4()}".encode()
         )
-        assert grant_store.is_valid(grant_id) is False
+        with plane_runtime.transaction() as transaction:
+            plane_runtime.repositories.offline_grants.create_grant(
+                transaction,
+                grant_id=grant_id,
+                owner_id=user_id,
+                agent_id=None,
+                encrypted_refresh_token=ciphertext,
+                issued_at=now - 2,
+                expires_at=now - 1,
+            )
+        assert grant_store.is_valid(grant_id, user_id=user_id) is False
 
         with pytest.raises(OfflineGrantError, match="expired"):
-            asyncio.run(grant_store.mint_access_token(grant_id))
+            asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))
         assert calls == []
     finally:
-        _purge_grants(db, user_id)
+        _revoke_grants(plane_runtime, user_id)
 
 
-def test_mint_refuses_unknown_grant_before_any_idp_call(db, fernet_key, monkeypatch):
+def test_mint_refuses_unknown_grant_before_any_idp_call(
+    plane_runtime, fernet_key, monkeypatch
+):
     """025: a nonexistent grant id is refused locally."""
     calls = _install_exploding_idp(monkeypatch)
-    store = OfflineGrantStore(db=db)
+    store = OfflineGrantStore(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
     with pytest.raises(OfflineGrantError, match="not found"):
-        asyncio.run(store.mint_access_token(str(uuid.uuid4())))
+        asyncio.run(store.mint_access_token(str(uuid.uuid4()), user_id="missing-user"))
     assert calls == []
-    assert store.is_valid(str(uuid.uuid4())) is False
+    assert store.is_valid(str(uuid.uuid4()), user_id="missing-user") is False
 
 
 # ---------------------------------------------------------------------------
 # mint_access_token — exchange path (HTTP boundary faked, store real)
 # ---------------------------------------------------------------------------
 
-def test_mint_happy_path_round_trips_refresh_token(db, grant_store, monkeypatch):
+def test_mint_happy_path_round_trips_refresh_token(
+    plane_runtime, grant_store, monkeypatch
+):
     """025: a live grant decrypts back to the original refresh token and posts
     a grant_type=refresh_token exchange; the fresh access token is returned."""
     user_id = f"u-{uuid.uuid4()}"
@@ -267,7 +321,9 @@ def test_mint_happy_path_round_trips_refresh_token(db, grant_store, monkeypatch)
     )
     try:
         grant_id = grant_store.capture(user_id, plaintext)
-        token = asyncio.run(grant_store.mint_access_token(grant_id))
+        token = asyncio.run(
+            grant_store.mint_access_token(grant_id, user_id=user_id)
+        )
         assert token == "fresh-at-123"
 
         assert len(captured) == 1
@@ -278,10 +334,12 @@ def test_mint_happy_path_round_trips_refresh_token(db, grant_store, monkeypatch)
         assert data["refresh_token"] == plaintext        # Fernet round-trip
         assert "client_secret" not in data
     finally:
-        _purge_grants(db, user_id)
+        _revoke_grants(plane_runtime, user_id)
 
 
-def test_mint_fails_safe_on_idp_rejection(db, grant_store, monkeypatch):
+def test_mint_fails_safe_on_idp_rejection(
+    plane_runtime, grant_store, monkeypatch
+):
     """025 FR-024: Keycloak-side revocation (non-200 exchange) fails the run safe."""
     user_id = f"u-{uuid.uuid4()}"
     monkeypatch.setenv("KEYCLOAK_TOKEN_URL", "http://keycloak.test/token")
@@ -289,16 +347,18 @@ def test_mint_fails_safe_on_idp_rejection(db, grant_store, monkeypatch):
     try:
         grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
         with pytest.raises(OfflineGrantError, match="refresh exchange failed"):
-            asyncio.run(grant_store.mint_access_token(grant_id))
+            asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))
     finally:
-        _purge_grants(db, user_id)
+        _revoke_grants(plane_runtime, user_id)
 
 
 # ---------------------------------------------------------------------------
 # auth_logout integration — REAL OfflineGrantStore (FR-012 / 025 linkage)
 # ---------------------------------------------------------------------------
 
-def test_auth_logout_revokes_real_offline_grant(db, grant_store, monkeypatch):
+def test_auth_logout_revokes_real_offline_grant(
+    plane_runtime, grant_store, monkeypatch
+):
     """028 FR-012: /auth/logout revokes the user's feature-025 offline grants
     through the real store — only the Keycloak revoke HTTP is faked."""
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
@@ -307,8 +367,9 @@ def test_auth_logout_revokes_real_offline_grant(db, grant_store, monkeypatch):
     monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
 
-    session_store = WebSessionStore(db=db)
+    session_store = web_session_store(plane_runtime)
     monkeypatch.setattr(web_auth, "_get_store", lambda: session_store)
+    monkeypatch.setattr(og, "get_offline_grant_store", lambda: grant_store)
 
     revoked_refresh = []
 
@@ -326,7 +387,7 @@ def test_auth_logout_revokes_real_offline_grant(db, grant_store, monkeypatch):
         hard_max_seconds=web_auth.HARD_MAX_SECONDS,
     )
     grant_id = grant_store.capture(user_id, f"offline-rt-{uuid.uuid4()}")
-    assert grant_store.is_valid(grant_id) is True
+    assert grant_store.is_valid(grant_id, user_id=user_id) is True
 
     req = _FakeRequest(cookies={web_auth.COOKIE_NAME: web_auth._sign(sid)})
     try:
@@ -338,15 +399,15 @@ def test_auth_logout_revokes_real_offline_grant(db, grant_store, monkeypatch):
         assert revoked_refresh == [session_refresh]
 
         # The REAL store marked the grant revoked, and mint now refuses it.
-        row = _grant_rows(db, user_id)[0]
-        assert row["revoked_at"] is not None
-        assert grant_store.is_valid(grant_id) is False
+        row = _grant_record(plane_runtime, user_id, grant_id)
+        assert row is not None and row.revoked_at is not None
+        assert grant_store.is_valid(grant_id, user_id=user_id) is False
         calls = _install_exploding_idp(monkeypatch)
         with pytest.raises(OfflineGrantError, match="revoked"):
-            asyncio.run(grant_store.mint_access_token(grant_id))
+            asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))
         assert calls == []
     finally:
         web_auth._SESSIONS.pop(sid, None)
         session_store.delete(sid)
-        _purge_grants(db, user_id)
-        db.execute("DELETE FROM auth_revocation_queue WHERE user_id = ?", (user_id,))
+        _revoke_grants(plane_runtime, user_id)
+        purge_revocations(plane_runtime, (user_id,))

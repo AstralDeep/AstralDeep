@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import read_attachment_bytes
 
 logger = logging.getLogger("FileTools.read_presentation")
 
@@ -30,10 +30,10 @@ def _parse_slide_range(spec: Optional[str], total: int) -> List[int]:
     return pages
 
 
-def _read_pptx(path: Path, slide_range: Optional[str]) -> Dict[str, Any]:
+def _read_pptx(payload: bytes, slide_range: Optional[str]) -> Dict[str, Any]:
     from pptx import Presentation  # type: ignore
 
-    prs = Presentation(str(path))
+    prs = Presentation(io.BytesIO(payload))
     indices = _parse_slide_range(slide_range, len(prs.slides))
     out: List[Dict[str, Any]] = []
     for idx in indices:
@@ -64,12 +64,12 @@ def _read_pptx(path: Path, slide_range: Optional[str]) -> Dict[str, Any]:
     return {"slide_count": len(prs.slides), "slides": out}
 
 
-def _read_odp(path: Path, slide_range: Optional[str]) -> Dict[str, Any]:
+def _read_odp(payload: bytes, slide_range: Optional[str]) -> Dict[str, Any]:
     from odf.opendocument import load  # type: ignore
     from odf import draw  # type: ignore
     from odf import text as odftext  # type: ignore
 
-    doc = load(str(path))
+    doc = load(io.BytesIO(payload))
     pages = doc.getElementsByType(draw.Page)
     indices = _parse_slide_range(slide_range, len(pages))
     out = []
@@ -93,15 +93,15 @@ def read_presentation(
     **_ignored: Any,
 ) -> Dict[str, Any]:
     """Read a presentation attachment (PPTX or ODP) and return slide text."""
-    att, path, err = resolve_attachment(attachment_id, user_id)
+    att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err
     base = {"filename": att.filename}
     try:
         if att.extension == "pptx":
-            base.update(_read_pptx(path, slide_range))
+            base.update(_read_pptx(payload, slide_range))
         elif att.extension == "odp":
-            base.update(_read_odp(path, slide_range))
+            base.update(_read_odp(payload, slide_range))
         else:
             return {"error": {
                 "code": "unsupported",

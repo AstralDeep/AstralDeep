@@ -1,36 +1,44 @@
 {
   "schema_version": 1,
-  "fixture_id": "runtime-lock-contract-060-v1",
-  "runtime_contract_version": 2,
+  "fixture_id": "runtime-lock-contract-074-v3",
+  "runtime_contract_version": 3,
   "digest_algorithm": "sha256",
-  "lock_artifact": "windows-client/requirements-release.lock.txt",
-  "lock_digest": "82d58a54a8cd1a7ffd925d724ba247f0cfb09e4de0747aeca4a869f7dd87ba35",
+  "lock_artifact": "components/AstralProjection/windows-client/requirements-release.lock.txt",
+  "lock_digest": "948def355ae1e4c37478d2c87c287d41d3a81055a96ff813c341d1b466096943",
   "bundle_digest_contract": "canonical-json-utf8-v1",
   "bundle_digest_vector": {
     "files": {
       "agent_main.py": "# canonical digest vector\n",
       "astralprims_ui.py": "def normalize(value):\n    return value\n",
+      "protected_executor.py": "# public LETS executor adapter\n",
       "mcp_tools.py": "TOOL_REGISTRY = {}\n"
     },
-    "bundle_sha256": "2403aaf8410384f752d030dc90dd5c1456541dad858cb6475f8b5644ed590842"
+    "bundle_sha256": "47551378703e045e5d1dbddf717a6fb76a26556aab916814e495928f95bfaaf1"
   },
   "compatibility_vectors": [
     {
       "id": "exact-contract-and-lock",
-      "advertised_runtime_contract_version": 2,
-      "advertised_lock_digest": "82d58a54a8cd1a7ffd925d724ba247f0cfb09e4de0747aeca4a869f7dd87ba35",
+      "advertised_runtime_contract_version": 3,
+      "advertised_lock_digest": "948def355ae1e4c37478d2c87c287d41d3a81055a96ff813c341d1b466096943",
       "compatible": true
+    },
+    {
+      "id": "legacy-v2-dispatch-mediated-only",
+      "advertised_runtime_contract_version": 2,
+      "advertised_lock_digest": "948def355ae1e4c37478d2c87c287d41d3a81055a96ff813c341d1b466096943",
+      "compatible": false,
+      "refusal_code": "legacy_runtime_dispatch_mediated_only"
     },
     {
       "id": "runtime-contract-mismatch",
       "advertised_runtime_contract_version": 1,
-      "advertised_lock_digest": "82d58a54a8cd1a7ffd925d724ba247f0cfb09e4de0747aeca4a869f7dd87ba35",
+      "advertised_lock_digest": "948def355ae1e4c37478d2c87c287d41d3a81055a96ff813c341d1b466096943",
       "compatible": false,
       "refusal_code": "runtime_contract_unsupported"
     },
     {
       "id": "lock-digest-mismatch",
-      "advertised_runtime_contract_version": 2,
+      "advertised_runtime_contract_version": 3,
       "advertised_lock_digest": "0000000000000000000000000000000000000000000000000000000000000000",
       "compatible": false,
       "refusal_code": "runtime_lock_mismatch"

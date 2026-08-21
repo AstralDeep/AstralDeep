@@ -10,10 +10,11 @@ fonts are real woff2 binaries declared with ``font-display: swap``.
 import re
 from pathlib import Path
 
-WEBRENDER_DIR = Path(__file__).resolve().parents[1] / "webrender"
-SHELL_PATH = WEBRENDER_DIR / "templates" / "shell.html"
-CSS_PATH = WEBRENDER_DIR / "static" / "astral.css"
-FONTS_DIR = WEBRENDER_DIR / "static" / "fonts"
+from astralprojection.resources import static_path, static_root, template_path
+
+SHELL_PATH = template_path("shell.html")
+CSS_PATH = static_path("astral.css")
+FONTS_DIR = Path(str(static_root())) / "fonts"
 
 
 def _shell() -> str:

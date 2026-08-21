@@ -11,28 +11,29 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-if not (REPO_ROOT / "apple-clients").is_dir():
+PROJECTION_ROOT = REPO_ROOT / "components" / "AstralProjection"
+if not (PROJECTION_ROOT / "apple-clients").is_dir():
     pytest.skip(
         "repo-root Apple manifests are not part of the product image",
         allow_module_level=True,
     )
 PROJECT = (
     REPO_ROOT
-    / "apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj"
+    / "components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj"
 )
 RESOLUTION = (
     REPO_ROOT
-    / "apple-clients/AstralApp/AstralApp.xcodeproj/project.xcworkspace"
+    / "components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj/project.xcworkspace"
     / "xcshareddata/swiftpm/Package.resolved"
 )
-CORE_PACKAGE = REPO_ROOT / "apple-clients/AstralCore/Package.swift"
-BASE_CONFIG = REPO_ROOT / "apple-clients/Config/Base.xcconfig"
+CORE_PACKAGE = REPO_ROOT / "components/AstralProjection/apple-clients/AstralCore/Package.swift"
+BASE_CONFIG = REPO_ROOT / "components/AstralProjection/apple-clients/Config/Base.xcconfig"
 MACOS_ENTITLEMENTS = (
-    REPO_ROOT / "apple-clients/AstralApp/AstralApp-macOS.entitlements"
+    REPO_ROOT / "components/AstralProjection/apple-clients/AstralApp/AstralApp-macOS.entitlements"
 )
 VOICE_SESSION_CONTROLLER = (
     REPO_ROOT
-    / "apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift"
+    / "components/AstralProjection/apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift"
 )
 DEPENDENCY_APPROVAL_PATH = Path(
     os.environ.get(

@@ -28,12 +28,17 @@ raw ``agent_scopes`` query.
 Part of the RFC 8693 Delegated Authorization framework.
 """
 import contextvars
-import os
-import json
 import time
 import logging
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Dict, List, Optional
+
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    repository_from,
+)
 
 logger = logging.getLogger("ToolPermissions")
 
@@ -73,6 +78,82 @@ VALID_SCOPES = ["tools:read", "tools:write", "tools:search", "tools:system",
                 "tools:files", "tools:execute"]
 
 
+def resolve_effective_tool_permissions(
+    tool_scope_map: Mapping[str, str],
+    *,
+    owner_id: str,
+    agent_id: str,
+    scope_rows: Iterable[object],
+    override_rows: Iterable[object],
+    safe_default: bool = False,
+) -> Dict[str, Dict[str, bool]]:
+    """Resolve a detached, exactly owner-scoped permission snapshot.
+
+    This is the canonical pure form of the permission-picker precedence used
+    by :meth:`ToolPermissionManager.get_effective_tool_permissions`. Callers
+    that already loaded typed Plane rows can reuse it without issuing another
+    query, while runtime and UI policy retain identical ordering.
+
+    Every row is re-fenced to ``(owner_id, agent_id)`` before it can affect a
+    decision. A mixed-owner or mixed-agent snapshot raises instead of leaking
+    another principal's grant into the result.
+    """
+    if not isinstance(owner_id, str) or not owner_id:
+        raise ValueError("owner_id must be a non-empty string")
+    if not isinstance(agent_id, str) or not agent_id:
+        raise ValueError("agent_id must be a non-empty string")
+
+    explicit_scope: Dict[str, bool] = {}
+    for row in scope_rows:
+        if (
+            getattr(row, "owner_id", None) != owner_id
+            or getattr(row, "agent_id", None) != agent_id
+        ):
+            raise RuntimeError("tool permission scope snapshot crossed its owner fence")
+        scope = getattr(row, "scope", None)
+        enabled = getattr(row, "enabled", None)
+        if not isinstance(scope, str) or not scope or not isinstance(enabled, bool):
+            raise RuntimeError("tool permission scope snapshot is invalid")
+        explicit_scope[scope] = enabled
+
+    kind_lookup: Dict[str, Dict[str, bool]] = {}
+    legacy_disabled: set[str] = set()
+    for row in override_rows:
+        if (
+            getattr(row, "owner_id", None) != owner_id
+            or getattr(row, "agent_id", None) != agent_id
+        ):
+            raise RuntimeError("tool override snapshot crossed its owner fence")
+        tool_name = getattr(row, "tool_name", None)
+        permission_kind = getattr(row, "permission_kind", None)
+        enabled = getattr(row, "enabled", None)
+        if (
+            not isinstance(tool_name, str)
+            or not tool_name
+            or (permission_kind is not None and not isinstance(permission_kind, str))
+            or not isinstance(enabled, bool)
+        ):
+            raise RuntimeError("tool override snapshot is invalid")
+        if permission_kind is None:
+            if not enabled:
+                legacy_disabled.add(tool_name)
+        else:
+            kind_lookup.setdefault(tool_name, {})[permission_kind] = enabled
+
+    result: Dict[str, Dict[str, bool]] = {}
+    for tool_name, required_scope in tool_scope_map.items():
+        if tool_name in legacy_disabled:
+            effective = False
+        elif required_scope in kind_lookup.get(tool_name, {}):
+            effective = kind_lookup[tool_name][required_scope]
+        elif required_scope in explicit_scope:
+            effective = explicit_scope[required_scope]
+        else:
+            effective = bool(safe_default)
+        result[tool_name] = {required_scope: effective}
+    return result
+
+
 class ToolPermissionManager:
     """Manages per-user, per-agent scope-based permissions backed by PostgreSQL.
 
@@ -95,42 +176,77 @@ class ToolPermissionManager:
     docstring and :meth:`_resolve_tool_allowed`.
     """
 
-    def __init__(self, db=None, data_dir: str = None, database_url: str = None):
-        if db is not None:
-            self.db = db
-        elif data_dir is not None or database_url is not None:
-            import sys
-            sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-            from shared.database import Database
-            self.db = Database(database_url)
-        else:
-            raise ValueError("Either db, data_dir, or database_url must be provided")
+    def __init__(
+        self,
+        db=None,
+        data_dir: str = None,
+        database_url: str = None,
+        *,
+        plane_runtime=None,
+        plane_repositories=None,
+        plane_repository=None,
+        agent_repository=None,
+        user_agent_registry=None,
+    ):
+        if database_url is not None:
+            raise ValueError(
+                "ToolPermissionManager no longer constructs database runtimes; "
+                "inject the application Plane runtime"
+            )
+        if db is None and plane_runtime is None:
+            raise ValueError("ToolPermissionManager requires the application Plane runtime")
+        self.db = db
+        self.user_agent_registry = user_agent_registry
 
         self.data_dir = data_dir
+        repository, runtime = repository_from(
+            "tool_policy_state",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=self.db,
+        )
+        self._policy = PlaneRepositoryContext(
+            repository=plane_repository or repository,
+            plane_runtime=runtime,
+            legacy_database=self.db,
+        )
+        agents, agents_runtime = repository_from(
+            "agents",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=self.db,
+        )
+        self._agents = PlaneRepositoryContext(
+            repository=agent_repository or agents,
+            plane_runtime=agents_runtime,
+            legacy_database=self.db,
+        )
         # In-memory tool→scope mapping populated by orchestrator on agent registration
         # Structure: { agent_id: { tool_name: scope_string } }
         self._tool_scope_map: Dict[str, Dict[str, str]] = {}
         # Feature 040: short-TTL cache of agent_trust.is_safe so the
         # safe-baseline check stays off the per-call DB hot path.
         self._safe_cache: Dict[str, tuple] = {}
-        self._migrate_from_json()
+        self._reject_legacy_json()
 
-    def _migrate_from_json(self):
-        """One-time migration from legacy JSON file to database."""
+    def _reject_legacy_json(self) -> None:
+        """Fail closed when preserved pre-Plane permission state is present.
+
+        Deep no longer owns a data importer for this durable state.  In
+        particular, startup must not parse, rename, or otherwise mutate the
+        operator's only legacy copy.  Recovery belongs at an explicit,
+        evidence-backed Plane boundary.
+        """
         if not self.data_dir:
             return
-        json_path = os.path.join(self.data_dir, "tool_permissions.json")
-        if not os.path.exists(json_path):
+        json_path = Path(self.data_dir) / "tool_permissions.json"
+        if not json_path.is_file() or json_path.stat().st_size == 0:
             return
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                json.load(f)
-            # Legacy format was per-tool; we can't auto-migrate to scopes meaningfully
-            # Just rename the file so migration doesn't re-run
-            os.rename(json_path, json_path + ".bak")
-            logger.info("Archived legacy tool_permissions.json (scope-based model now active)")
-        except Exception as e:
-            logger.error(f"Failed to archive legacy tool permissions: {e}")
+        raise RuntimeError(
+            "legacy tool_permissions.json is preserved and cannot be imported "
+            "by AstralDeep; complete an evidence-backed AstralPlane recovery "
+            "before startup"
+        )
 
     # ── Tool→Scope Mapping ──────────────────────────────────────────────
 
@@ -164,11 +280,12 @@ class ToolPermissionManager:
         Returns a dict of {scope: enabled} for all 4 scopes.
         Default: all scopes disabled (False).
         """
-        rows = self.db.fetch_all(
-            "SELECT scope, enabled FROM agent_scopes WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id)
+        rows = self._policy.call(
+            self._policy.repository.list_scopes,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
-        stored = {row['scope']: bool(row['enabled']) for row in rows}
+        stored = {row.scope: row.enabled for row in rows}
         # Fill in defaults for any missing scopes
         return {scope: stored.get(scope, False) for scope in VALID_SCOPES}
 
@@ -180,11 +297,83 @@ class ToolPermissionManager:
         agents (rows exist, possibly all disabled — affordance still shown)
         or enabled some (no affordance).
         """
-        row = self.db.fetch_one(
-            "SELECT 1 AS one FROM agent_scopes WHERE user_id = ? AND enabled LIMIT 1",
-            (user_id,)
+        return self._policy.call(
+            self._policy.repository.has_any_enabled_scope,
+            owner_id=user_id,
         )
-        return row is not None
+
+    def list_disabled_agents(self, user_id: str) -> tuple[str, ...]:
+        """Return the user's explicitly disabled agent identifiers.
+
+        This is the application-facing boundary for the Plane-owned
+        ``disabled_agents`` preference.  Callers must not reach through
+        ``HistoryManager`` or the retiring Deep database facade to inspect it.
+        """
+        return self._policy.call(
+            self._policy.repository.list_disabled_agents,
+            owner_id=user_id,
+        )
+
+    def is_agent_disabled(self, user_id: str, agent_id: str) -> bool:
+        """Return whether ``agent_id`` is explicitly disabled for ``user_id``."""
+        return agent_id in self.list_disabled_agents(user_id)
+
+    def set_agent_disabled(
+        self,
+        user_id: str,
+        agent_id: str,
+        disabled: bool,
+    ) -> bool:
+        """Persist an explicit per-user agent enable/disable preference.
+
+        Returns ``True`` only when the stored preference changed.  Plane owns
+        the row lock and JSON preference update in the caller transaction.
+        """
+        return self._policy.call(
+            self._policy.repository.set_agent_disabled,
+            owner_id=user_id,
+            agent_id=agent_id,
+            disabled=disabled,
+            updated_at=int(time.time() * 1000),
+        )
+
+    def get_tool_selection(
+        self,
+        user_id: str,
+        agent_id: str,
+    ) -> Optional[List[str]]:
+        """Return the saved tool-picker subset, or ``None`` when unrestricted."""
+        selected = self._policy.call(
+            self._policy.repository.get_tool_selection,
+            owner_id=user_id,
+            agent_id=agent_id,
+        )
+        return None if selected is None else list(selected)
+
+    def set_tool_selection(
+        self,
+        user_id: str,
+        agent_id: str,
+        selected_tools: List[str],
+    ) -> List[str]:
+        """Persist the validated, non-empty tool-picker subset."""
+        selected = self._policy.call(
+            self._policy.repository.set_tool_selection,
+            owner_id=user_id,
+            agent_id=agent_id,
+            selected_tools=selected_tools,
+            updated_at=int(time.time() * 1000),
+        )
+        return list(selected)
+
+    def clear_tool_selection(self, user_id: str, agent_id: str) -> bool:
+        """Remove the saved subset so normal permission resolution applies."""
+        return self._policy.call(
+            self._policy.repository.clear_tool_selection,
+            owner_id=user_id,
+            agent_id=agent_id,
+            updated_at=int(time.time() * 1000),
+        )
 
     def scopes_required_by_tools(self, agent_id: str, exclude=("tools:write",)) -> List[str]:
         """Scopes the agent's registered tools actually use, minus ``exclude``.
@@ -202,13 +391,12 @@ class ToolPermissionManager:
 
         Returns False if no record exists (default = disabled).
         """
-        row = self.db.fetch_one(
-            "SELECT enabled FROM agent_scopes WHERE user_id = ? AND agent_id = ? AND scope = ?",
-            (user_id, agent_id, scope)
+        rows = self._policy.call(
+            self._policy.repository.list_scopes,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
-        if row is None:
-            return False
-        return bool(row['enabled'])
+        return next((row.enabled for row in rows if row.scope == scope), False)
 
     def set_agent_scopes(self, user_id: str, agent_id: str, scopes: Dict[str, bool]):
         """Set scope permissions for a user/agent combination.
@@ -219,18 +407,19 @@ class ToolPermissionManager:
             scopes: Dict of {scope: enabled} for each scope to set.
         """
         now = int(time.time() * 1000)
+        valid: Dict[str, bool] = {}
         for scope, enabled in scopes.items():
             if scope not in VALID_SCOPES:
                 logger.warning(f"Ignoring invalid scope: {scope}")
                 continue
-            self.db.execute(
-                """INSERT INTO agent_scopes
-                   (user_id, agent_id, scope, enabled, updated_at)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT (user_id, agent_id, scope)
-                   DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = EXCLUDED.updated_at""",
-                (user_id, agent_id, scope, bool(enabled), now)
-            )
+            valid[scope] = bool(enabled)
+        self._policy.call(
+            self._policy.repository.set_scopes,
+            owner_id=user_id,
+            agent_id=agent_id,
+            scopes=valid,
+            updated_at=now,
+        )
         logger.info(
             f"Scopes updated: user={user_id} agent={agent_id} "
             f"scopes={scopes}"
@@ -244,11 +433,12 @@ class ToolPermissionManager:
         Returns a dict of {tool_name: enabled} only for tools that have
         an explicit override. Tools not in this dict follow scope default.
         """
-        rows = self.db.fetch_all(
-            "SELECT tool_name, enabled FROM tool_overrides WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id)
+        rows = self._policy.call(
+            self._policy.repository.list_overrides,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
-        return {row['tool_name']: bool(row['enabled']) for row in rows}
+        return {row.tool_name: row.enabled for row in rows}
 
     def set_tool_overrides(self, user_id: str, agent_id: str, overrides: Dict[str, bool]):
         """Set per-tool enable/disable overrides.
@@ -262,21 +452,24 @@ class ToolPermissionManager:
             if enabled:
                 # Remove only the legacy NULL-kind row so Feature 013 per-(tool, kind)
                 # rows are preserved.
-                self.db.execute(
-                    "DELETE FROM tool_overrides WHERE user_id = ? AND agent_id = ? "
-                    "AND tool_name = ? AND permission_kind IS NULL",
-                    (user_id, agent_id, tool_name)
+                self._policy.call(
+                    self._policy.repository.clear_tool_override,
+                    owner_id=user_id,
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                    permission_kind=None,
                 )
             else:
                 # Match the 4-col expression-based unique index
                 # (user_id, agent_id, tool_name, COALESCE(permission_kind, '')).
-                self.db.execute(
-                    """INSERT INTO tool_overrides
-                       (user_id, agent_id, tool_name, permission_kind, enabled, updated_at)
-                       VALUES (?, ?, ?, NULL, ?, ?)
-                       ON CONFLICT (user_id, agent_id, tool_name, COALESCE(permission_kind, ''))
-                       DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = EXCLUDED.updated_at""",
-                    (user_id, agent_id, tool_name, False, now)
+                self._policy.call(
+                    self._policy.repository.set_tool_override,
+                    owner_id=user_id,
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                    permission_kind=None,
+                    enabled=False,
+                    updated_at=now,
                 )
         logger.info(
             f"Tool overrides updated: user={user_id} agent={agent_id} "
@@ -319,28 +512,46 @@ class ToolPermissionManager:
         # tools, INDEPENDENT of any (stray) scope row. can_user_use_agent returns
         # True for every non-user-agent, so built-ins/public are unaffected.
         try:
-            from orchestrator.user_agents import can_user_use_agent
-            if not can_user_use_agent(self.db, user_id, agent_id):
+            user_agent = self._agents.call(
+                self._agents.repository.get_agent_for_administration,
+                agent_id=agent_id,
+            )
+            if user_agent is not None and (
+                user_agent.deleted_at is not None or user_agent.owner_id != user_id
+            ):
                 return False
         except Exception:
-            logger.debug("user-agent isolation check failed (allowing normal resolution)", exc_info=True)
+            logger.debug(
+                "user-agent isolation check failed (allowing normal resolution)",
+                exc_info=True,
+            )
         # 1. Per-(tool, kind) row takes priority
-        kind_row = self.db.fetch_one(
-            """SELECT enabled FROM tool_overrides
-               WHERE user_id = ? AND agent_id = ? AND tool_name = ?
-                 AND permission_kind = ?""",
-            (user_id, agent_id, tool_name, required_scope),
+        override_rows = self._policy.call(
+            self._policy.repository.list_overrides,
+            owner_id=user_id,
+            agent_id=agent_id,
+        )
+        kind_row = next(
+            (
+                row
+                for row in override_rows
+                if row.tool_name == tool_name
+                and row.permission_kind == required_scope
+            ),
+            None,
         )
         if kind_row is not None:
-            return bool(kind_row["enabled"])
+            return kind_row.enabled
         # 2. Legacy tool-wide override (permission_kind IS NULL) can still block
-        legacy_row = self.db.fetch_one(
-            """SELECT enabled FROM tool_overrides
-               WHERE user_id = ? AND agent_id = ? AND tool_name = ?
-                 AND permission_kind IS NULL""",
-            (user_id, agent_id, tool_name),
+        legacy_row = next(
+            (
+                row
+                for row in override_rows
+                if row.tool_name == tool_name and row.permission_kind is None
+            ),
+            None,
         )
-        if legacy_row is not None and not bool(legacy_row["enabled"]):
+        if legacy_row is not None and not legacy_row.enabled:
             return False
         # 3. Fall back to the agent-wide scope. Feature 040: an owner-approved
         # "safe" agent flips this baseline from deny→allow — but ONLY when the
@@ -348,12 +559,14 @@ class ToolPermissionManager:
         # agent_scopes row, including enabled=False) always wins. Hard
         # security-flag blocks are an independent upstream gate (orchestrator
         # dispatch), unaffected here.
-        scope_row = self.db.fetch_one(
-            "SELECT enabled FROM agent_scopes WHERE user_id = ? AND agent_id = ? AND scope = ?",
-            (user_id, agent_id, required_scope),
+        scope_rows = self._policy.call(
+            self._policy.repository.list_scopes,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
+        scope_row = next((row for row in scope_rows if row.scope == required_scope), None)
         if scope_row is not None:
-            return bool(scope_row["enabled"])
+            return scope_row.enabled
         if required_scope not in VALID_SCOPES:
             # A tool declaring an unknown scope has no grantable permission
             # surface (registration warns and says as much) and no scope the
@@ -381,12 +594,18 @@ class ToolPermissionManager:
         returns True; built-ins/public/drafts return False, so their baseline is
         unchanged. Fails closed on any error."""
         try:
-            from orchestrator.user_agents import get_user_agent
-            ua = get_user_agent(self.db, agent_id)
+            record = self._agents.call(
+                self._agents.repository.get_agent_for_administration,
+                agent_id=agent_id,
+            )
         except Exception:
             logger.debug("owned-user-agent check failed", exc_info=True)
             return False
-        return bool(ua) and ua.get("owner_user_id") == user_id
+        return bool(
+            record is not None
+            and record.deleted_at is None
+            and record.owner_id == user_id
+        )
 
     def _is_safe_agent(self, agent_id: str) -> bool:
         """Whether ``agent_id`` is an owner-approved 'safe' agent (feature 040).
@@ -407,7 +626,11 @@ class ToolPermissionManager:
         if cached is not None and cached[1] > now:
             return cached[0]
         try:
-            val = bool(self.db.get_agent_is_safe(agent_id))
+            trust = self._agents.call(
+                self._agents.repository.get_trust,
+                agent_id=agent_id,
+            )
+            val = bool(trust is not None and trust.is_safe)
         except Exception:
             val = False
         self._safe_cache[agent_id] = (val, now + 30.0)
@@ -432,10 +655,13 @@ class ToolPermissionManager:
         if cached is not None and cached[1] > now:
             return cached[0]
         try:
-            own = self.db.get_agent_ownership(agent_id)
+            ownership = self._agents.call(
+                self._agents.repository.get_ownership,
+                agent_id=agent_id,
+            )
         except Exception:
             return False  # fail closed on lookup error (do not cache)
-        val = True if own is None else bool(own.get("is_public"))
+        val = True if ownership is None else ownership.is_public
         cache[agent_id] = (val, now + 30.0)
         return val
 
@@ -453,11 +679,12 @@ class ToolPermissionManager:
         required_scope = self.get_tool_scope(agent_id, tool_name)
         if required_scope in VALID_SCOPES:
             self.set_tool_permission(user_id, agent_id, tool_name, required_scope, enabled)
-            self.db.execute(
-                """DELETE FROM tool_overrides
-                   WHERE user_id = ? AND agent_id = ? AND tool_name = ?
-                     AND permission_kind IS NULL""",
-                (user_id, agent_id, tool_name),
+            self._policy.call(
+                self._policy.repository.clear_tool_override,
+                owner_id=user_id,
+                agent_id=agent_id,
+                tool_name=tool_name,
+                permission_kind=None,
             )
         else:
             # Unknown/legacy scope — the tool-wide row is all that exists.
@@ -498,39 +725,25 @@ class ToolPermissionManager:
             safe_default = self._is_safe_agent(agent_id) and self._safe_flip_allowed(agent_id)
         # Raw scope rows so an explicit opt-out (enabled=False) is distinguished
         # from an absent scope, which alone falls through to safe_default.
-        scope_rows = self.db.fetch_all(
-            "SELECT scope, enabled FROM agent_scopes WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id),
+        scope_rows = self._policy.call(
+            self._policy.repository.list_scopes,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
-        explicit_scope = {row["scope"]: bool(row["enabled"]) for row in scope_rows}
         # Pull per-kind AND legacy override rows in one query, split in Python.
-        override_rows = self.db.fetch_all(
-            """SELECT tool_name, permission_kind, enabled FROM tool_overrides
-               WHERE user_id = ? AND agent_id = ?""",
-            (user_id, agent_id),
+        override_rows = self._policy.call(
+            self._policy.repository.list_overrides,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
-        kind_lookup: Dict[str, Dict[str, bool]] = {}
-        legacy_disabled = set()
-        for row in override_rows:
-            if row["permission_kind"] is None:
-                if not bool(row["enabled"]):
-                    legacy_disabled.add(row["tool_name"])
-            else:
-                kind_lookup.setdefault(row["tool_name"], {})[row["permission_kind"]] = bool(
-                    row["enabled"]
-                )
-        result: Dict[str, Dict[str, bool]] = {}
-        for tool_name, required_scope in scope_map.items():
-            if tool_name in legacy_disabled:
-                effective = False
-            elif tool_name in kind_lookup and required_scope in kind_lookup[tool_name]:
-                effective = kind_lookup[tool_name][required_scope]
-            elif required_scope in explicit_scope:
-                effective = explicit_scope[required_scope]
-            else:
-                effective = bool(safe_default)
-            result[tool_name] = {required_scope: effective}
-        return result
+        return resolve_effective_tool_permissions(
+            scope_map,
+            owner_id=user_id,
+            agent_id=agent_id,
+            scope_rows=scope_rows,
+            override_rows=override_rows,
+            safe_default=bool(safe_default),
+        )
 
     def set_tool_permission(
         self,
@@ -560,13 +773,14 @@ class ToolPermissionManager:
         # Use the (user_id, agent_id, tool_name, COALESCE(permission_kind, ''))
         # unique index added by the migration. ON CONFLICT requires explicit
         # constraint targeting; use the index-based form.
-        self.db.execute(
-            """INSERT INTO tool_overrides
-               (user_id, agent_id, tool_name, permission_kind, enabled, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT (user_id, agent_id, tool_name, COALESCE(permission_kind, ''))
-               DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = EXCLUDED.updated_at""",
-            (user_id, agent_id, tool_name, permission_kind, bool(enabled), now),
+        self._policy.call(
+            self._policy.repository.set_tool_override,
+            owner_id=user_id,
+            agent_id=agent_id,
+            tool_name=tool_name,
+            permission_kind=permission_kind,
+            enabled=bool(enabled),
+            updated_at=now,
         )
         logger.info(
             "Per-tool permission updated: user=%s agent=%s tool=%s kind=%s enabled=%s",
@@ -607,40 +821,34 @@ class ToolPermissionManager:
             return 0
         # Raw rows, NOT get_agent_scopes() — that helper fills absent scopes
         # with False, which is exactly the distinction this method turns on.
-        explicit_scopes = {
-            row["scope"]: bool(row["enabled"])
-            for row in self.db.fetch_all(
-                "SELECT scope, enabled FROM agent_scopes WHERE user_id = ? AND agent_id = ?",
-                (user_id, agent_id),
-            )
-        }
-        if not explicit_scopes:
-            return 0
-        existing = self.db.fetch_all(
-            """SELECT tool_name, permission_kind FROM tool_overrides
-               WHERE user_id = ? AND agent_id = ? AND permission_kind IS NOT NULL""",
-            (user_id, agent_id),
-        )
-        existing_pairs = {(r["tool_name"], r["permission_kind"]) for r in existing}
         now = int(time.time() * 1000)
         inserted = 0
-        for tool_name, required_scope in scope_map.items():
-            if (tool_name, required_scope) in existing_pairs:
-                continue
-            if required_scope not in explicit_scopes:
-                # No agent-wide decision to carry forward — leave the tool to
-                # the resolution baselines rather than freezing a denial.
-                continue
-            enabled = explicit_scopes[required_scope]
-            self.db.execute(
-                """INSERT INTO tool_overrides
-                   (user_id, agent_id, tool_name, permission_kind, enabled, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT (user_id, agent_id, tool_name, COALESCE(permission_kind, ''))
-                   DO NOTHING""",
-                (user_id, agent_id, tool_name, required_scope, enabled, now),
-            )
-            inserted += 1
+        with self._policy.transaction() as transaction:
+            explicit_scopes = {
+                row.scope: row.enabled
+                for row in self._policy.repository.list_scopes(
+                    transaction,
+                    owner_id=user_id,
+                    agent_id=agent_id,
+                )
+            }
+            if not explicit_scopes:
+                return 0
+            for tool_name, required_scope in scope_map.items():
+                if required_scope not in explicit_scopes:
+                    # No agent-wide decision to carry forward — leave the tool to
+                    # the resolution baselines rather than freezing a denial.
+                    continue
+                if self._policy.repository.create_tool_override_if_absent(
+                    transaction,
+                    owner_id=user_id,
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                    permission_kind=required_scope,
+                    enabled=explicit_scopes[required_scope],
+                    updated_at=now,
+                ):
+                    inserted += 1
         if inserted:
             logger.info(
                 "Backfilled %d per-tool permission rows for user=%s agent=%s",
@@ -686,13 +894,14 @@ class ToolPermissionManager:
         them agent-wide, whether or not a registered tool currently maps to
         them.
         """
-        rows = self.db.fetch_all(
-            "SELECT scope, enabled FROM agent_scopes WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id),
+        rows = self._policy.call(
+            self._policy.repository.list_scopes,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
         enabled = {
-            row["scope"] for row in rows
-            if bool(row["enabled"]) and row["scope"] in VALID_SCOPES
+            row.scope for row in rows
+            if row.enabled and row.scope in VALID_SCOPES
         }
         scope_map = self._tool_scope_map.get(agent_id, {})
         if scope_map:
@@ -731,38 +940,31 @@ class ToolPermissionManager:
         Returns:
             Dict of {agent_id: {scope: enabled}}
         """
-        rows = self.db.fetch_all(
-            "SELECT agent_id, scope, enabled FROM agent_scopes WHERE user_id = ?",
-            (user_id,)
+        rows = self._policy.call(
+            self._policy.repository.list_all_scopes,
+            owner_id=user_id,
         )
         result: Dict[str, Dict[str, bool]] = {}
         for row in rows:
-            agent_id = row['agent_id']
+            agent_id = row.agent_id
             if agent_id not in result:
                 result[agent_id] = {s: False for s in VALID_SCOPES}
-            result[agent_id][row['scope']] = bool(row['enabled'])
+            result[agent_id][row.scope] = row.enabled
         return result
 
     def remove_user_permissions(self, user_id: str):
         """Remove all scope permissions and tool overrides for a user."""
-        self.db.execute(
-            "DELETE FROM agent_scopes WHERE user_id = ?",
-            (user_id,)
-        )
-        self.db.execute(
-            "DELETE FROM tool_overrides WHERE user_id = ?",
-            (user_id,)
+        self._policy.call(
+            self._policy.repository.remove_owner_state,
+            owner_id=user_id,
         )
 
     def remove_agent_permissions(self, user_id: str, agent_id: str):
         """Remove all scope permissions and tool overrides for a specific agent under a user."""
-        self.db.execute(
-            "DELETE FROM agent_scopes WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id)
-        )
-        self.db.execute(
-            "DELETE FROM tool_overrides WHERE user_id = ? AND agent_id = ?",
-            (user_id, agent_id)
+        self._policy.call(
+            self._policy.repository.remove_agent_state,
+            owner_id=user_id,
+            agent_id=agent_id,
         )
 
     def cleanup_stale_tool_overrides(self, agent_id: str, live_tool_names) -> int:
@@ -781,19 +983,11 @@ class ToolPermissionManager:
         Returns:
             Number of rows deleted.
         """
-        live = list(live_tool_names)
-        if not live:
-            cursor = self.db.execute(
-                "DELETE FROM tool_overrides WHERE agent_id = ?",
-                (agent_id,)
-            )
-        else:
-            placeholders = ",".join(["?"] * len(live))
-            cursor = self.db.execute(
-                f"DELETE FROM tool_overrides WHERE agent_id = ? AND tool_name NOT IN ({placeholders})",
-                (agent_id, *live)
-            )
-        deleted = cursor.rowcount or 0
+        deleted = self._policy.call(
+            self._policy.repository.prune_agent_overrides,
+            agent_id=agent_id,
+            live_tool_names=tuple(live_tool_names),
+        )
         if deleted > 0:
             logger.info("Pruned %d stale tool_override row(s) for agent=%s", deleted, agent_id)
         return deleted

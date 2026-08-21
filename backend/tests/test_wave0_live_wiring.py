@@ -33,10 +33,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def orchestrator():
-    from orchestrator.orchestrator import Orchestrator
-
-    orch = Orchestrator()
+def orchestrator(orchestrator_factory):
+    orch = orchestrator_factory()
     # Feature 054: chat turns pre-flight the acting user's PERSISTED LLM
     # config (env vars are inert) — seed the fixture user so turns proceed.
     orch._llm_store.set_sync("wave0-user", provider="custom",

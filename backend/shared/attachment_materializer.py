@@ -17,10 +17,9 @@ never model-suppliable; the resulting attachment is owned by, and only
 resolvable by, that user (``AttachmentRepository`` enforces per-user
 ownership at the database layer).
 
-Each consuming agent runs in its own process (same ``/app/backend``
-root), so this module opens its own DB connection — the same ``_open_db``
-pattern as ``shared.attachment_resolver``. Stdlib only: ``csv``, ``io``,
-``uuid`` (sha256 hashing happens inside the attachments store).
+Each consuming application injects its one initialized attachment
+materialization service; this module never receives a raw Plane runtime, blob
+store, or repository mutation surface. Stdlib only: ``csv``, ``io``, ``uuid``.
 """
 from __future__ import annotations
 
@@ -34,26 +33,46 @@ logger = logging.getLogger("AttachmentMaterializer")
 #: Hard cap for inline/pasted payloads (bytes, UTF-8 encoded).
 MAX_INLINE_BYTES = 1024 * 1024  # 1 MB
 
-_MATERIALIZER_DB = None
+_MATERIALIZATION_SERVICE = None
 
 
-def _open_db():
-    """Open (and cache) a Database connection for this process.
+def register_materialization_service(service) -> bool:
+    """Bind the host's application-scoped durable publisher exactly once.
 
-    Uses the same env-var configuration the orchestrator uses (DB_HOST,
-    DB_PORT, DB_NAME, DB_USER, DB_PASSWORD) so a sidecar agent process
-    can materialize attachments without any explicit wiring. Mirrors
-    ``shared.attachment_resolver._open_db``.
-
-    Returns:
-        The process-wide cached ``shared.database.Database`` instance.
+    In-process consumers reuse the orchestrator runtime; a networked agent
+    process explicitly composes one application runtime before registering it.
+    Missing or conflicting bindings fail closed.
     """
-    global _MATERIALIZER_DB
-    if _MATERIALIZER_DB is not None:
-        return _MATERIALIZER_DB
-    from shared.database import Database
-    _MATERIALIZER_DB = Database()
-    return _MATERIALIZER_DB
+    if service is None or not callable(getattr(service, "materialize_bytes", None)):
+        raise ValueError("the durable attachment materialization service is required")
+
+    global _MATERIALIZATION_SERVICE
+    if _MATERIALIZATION_SERVICE is not None:
+        if _MATERIALIZATION_SERVICE is not service:
+            raise RuntimeError("attachment materialization service is already bound")
+        return False
+    _MATERIALIZATION_SERVICE = service
+    return True
+
+
+def unregister_materialization_service(service) -> None:
+    """Release the exact application publisher after every tool call is joined."""
+
+    global _MATERIALIZATION_SERVICE
+    if _MATERIALIZATION_SERVICE is None:
+        return
+    if _MATERIALIZATION_SERVICE is not service:
+        raise RuntimeError("attachment materializer unbind does not own the service")
+    _MATERIALIZATION_SERVICE = None
+
+
+def _materialization_service():
+    if _MATERIALIZATION_SERVICE is None:
+        raise RuntimeError(
+            "attachment materializer has no durable publisher; "
+            "the application must call register_materialization_service() during startup"
+        )
+    return _MATERIALIZATION_SERVICE
 
 
 def strip_code_fences(text: str) -> str:
@@ -113,7 +132,7 @@ def _validate_csv(text: str) -> None:
 def materialize_text_attachment(text: str, user_id: str, *, extension: str = "csv") -> str:
     """Persist pasted text as a real attachment owned by *user_id*.
 
-    Writes the blob through the orchestrator attachments store (same
+    Writes the blob through the application Plane store (same
     on-disk layout as ``POST /api/upload``: ``{root}/{user}/{id}/{name}``)
     and inserts the metadata row via ``AttachmentRepository``, so the
     returned id resolves through ``shared.attachment_resolver`` and shows
@@ -158,8 +177,6 @@ def materialize_text_attachment(text: str, user_id: str, *, extension: str = "cs
 
     try:
         from orchestrator.attachments import content_type as ct
-        from orchestrator.attachments import store
-        from orchestrator.attachments.repository import AttachmentRepository
     except ImportError as e:
         raise ValueError(f"Attachments subsystem unavailable: {e}") from e
 
@@ -168,42 +185,35 @@ def materialize_text_attachment(text: str, user_id: str, *, extension: str = "cs
         raise ValueError(f"Unsupported inline_data extension '.{ext}'.")
 
     try:
-        repo = AttachmentRepository(_open_db())
+        materializations = _materialization_service()
     except Exception as e:
-        raise ValueError(f"Could not open attachments database: {e}") from e
+        raise ValueError(f"Could not open attachment persistence: {e}") from e
 
     attachment_id = str(uuid.uuid4())
     filename = f"inline-data-{attachment_id[:8]}.{ext}"
-    root = store.get_upload_root()
-    path, size_bytes, sha256 = store.write(
-        user_id=user_id,
-        attachment_id=attachment_id,
-        filename=filename,
-        chunks=[data],
-        max_bytes=MAX_INLINE_BYTES,
-        root=root,
-    )
-    rel_storage = str(path.relative_to(root))
     try:
-        repo.insert(
+        attachment = materializations.materialize_bytes(
+            owner_id=user_id,
             attachment_id=attachment_id,
-            user_id=user_id,
             filename=filename,
-            content_type="text/csv" if ext == "csv" else "text/plain",
             category=category,
             extension=ext,
-            size_bytes=size_bytes,
-            sha256=sha256,
-            storage_path=rel_storage,
+            chunks=(data,),
+            max_bytes=MAX_INLINE_BYTES,
+            resolve_content_type=(
+                lambda _prefix: "text/csv" if ext == "csv" else "text/plain"
+            ),
         )
     except Exception as e:
-        # Mirror the upload router: never leave an orphaned blob behind.
-        store.delete(user_id, attachment_id, root=root)
         raise ValueError(f"Could not record inline attachment: {e}") from e
 
     logger.info(
         "Materialized inline attachment %s (%d bytes, .%s, sha256=%s…) for user=%s",
-        attachment_id, size_bytes, ext, sha256[:12], user_id,
+        attachment_id,
+        attachment.size_bytes,
+        ext,
+        attachment.sha256[:12],
+        user_id,
     )
     return attachment_id
 
@@ -211,5 +221,7 @@ def materialize_text_attachment(text: str, user_id: str, *, extension: str = "cs
 __all__ = [
     "MAX_INLINE_BYTES",
     "materialize_text_attachment",
+    "register_materialization_service",
+    "unregister_materialization_service",
     "strip_code_fences",
 ]

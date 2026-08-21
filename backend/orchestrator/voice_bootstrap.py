@@ -2686,8 +2686,9 @@ class VoiceServices:
 
 
 def build_voice_services(
-    database: Any,
     *,
+    plane_runtime: Any,
+    plane_repositories: Any | None = None,
     environ: Mapping[str, str] | None = None,
     observability: RuntimeObservability | None = None,
 ) -> VoiceServices:
@@ -2752,7 +2753,10 @@ def build_voice_services(
         )
     )
     livekit = LiveKitService(livekit_settings)
-    repository = VoiceSessionRepository(database)
+    repository = VoiceSessionRepository(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_repositories,
+    )
     coordinator = VoiceCoordinator(
         worker_pool,
         repository,

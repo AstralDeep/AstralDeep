@@ -80,7 +80,7 @@ def stub_surfaces(monkeypatch):
     html_mod.render = html_render  # no components() → not yet converted
     sys.modules["tests.stub_html_surface"] = html_mod
 
-    from webrender.chrome import surfaces as reg
+    from orchestrator import projection_surfaces as reg
     monkeypatch.setitem(reg.SURFACE_MODULES, "stub_sdui", "tests.stub_sdui_surface")
     monkeypatch.setitem(reg.SURFACE_MODULES, "stub_html", "tests.stub_html_surface")
     monkeypatch.setattr(chrome_events, "_HANDLERS", None)

@@ -7,7 +7,7 @@ and sessions, survives disconnect and sign-out, and is resolvable by
 ``user_id`` — which is what makes the mandatory first-run gate, the watch,
 and scheduled-job turns possible at all.
 
-Storage: two tables created by ``shared/database.py::_init_db``:
+Storage: two Plane-owned records exposed by the typed secrets repository:
 
 * ``user_llm_config`` — one row per configured user (PK ``user_id``).
 * ``system_llm_config`` — zero-or-one admin-managed row (PK CHECK id=1),
@@ -26,11 +26,11 @@ Security posture (spec FR-006/FR-007, carried over from 006):
 * An undecryptable row (key rotation, corruption) is treated as ABSENT:
   audited, deleted, and the user is re-gated — never a crash (FR-010).
 
-Concurrency: DB reads/writes are synchronous psycopg2 calls; the async
-wrappers run them via ``asyncio.to_thread`` so the event loop is never
-blocked (feature 052 loop-guard). A small in-process TTL cache fronts the
-reads; ``set``/``clear`` invalidate synchronously, so gate transitions are
-immediate within the process.
+Concurrency: repository reads/writes are synchronous caller-owned Plane
+transactions; the async wrappers run them via ``asyncio.to_thread`` so the
+event loop is never blocked (feature 052 loop-guard). A small in-process TTL
+cache fronts the reads; ``set``/``clear`` invalidate synchronously, so gate
+transitions are immediate within the process.
 """
 from __future__ import annotations
 
@@ -42,7 +42,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Dict, Optional
 
+from astralplane.repositories import RepositoryNotFoundError
+from astralplane.repositories.secrets import EncryptedLLMConfigRecord
 from cryptography.fernet import Fernet, InvalidToken
+from orchestrator.plane_repository_context import PlaneRepositoryContext, repository_from
 from orchestrator.work_admission import OperationState
 
 logger = logging.getLogger("LLMConfig.UserStore")
@@ -121,8 +124,27 @@ def _resolve_fernet(data_dir: Optional[str] = None) -> Fernet:
 class UserLLMConfigStore:
     """DB-backed store for per-user and system LLM configuration."""
 
-    def __init__(self, db, *, data_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        db=None,
+        *,
+        data_dir: Optional[str] = None,
+        plane_runtime=None,
+        plane_repositories=None,
+        encrypted_llm_config_repository=None,
+    ) -> None:
         self.db = db
+        repository, runtime = repository_from(
+            "encrypted_llm_config",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._repository = PlaneRepositoryContext(
+            repository=encrypted_llm_config_repository or repository,
+            plane_runtime=runtime,
+            legacy_database=db,
+        )
         self._fernet = _resolve_fernet(data_dir)
         # cache key -> (expires_monotonic, PersistedLLMConfig | None)
         self._cache: Dict[str, tuple] = {}
@@ -177,11 +199,9 @@ class UserLLMConfigStore:
         hit, value = self._cache_get(user_id)
         if hit:
             return value
-        row = self.db.fetch_one(
-            "SELECT provider, base_url, model, api_key_enc, "
-            "EXTRACT(EPOCH FROM updated_at) AS updated_at "
-            "FROM user_llm_config WHERE user_id = ?",
-            (user_id,),
+        row = self._repository.call(
+            self._repository.repository.get_user,
+            owner_id=user_id,
         )
         value = self._row_to_config(row, discard_scope="user", discard_id=user_id)
         self._cache_put(user_id, value)
@@ -198,21 +218,22 @@ class UserLLMConfigStore:
         api_key = (api_key or "").strip()
         if not base_url or not model:
             raise ValueError("base_url and model must be non-empty")
-        self.db.execute(
-            """INSERT INTO user_llm_config
-               (user_id, provider, base_url, model, api_key_enc, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, now(), now())
-               ON CONFLICT (user_id)
-               DO UPDATE SET provider = EXCLUDED.provider,
-                             base_url = EXCLUDED.base_url,
-                             model = EXCLUDED.model,
-                             api_key_enc = EXCLUDED.api_key_enc,
-                             updated_at = now()""",
-            (user_id, provider, base_url, model, self._encrypt_key(api_key)),
+        with self._repository.transaction() as transaction:
+            record = self._repository.repository.upsert_user(
+                transaction,
+                owner_id=user_id,
+                provider=provider,
+                base_url=base_url,
+                model=model,
+                api_key_ciphertext=self._encrypt_key(api_key),
+            )
+        cfg = PersistedLLMConfig(
+            provider=provider,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            updated_at=record.updated_at.timestamp(),
         )
-        cfg = PersistedLLMConfig(provider=provider, base_url=base_url,
-                                 model=model, api_key=api_key,
-                                 updated_at=time.time())
         self._cache_put(user_id, cfg)
         return cfg
 
@@ -261,48 +282,23 @@ class UserLLMConfigStore:
                 raise LLMConfigCommitDeadlineExceeded(
                     "credential save deadline elapsed before persistence"
                 )
-            if callable(getattr(transaction, "execute", None)):
-                transaction.execute(
-                    """INSERT INTO user_llm_config
-                       (user_id, provider, base_url, model, api_key_enc,
-                        created_at, updated_at)
-                       SELECT %s, %s, %s, %s, %s,
-                              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                       WHERE clock_timestamp() < %s
-                       ON CONFLICT (user_id)
-                       DO UPDATE SET provider = EXCLUDED.provider,
-                                     base_url = EXCLUDED.base_url,
-                                     model = EXCLUDED.model,
-                                     api_key_enc = EXCLUDED.api_key_enc,
-                                     updated_at = CURRENT_TIMESTAMP""",
-                    (
-                        user_id,
-                        provider,
-                        base_url,
-                        model,
-                        encrypted_key,
-                        deadline_at_utc,
-                    ),
+            if callable(getattr(transaction, "fetch_one", None)):
+                record = self._repository.repository.upsert_user_before_deadline(
+                    transaction,
+                    owner_id=user_id,
+                    provider=provider,
+                    base_url=base_url,
+                    model=model,
+                    api_key_ciphertext=encrypted_key,
+                    deadline_at=deadline_at_utc,
                 )
-                if transaction.rowcount != 1:
+                if record is None:
                     raise LLMConfigCommitDeadlineExceeded(
                         "credential save deadline elapsed before persistence"
                     )
-                # The insert can win just before the deadline. Re-read actual
-                # database wall time immediately before the completed CAS; an
-                # exception rolls the credential row back with this transaction.
-                transaction.execute(
-                    "SELECT clock_timestamp() AS current_time"
-                )
-                row = transaction.fetchone()
-                current_time = (
-                    row.get("current_time")
-                    if isinstance(row, dict)
-                    else row[0]
-                )
                 if (
                     time.monotonic() >= deadline_at_monotonic
-                    or current_time >= deadline_at_utc
+                    or record.updated_at >= deadline_at_utc
                 ):
                     raise LLMConfigCommitDeadlineExceeded(
                         "credential save deadline elapsed before completion"
@@ -333,18 +329,13 @@ class UserLLMConfigStore:
                     retry_after_ms=None,
                     transaction=transaction,
                 )
-                self.db.execute(
-                    """INSERT INTO user_llm_config
-                       (user_id, provider, base_url, model, api_key_enc,
-                        created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, now(), now())
-                       ON CONFLICT (user_id)
-                       DO UPDATE SET provider = EXCLUDED.provider,
-                                     base_url = EXCLUDED.base_url,
-                                     model = EXCLUDED.model,
-                                     api_key_enc = EXCLUDED.api_key_enc,
-                                     updated_at = now()""",
-                    (user_id, provider, base_url, model, encrypted_key),
+                self._repository.repository.upsert_user(
+                    transaction,
+                    owner_id=user_id,
+                    provider=provider,
+                    base_url=base_url,
+                    model=model,
+                    api_key_ciphertext=encrypted_key,
                 )
 
         cfg = PersistedLLMConfig(
@@ -359,9 +350,16 @@ class UserLLMConfigStore:
 
     def clear_sync(self, user_id: str) -> bool:
         """Delete the user's configuration. Returns True iff a row existed."""
-        row = self.db.fetch_one(
-            "SELECT 1 AS present FROM user_llm_config WHERE user_id = ?", (user_id,))
-        self.db.execute("DELETE FROM user_llm_config WHERE user_id = ?", (user_id,))
+        row = self._repository.call(
+            self._repository.repository.get_user,
+            owner_id=user_id,
+        )
+        if row is not None:
+            with self._repository.transaction() as transaction:
+                self._repository.repository.delete_user(
+                    transaction,
+                    owner_id=user_id,
+                )
         self.invalidate(user_id)
         self._cache_put(user_id, None)
         return row is not None
@@ -374,10 +372,8 @@ class UserLLMConfigStore:
         hit, value = self._cache_get(_SYSTEM_CACHE_KEY)
         if hit:
             return value
-        row = self.db.fetch_one(
-            "SELECT provider, base_url, model, api_key_enc, "
-            "EXTRACT(EPOCH FROM updated_at) AS updated_at "
-            "FROM system_llm_config WHERE id = 1",
+        row = self._repository.call(
+            self._repository.repository.get_system,
         )
         value = self._row_to_config(row, discard_scope="system", discard_id=_SYSTEM_CACHE_KEY)
         self._cache_put(_SYSTEM_CACHE_KEY, value)
@@ -391,28 +387,30 @@ class UserLLMConfigStore:
         api_key = (api_key or "").strip()
         if not base_url or not model:
             raise ValueError("base_url and model must be non-empty")
-        self.db.execute(
-            """INSERT INTO system_llm_config
-               (id, provider, base_url, model, api_key_enc, updated_by, created_at, updated_at)
-               VALUES (1, ?, ?, ?, ?, ?, now(), now())
-               ON CONFLICT (id)
-               DO UPDATE SET provider = EXCLUDED.provider,
-                             base_url = EXCLUDED.base_url,
-                             model = EXCLUDED.model,
-                             api_key_enc = EXCLUDED.api_key_enc,
-                             updated_by = EXCLUDED.updated_by,
-                             updated_at = now()""",
-            (provider, base_url, model, self._encrypt_key(api_key), updated_by),
+        with self._repository.transaction() as transaction:
+            record = self._repository.repository.upsert_system(
+                transaction,
+                updated_by=updated_by,
+                provider=provider,
+                base_url=base_url,
+                model=model,
+                api_key_ciphertext=self._encrypt_key(api_key),
+            )
+        cfg = PersistedLLMConfig(
+            provider=provider,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            updated_at=record.updated_at.timestamp(),
         )
-        cfg = PersistedLLMConfig(provider=provider, base_url=base_url,
-                                 model=model, api_key=api_key,
-                                 updated_at=time.time())
         self._cache_put(_SYSTEM_CACHE_KEY, cfg)
         return cfg
 
     def clear_system_sync(self) -> bool:
-        row = self.db.fetch_one("SELECT 1 AS present FROM system_llm_config WHERE id = 1")
-        self.db.execute("DELETE FROM system_llm_config WHERE id = 1")
+        row = self._repository.call(self._repository.repository.get_system)
+        if row is not None:
+            with self._repository.transaction() as transaction:
+                self._repository.repository.delete_system(transaction)
         self._cache_put(_SYSTEM_CACHE_KEY, None)
         return row is not None
 
@@ -480,13 +478,12 @@ class UserLLMConfigStore:
     # Shared row handling
     # ------------------------------------------------------------------
 
-    def _row_to_config(self, row: Optional[Any], *, discard_scope: str,
+    def _row_to_config(self, row: Optional[EncryptedLLMConfigRecord], *, discard_scope: str,
                        discard_id: str) -> Optional[PersistedLLMConfig]:
         if row is None:
             return None
-        get = row.get if isinstance(row, dict) else lambda k: row[k]  # psycopg2 dict rows
         try:
-            api_key = self._decrypt_key(get("api_key_enc"))
+            api_key = self._decrypt_key(row.api_key_ciphertext)
         except (InvalidToken, ValueError, TypeError):
             # FR-010: undecryptable ⇒ discard + treat as absent. The deletion
             # is immediate; the audit note is queued for the orchestrator's
@@ -496,23 +493,28 @@ class UserLLMConfigStore:
                 "or corruption); treated as unconfigured", discard_scope)
             try:
                 if discard_scope == "system":
-                    self.db.execute("DELETE FROM system_llm_config WHERE id = 1")
+                    with self._repository.transaction() as transaction:
+                        self._repository.repository.delete_system(transaction)
                 else:
-                    self.db.execute(
-                        "DELETE FROM user_llm_config WHERE user_id = ?", (discard_id,))
+                    with self._repository.transaction() as transaction:
+                        self._repository.repository.delete_user(
+                            transaction,
+                            owner_id=discard_id,
+                        )
+            except RepositoryNotFoundError:
+                pass
             except Exception:  # pragma: no cover — deletion is best-effort
                 logger.exception("Failed to delete undecryptable LLM config row")
             if not hasattr(self, "_pending_discards"):
                 self._pending_discards = []
             self._pending_discards.append((discard_scope, discard_id))
             return None
-        updated_at = get("updated_at")
         return PersistedLLMConfig(
-            provider=get("provider") or "custom",
-            base_url=(get("base_url") or "").rstrip("/"),
-            model=get("model") or "",
+            provider=row.provider or "custom",
+            base_url=(row.base_url or "").rstrip("/"),
+            model=row.model or "",
             api_key=api_key,
-            updated_at=float(updated_at) if updated_at is not None else None,
+            updated_at=row.updated_at.timestamp(),
         )
 
     def pop_discard_note(self) -> Optional[tuple]:

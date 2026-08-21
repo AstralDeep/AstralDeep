@@ -1,28 +1,42 @@
-"""Shared fixtures for the ML Services tool suites.
+"""Shared bounded-reader fixture for the ML Services tool suites.
 
-These tests hand ``resolve_attachment_path`` a real temp file as the
-``file_handle``. The resolver has no absolute-path escape hatch (it must
-not — the handle comes straight from a model's tool arguments), so the
-suite stands in a fake attachments repository that treats an existing
-temp path as an attachment the caller owns. The real ownership query is
-still the code under test: a handle the fake repo does not recognise
-resolves to ``None`` and the resolver raises, exactly as in production.
+Production resolves an attachment identity through Plane and yields metadata
+plus a bounded reader. These isolated HTTP-wrapper tests use existing temporary
+files as synthetic identities and patch only the imported reader seam; resolver
+ownership and integrity behavior have their own focused integration tests.
 """
+from contextlib import contextmanager
 import os
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def stub_attachment_repo():
-    def _get_by_id(handle, user_id):
-        if handle and os.path.isabs(str(handle)) and os.path.exists(str(handle)):
-            return MagicMock(storage_path=str(handle))
-        return None
+def scoped_attachment_blob_reader():
+    class _Reader:
+        def __init__(self, path):
+            self._path = path
 
-    fake_repo = MagicMock()
-    fake_repo.get_by_id.side_effect = _get_by_id
-    with patch("orchestrator.attachments.repository.AttachmentRepository", return_value=fake_repo), \
-         patch("shared.attachment_resolver._open_db", return_value=MagicMock()):
-        yield fake_repo
+        def iter_chunks(self):
+            with open(self._path, "rb") as stream:
+                while chunk := stream.read(64 * 1024):
+                    yield chunk
+
+    @contextmanager
+    def _reader(handle, user_id):
+        if not user_id:
+            raise ValueError("user_id is required to resolve attachments")
+        path = os.fspath(handle)
+        if not os.path.isabs(path) or not os.path.isfile(path):
+            raise ValueError("file_handle is not an available test attachment")
+        yield SimpleNamespace(filename=os.path.basename(path)), _Reader(path)
+
+    targets = (
+        "agents.ml_services.classify_tools.open_attachment_blob_reader",
+        "agents.ml_services.forecaster_tools.open_attachment_blob_reader",
+        "agents.ml_services.llm_factory_tools.open_attachment_blob_reader",
+    )
+    with patch(targets[0], _reader), patch(targets[1], _reader), patch(targets[2], _reader):
+        yield

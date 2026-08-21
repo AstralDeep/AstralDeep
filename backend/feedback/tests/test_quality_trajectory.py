@@ -10,16 +10,18 @@ asserts:
 * flag OFF → byte-identical behaviour to before (no trajectory work, no
   trajectory audit event, no DTO stamp).
 
-DB-free: a fake repository serves canned audit rows from its ``_db`` handle and
-records the inserted quality snapshots in memory; a fake audit recorder captures
-emitted events. This exercises the production code path end to end without a
-live Postgres.
+DB-free: a fake Plane audit repository serves canned typed trajectory records
+through the same repository context production uses and records the inserted
+quality snapshots in memory; a fake audit recorder captures emitted events.
+This exercises the production code path end to end without a live Postgres.
 """
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,67 +37,43 @@ from feedback import quality  # noqa: E402
 # Fakes
 # ---------------------------------------------------------------------------
 
-class _FakeCursor:
-    """Serves rows for the two queries quality.py runs: aggregate_window and
-    the C-N5 trajectory reconstruction. Dispatches on SQL fingerprint."""
+class _FakeAuditRepository:
+    """Typed Plane audit boundary used by trajectory reconstruction."""
 
-    def __init__(self, agg_rows, traj_rows):
-        self._agg_rows = agg_rows
-        self._traj_rows = traj_rows
-        self._result = []
+    def __init__(self, traj_rows):
+        self._traj_rows = tuple(SimpleNamespace(**row) for row in traj_rows)
 
-    def execute(self, sql, params=None):
-        s = " ".join(sql.split())
-        if "agent_tool_call" in s and "correlation_id" in s and "ORDER BY agent_id" in s:
-            # The trajectory reconstruction query.
-            self._result = list(self._traj_rows)
-        elif "FULL OUTER JOIN" in s or "feedback_negs" in s:
-            # aggregate_window
-            self._result = list(self._agg_rows)
-        else:
-            self._result = []
-
-    def fetchall(self):
-        return self._result
-
-    def fetchone(self):
-        return self._result[0] if self._result else None
+    def list_tool_trajectory_events_for_administration(
+        self,
+        _transaction,
+        *,
+        from_ts,
+        to_ts,
+        limit,
+    ):
+        assert from_ts < to_ts
+        assert limit > 0
+        return self._traj_rows
 
 
-class _FakeConn:
-    def __init__(self, agg_rows, traj_rows):
-        self._agg_rows = agg_rows
-        self._traj_rows = traj_rows
-        self.closed = False
+class _FakeAuditContext:
+    def __init__(self, traj_rows):
+        self.repository = _FakeAuditRepository(traj_rows)
 
-    def cursor(self):
-        return _FakeCursor(self._agg_rows, self._traj_rows)
+    @contextmanager
+    def transaction(self):
+        yield object()
 
-    def commit(self):
-        pass
-
-    def rollback(self):
-        pass
-
-    def close(self):
-        self.closed = True
-
-
-class _FakeDB:
-    def __init__(self, agg_rows, traj_rows):
-        self._agg_rows = agg_rows
-        self._traj_rows = traj_rows
-
-    def _get_connection(self):
-        return _FakeConn(self._agg_rows, self._traj_rows)
+    def call(self, operation, /, *args, **kwargs):
+        with self.transaction() as transaction:
+            return operation(transaction, *args, **kwargs)
 
 
 class _FakeRepo:
-    """Stands in for FeedbackRepository: real ``_db`` handle for the raw
-    trajectory query; in-memory aggregate/snapshot behaviour for the rest."""
+    """Typed audit context plus in-memory aggregate/snapshot behaviour."""
 
     def __init__(self, agg_rows, traj_rows):
-        self._db = _FakeDB(agg_rows, traj_rows)
+        self._audit = _FakeAuditContext(traj_rows)
         self._agg_rows = agg_rows
         self.inserted = []
 

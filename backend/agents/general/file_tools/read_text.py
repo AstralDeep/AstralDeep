@@ -6,10 +6,9 @@ import html
 import logging
 import re
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agents.general.file_tools import resolve_attachment
+from agents.general.file_tools import read_attachment_bytes
 
 logger = logging.getLogger("FileTools.read_text")
 
@@ -24,14 +23,14 @@ _LANGUAGE_BY_EXTENSION = {
 }
 
 
-def _decode(path: Path) -> str:
-    raw = path.read_bytes()
-    for encoding in ("utf-8", "utf-16", "latin-1"):
+def _decode(raw: bytes) -> str:
+    for encoding in ("utf-8", "utf-16"):
         try:
             return raw.decode(encoding)
         except UnicodeDecodeError:
             continue
-    return raw.decode("utf-8", errors="replace")
+    # Latin-1 maps every byte value and therefore cannot fail.
+    return raw.decode("latin-1")
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -83,15 +82,11 @@ def read_text(
     **_ignored: Any,
 ) -> Dict[str, Any]:
     """Read a text-class attachment and return its source plus a plaintext rendering."""
-    att, path, err = resolve_attachment(attachment_id, user_id)
+    att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err
-
-    try:
-        text = _decode(path)
-    except Exception as exc:
-        logger.exception("text decode failed")
-        return {"error": {"code": "parse_failed", "message": str(exc)}}
+    assert att is not None and payload is not None
+    text = _decode(payload)
 
     truncated = len(text) > max_chars
     if truncated:

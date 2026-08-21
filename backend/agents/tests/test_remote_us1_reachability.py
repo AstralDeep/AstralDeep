@@ -1,15 +1,13 @@
 """US1 register→probe reachability integration (feature 063, SC-001).
 
 Drives the REAL register path (`chrome_machine_add` → create + credential store +
-immediate probe) and the REAL chat-tier `probe_machine` verb over the real
-``remote_machines`` SQL against an in-memory sqlite double of the Database facade;
-only the transport is faked via the FR-050 seam. Asserts the exact enumerated
-verdicts from contracts/result-vocabulary.md reach the caller for the three US1
-outcomes: reachable, wrong credential, unroutable.
+immediate probe) and the REAL chat-tier `probe_machine` verb over the typed
+AstralPlane repository boundary; only the transport is faked via the FR-050 seam.
+Asserts the exact enumerated verdicts from contracts/result-vocabulary.md reach
+the caller for the three US1 outcomes: reachable, wrong credential, unroutable.
 """
 from __future__ import annotations
 
-import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -17,53 +15,11 @@ import pytest
 from agents.remote_observe import mcp_tools as obs
 from orchestrator import remote_machines
 from orchestrator.remote_transport import FakeTransport, Verdict, set_transport
-from webrender.chrome.surfaces import remote_machines as surface
+from orchestrator.projection_surfaces import remote_machines as surface
+from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 USER = "user-1"
 ADDR = "10.33.77.11"  # RFC1918 literal: gate-permitted, resolves to itself (no DNS)
-
-# Mirrors shared/database.py's remote_machine DDL (sqlite accepts the same shape).
-_SCHEMA = """
-CREATE TABLE remote_machine (
-    machine_id            TEXT PRIMARY KEY,
-    owner_user_id         TEXT NOT NULL,
-    label                 TEXT NOT NULL,
-    address               TEXT NOT NULL,
-    port                  INTEGER NOT NULL DEFAULT 22,
-    username              TEXT NOT NULL,
-    os_family             TEXT NOT NULL,
-    role                  TEXT NOT NULL,
-    host_key_type         TEXT,
-    host_key_fingerprint  TEXT,
-    host_key_blob         TEXT,
-    last_verdict          TEXT,
-    last_checked_at       BIGINT,
-    created_at            BIGINT NOT NULL,
-    updated_at            BIGINT NOT NULL
-)
-"""
-
-
-class MemDB:
-    """sqlite double for the Database facade — same '?' placeholder dialect, so the
-    real owner-scoped queries in orchestrator/remote_machines.py run unmodified."""
-
-    def __init__(self):
-        self._conn = sqlite3.connect(":memory:")
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute(_SCHEMA)
-
-    def execute(self, sql, params=()):
-        self._conn.execute(sql, params)
-        self._conn.commit()
-
-    def fetch_one(self, sql, params=()):
-        row = self._conn.execute(sql, params).fetchone()
-        return dict(row) if row is not None else None
-
-    def fetch_all(self, sql, params=()):
-        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
-
 
 class MemCredMgr:
     """In-memory stand-in for the machine-credential slice of CredentialManager."""
@@ -73,19 +29,30 @@ class MemCredMgr:
 
     def set_machine_credential(self, machine_id, owner_user_id, cred_type, secret,
                                passphrase=None):
-        self.creds[machine_id] = {"cred_type": cred_type, "secret": secret,
-                                  "passphrase": passphrase}
+        self.creds[machine_id] = {
+            "owner_user_id": owner_user_id,
+            "cred_type": cred_type,
+            "secret": secret,
+            "passphrase": passphrase,
+        }
 
-    def get_machine_credential(self, machine_id):
-        return self.creds.get(machine_id)
+    def get_machine_credential(self, machine_id, owner_user_id):
+        credential = self.creds.get(machine_id)
+        if credential is None or credential["owner_user_id"] != owner_user_id:
+            return None
+        return credential
 
-    def delete_machine_credential(self, machine_id):
-        self.creds.pop(machine_id, None)
+    def delete_machine_credential(self, machine_id, owner_user_id):
+        credential = self.creds.get(machine_id)
+        if credential is not None and credential["owner_user_id"] == owner_user_id:
+            self.creds.pop(machine_id)
 
 
 @pytest.fixture()
 def db():
-    return MemDB()
+    return make_remote_plane_source(
+        SimpleNamespace(machines={}, credentials={}, jobs={})
+    )
 
 
 @pytest.fixture()
@@ -95,7 +62,10 @@ def credmgr():
 
 @pytest.fixture()
 def orch(db, credmgr):
-    return SimpleNamespace(history=SimpleNamespace(db=db), credential_manager=credmgr)
+    return SimpleNamespace(
+        plane_repository_source=db,
+        credential_manager=credmgr,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -117,7 +87,8 @@ def _add_payload(**over):
 
 
 def _machine_row(db):
-    return db.fetch_one("SELECT * FROM remote_machine WHERE owner_user_id = ?", (USER,))
+    rows = remote_machines.list_machines(db, USER)
+    return rows[0] if rows else None
 
 
 # ── register → probe via the surface (the SC-001 on-screen form path) ─────────

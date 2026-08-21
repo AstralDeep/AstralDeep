@@ -1417,7 +1417,7 @@ def session_state_frame(
 ) -> dict[str, Any]:
     """Build the manifest ``voice_session_state`` frame for the owner device.
 
-    The field set matches ``shared/ui_protocol.json`` exactly; state/reason
+    The field set matches Projection's ``contracts/ui_protocol.json`` exactly; state/reason
     reuse the same derivation the composer projection applies for the owning
     device, so REST responses, composer frames, and this push cannot disagree.
     """

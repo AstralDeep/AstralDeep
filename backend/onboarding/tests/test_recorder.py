@@ -18,7 +18,10 @@ from onboarding.recorder import (
 
 @pytest.fixture
 def wired_recorder(database):
-    repo = AuditRepository(database)
+    repo = AuditRepository(
+        plane_runtime=database,
+        plane_repositories=database.repositories,
+    )
     rec = Recorder(repo)
     set_recorder(rec)
     yield rec
@@ -26,10 +29,9 @@ def wired_recorder(database):
 
 
 def _events_for_user(database, user_id, event_class):
-    conn = database._get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
+    with database.transaction() as transaction:
+        return list(
+            transaction.fetch_all(
             """
             SELECT event_class, action_type, inputs_meta
             FROM audit_events
@@ -38,9 +40,7 @@ def _events_for_user(database, user_id, event_class):
             """,
             (user_id, event_class),
         )
-        return list(cur.fetchall())
-    finally:
-        conn.close()
+        )
 
 
 def test_record_onboarding_started(wired_recorder, database, unique_user):

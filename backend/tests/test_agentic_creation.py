@@ -33,6 +33,12 @@ class FakeDB:
         d = self.drafts.get(draft_id)
         return dict(d) if d else None
 
+    def get_owned_draft_agent(self, user_id, draft_id):
+        draft = self.get_draft_agent(draft_id)
+        if draft is None or draft.get("user_id") != user_id:
+            return None
+        return draft
+
     def update_draft_agent(self, draft_id, **kw):
         self.drafts.setdefault(draft_id, {}).update(kw)
         return True
@@ -43,20 +49,49 @@ class FakeDB:
     def get_user(self, user_id):
         return self.users.get(user_id)
 
+    def set_agent_visibility(self, agent_id, is_public):
+        ownership = self.ownership.get(agent_id)
+        if ownership is None:
+            return False
+        ownership["is_public"] = bool(is_public)
+        return True
+
+    def get_agent_is_safe(self, _agent_id):
+        return False
+
 
 class FakeLifecycle:
     def __init__(self, db, agents_dir):
         self.db = db
+        self.draft_store = db
         self._agents_dir = agents_dir
         self.calls = []
         self.approve_result = {"status": "live"}
 
-    async def create_draft(self, user_id, agent_name, description, tools_spec=None,
-                           skill_tags=None, packages=None):
+    async def create_draft(
+        self,
+        user_id,
+        agent_name,
+        description,
+        tools_spec=None,
+        skill_tags=None,
+        packages=None,
+        **metadata,
+    ):
         draft_id = f"draft-{len(self.db.drafts) + 1}"
         slug = agent_name.lower().replace(" ", "_").replace("(", "").replace(")", "")
-        row = {"id": draft_id, "user_id": user_id, "agent_name": agent_name,
-               "agent_slug": slug, "description": description, "status": "pending"}
+        row = {
+            "id": draft_id,
+            "user_id": user_id,
+            "agent_name": agent_name,
+            "agent_slug": slug,
+            "description": description,
+            "status": "pending",
+            "origin": metadata.get("origin", "manual"),
+            "source_chat_id": metadata.get("source_chat_id"),
+            "gap_fingerprint": metadata.get("gap_fingerprint"),
+            "revises_agent_id": metadata.get("revises_agent_id"),
+        }
         self.db.drafts[draft_id] = row
         self.calls.append(("create_draft", agent_name))
         return dict(row)

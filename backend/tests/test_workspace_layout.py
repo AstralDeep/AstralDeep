@@ -1,11 +1,10 @@
-"""Feature 029 — workspace_layout persistence + schema + catalog migrations (T004/T012).
+"""Feature 029 — product-level workspace layout behavior (T012).
 
-Real-Postgres coverage of: the new ``workspace_layout`` table and
-``workspace_snapshot.layouts`` column (idempotent creation, CASCADE), the
-WorkspaceManager layout API (upsert/claim-stealing/live ordering/remove
-pruning/shared position space), snapshot round-trips including layouts, and
-the feature-029 agent-catalog migrations (ml_services remap with verb
-prefixing + retired-agent row cleanup) — including double-run idempotency.
+Real-Postgres coverage of the WorkspaceManager layout API
+(upsert/claim-stealing/live ordering/remove pruning/shared position space),
+snapshot round-trips including legacy no-layout rows, and chat-deletion
+cascades through typed AstralPlane repositories. Schema and migration
+qualification lives with the owning AstralPlane component.
 """
 from __future__ import annotations
 
@@ -26,36 +25,30 @@ from orchestrator.workspace import (  # noqa: E402
     layout_key_for,
     prune_layout_refs,
 )
-
-
-def _can_connect_to_db() -> bool:
-    try:
-        import psycopg2
-        from shared.database import _build_database_url
-
-        conn = psycopg2.connect(_build_database_url())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _can_connect_to_db(),
-    reason="Postgres unavailable in this environment",
+from tests.helpers.voice_plane_runtime import (  # noqa: E402
+    history_manager,
+    isolated_voice_plane_runtime,
 )
 
 
 @pytest.fixture(scope="module")
-def history(tmp_path_factory):
-    from orchestrator.history import HistoryManager
-
-    return HistoryManager(data_dir=str(tmp_path_factory.mktemp("layout-data")))
+def plane_runtime():
+    with isolated_voice_plane_runtime("workspace_layout") as runtime:
+        yield runtime
 
 
 @pytest.fixture(scope="module")
-def ws(history):
-    return WorkspaceManager(history)
+def history(plane_runtime):
+    return history_manager(plane_runtime)
+
+
+@pytest.fixture(scope="module")
+def ws(history, plane_runtime):
+    return WorkspaceManager(
+        history,
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
 
 
 @pytest.fixture
@@ -78,28 +71,15 @@ def _ref(cid):
 
 
 # ---------------------------------------------------------------------------
-# Schema (T004)
+# Plane composition boundary
 # ---------------------------------------------------------------------------
 
 
-def test_schema_table_column_and_indexes_exist(history):
-    db = history.db
-    row = db.fetch_one(
-        "SELECT 1 AS ok FROM information_schema.tables WHERE table_name = 'workspace_layout'")
-    assert row and row["ok"] == 1
-    col = db.fetch_one(
-        "SELECT 1 AS ok FROM information_schema.columns "
-        "WHERE table_name = 'workspace_snapshot' AND column_name = 'layouts'")
-    assert col and col["ok"] == 1
-    idx = db.fetch_one(
-        "SELECT 1 AS ok FROM pg_indexes WHERE indexname = 'ux_workspace_layout_chat_key'")
-    assert idx and idx["ok"] == 1
-
-
-def test_init_db_reruns_idempotently(history):
-    """Constitution IX: repeated boots are safe — _init_db twice, no error."""
-    history.db._init_db()
-    history.db._init_db()
+def test_plane_catalog_exposes_workspace_contracts(plane_runtime):
+    workspaces = plane_runtime.repositories.workspaces
+    assert workspaces.canvas is not None
+    assert workspaces.layouts is not None
+    assert workspaces.snapshots is not None
 
 
 def test_chat_delete_cascades_layouts(history, ws):
@@ -110,9 +90,7 @@ def test_chat_delete_cascades_layouts(history, ws):
                      [_ref(ops[0]["component_id"])])
     assert ws.live_layouts(chat_id, user_id)
     history.delete_chat(chat_id, user_id)
-    rows = history.db.fetch_all(
-        "SELECT 1 FROM workspace_layout WHERE chat_id = ?", (chat_id,))
-    assert rows == []
+    assert ws.live_layouts(chat_id, user_id) == []
 
 
 # ---------------------------------------------------------------------------
@@ -203,117 +181,22 @@ def test_snapshot_roundtrips_layouts(ws, chat):
     assert set(iter_layout_refs(snap["layouts"][0]["layout"])) == set(ids)
 
 
-def test_pre_029_snapshot_reads_as_no_layouts(ws, chat, history):
+def test_pre_029_snapshot_reads_as_no_layouts(ws, chat, plane_runtime):
     chat_id, user_id = chat
-    history.db.execute(
+    plane_runtime.execute(
         "INSERT INTO workspace_snapshot (chat_id, user_id, cause, components, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (chat_id, user_id, "turn", json.dumps([]), 1),
     )
-    row = history.db.fetch_one(
+    row = plane_runtime.fetch_one(
         "SELECT id FROM workspace_snapshot WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
         (chat_id,))
     snap = ws.get_snapshot(row["id"], user_id)
     assert snap["layouts"] == [], "NULL layouts column degrades to flat render"
 
 
-def test_snapshot_without_layouts_stores_null(ws, chat, history):
+def test_snapshot_without_layouts_reads_as_empty(ws, chat):
     chat_id, user_id = chat
     ws.upsert(chat_id, user_id, [_comp("a", "t1", {})])
-    ws.snapshot(chat_id, user_id, cause="turn")
-    row = history.db.fetch_one(
-        "SELECT layouts FROM workspace_snapshot WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
-        (chat_id,))
-    assert row["layouts"] is None
-
-
-# ---------------------------------------------------------------------------
-# Feature-029 catalog migrations (T020/T022) — guarded, idempotent
-# ---------------------------------------------------------------------------
-
-
-def _seed_rows(db, user_id):
-    now = 1
-    db.execute(
-        "INSERT INTO agent_scopes (user_id, agent_id, scope, enabled, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (user_id, "classify-1", "tools:read", True, now))
-    db.execute(
-        "INSERT INTO agent_scopes (user_id, agent_id, scope, enabled, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (user_id, "forecaster-1", "tools:read", False, now))
-    db.execute(
-        "INSERT INTO tool_overrides (user_id, agent_id, tool_name, enabled, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (user_id, "classify-1", "submit_dataset", False, now))
-    db.execute(
-        "INSERT INTO tool_overrides (user_id, agent_id, tool_name, enabled, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (user_id, "forecaster-1", "get_results", True, now))
-    db.execute(
-        "INSERT INTO tool_overrides (user_id, agent_id, tool_name, enabled, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (user_id, "llm-factory-1", "chat_with_model", False, now))
-    db.execute(
-        "INSERT INTO user_credentials (user_id, agent_id, credential_key, encrypted_value, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, "classify-1", "CLASSIFY_URL", "enc:x", now, now))
-    db.execute(
-        "INSERT INTO agent_scopes (user_id, agent_id, scope, enabled, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (user_id, "grants-1", "tools:read", True, now))
-    db.execute(
-        "INSERT INTO user_credentials (user_id, agent_id, credential_key, encrypted_value, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, "nocodb-1", "NOCODB_API_TOKEN", "enc:y", now, now))
-
-
-def _cleanup_rows(db, user_id):
-    for table in ("agent_scopes", "tool_overrides", "user_credentials"):
-        db.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
-
-
-def _force_full_init(db):
-    """Run ``_init_db`` with the schema_meta revision marker cleared.
-
-    Feature 052's fast path skips the full migration set (including
-    ``_migrate_agent_catalog_029``) when the marker is current; deleting the
-    marker forces the full run, and ``_init_db`` re-upserts it afterward so
-    other tests see a current marker again.
-    """
-    db.execute("DELETE FROM schema_meta WHERE key = 'revision'")
-    db._init_db()
-
-
-def test_catalog_migration_remaps_merges_and_cleans(history):
-    db = history.db
-    user_id = f"pytest-mig-{uuid.uuid4().hex[:12]}"
-    _seed_rows(db, user_id)
-    try:
-        _force_full_init(db)  # runs _migrate_agent_catalog_029
-
-        scopes = db.fetch_all(
-            "SELECT agent_id, scope, enabled FROM agent_scopes WHERE user_id = ?", (user_id,))
-        assert [dict(s) for s in scopes] == [
-            {"agent_id": "ml-services-1", "scope": "tools:read", "enabled": True}
-        ], "OR-merge: granted on any predecessor stays granted; grants-1 row deleted"
-
-        overrides = {(r["agent_id"], r["tool_name"]): r["enabled"] for r in db.fetch_all(
-            "SELECT agent_id, tool_name, enabled FROM tool_overrides WHERE user_id = ?", (user_id,))}
-        assert overrides == {
-            ("ml-services-1", "classify_submit_dataset"): False,
-            ("ml-services-1", "forecaster_get_results"): True,
-            ("ml-services-1", "chat_with_model"): False,
-        }, "colliding verbs prefixed per source service; unique names unchanged"
-
-        creds = db.fetch_all(
-            "SELECT agent_id, credential_key FROM user_credentials WHERE user_id = ?", (user_id,))
-        assert [dict(c) for c in creds] == [
-            {"agent_id": "ml-services-1", "credential_key": "CLASSIFY_URL"}
-        ], "credentials carry over; retired-agent credentials destroyed"
-
-        # Idempotency: a second boot changes nothing.
-        before = sorted(map(dict, db.fetch_all(
-            "SELECT agent_id, tool_name, enabled FROM tool_overrides WHERE user_id = ?", (user_id,))),
-            key=lambda r: r["tool_name"])
-        _force_full_init(db)
-        after = sorted(map(dict, db.fetch_all(
-            "SELECT agent_id, tool_name, enabled FROM tool_overrides WHERE user_id = ?", (user_id,))),
-            key=lambda r: r["tool_name"])
-        assert before == after
-    finally:
-        _cleanup_rows(db, user_id)
+    snapshot_id = ws.snapshot(chat_id, user_id, cause="turn")
+    assert ws.get_snapshot(snapshot_id, user_id)["layouts"] == []

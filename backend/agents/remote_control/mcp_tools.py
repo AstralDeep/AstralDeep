@@ -41,6 +41,7 @@ from orchestrator.remote_transport import RemoteResult, Verdict, get_transport
 # Dependencies wired by RemoteControlAgent.__init__ (in-process pattern).
 _DB = None
 _CREDMGR = None
+_BLOBS = None
 
 _MAX_FIELD = 256
 _MAX_PATH = 4096
@@ -56,10 +57,10 @@ _PACKAGE_ACTIONS = ("install", "remove")
 _SIGNALS = ("TERM", "KILL")
 
 
-def register_deps(db, credmgr) -> None:
-    """Wire the shared Database + CredentialManager used by the verbs."""
-    global _DB, _CREDMGR
-    _DB, _CREDMGR = db, credmgr
+def register_deps(db, credmgr, blob_store) -> None:
+    """Wire the application Plane source, credentials, and blob store."""
+    global _DB, _CREDMGR, _BLOBS
+    _DB, _CREDMGR, _BLOBS = db, credmgr, blob_store
 
 
 # ── rendering helpers (mirror remote_observe) ─────────────────────────────────
@@ -494,11 +495,17 @@ def upload_file(**kwargs) -> Dict[str, Any]:
         return _fail(Verdict.INVALID_ARGUMENT, target.label, "remote_path must be an absolute path")
     if not (isinstance(attachment_id, str) and attachment_id):
         return _fail(Verdict.INVALID_ARGUMENT, target.label, "attachment_id is required")
-    from pathlib import Path
+    from astralplane.errors import PlaneError
 
-    from orchestrator.attachments import store
+    from orchestrator.attachments.blob_access import (
+        AttachmentBlobReferenceError,
+        open_attachment_reader,
+    )
     from orchestrator.attachments.repository import AttachmentRepository
-    att = AttachmentRepository(_DB).get_by_id(attachment_id, user_id)
+    att = AttachmentRepository.from_plane_source(_DB).get_by_id(
+        attachment_id,
+        user_id,
+    )
     if att is None:
         return _fail(Verdict.NOT_FOUND, target.label, "that attachment is not in your files")
     filename = getattr(att, "filename", None)
@@ -506,9 +513,9 @@ def upload_file(**kwargs) -> Dict[str, Any]:
     if size > _MAX_UPLOAD_BYTES:
         return _fail(Verdict.INVALID_ARGUMENT, target.label, "that attachment is too large to upload")
     try:
-        local_path: Path = store.read_path(user_id, attachment_id, filename)
-        data = local_path.read_bytes()
-    except FileNotFoundError:
+        with open_attachment_reader(_BLOBS, att, user_id) as reader:
+            data = b"".join(reader.iter_chunks())
+    except (AttachmentBlobReferenceError, PlaneError):
         return _fail(Verdict.NOT_FOUND, target.label, "the attachment's stored file is missing")
     res = get_transport().put_file(target, data, remote_path, timeout=60.0)
     if not res.ok:

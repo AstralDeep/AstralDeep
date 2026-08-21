@@ -47,16 +47,22 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
     orch.concurrency_cap.max_per_user_agent = 3
     orch._pending_cap_entries = {}
 
-    db = MagicMock()
-    db.get_user_disabled_agents.return_value = disabled_agents or []
-    db.get_chat_agent.side_effect = lambda c: (chat_to_agent or {}).get(c)
-    db.get_user_tool_selection.side_effect = lambda u, a: (saved_selection or {}).get((u, a))
     orch.history = MagicMock()
-    orch.history.db = db
+    orch.history.get_chat_agent.side_effect = (
+        lambda chat_id, *, user_id: (chat_to_agent or {}).get(chat_id)
+    )
     orch.history.get_file_mappings = MagicMock(return_value={})
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.list_disabled_agents.return_value = tuple(
+        disabled_agents or ()
+    )
+    orch.tool_permissions.get_tool_selection.side_effect = (
+        lambda user_id, agent_id: (saved_selection or {}).get(
+            (user_id, agent_id)
+        )
+    )
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})
     # Feature 054: dispatch resolves the call context's persisted LLM

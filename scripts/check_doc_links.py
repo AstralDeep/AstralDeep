@@ -101,7 +101,13 @@ def git_candidate_files(repo_root: Path) -> tuple[PurePosixPath, ...]:
         values = completed.stdout.decode("utf-8").split("\0")
     except UnicodeDecodeError as exc:
         raise GitInventoryError("git candidate inventory returned non-UTF-8 paths") from exc
-    return tuple(sorted(PurePosixPath(value) for value in values if value))
+    candidates = tuple(sorted(PurePosixPath(value) for value in values if value))
+    # ``--cached`` includes tracked paths deleted by an uncommitted cutover.
+    # Validate the live candidate tree: removed sources disappear, while links
+    # from surviving documents to those removed targets still fail normally.
+    return tuple(
+        path for path in candidates if repo_root.joinpath(*path.parts).exists()
+    )
 
 
 def tracked_markdown_files(

@@ -159,19 +159,27 @@ class CoverageData:
 TARGETS = (
     CoverageTarget("backend_python", "python", ("backend",), "cobertura"),
     CoverageTarget("tooling_python", "python", ("scripts",), "cobertura"),
-    CoverageTarget("windows_python", "python", ("windows-client",), "cobertura"),
+    CoverageTarget(
+        "windows_python",
+        "python",
+        ("components/AstralProjection/windows-client",),
+        "cobertura",
+    ),
     CoverageTarget(
         "javascript",
         "javascript",
-        ("backend/webrender", "tooling/web-ci"),
+        (
+            "components/AstralProjection/backend/webrender",
+            "components/AstralProjection/tooling/web-ci",
+        ),
         "javascript",
     ),
     CoverageTarget(
         "android_app",
         "kotlin",
         (
-            "android-client/app/src/main/kotlin",
-            "android-client/app/src/main/java",
+            "components/AstralProjection/android-client/app/src/main/kotlin",
+            "components/AstralProjection/android-client/app/src/main/java",
         ),
         "kover",
     ),
@@ -179,8 +187,8 @@ TARGETS = (
         "android_core",
         "kotlin",
         (
-            "android-client/core/src/main/kotlin",
-            "android-client/core/src/main/java",
+            "components/AstralProjection/android-client/core/src/main/kotlin",
+            "components/AstralProjection/android-client/core/src/main/java",
         ),
         "kover",
     ),
@@ -188,9 +196,9 @@ TARGETS = (
         "apple",
         "swift",
         (
-            "apple-clients/AstralApp/AstralApp",
-            "apple-clients/AstralCore/Sources",
-            "apple-clients/AstralWatch",
+            "components/AstralProjection/apple-clients/AstralApp/AstralApp",
+            "components/AstralProjection/apple-clients/AstralCore/Sources",
+            "components/AstralProjection/apple-clients/AstralWatch",
         ),
         "xccov",
     ),
@@ -215,21 +223,24 @@ COVERAGE_PRODUCERS = (
     ),
     CoverageProducer("tooling", "tooling_python", "tooling-python", ("scripts",)),
     CoverageProducer(
-        "windows", "windows_python", "windows-python", ("windows-client",)
+        "windows",
+        "windows_python",
+        "windows-python",
+        ("components/AstralProjection/windows-client",),
     ),
     CoverageProducer(
         "javascript",
         "javascript",
         "javascript",
-        ("backend/webrender/static/client.js",),
+        ("components/AstralProjection/backend/webrender/static/client.js",),
     ),
     CoverageProducer(
         "android_app",
         "android_app",
         "android-app",
         (
-            "android-client/app/src/main/kotlin",
-            "android-client/app/src/main/java",
+            "components/AstralProjection/android-client/app/src/main/kotlin",
+            "components/AstralProjection/android-client/app/src/main/java",
         ),
     ),
     CoverageProducer(
@@ -237,18 +248,18 @@ COVERAGE_PRODUCERS = (
         "android_core",
         "android-core",
         (
-            "android-client/core/src/main/kotlin",
-            "android-client/core/src/main/java",
+            "components/AstralProjection/android-client/core/src/main/kotlin",
+            "components/AstralProjection/android-client/core/src/main/java",
         ),
     ),
     CoverageProducer(
-        "ios", "apple", "ios", ("apple-clients/AstralApp/AstralApp",)
+        "ios", "apple", "ios", ("components/AstralProjection/apple-clients/AstralApp/AstralApp",)
     ),
     CoverageProducer(
-        "macos", "apple", "macos", ("apple-clients/AstralApp/AstralApp",)
+        "macos", "apple", "macos", ("components/AstralProjection/apple-clients/AstralApp/AstralApp",)
     ),
     CoverageProducer(
-        "watchos", "apple", "watchos", ("apple-clients/AstralWatch",)
+        "watchos", "apple", "watchos", ("components/AstralProjection/apple-clients/AstralWatch",)
     ),
 )
 PRODUCER_BY_KEY = {producer.key: producer for producer in COVERAGE_PRODUCERS}
@@ -264,10 +275,11 @@ REPORT_FLAGS = {
 ANCHORS = (
     "backend/",
     "scripts/",
-    "windows-client/",
-    "android-client/",
-    "apple-clients/",
-    "tooling/web-ci/",
+    "components/AstralProjection/backend/webrender/",
+    "components/AstralProjection/windows-client/",
+    "components/AstralProjection/android-client/",
+    "components/AstralProjection/apple-clients/",
+    "components/AstralProjection/tooling/web-ci/",
 )
 
 
@@ -315,12 +327,12 @@ def classify_path(path: str) -> CoverageTarget | None:
             return TARGET_BY_KEY["backend_python"]
         if path.startswith("scripts/"):
             return TARGET_BY_KEY["tooling_python"]
-        if path.startswith("windows-client/"):
+        if path.startswith("components/AstralProjection/windows-client/"):
             return TARGET_BY_KEY["windows_python"]
     if path.endswith((".js", ".mjs")):
-        if path.startswith("backend/webrender/") and "/static/vendor/" not in path:
+        if path.startswith("components/AstralProjection/backend/webrender/") and "/static/vendor/" not in path:
             return TARGET_BY_KEY["javascript"]
-        if path.startswith("tooling/web-ci/"):
+        if path.startswith("components/AstralProjection/tooling/web-ci/"):
             return TARGET_BY_KEY["javascript"]
     if path.endswith(".kt"):
         if any(
@@ -598,7 +610,18 @@ def _read_report(path: Path) -> bytes:
             "unparseable_report",
             f"coverage report must be a regular non-symlink file: {path}",
         )
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # Python's Windows CRT opens descriptors in text mode unless O_BINARY is
+    # explicit.  ``os.read`` would then translate CRLF to LF while ``fstat``
+    # continues to report the physical byte length, producing a false
+    # ``invalid size`` failure and hashing bytes other than the artifact that
+    # was bound.  O_BINARY is zero/absent on POSIX, so Linux behavior is
+    # unchanged.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
@@ -854,8 +877,17 @@ def _normalized_report_path(raw: str, target: CoverageTarget) -> str | None:
         candidate = min(anchored, key=lambda item: item[0])[1]
     else:
         relative = value.lstrip("/")
-        if target.key == "javascript" and relative.startswith("static/"):
-            candidate = f"backend/webrender/{relative}"
+        projection_owner_roots = (
+            "backend/webrender/",
+            "tooling/web-ci/",
+            "windows-client/",
+            "android-client/",
+            "apple-clients/",
+        )
+        if not value.startswith("/") and relative.startswith(projection_owner_roots):
+            candidate = f"components/AstralProjection/{relative}"
+        elif target.key == "javascript" and relative.startswith("static/"):
+            candidate = f"components/AstralProjection/backend/webrender/{relative}"
         else:
             return None
     try:
@@ -1564,20 +1596,20 @@ def _producer_applies_to_path(slot_key: str, path: str) -> bool:
         return any(
             _path_matches_root(path, root)
             for root in (
-                "apple-clients/AstralApp/AstralApp",
-                "apple-clients/AstralCore/Sources",
+                "components/AstralProjection/apple-clients/AstralApp/AstralApp",
+                "components/AstralProjection/apple-clients/AstralCore/Sources",
             )
         )
     if slot_key == "macos":
         return any(
             _path_matches_root(path, root)
             for root in (
-                "apple-clients/AstralApp/AstralApp",
-                "apple-clients/AstralCore/Sources",
+                "components/AstralProjection/apple-clients/AstralApp/AstralApp",
+                "components/AstralProjection/apple-clients/AstralCore/Sources",
             )
         )
     if slot_key == "watchos":
-        return _path_matches_root(path, "apple-clients/AstralWatch")
+        return _path_matches_root(path, "components/AstralProjection/apple-clients/AstralWatch")
     target = TARGET_BY_KEY[PRODUCER_BY_KEY[slot_key].target_key]
     return any(_path_matches_root(path, root) for root in target.roots)
 
@@ -1793,14 +1825,14 @@ def _strict_producer_contributions(
                 "backend/voice_agent and its audited backend/shared source aliases",
             )
         if slot_key == "ios" and any(
-            _path_matches_root(path, "apple-clients/AstralWatch")
+            _path_matches_root(path, "components/AstralProjection/apple-clients/AstralWatch")
             for path in artifact.coverage.files
         ):
             raise CoveragePolicyError(
                 "producer_scope_mismatch", "ios coverage contains Watch sources"
             )
         if slot_key == "macos" and any(
-            _path_matches_root(path, "apple-clients/AstralWatch")
+            _path_matches_root(path, "components/AstralProjection/apple-clients/AstralWatch")
             for path in artifact.coverage.files
         ):
             raise CoveragePolicyError(
@@ -1808,8 +1840,8 @@ def _strict_producer_contributions(
             )
         if slot_key == "watchos":
             watch_roots = (
-                "apple-clients/AstralWatch",
-                "apple-clients/AstralCore/Sources",
+                "components/AstralProjection/apple-clients/AstralWatch",
+                "components/AstralProjection/apple-clients/AstralCore/Sources",
             )
             if any(
                 not any(_path_matches_root(path, root) for root in watch_roots)
@@ -1829,7 +1861,7 @@ def _strict_producer_contributions(
             if _producer_applies_to_path(slot_key, changed_path)
         ]
         if target.key == "apple" and _path_matches_root(
-            changed_path, "apple-clients/AstralCore/Sources"
+            changed_path, "components/AstralProjection/apple-clients/AstralCore/Sources"
         ):
             core_slots = [
                 slot_key

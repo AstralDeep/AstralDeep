@@ -2,8 +2,7 @@
 
 Each 063 entry point outside the verb libraries carries one guard the behaviour
 suites never trip, because it fires only when a dependency is broken: a flag
-helper that raises, an older schema missing a table, a sign-out with no
-principal. Those guards decide whether a partial failure degrades or takes down
+helper that raises or a sign-out with no principal. Those guards decide whether a partial failure degrades or takes down
 a boot / a sign-out, so each is pinned to the direction it must degrade —
 fail-CLOSED for the feature's visibility, fail-OPEN for the surrounding flow.
 Hermetic: no DB connection, no network, no agent instantiation.
@@ -25,12 +24,33 @@ def _unavailable(*_a, **_k):
 async def test_register_built_ins_survives_a_failing_remote_flag_check(monkeypatch):
     from orchestrator import local_agents
     from shared.feature_flags import flags
+    from shared import attachment_materializer, attachment_resolver
 
     monkeypatch.setattr(flags, "is_enabled", _unavailable)
     monkeypatch.setattr(local_agents, "discover_built_in_agent_dirs", lambda *a, **k: [])
     monkeypatch.setattr(local_agents, "_load_agent_class",
                         lambda d: pytest.fail("loaded the 063 agent after the flag check failed"))
-    orch = SimpleNamespace(local_agents={}, register_agent=None)
+    monkeypatch.setattr(
+        attachment_resolver,
+        "register_plane_runtime",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        attachment_materializer,
+        "register_materialization_service",
+        lambda *_args: None,
+    )
+    plane = SimpleNamespace(
+        runtime=object(),
+        repositories=object(),
+        blobs=object(),
+        attachment_materializer=object(),
+    )
+    orch = SimpleNamespace(
+        local_agents={},
+        register_agent=None,
+        runtime_composition=SimpleNamespace(plane=plane),
+    )
     # Fail-closed on the remote agent (it is never loaded), but the fleet
     # registration itself still returns normally.
     assert await local_agents.register_built_ins(orch) == []
@@ -47,36 +67,15 @@ def test_remote_machines_menu_item_is_absent_when_the_flag_cannot_be_read(monkey
     assert "remote_machines" not in json.dumps(model)
 
 
-# ── database: an older schema missing a table must not abort the migration ─────
-
-def test_merged_remote_agent_cleanup_tolerates_a_missing_table():
-    from shared.database import Database
-
-    class _Cursor:
-        def __init__(self):
-            self.tables = []
-
-        def execute(self, sql, params=None):
-            self.tables.append(sql.split("FROM ")[1].split()[0])
-            if self.tables[-1] == "agent_ownership":  # first table of the sweep
-                raise RuntimeError('relation "agent_ownership" does not exist')
-
-    cursor = _Cursor()
-    # Unbound call: the migration reads only the class-level retired-id tuple, so
-    # it needs no Database instance and no live connection.
-    Database._cleanup_merged_remote_agents_063(
-        SimpleNamespace(_RETIRED_AGENT_IDS_063=Database._RETIRED_AGENT_IDS_063), cursor)
-    # The failure of one table does not skip the rest of the sweep.
-    assert cursor.tables == ['agent_ownership', 'agent_scopes', 'tool_overrides',
-                             'tool_permissions', 'user_credentials', 'agent_trust']
-
-
 # ── web_auth: a sign-out with no principal touches nothing ─────────────────────
 
 async def test_machine_credential_destruction_is_a_noop_without_a_principal(monkeypatch):
-    import shared.database as db_mod
     from orchestrator import web_auth
 
-    monkeypatch.setattr(db_mod, "Database",
-                        lambda *a, **k: pytest.fail("opened a connection with no principal"))
+    manager = SimpleNamespace(
+        remove_machine_credentials_for_user=lambda *_args: pytest.fail(
+            "credential persistence was touched without a principal"
+        )
+    )
+    monkeypatch.setattr(web_auth, "_CREDENTIAL_MANAGER", manager)
     assert await web_auth._destroy_machine_credentials("", "logout") is None

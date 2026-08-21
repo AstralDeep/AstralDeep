@@ -11,6 +11,7 @@ import asyncio
 import os
 import sys
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,9 +33,11 @@ class FakeLocalStreamingAgent:
     def __init__(self):
         self.requests = []
         self.cancels = []
+        self.release_stream = asyncio.Event()
 
     async def handle_mcp_request(self, ws, msg):
         self.requests.append(msg)
+        await self.release_stream.wait()
         sid = msg.params["_stream_id"]
         chunk = ToolStreamData(
             request_id=msg.request_id, stream_id=sid, agent_id=AGENT,
@@ -59,11 +62,11 @@ def push_flags():
 
 
 @pytest.fixture
-def env(push_flags):
+async def env(push_flags):
     from orchestrator.orchestrator import Orchestrator
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     try:
-        orch = Orchestrator()
+        orch = await asyncio.to_thread(Orchestrator)
     except Exception as exc:
         pytest.skip(f"orchestrator/database unavailable: {exc}")
     user_id = f"inproc-stream-{uuid.uuid4().hex[:8]}"
@@ -72,20 +75,36 @@ def env(push_flags):
     orch.ui_sessions[ws] = {"sub": user_id}
     orch.ui_clients.append(ws)
     orch.rote.register_device(ws, {})
-    chat_id = orch.history.create_chat(user_id=user_id)
+    chat_id = await asyncio.to_thread(
+        orch.history.create_chat,
+        user_id=user_id,
+    )
     orch._ws_active_chat[id(ws)] = chat_id
     agent = FakeLocalStreamingAgent()
     orch.local_agents[AGENT] = agent
+    orch.tool_permissions = MagicMock()
+    orch.tool_permissions.is_tool_allowed.return_value = True
     orch._streamable_tools[TOOL] = {
         "agent_id": AGENT, "kind": "push", "max_fps": 30, "min_fps": 5,
         "max_chunk_bytes": 65536, "default_interval": 2,
         "min_interval": 1, "max_interval": 30,
     }
-    yield orch, ws, chat_id, user_id, agent
     try:
-        orch.stream_manager.shutdown()
-    except Exception:
-        pass
+        yield orch, ws, chat_id, user_id, agent
+    finally:
+        try:
+            orch.stream_manager.shutdown()
+        except Exception:
+            pass
+        try:
+            await asyncio.to_thread(
+                orch.history.delete_chat,
+                chat_id,
+                user_id=user_id,
+            )
+        except Exception:
+            pass
+        await orch._close_started_services()
 
 
 def _frames(ws, ftype):
@@ -99,6 +118,7 @@ async def test_subscribe_dispatches_in_process_and_streams(env):
         tool_name=TOOL, agent_id=AGENT, params={"interval_s": 1},
         tool_metadata=orch._streamable_tools[TOOL],
     )
+    agent.release_stream.set()
     await asyncio.sleep(0.1)
     assert agent.requests, "in-process agent never received the stream request"
     assert agent.requests[0].params["_stream"] is True
@@ -114,6 +134,7 @@ async def test_terminal_persists_via_loopback(env):
         tool_name=TOOL, agent_id=AGENT, params={"interval_s": 2},
         tool_metadata=orch._streamable_tools[TOOL],
     )
+    agent.release_stream.set()
     await asyncio.sleep(0.15)
     live = await asyncio.to_thread(orch.workspace.live_components, chat_id, user_id)
     persisted = [c for c in live if c.get("type") == "metric"]

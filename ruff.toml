@@ -4,8 +4,13 @@
 # the container cannot import.
 target-version = "py311"
 
-# apple-clients is a Swift package. Its .py files are build tooling, not product
-# code: a container-run fixture generator (needs the installed astralprims wheel)
-# and, since feature 053, Scripts/generate_app_icons.py + render_export_options.py,
-# which run on the macOS release runner rather than in the backend image.
-exclude = [".venv", "node_modules", "backend/tmp", "backend/data", "apple-clients"]
+# The component directories are independently owned submodules with their own
+# verification gates.  AstralDeep's repo-root lint must cover Deep-owned code,
+# not re-lint pinned component internals under the parent's policy.
+exclude = [
+  ".venv",
+  "node_modules",
+  "backend/tmp",
+  "backend/data",
+  "components",
+]

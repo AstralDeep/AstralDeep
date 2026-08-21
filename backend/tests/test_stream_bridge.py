@@ -308,7 +308,7 @@ class TestNarrativeAndLegacyExclusion:
             assert "component_id" not in frame
 
     async def test_legacy_poll_path_never_carries_component_id(self):
-        from orchestrator.orchestrator import Orchestrator
+        from orchestrator.orchestrator import Orchestrator, PreparedDispatch
 
         orch = Orchestrator.__new__(Orchestrator)
         sent = []
@@ -329,15 +329,27 @@ class TestNarrativeAndLegacyExclusion:
         orch._MAX_STREAM_SUBSCRIPTIONS = 10
         orch._stream_tasks = {}
         orch._stream_subs = {}
-        orch._execute_via_websocket = AsyncMock(return_value=types.SimpleNamespace(
+        orch._ws_active_chat = {}
+        orch._authorize_and_prepare = AsyncMock(return_value=PreparedDispatch(
+            args={},
+            stream_params={},
+            cap_job_id=None,
+            delegation_token=None,
+        ))
+        orch._execute_with_retry_audited = AsyncMock(return_value=types.SimpleNamespace(
             error=None, ui_components=[{"type": "metric", "value": "0.5"}],
             result={}, correlation_id=None))
         ws = FakeWebSocket()
 
-        await orch._handle_stream_subscribe(ws, {"tool_name": "cpu_load"})
+        await asyncio.wait_for(
+            orch._handle_stream_subscribe(ws, {"tool_name": "cpu_load"}),
+            timeout=1.0,
+        )
         await asyncio.sleep(0.05)
-        for task in list(orch._stream_tasks.get(id(ws), {}).values()):
+        tasks = list(orch._stream_tasks.get(id(ws), {}).values())
+        for task in tasks:
             task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         types_seen = {f["type"] for f in sent}
         assert "stream_subscribed" in types_seen

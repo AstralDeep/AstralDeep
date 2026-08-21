@@ -112,7 +112,10 @@ class Recorder:
                 # If safety transitioned, refresh quarantine_entry.
                 if safety_status == "quarantined":
                     self._repo.upsert_quarantine(
-                        updated.id, reason=safety_reason or "inline", detector="inline",
+                        updated.id,
+                        owner_user_id=actor_user_id,
+                        reason=safety_reason or "inline",
+                        detector="inline",
                     )
                 return SubmitResult(
                     feedback=updated,
@@ -149,7 +152,10 @@ class Recorder:
 
         if safety_status == "quarantined":
             self._repo.upsert_quarantine(
-                new_row.id, reason=safety_reason or "inline", detector="inline",
+                new_row.id,
+                owner_user_id=actor_user_id,
+                reason=safety_reason or "inline",
+                detector="inline",
             )
 
         # Emit audit row.
@@ -274,7 +280,10 @@ class Recorder:
 
         if safety_status == "quarantined":
             self._repo.upsert_quarantine(
-                new_row.id, reason=safety_reason or "inline", detector="inline",
+                new_row.id,
+                owner_user_id=actor_user_id,
+                reason=safety_reason or "inline",
+                detector="inline",
             )
 
         await self._emit_audit(

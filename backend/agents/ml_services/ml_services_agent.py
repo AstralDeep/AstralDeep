@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -100,13 +101,162 @@ class MlServicesAgent(BaseA2AAgent):
         "long_running_tools": ["classify_start_training_job", "forecaster_start_training_job"],
     }
 
-    def __init__(self, port: int = None):
+    def __init__(
+        self,
+        port: int = None,
+        *,
+        plane_runtime,
+        plane_repositories=None,
+        plane_blobs=None,
+        attachment_materialization_service=None,
+    ):
         """Start the agent over the union MCP server.
 
         Args:
             port: Explicit port; falls back to ``ML_SERVICES_AGENT_PORT``.
         """
+        repositories = plane_repositories or getattr(
+            plane_runtime,
+            "repositories",
+            None,
+        )
+        if (
+            plane_runtime is None
+            or repositories is None
+            or plane_blobs is None
+            or attachment_materialization_service is None
+        ):
+            raise RuntimeError(
+                "MlServicesAgent requires an initialized AstralPlane runtime "
+                "catalog, blob store, and durable attachment publisher"
+            )
         super().__init__(MCPServer(), port=port, port_env_var="ML_SERVICES_AGENT_PORT")
+
+        from shared.attachment_materializer import (
+            register_materialization_service as bind_materializer,
+        )
+        from shared.attachment_resolver import (
+            register_plane_runtime as bind_resolver,
+            unregister_plane_runtime as unbind_resolver,
+        )
+
+        resolver_binding_created = bind_resolver(
+            plane_runtime,
+            repositories,
+            plane_blobs,
+        )
+        try:
+            materializer_binding_created = bind_materializer(
+                attachment_materialization_service
+            )
+        except BaseException:
+            if resolver_binding_created:
+                unbind_resolver(plane_runtime, repositories, plane_blobs)
+            raise
+
+        self._plane_runtime = plane_runtime
+        self._plane_repositories = repositories
+        self._plane_blobs = plane_blobs
+        self._attachment_materialization_service = attachment_materialization_service
+        self._resolver_binding_created = resolver_binding_created
+        self._materializer_binding_created = materializer_binding_created
+
+    def close_plane_bindings(self) -> None:
+        """Idempotently release only the process bindings created by this agent."""
+
+        from shared.attachment_materializer import unregister_materialization_service
+        from shared.attachment_resolver import unregister_plane_runtime
+
+        errors: list[BaseException] = []
+        if self._materializer_binding_created:
+            try:
+                unregister_materialization_service(
+                    self._attachment_materialization_service
+                )
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                self._materializer_binding_created = False
+        if self._resolver_binding_created:
+            try:
+                unregister_plane_runtime(
+                    self._plane_runtime,
+                    self._plane_repositories,
+                    self._plane_blobs,
+                )
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                self._resolver_binding_created = False
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup("MlServicesAgent Plane binding cleanup failed", errors)
+
+
+def _compose_standalone_plane():
+    """Compose the one Plane runtime owned by a networked agent process."""
+
+    from orchestrator.plane_composition import compose_plane_from_environment
+
+    manifest = Path(__file__).resolve().parents[3] / "config" / "astral-composition.json"
+    return compose_plane_from_environment(manifest)
+
+
+async def _run_standalone(port: int | None) -> None:
+    """Run a networked agent and always release bindings before its Plane."""
+
+    composition = _compose_standalone_plane()
+    agent = None
+    try:
+        agent = MlServicesAgent(
+            port=port,
+            plane_runtime=composition.runtime,
+            plane_repositories=composition.repositories,
+            plane_blobs=composition.blobs,
+            attachment_materialization_service=composition.attachment_materializer,
+        )
+        await agent.run()
+    finally:
+        await _close_standalone_plane(agent, composition)
+
+
+async def _close_standalone_plane(agent, composition) -> None:
+    """Join agent-local Plane consumers before final synchronous teardown.
+
+    Standalone agents never start the durable purge retry loop. Continuous
+    reconciliation is owned by the orchestrator process over the same Plane
+    state; this close only joins work admitted by this networked agent.
+    """
+
+    from orchestrator.runtime_composition import close_blocking_component
+
+    errors: list[BaseException] = []
+    try:
+        await composition.attachment_materializer.close()
+    except BaseException as exc:
+        errors.append(exc)
+    try:
+        await close_blocking_component(composition.attachment_materializations.close)
+    except BaseException as exc:
+        errors.append(exc)
+    try:
+        await composition.attachment_purges.close()
+    except BaseException as exc:
+        errors.append(exc)
+    if agent is not None:
+        try:
+            agent.close_plane_bindings()
+        except BaseException as exc:
+            errors.append(exc)
+    try:
+        await close_blocking_component(composition.close)
+    except BaseException as exc:
+        errors.append(exc)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("MlServicesAgent standalone Plane cleanup failed", errors)
 
 
 if __name__ == "__main__":
@@ -115,5 +265,4 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=None, help="Port to run the agent on")
     args = parser.parse_args()
 
-    agent = MlServicesAgent(port=args.port)
-    asyncio.run(agent.run())
+    asyncio.run(_run_standalone(args.port))

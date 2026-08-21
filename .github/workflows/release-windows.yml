@@ -8,7 +8,7 @@
 # re-pin vars.RELEASE_BRIDGE_WORKFLOW_SHA256 at that point.
 #
 # The workflow path and tag-ref trigger are load-bearing: the shipped client's
-# updater (windows-client/astral_client/integrity.py) fail-closes unless the
+# updater (components/AstralProjection/windows-client/astral_client/integrity.py) fail-closes unless the
 # release assets are signed by the OIDC identity
 #   https://github.com/AstralDeep/AstralDeep/.github/workflows/release-windows.yml@refs/tags/<tag>
 # so the signing MUST happen in this file, running at the tag ref.
@@ -53,7 +53,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: windows-client/requirements-release.lock.txt
+          cache-dependency-path: components/AstralProjection/windows-client/requirements-release.lock.txt
 
       # Guard: the pushed tag must equal v<astral_client.__version__>. Without
       # this, a tag pushed against a stale version constant builds and signs
@@ -63,7 +63,7 @@ jobs:
       # workflow_dispatch runs from a branch ref and is exempt.
       - name: Tag matches astral_client.__version__
         if: startsWith(github.ref, 'refs/tags/')
-        working-directory: windows-client
+        working-directory: components/AstralProjection/windows-client
         shell: bash
         env:
           TAG: ${{ github.ref_name }}
@@ -75,7 +75,7 @@ jobs:
           want = f"v{astral_client.__version__}"
           if tag != want:
               sys.exit(f"Tag {tag!r} != v<__version__> ({want!r}) — bump "
-                       "windows-client/astral_client/__init__.py before tagging.")
+                       "components/AstralProjection/windows-client/astral_client/__init__.py before tagging.")
           print(f"tag {tag} matches __version__")
           EOF
 
@@ -83,21 +83,21 @@ jobs:
       # reproducible) already pins pyinstaller and the sigstore CLI, so the
       # released exe is built from exactly the dependency set CI validates.
       - name: Install locked build + signing deps
-        run: python -m pip install --require-hashes -r windows-client/requirements-release.lock.txt
+        run: python -m pip install --require-hashes -r components/AstralProjection/windows-client/requirements-release.lock.txt
 
       - name: Build the exe (PyInstaller)
-        working-directory: windows-client
+        working-directory: components/AstralProjection/windows-client
         run: pyinstaller --noconfirm --clean AstralDeep.spec
 
       - name: Create SHA256SUMS
-        working-directory: windows-client/dist
+        working-directory: components/AstralProjection/windows-client/dist
         shell: bash
         run: |
           sha256sum AstralDeep.exe > SHA256SUMS
           cat SHA256SUMS
 
       - name: Keyless sign with sigstore (GitHub OIDC)
-        working-directory: windows-client/dist
+        working-directory: components/AstralProjection/windows-client/dist
         shell: bash
         # Keyless signing uses the job's ambient GitHub OIDC credential
         # (permissions.id-token: write) — no --identity/--oidc-issuer flags,
@@ -109,7 +109,7 @@ jobs:
           sigstore sign AstralDeep.exe --bundle cosign.bundle
 
       - name: Verify the signature (self-check)
-        working-directory: windows-client/dist
+        working-directory: components/AstralProjection/windows-client/dist
         shell: bash
         env:
           SIGSTORE_IDENTITY: "https://github.com/AstralDeep/AstralDeep/.github/workflows/release-windows.yml@refs/tags/${{ github.ref_name }}"
@@ -122,8 +122,8 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
-            windows-client/dist/AstralDeep.exe
-            windows-client/dist/SHA256SUMS
-            windows-client/dist/cosign.bundle
+            components/AstralProjection/windows-client/dist/AstralDeep.exe
+            components/AstralProjection/windows-client/dist/SHA256SUMS
+            components/AstralProjection/windows-client/dist/cosign.bundle
           generate_release_notes: true
           fail_on_unmatched_files: true

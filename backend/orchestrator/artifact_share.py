@@ -34,11 +34,14 @@ import hashlib
 import json
 import logging
 import secrets
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
-from psycopg2.extras import Json
-
 from audit.hooks import record_share_event
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    repository_from,
+)
 from personalization.phi_gate import get_phi_gate
 from shared.feature_flags import flags
 
@@ -68,13 +71,29 @@ def hash_token(token: str) -> str:
 
 
 class ShareGrantStore:
-    """CRUD over ``share_grant`` (schema in shared/database.py, 055.001)."""
+    """Product policy over AstralPlane's typed ``share_grant`` repository."""
 
-    def __init__(self, db=None):
-        if db is None:
-            from shared.database import Database
-            db = Database()
-        self.db = db
+    def __init__(
+        self,
+        db=None,
+        *,
+        plane_runtime=None,
+        plane_repositories=None,
+        plane_repository=None,
+    ):
+        if db is None and plane_runtime is None:
+            raise ValueError("ShareGrantStore requires the application Plane runtime")
+        repository, runtime = repository_from(
+            "share_grants",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._grants = PlaneRepositoryContext(
+            repository=plane_repository or repository,
+            plane_runtime=runtime,
+            legacy_database=db,
+        )
 
     # ── mint ─────────────────────────────────────────────────────────────
     async def mint(
@@ -120,52 +139,56 @@ class ShareGrantStore:
             raise SharePHIRefusedError("snapshot content flagged as PHI")
 
         token = secrets.token_urlsafe(32)
-        row = await asyncio.to_thread(
-            self._insert_grant, hash_token(token), user_id, chat_id, scope,
-            component_id, snapshot_html, snapshot_json, expires_at,
+        record = await self._grants.call_async(
+            self._grants.repository.create_grant,
+            token_sha256=hash_token(token),
+            owner_id=user_id,
+            chat_id=chat_id,
+            scope=scope,
+            component_id=component_id,
+            snapshot_html=snapshot_html,
+            snapshot_json=snapshot_json,
+            expires_at=expires_at,
         )
         detail = {"scope": scope}
         if component_id:
             detail["component_id"] = component_id
         await record_share_event(
             user_id=user_id, action="minted", chat_id=chat_id,
-            share_id=row["id"],
+            share_id=record.share_id,
             description=f"Share link minted ({scope})", detail=detail,
         )
         logger.info("share.minted share_id=%s user=%s chat=%s scope=%s component=%s",
-                    row["id"], user_id, chat_id, scope, component_id)
+                    record.share_id, user_id, chat_id, scope, component_id)
         return {
-            "id": row["id"],
+            "id": record.share_id,
             "token": token,
             "share_url": f"/share/{token}",
-            "created_at": row["created_at"],
-            "expires_at": row["expires_at"],
+            "created_at": record.created_at,
+            "expires_at": record.expires_at,
         }
-
-    def _insert_grant(self, digest: str, user_id: str, chat_id: str, scope: str,
-                      component_id: Optional[str], snapshot_html: str,
-                      snapshot_json: Any, expires_at) -> Dict[str, Any]:
-        self.db.execute(
-            "INSERT INTO share_grant (token_sha256, user_id, chat_id, scope, "
-            "component_id, snapshot_html, snapshot_json, expires_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (digest, user_id, chat_id, scope, component_id, snapshot_html,
-             Json(snapshot_json), expires_at),
-        )
-        return self.db.fetch_one(
-            "SELECT id, created_at, expires_at FROM share_grant WHERE token_sha256 = ?",
-            (digest,),
-        )
 
     # ── owner views ──────────────────────────────────────────────────────
     async def list_grants(self, user_id: str) -> List[Dict[str, Any]]:
         """Owner's grants, newest first — metadata only, never token/snapshot."""
-        return await self.db.afetch_all(
-            "SELECT id, chat_id, scope, component_id, created_at, expires_at, "
-            "revoked_at, open_count FROM share_grant WHERE user_id = ? "
-            "ORDER BY created_at DESC, id DESC",
-            (user_id,),
+        records = await self._grants.call_async(
+            self._grants.repository.list_grants,
+            owner_id=user_id,
+            limit=1000,
         )
+        return [
+            {
+                "id": record.share_id,
+                "chat_id": record.chat_id,
+                "scope": record.scope,
+                "component_id": record.component_id,
+                "created_at": record.created_at,
+                "expires_at": record.expires_at,
+                "revoked_at": record.revoked_at,
+                "open_count": record.open_count,
+            }
+            for record in records
+        ]
 
     async def revoke(self, user_id: str, share_id: int) -> bool:
         """Owner-scoped, idempotent revoke. False only when no such grant.
@@ -182,18 +205,13 @@ class ShareGrantStore:
         return state != "missing"
 
     def _revoke_sync(self, user_id: str, share_id: int) -> str:
-        cur = self.db.execute(
-            "UPDATE share_grant SET revoked_at = now() "
-            "WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
-            (share_id, user_id),
+        state = self._grants.call(
+            self._grants.repository.revoke_grant,
+            owner_id=user_id,
+            share_id=share_id,
+            revoked_at=datetime.now(UTC),
         )
-        if getattr(cur, "rowcount", 0):
-            return "revoked"
-        row = self.db.fetch_one(
-            "SELECT 1 AS present FROM share_grant WHERE id = ? AND user_id = ?",
-            (share_id, user_id),
-        )
-        return "already_revoked" if row else "missing"
+        return state.value
 
     # ── public serving ───────────────────────────────────────────────────
     async def resolve(self, token: str) -> Optional[Dict[str, Any]]:
@@ -204,29 +222,47 @@ class ShareGrantStore:
         """
         if not token:
             return None
-        return await self.db.afetch_one(
-            "SELECT id, user_id, chat_id, scope, component_id, snapshot_html, "
-            "snapshot_json, created_at, expires_at, open_count "
-            "FROM share_grant WHERE token_sha256 = ? AND revoked_at IS NULL "
-            "AND (expires_at IS NULL OR expires_at > now())",
-            (hash_token(token),),
+        record = await self._grants.call_async(
+            self._grants.repository.resolve_active_by_digest,
+            token_sha256=hash_token(token),
+            as_of=datetime.now(UTC),
         )
+        if record is None:
+            return None
+        return {
+            "id": record.share_id,
+            "user_id": record.owner_id,
+            "chat_id": record.chat_id,
+            "scope": record.scope,
+            "component_id": record.component_id,
+            "snapshot_html": record.snapshot_html,
+            "snapshot_json": record.snapshot_json,
+            "created_at": record.created_at,
+            "expires_at": record.expires_at,
+            "open_count": record.open_count,
+            "_token_sha256": record.token_sha256,
+        }
 
-    async def record_open(self, grant: Dict[str, Any]) -> None:
+    async def record_open(self, grant: Dict[str, Any]) -> bool:
         """Bump ``open_count`` and audit a public open of a resolved grant.
 
         ``share.opened``: actor = share owner, principal ``share:<id>`` (the
         anonymous visitor has no identity of their own).
         """
-        await self.db.aexecute(
-            "UPDATE share_grant SET open_count = open_count + 1 WHERE id = ?",
-            (grant["id"],),
+        record = await self._grants.call_async(
+            self._grants.repository.record_open,
+            share_id=grant["id"],
+            token_sha256=grant["_token_sha256"],
+            as_of=datetime.now(UTC),
         )
+        if record is None:
+            return False
         await record_share_event(
             user_id=grant["user_id"], action="opened", share_id=grant["id"],
             chat_id=grant.get("chat_id"), principal=f"share:{grant['id']}",
             description="Shared snapshot opened (public)",
         )
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -237,10 +273,9 @@ _STORE: Optional[ShareGrantStore] = None
 
 
 def get_share_store() -> ShareGrantStore:
-    """Return the process-wide store, building it on first use."""
-    global _STORE
+    """Return the application-bound process-wide store or fail closed."""
     if _STORE is None:
-        _STORE = ShareGrantStore()
+        raise RuntimeError("share persistence has not been bound to AstralPlane")
     return _STORE
 
 

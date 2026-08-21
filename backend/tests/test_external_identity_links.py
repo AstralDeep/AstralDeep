@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from astralplane.repositories.identity import (
+    ExternalIdentityLinkRecord,
+    ExternalIdentityNonceReplayError,
+)
 from starlette.requests import Request
 
 from orchestrator.api import (
@@ -144,68 +149,52 @@ def test_saved_link_projects_only_through_internal_verified_identity_bucket():
     assert public_user_preferences(preferences) == {"theme": "dark"}
 
 
-class _Cursor:
-    def __init__(self, db):
-        self.db = db
-
-    def execute(self, query, params=()):
-        if query.startswith("SELECT user_id"):
-            self.db.result = [dict(row) for row in self.db.rows]
-        elif query.startswith("INSERT INTO user_preferences"):
-            user_id, preferences, updated_at = params
-            replacement = {
-                "user_id": user_id,
-                "preferences": preferences,
-                "updated_at": updated_at,
-            }
-            self.db.rows = [r for r in self.db.rows if r["user_id"] != user_id]
-            self.db.rows.append(replacement)
-
-    def fetchall(self):
-        return list(self.db.result)
-
-
-class _Connection:
-    def __init__(self, db):
-        self.db = db
-
-    def cursor(self):
-        return _Cursor(self.db)
-
-    def commit(self):
-        self.db.commits += 1
-
-    def rollback(self):
-        self.db.rollbacks += 1
-
-
-class _Database:
+class _IdentityRepository:
     def __init__(self):
-        self.rows = [{
-            "user_id": USER_ID,
-            "preferences": json.dumps({"theme": "dark"}),
-        }]
-        self.result = []
-        self.commits = 0
-        self.rollbacks = 0
+        self.records = {}
+        self.nonces = set()
 
-    def _borrow(self):
-        return _Connection(self), False
+    def store_verified_external_identity(self, _transaction, **values):
+        nonce = (values["owner_id"], values["provider"], values["state_nonce"])
+        if nonce in self.nonces:
+            raise ExternalIdentityNonceReplayError("state nonce was already used")
+        self.nonces.add(nonce)
+        record = ExternalIdentityLinkRecord(
+            owner_id=values["owner_id"],
+            agent_id=values["agent_id"],
+            provider=values["provider"],
+            subject=values["subject"],
+            issuer=values["issuer"],
+            verified_at=values["observed_at"],
+        )
+        self.records[(record.owner_id, record.provider)] = record
+        return record
 
-    def _release(self, _connection, _pooled):
-        return None
-
-    def get_user_preferences(self, user_id):
-        for row in self.rows:
-            if row["user_id"] == user_id:
-                return json.loads(row["preferences"])
-        return {}
+    def list_external_identities(self, _transaction, *, owner_id, limit):
+        return tuple(
+            record
+            for (record_owner, _), record in sorted(self.records.items())
+            if record_owner == owner_id
+        )[:limit]
 
 
-def test_store_preserves_preferences_and_rejects_state_replay():
-    db = _Database()
+class _Runtime:
+    @contextmanager
+    def transaction(self):
+        yield object()
+
+
+def _plane_boundary():
+    repository = _IdentityRepository()
+    runtime = _Runtime()
+    repositories = SimpleNamespace(identity=repository)
+    return runtime, repositories
+
+
+def test_store_uses_typed_plane_boundary_and_rejects_state_replay():
+    runtime, repositories = _plane_boundary()
     store_verified_identity(
-        db,
+        None,
         user_id=USER_ID,
         agent_id=AGENT_ID,
         provider=PROVIDER,
@@ -213,14 +202,14 @@ def test_store_preserves_preferences_and_rejects_state_replay():
         issuer="https://orcid.org",
         state_nonce="nonce-1",
         now=NOW,
+        plane_runtime=runtime,
+        plane_repositories=repositories,
     )
-    saved = json.loads(db.rows[0]["preferences"])
-    assert saved["theme"] == "dark"
-    assert saved["verified_external_identities"]["orcid"]["subject"] == ORCID
+    assert repositories.identity.records[(USER_ID, PROVIDER)].subject == ORCID
 
     with pytest.raises(IdentityLinkError, match="already used"):
         store_verified_identity(
-            db,
+            None,
             user_id=USER_ID,
             agent_id=AGENT_ID,
             provider=PROVIDER,
@@ -228,8 +217,9 @@ def test_store_preserves_preferences_and_rejects_state_replay():
             issuer="https://orcid.org",
             state_nonce="nonce-1",
             now=NOW + 1,
+            plane_runtime=runtime,
+            plane_repositories=repositories,
         )
-    assert db.rollbacks == 1
 
 
 def _request_for(orchestrator) -> Request:
@@ -246,7 +236,7 @@ def _request_for(orchestrator) -> Request:
     })
 
 
-def _link_orchestrator(db=None):
+def _link_orchestrator():
     card = SimpleNamespace(
         agent_id=AGENT_ID,
         metadata={
@@ -258,9 +248,12 @@ def _link_orchestrator(db=None):
             }
         },
     )
+    runtime, repositories = _plane_boundary()
     return SimpleNamespace(
         agent_cards={AGENT_ID: card},
-        history=SimpleNamespace(db=db or _Database()),
+        runtime_composition=SimpleNamespace(
+            plane=SimpleNamespace(runtime=runtime, repositories=repositories)
+        ),
         ui_sessions={},
     )
 
@@ -319,8 +312,10 @@ def test_api_start_and_callback_complete_the_direct_orcid_link(monkeypatch):
     ))
     assert callback_response.status_code == 303
     assert callback_response.headers["location"] == "/?external_identity=orcid-linked"
-    stored = orch.history.db.get_user_preferences(USER_ID)
-    assert stored["verified_external_identities"]["orcid"]["subject"] == ORCID
+    stored = orch.runtime_composition.plane.repositories.identity.records[
+        (USER_ID, PROVIDER)
+    ]
+    assert stored.subject == ORCID
     assert orch.ui_sessions[websocket]["_verified_external_identities"]["orcid"][
         "subject"
     ] == ORCID

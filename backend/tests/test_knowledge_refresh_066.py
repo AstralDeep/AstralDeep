@@ -9,16 +9,31 @@ real bearer alike) without any network contact.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 
+from astralplane import create_repository_catalog
 from orchestrator.knowledge_synthesis import KnowledgeSynthesizer
 
 
+class _PlaneRuntime:
+    def __init__(self) -> None:
+        self.repositories = create_repository_catalog()
+
+    @contextmanager
+    def transaction(self):
+        yield object()
+
+
 def _synthesizer(tmp_path, config_resolver) -> KnowledgeSynthesizer:
+    runtime = _PlaneRuntime()
     return KnowledgeSynthesizer(
-        db=None,
         knowledge_dir=str(tmp_path),
         config_resolver=config_resolver,
+        plane_runtime=runtime,
+        plane_repositories=runtime.repositories,
+        # Client-refresh tests do not create or claim maintenance units.
+        maintenance_repository=object(),
     )
 
 

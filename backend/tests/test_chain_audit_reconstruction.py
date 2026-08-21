@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,20 +25,27 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from audit.recorder import Recorder, get_recorder, set_recorder  # noqa: E402
 from audit.repository import AuditRepository  # noqa: E402
 from orchestrator import delegation as dg  # noqa: E402
-from shared.database import Database  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 from shared.protocol import AgentHopRequest, MCPResponse  # noqa: E402
+from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def db():
-    return Database()
+    with isolated_plane_runtime("chain_audit") as runtime:
+        yield runtime
 
 
 @pytest.fixture()
 def recorder(db, tmp_path):
     prev = get_recorder()
-    rec = Recorder(AuditRepository(db), retry_queue=tmp_path / "audit-retry.jsonl")
+    rec = Recorder(
+        AuditRepository(
+            plane_runtime=db,
+            plane_repositories=db.repositories,
+        ),
+        retry_queue=tmp_path / "audit-retry.jsonl",
+    )
     set_recorder(rec)
     yield rec
     set_recorder(prev)
@@ -50,14 +58,41 @@ def chaining_on(monkeypatch):
 
 @pytest.fixture
 def orch():
+    from orchestrator.concurrency_cap import ConcurrencyCap
+    from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
 
-    o = Orchestrator()
+    # Keep the real delegation methods and audit repository, but do not
+    # compose an unrelated application-scoped Plane graph for the method
+    # harness itself.
+    o = Orchestrator.__new__(Orchestrator)
+    o.agents = {}
+    o.a2a_clients = {}
+    o.local_agents = {}
+    o.agent_cards = {}
+    o.ui_sessions = {}
+    o.security_flags = {}
+    o._dispatch_context = {}
+    o._chain_budgets = {}
+    o._pending_cap_entries = {}
+    o._hop_cap_entries = {}
+    o._job_context = {}
+    o._active_request = {}
+    o._taint_trackers = {}
+    o.concurrency_cap = ConcurrencyCap(max_per_user_agent=3)
+    o.hooks = HookManager()
+    o.stream_manager = None
+    o._llm_store = SimpleNamespace(
+        get=AsyncMock(return_value=None),
+        get_system=AsyncMock(return_value=None),
+    )
     o.send_ui_render = AsyncMock()
+    o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
     o._map_file_paths = lambda cid, a, **k: a
+    o.credential_manager = MagicMock()
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     for aid in ("agent-a", "agent-b", "agent-c"):
         o.local_agents[aid] = MagicMock()
@@ -137,7 +172,9 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
 
     def _meta(r):
         m = r["inputs_meta"]
-        return m if isinstance(m, dict) else json.loads(m)
+        if isinstance(m, Mapping):
+            return json.loads(json.dumps(dict(m)))
+        return json.loads(m)
 
     chains = sorted((_meta(r)["actor_chain"] for r in enforce), key=len)
     assert chains[0] == ["agent:agent-b", "agent:agent-a"]
@@ -158,7 +195,10 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
 
     # ---- Tamper evidence (verify_chain) ----
     # All DB work runs off the event loop (LOOP_GUARD_ENFORCE=1 in CI).
-    repo = AuditRepository(db)
+    repo = AuditRepository(
+        plane_runtime=db,
+        plane_repositories=db.repositories,
+    )
     assert await asyncio.to_thread(repo.verify_chain, user) is None  # intact
     victim = enforce[-1]["event_id"]
 
@@ -167,21 +207,13 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
         # refused outright — itself part of the tamper-evidence posture). To
         # prove the HASH CHAIN also detects tampering, simulate an attacker with
         # direct storage access: a raw superuser session with triggers disabled.
-        import psycopg2
-        raw = psycopg2.connect(
-            host=os.getenv("DB_HOST", "localhost"),
-            port=os.getenv("DB_PORT", "5432"),
-            dbname=os.getenv("DB_NAME", "astraldeep"),
-            user=os.getenv("DB_USER", "astral"),
-            password=os.getenv("DB_PASSWORD", "astral_dev"))
-        try:
-            cur = raw.cursor()
-            cur.execute("SET session_replication_role = replica")
-            cur.execute("UPDATE audit_events SET description = 'tampered' "
-                        "WHERE event_id = %s", (victim,))
-            raw.commit()
-        finally:
-            raw.close()
+        with db.transaction() as transaction:
+            transaction.execute("SET LOCAL session_replication_role = replica")
+            transaction.execute(
+                "UPDATE audit_events SET description = 'tampered' "
+                "WHERE event_id = %s",
+                (victim,),
+            )
 
     await asyncio.to_thread(_tamper)
     assert await asyncio.to_thread(repo.verify_chain, user) == victim

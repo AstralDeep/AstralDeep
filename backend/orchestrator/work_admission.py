@@ -1,19 +1,20 @@
 """Durable admission, operation lifecycle, and execution fencing.
 
-``WorkAdmissionCoordinator`` is the sole operation-state authority.  Product
-construction must inject either ``PostgresWorkAdmissionRepository`` or an
-existing :class:`shared.database.Database`; the coordinator never silently
-falls back to process memory.  ``InMemoryWorkAdmissionRepository`` exists only
-as an explicitly named deterministic test dependency.
+``WorkAdmissionCoordinator`` is the sole product operation-state authority.
+Production construction injects ``PlaneWorkAdmissionRepository`` bound to the
+one application-scoped Plane runtime and repository catalog; the coordinator
+never constructs storage or silently falls back to process memory.
+``InMemoryWorkAdmissionRepository`` exists only as an explicitly named
+deterministic test dependency.
 
 The public projections in this module deliberately exclude authenticated owner
 identifiers, idempotency material, and execution fences.  Internal operation
-records remain available only to trusted workers that already hold a fence.
+records remain available only to trusted workers through fenced or explicitly
+administrative repository surfaces.
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
 import threading
 import uuid
@@ -21,7 +22,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any, Callable, ContextManager, Iterator, Mapping, Protocol, Sequence
+from typing import Any, Callable, ContextManager, Iterator, Protocol, Sequence
+
+from astralplane.repositories import (
+    RepositoryConflictError as PlaneRepositoryConflictError,
+)
+from astralplane.repositories import work_admission as plane_admission
 
 
 _OPERATION_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -82,6 +88,10 @@ class StaleExecutionFenceError(RuntimeError):
 
 class AdmissionConfigurationError(ValueError):
     """Raised for an invalid admission-class graph or limit."""
+
+
+class WorkAdmissionConflictError(RuntimeError):
+    """Raised when an immutable work-admission binding conflicts."""
 
 
 @dataclass(frozen=True)
@@ -366,6 +376,22 @@ class WorkAdmissionRepository(Protocol):
         self, owner: OperationOwner, operation_id: uuid.UUID
     ) -> SafeOperationProjection: ...
 
+    def get_operation_for_administration(
+        self,
+        operation_id: uuid.UUID,
+        *,
+        for_update: bool = False,
+        transaction: Any | None = None,
+    ) -> OperationRecord | None: ...
+
+    def bind_request_generation(
+        self,
+        fence: ExecutionFence,
+        request_generation: uuid.UUID,
+        *,
+        transaction: Any | None = None,
+    ) -> OperationRecord: ...
+
     def bind_chat(
         self, fence: ExecutionFence, chat_id: str, *, now: datetime | None
     ) -> OperationRecord: ...
@@ -446,6 +472,13 @@ class WorkAdmissionRepository(Protocol):
         self, *, now: datetime | None, retention: timedelta
     ) -> tuple[OperationRecord, ...]: ...
 
+    def oldest_purge_eligible_due_at(
+        self,
+        *,
+        now: datetime | None,
+        transaction: Any | None = None,
+    ) -> datetime | None: ...
+
     def purge_expired(
         self,
         *,
@@ -465,25 +498,20 @@ class WorkAdmissionCoordinator:
         *,
         admission_classes: Sequence[AdmissionClassConfig],
         repository: WorkAdmissionRepository | None = None,
-        database: Any | None = None,
         clock: Callable[[], datetime] | None = None,
         operation_retention: timedelta = timedelta(hours=24),
         slot_lease: timedelta = timedelta(seconds=30),
         _configure_repository: bool = True,
     ) -> None:
-        if (repository is None) == (database is None):
-            raise ValueError("inject exactly one work-admission repository or Database")
+        if repository is None:
+            raise ValueError("inject an explicit work-admission repository")
         if operation_retention <= timedelta(0):
             raise ValueError("operation_retention must be positive")
         if slot_lease <= timedelta(0):
             raise ValueError("slot_lease must be positive")
         configs = tuple(admission_classes)
         _validate_admission_graph(configs)
-        self._repository: WorkAdmissionRepository = (
-            repository
-            if repository is not None
-            else PostgresWorkAdmissionRepository(database)
-        )
+        self._repository = repository
         self._clock = clock
         self._operation_retention = operation_retention
         self._slot_lease = slot_lease
@@ -500,17 +528,21 @@ class WorkAdmissionCoordinator:
                 )
 
     @classmethod
-    def from_database(
+    def from_plane(
         cls,
         *,
-        database: Any,
+        plane_runtime: Any,
+        plane_repositories: Any | None = None,
         clock: Callable[[], datetime] | None = None,
         operation_retention: timedelta = timedelta(hours=24),
         slot_lease: timedelta = timedelta(seconds=30),
     ) -> WorkAdmissionCoordinator:
-        """Bind the effective PostgreSQL graph without rewriting its rows."""
+        """Bind the effective Plane-owned graph without rewriting its rows."""
 
-        repository = PostgresWorkAdmissionRepository(database)
+        repository = PlaneWorkAdmissionRepository(
+            plane_runtime=plane_runtime,
+            plane_repositories=plane_repositories,
+        )
         configs = repository.load_existing_configs()
         return cls(
             admission_classes=configs,
@@ -525,6 +557,12 @@ class WorkAdmissionCoordinator:
         if self._clock is None:
             return None
         return _normalize_datetime(self._clock())
+
+    def current_time(self) -> datetime:
+        """Return the coordinator's normalized clock for product telemetry."""
+
+        current = self._now()
+        return datetime.now(UTC) if current is None else current
 
     def submit(self, request: OperationRequest) -> AdmissionResult:
         return self._repository.submit(
@@ -574,7 +612,7 @@ class WorkAdmissionCoordinator:
         """The injected durable repository shared by trusted state machines.
 
         Runtime subsystems use this narrow exposure so one operation can be
-        fenced and terminalized in the same PostgreSQL transaction as its
+        fenced and terminalized in the same caller-owned Plane transaction as its
         domain effect. Callers must not replace or reconfigure the repository.
         """
 
@@ -616,8 +654,8 @@ class WorkAdmissionCoordinator:
     ) -> OperationRecord:
         """Cancel queued/preselected work, or request cancellation after handoff.
 
-        Trusted subsystems that must decide a second database guard while the
-        operation lock is held may pass their PostgreSQL cursor and set
+        Trusted subsystems that must decide a second durable guard while the
+        operation lock is held may pass their Plane transaction and set
         ``request_running=False``.  Existing callers retain the normal
         cooperative-cancellation behavior by default.
         """
@@ -732,6 +770,15 @@ class WorkAdmissionCoordinator:
             now=self._now(), retention=self._operation_retention
         )
 
+    def oldest_purge_eligible_due_at(
+        self, *, transaction: Any | None = None
+    ) -> datetime | None:
+        """Return the oldest operation/submission row currently purgeable."""
+
+        return self._repository.oldest_purge_eligible_due_at(
+            now=self._now(), transaction=transaction
+        )
+
     def purge_expired(
         self, *, limit: int = 100, fence: ExecutionFence | None = None
     ) -> PurgeResult:
@@ -744,7 +791,7 @@ class WorkAdmissionCoordinator:
     def fenced_transaction(self, fence: ExecutionFence) -> ContextManager[Any]:
         """Return a transaction that locks and validates ``fence``.
 
-        Database-owned effects executed with the yielded PostgreSQL cursor are
+        Plane-owned effects executed with the yielded transaction are
         committed atomically with the fence check.  The explicitly injected
         in-memory test repository yields a sentinel while holding its lock.
         """
@@ -785,49 +832,15 @@ def _validate_admission_graph(configs: Sequence[AdmissionClassConfig]) -> None:
             current = by_name[current].parent_class_name
 
 
-def _admission_configs_from_rows(
-    rows: Sequence[Mapping[str, Any]],
+def load_admission_class_configs(
+    *, plane_runtime: Any, plane_repositories: Any | None = None
 ) -> tuple[AdmissionClassConfig, ...]:
-    configs = tuple(
-        AdmissionClassConfig(
-            class_name=AdmissionClass(str(row["class_name"])),
-            parent_class_name=(
-                AdmissionClass(str(row["parent_class_name"]))
-                if row["parent_class_name"] is not None
-                else None
-            ),
-            active_limit=int(row["active_limit"]),
-            queue_limit=int(row["queue_limit"]),
-            max_wait_ms=(
-                int(row["max_wait_ms"]) if int(row["max_wait_ms"]) > 0 else None
-            ),
-            config_revision=str(row["config_revision"]),
-        )
-        for row in rows
-    )
-    configured = {config.class_name for config in configs}
-    required = set(AdmissionClass)
-    if configured != required:
-        missing = sorted(member.value for member in required - configured)
-        unexpected = sorted(member.value for member in configured - required)
-        raise AdmissionConfigurationError(
-            "production admission config must contain every class "
-            f"(missing={missing}, unexpected={unexpected})"
-        )
-    _validate_admission_graph(configs)
-    return configs
+    """Read the complete effective graph through Plane's typed repository."""
 
-
-def load_admission_class_configs(database: Any) -> tuple[AdmissionClassConfig, ...]:
-    """Read and validate the complete effective PostgreSQL class graph."""
-
-    rows = database.fetch_all(
-        "SELECT class_name, parent_class_name, active_limit, queue_limit, "
-        "max_wait_ms, config_revision FROM operation_admission_class "
-        "ORDER BY CASE WHEN parent_class_name IS NULL THEN 0 ELSE 1 END, "
-        "class_name"
-    )
-    return _admission_configs_from_rows(rows)
+    return PlaneWorkAdmissionRepository(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_repositories,
+    ).load_existing_configs()
 
 
 def _normalize_datetime(value: datetime) -> datetime:
@@ -1535,6 +1548,50 @@ class InMemoryWorkAdmissionRepository:
                 raise OperationNotFoundError("operation not found")
             return _safe_projection(record)
 
+    def get_operation_for_administration(
+        self,
+        operation_id: uuid.UUID,
+        *,
+        for_update: bool = False,
+        transaction: Any | None = None,
+    ) -> OperationRecord | None:
+        del transaction
+        operation_id = _require_uuid(operation_id, "operation_id")
+        if not isinstance(for_update, bool):
+            raise ValueError("for_update must be boolean")
+        with self._lock:
+            return self._operations.get(operation_id)
+
+    def bind_request_generation(
+        self,
+        fence: ExecutionFence,
+        request_generation: uuid.UUID,
+        *,
+        transaction: Any | None = None,
+    ) -> OperationRecord:
+        del transaction
+        request_generation = _require_uuid(
+            request_generation, "request_generation"
+        )
+        with self._lock:
+            record = self._operations.get(fence.operation_id)
+            if record is None or not self._fence_matches(record, fence):
+                raise StaleExecutionFenceError("execution fence is stale")
+            if record.request_generation is not None:
+                if record.request_generation == request_generation:
+                    return record
+                raise WorkAdmissionConflictError(
+                    "operation is bound to a different request generation"
+                )
+            updated = replace(
+                record,
+                request_generation=request_generation,
+                state_revision=record.state_revision + 1,
+                updated_at=datetime.now(UTC),
+            )
+            self._operations[record.operation_id] = updated
+            return updated
+
     def reconcile_submission(
         self, owner: OperationOwner, submission_id: uuid.UUID
     ) -> SubmissionResult:
@@ -1576,7 +1633,7 @@ class InMemoryWorkAdmissionRepository:
         request_running: bool = True,
         transaction: Any | None = None,
     ) -> OperationRecord:
-        del transaction  # PostgreSQL cursors are not meaningful to this test double.
+        del transaction  # External transactions are not meaningful to this test double.
         current_time = self._now(now)
         with self._lock:
             record = self._operations.get(operation_id)
@@ -1674,7 +1731,7 @@ class InMemoryWorkAdmissionRepository:
         retention: timedelta,
         transaction: Any | None = None,
     ) -> OperationRecord:
-        del transaction  # PostgreSQL cursors are not meaningful to this test double.
+        del transaction  # External transactions are not meaningful to this test double.
         current_time = self._now(now)
         with self._lock:
             record = self._operations.get(fence.operation_id)
@@ -1873,6 +1930,46 @@ class InMemoryWorkAdmissionRepository:
             expired.append(terminal)
         return tuple(expired)
 
+    def oldest_purge_eligible_due_at(
+        self,
+        *,
+        now: datetime | None,
+        transaction: Any | None = None,
+    ) -> datetime | None:
+        del transaction
+        current_time = self._now(now)
+        with self._lock:
+            due_times: list[datetime] = []
+            for submission in self._submissions.values():
+                if submission.purge_after >= current_time:
+                    continue
+                operation = (
+                    self._operations.get(submission.operation_id)
+                    if submission.operation_id is not None
+                    else None
+                )
+                if submission.accepted and operation is not None and (
+                    operation.state not in _TERMINAL_STATES
+                    or operation.purge_after is None
+                    or operation.purge_after >= current_time
+                ):
+                    continue
+                due_times.append(submission.purge_after)
+            accepted_operation_ids = {
+                submission.operation_id
+                for submission in self._submissions.values()
+                if submission.accepted and submission.operation_id is not None
+            }
+            due_times.extend(
+                operation.purge_after
+                for operation in self._operations.values()
+                if operation.state in _TERMINAL_STATES
+                and operation.purge_after is not None
+                and operation.purge_after < current_time
+                and operation.operation_id not in accepted_operation_ids
+            )
+            return min(due_times) if due_times else None
+
     def purge_expired(
         self,
         *,
@@ -1961,472 +2058,242 @@ class InMemoryWorkAdmissionRepository:
             yield self
 
 
-class PostgresWorkAdmissionRepository:
-    """PostgreSQL authority for admission, lifecycle, and commit fencing.
+def _to_plane_class(value: AdmissionClass) -> plane_admission.AdmissionClass:
+    return plane_admission.AdmissionClass(value.value)
 
-    Every multi-row transition uses one borrowed connection and one explicit
-    transaction.  When no test clock is supplied, the transaction timestamp
-    comes from PostgreSQL, so replicas cannot disagree because of host-clock
-    skew.  Submission and idempotency identities also take stable advisory
-    transaction locks before their unique rows are inspected.
-    """
 
-    def __init__(self, database: Any) -> None:
-        if database is None or not callable(getattr(database, "_get_connection", None)):
-            raise TypeError("database must provide _get_connection()")
-        self._database = database
+def _from_plane_class(value: plane_admission.AdmissionClass) -> AdmissionClass:
+    return AdmissionClass(value.value)
+
+
+def _to_plane_state(value: OperationState) -> plane_admission.OperationState:
+    return plane_admission.OperationState(value.value)
+
+
+def _from_plane_state(value: plane_admission.OperationState) -> OperationState:
+    return OperationState(value.value)
+
+
+def _to_plane_owner(owner: OperationOwner) -> plane_admission.OperationOwner:
+    return plane_admission.OperationOwner(
+        owner_scope=plane_admission.OwnerScope(owner.owner_scope.value),
+        owner_user_id=owner.owner_user_id,
+        connection_scope_id=owner.connection_scope_id,
+    )
+
+
+def _to_plane_config(
+    config: AdmissionClassConfig,
+) -> plane_admission.AdmissionClassConfig:
+    return plane_admission.AdmissionClassConfig(
+        class_name=_to_plane_class(config.class_name),
+        parent_class_name=(
+            None
+            if config.parent_class_name is None
+            else _to_plane_class(config.parent_class_name)
+        ),
+        active_limit=config.active_limit,
+        queue_limit=config.queue_limit,
+        max_wait_ms=config.max_wait_ms,
+        config_revision=config.config_revision,
+    )
+
+
+def _from_plane_config(
+    config: plane_admission.AdmissionClassConfig,
+) -> AdmissionClassConfig:
+    return AdmissionClassConfig(
+        class_name=_from_plane_class(config.class_name),
+        parent_class_name=(
+            None
+            if config.parent_class_name is None
+            else _from_plane_class(config.parent_class_name)
+        ),
+        active_limit=config.active_limit,
+        queue_limit=config.queue_limit,
+        max_wait_ms=config.max_wait_ms,
+        config_revision=config.config_revision,
+    )
+
+
+def _to_plane_request(request: OperationRequest) -> plane_admission.OperationRequest:
+    return plane_admission.OperationRequest(
+        operation_kind=request.operation_kind,
+        admission_class=_to_plane_class(request.admission_class),
+        owner=_to_plane_owner(request.owner),
+        submission_id=request.submission_id,
+        idempotency_namespace=request.idempotency_namespace,
+        idempotency_key=request.idempotency_key,
+        normalized_input_digest=request.normalized_input_digest,
+        chat_id=request.chat_id,
+        parent_operation_id=request.parent_operation_id,
+        connection_generation=request.connection_generation,
+        request_generation=request.request_generation,
+    )
+
+
+def _to_plane_fence(fence: ExecutionFence) -> plane_admission.ExecutionFence:
+    return plane_admission.ExecutionFence(
+        operation_id=fence.operation_id,
+        execution_generation=fence.execution_generation,
+        execution_lease_token=fence.execution_lease_token,
+    )
+
+
+def _from_plane_fence(fence: plane_admission.ExecutionFence) -> ExecutionFence:
+    return ExecutionFence(
+        operation_id=fence.operation_id,
+        execution_generation=fence.execution_generation,
+        execution_lease_token=fence.execution_lease_token,
+    )
+
+
+def _from_plane_record(
+    record: plane_admission.OperationRecord,
+) -> OperationRecord:
+    return OperationRecord(
+        operation_id=record.operation_id,
+        operation_kind=record.operation_kind,
+        admission_class=_from_plane_class(record.admission_class),
+        owner_scope=OwnerScope(record.owner_scope.value),
+        owner_user_id=record.owner_user_id,
+        connection_scope_id=record.connection_scope_id,
+        idempotency_namespace=record.idempotency_namespace,
+        idempotency_key=record.idempotency_key,
+        normalized_input_digest=record.normalized_input_digest,
+        chat_id=record.chat_id,
+        parent_operation_id=record.parent_operation_id,
+        connection_generation=record.connection_generation,
+        request_generation=record.request_generation,
+        state=_from_plane_state(record.state),
+        phase_code=record.phase_code,
+        terminal_code=record.terminal_code,
+        safe_summary=record.safe_summary,
+        retry_after_ms=record.retry_after_ms,
+        execution_generation=record.execution_generation,
+        execution_lease_token=record.execution_lease_token,
+        state_revision=record.state_revision,
+        accepted_at=record.accepted_at,
+        updated_at=record.updated_at,
+        queue_deadline_at=record.queue_deadline_at,
+        started_at=record.started_at,
+        terminal_at=record.terminal_at,
+        cancel_requested_at=record.cancel_requested_at,
+        purge_after=record.purge_after,
+    )
+
+
+def _from_plane_projection(
+    projection: plane_admission.SafeOperationProjection,
+) -> SafeOperationProjection:
+    return SafeOperationProjection(
+        operation_id=projection.operation_id,
+        operation_kind=projection.operation_kind,
+        admission_class=_from_plane_class(projection.admission_class),
+        owner_scope=OwnerScope(projection.owner_scope.value),
+        chat_id=projection.chat_id,
+        parent_operation_id=projection.parent_operation_id,
+        connection_generation=projection.connection_generation,
+        request_generation=projection.request_generation,
+        state=_from_plane_state(projection.state),
+        phase_code=projection.phase_code,
+        terminal_code=projection.terminal_code,
+        safe_summary=projection.safe_summary,
+        retry_after_ms=projection.retry_after_ms,
+        state_revision=projection.state_revision,
+        accepted_at=projection.accepted_at,
+        queue_deadline_at=projection.queue_deadline_at,
+        started_at=projection.started_at,
+        terminal_at=projection.terminal_at,
+        updated_at=projection.updated_at,
+        purge_after=projection.purge_after,
+    )
+
+
+@contextmanager
+def _translate_plane_errors() -> Iterator[None]:
+    try:
+        yield
+    except plane_admission.StaleWorkExecutionFenceError as exc:
+        raise StaleExecutionFenceError(str(exc)) from exc
+    except plane_admission.WorkAdmissionNotFoundError as exc:
+        raise OperationNotFoundError(str(exc)) from exc
+    except plane_admission.WorkAdmissionConfigurationError as exc:
+        raise AdmissionConfigurationError(str(exc)) from exc
+    except plane_admission.WorkAdmissionIntegrityError as exc:
+        raise RuntimeError(str(exc)) from exc
+    except PlaneRepositoryConflictError as exc:
+        raise WorkAdmissionConflictError(str(exc)) from exc
+    except ValueError as exc:
+        # Plane validation errors intentionally remain ordinary domain
+        # ``ValueError`` instances at Deep's established public boundary.
+        raise ValueError(str(exc)) from exc
+
+
+class PlaneWorkAdmissionRepository:
+    """Deep domain adapter over Plane's caller-owned transaction repository."""
+
+    def __init__(
+        self,
+        *,
+        plane_runtime: Any,
+        plane_repositories: Any | None = None,
+    ) -> None:
+        if plane_runtime is None or not callable(
+            getattr(plane_runtime, "transaction", None)
+        ):
+            raise TypeError("an initialized Plane runtime is required")
+        catalog = plane_repositories or getattr(plane_runtime, "repositories", None)
+        repository = getattr(catalog, "work_admission", None)
+        if repository is None:
+            raise TypeError("Plane repository catalog is missing work_admission")
+        self._runtime = plane_runtime
+        self._plane_repository = repository
         self._configuration_lock = threading.RLock()
         self._configs: dict[AdmissionClass, AdmissionClassConfig] = {}
 
     @contextmanager
-    def _transaction(self) -> Iterator[Any]:
-        connection = self._database._get_connection()
-        cursor = connection.cursor()
-        try:
-            yield cursor
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            try:
-                cursor.close()
-            finally:
-                connection.close()
-
-    @contextmanager
-    def _transaction_or_cursor(self, transaction: Any | None) -> Iterator[Any]:
-        """Reuse a trusted caller transaction without committing it here."""
-
+    def _transaction(self, transaction: Any | None = None) -> Iterator[Any]:
         if transaction is not None:
             yield transaction
             return
-        with self._transaction() as cursor:
-            yield cursor
+        with self._runtime.transaction() as owned_transaction:
+            yield owned_transaction
+
+    def _invoke(
+        self,
+        operation: Callable[..., Any],
+        /,
+        *args: object,
+        transaction: Any | None = None,
+        **kwargs: object,
+    ) -> Any:
+        with self._transaction(transaction) as active_transaction:
+            with _translate_plane_errors():
+                return operation(active_transaction, *args, **kwargs)
 
     def load_existing_configs(self) -> tuple[AdmissionClassConfig, ...]:
-        """Atomically bind persisted class rows without an UPDATE/UPSERT."""
-
-        with self._configuration_lock:
-            with self._transaction() as cursor:
-                cursor.execute(
-                    """
-                    SELECT class_name, parent_class_name, active_limit,
-                           queue_limit, max_wait_ms, config_revision
-                    FROM operation_admission_class
-                    ORDER BY CASE WHEN parent_class_name IS NULL THEN 0 ELSE 1 END,
-                             class_name
-                    FOR SHARE
-                    """
-                )
-                configs = _admission_configs_from_rows(cursor.fetchall())
-                # Bind while shared row locks remain held. A concurrent
-                # operator update can proceed only after this complete snapshot
-                # is installed, and startup never writes the snapshot back.
-                self._configs = {
-                    config.class_name: config for config in configs
-                }
-                return configs
-
-    @staticmethod
-    def _current_time(cursor: Any, now: datetime | None) -> datetime:
-        if now is not None:
-            return _normalize_datetime(now)
-        cursor.execute("SELECT CURRENT_TIMESTAMP AS current_time")
-        row = cursor.fetchone()
-        if row is None:
-            raise RuntimeError("PostgreSQL did not return its transaction timestamp")
-        return _normalize_datetime(row["current_time"])
-
-    @staticmethod
-    def _advisory_identity(*parts: object) -> int:
-        digest = hashlib.sha256()
-        for part in parts:
-            encoded = str(part).encode("utf-8")
-            digest.update(len(encoded).to_bytes(4, "big"))
-            digest.update(encoded)
-        return int.from_bytes(digest.digest()[:8], "big", signed=True)
-
-    @classmethod
-    def _lock_request_identities(cls, cursor: Any, request: OperationRequest) -> None:
-        scope, partition = _owner_partition(request.owner)
-        lock_ids = {
-            cls._advisory_identity(
-                "operation-submission", scope, partition, request.submission_id
-            )
-        }
-        if request.idempotency_namespace is not None:
-            lock_ids.add(
-                cls._advisory_identity(
-                    "operation-idempotency",
-                    scope,
-                    partition,
-                    request.idempotency_namespace,
-                    request.idempotency_key,
-                )
-            )
-        for lock_id in sorted(lock_ids):
-            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (lock_id,))
-
-    @staticmethod
-    def _owner_clause(
-        owner: OperationOwner, *, alias: str = ""
-    ) -> tuple[str, tuple[Any, ...]]:
-        prefix = f"{alias}." if alias else ""
-        if owner.owner_scope is OwnerScope.CONNECTION:
-            return (
-                f"{prefix}owner_scope = %s AND {prefix}connection_scope_id = %s",
-                (owner.owner_scope.value, str(owner.connection_scope_id)),
-            )
-        if owner.owner_scope in {OwnerScope.USER, OwnerScope.SCHEDULE}:
-            return (
-                f"{prefix}owner_scope = %s AND {prefix}owner_user_id = %s",
-                (owner.owner_scope.value, owner.owner_user_id),
-            )
-        return f"{prefix}owner_scope = %s", (owner.owner_scope.value,)
-
-    @staticmethod
-    def _uuid(value: Any) -> uuid.UUID | None:
-        if value is None:
-            return None
-        return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
-
-    @classmethod
-    def _operation_from_row(cls, row: Mapping[str, Any]) -> OperationRecord:
-        return OperationRecord(
-            operation_id=cls._uuid(row["operation_id"]),  # type: ignore[arg-type]
-            operation_kind=str(row["operation_kind"]),
-            admission_class=AdmissionClass(row["admission_class"]),
-            owner_scope=OwnerScope(row["owner_scope"]),
-            owner_user_id=row["owner_user_id"],
-            connection_scope_id=cls._uuid(row["connection_scope_id"]),
-            idempotency_namespace=row["idempotency_namespace"],
-            idempotency_key=row["idempotency_key"],
-            normalized_input_digest=(
-                str(row["normalized_input_digest"])
-                if row["normalized_input_digest"] is not None
-                else None
-            ),
-            chat_id=row["chat_id"],
-            parent_operation_id=cls._uuid(row["parent_operation_id"]),
-            connection_generation=cls._uuid(row["connection_generation"]),
-            request_generation=cls._uuid(row["request_generation"]),
-            state=OperationState(row["state"]),
-            phase_code=row["phase_code"],
-            terminal_code=row["terminal_code"],
-            safe_summary=row["safe_summary"],
-            retry_after_ms=row["retry_after_ms"],
-            execution_generation=int(row["execution_generation"]),
-            execution_lease_token=cls._uuid(row["execution_lease_token"]),
-            state_revision=int(row["state_revision"]),
-            accepted_at=_normalize_datetime(row["accepted_at"]),
-            updated_at=_normalize_datetime(row["updated_at"]),
-            queue_deadline_at=(
-                _normalize_datetime(row["queue_deadline_at"])
-                if row["queue_deadline_at"] is not None
-                else None
-            ),
-            started_at=(
-                _normalize_datetime(row["started_at"])
-                if row["started_at"] is not None
-                else None
-            ),
-            terminal_at=(
-                _normalize_datetime(row["terminal_at"])
-                if row["terminal_at"] is not None
-                else None
-            ),
-            cancel_requested_at=(
-                _normalize_datetime(row["cancel_requested_at"])
-                if row["cancel_requested_at"] is not None
-                else None
-            ),
-            purge_after=(
-                _normalize_datetime(row["purge_after"])
-                if row["purge_after"] is not None
-                else None
-            ),
+        plane_configs = tuple(
+            self._invoke(self._plane_repository.load_existing_configs)
         )
-
-    @staticmethod
-    def _configuration_order(
-        configs: Sequence[AdmissionClassConfig],
-    ) -> tuple[AdmissionClassConfig, ...]:
-        by_name = {config.class_name: config for config in configs}
-        ordered: list[AdmissionClassConfig] = []
-
-        def visit(config: AdmissionClassConfig) -> None:
-            parent = config.parent_class_name
-            if parent is not None and by_name[parent] not in ordered:
-                visit(by_name[parent])
-            if config not in ordered:
-                ordered.append(config)
-
-        for config in configs:
-            visit(config)
-        return tuple(ordered)
+        with _translate_plane_errors():
+            self._plane_repository.bind_configs(plane_configs)
+        configs = tuple(_from_plane_config(config) for config in plane_configs)
+        with self._configuration_lock:
+            self._configs = {config.class_name: config for config in configs}
+        return configs
 
     def configure(self, admission_classes: Sequence[AdmissionClassConfig]) -> None:
         configs = tuple(admission_classes)
-        _validate_admission_graph(configs)
-        ordered = self._configuration_order(configs)
+        plane_configs = tuple(_to_plane_config(config) for config in configs)
+        self._invoke(
+            self._plane_repository.configure,
+            plane_configs,
+        )
+        with _translate_plane_errors():
+            self._plane_repository.bind_configs(plane_configs)
         with self._configuration_lock:
-            with self._transaction() as cursor:
-                for config in ordered:
-                    cursor.execute(
-                        """
-                    INSERT INTO operation_admission_class (
-                        class_name, parent_class_name, active_limit, queue_limit,
-                        max_wait_ms, config_revision, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                    ON CONFLICT (class_name) DO UPDATE SET
-                        parent_class_name = EXCLUDED.parent_class_name,
-                        active_limit = EXCLUDED.active_limit,
-                        queue_limit = EXCLUDED.queue_limit,
-                        max_wait_ms = EXCLUDED.max_wait_ms,
-                        config_revision = EXCLUDED.config_revision,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                        (
-                            config.class_name.value,
-                            config.parent_class_name.value
-                            if config.parent_class_name is not None
-                            else None,
-                            config.active_limit,
-                            config.queue_limit,
-                            config.max_wait_ms or 0,
-                            config.config_revision,
-                        ),
-                    )
-                    cursor.execute(
-                        """
-                    INSERT INTO operation_admission_slot (class_name, slot_number)
-                    SELECT %s, generate_series(1, %s)
-                    ON CONFLICT (class_name, slot_number) DO NOTHING
-                    """,
-                        (config.class_name.value, config.active_limit),
-                    )
-                    cursor.execute(
-                        """
-                    DELETE FROM operation_admission_slot
-                    WHERE class_name = %s AND slot_number > %s
-                      AND operation_id IS NULL
-                    """,
-                        (config.class_name.value, config.active_limit),
-                    )
             self._configs = {config.class_name: config for config in configs}
-
-    def _chain(self, class_name: AdmissionClass) -> tuple[AdmissionClass, ...]:
-        with self._configuration_lock:
-            if class_name not in self._configs:
-                raise AdmissionConfigurationError(
-                    f"unknown admission class {class_name.value}"
-                )
-            chain: list[AdmissionClass] = []
-            current: AdmissionClass | None = class_name
-            while current is not None:
-                chain.append(current)
-                current = self._configs[current].parent_class_name
-        return tuple(reversed(chain))
-
-    def _lock_class_chain(self, cursor: Any, class_name: AdmissionClass) -> None:
-        for member in self._chain(class_name):
-            cursor.execute(
-                """
-                SELECT class_name FROM operation_admission_class
-                WHERE class_name = %s FOR UPDATE
-                """,
-                (member.value,),
-            )
-            if cursor.fetchone() is None:
-                raise AdmissionConfigurationError(
-                    f"unknown admission class {member.value}"
-                )
-
-    def _submission_row(
-        self,
-        cursor: Any,
-        owner: OperationOwner,
-        submission_id: uuid.UUID,
-        *,
-        lock: bool = False,
-    ) -> Mapping[str, Any] | None:
-        owner_sql, owner_params = self._owner_clause(owner)
-        cursor.execute(
-            f"""
-            SELECT * FROM operation_submission_result
-            WHERE submission_id = %s AND {owner_sql}
-            {"FOR UPDATE" if lock else ""}
-            """,
-            (str(submission_id), *owner_params),
-        )
-        return cursor.fetchone()
-
-    @staticmethod
-    def _refusal_from_row(row: Mapping[str, Any]) -> RefusedAdmission:
-        return RefusedAdmission(
-            accepted=False,
-            code=str(row["refusal_code"]),
-            retryable=bool(row["retryable"]),
-            retry_after_ms=row["retry_after_ms"],
-        )
-
-    def _operation_row(
-        self, cursor: Any, operation_id: uuid.UUID, *, lock: bool = False
-    ) -> Mapping[str, Any] | None:
-        cursor.execute(
-            f"SELECT * FROM operation_record WHERE operation_id = %s "
-            f"{'FOR UPDATE' if lock else ''}",
-            (str(operation_id),),
-        )
-        return cursor.fetchone()
-
-    def _queue_position(self, cursor: Any, operation: OperationRecord) -> int | None:
-        if operation.state is not OperationState.QUEUED:
-            return None
-        cursor.execute(
-            """
-            SELECT COUNT(*) AS queue_position
-            FROM operation_record
-            WHERE admission_class = %s AND state = 'queued'
-              AND (
-                  accepted_at < %s
-                  OR (accepted_at = %s AND operation_id <= %s)
-              )
-            """,
-            (
-                operation.admission_class.value,
-                operation.accepted_at,
-                operation.accepted_at,
-                str(operation.operation_id),
-            ),
-        )
-        row = cursor.fetchone()
-        return int(row["queue_position"]) if row is not None else None
-
-    def _accepted(self, cursor: Any, operation: OperationRecord) -> AcceptedAdmission:
-        return AcceptedAdmission(
-            accepted=True,
-            operation_id=operation.operation_id,
-            state=operation.state,
-            state_revision=operation.state_revision,
-            queue_position=self._queue_position(cursor, operation),
-            queue_deadline_at=operation.queue_deadline_at,
-        )
-
-    @staticmethod
-    def _insert_submission(
-        cursor: Any,
-        request: OperationRequest,
-        *,
-        current_time: datetime,
-        retention: timedelta,
-        operation_id: uuid.UUID | None = None,
-        refusal_code: str | None = None,
-        retryable: bool = False,
-        retry_after_ms: int | None = None,
-    ) -> None:
-        cursor.execute(
-            """
-            INSERT INTO operation_submission_result (
-                submission_result_id, submission_id, owner_scope, owner_user_id,
-                connection_scope_id, accepted, operation_id, refusal_code,
-                retryable, retry_after_ms, observed_at, purge_after
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                str(uuid.uuid4()),
-                str(request.submission_id),
-                request.owner.owner_scope.value,
-                request.owner.owner_user_id,
-                str(request.owner.connection_scope_id)
-                if request.owner.connection_scope_id is not None
-                else None,
-                operation_id is not None,
-                str(operation_id) if operation_id is not None else None,
-                refusal_code,
-                retryable,
-                retry_after_ms,
-                current_time,
-                current_time + retention,
-            ),
-        )
-
-    def _existing_idempotent_operation(
-        self, cursor: Any, request: OperationRequest
-    ) -> Mapping[str, Any] | None:
-        if request.idempotency_namespace is None:
-            return None
-        owner_sql, owner_params = self._owner_clause(request.owner)
-        cursor.execute(
-            f"""
-            SELECT * FROM operation_record
-            WHERE {owner_sql}
-              AND idempotency_namespace = %s AND idempotency_key = %s
-            FOR UPDATE
-            """,
-            (
-                *owner_params,
-                request.idempotency_namespace,
-                request.idempotency_key,
-            ),
-        )
-        return cursor.fetchone()
-
-    def _select_free_slots(
-        self, cursor: Any, class_name: AdmissionClass
-    ) -> list[tuple[AdmissionClass, int]] | None:
-        with self._configuration_lock:
-            configs = dict(self._configs)
-        selected: list[tuple[AdmissionClass, int]] = []
-        for member in self._chain(class_name):
-            cursor.execute(
-                """
-                SELECT slot_number FROM operation_admission_slot
-                WHERE class_name = %s AND slot_number <= %s
-                  AND operation_id IS NULL
-                ORDER BY slot_number
-                FOR UPDATE SKIP LOCKED
-                LIMIT 1
-                """,
-                (member.value, configs[member].active_limit),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                return None
-            selected.append((member, int(row["slot_number"])))
-        return selected
-
-    @staticmethod
-    def _occupy_slots(
-        cursor: Any,
-        selected: Sequence[tuple[AdmissionClass, int]],
-        *,
-        operation_id: uuid.UUID,
-        lease_token: uuid.UUID | None,
-        lease_expires_at: datetime,
-    ) -> None:
-        for member, slot_number in selected:
-            cursor.execute(
-                """
-                UPDATE operation_admission_slot
-                SET operation_id = %s,
-                    lease_token = %s,
-                    claim_generation = claim_generation + 1,
-                    lease_expires_at = %s
-                WHERE class_name = %s AND slot_number = %s
-                  AND operation_id IS NULL
-                """,
-                (
-                    str(operation_id),
-                    str(lease_token or uuid.uuid4()),
-                    lease_expires_at,
-                    member.value,
-                    slot_number,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeError("admission slot claim lost atomicity")
 
     def submit(
         self,
@@ -2436,235 +2303,38 @@ class PostgresWorkAdmissionRepository:
         retention: timedelta,
         slot_lease: timedelta,
     ) -> AdmissionResult:
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            self._lock_request_identities(cursor, request)
-            existing_submission = self._submission_row(
-                cursor, request.owner, request.submission_id, lock=True
+        result = self._invoke(
+            self._plane_repository.submit,
+            _to_plane_request(request),
+            now=now,
+            retention=retention,
+            slot_lease=slot_lease,
+        )
+        if isinstance(result, plane_admission.AcceptedAdmission):
+            return AcceptedAdmission(
+                accepted=result.accepted,
+                operation_id=result.operation_id,
+                state=_from_plane_state(result.state),
+                state_revision=result.state_revision,
+                queue_position=result.queue_position,
+                queue_deadline_at=result.queue_deadline_at,
             )
-            if existing_submission is not None:
-                if not existing_submission["accepted"]:
-                    return self._refusal_from_row(existing_submission)
-                operation_id = self._uuid(existing_submission["operation_id"])
-                if operation_id is None:
-                    raise OperationNotFoundError("operation submission not found")
-                operation_row = self._operation_row(cursor, operation_id)
-                if operation_row is None:
-                    raise OperationNotFoundError("operation submission not found")
-                return self._accepted(cursor, self._operation_from_row(operation_row))
-
-            idempotent_row = self._existing_idempotent_operation(cursor, request)
-            if idempotent_row is not None:
-                operation = self._operation_from_row(idempotent_row)
-                if (
-                    operation.operation_kind != request.operation_kind
-                    or operation.admission_class is not request.admission_class
-                    or operation.normalized_input_digest
-                    != request.normalized_input_digest
-                ):
-                    self._insert_submission(
-                        cursor,
-                        request,
-                        current_time=current_time,
-                        retention=retention,
-                        refusal_code="idempotency_conflict",
-                    )
-                    return RefusedAdmission(False, "idempotency_conflict", False, None)
-                self._insert_submission(
-                    cursor,
-                    request,
-                    current_time=current_time,
-                    retention=retention,
-                    operation_id=operation.operation_id,
-                )
-                return self._accepted(cursor, operation)
-
-            with self._configuration_lock:
-                config = self._configs.get(request.admission_class)
-            if config is None:
-                raise AdmissionConfigurationError(
-                    f"unknown admission class {request.admission_class.value}"
-                )
-            self._lock_class_chain(cursor, request.admission_class)
-            self._expire_queued_locked(cursor, current_time, retention)
-            self._expire_execution_leases_locked(cursor, current_time, retention)
-            if request.admission_class is AdmissionClass.VOICE_INTERACTIVE:
-                cursor.execute(
-                    """
-                    SELECT COUNT(*) AS running_count
-                    FROM operation_record
-                    WHERE admission_class = %s
-                      AND owner_scope = %s
-                      AND owner_user_id = %s
-                      AND state = 'running'
-                    """,
-                    (
-                        AdmissionClass.VOICE_INTERACTIVE.value,
-                        OwnerScope.USER.value,
-                        request.owner.owner_user_id,
-                    ),
-                )
-                running_row = cursor.fetchone()
-                running_for_user = (
-                    int(running_row["running_count"]) if running_row else 0
-                )
-                if running_for_user >= VOICE_INTERACTIVE_PER_USER_ACTIVE_LIMIT:
-                    self._insert_submission(
-                        cursor,
-                        request,
-                        current_time=current_time,
-                        retention=retention,
-                        refusal_code="capacity_exceeded",
-                        retryable=True,
-                        retry_after_ms=_VOICE_CAPACITY_RETRY_AFTER_MS,
-                    )
-                    return RefusedAdmission(
-                        False,
-                        "capacity_exceeded",
-                        True,
-                        _VOICE_CAPACITY_RETRY_AFTER_MS,
-                    )
-            selected_slots = self._select_free_slots(cursor, request.admission_class)
-            cursor.execute(
-                """
-                SELECT COUNT(*) AS queued_count FROM operation_record
-                WHERE admission_class = %s AND state = 'queued'
-                """,
-                (request.admission_class.value,),
-            )
-            queue_row = cursor.fetchone()
-            queued_count = int(queue_row["queued_count"]) if queue_row else 0
-            if selected_slots is None and queued_count >= config.queue_limit:
-                retry_after_ms = max(1, min(config.max_wait_ms or 1_000, 60_000))
-                self._insert_submission(
-                    cursor,
-                    request,
-                    current_time=current_time,
-                    retention=retention,
-                    refusal_code="capacity_exceeded",
-                    retryable=True,
-                    retry_after_ms=retry_after_ms,
-                )
-                return RefusedAdmission(
-                    False, "capacity_exceeded", True, retry_after_ms
-                )
-
-            if selected_slots is None and (
-                config.max_wait_ms is None or config.max_wait_ms <= 0
-            ):
-                raise AdmissionConfigurationError(
-                    f"work class {config.class_name.value} requires finite queue wait"
-                )
-            operation_id = uuid.uuid4()
-            execution_token = uuid.uuid4() if selected_slots is not None else None
-            state = (
-                OperationState.RUNNING
-                if selected_slots is not None
-                else OperationState.QUEUED
-            )
-            queue_deadline = (
-                None
-                if selected_slots is not None
-                else current_time + timedelta(milliseconds=config.max_wait_ms or 0)
-            )
-            cursor.execute(
-                """
-                INSERT INTO operation_record (
-                    operation_id, operation_kind, admission_class, owner_scope,
-                    owner_user_id, connection_scope_id, idempotency_namespace,
-                    idempotency_key, normalized_input_digest, chat_id,
-                    parent_operation_id, connection_generation, request_generation,
-                    state, execution_generation, execution_lease_token,
-                    state_revision, accepted_at, updated_at, queue_deadline_at,
-                    started_at
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                )
-                RETURNING *
-                """,
-                (
-                    str(operation_id),
-                    request.operation_kind,
-                    request.admission_class.value,
-                    request.owner.owner_scope.value,
-                    request.owner.owner_user_id,
-                    str(request.owner.connection_scope_id)
-                    if request.owner.connection_scope_id is not None
-                    else None,
-                    request.idempotency_namespace,
-                    request.idempotency_key,
-                    request.normalized_input_digest,
-                    request.chat_id,
-                    str(request.parent_operation_id)
-                    if request.parent_operation_id is not None
-                    else None,
-                    str(request.connection_generation)
-                    if request.connection_generation is not None
-                    else None,
-                    str(request.request_generation)
-                    if request.request_generation is not None
-                    else None,
-                    state.value,
-                    1 if selected_slots is not None else 0,
-                    str(execution_token) if execution_token is not None else None,
-                    1 if selected_slots is not None else 0,
-                    current_time,
-                    current_time,
-                    queue_deadline,
-                    current_time if selected_slots is not None else None,
-                ),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise RuntimeError("accepted operation insert returned no record")
-            if selected_slots is not None:
-                if execution_token is None:  # pragma: no cover - branch invariant
-                    raise RuntimeError("preselected execution is missing its token")
-                self._occupy_slots(
-                    cursor,
-                    selected_slots,
-                    operation_id=operation_id,
-                    lease_token=execution_token,
-                    lease_expires_at=current_time + slot_lease,
-                )
-            self._insert_submission(
-                cursor,
-                request,
-                current_time=current_time,
-                retention=retention,
-                operation_id=operation_id,
-            )
-            return self._accepted(cursor, self._operation_from_row(row))
+        return RefusedAdmission(
+            accepted=result.accepted,
+            code=result.code,
+            retryable=result.retryable,
+            retry_after_ms=result.retry_after_ms,
+        )
 
     @staticmethod
-    def _expire_queued_locked(
-        cursor: Any, current_time: datetime, retention: timedelta
-    ) -> tuple[OperationRecord, ...]:
-        cursor.execute(
-            """
-            UPDATE operation_record
-            SET state = 'retryable',
-                terminal_code = 'queue_wait_expired',
-                safe_summary = 'Queue wait expired',
-                retry_after_ms = 1000,
-                state_revision = state_revision + 1,
-                updated_at = %s,
-                terminal_at = %s,
-                purge_after = %s
-            WHERE state = 'queued' AND queue_deadline_at <= %s
-            RETURNING *
-            """,
-            (
-                current_time,
-                current_time,
-                current_time + retention,
-                current_time,
-            ),
-        )
-        return tuple(
-            PostgresWorkAdmissionRepository._operation_from_row(row)
-            for row in cursor.fetchall()
+    def _claim(
+        claim: plane_admission.OperationClaim | None,
+    ) -> OperationClaim | None:
+        if claim is None:
+            return None
+        return OperationClaim(
+            operation=_from_plane_record(claim.operation),
+            fence=_from_plane_fence(claim.fence),
         )
 
     def claim_next(
@@ -2675,121 +2345,15 @@ class PostgresWorkAdmissionRepository:
         slot_lease: timedelta,
         retention: timedelta,
     ) -> OperationClaim | None:
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            self._lock_class_chain(cursor, class_name)
-            self._expire_execution_leases_locked(cursor, current_time, retention)
-            self._expire_queued_locked(cursor, current_time, retention)
-            cursor.execute(
-                """
-                SELECT operation.*
-                FROM operation_record AS operation
-                JOIN operation_admission_slot AS marker
-                  ON marker.operation_id = operation.operation_id
-                 AND marker.class_name = operation.admission_class
-                 AND marker.lease_token = operation.execution_lease_token
-                WHERE operation.admission_class = %s
-                  AND operation.state = 'running'
-                  AND operation.cancel_requested_at IS NULL
-                ORDER BY operation.accepted_at, operation.operation_id
-                FOR UPDATE OF operation, marker SKIP LOCKED
-                LIMIT 1
-                """,
-                (class_name.value,),
+        return self._claim(
+            self._invoke(
+                self._plane_repository.claim_next,
+                _to_plane_class(class_name),
+                now=now,
+                slot_lease=slot_lease,
+                retention=retention,
             )
-            preselected_row = cursor.fetchone()
-            if preselected_row is not None:
-                operation = self._operation_from_row(preselected_row)
-                marker_token = operation.execution_lease_token
-                if marker_token is None:  # pragma: no cover - SQL predicate invariant
-                    raise RuntimeError("preselected execution is missing its token")
-                cursor.execute(
-                    """
-                    UPDATE operation_admission_slot
-                    SET lease_token = %s,
-                        claim_generation = claim_generation + 1,
-                        lease_expires_at = %s
-                    WHERE operation_id = %s AND lease_token = %s
-                    """,
-                    (
-                        str(uuid.uuid4()),
-                        current_time + slot_lease,
-                        str(operation.operation_id),
-                        str(marker_token),
-                    ),
-                )
-                if cursor.rowcount != len(self._chain(operation.admission_class)):
-                    raise RuntimeError("preselected handoff marker is incomplete")
-                return OperationClaim(
-                    operation=operation,
-                    fence=ExecutionFence(
-                        operation_id=operation.operation_id,
-                        execution_generation=operation.execution_generation,
-                        execution_lease_token=marker_token,
-                    ),
-                )
-            cursor.execute(
-                """
-                SELECT * FROM operation_record
-                WHERE admission_class = %s AND state = 'queued'
-                ORDER BY accepted_at, operation_id
-                FOR UPDATE SKIP LOCKED
-                LIMIT 1
-                """,
-                (class_name.value,),
-            )
-            candidate = cursor.fetchone()
-            if candidate is None:
-                return None
-
-            claimed_slots = self._select_free_slots(cursor, class_name)
-            if claimed_slots is None:
-                return None
-
-            operation_id = self._uuid(candidate["operation_id"])
-            if operation_id is None:
-                raise RuntimeError("queued operation has no identity")
-            lease_expires_at = current_time + slot_lease
-            self._occupy_slots(
-                cursor,
-                claimed_slots,
-                operation_id=operation_id,
-                lease_token=None,
-                lease_expires_at=lease_expires_at,
-            )
-
-            execution_token = uuid.uuid4()
-            cursor.execute(
-                """
-                UPDATE operation_record
-                SET state = 'running',
-                    execution_generation = execution_generation + 1,
-                    execution_lease_token = %s,
-                    state_revision = state_revision + 1,
-                    updated_at = %s,
-                    started_at = COALESCE(started_at, %s)
-                WHERE operation_id = %s AND state = 'queued'
-                RETURNING *
-                """,
-                (
-                    str(execution_token),
-                    current_time,
-                    current_time,
-                    str(operation_id),
-                ),
-            )
-            running_row = cursor.fetchone()
-            if running_row is None:
-                raise RuntimeError("operation selection lost atomicity")
-            operation = self._operation_from_row(running_row)
-            return OperationClaim(
-                operation=operation,
-                fence=ExecutionFence(
-                    operation_id=operation.operation_id,
-                    execution_generation=operation.execution_generation,
-                    execution_lease_token=execution_token,
-                ),
-            )
+        )
 
     def claim_operation(
         self,
@@ -2800,257 +2364,113 @@ class PostgresWorkAdmissionRepository:
         slot_lease: timedelta,
         retention: timedelta,
     ) -> OperationClaim | None:
-        """Claim one exact preselected/FIFO operation under the class lock."""
-
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            self._lock_class_chain(cursor, class_name)
-            self._expire_execution_leases_locked(cursor, current_time, retention)
-            self._expire_queued_locked(cursor, current_time, retention)
-
-            # A submit that found headroom has already selected durable slots.
-            # The child-class slot still carries the operation token only until
-            # one worker consumes this handoff.  Addressing it by ID prevents a
-            # local submitter from accidentally taking an older operation.
-            cursor.execute(
-                """
-                SELECT operation.*
-                FROM operation_record AS operation
-                JOIN operation_admission_slot AS marker
-                  ON marker.operation_id = operation.operation_id
-                 AND marker.class_name = operation.admission_class
-                 AND marker.lease_token = operation.execution_lease_token
-                WHERE operation.operation_id = %s
-                  AND operation.admission_class = %s
-                  AND operation.state = 'running'
-                  AND operation.cancel_requested_at IS NULL
-                FOR UPDATE OF operation, marker
-                """,
-                (str(operation_id), class_name.value),
+        return self._claim(
+            self._invoke(
+                self._plane_repository.claim_operation,
+                _to_plane_class(class_name),
+                operation_id,
+                now=now,
+                slot_lease=slot_lease,
+                retention=retention,
             )
-            preselected_row = cursor.fetchone()
-            if preselected_row is not None:
-                operation = self._operation_from_row(preselected_row)
-                marker_token = operation.execution_lease_token
-                if marker_token is None:  # pragma: no cover - SQL invariant
-                    raise RuntimeError("preselected execution is missing its token")
-                cursor.execute(
-                    """
-                    UPDATE operation_admission_slot
-                    SET lease_token = %s,
-                        claim_generation = claim_generation + 1,
-                        lease_expires_at = %s
-                    WHERE operation_id = %s AND lease_token = %s
-                    """,
-                    (
-                        str(uuid.uuid4()),
-                        current_time + slot_lease,
-                        str(operation_id),
-                        str(marker_token),
-                    ),
-                )
-                if cursor.rowcount != len(self._chain(class_name)):
-                    raise RuntimeError("preselected handoff marker is incomplete")
-                return OperationClaim(
-                    operation=operation,
-                    fence=ExecutionFence(
-                        operation_id=operation.operation_id,
-                        execution_generation=operation.execution_generation,
-                        execution_lease_token=marker_token,
-                    ),
-                )
-
-            cursor.execute(
-                """
-                SELECT * FROM operation_record
-                WHERE operation_id = %s AND admission_class = %s
-                FOR UPDATE
-                """,
-                (str(operation_id), class_name.value),
-            )
-            candidate = cursor.fetchone()
-            if candidate is None or candidate["state"] != OperationState.QUEUED.value:
-                return None
-
-            cursor.execute(
-                """
-                SELECT operation_id FROM operation_record
-                WHERE admission_class = %s AND state = 'queued'
-                ORDER BY accepted_at, operation_id
-                LIMIT 1
-                """,
-                (class_name.value,),
-            )
-            head = cursor.fetchone()
-            if head is None or str(head["operation_id"]) != str(operation_id):
-                return None
-
-            claimed_slots = self._select_free_slots(cursor, class_name)
-            if claimed_slots is None:
-                return None
-            lease_expires_at = current_time + slot_lease
-            self._occupy_slots(
-                cursor,
-                claimed_slots,
-                operation_id=operation_id,
-                lease_token=None,
-                lease_expires_at=lease_expires_at,
-            )
-            execution_token = uuid.uuid4()
-            cursor.execute(
-                """
-                UPDATE operation_record
-                SET state = 'running',
-                    execution_generation = execution_generation + 1,
-                    execution_lease_token = %s,
-                    state_revision = state_revision + 1,
-                    updated_at = %s,
-                    started_at = COALESCE(started_at, %s)
-                WHERE operation_id = %s AND state = 'queued'
-                RETURNING *
-                """,
-                (
-                    str(execution_token),
-                    current_time,
-                    current_time,
-                    str(operation_id),
-                ),
-            )
-            running_row = cursor.fetchone()
-            if running_row is None:
-                raise RuntimeError("operation selection lost atomicity")
-            operation = self._operation_from_row(running_row)
-            return OperationClaim(
-                operation=operation,
-                fence=ExecutionFence(
-                    operation_id=operation.operation_id,
-                    execution_generation=operation.execution_generation,
-                    execution_lease_token=execution_token,
-                ),
-            )
+        )
 
     def inspect_admission_class(
         self, class_name: AdmissionClass, *, now: datetime | None
     ) -> AdmissionClassStatus:
-        with self._transaction() as cursor:
-            self._current_time(cursor, now)
-            cursor.execute(
-                """
-                SELECT class_name, parent_class_name, active_limit, queue_limit,
-                       max_wait_ms
-                FROM operation_admission_class WHERE class_name = %s
-                """,
-                (class_name.value,),
-            )
-            config = cursor.fetchone()
-            if config is None:
-                raise AdmissionConfigurationError(
-                    f"unknown admission class {class_name.value}"
-                )
-            cursor.execute(
-                """
-                SELECT
-                    COUNT(*) FILTER (WHERE s.operation_id IS NOT NULL) AS active_count,
-                    MIN(o.started_at) AS oldest_running_at
-                FROM operation_admission_slot AS s
-                LEFT JOIN operation_record AS o ON o.operation_id = s.operation_id
-                WHERE s.class_name = %s
-                """,
-                (class_name.value,),
-            )
-            active = cursor.fetchone()
-            cursor.execute(
-                """
-                SELECT COUNT(*) AS queued_count, MIN(accepted_at) AS oldest_queued_at
-                FROM operation_record
-                WHERE admission_class = %s AND state = 'queued'
-                """,
-                (class_name.value,),
-            )
-            queued = cursor.fetchone()
-            max_wait = int(config["max_wait_ms"])
-            return AdmissionClassStatus(
-                class_name=AdmissionClass(config["class_name"]),
-                parent_class_name=(
-                    AdmissionClass(config["parent_class_name"])
-                    if config["parent_class_name"] is not None
-                    else None
-                ),
-                active_limit=int(config["active_limit"]),
-                queue_limit=int(config["queue_limit"]),
-                max_wait_ms=max_wait or None,
-                active_count=int(active["active_count"]) if active else 0,
-                queued_count=int(queued["queued_count"]) if queued else 0,
-                oldest_queued_at=(
-                    _normalize_datetime(queued["oldest_queued_at"])
-                    if queued and queued["oldest_queued_at"] is not None
-                    else None
-                ),
-                oldest_running_at=(
-                    _normalize_datetime(active["oldest_running_at"])
-                    if active and active["oldest_running_at"] is not None
-                    else None
-                ),
-            )
+        status = self._invoke(
+            self._plane_repository.inspect_admission_class,
+            _to_plane_class(class_name),
+            now=now,
+        )
+        return AdmissionClassStatus(
+            class_name=_from_plane_class(status.class_name),
+            parent_class_name=(
+                None
+                if status.parent_class_name is None
+                else _from_plane_class(status.parent_class_name)
+            ),
+            active_limit=status.active_limit,
+            queue_limit=status.queue_limit,
+            max_wait_ms=status.max_wait_ms,
+            active_count=status.active_count,
+            queued_count=status.queued_count,
+            oldest_queued_at=status.oldest_queued_at,
+            oldest_running_at=status.oldest_running_at,
+        )
 
     def query_operation(
         self, owner: OperationOwner, operation_id: uuid.UUID
     ) -> SafeOperationProjection:
-        owner_sql, owner_params = self._owner_clause(owner)
-        with self._transaction() as cursor:
-            cursor.execute(
-                f"""
-                SELECT * FROM operation_record
-                WHERE operation_id = %s AND {owner_sql}
-                """,
-                (str(operation_id), *owner_params),
+        return _from_plane_projection(
+            self._invoke(
+                self._plane_repository.query_operation,
+                _to_plane_owner(owner),
+                operation_id,
             )
-            row = cursor.fetchone()
-            if row is None:
-                raise OperationNotFoundError("operation not found")
-            return _safe_projection(self._operation_from_row(row))
+        )
+
+    def get_operation_for_administration(
+        self,
+        operation_id: uuid.UUID,
+        *,
+        for_update: bool = False,
+        transaction: Any | None = None,
+    ) -> OperationRecord | None:
+        record = self._invoke(
+            self._plane_repository.get_operation_for_administration,
+            operation_id=operation_id,
+            for_update=for_update,
+            transaction=transaction,
+        )
+        return None if record is None else _from_plane_record(record)
+
+    def bind_request_generation(
+        self,
+        fence: ExecutionFence,
+        request_generation: uuid.UUID,
+        *,
+        transaction: Any | None = None,
+    ) -> OperationRecord:
+        return _from_plane_record(
+            self._invoke(
+                self._plane_repository.bind_request_generation,
+                fence=_to_plane_fence(fence),
+                request_generation=request_generation,
+                transaction=transaction,
+            )
+        )
+
+    def bind_chat(
+        self, fence: ExecutionFence, chat_id: str, *, now: datetime | None
+    ) -> OperationRecord:
+        return _from_plane_record(
+            self._invoke(
+                self._plane_repository.bind_chat,
+                _to_plane_fence(fence),
+                chat_id,
+                now=now,
+            )
+        )
 
     def reconcile_submission(
         self, owner: OperationOwner, submission_id: uuid.UUID
     ) -> SubmissionResult:
-        with self._transaction() as cursor:
-            row = self._submission_row(cursor, owner, submission_id)
-            if row is None:
-                raise OperationNotFoundError("operation submission not found")
-            if not row["accepted"]:
-                return self._refusal_from_row(row)
-            operation_id = self._uuid(row["operation_id"])
-            if operation_id is None:
-                raise OperationNotFoundError("operation submission not found")
-            operation = self._operation_row(cursor, operation_id)
-            if operation is None:
-                raise OperationNotFoundError("operation submission not found")
-            return AcceptedSubmission(
-                accepted=True,
-                operation=_safe_projection(self._operation_from_row(operation)),
-            )
-
-    @staticmethod
-    def _release_slots(cursor: Any, operation_id: uuid.UUID) -> None:
-        cursor.execute(
-            """
-            UPDATE operation_admission_slot
-            SET operation_id = NULL,
-                lease_token = NULL,
-                claim_generation = claim_generation + 1,
-                lease_expires_at = NULL
-            WHERE operation_id = %s
-            """,
-            (str(operation_id),),
+        result = self._invoke(
+            self._plane_repository.reconcile_submission,
+            _to_plane_owner(owner),
+            submission_id,
         )
-        cursor.execute(
-            """
-            DELETE FROM operation_admission_slot AS slot
-            USING operation_admission_class AS config
-            WHERE slot.class_name = config.class_name
-              AND slot.slot_number > config.active_limit
-              AND slot.operation_id IS NULL
-            """
+        if isinstance(result, plane_admission.AcceptedSubmission):
+            return AcceptedSubmission(
+                accepted=result.accepted,
+                operation=_from_plane_projection(result.operation),
+            )
+        return RefusedAdmission(
+            accepted=result.accepted,
+            code=result.code,
+            retryable=result.retryable,
+            retry_after_ms=result.retry_after_ms,
         )
 
     def cancel(
@@ -3064,102 +2484,18 @@ class PostgresWorkAdmissionRepository:
         request_running: bool = True,
         transaction: Any | None = None,
     ) -> OperationRecord:
-        owner_sql, owner_params = self._owner_clause(owner)
-        with self._transaction_or_cursor(transaction) as cursor:
-            current_time = self._current_time(cursor, now)
-            cursor.execute(
-                "SELECT admission_class FROM operation_record "
-                "WHERE operation_id = %s",
-                (str(operation_id),),
+        return _from_plane_record(
+            self._invoke(
+                self._plane_repository.cancel,
+                _to_plane_owner(owner),
+                operation_id,
+                terminal_code,
+                now=now,
+                retention=retention,
+                request_running=request_running,
+                transaction=transaction,
             )
-            identity = cursor.fetchone()
-            if identity is None:
-                raise OperationNotFoundError("operation not found")
-            self._lock_class_chain(
-                cursor, AdmissionClass(str(identity["admission_class"]))
-            )
-            cursor.execute(
-                f"""
-                SELECT * FROM operation_record
-                WHERE operation_id = %s AND {owner_sql}
-                FOR UPDATE
-                """,
-                (str(operation_id), *owner_params),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise OperationNotFoundError("operation not found")
-            operation = self._operation_from_row(row)
-            if (
-                operation.state in _TERMINAL_STATES
-                or operation.cancel_requested_at is not None
-            ):
-                return operation
-            preselected = False
-            if operation.state is OperationState.RUNNING:
-                cursor.execute(
-                    """
-                    SELECT COUNT(*) AS slot_count,
-                           BOOL_AND(lease_token = %s) AS marker_matches
-                    FROM operation_admission_slot
-                    WHERE operation_id = %s
-                    """,
-                    (
-                        str(operation.execution_lease_token),
-                        str(operation.operation_id),
-                    ),
-                )
-                marker = cursor.fetchone()
-                preselected = bool(
-                    marker
-                    and int(marker["slot_count"])
-                    == len(self._chain(operation.admission_class))
-                    and marker["marker_matches"]
-                )
-            if operation.state is OperationState.QUEUED or preselected:
-                cursor.execute(
-                    """
-                    UPDATE operation_record
-                    SET state = 'cancelled', terminal_code = %s,
-                        safe_summary = 'Cancelled',
-                        state_revision = state_revision + 1,
-                        updated_at = %s, cancel_requested_at = %s,
-                        terminal_at = %s, purge_after = %s,
-                        execution_lease_token = NULL
-                    WHERE operation_id = %s
-                      AND state IN ('queued', 'running')
-                    RETURNING *
-                    """,
-                    (
-                        terminal_code,
-                        current_time,
-                        current_time,
-                        current_time,
-                        current_time + retention,
-                        str(operation_id),
-                    ),
-                )
-                release_slots = True
-            else:
-                if not request_running:
-                    return operation
-                cursor.execute(
-                    """
-                    UPDATE operation_record
-                    SET state_revision = state_revision + 1,
-                        updated_at = %s, cancel_requested_at = %s
-                    WHERE operation_id = %s AND state = 'running'
-                    RETURNING *
-                    """,
-                    (current_time, current_time, str(operation_id)),
-                )
-                release_slots = False
-            updated = cursor.fetchone()
-            if updated is None:
-                raise RuntimeError("operation cancellation lost atomicity")
-            if release_slots:
-                self._release_slots(cursor, operation_id)
-            return self._operation_from_row(updated)
+        )
 
     def terminalize_unselected(
         self,
@@ -3171,107 +2507,16 @@ class PostgresWorkAdmissionRepository:
         now: datetime | None,
         retention: timedelta,
     ) -> OperationRecord | None:
-        """Atomically settle exact work only while no worker owns its handoff."""
-
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            cursor.execute(
-                "SELECT admission_class FROM operation_record "
-                "WHERE operation_id = %s",
-                (str(operation_id),),
-            )
-            identity = cursor.fetchone()
-            if identity is None:
-                return None
-
-            admission_class = AdmissionClass(identity["admission_class"])
-            # Claim paths take these locks before the operation and slot rows.
-            # Matching that order makes handoff-vs-recovery linearizable and
-            # avoids inverting locks with an exact claim.
-            self._lock_class_chain(cursor, admission_class)
-            row = self._operation_row(cursor, operation_id, lock=True)
-            if row is None:
-                return None
-            operation = self._operation_from_row(row)
-            if operation.state in _TERMINAL_STATES:
-                return operation
-
-            if operation.state is OperationState.RUNNING:
-                cursor.execute(
-                    """
-                    SELECT class_name, lease_token
-                    FROM operation_admission_slot
-                    WHERE operation_id = %s
-                    ORDER BY class_name, slot_number
-                    FOR UPDATE
-                    """,
-                    (str(operation_id),),
-                )
-                slots = tuple(cursor.fetchall())
-                expected_classes = {
-                    member.value for member in self._chain(admission_class)
-                }
-                preselected = (
-                    operation.cancel_requested_at is None
-                    and operation.execution_lease_token is not None
-                    and len(slots) == len(expected_classes)
-                    and {str(slot["class_name"]) for slot in slots}
-                    == expected_classes
-                    and all(
-                        self._uuid(slot["lease_token"])
-                        == operation.execution_lease_token
-                        for slot in slots
-                    )
-                )
-                if not preselected:
-                    return None
-            elif operation.state is not OperationState.QUEUED:
-                return None
-
-            execution_token = (
-                str(operation.execution_lease_token)
-                if operation.execution_lease_token is not None
-                else None
-            )
-            cursor.execute(
-                """
-                UPDATE operation_record
-                SET state = 'retryable', terminal_code = %s,
-                    safe_summary = %s, retry_after_ms = %s,
-                    execution_lease_token = NULL,
-                    state_revision = state_revision + 1,
-                    updated_at = %s, terminal_at = %s, purge_after = %s
-                WHERE operation_id = %s AND state = %s
-                  AND execution_generation = %s
-                  AND execution_lease_token IS NOT DISTINCT FROM %s
-                RETURNING *
-                """,
-                (
-                    terminal_code,
-                    safe_summary,
-                    retry_after_ms,
-                    current_time,
-                    current_time,
-                    current_time + retention,
-                    str(operation_id),
-                    operation.state.value,
-                    operation.execution_generation,
-                    execution_token,
-                ),
-            )
-            terminal = cursor.fetchone()
-            if terminal is None:  # pragma: no cover - row lock and CAS invariant
-                raise RuntimeError("unselected terminalization lost atomicity")
-            self._release_slots(cursor, operation_id)
-            return self._operation_from_row(terminal)
-
-    @staticmethod
-    def _fence_matches(operation: OperationRecord, fence: ExecutionFence) -> bool:
-        return (
-            operation.state is OperationState.RUNNING
-            and operation.execution_generation == fence.execution_generation
-            and operation.execution_lease_token == fence.execution_lease_token
+        record = self._invoke(
+            self._plane_repository.terminalize_unselected,
+            operation_id,
+            terminal_code=terminal_code,
+            safe_summary=safe_summary,
+            retry_after_ms=retry_after_ms,
+            now=now,
+            retention=retention,
         )
+        return None if record is None else _from_plane_record(record)
 
     def terminalize(
         self,
@@ -3285,80 +2530,42 @@ class PostgresWorkAdmissionRepository:
         retention: timedelta,
         transaction: Any | None = None,
     ) -> OperationRecord:
-        with self._transaction_or_cursor(transaction) as cursor:
-            current_time = self._current_time(cursor, now)
-            row = self._operation_row(cursor, fence.operation_id, lock=True)
-            if row is None:
-                raise StaleExecutionFenceError("execution fence is stale")
-            operation = self._operation_from_row(row)
-            if operation.state in _TERMINAL_STATES:
-                return operation
-            if not self._fence_matches(operation, fence):
-                raise StaleExecutionFenceError("execution fence is stale")
-            cursor.execute(
-                """
-                UPDATE operation_record
-                SET state = %s, terminal_code = %s, safe_summary = %s,
-                    retry_after_ms = %s, execution_lease_token = NULL,
-                    state_revision = state_revision + 1,
-                    updated_at = %s, terminal_at = %s, purge_after = %s
-                WHERE operation_id = %s AND state = 'running'
-                  AND execution_generation = %s
-                  AND execution_lease_token = %s
-                RETURNING *
-                """,
-                (
-                    state.value,
-                    terminal_code,
-                    safe_summary,
-                    retry_after_ms,
-                    current_time,
-                    current_time,
-                    current_time + retention,
-                    str(fence.operation_id),
-                    fence.execution_generation,
-                    str(fence.execution_lease_token),
-                ),
+        return _from_plane_record(
+            self._invoke(
+                self._plane_repository.terminalize,
+                _to_plane_fence(fence),
+                state=_to_plane_state(state),
+                terminal_code=terminal_code,
+                safe_summary=safe_summary,
+                retry_after_ms=retry_after_ms,
+                now=now,
+                retention=retention,
+                transaction=transaction,
             )
-            terminal = cursor.fetchone()
-            if terminal is None:
-                raise StaleExecutionFenceError("execution fence is stale")
-            self._release_slots(cursor, fence.operation_id)
-            return self._operation_from_row(terminal)
+        )
 
     def expire_queued(
         self, *, now: datetime | None, retention: timedelta
     ) -> tuple[OperationRecord, ...]:
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            return self._expire_queued_locked(cursor, current_time, retention)
-
-    def _assert_current_execution_cursor(
-        self, cursor: Any, fence: ExecutionFence
-    ) -> OperationRecord:
-        cursor.execute(
-            """
-            SELECT * FROM operation_record
-            WHERE operation_id = %s
-            FOR UPDATE
-            """,
-            (str(fence.operation_id),),
+        return tuple(
+            _from_plane_record(record)
+            for record in self._invoke(
+                self._plane_repository.expire_queued,
+                now=now,
+                retention=retention,
+            )
         )
-        row = cursor.fetchone()
-        if row is None:
-            raise StaleExecutionFenceError("execution fence is stale")
-        operation = self._operation_from_row(row)
-        if not self._fence_matches(operation, fence):
-            raise StaleExecutionFenceError("execution fence is stale")
-        return operation
 
     def assert_current_execution(
         self, fence: ExecutionFence, *, transaction: Any | None = None
     ) -> OperationRecord:
-        if transaction is not None:
-            return self._assert_current_execution_cursor(transaction, fence)
-        with self._transaction() as cursor:
-            return self._assert_current_execution_cursor(cursor, fence)
+        return _from_plane_record(
+            self._invoke(
+                self._plane_repository.assert_current_execution,
+                _to_plane_fence(fence),
+                transaction=transaction,
+            )
+        )
 
     def reselect_execution(
         self,
@@ -3367,56 +2574,14 @@ class PostgresWorkAdmissionRepository:
         now: datetime | None,
         slot_lease: timedelta,
     ) -> ExecutionFence:
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            operation = self._assert_current_execution_cursor(cursor, fence)
-            execution_token = uuid.uuid4()
-            cursor.execute(
-                """
-                UPDATE operation_record
-                SET execution_generation = execution_generation + 1,
-                    execution_lease_token = %s,
-                    state_revision = state_revision + 1,
-                    updated_at = %s
-                WHERE operation_id = %s AND state = 'running'
-                  AND execution_generation = %s
-                  AND execution_lease_token = %s
-                RETURNING execution_generation
-                """,
-                (
-                    str(execution_token),
-                    current_time,
-                    str(fence.operation_id),
-                    fence.execution_generation,
-                    str(fence.execution_lease_token),
-                ),
+        return _from_plane_fence(
+            self._invoke(
+                self._plane_repository.reselect_execution,
+                _to_plane_fence(fence),
+                now=now,
+                slot_lease=slot_lease,
             )
-            selected = cursor.fetchone()
-            if selected is None:
-                raise StaleExecutionFenceError("execution fence is stale")
-            slot_token = uuid.uuid4()
-            cursor.execute(
-                """
-                UPDATE operation_admission_slot
-                SET lease_token = %s,
-                    claim_generation = claim_generation + 1,
-                    lease_expires_at = %s
-                WHERE operation_id = %s
-                """,
-                (
-                    str(slot_token),
-                    current_time + slot_lease,
-                    str(fence.operation_id),
-                ),
-            )
-            expected_slots = len(self._chain(operation.admission_class))
-            if cursor.rowcount != expected_slots:
-                raise StaleExecutionFenceError("execution capacity lease is missing")
-            return ExecutionFence(
-                operation_id=fence.operation_id,
-                execution_generation=int(selected["execution_generation"]),
-                execution_lease_token=execution_token,
-            )
+        )
 
     def update_phase(
         self,
@@ -3425,71 +2590,14 @@ class PostgresWorkAdmissionRepository:
         *,
         now: datetime | None,
     ) -> OperationRecord:
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            operation = self._assert_current_execution_cursor(cursor, fence)
-            if operation.phase_code == phase_code:
-                return operation
-            cursor.execute(
-                """
-                UPDATE operation_record
-                SET phase_code = %s, state_revision = state_revision + 1,
-                    updated_at = %s
-                WHERE operation_id = %s AND state = 'running'
-                  AND execution_generation = %s
-                  AND execution_lease_token = %s
-                RETURNING *
-                """,
-                (
-                    phase_code,
-                    current_time,
-                    str(fence.operation_id),
-                    fence.execution_generation,
-                    str(fence.execution_lease_token),
-                ),
+        return _from_plane_record(
+            self._invoke(
+                self._plane_repository.update_phase,
+                _to_plane_fence(fence),
+                phase_code,
+                now=now,
             )
-            row = cursor.fetchone()
-            if row is None:
-                raise StaleExecutionFenceError("execution fence is stale")
-            return self._operation_from_row(row)
-
-    def bind_chat(
-        self,
-        fence: ExecutionFence,
-        chat_id: str,
-        *,
-        now: datetime | None,
-    ) -> OperationRecord:
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            operation = self._assert_current_execution_cursor(cursor, fence)
-            if operation.chat_id is not None:
-                if str(operation.chat_id) == str(chat_id):
-                    return operation
-                raise ValueError("operation is bound to a different conversation")
-            cursor.execute(
-                """
-                UPDATE operation_record
-                SET chat_id = %s, state_revision = state_revision + 1,
-                    updated_at = %s
-                WHERE operation_id = %s AND state = 'running'
-                  AND execution_generation = %s
-                  AND execution_lease_token = %s
-                  AND chat_id IS NULL
-                RETURNING *
-                """,
-                (
-                    str(chat_id),
-                    current_time,
-                    str(fence.operation_id),
-                    fence.execution_generation,
-                    str(fence.execution_lease_token),
-                ),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise StaleExecutionFenceError("execution fence is stale")
-            return self._operation_from_row(row)
+        )
 
     def renew_execution_lease(
         self,
@@ -3498,112 +2606,41 @@ class PostgresWorkAdmissionRepository:
         now: datetime | None,
         slot_lease: timedelta,
     ) -> SlotLeaseRenewal:
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            operation = self._assert_current_execution_cursor(cursor, fence)
-            lease_expires_at = current_time + slot_lease
-            slot_token = uuid.uuid4()
-            cursor.execute(
-                """
-                UPDATE operation_admission_slot
-                SET lease_token = %s,
-                    claim_generation = claim_generation + 1,
-                    lease_expires_at = %s
-                WHERE operation_id = %s
-                """,
-                (str(slot_token), lease_expires_at, str(fence.operation_id)),
-            )
-            if cursor.rowcount != len(self._chain(operation.admission_class)):
-                raise StaleExecutionFenceError("execution capacity lease is missing")
-            return SlotLeaseRenewal(
-                operation_id=fence.operation_id,
-                execution_generation=fence.execution_generation,
-                lease_expires_at=lease_expires_at,
-            )
+        renewal = self._invoke(
+            self._plane_repository.renew_execution_lease,
+            _to_plane_fence(fence),
+            now=now,
+            slot_lease=slot_lease,
+        )
+        return SlotLeaseRenewal(
+            operation_id=renewal.operation_id,
+            execution_generation=renewal.execution_generation,
+            lease_expires_at=renewal.lease_expires_at,
+        )
 
     def expire_execution_leases(
         self, *, now: datetime | None, retention: timedelta
     ) -> tuple[OperationRecord, ...]:
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            return self._expire_execution_leases_locked(cursor, current_time, retention)
+        return tuple(
+            _from_plane_record(record)
+            for record in self._invoke(
+                self._plane_repository.expire_execution_leases,
+                now=now,
+                retention=retention,
+            )
+        )
 
-    def _expire_execution_leases_locked(
-        self, cursor: Any, current_time: datetime, retention: timedelta
-    ) -> tuple[OperationRecord, ...]:
-        cursor.execute(
-            """
-                SELECT class_name, slot_number, operation_id
-                FROM operation_admission_slot
-                WHERE operation_id IS NOT NULL AND lease_expires_at <= %s
-                ORDER BY lease_expires_at, class_name, slot_number
-                """,
-            (current_time,),
+    def oldest_purge_eligible_due_at(
+        self,
+        *,
+        now: datetime | None,
+        transaction: Any | None = None,
+    ) -> datetime | None:
+        return self._invoke(
+            self._plane_repository.oldest_purge_eligible_due_at,
+            now=now,
+            transaction=transaction,
         )
-        operation_ids = sorted(
-            {
-                operation_id
-                for row in cursor.fetchall()
-                if (operation_id := self._uuid(row["operation_id"])) is not None
-            },
-            key=lambda value: value.int,
-        )
-        terminal_records: list[OperationRecord] = []
-        for operation_id in operation_ids:
-            row = self._operation_row(cursor, operation_id, lock=True)
-            if row is None:
-                self._release_slots(cursor, operation_id)
-                continue
-            operation = self._operation_from_row(row)
-            if operation.state is not OperationState.RUNNING:
-                self._release_slots(cursor, operation_id)
-                continue
-            cursor.execute(
-                """
-                    SELECT 1 FROM operation_admission_slot
-                    WHERE operation_id = %s
-                    ORDER BY class_name, slot_number
-                    FOR UPDATE
-                    """,
-                (str(operation_id),),
-            )
-            cursor.fetchall()
-            cursor.execute(
-                """
-                    SELECT 1 FROM operation_admission_slot
-                    WHERE operation_id = %s AND lease_expires_at <= %s
-                    LIMIT 1
-                    """,
-                (str(operation_id), current_time),
-            )
-            if cursor.fetchone() is None:
-                continue
-            cursor.execute(
-                """
-                    UPDATE operation_record
-                    SET state = 'retryable',
-                        terminal_code = 'execution_lease_expired',
-                        safe_summary = 'Execution lease expired',
-                        retry_after_ms = 1000,
-                        execution_lease_token = NULL,
-                        state_revision = state_revision + 1,
-                        updated_at = %s, terminal_at = %s, purge_after = %s
-                    WHERE operation_id = %s AND state = 'running'
-                    RETURNING *
-                    """,
-                (
-                    current_time,
-                    current_time,
-                    current_time + retention,
-                    str(operation_id),
-                ),
-            )
-            terminal = cursor.fetchone()
-            if terminal is None:
-                raise RuntimeError("execution lease recovery lost atomicity")
-            self._release_slots(cursor, operation_id)
-            terminal_records.append(self._operation_from_row(terminal))
-        return tuple(terminal_records)
 
     def purge_expired(
         self,
@@ -3612,84 +2649,22 @@ class PostgresWorkAdmissionRepository:
         limit: int,
         fence: ExecutionFence | None = None,
     ) -> PurgeResult:
-        with self._transaction() as cursor:
-            current_time = self._current_time(cursor, now)
-            if fence is not None:
-                self._assert_current_execution_cursor(cursor, fence)
-            cursor.execute(
-                """
-                WITH candidates AS (
-                    SELECT submission.submission_result_id
-                    FROM operation_submission_result AS submission
-                    LEFT JOIN operation_record AS operation
-                      ON operation.operation_id = submission.operation_id
-                    WHERE submission.purge_after < %s
-                      AND (
-                          NOT submission.accepted
-                          OR operation.operation_id IS NULL
-                          OR (
-                              operation.state IN (
-                                  'completed', 'failed', 'cancelled', 'retryable'
-                              )
-                              AND operation.purge_after < %s
-                          )
-                      )
-                    ORDER BY submission.purge_after, submission.submission_result_id
-                    FOR UPDATE OF submission SKIP LOCKED
-                    LIMIT %s
-                )
-                DELETE FROM operation_submission_result AS submission
-                USING candidates
-                WHERE submission.submission_result_id = candidates.submission_result_id
-                RETURNING submission.submission_result_id
-                """,
-                (current_time, current_time, limit),
-            )
-            submissions = len(cursor.fetchall())
-            cursor.execute(
-                """
-                SELECT operation_id
-                FROM operation_record
-                WHERE state IN ('completed', 'failed', 'cancelled', 'retryable')
-                  AND purge_after < %s
-                  AND NOT EXISTS (
-                      SELECT 1 FROM operation_submission_result AS submission
-                      WHERE submission.accepted
-                        AND submission.operation_id = operation_record.operation_id
-                  )
-                ORDER BY purge_after, operation_id
-                FOR UPDATE SKIP LOCKED
-                LIMIT %s
-                """,
-                (current_time, limit),
-            )
-            candidate_ids = [str(row["operation_id"]) for row in cursor.fetchall()]
-            if not candidate_ids:
-                return PurgeResult(operations=0, submissions=submissions)
-            # This second statement intentionally rechecks accepted
-            # reconciliation rows after the candidate operation locks are
-            # held. A concurrent idempotent replay either held the operation
-            # lock (and was skipped above) or is now visible to this fresh
-            # READ COMMITTED snapshot; cleanup cannot race it into a false
-            # missing result.
-            cursor.execute(
-                """
-                DELETE FROM operation_record AS operation
-                WHERE operation.operation_id = ANY(%s::uuid[])
-                  AND NOT EXISTS (
-                      SELECT 1 FROM operation_submission_result AS submission
-                      WHERE submission.accepted
-                        AND submission.operation_id = operation.operation_id
-                  )
-                RETURNING operation.operation_id
-                """,
-                (candidate_ids,),
-            )
-            operations = len(cursor.fetchall())
-            return PurgeResult(operations=operations, submissions=submissions)
+        result = self._invoke(
+            self._plane_repository.purge_expired,
+            now=now,
+            limit=limit,
+            fence=None if fence is None else _to_plane_fence(fence),
+        )
+        return PurgeResult(
+            operations=result.operations,
+            submissions=result.submissions,
+        )
 
     @contextmanager
     def fenced_transaction(self, fence: ExecutionFence) -> Iterator[Any]:
-        with self._transaction() as cursor:
-            self._assert_current_execution_cursor(cursor, fence)
-            yield cursor
+        with self._runtime.transaction() as transaction:
+            with _translate_plane_errors():
+                self._plane_repository.assert_current_execution(
+                    transaction, _to_plane_fence(fence)
+                )
+            yield transaction

@@ -41,7 +41,7 @@ logger = logging.getLogger("orchestrator.sandbox")
 #: generated code cannot read them from ``os.environ``. ``AGENT_API_KEY`` is KEPT
 #: (the agent framework needs it to register with the orchestrator), and the
 #: ``DB_*`` connection vars are KEPT because a parser agent resolves its
-#: attachment through ``shared.database`` (``resolve_attachment_path``); scrubbing
+#: attachment through a scoped Plane reader/parser capability; scrubbing
 #: them would break the very file read the sandbox exists to run. Names here must
 #: be the exact env keys the code reads — an env key that is never set (a typo or
 #: a renamed secret) protects nothing, so this list is verified against the

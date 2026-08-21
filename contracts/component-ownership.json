@@ -79,12 +79,9 @@
       "id": "orchestration",
       "owner": "astraldeep",
       "ownedPaths": [
-        "backend/agents/**",
-        "backend/orchestrator/**",
-        "backend/shared/external_http.py",
-        "backend/shared/protocol.py",
-        "backend/voice_agent/**"
+        "backend/**"
       ],
+      "scanExactDuplicates": true,
       "forbiddenCopies": [
         {"repository": "astralprojection", "paths": ["**/orchestrator/**", "**/agents/**", "**/voice_agent/**"]},
         {"repository": "astralplane", "paths": ["**/orchestrator/**", "**/agents/**", "**/voice_agent/**"]},
@@ -93,19 +90,35 @@
       ]
     },
     {
+      "id": "astraldeep-repository-support",
+      "owner": "astraldeep",
+      "ownedPaths": [
+        ".github/**",
+        ".specify/**",
+        "config/**",
+        "contracts/**",
+        "deploy/**",
+        "docs/**",
+        "scripts/**",
+        "specs/**"
+      ],
+      "scanExactDuplicates": false,
+      "forbiddenCopies": []
+    },
+    {
       "id": "presentation-and-clients",
       "owner": "astralprojection",
       "ownedPaths": [
         "backend/rote/**",
         "backend/webrender/**",
-        "contracts/ui_protocol.json",
-        "contracts/fixtures/**",
+        "contracts/**",
         "windows-client/**",
         "android-client/**",
         "apple-clients/**",
         "tooling/web-ci/**",
         "src/astralprojection/**"
       ],
+      "scanExactDuplicates": true,
       "forbiddenCopies": [
         {
           "repository": "astraldeep",
@@ -125,23 +138,32 @@
       ]
     },
     {
+      "id": "astralprojection-repository-support",
+      "owner": "astralprojection",
+      "ownedPaths": [
+        "docs/**",
+        "scripts/**",
+        "tests/**",
+        "workflows-disabled/**"
+      ],
+      "scanExactDuplicates": false,
+      "forbiddenCopies": []
+    },
+    {
       "id": "durable-data-plane",
       "owner": "astralplane",
       "ownedPaths": [
         "src/astralplane/**"
       ],
+      "scanExactDuplicates": true,
       "forbiddenCopies": [
         {
           "repository": "astraldeep",
           "paths": [
-            "backend/audit/repository.py",
-            "backend/feedback/repository.py",
-            "backend/onboarding/repository.py",
-            "backend/personalization/repository.py",
-            "backend/scheduler/store.py",
-            "backend/orchestrator/attachments/repository.py",
-            "backend/orchestrator/attachments/message_attachment_repo.py",
-            "backend/orchestrator/attachments/parser_repo.py",
+            "backend/shared/database.py",
+            "backend/scripts/migrate_agent_ownership.py",
+            "backend/scripts/migrate_sqlite_to_postgres.py",
+            "backend/scripts/migrate_user_ids.py",
             "backend/orchestrator/attachments/store.py"
           ]
         },
@@ -151,17 +173,39 @@
       ]
     },
     {
+      "id": "astralplane-repository-support",
+      "owner": "astralplane",
+      "ownedPaths": [
+        "docs/**",
+        "tests/**",
+        "workflows-disabled/**"
+      ],
+      "scanExactDuplicates": false,
+      "forbiddenCopies": []
+    },
+    {
       "id": "primitive-vocabulary",
       "owner": "astralprimitives",
       "ownedPaths": [
         "src/astralprims/**"
       ],
+      "scanExactDuplicates": true,
       "forbiddenCopies": [
         {"repository": "astraldeep", "paths": ["**/astralprims/**"]},
         {"repository": "astralprojection", "paths": ["**/astralprims/**"]},
         {"repository": "astralplane", "paths": ["**/astralprims/**"]},
         {"repository": "lets", "paths": ["**/astralprims/**"]}
       ]
+    },
+    {
+      "id": "astralprimitives-repository-support",
+      "owner": "astralprimitives",
+      "ownedPaths": [
+        "docs/**",
+        "tests/**"
+      ],
+      "scanExactDuplicates": false,
+      "forbiddenCopies": []
     },
     {
       "id": "finite-authority",
@@ -171,20 +215,119 @@
         "protocol/**",
         "src/lets/**"
       ],
+      "scanExactDuplicates": true,
       "forbiddenCopies": [
         {"repository": "astraldeep", "paths": ["**/lets/core/**", "**/lets/warden/**"]},
         {"repository": "astralprojection", "paths": ["**/lets/**"]},
         {"repository": "astralplane", "paths": ["**/lets/**"]},
         {"repository": "astralprimitives", "paths": ["**/lets/**"]}
       ]
+    },
+    {
+      "id": "lets-repository-support",
+      "owner": "lets",
+      "ownedPaths": [
+        "benchmarks/**",
+        "deploy/**",
+        "docs/**",
+        "paper/**",
+        "prototype/**",
+        "tests/**"
+      ],
+      "scanExactDuplicates": false,
+      "forbiddenCopies": []
     }
   ],
   "compatibilityAdapters": [
     {
       "repository": "astraldeep",
-      "path": "backend/shared/database.py",
+      "path": "backend/audit/repository.py",
       "upstreamOwner": "astralplane",
-      "rule": "Public-facade adapter only; no raw SQL, psycopg import, schema DDL, or repository implementation."
+      "rule": "Deep-owned audit policy, key-custody callback, and DTO adapter over typed AstralPlane repositories; no SQL, driver access, schema DDL, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/feedback/repository.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned feedback and knowledge workflow policy plus DTO shaping over typed AstralPlane repositories; no SQL, driver access, schema DDL, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/llm_config/user_store.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned encryption custody, commit-deadline policy, and product DTO adapter over typed AstralPlane repositories; no SQL, driver access, schema DDL, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/onboarding/repository.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned onboarding workflow and DTO adapter over typed AstralPlane repositories; no SQL, driver access, schema DDL, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/personalization/repository.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned personalization policy, signature handling, and DTO adapter over typed AstralPlane repositories; no SQL, driver access, schema DDL, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/qual_audit/database.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned qualification workflow facade over typed AstralPlane quality-audit records and chain verification; no SQL, driver access, schema DDL, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/scheduler/store.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned scheduling, admission, and effect policy adapter over typed AstralPlane scheduler repositories; no SQL, driver access, schema DDL, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/attachments/repository.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned attachment DTO and pagination adapter over typed AstralPlane artifact repositories; no SQL, driver access, schema DDL, blob mechanics, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/attachments/message_attachment_repo.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned per-turn attachment-link adapter over typed AstralPlane artifact repositories; no SQL, driver access, schema DDL, blob mechanics, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/attachments/parser_repo.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned parser policy and DTO adapter over the typed AstralPlane parser registry; no SQL, driver access, schema DDL, blob mechanics, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/attachments/blob_access.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned canonical locator validation and typed reader/parser-capability mapping over AstralPlane; no SQL, driver access, schema DDL, filesystem storage mechanics, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/attachments/materialization.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned upload policy, bounded MIME decision, cancellation, and readiness orchestration over AstralPlane's pending materialization coordinator; no SQL, driver access, schema DDL, blob mechanics, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/attachments/purge.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned asynchronous deletion acceptance, readiness, and bounded recovery orchestration over the typed AstralPlane purge store and executor; no SQL, driver access, schema DDL, blob mechanics, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/generated_agent_publication.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Deep-owned generated-agent lifecycle identity, work-admission, cancellation, readiness, and bounded recovery coordination over AstralPlane's journal and immutable bundle store; no SQL, driver access, schema DDL, filesystem publication mechanics, or durable repository implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/plane_repository_context.py",
+      "upstreamOwner": "astralplane",
+      "rule": "Application-scoped runtime, catalog, and caller-transaction binding only; no SQL, placeholder translation, driver access, schema DDL, or durable repository implementation."
     },
     {
       "repository": "astraldeep",
@@ -194,12 +337,18 @@
     },
     {
       "repository": "astraldeep",
-      "path": "backend/orchestrator/lets_integration/",
+      "path": "backend/orchestrator/projection_surfaces/",
+      "upstreamOwner": "astralprojection",
+      "rule": "Deep-owned host adapters may authorize, query, and mutate Deep services while consuming Projection rendering helpers; they are not a reusable renderer or client implementation."
+    },
+    {
+      "repository": "astraldeep",
+      "path": "backend/orchestrator/lets_composition.py",
       "upstreamOwner": "lets",
       "rule": "Astral-owned policy and host binding over LETS public contracts; no LETS warden or cryptographic implementation copy."
     }
   ],
   "generatedCopies": [],
-  "ignoredPathPolicy": "Ignored and untracked paths are never ownership inputs and may not be used to satisfy a missing owner.",
-  "duplicatePolicy": "A tracked mutable implementation path may match exactly one ownership domain. Identical tracked source outside its owner is forbidden unless declared in generatedCopies with an exact owner-source digest."
+  "ignoredPathPolicy": "Ignored and untracked paths, including retained local Android property files, are never ownership inputs and may not be used to satisfy a missing owner.",
+  "duplicatePolicy": "ownedPaths are relative to their declared owner repository, and every tracked path beneath a mutable root matches exactly one owner-local domain. scanExactDuplicates is enabled for mutable implementation domains and disabled only for repository-support material where common fixture or documentation bytes do not constitute a second implementation. Empty blobs are package markers, not source duplication. Canonical component Gitlink mounts are repository boundaries, not generated copies. Identical non-empty tracked implementation source outside its owner is forbidden unless declared in generatedCopies with an exact owner-source digest; the decomposed composition declares no generated mutable copies."
 }

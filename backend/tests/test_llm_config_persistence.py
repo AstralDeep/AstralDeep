@@ -47,7 +47,12 @@ def _uid() -> str:
 @pytest.fixture(scope="module")
 def orch_module():
     from orchestrator.orchestrator import Orchestrator
-    return Orchestrator()
+
+    o = Orchestrator()
+    try:
+        yield o
+    finally:
+        asyncio.run(o._close_started_services())
 
 
 @pytest.fixture
@@ -87,6 +92,29 @@ async def _seed(orch, uid, base_url="https://api.example.com/v1",
                 model="gpt-x", api_key=SECRET, provider="custom"):
     return await orch._llm_store.set(
         uid, provider=provider, base_url=base_url, model=model, api_key=api_key)
+
+
+def _get_encrypted_user_record(orch, uid):
+    plane = orch.runtime_composition.plane
+    repository = plane.repositories.encrypted_llm_config
+    with plane.runtime.transaction() as transaction:
+        return repository.get_user(transaction, owner_id=uid)
+
+
+def _replace_encrypted_user_ciphertext(orch, uid, ciphertext):
+    plane = orch.runtime_composition.plane
+    repository = plane.repositories.encrypted_llm_config
+    with plane.runtime.transaction() as transaction:
+        current = repository.get_user(transaction, owner_id=uid)
+        assert current is not None
+        return repository.upsert_user(
+            transaction,
+            owner_id=uid,
+            provider=current.provider,
+            base_url=current.base_url,
+            model=current.model,
+            api_key_ciphertext=ciphertext,
+        )
 
 
 def _mandatory_frames(orch):
@@ -156,11 +184,24 @@ async def test_undecryptable_row_discarded_and_treated_unconfigured(orch):
     store = orch._llm_store
     await _seed(orch, uid)
     try:
-        # Corrupt the at-rest ciphertext directly (key rotation / corruption).
+        # The public Plane record exposes only opaque ciphertext, never the
+        # decrypted secret held by the product store.
+        encrypted = await asyncio.to_thread(
+            _get_encrypted_user_record,
+            orch,
+            uid,
+        )
+        assert encrypted is not None
+        assert encrypted.api_key_ciphertext not in (None, SECRET)
+        assert SECRET not in repr(encrypted)
+
+        # Model key rotation/corruption through the typed owner-scoped Plane
+        # repository instead of borrowing a connection or issuing raw SQL.
         await asyncio.to_thread(
-            store.db.execute,
-            "UPDATE user_llm_config SET api_key_enc = ? WHERE user_id = ?",
-            ("not-a-fernet-token", uid),
+            _replace_encrypted_user_ciphertext,
+            orch,
+            uid,
+            "not-a-fernet-token",
         )
         store.invalidate(uid)
 
@@ -168,10 +209,11 @@ async def test_undecryptable_row_discarded_and_treated_unconfigured(orch):
         assert await orch.llm_configured_for(uid) is False
 
         # The unusable row was deleted...
-        row = await asyncio.to_thread(
-            store.db.fetch_one,
-            "SELECT 1 AS present FROM user_llm_config WHERE user_id = ?", (uid,))
-        assert row is None
+        assert await asyncio.to_thread(
+            _get_encrypted_user_record,
+            orch,
+            uid,
+        ) is None
         # ...the discard note was drained into an audit event...
         actions = [e.action_type for e in orch.audit_recorder.events]
         assert "llm_config.discarded_undecryptable" in actions
@@ -283,7 +325,7 @@ async def test_partial_submission_stores_nothing_and_skips_probe(orch, monkeypat
 # ---------------------------------------------------------------------------
 
 async def test_blank_key_resolves_to_saved_key_at_surface(orch):
-    from webrender.chrome.surfaces.llm import _resolve_api_key
+    from orchestrator.projection_surfaces.llm import _resolve_api_key
 
     uid = _uid()
     ws = _register(orch, uid)

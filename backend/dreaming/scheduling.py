@@ -27,13 +27,20 @@ DREAMING_JOB_NAME = "Memory consolidation"
 DREAMING_INSTRUCTION = "(internal) Consolidate recurring short-term memory signals into durable memory."
 
 
-def ensure_dreaming_job(db, user_id: str) -> Optional[dict]:
+def _store(plane_source) -> ScheduledJobStore:
+    return ScheduledJobStore(
+        plane_runtime=plane_source.plane_runtime,
+        plane_repositories=plane_source.plane_repositories,
+    )
+
+
+def ensure_dreaming_job(plane_source, user_id: str) -> Optional[dict]:
     """Idempotently ensure an *active* recurring dreaming job for the user.
 
     Reactivates a previously-paused dreaming job if present, otherwise creates
     one on the ``DREAMING_DEFAULT_CRON`` cadence. Returns the job dict.
     """
-    store = ScheduledJobStore(db)
+    store = _store(plane_source)
     paused = None
     for job in store.list_jobs(user_id):
         if job.get("agent_id") != DREAMING_AGENT_ID:
@@ -60,9 +67,9 @@ def ensure_dreaming_job(db, user_id: str) -> Optional[dict]:
     return job
 
 
-def remove_dreaming_job(db, user_id: str) -> int:
+def remove_dreaming_job(plane_source, user_id: str) -> int:
     """Pause all active dreaming jobs for the user (on disable). Returns count paused."""
-    store = ScheduledJobStore(db)
+    store = _store(plane_source)
     paused = 0
     for job in store.list_jobs(user_id):
         if job.get("agent_id") == DREAMING_AGENT_ID and job.get("status") == "active":

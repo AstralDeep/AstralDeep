@@ -13,18 +13,26 @@ reads return ``404`` (we do not confirm or deny the existence of foreign rows).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
+from datetime import UTC, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
+from astralplane import BlobSizeLimitError
+from astralplane.errors import PlaneError
 
 from orchestrator.attachments import content_type as ct
-from orchestrator.attachments import store
+from orchestrator.attachments.materialization import (
+    AttachmentContentTypeMismatchError,
+    materialization_service_from_orchestrator,
+)
 from orchestrator.attachments.repository import AttachmentRepository
 from orchestrator.auth import require_user_id
+from orchestrator.plane_repository_context import plane_source_from_orchestrator
 
 logger = logging.getLogger("AttachmentsAPI")
 
@@ -33,9 +41,11 @@ logger = logging.getLogger("AttachmentsAPI")
 MAX_UPLOAD_BYTES = ct.MAX_BYTES_BY_CATEGORY["document"]
 
 # Stream upload in modest chunks so we can short-circuit oversize files without
-# buffering them in memory. Medical uploads can run into the GBs, so writes go
-# straight to disk via ``store.awrite`` rather than being collected in a list.
+# buffering them in memory. Medical uploads can run into the GBs, so the central
+# pending-first materialization service stages each chunk under Plane's durable
+# lease rather than collecting the request in a list.
 _CHUNK_SIZE = 1024 * 256  # 256 KiB
+_SNIFF_BYTES = 8192
 
 
 def _format_cap_mb(cap_bytes: int) -> str:
@@ -59,12 +69,54 @@ def _get_orchestrator(request: Request):
 def _get_repository(request: Request) -> AttachmentRepository:
     """Resolve the AttachmentRepository from the orchestrator on app state."""
     orch = _get_orchestrator(request)
-    if orch is None or not getattr(orch, "history", None):
-        raise HTTPException(status_code=500, detail="Database not initialised")
-    return AttachmentRepository(orch.history.db)
+    if orch is None:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialised")
+    injected = getattr(orch, "attachment_repository", None)
+    if injected is not None:
+        return injected
+    try:
+        return AttachmentRepository.from_plane_source(plane_source_from_orchestrator(orch))
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Attachment persistence is not initialised",
+        ) from exc
+
+
+def _get_materialization_service(request: Request):
+    orch = _get_orchestrator(request)
+    if orch is None:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialised")
+    try:
+        return materialization_service_from_orchestrator(orch)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Attachment materialization is not initialised",
+        ) from exc
+
+
+def _get_purge_coordinator(request: Request):
+    orch = _get_orchestrator(request)
+    if orch is None:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialised")
+    try:
+        from orchestrator.attachments.purge import (
+            purge_coordinator_from_orchestrator,
+        )
+
+        return purge_coordinator_from_orchestrator(orch)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Attachment deletion is not initialised",
+        ) from exc
 
 
 def _attachment_to_response(att) -> dict:
+    created_at = att.created_at
+    if isinstance(created_at, (int, float)):
+        created_at = datetime.fromtimestamp(created_at / 1000.0, tz=UTC)
     return {
         "attachment_id": att.attachment_id,
         "filename": att.filename,
@@ -73,7 +125,7 @@ def _attachment_to_response(att) -> dict:
         "content_type": att.content_type,
         "size_bytes": att.size_bytes,
         "sha256": att.sha256,
-        "created_at": att.created_at.isoformat() if att.created_at else None,
+        "created_at": created_at.isoformat() if created_at else None,
     }
 
 
@@ -124,6 +176,7 @@ async def upload_file(
 
     attachment_id = str(uuid.uuid4())
     max_bytes = ct.max_bytes_for_category(category)
+    materializations = _get_materialization_service(request)
 
     async def _stream_chunks():
         while True:
@@ -133,56 +186,57 @@ async def upload_file(
             yield chunk
 
     try:
-        path, size_bytes, sha256 = await store.awrite(
-            user_id=user_id,
+        def _resolve_content_type(prefix: bytes) -> str:
+            sniffed = ct.sniff_content_type(prefix[:_SNIFF_BYTES])
+            if not ct.is_consistent(extension, sniffed):
+                raise AttachmentContentTypeMismatchError(sniffed)
+            return sniffed
+
+        attachment = await materializations.materialize_stream(
+            owner_id=user_id,
             attachment_id=attachment_id,
             filename=safe_filename,
+            category=category,
+            extension=extension,
             chunks=_stream_chunks(),
             max_bytes=max_bytes,
+            resolve_content_type=_resolve_content_type,
         )
-    except ValueError:
+    except BlobSizeLimitError:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 f"{safe_filename} exceeds the {_format_cap_mb(max_bytes)} "
                 f"upload limit for {category} files."
             ),
         )
 
-    sniffed = ct.sniff_content_type(path)
-    if not ct.is_consistent(extension, sniffed):
-        # Roll back the on-disk blob so we never persist a row for an
-        # extension/content-type mismatch.
-        store.delete(user_id, attachment_id)
+    except AttachmentContentTypeMismatchError as exc:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=(
                 f"{safe_filename} has extension '.{extension}' but its content "
-                f"appears to be '{sniffed}'. Please upload a file whose contents "
+                f"appears to be '{exc.detected_content_type}'. Please upload a file whose contents "
                 "match its extension."
             ),
-        )
+        ) from exc
 
-    rel_storage = str(path.relative_to(store.get_upload_root()))
-    repo = _get_repository(request)
-    try:
-        attachment = await repo.ainsert(
-            attachment_id=attachment_id,
-            user_id=user_id,
-            filename=safe_filename,
-            content_type=sniffed,
-            category=category,
-            extension=extension,
-            size_bytes=size_bytes,
-            sha256=sha256,
-            storage_path=rel_storage,
+    except PlaneError as exc:
+        logger.warning(
+            "Attachment materialization failed for user=%s code=%s",
+            user_id,
+            getattr(exc, "code", "plane_error"),
         )
-    except Exception:
-        store.delete(user_id, attachment_id)
-        raise
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Attachment materialization could not be verified. "
+                "Durable recovery remains pending; retry later."
+            ),
+        ) from exc
 
     logger.info(
-        f"Uploaded attachment {attachment_id} ({size_bytes} bytes, {category}) "
+        f"Uploaded attachment {attachment_id} ({attachment.size_bytes} bytes, {category}) "
         f"for user={user_id}"
     )
 
@@ -192,8 +246,6 @@ async def upload_file(
     response_body = _attachment_to_response(attachment)
     response_body["parser_status"] = "covered"
     try:
-        import asyncio
-
         from orchestrator import attachment_autoparse
         orch = _get_orchestrator(request)
         if orch is not None:
@@ -259,21 +311,51 @@ async def get_attachment(
 
 @attachments_router.delete(
     "/api/attachments/{attachment_id}",
-    summary="Soft-delete an attachment",
-    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Durably schedule attachment deletion",
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def delete_attachment(
     request: Request,
     attachment_id: str,
     user_id: str = Depends(require_user_id),
 ):
-    repo = _get_repository(request)
-    deleted = await repo.asoft_delete(attachment_id, user_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Attachment not found")
-    # Best-effort blob removal.
-    store.delete(user_id, attachment_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    coordinator = _get_purge_coordinator(request)
+    try:
+        acceptance = await coordinator.aschedule_attachment(
+            owner_id=user_id,
+            attachment_id=attachment_id,
+        )
+    except PlaneError as exc:
+        if exc.code == "purge_object_not_found":
+            raise HTTPException(status_code=404, detail="Attachment not found") from exc
+        logger.warning(
+            "Attachment durable purge failed for owner=%s attachment=%s code=%s",
+            user_id,
+            attachment_id,
+            exc.code,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Attachment deletion could not be completed; please retry.",
+        ) from exc
+    except Exception as exc:
+        logger.warning(
+            "Attachment durable purge failed for owner=%s attachment=%s",
+            user_id,
+            attachment_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Attachment deletion could not be completed; please retry.",
+        ) from exc
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "cleanup_pending",
+            "cleanup_id": acceptance.cleanup_id,
+        },
+    )
 
 
 __all__ = ["attachments_router", "MAX_UPLOAD_BYTES"]

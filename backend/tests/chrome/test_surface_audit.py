@@ -13,7 +13,7 @@ import pytest
 
 from audit.recorder import set_recorder
 from audit.schemas import EVENT_CLASSES, OUTCOMES, AuditEventDTO
-from webrender.chrome.surfaces import audit as audit_surface
+from orchestrator.projection_surfaces import audit as audit_surface
 
 EVENT_ID = "11111111-1111-1111-1111-111111111111"
 EVENT_ID_2 = "33333333-3333-3333-3333-333333333333"
@@ -72,7 +72,15 @@ class FakeRecorder:
 
 
 def make_orch(repo):
-    return SimpleNamespace(audit_repo=repo)
+    # The production surface always builds Plane-backed artifact availability
+    # checks before querying the audit repository.  This suite isolates the
+    # surface HTML, so inject the same narrow repository seam used by the audit
+    # API tests instead of constructing an application Plane runtime.
+    attachments = SimpleNamespace(get_by_id=lambda _attachment_id, _user_id: None)
+    return SimpleNamespace(
+        audit_repo=repo,
+        attachment_repository=attachments,
+    )
 
 
 @pytest.fixture

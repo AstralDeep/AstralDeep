@@ -9,17 +9,14 @@ per-response nonce and every other executable source can be pinned to same-origi
 import re
 
 import pytest
+from astralprojection.resources import template_path
 
 
-SHELL = "backend/webrender/templates/shell.html"
+SHELL = template_path("shell.html")
 
 
 def _shell_text():
-    import os
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(here, "webrender", "templates", "shell.html"),
-              encoding="utf-8") as fh:
-        return fh.read()
+    return SHELL.read_text(encoding="utf-8")
 
 
 def test_every_inline_script_carries_the_nonce_placeholder():

@@ -616,11 +616,11 @@ jobs:
       - name: Run the browser release lane in the digest-pinned image
         run: |
           set -euo pipefail
-          PLAYWRIGHT_IMAGE="$(tr -d '\n' < tooling/web-ci/playwright-image.txt)"
+          PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
           test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"
           docker pull "$PLAYWRIGHT_IMAGE"
           mkdir -p build/060/release-evidence/coverage
-          docker run --rm -v "$PWD:/work" -w /work/tooling/web-ci \
+          docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web-ci \
             -e ASTRAL_PLAYWRIGHT_IMAGE="$PLAYWRIGHT_IMAGE" \
             -e ASTRAL_RELEASE_USERNAME -e ASTRAL_RELEASE_PASSWORD \
             -e ASTRAL_RELEASE_ID -e ASTRAL_RELEASE_VERSION \
@@ -666,10 +666,10 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: |
-            windows-client/requirements-release.lock.txt
+            components/AstralProjection/windows-client/requirements-release.lock.txt
             tooling/python-ci/requirements.lock.txt
       - name: Install hash-locked client runtime requirements
-        run: python -m pip install --require-hashes -r windows-client/requirements-release.lock.txt
+        run: python -m pip install --require-hashes -r components/AstralProjection/windows-client/requirements-release.lock.txt
       - name: Install hash-locked CI-only Python tooling
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -702,7 +702,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force build\060\release-evidence | Out-Null
-          python -m pytest windows-client/tests/release_evidence_060.py -q
+          python -m pytest components/AstralProjection/windows-client/tests/release_evidence_060.py -q
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: evidence-windows-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
@@ -735,7 +735,7 @@ jobs:
           java-version: "17"
       - name: Resolve Gradle version from the committed wrapper
         id: wrapper
-        working-directory: android-client
+        working-directory: components/AstralProjection/android-client
         run: |
           v=$(sed -n 's/^distributionUrl=.*gradle-\([0-9][0-9.]*\)-\(bin\|all\)\.zip$/\1/p' gradle/wrapper/gradle-wrapper.properties)
           test -n "$v" || { echo "could not parse Gradle version from wrapper properties" >&2; exit 1; }
@@ -752,7 +752,7 @@ jobs:
       - name: Run the Android next-major readiness canary diagnostic
         run: >-
           python3 scripts/run_android_next_major_canary.py
-          android-client/gradle/next-major-canary.properties
+          components/AstralProjection/android-client/gradle/next-major-canary.properties
           --allow-unreleased
           --verify-official-availability
           --output build/060/android-next-major-readiness.json
@@ -771,7 +771,7 @@ jobs:
         with:
           api-level: 34
           arch: x86_64
-          working-directory: android-client
+          working-directory: components/AstralProjection/android-client
           script: |
             gradle :app:connectedDebugAndroidTest --no-daemon --stacktrace \
               -Pandroid.testInstrumentationRunnerArguments.class=com.personalailabs.astraldeep.app.ReleaseEvidenceInstrumentedTest \
@@ -801,7 +801,7 @@ jobs:
       # The report references the exact tested APK bytes as
       # bundle://android/app-debug.apk — place them at that member path.
       - name: Bundle the tested APK bytes and Kover coverage inputs
-        working-directory: android-client
+        working-directory: components/AstralProjection/android-client
         run: |
           set -euo pipefail
           mkdir -p ../build/060/release-evidence/android ../build/060/release-evidence/coverage
@@ -827,7 +827,7 @@ jobs:
     env:
       XCODE_VERSION: "26.6"
       XCODE_BUILD: "17F113"
-      APP_PROJECT: apple-clients/AstralApp/AstralApp.xcodeproj
+      APP_PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
       DESTINATION: platform=macOS
       PRODUCER_PLATFORM: macos
       PRODUCER_ONLY_TESTING: AstralAppUITests/ReleaseEvidenceUITests
@@ -946,7 +946,7 @@ jobs:
       XCODE_VERSION: "26.6"
       XCODE_BUILD: "17F113"
       IOS_RUNTIME: "26.5"
-      APP_PROJECT: apple-clients/AstralApp/AstralApp.xcodeproj
+      APP_PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
       DESTINATION: platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5
       PRODUCER_PLATFORM: ios
       PRODUCER_ONLY_TESTING: AstralAppUITests/ReleaseEvidenceUITests
@@ -1060,7 +1060,7 @@ jobs:
       XCODE_VERSION: "26.6"
       XCODE_BUILD: "17F113"
       WATCHOS_RUNTIME: "26.5"
-      APP_PROJECT: apple-clients/AstralApp/AstralApp.xcodeproj
+      APP_PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
       PRODUCER_PLATFORM: watchos
     steps:
       - name: Check out the exact candidate

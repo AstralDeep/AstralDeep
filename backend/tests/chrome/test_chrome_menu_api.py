@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from orchestrator.api import chrome_router
 from orchestrator.auth import get_current_user_payload
+from orchestrator.chrome_availability import projection_chrome_availability
 from shared.protocol import ChromeMenu
 from webrender.chrome import render_topbar
 from webrender.chrome.menu_model import menu_model_dict
@@ -71,7 +72,11 @@ def test_rest_body_equals_ws_frame_model():
         # Both native channels omit admin AND tour (web-only) — mirroring the
         # actual WS emission (orchestrator.py register_ui path, feature 043).
         frame = json.loads(ChromeMenu(model=menu_model_dict(
-            roles, include_admin=False, include_tour=False)).to_json())
+            roles,
+            include_admin=False,
+            include_tour=False,
+            **projection_chrome_availability(),
+        )).to_json())
         assert frame["type"] == "chrome_menu"
         assert frame["model"] == rest
 
@@ -79,7 +84,10 @@ def test_rest_body_equals_ws_frame_model():
 def test_rest_body_matches_web_topbar_labels():
     """The web shell (render_topbar) and REST agree on items/order — one source."""
     body = _client({"realm_access": {"roles": ["admin", "user"]}}).get("/api/chrome/menu").json()
-    html = render_topbar(roles=["admin", "user"])
+    html = render_topbar(
+        roles=["admin", "user"],
+        **projection_chrome_availability(),
+    )
     # Every menu item label the REST model advertises is present in the web DOM,
     # in the same order (the web renders from the same builder).
     labels = [i["label"] for g in body["menu"] for i in g["items"]]

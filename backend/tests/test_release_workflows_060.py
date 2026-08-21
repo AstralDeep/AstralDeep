@@ -825,7 +825,7 @@ def test_release_evidence_exception_registrar_is_environment_gated() -> None:
 def test_release_windows_signing_identity_surface_matches_the_shipped_client() -> None:
     """The Fulcio SAN the ALREADY-SHIPPED v0.3.0 updater pins must not drift.
 
-    windows-client/astral_client/integrity.py hard-codes the signing workflow
+    components/AstralProjection/windows-client/astral_client/integrity.py hard-codes the signing workflow
     path and fails closed, so the workflow FILE PATH, its ``name:``, and the
     fact that signing runs at a TAG ref are load-bearing for clients already in
     the field — a drift here bricks updates for every installed client.
@@ -859,13 +859,18 @@ def test_release_windows_signing_identity_surface_matches_the_shipped_client() -
 
     # Both halves of the contract must name the same workflow.
     integrity = (
-        REPO_ROOT / "windows-client" / "astral_client" / "integrity.py"
+        REPO_ROOT
+        / "components"
+        / "AstralProjection"
+        / "windows-client"
+        / "astral_client"
+        / "integrity.py"
     ).read_text(encoding="utf-8")
     assert (
         '"https://github.com/AstralDeep/AstralDeep'
         '/.github/workflows/release-windows.yml"' in integrity
-    ), "windows-client/astral_client/integrity.py no longer pins this workflow"
-    assert 'f"{_SIGNING_WORKFLOW}@refs/tags/{tag}"' in integrity
+    ), "components/AstralProjection/windows-client/astral_client/integrity.py no longer pins this workflow"
+    assert 'f"{signing_workflow}@refs/tags/{tag}"' in integrity
 
 @bridge_parked
 def test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority() -> None:
@@ -1199,11 +1204,11 @@ def test_release_windows_publisher_isolates_candidate_code_and_exact_dispatch() 
     assert 'actions/runs/$BRIDGE_RUN_ID' in body
 
     assert "pip install --require-hashes" in body
-    assert "protected-policy/windows-client/requirements-release.lock.txt" in body
-    assert "candidate-source/windows-client/requirements-release.lock.txt" not in body
+    assert "protected-policy/components/AstralProjection/windows-client/requirements-release.lock.txt" in body
+    assert "candidate-source/components/AstralProjection/windows-client/requirements-release.lock.txt" not in body
     assert "protected-policy/scripts/validate_release_evidence.py" in body
     assert "protected-policy/specs/060-runtime-reliability-hardening/" in body
-    assert "protected-policy/windows-client/astral_client/integrity.py" in body
+    assert "protected-policy/components/AstralProjection/windows-client/astral_client/integrity.py" in body
     assert 'git -C candidate-source show "$CANDIDATE_SHA:' in body
 
     for match in re.finditer(r"(?<![A-Za-z0-9_-])(python3?|python)(?=\s)", body):
@@ -1361,12 +1366,9 @@ def test_ci_voice_worker_is_distribution_disabled_but_keeps_test_lane() -> None:
     assert "name: voice-worker-coverage" in job
     assert "continue-on-error" not in job
 
-    # Publication depends on the worker gate TRANSITIVELY through the
-    # unprivileged `gates` aggregation: publish's own guard must stay inside
-    # the draft-bootstrap push-only grammar (no always()), while gates
-    # converts "every verification succeeded — voice-worker-test may be its
-    # sanctioned VOICE_WORKER_CLOSURE_APPROVED skip" into one dependable
-    # success (a skipped need would otherwise skip publish silently).
+    # Feature 074 retains the aggregation topology for later private
+    # qualification but makes the public lane explicitly diagnostic: it checks
+    # exact skips and then fails rather than authorizing publication.
     publish = _workflow_job(workflow, "publish")
     assert "- gates" in publish
     gates = _workflow_job(workflow, "gates")
@@ -1374,7 +1376,13 @@ def test_ci_voice_worker_is_distribution_disabled_but_keeps_test_lane() -> None:
     assert "- coverage-gate" in gates
     assert "needs.voice-worker-test.result }}' == 'success'" in gates
     assert "needs.voice-worker-test.result }}' == 'skipped'" in gates
-    assert "needs.coverage-gate.result }}' == 'success'" in gates
+    assert "needs.component-contract-tests.result }}' == 'success'" in gates
+    assert "Composed qualification unavailable" in gates
+    assert "exit 1" in gates
+    # Consumers of private composed bytes are physically disabled in public CI;
+    # the declaration and source-free contract lanes remain required successes.
+    assert "needs.build.result }}' == 'success'" in gates
+    assert "needs.coverage-gate.result }}' == 'skipped'" in gates
 
 
 def test_ci_draft_151_coverage_diagnostic_cannot_waive_merge_gate() -> None:
@@ -1410,14 +1418,13 @@ def test_ci_draft_151_coverage_diagnostic_cannot_waive_merge_gate() -> None:
     assert '>> "$GITHUB_STEP_SUMMARY"' in warning_step
     assert "canonical multi-lane coverage" in warning_step
 
-    # Same transitive-gate rationale as the voice-worker pin above: publish
-    # depends on coverage-gate THROUGH the `gates` aggregation so its own
-    # guard stays inside the draft-bootstrap push-only grammar.
+    # The historical dependency remains visible but is an exact skip in the
+    # temporary public diagnostic posture.
     publish = _workflow_job(workflow, "publish")
     assert "- gates" in publish
     gates = _workflow_job(workflow, "gates")
     assert "- coverage-gate" in gates
-    assert "needs.coverage-gate.result }}' == 'success'" in gates
+    assert "needs.coverage-gate.result }}' == 'skipped'" in gates
 
 
 def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:

@@ -21,6 +21,13 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from astralplane.repositories.tracked_jobs import TrackedJobRecord
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    plane_source_from_orchestrator,
+    repository_from,
+)
+
 logger = logging.getLogger("RemoteJobs")
 
 # Slurm states that mean the job is finished (base token, before any suffix like
@@ -46,70 +53,140 @@ def is_terminal_state(state: Optional[str]) -> bool:
 
 # ── repository (sync; callers wrap in asyncio.to_thread off the event loop) ─────
 
+
+def _tracked_context(db) -> PlaneRepositoryContext:
+    repository, runtime = repository_from(
+        "tracked_jobs",
+        plane_runtime=None,
+        repositories=None,
+        legacy_database=db,
+    )
+    return PlaneRepositoryContext(
+        repository=repository,
+        plane_runtime=runtime,
+        legacy_database=db,
+    )
+
+
+def _record_to_dict(record: TrackedJobRecord) -> Dict[str, Any]:
+    return {
+        "tracked_job_id": record.tracked_job_id,
+        "owner_user_id": record.owner_id,
+        "machine_id": record.machine_id,
+        "chat_id": record.conversation_id,
+        "scheduler_job_id": record.scheduler_job_id,
+        "submit_marker": record.submit_marker,
+        "output_path": record.output_path,
+        "component_id": record.component_id,
+        "job_name": record.job_name,
+        "state": record.state,
+        "exit_code": record.exit_code,
+        "terminal": record.terminal,
+        "notify_on_finish": record.notify_on_finish,
+        "notified": record.notified,
+        "fail_count": record.fail_count,
+        "created_at": record.created_at,
+        "last_polled_at": record.last_polled_at,
+        "finished_at": record.finished_at,
+    }
+
 def create_tracked_job(db, *, owner_user_id: str, machine_id: str, chat_id: Optional[str],
                        scheduler_job_id: str, submit_marker: Optional[str],
                        output_path: Optional[str], component_id: Optional[str],
                        job_name: Optional[str], notify_on_finish: bool) -> str:
     tracked_job_id = uuid.uuid4().hex
-    db.execute(
-        """INSERT INTO tracked_job
-           (tracked_job_id, owner_user_id, machine_id, chat_id, scheduler_job_id,
-            submit_marker, output_path, component_id, job_name, state,
-            notify_on_finish, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?)""",
-        (tracked_job_id, owner_user_id, machine_id, chat_id, scheduler_job_id,
-         submit_marker, output_path, component_id, job_name or "",
-         bool(notify_on_finish), int(time.time())))
-    return tracked_job_id
+    context = _tracked_context(db)
+    record = context.call(
+        context.repository.create,
+        record=TrackedJobRecord(
+            tracked_job_id=tracked_job_id,
+            owner_id=owner_user_id,
+            machine_id=machine_id,
+            scheduler_job_id=scheduler_job_id,
+            conversation_id=chat_id,
+            submit_marker=submit_marker,
+            output_path=output_path,
+            component_id=component_id,
+            job_name=job_name or "",
+            state="submitted",
+            exit_code=None,
+            terminal=False,
+            notify_on_finish=bool(notify_on_finish),
+            notified=False,
+            fail_count=0,
+            created_at=int(time.time()),
+            last_polled_at=None,
+            finished_at=None,
+        ),
+    )
+    return record.tracked_job_id
 
 
 def get_by_job(db, owner_user_id: str, scheduler_job_id: str) -> Optional[Dict[str, Any]]:
-    row = db.fetch_one(
-        "SELECT * FROM tracked_job WHERE owner_user_id = ? AND scheduler_job_id = ?",
-        (owner_user_id, str(scheduler_job_id)))
-    return dict(row) if row else None
+    context = _tracked_context(db)
+    record = context.call(
+        context.repository.get_by_scheduler_job,
+        owner_id=owner_user_id,
+        scheduler_job_id=str(scheduler_job_id),
+    )
+    return None if record is None else _record_to_dict(record)
 
 
 def list_open(db, limit: int = 200) -> List[Dict[str, Any]]:
-    rows = db.fetch_all(
-        "SELECT * FROM tracked_job WHERE terminal = FALSE ORDER BY created_at ASC LIMIT ?",
-        (int(limit),)) or []
-    return [dict(r) for r in rows]
+    context = _tracked_context(db)
+    records = context.call(
+        context.repository.list_open_for_administration,
+        limit=int(limit),
+    )
+    return [_record_to_dict(record) for record in records]
 
 
-def _apply(db, tracked_job_id: str, *, state: str, exit_code: Optional[str],
-           terminal: bool, fail_count: int, notified: Optional[bool] = None) -> None:
-    now = int(time.time())
-    finished = now if terminal else None
-    if notified is None:
-        db.execute(
-            "UPDATE tracked_job SET state=?, exit_code=?, terminal=?, fail_count=?, "
-            "last_polled_at=?, finished_at=COALESCE(finished_at, ?) WHERE tracked_job_id=?",
-            (state, exit_code, bool(terminal), int(fail_count), now,
-             finished, tracked_job_id))
-    else:
-        db.execute(
-            "UPDATE tracked_job SET state=?, exit_code=?, terminal=?, fail_count=?, "
-            "last_polled_at=?, finished_at=COALESCE(finished_at, ?), notified=? "
-            "WHERE tracked_job_id=?",
-            (state, exit_code, bool(terminal), int(fail_count), now, finished,
-             bool(notified), tracked_job_id))
+def _apply(db, row: Dict[str, Any], *, state: str, exit_code: Optional[str],
+           terminal: bool, fail_count: int) -> None:
+    context = _tracked_context(db)
+    context.call(
+        context.repository.apply_poll,
+        owner_id=row["owner_user_id"],
+        tracked_job_id=row["tracked_job_id"],
+        expected_fail_count=int(row.get("fail_count") or 0),
+        expected_last_polled_at=row.get("last_polled_at"),
+        state=state,
+        exit_code=exit_code,
+        terminal=bool(terminal),
+        fail_count=int(fail_count),
+        polled_at=int(time.time()),
+    )
 
 
-def _mark_notified(db, tracked_job_id: str) -> None:
-    db.execute("UPDATE tracked_job SET notified=TRUE WHERE tracked_job_id=?", (tracked_job_id,))
+def _mark_notified(db, row: Dict[str, Any]) -> None:
+    context = _tracked_context(db)
+    context.call(
+        context.repository.mark_notified,
+        owner_id=row["owner_user_id"],
+        tracked_job_id=row["tracked_job_id"],
+    )
 
 
-def _orphan(db, tracked_job_id: str) -> None:
-    db.execute(
-        "UPDATE tracked_job SET state='orphaned', terminal=TRUE, "
-        "finished_at=COALESCE(finished_at, ?) WHERE tracked_job_id=?",
-        (int(time.time()), tracked_job_id))
+def _orphan(db, row: Dict[str, Any]) -> None:
+    _apply(
+        db,
+        row,
+        state="orphaned",
+        exit_code=row.get("exit_code"),
+        terminal=True,
+        fail_count=int(row.get("fail_count") or 0),
+    )
 
 
-def _touch_fail(db, tracked_job_id: str, fail_count: int) -> None:
-    db.execute("UPDATE tracked_job SET fail_count=?, last_polled_at=? WHERE tracked_job_id=?",
-               (int(fail_count), int(time.time()), tracked_job_id))
+def _touch_fail(db, row: Dict[str, Any], fail_count: int) -> None:
+    _apply(
+        db,
+        row,
+        state=row.get("state") or "submitted",
+        exit_code=row.get("exit_code"),
+        terminal=False,
+        fail_count=int(fail_count),
+    )
 
 
 # ── shared component renderer (submit verb + poller build the SAME card) ────────
@@ -174,7 +251,11 @@ def _probe_state(orch, row: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         target = remote_machines.build_target(
-            orch.history.db, orch.credential_manager, row["owner_user_id"], row["machine_id"])
+            plane_source_from_orchestrator(orch),
+            orch.credential_manager,
+            row["owner_user_id"],
+            row["machine_id"],
+        )
     except (MachineNotFound, CredentialNotConfigured, CredentialUndecryptable):
         return {"orphan": True}
     except Exception:  # noqa: BLE001 — treat an unexpected resolve error as transient
@@ -237,8 +318,8 @@ async def poll_once(orch) -> None:
     """One poll pass over every open tracked job. Best-effort per job — one bad
     job never blocks the others, and a transport blip only degrades that job."""
     import asyncio
-    db = orch.history.db
-    rows = await asyncio.to_thread(list_open, db)
+    source = plane_source_from_orchestrator(orch)
+    rows = await asyncio.to_thread(list_open, source)
     for row in rows:
         try:
             await _poll_one(orch, row)
@@ -249,37 +330,36 @@ async def poll_once(orch) -> None:
 
 async def _poll_one(orch, row: Dict[str, Any]) -> None:
     import asyncio
-    db = orch.history.db
-    tid = row["tracked_job_id"]
+    source = plane_source_from_orchestrator(orch)
     outcome = await asyncio.to_thread(_probe_state, orch, row)
 
     if outcome.get("skip"):
         return  # unpinned host key — do not TOFU unattended
     if outcome.get("orphan"):
-        await asyncio.to_thread(_orphan, db, tid)
+        await asyncio.to_thread(_orphan, source, row)
         await _push_component(orch, row, state="orphaned", exit_code=None, terminal=True)
         return
     if outcome.get("transient"):
         fails = int(row.get("fail_count") or 0) + 1
         if fails >= _FAIL_CEILING:
-            await asyncio.to_thread(_orphan, db, tid)
+            await asyncio.to_thread(_orphan, source, row)
             await _push_component(orch, row, state="orphaned", exit_code=None, terminal=True)
         else:
-            await asyncio.to_thread(_touch_fail, db, tid, fails)
+            await asyncio.to_thread(_touch_fail, source, row, fails)
         return
 
     new_state = outcome["state"]
     terminal = bool(outcome.get("terminal"))
     exit_code = outcome.get("exit_code")
     changed = (_base_state(new_state) != _base_state(row.get("state"))) or terminal != bool(row.get("terminal"))
-    await asyncio.to_thread(_apply, db, tid, state=new_state, exit_code=exit_code,
+    await asyncio.to_thread(_apply, source, row, state=new_state, exit_code=exit_code,
                             terminal=terminal, fail_count=0)
     if changed:
         await _push_component(orch, row, state=new_state, exit_code=exit_code,
                               terminal=terminal, output_tail=outcome.get("output_tail"))
     if terminal and row.get("notify_on_finish") and not row.get("notified"):
         await _notify_finish(orch, row, new_state, exit_code)
-        await asyncio.to_thread(_mark_notified, db, tid)
+        await asyncio.to_thread(_mark_notified, source, row)
 
 
 async def _push_component(orch, row: Dict[str, Any], *, state: str, exit_code: Optional[str],
@@ -295,8 +375,12 @@ async def _push_component(orch, row: Dict[str, Any], *, state: str, exit_code: O
     label = row.get("machine_id") or "?"  # prefer the friendly label if resolvable
     try:
         from orchestrator import remote_machines
-        m = await asyncio.to_thread(remote_machines.get_machine, orch.history.db,
-                                    user_id, row["machine_id"])
+        m = await asyncio.to_thread(
+            remote_machines.get_machine,
+            plane_source_from_orchestrator(orch),
+            user_id,
+            row["machine_id"],
+        )
         if m and m.get("label"):
             label = m["label"]
     except Exception:  # noqa: BLE001

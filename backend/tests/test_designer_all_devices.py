@@ -77,7 +77,7 @@ def _last_done_index(ws):
 
 
 @pytest.fixture()
-def env(monkeypatch):
+async def env(monkeypatch):
     """A real Orchestrator + a native-profile VirtualWebSocket on a fresh chat."""
     monkeypatch.setenv("FF_UI_DESIGNER", "true")
     # This suite owns designer delivery, not compatibility TaskManager
@@ -91,7 +91,7 @@ def env(monkeypatch):
                             lambda draft_agent_id: False)
     from orchestrator.orchestrator import Orchestrator
     try:
-        orch = Orchestrator()
+        orch = await asyncio.to_thread(Orchestrator)
     except Exception as exc:
         pytest.skip(f"orchestrator/database unavailable: {exc}")
     orch.audit_recorder = MagicMock()
@@ -121,13 +121,23 @@ def env(monkeypatch):
     orch.ui_sessions[ws] = {"sub": user_id, "preferred_username": user_id}
     orch.ui_clients.append(ws)
     orch.rote.register_device(ws, {"device_type": "android"})
-    chat_id = orch.history.create_chat(user_id=user_id)
+    chat_id = await asyncio.to_thread(
+        orch.history.create_chat,
+        user_id=user_id,
+    )
     orch._ws_active_chat[id(ws)] = chat_id
-    yield orch, ws, chat_id, user_id
     try:
-        orch.history.delete_chat(chat_id, user_id=user_id)
-    except Exception:
-        pass
+        yield orch, ws, chat_id, user_id
+    finally:
+        try:
+            await asyncio.to_thread(
+                orch.history.delete_chat,
+                chat_id,
+                user_id=user_id,
+            )
+        except Exception:
+            pass
+        await orch._close_started_services()
 
 
 def _install_llm(orch, final_text="All set."):
@@ -245,19 +255,60 @@ async def test_async_mode_render_sequences_before_task_completed(env, monkeypatc
 
 
 async def test_stale_guard_drops_late_push(env, monkeypatch):
-    """A newer turn on the chat wins: the layout persists but the out-of-turn
-    render is dropped server-side."""
+    """A newer durable turn wins after design but before a native push.
+
+    Feature 060 publishes a normal turn atomically, so a second turn can no
+    longer interleave inside ``handle_chat_message``.  Exercise the post-done
+    helper boundary directly: persist the design against one exact message
+    marker, advance the chat, then prove delivery is dropped.
+    """
     orch, ws, chat_id, user_id = env
     monkeypatch.setitem(flags._flags, "designer_all_devices", True)
     _install_llm(orch)
+
+    components = _rich_components()
+    await orch._send_or_replace_components(
+        ws,
+        components,
+        chat_id,
+        user_id,
+    )
+    ws.task.outputs.clear()
+    await asyncio.to_thread(
+        orch.history.add_message,
+        chat_id,
+        "user",
+        "make a dashboard",
+        user_id=user_id,
+    )
+    turn_marker = str(
+        await asyncio.to_thread(
+            orch.history.get_latest_message_id,
+            chat_id,
+            user_id,
+        )
+    )
 
     async def _newer_turn():
         await asyncio.to_thread(orch.history.add_message, chat_id, "user",
                                 "next question", user_id=user_id)
 
     _install_designer(monkeypatch, side_effect=_newer_turn)
-
-    await orch.handle_chat_message(ws, "make a dashboard", chat_id, user_id=user_id)
+    designed_marker = await orch._design_turn_post_done(
+        ws,
+        chat_id,
+        user_id,
+        "make a dashboard",
+        components,
+        turn_marker=turn_marker,
+    )
+    assert designed_marker == turn_marker
+    await orch._push_designed_native_canvas(
+        chat_id,
+        user_id,
+        ws,
+        designed_marker,
+    )
 
     assert await asyncio.to_thread(
         orch.workspace.live_layouts, chat_id, user_id), "layout still persists"

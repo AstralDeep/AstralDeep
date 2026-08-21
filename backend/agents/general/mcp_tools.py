@@ -44,6 +44,9 @@ from astralprims import (  # noqa: E402
     ThemeApply
 )
 from shared.stream_sdk import streaming_tool, StreamComponents  # noqa: E402
+from agents.general.file_tools import (  # noqa: E402
+    read_attachment_bytes,
+)
 
 
 def generate_dynamic_chart(
@@ -203,11 +206,6 @@ def _confine_input_path(file_path: str, user_id: str) -> Optional[str]:
         return None
     backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     roots = [os.path.join(backend_dir, "tmp", str(user_id))]
-    try:
-        from orchestrator.attachments import store
-        roots.append(os.path.join(str(store.get_upload_root()), str(user_id)))
-    except ImportError:
-        pass
 
     real = os.path.realpath(file_path)
     for root in roots:
@@ -235,7 +233,7 @@ def modify_data(
     Args:
         csv_data: Raw CSV string data (optional if file_path/file_handle is provided).
         file_handle: AstralDeep attachment_id for a CSV/Excel uploaded via the
-            chat composer. Resolved to a real on-disk path server-side; preferred
+            chat composer. Read through Plane's bounded byte stream; preferred
             over file_path for chat-uploaded files.
         modifications: List of modifications to apply. Each modification can have:
             - action: "add_column", "update_column", "calculate_column"
@@ -253,12 +251,23 @@ def modify_data(
     if modifications is None:
         modifications = []
 
+    attachment_payload = None
+    attachment_filename = None
+    attachment_extension = None
     if file_handle:
-        try:
-            from shared.attachment_resolver import resolve_attachment_path
-            file_path = resolve_attachment_path(file_handle, user_id)
-        except ValueError as e:
-            return create_ui_response([Alert(message=str(e), variant="error")])
+        attachment, attachment_payload, resolution_error = read_attachment_bytes(
+            file_handle,
+            user_id,
+        )
+        if resolution_error is not None or attachment_payload is None:
+            message = (
+                resolution_error.get("error", {}).get("message")
+                if isinstance(resolution_error, dict)
+                else "Attachment is unavailable."
+            )
+            return create_ui_response([Alert(message=message, variant="error")])
+        attachment_filename = attachment.filename
+        attachment_extension = attachment.extension.lower()
     elif file_path:
         confined = _confine_input_path(file_path, user_id)
         if confined is None:
@@ -274,7 +283,13 @@ def modify_data(
     try:
         # Determine input format
         input_format = None
-        if file_path:
+        if attachment_payload is not None:
+            input_format = (
+                "excel"
+                if attachment_extension in {"xlsx", "xls"}
+                else "csv"
+            )
+        elif file_path:
             if not os.path.exists(file_path):
                 return create_ui_response([Alert(message=f"File not found: {file_path}", variant="error")])
             # Detect format from extension
@@ -296,12 +311,23 @@ def modify_data(
         
         if PANDAS_AVAILABLE and input_format == 'excel':
             # Use pandas for Excel
-            df = pd.read_excel(file_path)
+            source = (
+                io.BytesIO(attachment_payload)
+                if attachment_payload is not None
+                else file_path
+            )
+            df = pd.read_excel(source)
             rows = df.to_dict('records')
             fieldnames = list(df.columns)
         else:
             # CSV fallback (or pandas not available)
-            if file_path:
+            if attachment_payload is not None:
+                reader = csv.DictReader(
+                    io.StringIO(attachment_payload.decode("utf-8", errors="replace"))
+                )
+                fieldnames = list(reader.fieldnames) if reader.fieldnames else []
+                rows = list(reader)
+            elif file_path:
                 with open(file_path, mode='r', encoding='utf-8') as f:
                     reader = csv.DictReader(f)
                     fieldnames = list(reader.fieldnames) if reader.fieldnames else []
@@ -452,7 +478,12 @@ def modify_data(
         timestamp = int(time.time())
         if not filename:
             ext = "csv" if output_format == "csv" else "xlsx"
-            if file_path:
+            if attachment_filename:
+                name_without_ext = os.path.splitext(
+                    os.path.basename(attachment_filename)
+                )[0]
+                filename = f"{name_without_ext}_modified.{ext}"
+            elif file_path:
                 basename = os.path.basename(file_path)
                 name_without_ext = os.path.splitext(basename)[0]
                 filename = f"{name_without_ext}_modified.{ext}"

@@ -1,4 +1,4 @@
-"""psycopg2 access layer for the onboarding subsystem (feature 005).
+"""Product-facing repository facade for the onboarding subsystem.
 
 Every query that touches ``onboarding_state``, ``tutorial_step``, or
 ``tutorial_step_revision`` lives here. The router and recorder NEVER
@@ -21,12 +21,20 @@ Design notes:
 """
 from __future__ import annotations
 
-import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-import psycopg2
-import psycopg2.errors
+from astralplane.repositories import RepositoryConflictError, RepositoryNotFoundError
+from astralplane.repositories.preferences import OnboardingStateRecord
+from astralplane.repositories.tutorials import (
+    TutorialStepRecord,
+    TutorialStepRevisionRecord,
+)
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    repository_from,
+)
 
 from .schemas import (
     OnboardingStateResponse,
@@ -35,6 +43,10 @@ from .schemas import (
 )
 
 logger = logging.getLogger("Onboarding.Repository")
+
+
+def _after(previous: datetime) -> datetime:
+    return max(datetime.now(timezone.utc), previous + timedelta(microseconds=1))
 
 
 class StepNotFound(Exception):
@@ -48,9 +60,36 @@ class DuplicateSlug(Exception):
 class OnboardingRepository:
     """Thin façade over the three feature-005 tables."""
 
-    def __init__(self, db: Any):
-        # ``db`` is a :class:`backend.shared.database.Database` instance.
-        self._db = db
+    def __init__(
+        self,
+        db: Any,
+        *,
+        plane_runtime=None,
+        plane_repositories=None,
+        preferences_repository=None,
+    ):
+        preferences, runtime = repository_from(
+            "preferences",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._state = PlaneRepositoryContext(
+            repository=(preferences_repository or preferences).onboarding,
+            plane_runtime=runtime,
+            legacy_database=db,
+        )
+        tutorials, tutorial_runtime = repository_from(
+            "tutorials",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._tutorials = PlaneRepositoryContext(
+            repository=tutorials,
+            plane_runtime=tutorial_runtime,
+            legacy_database=db,
+        )
 
     # ------------------------------------------------------------------
     # Onboarding state
@@ -62,36 +101,11 @@ class OnboardingRepository:
         Absence of a row maps to the implicit default; this is the only
         place we materialize that default so callers never need to.
         """
-        conn = self._db._get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT s.user_id, s.status, s.last_step_id, s.started_at,
-                       s.updated_at, s.completed_at, s.skipped_at,
-                       s.dismissed_at, s.dismiss_count,
-                       t.slug AS last_step_slug
-                FROM onboarding_state s
-                LEFT JOIN tutorial_step t ON t.id = s.last_step_id
-                WHERE s.user_id = %s
-                """,
-                (user_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return OnboardingStateResponse(status="not_started")
-            return OnboardingStateResponse(
-                status=row["status"],
-                last_step_id=row["last_step_id"],
-                last_step_slug=row["last_step_slug"],
-                started_at=row["started_at"],
-                completed_at=row["completed_at"],
-                skipped_at=row["skipped_at"],
-                dismissed_at=row.get("dismissed_at"),
-                dismiss_count=row.get("dismiss_count", 0),
-            )
-        finally:
-            conn.close()
+        record = self._state.call(
+            self._state.repository.get_state,
+            owner_id=user_id,
+        )
+        return self._state_response(record)
 
     def upsert_state(
         self,
@@ -106,57 +120,51 @@ class OnboardingRepository:
         recorder) uses ``prior_status`` to decide which audit event to
         record.
         """
-        conn = self._db._get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT status FROM onboarding_state WHERE user_id = %s FOR UPDATE",
-                (user_id,),
+        with self._state.transaction() as transaction:
+            existing = self._state.repository.get_state(
+                transaction,
+                owner_id=user_id,
             )
-            existing = cur.fetchone()
-            prior_status = existing["status"] if existing else None
-
+            prior_status = None if existing is None else existing.status
             if existing is None:
-                cur.execute(
-                    """
-                    INSERT INTO onboarding_state (
-                        user_id, status, last_step_id, started_at,
-                        updated_at, completed_at, skipped_at
-                    )
-                    VALUES (
-                        %s, %s, %s, now(), now(),
-                        CASE WHEN %s = 'completed' THEN now() ELSE NULL END,
-                        CASE WHEN %s = 'skipped'   THEN now() ELSE NULL END
-                    )
-                    """,
-                    (user_id, status, last_step_id, status, status),
+                now = datetime.now(timezone.utc)
+                candidate = OnboardingStateRecord(
+                    owner_id=user_id,
+                    status=status,
+                    last_step_id=last_step_id,
+                    started_at=now,
+                    updated_at=now,
+                    completed_at=now if status == "completed" else None,
+                    skipped_at=now if status == "skipped" else None,
+                    dismissed_at=None,
+                    dismiss_count=0,
                 )
+                expected_updated_at = None
             else:
-                cur.execute(
-                    """
-                    UPDATE onboarding_state SET
-                        status = %s,
-                        last_step_id = %s,
-                        updated_at = now(),
-                        completed_at = CASE
-                            WHEN %s = 'completed' AND completed_at IS NULL THEN now()
-                            ELSE completed_at
-                        END,
-                        skipped_at = CASE
-                            WHEN %s = 'skipped' AND skipped_at IS NULL THEN now()
-                            ELSE skipped_at
-                        END
-                    WHERE user_id = %s
-                    """,
-                    (status, last_step_id, status, status, user_id),
+                now = _after(existing.updated_at)
+                candidate = OnboardingStateRecord(
+                    owner_id=user_id,
+                    status=status,
+                    last_step_id=last_step_id,
+                    started_at=existing.started_at,
+                    updated_at=now,
+                    completed_at=(
+                        existing.completed_at
+                        or (now if status == "completed" else None)
+                    ),
+                    skipped_at=(
+                        existing.skipped_at or (now if status == "skipped" else None)
+                    ),
+                    dismissed_at=existing.dismissed_at,
+                    dismiss_count=existing.dismiss_count,
                 )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-        return self.get_state(user_id), prior_status
+                expected_updated_at = existing.updated_at
+            durable = self._state.repository.put_state(
+                transaction,
+                candidate,
+                expected_updated_at=expected_updated_at,
+            )
+        return self._state_response(durable), prior_status
 
     def record_dismissal(self, user_id: str, max_dismissals: int = 2) -> OnboardingStateResponse:
         """Record a 'not now' dismissal.
@@ -165,52 +173,63 @@ class OnboardingRepository:
         reaches max_dismissals, auto-transitions status to 'skipped' so
         the tour stops prompting.
         """
-        conn = self._db._get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT dismiss_count FROM onboarding_state WHERE user_id = %s FOR UPDATE",
-                (user_id,),
+        with self._state.transaction() as transaction:
+            existing = self._state.repository.get_state(
+                transaction,
+                owner_id=user_id,
             )
-            existing = cur.fetchone()
-            new_count = (existing["dismiss_count"] + 1) if existing else 1
+            now = (
+                datetime.now(timezone.utc)
+                if existing is None
+                else _after(existing.updated_at)
+            )
+            new_count = 1 if existing is None else existing.dismiss_count + 1
+            auto_skip = new_count >= max_dismissals
+            candidate = OnboardingStateRecord(
+                owner_id=user_id,
+                status=(
+                    "skipped"
+                    if auto_skip
+                    else ("not_started" if existing is None else existing.status)
+                ),
+                last_step_id=None if existing is None else existing.last_step_id,
+                started_at=now if existing is None else existing.started_at,
+                updated_at=now,
+                completed_at=None if existing is None else existing.completed_at,
+                skipped_at=(
+                    now
+                    if auto_skip and (existing is None or existing.skipped_at is None)
+                    else (None if existing is None else existing.skipped_at)
+                ),
+                dismissed_at=now,
+                dismiss_count=new_count,
+            )
+            durable = self._state.repository.put_state(
+                transaction,
+                candidate,
+                expected_updated_at=(
+                    None if existing is None else existing.updated_at
+                ),
+            )
+        return self._state_response(durable)
 
-            if new_count >= max_dismissals:
-                cur.execute(
-                    """
-                    INSERT INTO onboarding_state (user_id, status, dismissed_at, dismiss_count, updated_at)
-                    VALUES (%s, 'skipped', now(), %s, now())
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        status = 'skipped',
-                        dismissed_at = now(),
-                        dismiss_count = %s,
-                        updated_at = now(),
-                        skipped_at = CASE
-                            WHEN onboarding_state.skipped_at IS NULL THEN now()
-                            ELSE onboarding_state.skipped_at
-                        END
-                    """,
-                    (user_id, new_count, new_count),
-                )
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO onboarding_state (user_id, status, dismissed_at, dismiss_count, updated_at)
-                    VALUES (%s, 'not_started', now(), %s, now())
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        dismissed_at = now(),
-                        dismiss_count = %s,
-                        updated_at = now()
-                    """,
-                    (user_id, new_count, new_count),
-                )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-        return self.get_state(user_id)
+    def _state_response(
+        self,
+        record: OnboardingStateRecord | None,
+    ) -> OnboardingStateResponse:
+        if record is None:
+            return OnboardingStateResponse(status="not_started")
+        step = None if record.last_step_id is None else self.get_step(record.last_step_id)
+        return OnboardingStateResponse(
+            status=record.status,
+            last_step_id=record.last_step_id,
+            last_step_slug=None if step is None else step.slug,
+            started_at=record.started_at,
+            completed_at=record.completed_at,
+            skipped_at=record.skipped_at,
+            dismissed_at=record.dismissed_at,
+            dismiss_count=record.dismiss_count,
+        )
 
     # ------------------------------------------------------------------
     # Tutorial steps — read paths
@@ -226,86 +245,39 @@ class OnboardingRepository:
             audiences = ("user", "admin")
         else:
             audiences = ("user",)
-        conn = self._db._get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT id, slug, audience, display_order, target_kind, target_key,
-                       title, body, archived_at, updated_at
-                FROM tutorial_step
-                WHERE archived_at IS NULL AND audience = ANY(%s)
-                ORDER BY display_order ASC, id ASC
-                """,
-                (list(audiences),),
-            )
-            return [_row_to_step_dto(r) for r in cur.fetchall()]
-        finally:
-            conn.close()
+        records = self._tutorials.call(
+            self._tutorials.repository.list_visible,
+            audiences=audiences,
+            include_archived=False,
+            limit=200,
+        )
+        return [_tutorial_step_to_dto(record) for record in records]
 
     def list_all_steps(self, include_archived: bool = True) -> List[TutorialStepDTO]:
         """Admin read: returns every step, optionally including archived ones."""
-        conn = self._db._get_connection()
-        try:
-            cur = conn.cursor()
-            if include_archived:
-                cur.execute(
-                    """
-                    SELECT id, slug, audience, display_order, target_kind, target_key,
-                           title, body, archived_at, updated_at
-                    FROM tutorial_step
-                    ORDER BY display_order ASC, id ASC
-                    """
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT id, slug, audience, display_order, target_kind, target_key,
-                           title, body, archived_at, updated_at
-                    FROM tutorial_step
-                    WHERE archived_at IS NULL
-                    ORDER BY display_order ASC, id ASC
-                    """
-                )
-            return [_row_to_step_dto(r) for r in cur.fetchall()]
-        finally:
-            conn.close()
+        records = self._tutorials.call(
+            self._tutorials.repository.list_for_administration,
+            include_archived=include_archived,
+            limit=500,
+        )
+        return [_tutorial_step_to_dto(record) for record in records]
 
     def get_step(self, step_id: int) -> Optional[TutorialStepDTO]:
-        conn = self._db._get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT id, slug, audience, display_order, target_kind, target_key,
-                       title, body, archived_at, updated_at
-                FROM tutorial_step
-                WHERE id = %s
-                """,
-                (step_id,),
-            )
-            row = cur.fetchone()
-            return _row_to_step_dto(row) if row else None
-        finally:
-            conn.close()
+        record = self._tutorials.call(
+            self._tutorials.repository.get,
+            step_id=step_id,
+        )
+        return None if record is None else _tutorial_step_to_dto(record)
 
     def get_step_audience(self, step_id: int) -> Optional[str]:
         """Return just the audience for a step. Used for cheap validation."""
-        conn = self._db._get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT audience, archived_at FROM tutorial_step WHERE id = %s",
-                (step_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            if row["archived_at"] is not None:
-                return None
-            return row["audience"]
-        finally:
-            conn.close()
+        record = self._tutorials.call(
+            self._tutorials.repository.get,
+            step_id=step_id,
+        )
+        if record is None or record.archived_at is not None:
+            return None
+        return record.audience
 
     # ------------------------------------------------------------------
     # Tutorial steps — admin write paths
@@ -323,42 +295,23 @@ class OnboardingRepository:
         title: str,
         body: str,
     ) -> TutorialStepDTO:
-        conn = self._db._get_connection()
         try:
-            cur = conn.cursor()
-            try:
-                cur.execute(
-                    """
-                    INSERT INTO tutorial_step (
-                        slug, audience, display_order, target_kind, target_key,
-                        title, body
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id, slug, audience, display_order, target_kind, target_key,
-                              title, body, archived_at, updated_at
-                    """,
-                    (slug, audience, display_order, target_kind, target_key, title, body),
+            with self._tutorials.transaction() as transaction:
+                record = self._tutorials.repository.create_with_revision(
+                    transaction,
+                    slug=slug,
+                    audience=audience,
+                    display_order=display_order,
+                    target_kind=target_kind,
+                    target_key=target_key,
+                    title=title,
+                    body=body,
+                    editor_id=editor_user_id,
+                    observed_at=datetime.now(timezone.utc),
                 )
-            except psycopg2.errors.UniqueViolation as exc:
-                conn.rollback()
-                raise DuplicateSlug(slug) from exc
-            row = cur.fetchone()
-            dto = _row_to_step_dto(row)
-            cur.execute(
-                """
-                INSERT INTO tutorial_step_revision (
-                    step_id, editor_user_id, previous, current, change_kind
-                ) VALUES (%s, %s, NULL, %s, 'create')
-                """,
-                (dto.id, editor_user_id, json.dumps(_dto_to_snapshot(dto))),
-            )
-            conn.commit()
-            return dto
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        except RepositoryConflictError as exc:
+            raise DuplicateSlug(slug) from exc
+        return _tutorial_step_to_dto(record)
 
     def update_step(
         self,
@@ -389,75 +342,25 @@ class OnboardingRepository:
         if unknown:
             raise ValueError(f"cannot update unknown fields: {sorted(unknown)}")
 
-        conn = self._db._get_connection()
+        existing = self._tutorials.call(
+            self._tutorials.repository.get,
+            step_id=step_id,
+        )
+        if existing is None:
+            raise StepNotFound(step_id)
         try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT id, slug, audience, display_order, target_kind, target_key,
-                       title, body, archived_at, updated_at
-                FROM tutorial_step
-                WHERE id = %s
-                FOR UPDATE
-                """,
-                (step_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise StepNotFound(step_id)
-            previous = _row_to_step_dto(row)
-
-            # Compute changed_fields by comparing prior values to the patch.
-            changed: List[str] = []
-            patched: Dict[str, Any] = {}
-            for col in allowed:
-                if col not in partial:
-                    continue
-                new_val = partial[col]
-                old_val = getattr(previous, col)
-                if new_val != old_val:
-                    changed.append(col)
-                    patched[col] = new_val
-
-            if not changed:
-                conn.commit()
-                return previous, []
-
-            # Build SET clause dynamically — only changed cols.
-            set_clauses = ", ".join(f"{c} = %s" for c in changed)
-            params = [patched[c] for c in changed] + [step_id]
-            cur.execute(
-                f"""
-                UPDATE tutorial_step
-                SET {set_clauses}, updated_at = now()
-                WHERE id = %s
-                RETURNING id, slug, audience, display_order, target_kind, target_key,
-                          title, body, archived_at, updated_at
-                """,
-                tuple(params),
-            )
-            new_row = cur.fetchone()
-            new_dto = _row_to_step_dto(new_row)
-            cur.execute(
-                """
-                INSERT INTO tutorial_step_revision (
-                    step_id, editor_user_id, previous, current, change_kind
-                ) VALUES (%s, %s, %s, %s, 'update')
-                """,
-                (
-                    step_id,
-                    editor_user_id,
-                    json.dumps(_dto_to_snapshot(previous)),
-                    json.dumps(_dto_to_snapshot(new_dto)),
-                ),
-            )
-            conn.commit()
-            return new_dto, changed
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+            with self._tutorials.transaction() as transaction:
+                result = self._tutorials.repository.update_with_revision(
+                    transaction,
+                    step_id=step_id,
+                    expected_updated_at=existing.updated_at,
+                    changes=partial,
+                    editor_id=editor_user_id,
+                    updated_at=_after(existing.updated_at),
+                )
+        except RepositoryNotFoundError as exc:
+            raise StepNotFound(step_id) from exc
+        return _tutorial_step_to_dto(result.record), list(result.changed_fields)
 
     def archive_step(self, *, step_id: int, editor_user_id: str) -> TutorialStepDTO:
         return self._toggle_archive(step_id=step_id, editor_user_id=editor_user_id, archive=True)
@@ -466,142 +369,61 @@ class OnboardingRepository:
         return self._toggle_archive(step_id=step_id, editor_user_id=editor_user_id, archive=False)
 
     def _toggle_archive(self, *, step_id: int, editor_user_id: str, archive: bool) -> TutorialStepDTO:
-        change_kind = "archive" if archive else "restore"
-        conn = self._db._get_connection()
+        existing = self._tutorials.call(
+            self._tutorials.repository.get,
+            step_id=step_id,
+        )
+        if existing is None:
+            raise StepNotFound(step_id)
         try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT id, slug, audience, display_order, target_kind, target_key,
-                       title, body, archived_at, updated_at
-                FROM tutorial_step
-                WHERE id = %s
-                FOR UPDATE
-                """,
-                (step_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise StepNotFound(step_id)
-            previous = _row_to_step_dto(row)
-            already_in_target_state = (archive and previous.archived_at is not None) or (
-                not archive and previous.archived_at is None
-            )
-            if already_in_target_state:
-                conn.commit()
-                return previous
-
-            if archive:
-                cur.execute(
-                    """
-                    UPDATE tutorial_step SET archived_at = now(), updated_at = now()
-                    WHERE id = %s
-                    RETURNING id, slug, audience, display_order, target_kind, target_key,
-                              title, body, archived_at, updated_at
-                    """,
-                    (step_id,),
+            with self._tutorials.transaction() as transaction:
+                result = self._tutorials.repository.set_archived_with_revision(
+                    transaction,
+                    step_id=step_id,
+                    expected_updated_at=existing.updated_at,
+                    archived=archive,
+                    editor_id=editor_user_id,
+                    updated_at=_after(existing.updated_at),
                 )
-            else:
-                cur.execute(
-                    """
-                    UPDATE tutorial_step SET archived_at = NULL, updated_at = now()
-                    WHERE id = %s
-                    RETURNING id, slug, audience, display_order, target_kind, target_key,
-                              title, body, archived_at, updated_at
-                    """,
-                    (step_id,),
-                )
-            new_dto = _row_to_step_dto(cur.fetchone())
-            cur.execute(
-                """
-                INSERT INTO tutorial_step_revision (
-                    step_id, editor_user_id, previous, current, change_kind
-                ) VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    step_id,
-                    editor_user_id,
-                    json.dumps(_dto_to_snapshot(previous)),
-                    json.dumps(_dto_to_snapshot(new_dto)),
-                    change_kind,
-                ),
-            )
-            conn.commit()
-            return new_dto
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        except RepositoryNotFoundError as exc:
+            raise StepNotFound(step_id) from exc
+        return _tutorial_step_to_dto(result.record)
 
     def list_revisions(self, step_id: int) -> List[RevisionDTO]:
-        conn = self._db._get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT id, step_id, editor_user_id, edited_at, previous, current, change_kind
-                FROM tutorial_step_revision
-                WHERE step_id = %s
-                ORDER BY edited_at DESC, id DESC
-                """,
-                (step_id,),
-            )
-            return [_row_to_revision_dto(r) for r in cur.fetchall()]
-        finally:
-            conn.close()
+        records = self._tutorials.call(
+            self._tutorials.repository.list_revisions,
+            step_id=step_id,
+            limit=500,
+        )
+        return [_tutorial_revision_to_dto(record) for record in records]
 
 
 # ---------------------------------------------------------------------------
-# Helpers — DB row → DTO
+# Helpers — Plane record → DTO
 # ---------------------------------------------------------------------------
 
-def _row_to_step_dto(row: Optional[Dict[str, Any]]) -> Optional[TutorialStepDTO]:
-    if row is None:
-        return None
+def _tutorial_step_to_dto(record: TutorialStepRecord) -> TutorialStepDTO:
     return TutorialStepDTO(
-        id=row["id"],
-        slug=row["slug"],
-        audience=row["audience"],
-        display_order=row["display_order"],
-        target_kind=row["target_kind"],
-        target_key=row["target_key"],
-        title=row["title"],
-        body=row["body"],
-        archived_at=row.get("archived_at"),
-        updated_at=row.get("updated_at"),
+        id=record.step_id,
+        slug=record.slug,
+        audience=record.audience,
+        display_order=record.display_order,
+        target_kind=record.target_kind,
+        target_key=record.target_key,
+        title=record.title,
+        body=record.body,
+        archived_at=record.archived_at,
+        updated_at=record.updated_at,
     )
 
 
-def _row_to_revision_dto(row: Dict[str, Any]) -> RevisionDTO:
-    prev = row.get("previous")
-    cur = row.get("current")
-    if isinstance(prev, str):
-        prev = json.loads(prev)
-    if isinstance(cur, str):
-        cur = json.loads(cur)
+def _tutorial_revision_to_dto(record: TutorialStepRevisionRecord) -> RevisionDTO:
     return RevisionDTO(
-        id=row["id"],
-        step_id=row["step_id"],
-        editor_user_id=row["editor_user_id"],
-        edited_at=row["edited_at"],
-        change_kind=row["change_kind"],
-        previous=prev,
-        current=cur,
+        id=record.revision_id,
+        step_id=record.step_id,
+        editor_user_id=record.editor_id,
+        edited_at=record.edited_at,
+        change_kind=record.change_kind,
+        previous=None if record.previous is None else dict(record.previous),
+        current=dict(record.current),
     )
-
-
-def _dto_to_snapshot(dto: TutorialStepDTO) -> Dict[str, Any]:
-    """Snapshot used for the revision row's ``previous`` / ``current`` JSON."""
-    return {
-        "id": dto.id,
-        "slug": dto.slug,
-        "audience": dto.audience,
-        "display_order": dto.display_order,
-        "target_kind": dto.target_kind,
-        "target_key": dto.target_key,
-        "title": dto.title,
-        "body": dto.body,
-        "archived_at": dto.archived_at.isoformat() if dto.archived_at else None,
-        "updated_at": dto.updated_at.isoformat() if dto.updated_at else None,
-    }

@@ -8,6 +8,7 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 
+from astralprojection.resources import static_path, template_path, vendor_path
 from webrender.chrome.composer_model import (
     VoiceComposerContext,
     build_composer_state,
@@ -15,13 +16,15 @@ from webrender.chrome.composer_model import (
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-SHELL_PATH = BACKEND_DIR / "webrender/templates/shell.html"
-CLIENT_PATH = BACKEND_DIR / "webrender/static/client.js"
-CSS_PATH = BACKEND_DIR / "webrender/static/astral.css"
-FIXTURE_PATH = BACKEND_DIR / "tests/fixtures/voice_065/client_conformance.json"
-VENDOR_DIR = BACKEND_DIR / "webrender/static/vendor"
-LIVEKIT_PATH = VENDOR_DIR / "livekit-client.umd.min.js"
-LIVEKIT_DIGEST_PATH = VENDOR_DIR / "livekit-client.sha256"
+SHELL_PATH = template_path("shell.html")
+CLIENT_PATH = static_path("client.js")
+CSS_PATH = static_path("astral.css")
+FIXTURE_PATH = (
+    BACKEND_DIR.parent
+    / "components/AstralProjection/contracts/fixtures/voice_065/client_conformance.json"
+)
+LIVEKIT_PATH = vendor_path("livekit-client.umd.min.js")
+LIVEKIT_DIGEST_PATH = vendor_path("livekit-client.sha256")
 
 
 class _ShellParser(HTMLParser):

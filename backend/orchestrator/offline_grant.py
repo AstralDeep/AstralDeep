@@ -26,6 +26,10 @@ from typing import Optional
 import aiohttp
 
 from agentic_settings import OFFLINE_GRANT_ENC_KEY, OFFLINE_GRANT_MAX_DAYS
+from orchestrator.plane_repository_context import (
+    PlaneRepositoryContext,
+    repository_from,
+)
 
 logger = logging.getLogger("orchestrator.offline_grant")
 
@@ -34,6 +38,35 @@ _DAY_MS = 86_400_000
 
 class OfflineGrantError(RuntimeError):
     """Raised when a grant cannot be captured, is unavailable, or is expired/revoked."""
+
+
+_APPLICATION_STORE = None
+
+
+def bind_offline_grant_store(store) -> None:
+    """Publish the application-scoped store for request modules without an owner object."""
+
+    global _APPLICATION_STORE
+    if store is None:
+        raise ValueError("offline grant store binding is required")
+    _APPLICATION_STORE = store
+
+
+def unbind_offline_grant_store(store) -> None:
+    """Release only the exact application-scoped offline-grant binding."""
+
+    global _APPLICATION_STORE
+    if _APPLICATION_STORE is None:
+        return
+    if _APPLICATION_STORE is not store:
+        raise RuntimeError("offline grant store unbind does not own the binding")
+    _APPLICATION_STORE = None
+
+
+def get_offline_grant_store():
+    if _APPLICATION_STORE is None:
+        raise RuntimeError("offline grant persistence has not been bound to AstralPlane")
+    return _APPLICATION_STORE
 
 
 def _fernet():
@@ -53,13 +86,27 @@ def _now_ms() -> int:
 class OfflineGrantStore:
     """Persistence + crypto for offline grants. Token bytes never leave this class."""
 
-    def __init__(self, db=None) -> None:
-        if db is None:
-            # Lazy default (mirrors session_store.WebSessionStore): callers
-            # like web_auth.auth_logout construct the store bare at sign-out.
-            from shared.database import Database
-            db = Database()
-        self.db = db
+    def __init__(
+        self,
+        db=None,
+        *,
+        plane_runtime=None,
+        plane_repositories=None,
+        plane_repository=None,
+    ) -> None:
+        if db is None and plane_runtime is None:
+            raise ValueError("OfflineGrantStore requires the application Plane runtime")
+        repository, runtime = repository_from(
+            "offline_grants",
+            plane_runtime=plane_runtime,
+            repositories=plane_repositories,
+            legacy_database=db,
+        )
+        self._grants = PlaneRepositoryContext(
+            repository=plane_repository or repository,
+            plane_runtime=runtime,
+            legacy_database=db,
+        )
 
     def capture(self, user_id: str, refresh_token: str, agent_id: Optional[str] = None) -> str:
         """Encrypt + store a refresh token captured from the live session.
@@ -73,34 +120,41 @@ class OfflineGrantStore:
         grant_id = str(uuid.uuid4())
         now = _now_ms()
         expires = now + OFFLINE_GRANT_MAX_DAYS * _DAY_MS
-        self.db.execute(
-            """INSERT INTO user_offline_grant
-                   (id, user_id, agent_id, refresh_token_enc, issued_at, expires_at,
-                    revoked_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
-            (grant_id, user_id, agent_id, token_enc, now, expires, now, now),
+        self._grants.call(
+            self._grants.repository.create_grant,
+            grant_id=grant_id,
+            owner_id=user_id,
+            agent_id=agent_id,
+            encrypted_refresh_token=token_enc,
+            issued_at=now,
+            expires_at=expires,
         )
         return grant_id
 
-    def _row(self, grant_id: str) -> Optional[dict]:
-        row = self.db.fetch_one("SELECT * FROM user_offline_grant WHERE id = ?", (grant_id,))
-        return dict(row) if row else None
+    def _grant(self, user_id: str, grant_id: str):
+        return self._grants.call(
+            self._grants.repository.get_grant,
+            owner_id=user_id,
+            grant_id=grant_id,
+        )
 
     def revoke_for_user(self, user_id: str) -> int:
         """Revoke all of a user's grants (e.g. on logout / sign-out-everywhere)."""
-        cur = self.db.execute(
-            "UPDATE user_offline_grant SET revoked_at = ?, updated_at = ? WHERE user_id = ? AND revoked_at IS NULL",
-            (_now_ms(), _now_ms(), user_id),
+        return self._grants.call(
+            self._grants.repository.revoke_owner,
+            owner_id=user_id,
+            revoked_at=_now_ms(),
         )
-        return getattr(cur, "rowcount", 0)
 
-    def is_valid(self, grant_id: str) -> bool:
-        row = self._row(grant_id)
-        if not row:
+    def is_valid(self, grant_id: str, *, user_id: str) -> bool:
+        """Check a grant only within the authenticated owner's namespace."""
+
+        grant = self._grant(user_id, grant_id)
+        if grant is None:
             return False
-        if row.get("revoked_at"):
+        if not grant.active:
             return False
-        if int(row["expires_at"]) <= _now_ms():
+        if grant.expires_at <= _now_ms():
             return False
         return True
 
@@ -115,40 +169,31 @@ class OfflineGrantStore:
         authority from the user's standing consent, and skip fail-closed when
         none exists.
         """
-        now = _now_ms()
-        if agent_id:
-            row = self.db.fetch_one(
-                """SELECT id FROM user_offline_grant
-                   WHERE user_id = ? AND agent_id = ?
-                     AND revoked_at IS NULL AND expires_at > ?
-                   ORDER BY issued_at DESC LIMIT 1""",
-                (user_id, agent_id, now),
-            )
-            if row:
-                return dict(row)["id"]
-        row = self.db.fetch_one(
-            """SELECT id FROM user_offline_grant
-               WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
-               ORDER BY issued_at DESC LIMIT 1""",
-            (user_id, now),
+        reference = self._grants.call(
+            self._grants.repository.find_latest_valid,
+            owner_id=user_id,
+            agent_id=agent_id,
+            as_of=_now_ms(),
         )
-        return dict(row)["id"] if row else None
+        return None if reference is None else reference.grant_id
 
-    async def mint_access_token(self, grant_id: str) -> str:
+    async def mint_access_token(self, grant_id: str, *, user_id: str) -> str:
         """Exchange the stored refresh token for a fresh access token at Keycloak.
 
         Raises OfflineGrantError on revoked/expired grants or refresh failure
         (e.g. Keycloak-side revocation) — the caller fails the run safe.
         """
-        row = await asyncio.to_thread(self._row, grant_id)
-        if not row:
+        grant = await asyncio.to_thread(self._grant, user_id, grant_id)
+        if grant is None:
             raise OfflineGrantError("offline grant not found")
-        if row.get("revoked_at"):
+        if not grant.active:
             raise OfflineGrantError("offline grant revoked")
-        if int(row["expires_at"]) <= _now_ms():
+        if grant.expires_at <= _now_ms():
             raise OfflineGrantError("offline grant expired (365-day cap reached); re-consent required")
 
-        refresh_token = _fernet().decrypt(bytes(row["refresh_token_enc"])).decode("utf-8")
+        refresh_token = _fernet().decrypt(
+            grant.encrypted_refresh_token
+        ).decode("utf-8")
 
         token_url = os.getenv("KEYCLOAK_TOKEN_URL") or (
             f"{os.getenv('KEYCLOAK_URL', '').rstrip('/')}/realms/"
@@ -177,5 +222,5 @@ class OfflineGrantStore:
             raise OfflineGrantError("refresh exchange returned no access_token")
         # 030 FR-017: structured observability for grant mints (success path).
         logger.info("offline_grant.minted",
-                    extra={"grant_id": grant_id, "user_id": row.get("user_id")})
+                    extra={"grant_id": grant_id, "user_id": grant.owner_id})
         return access_token

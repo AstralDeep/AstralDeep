@@ -1,38 +1,38 @@
-"""Account-deletion hook for attachments.
+"""Unbound account-retirement service boundary for attachment purges.
 
-Called by the user-management subsystem when an account is removed (per
-contracts/upload-api.md "Account deletion" section). Soft-deletes every
-attachment row owned by *user_id* and recursively removes the user's blob
-directory under ``ATTACHMENT_UPLOAD_ROOT``.
+The product has not yet selected an account-deletion authority (self-service
+endpoint versus an authenticated identity-provider administrative event), so
+this module is deliberately not mounted or called from logout.  The eventual
+authorized caller must use this boundary: Plane atomically soft-deletes the
+owner's attachment metadata with a durable namespace tombstone, then verifies
+physical absence outside that database transaction.
 """
 
 from __future__ import annotations
 
-import logging
-
-from orchestrator.attachments import store
-from orchestrator.attachments.repository import AttachmentRepository
-
-logger = logging.getLogger("AttachmentsLifecycle")
+from orchestrator.attachments.purge import (
+    AttachmentPurgeCoordinator,
+    AttachmentPurgeOutcome,
+)
 
 
-def purge_user_attachments(db, user_id: str) -> int:
-    """Soft-delete all of *user_id*'s attachments and remove their blobs.
+def purge_user_attachments(
+    purge_coordinator: AttachmentPurgeCoordinator,
+    user_id: str,
+) -> AttachmentPurgeOutcome:
+    """Schedule one owner namespace and report its actual physical state.
 
     Args:
-        db: A :class:`backend.shared.database.Database` (or compatible) instance.
+        purge_coordinator: The application-scoped durable purge boundary.
         user_id: The Keycloak ``sub`` of the deleted account.
 
     Returns:
-        Number of attachment rows that were soft-deleted.
+        The committed logical-deletion and physical-purge outcome.  A caller
+        MUST NOT report account purge complete unless ``outcome.completed`` is
+        true.
     """
-    repo = AttachmentRepository(db)
-    deleted = repo.soft_delete_all_for_user(user_id)
-    try:
-        store.delete_user(user_id)
-    except Exception as exc:  # pragma: no cover - log and swallow
-        logger.warning(f"Blob purge failed for user {user_id}: {exc}")
-    return deleted
+
+    return purge_coordinator.schedule_owner(owner_id=user_id)
 
 
 __all__ = ["purge_user_attachments"]

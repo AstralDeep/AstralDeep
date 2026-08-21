@@ -238,6 +238,19 @@ class LetsHostConfig:
             "LETS_SIGNED_TRUST_MANIFEST",
             "missing_signed_trust_manifest",
         )
+        if authenticate_manifest is None:
+            # Production startup obtains manifest authority only from a
+            # separately mounted operator trust bundle.  Tests/compositions
+            # may still inject an equivalent authenticator explicitly.
+            from orchestrator.lets_manifest import (
+                OperatorTrustError,
+                build_manifest_authenticator,
+            )
+
+            try:
+                authenticate_manifest = build_manifest_authenticator(values)
+            except OperatorTrustError:
+                raise LetsConfigError("invalid_operator_trust_bundle") from None
         manifest = _load_authenticated_manifest(
             manifest_path,
             authenticate_manifest=authenticate_manifest,

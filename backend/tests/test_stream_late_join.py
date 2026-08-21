@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -52,11 +53,11 @@ def push_flags():
 
 
 @pytest.fixture
-def env(push_flags):
+async def env(push_flags):
     from orchestrator.orchestrator import Orchestrator
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     try:
-        orch = Orchestrator()
+        orch = await asyncio.to_thread(Orchestrator)
     except Exception as exc:
         pytest.skip(f"orchestrator/database unavailable: {exc}")
     user_id = f"late-join-{uuid.uuid4().hex[:8]}"
@@ -70,24 +71,36 @@ def env(push_flags):
         return ws
 
     ws1, ws2 = make_ws(), make_ws()
-    chat_id = orch.history.create_chat(user_id=user_id)
+    chat_id = await asyncio.to_thread(
+        orch.history.create_chat,
+        user_id=user_id,
+    )
     orch._ws_active_chat[id(ws1)] = chat_id
     agent = HoldOpenAgent()
     orch.local_agents[AGENT] = agent
+    orch.tool_permissions = MagicMock()
+    orch.tool_permissions.is_tool_allowed.return_value = True
     orch._streamable_tools[TOOL] = {
         "agent_id": AGENT, "kind": "push", "max_fps": 30, "min_fps": 5,
         "max_chunk_bytes": 65536, "default_interval": 2,
         "min_interval": 1, "max_interval": 30,
     }
-    yield orch, ws1, ws2, chat_id, user_id
     try:
-        orch.stream_manager.shutdown()
-    except Exception:
-        pass
-    try:
-        orch.history.delete_chat(chat_id, user_id=user_id)
-    except Exception:
-        pass
+        yield orch, ws1, ws2, chat_id, user_id
+    finally:
+        try:
+            orch.stream_manager.shutdown()
+        except Exception:
+            pass
+        try:
+            await asyncio.to_thread(
+                orch.history.delete_chat,
+                chat_id,
+                user_id=user_id,
+            )
+        except Exception:
+            pass
+        await orch._close_started_services()
 
 
 def _frames(ws, ftype):

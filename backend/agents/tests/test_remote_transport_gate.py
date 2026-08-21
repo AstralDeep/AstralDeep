@@ -7,7 +7,7 @@ re-trust action as the ONLY path that accepts a changed identity.
 """
 from __future__ import annotations
 
-import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +22,7 @@ from orchestrator.remote_transport import (
     set_transport,
 )
 from shared import net_guard
+from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 USER = "user-1"
 RFC1918 = "10.33.77.11"
@@ -201,53 +202,15 @@ def test_policy_is_per_target_so_one_pin_never_leaks_into_another():
 
 # ── host-key pinning (FR-020): mismatch refuses; re-trust is the only accept ──
 
-_SCHEMA = """
-CREATE TABLE remote_machine (
-    machine_id            TEXT PRIMARY KEY,
-    owner_user_id         TEXT NOT NULL,
-    label                 TEXT NOT NULL,
-    address               TEXT NOT NULL,
-    port                  INTEGER NOT NULL DEFAULT 22,
-    username              TEXT NOT NULL,
-    os_family             TEXT NOT NULL,
-    role                  TEXT NOT NULL,
-    host_key_type         TEXT,
-    host_key_fingerprint  TEXT,
-    host_key_blob         TEXT,
-    last_verdict          TEXT,
-    last_checked_at       BIGINT,
-    created_at            BIGINT NOT NULL,
-    updated_at            BIGINT NOT NULL
-)
-"""
-
 KEY_A = {"type": "ssh-ed25519", "blob_b64": "AAAA", "fingerprint": "SHA256:aaa"}
 KEY_B = {"type": "ssh-ed25519", "blob_b64": "BBBB", "fingerprint": "SHA256:bbb"}
 
 
-class _MemDB:
-    """Minimal sqlite double for the Database facade ('?' placeholders match)."""
-
-    def __init__(self):
-        self._conn = sqlite3.connect(":memory:")
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute(_SCHEMA)
-
-    def execute(self, sql, params=()):
-        self._conn.execute(sql, params)
-        self._conn.commit()
-
-    def fetch_one(self, sql, params=()):
-        row = self._conn.execute(sql, params).fetchone()
-        return dict(row) if row is not None else None
-
-    def fetch_all(self, sql, params=()):
-        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
-
-
 @pytest.fixture()
 def db():
-    return _MemDB()
+    return make_remote_plane_source(
+        SimpleNamespace(machines={}, credentials={}, jobs={})
+    )
 
 
 def _register(db):

@@ -10,13 +10,14 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-if not (REPO_ROOT / "android-client").is_dir():
+PROJECTION_ROOT = REPO_ROOT / "components" / "AstralProjection"
+if not (PROJECTION_ROOT / "android-client").is_dir():
     pytest.skip(
         "repo-root client manifests are not part of the product image",
         allow_module_level=True,
     )
-WEB_VENDOR = REPO_ROOT / "backend" / "webrender" / "static" / "vendor"
-ANDROID = REPO_ROOT / "android-client"
+WEB_VENDOR = PROJECTION_ROOT / "backend" / "webrender" / "static" / "vendor"
+ANDROID = PROJECTION_ROOT / "android-client"
 
 LIVEKIT_WEB_SHA256 = "a77a2f4c363e93099d7c135721c9ec81d6c5bacc691796dad799222e33cbfb31"
 LIVEKIT_WEB_NOTICES_SHA256 = (

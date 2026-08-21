@@ -23,6 +23,7 @@ and are explicitly out of the user-facing audit-log read surface.
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
 import os
 import sys
@@ -36,9 +37,30 @@ if str(BACKEND_DIR) not in sys.path:
 
 
 def _make_repo():
-    from shared.database import Database
     from audit.repository import AuditRepository
-    return AuditRepository(Database())
+    from orchestrator.plane_composition import compose_plane_from_environment
+
+    global _composition
+    if _composition is None:
+        manifest = BACKEND_DIR.parent / "config" / "astral-composition.json"
+        _composition = compose_plane_from_environment(manifest)
+    return AuditRepository(
+        plane_runtime=_composition.runtime,
+        plane_repositories=_composition.repositories,
+    )
+
+
+_composition = None
+
+
+def _close_plane_runtime() -> None:
+    global _composition
+    if _composition is not None:
+        _composition.close()
+        _composition = None
+
+
+atexit.register(_close_plane_runtime)
 
 
 def cmd_verify_chain(args: argparse.Namespace) -> int:
@@ -54,7 +76,7 @@ def cmd_verify_chain(args: argparse.Namespace) -> int:
 def cmd_purge_expired(args: argparse.Namespace) -> int:
     repo = _make_repo()
     cutoff = datetime.now(timezone.utc) - timedelta(days=args.horizon_days)
-    deleted = repo.purge_older_than(cutoff)
+    deleted = repo.purge_older_than(args.user_id, cutoff)
     print(f"purged {deleted} audit row(s) older than {cutoff.isoformat()}")
     return 0
 
@@ -69,6 +91,11 @@ def main(argv: list[str] | None = None) -> int:
     p_verify.set_defaults(func=cmd_verify_chain)
 
     p_purge = sub.add_parser("purge-expired", help="Delete rows past the retention horizon")
+    p_purge.add_argument(
+        "--user-id",
+        required=True,
+        help="actor_user_id whose authenticated chain prefix may be pruned",
+    )
     p_purge.add_argument(
         "--horizon-days",
         type=int,

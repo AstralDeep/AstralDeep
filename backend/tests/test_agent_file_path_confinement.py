@@ -10,6 +10,7 @@ reads the orchestrator's own filesystem. These tests pin that:
 """
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -44,9 +45,16 @@ def test_modify_data_refuses_absolute_file_path():
 
 def test_modify_data_refuses_absolute_path_as_file_handle():
     """The resolver is the only path source — a handle is never a path."""
-    fake_repo = MagicMock()
-    fake_repo.get_by_id.return_value = None
-    with patch("orchestrator.attachments.repository.AttachmentRepository", return_value=fake_repo):
+    error = {
+        "error": {
+            "code": "not_found",
+            "message": "file_handle '/etc/passwd' is not a valid attachment for this user.",
+        }
+    }
+    with patch(
+        "agents.general.mcp_tools.read_attachment_bytes",
+        return_value=(None, None, error),
+    ):
         result = modify_data(
             file_handle="/etc/passwd",
             modifications=[],
@@ -81,18 +89,21 @@ def test_modify_data_refuses_another_users_directory():
 
 
 def test_modify_data_reads_owned_attachment_via_file_handle(tmp_path):
-    """The supported path still works end to end."""
-    src = tmp_path / "owned.csv"
-    src.write_text("name,age\nAlice,25\n")
-    fake_repo = MagicMock()
-    fake_repo.get_by_id.return_value = MagicMock(storage_path=str(src))
-    with patch("orchestrator.attachments.repository.AttachmentRepository", return_value=fake_repo):
+    """The supported bounded-byte path still works end to end."""
+    read_bytes = MagicMock(
+        return_value=(
+            SimpleNamespace(filename="owned.csv", extension="csv"),
+            b"name,age\nAlice,25\n",
+            None,
+        )
+    )
+    with patch("agents.general.mcp_tools.read_attachment_bytes", read_bytes):
         result = modify_data(
             file_handle="att-owned",
             modifications=[{"action": "add_column", "name": "status", "value": "ok"}],
             user_id="alice",
         )
-    fake_repo.get_by_id.assert_called_with("att-owned", "alice")
+    read_bytes.assert_called_once_with("att-owned", "alice")
     assert result["_data"] is not None, _alert_messages(result)
     out_path = result["_data"]["file_path"]
     try:
@@ -124,10 +135,16 @@ def test_analyze_csv_file_refuses_absolute_file_path():
 
 
 def test_analyze_csv_file_refuses_path_as_attachment_id():
-    fake_repo = MagicMock()
-    fake_repo.get_by_id.return_value = None
-    with patch("agents.general.file_tools.AttachmentRepository", return_value=fake_repo), \
-         patch("agents.general.file_tools._get_database", return_value=MagicMock()):
+    error = {
+        "error": {
+            "code": "not_found",
+            "message": "Attachment /etc/passwd not found.",
+        }
+    }
+    with patch(
+        "agents.general.file_tools.read_attachment_bytes",
+        return_value=(None, None, error),
+    ):
         result = analyze_csv_file(attachment_id="/etc/passwd", user_id="alice")
     assert result["_data"] is None
     assert "not found" in _alert_messages(result)
@@ -139,24 +156,36 @@ def test_analyze_csv_file_refuses_call_without_user_context():
     assert "without a user context" in _alert_messages(result)
 
 
-def test_analyze_csv_file_reads_owned_attachment(tmp_path, monkeypatch):
-    monkeypatch.setenv("ATTACHMENT_UPLOAD_ROOT", str(tmp_path))
-    blob = tmp_path / "alice" / "att-1" / "vitals.csv"
-    blob.parent.mkdir(parents=True)
-    blob.write_text("patient,age\nP-1,45\nP-2,52\n")
-
-    fake_repo = MagicMock()
-    fake_repo.get_by_id.return_value = MagicMock(
-        storage_path="alice/att-1/vitals.csv", extension="csv"
+def test_analyze_csv_file_reads_owned_attachment():
+    read_bytes = MagicMock(
+        return_value=(
+            SimpleNamespace(filename="vitals.csv", extension="csv"),
+            b"patient,age\nP-1,45\nP-2,52\n",
+            None,
+        )
     )
-    with patch("agents.general.file_tools.AttachmentRepository", return_value=fake_repo), \
-         patch("agents.general.file_tools._get_database", return_value=MagicMock()):
+    with patch("agents.general.file_tools.read_attachment_bytes", read_bytes):
         result = analyze_csv_file(attachment_id="att-1", user_id="alice")
 
-    fake_repo.get_by_id.assert_called_with("att-1", "alice")
+    read_bytes.assert_called_once_with("att-1", "alice")
     assert result["_data"] is not None, _alert_messages(result)
     assert result["_data"]["processed_rows"] == 2
     assert result["_data"]["columns"] == ["patient", "age"]
+
+
+def test_analyze_csv_file_rejects_header_only_attachment():
+    with patch(
+        "agents.general.file_tools.read_attachment_bytes",
+        return_value=(
+            SimpleNamespace(filename="empty.csv", extension="csv"),
+            b"patient,age\n",
+            None,
+        ),
+    ):
+        result = analyze_csv_file(attachment_id="att-empty", user_id="alice")
+
+    assert result["_data"] is None
+    assert "no data rows" in _alert_messages(result).lower()
 
 
 def test_analyze_csv_file_schema_has_no_path_parameter():

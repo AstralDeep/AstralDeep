@@ -31,8 +31,18 @@ _PERSONALITY_LABELS = {
 
 
 class PersonalizationService:
-    def __init__(self, db) -> None:
-        self.repo = PersonalizationRepository(db)
+    def __init__(
+        self,
+        db,
+        *,
+        plane_runtime=None,
+        plane_repositories=None,
+    ) -> None:
+        self.repo = PersonalizationRepository(
+            db,
+            plane_runtime=plane_runtime,
+            plane_repositories=plane_repositories,
+        )
 
     def _render_personality(self, personality: Optional[Dict[str, Any]]) -> str:
         if not personality:

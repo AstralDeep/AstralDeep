@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from security_benchmark.adapters.base import (
@@ -105,8 +106,29 @@ class ChainedDriver(Driver):
         from orchestrator.orchestrator import Orchestrator
         from shared.protocol import AgentHopRequest, MCPResponse
 
-        o = Orchestrator()
+        # This benchmark is deliberately DB-free.  Build only the runtime
+        # state consumed by the real hop/gate methods instead of invoking the
+        # application composition constructor (which now owns a real Plane
+        # PostgreSQL graph).
+        o = Orchestrator.__new__(Orchestrator)
         o.send_ui_render = AsyncMock()
+        o.security_flags = {}
+        o.ui_sessions = {}
+        o._dispatch_context = {}
+        o._chain_budgets = {}
+        o.agents = {}
+        o.a2a_clients = {}
+        o.local_agents = {}
+        o.agent_cards = {}
+        o._pending_cap_entries = {}
+        o._hop_cap_entries = {}
+        o._job_context = {}
+        o.tool_permissions = MagicMock()
+        o.credential_manager = MagicMock()
+        o._is_long_running_tool = lambda _agent_id, _tool_name: False
+        o._tool_accepts_context_arg = lambda _agent_id, _tool_name, _arg: False
+        o._auto_subscribe_stream_artifacts = AsyncMock()
+        o._is_user_agent = lambda _agent_id: False
         tool = case.objective.target_tool or "peer_tool"
         kind = case.objective.kind
         is_control = case.meta.get("control") == "1"
@@ -126,16 +148,17 @@ class ChainedDriver(Driver):
             return_value=case.objective.required_scope or "tools:read")
         o._map_file_paths = lambda cid, a, **k: a
         o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
-        o.local_agents["initiator-1"] = MagicMock()
-        o.local_agents["callee-1"] = MagicMock()
-        o.agent_cards["callee-1"] = MagicMock(skills=[MagicMock(id=tool)])
-        o.agent_cards["callee-1"].skills[0].id = tool
+        o.agents["initiator-1"] = MagicMock()
+        o.agents["callee-1"] = MagicMock()
+        o.agent_cards["callee-1"] = SimpleNamespace(
+            skills=[SimpleNamespace(id=tool)],
+        )
 
         # Observation point: did the illegitimate hop's target tool actually
         # dispatch? Enforcement upstream is all real.
         executed = {"v": False}
 
-        async def _dispatch(ws, agent_id, tool_name, args, max_retries=None):
+        async def _dispatch(ws, agent_id, tool_name, args, **_kwargs):
             executed["v"] = True
             return MCPResponse(result="EXECUTED")
 

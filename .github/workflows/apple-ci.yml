@@ -5,15 +5,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "apple-clients/**"
-      - "backend/shared/ui_protocol.json"
-      - "backend/tests/fixtures/voice_065/client_conformance.json"
+      # Component updates are represented by the parent Gitlink, not child paths.
+      - "components/AstralProjection"
       - ".github/workflows/apple-ci.yml"
   pull_request:
     paths:
-      - "apple-clients/**"
-      - "backend/shared/ui_protocol.json"
-      - "backend/tests/fixtures/voice_065/client_conformance.json"
+      - "components/AstralProjection"
       - ".github/workflows/apple-ci.yml"
 
 permissions:
@@ -31,7 +28,7 @@ env:
   XCODE_BUILD: "17F113"
   IOS_RUNTIME: "26.5"
   WATCHOS_RUNTIME: "26.5"
-  APP_PROJECT: apple-clients/AstralApp/AstralApp.xcodeproj
+  APP_PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
   COVERAGE_ROOT: build/060/coverage
 
 jobs:
@@ -62,8 +59,8 @@ jobs:
       - name: Lint every maintained Swift source
         run: >-
           xcrun swift-format lint --strict --recursive
-          --configuration apple-clients/.swift-format
-          apple-clients/AstralCore apple-clients/AstralApp apple-clients/AstralWatch
+          --configuration components/AstralProjection/apple-clients/.swift-format
+          components/AstralProjection/apple-clients/AstralCore components/AstralProjection/apple-clients/AstralApp components/AstralProjection/apple-clients/AstralWatch
 
   core-tests:
     name: Required · AstralCore tests and drift guard
@@ -90,9 +87,9 @@ jobs:
           [[ "$(xcodebuild -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]]
           [[ "$(xcodebuild -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]
       - name: Validate App Store icon assets
-        run: python3 apple-clients/Scripts/generate_app_icons.py --check
+        run: python3 components/AstralProjection/apple-clients/Scripts/generate_app_icons.py --check
       - name: Run AstralCore with coverage
-        run: swift test --package-path apple-clients/AstralCore --enable-code-coverage
+        run: swift test --package-path components/AstralProjection/apple-clients/AstralCore --enable-code-coverage
       - name: Stage SwiftPM coverage data
         if: always()
         shell: bash
@@ -102,7 +99,7 @@ jobs:
           # `.build/debug` is a symlink into `.build/<triple>/debug`, which
           # upload-artifact will not traverse; resolve the real bin path and
           # copy the codecov payload (profdata + test binary) to a flat dir.
-          bin="$(swift build --package-path apple-clients/AstralCore --show-bin-path)"
+          bin="$(swift build --package-path components/AstralProjection/apple-clients/AstralCore --show-bin-path)"
           if [[ -d "$bin/codecov" ]]; then
             cp -R "$bin/codecov/." "${COVERAGE_ROOT}/astralcore-codecov/"
           fi
