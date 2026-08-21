@@ -19,7 +19,9 @@ import re
 import stat
 import subprocess
 import sys
+import token as token_types
 import tokenize
+import types
 import urllib.parse
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
@@ -1784,181 +1786,138 @@ def _candidate_source_blobs(
 
 
 def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[int]:
-    """Derive a conservative, interpreter-stable Python statement witness.
+    """Derive the pinned native producer's interpreter-stable statement witness.
 
-    Coverage.py normalizes compiled line metadata back to logical statement headers.
-    The collector cannot import Coverage.py, so it uses filtered AST statement
-    headers directly. This deliberately permits over-approximation but never trusts
-    interpreter-version-specific bytecode line tables that can omit a native
-    Cobertura statement or yield ``None`` line numbers.
+    This is the stdlib-only equivalent of Coverage.py 7.15.2's statement parser:
+    recursive ``co_lines()`` observations are mapped to logical statement headers,
+    then its exact default exclusions and docstring rules are applied. Nullable line
+    metadata from newer interpreters is ignored explicitly.
     """
 
     try:
         encoding, _lines = tokenize.detect_encoding(io.BytesIO(content).readline)
         source = content.decode(encoding)
         tree = ast.parse(source, filename=path, mode="exec")
-        compile(source, path, "exec", dont_inherit=True, optimize=0)
-        comments = {
-            token.start[0]
-            for token in tokenize.generate_tokens(io.StringIO(source).readline)
-            if token.type == tokenize.COMMENT
-            and re.search(
-                r"\bpragma(?::|\s)\s*no\s+cover\b",
-                token.string,
-                re.IGNORECASE,
-            )
-        }
-    except (LookupError, SyntaxError, UnicodeDecodeError, ValueError) as exc:
+        compiled = compile(source, path, "exec", dont_inherit=True, optimize=0)
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (
+        LookupError,
+        SyntaxError,
+        tokenize.TokenError,
+        UnicodeDecodeError,
+        ValueError,
+    ) as exc:
         raise CoveragePolicyError(
             "invalid_candidate_source",
             f"candidate Python source is not parseable: {path!r}",
         ) from exc
 
-    def is_string_expression(node: ast.AST) -> bool:
-        return (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        )
+    multiline_map: dict[int, int] = {}
+    first_line = 0
+    for token in tokens:
+        if token.type == token_types.NEWLINE:
+            if first_line and token.end[0] != first_line:
+                for line_number in range(first_line, token.end[0] + 1):
+                    multiline_map[line_number] = first_line
+            first_line = 0
+        if token.string.strip() and token.type != tokenize.COMMENT and not first_line:
+            first_line = token.start[0]
 
-    def is_ellipsis_expression(node: ast.AST) -> bool:
-        return (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and node.value.value is Ellipsis
-        )
-
-    def is_type_checking_test(node: ast.AST) -> bool:
-        return (isinstance(node, ast.Name) and node.id == "TYPE_CHECKING") or (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "typing"
-            and node.attr == "TYPE_CHECKING"
-        )
-
-    candidates: set[int] = set()
-    excluded: set[int] = set(comments)
-    definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-    parents = {
-        id(child): parent
-        for parent in ast.walk(tree)
-        for child in ast.iter_child_nodes(parent)
-    }
-
-    def is_local_annotation(node: ast.AnnAssign) -> bool:
-        parent = parents.get(id(node))
-        while parent is not None:
-            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return True
-            if isinstance(parent, (ast.ClassDef, ast.Module)):
-                return False
-            parent = parents.get(id(parent))
-        return False
-
-    source_lines = source.splitlines()
-    ellipsis_declaration = re.compile(
-        r"^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.\.\s*(#|$)"
+    default_exclude = re.compile(
+        r"#\s*(pragma|PRAGMA)[:\s]?\s*(no|NO)\s*(cover|COVER)"
+        r"|^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.\.\s*(#|$)"
+        r"|if (typing\.)?TYPE_CHECKING:",
+        re.MULTILINE,
     )
-    docstring_nodes: set[int] = set()
-    owners = [tree, *(node for node in ast.walk(tree) if isinstance(node, definitions))]
-    for owner in owners:
-        if owner.body and is_string_expression(owner.body[0]):
-            docstring_nodes.add(id(owner.body[0]))
-
-    for comment_line in comments:
-        physical = source_lines[comment_line - 1]
-        code_before_comment = physical.split("#", 1)[0].rstrip()
-        if not code_before_comment.endswith(":"):
-            continue
-        clause_indent = len(physical) - len(physical.lstrip())
-        for line_number in range(comment_line + 1, len(source_lines) + 1):
-            candidate_line = source_lines[line_number - 1]
-            if not candidate_line.strip():
-                continue
-            indent = len(candidate_line) - len(candidate_line.lstrip())
-            if indent <= clause_indent:
-                break
-            excluded.add(line_number)
-
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if (
-                node.body
-                and all(is_ellipsis_expression(item) for item in node.body)
-                and all(
-                    ellipsis_declaration.search(source_lines[item.lineno - 1])
-                    for item in node.body
-                )
-            ):
-                first = min(
-                    [node.lineno, *(item.lineno for item in node.decorator_list)]
-                )
-                excluded.update(range(first, int(node.end_lineno or first) + 1))
-        if isinstance(node, ast.stmt):
-            if isinstance(node, (ast.Global, ast.Nonlocal)):
-                continue
-            if (
-                isinstance(node, ast.AnnAssign)
-                and node.value is None
-                and is_local_annotation(node)
-            ):
-                continue
-            if id(node) in docstring_nodes or is_ellipsis_expression(node):
-                continue
-            candidates.add(node.lineno)
-            if isinstance(node, definitions):
-                candidates.update(item.lineno for item in node.decorator_list)
-        elif isinstance(node, ast.ExceptHandler):
-            candidates.add(node.lineno)
-        if isinstance(node, ast.Match):
-            candidates.update(case.pattern.lineno for case in node.cases)
-
-    def candidate_headers(nodes: Sequence[ast.AST]) -> set[int]:
-        headers: set[int] = set()
-        for root in nodes:
-            for node in ast.walk(root):
-                line = getattr(node, "lineno", None)
-                if isinstance(line, int) and line in candidates:
-                    headers.add(line)
-                if isinstance(node, definitions):
-                    headers.update(
-                        item.lineno
-                        for item in node.decorator_list
-                        if item.lineno in candidates
-                    )
-                if isinstance(node, ast.Match):
-                    headers.update(
-                        case.pattern.lineno
-                        for case in node.cases
-                        if case.pattern.lineno in candidates
-                    )
-        return headers
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.If) and is_type_checking_test(node.test):
-            excluded.add(node.lineno)
-            excluded.update(candidate_headers(node.body))
-        if not isinstance(node, (ast.stmt, ast.ExceptHandler)):
-            continue
-        decorators = node.decorator_list if isinstance(node, definitions) else []
-        body = getattr(node, "body", [])
-        first_body_line = min(
-            (item.lineno for item in body),
-            default=int(getattr(node, "end_lineno", node.lineno) or node.lineno) + 1,
+    excluded: set[int] = set()
+    for match in default_exclude.finditer(source):
+        start_line = source.count("\n", 0, match.start()) + 1
+        end_line = source.count("\n", 0, match.end()) + 1
+        excluded.update(
+            multiline_map.get(line_number, line_number)
+            for line_number in range(start_line, end_line + 1)
         )
-        header_end = max(node.lineno, first_body_line - 1)
-        header_has_comment = any(
-            node.lineno <= comment_line <= header_end for comment_line in comments
-        )
-        if not header_has_comment and not any(
-            item.lineno in comments for item in decorators
+
+    indent = 0
+    exclude_indent = 0
+    excluding = False
+    first_line = 0
+    nesting = 0
+    for token in tokens:
+        if token.type == token_types.INDENT:
+            indent += 1
+        elif token.type == token_types.DEDENT:
+            indent -= 1
+        elif token.type == token_types.OP:
+            if token.string == ":" and nesting == 0:
+                should_exclude = excluded.intersection(
+                    range(first_line, token.end[0] + 1)
+                )
+                if not excluding and should_exclude:
+                    excluded.add(token.end[0])
+                    exclude_indent = indent
+                    excluding = True
+            elif token.string in "([{":
+                nesting += 1
+            elif token.string in ")]}":
+                nesting -= 1
+        elif token.type == token_types.NEWLINE:
+            first_line = 0
+
+        if token.string.strip() and token.type != tokenize.COMMENT:
+            if not first_line:
+                first_line = token.start[0]
+                if excluding and indent <= exclude_indent:
+                    excluding = False
+                if excluding:
+                    excluded.add(token.end[0])
+
+    excluded = {multiline_map.get(line_number, line_number) for line_number in excluded}
+    docstrings: set[int] = set()
+    definitions = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)
+    for node in ast.walk(tree):
+        if not isinstance(node, definitions) or not node.body:
+            continue
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            first_line = min(
+                (decorator.lineno for decorator in node.decorator_list),
+                default=node.lineno,
+            )
+            if excluded.intersection(range(first_line, node.lineno + 1)):
+                excluded.update(
+                    range(first_line, int(node.end_lineno or first_line) + 1)
+                )
+        first = node.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
         ):
-            continue
-        excluded.add(node.lineno)
-        excluded.update(item.lineno for item in decorators)
-        excluded.update(candidate_headers(body))
+            docstrings.update(
+                range(first.lineno, int(first.end_lineno or first.lineno) + 1)
+            )
 
-    return frozenset(candidates - excluded)
+    raw_statements: set[int] = set()
+    stack = [compiled]
+    while stack:
+        code = stack.pop()
+        stack.extend(
+            constant
+            for constant in code.co_consts
+            if isinstance(constant, types.CodeType)
+        )
+        raw_statements.update(
+            line_number
+            for _start, _end, line_number in code.co_lines()
+            if isinstance(line_number, int) and line_number > 0
+        )
+
+    ignore = excluded | docstrings
+    return frozenset(
+        multiline_map.get(line_number, line_number)
+        for line_number in raw_statements - ignore
+        if multiline_map.get(line_number, line_number) not in ignore
+    )
 
 
 def _candidate_source_witnesses(

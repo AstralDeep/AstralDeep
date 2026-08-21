@@ -671,11 +671,12 @@ AstralCore file and all of its changed physical lines must map completely throug
 or macOS because a real iOS UI archive can omit Core; Watch archive Core observations do not substitute
 for that group. Every other applicable Apple report must observe every changed physical line. Each
 Cobertura-backed Python producer must observe every candidate-executable changed line in its owned
-files. That candidate-bound witness uses filtered AST statement headers rather than
-interpreter-version-specific bytecode line tables; the locked Coverage parser is checked against all
-tracked maintained Deep Python sources to prevent under-approximation. Comments, blanks, docstrings,
-declaration continuations, `TYPE_CHECKING`/ellipsis-only declarations, and explicit no-cover clauses
-are not invented as executable work. Every changed maintained Python path must yield a bounded,
+files. That candidate-bound witness normalizes recursive `co_lines()` metadata through Python's
+tokenized logical-statement map, ignores nullable line entries, and applies the exact default
+exclusions and docstring rules from locked Coverage 7.15.2. It is checked in both directions against
+all tracked maintained Deep Python sources under Python 3.11 and 3.14. Comments, blanks, docstrings,
+declaration continuations, exact `TYPE_CHECKING`/ellipsis-only declarations, and exact no-cover
+clauses are not invented as executable work. Every changed maintained Python path must yield a bounded,
 NUL-free regular-blob witness; missing, non-regular, oversized, or binary sources fail explicitly.
 Overlapping Python producers must also agree on executable changed lines. No producer is required to cover a line merely
 to prove its native contribution—a valid zero-hit macOS archive remains valid input to the ordinary

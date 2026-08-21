@@ -603,6 +603,44 @@ else:
     ) == frozenset({4, 9, 11})
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (
+            "if (TYPE_CHECKING):\n    hidden = 1\nvisible = 2\n",
+            frozenset({1, 2, 3}),
+        ),
+        (
+            "if (\n    TYPE_CHECKING\n):\n    hidden = 1\nvisible = 2\n",
+            frozenset({1, 4, 5}),
+        ),
+        (
+            "if enabled:  # do not add pragma: no cover here\n"
+            "    runtime = 1\nvisible = 2\n",
+            frozenset({1, 2, 3}),
+        ),
+        (
+            "match value:\n    case (\n        1\n    ):\n        result = 1\n",
+            frozenset({1, 2, 5}),
+        ),
+        (
+            "def generate():\n    while False:\n        yield None\n    return 1\n",
+            frozenset({1, 2, 4}),
+        ),
+    ),
+)
+def test_python_candidate_witness_matches_locked_parser_edge_fixtures(
+    source: str, expected: frozenset[int]
+) -> None:
+    path = "backend/edge_fixture.py"
+
+    assert _native_python_statements(source, path) == expected
+    assert (
+        collector._python_candidate_executable_lines(source.encode("utf-8"), path)
+        == expected
+    )
+
+
 def test_python_candidate_witness_has_no_coverage_parser_underapproximation() -> None:
     missing_by_path: dict[str, list[int]] = {}
     extra_by_path: dict[str, list[int]] = {}
