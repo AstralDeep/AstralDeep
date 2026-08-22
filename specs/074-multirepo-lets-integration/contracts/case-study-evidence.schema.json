@@ -27,10 +27,7 @@
     "evidence_class": {
       "enum": ["release-baseline", "astral-integration"]
     },
-    "lets_release": {
-      "type": "string",
-      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
-    },
+    "lets_release": {"const": "v1.0.11"},
     "repositories": {
       "type": "object",
       "additionalProperties": false,
@@ -161,7 +158,7 @@
       },
       "then": {
         "properties": {
-          "lets_release": {"const": "v1.0.10"},
+          "lets_release": {"const": "v1.0.11"},
           "mode": {"const": "off"}
         }
       }

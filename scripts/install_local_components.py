@@ -42,7 +42,7 @@ BUILD_TOOL_REQUIREMENTS = (
     "setuptools==80.9.0",
     "wheel==0.45.1",
     "hatchling==1.27.0",
-    "uv_build==0.11.21",
+    "uv_build==0.12.3",
 )
 EXPECTED_INSTALL_ORDER = (
     "astral-primitives",
@@ -679,6 +679,13 @@ def _pip_environment() -> dict[str, str]:
             "UV_OFFLINE": "1",
         }
     )
+    executable_directory = str(Path(os.path.abspath(sys.executable)).parent)
+    inherited_path = tuple(
+        entry
+        for entry in environment.get("PATH", "").split(os.pathsep)
+        if entry and entry != executable_directory
+    )
+    environment["PATH"] = os.pathsep.join((executable_directory, *inherited_path))
     return environment
 
 

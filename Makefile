@@ -13,7 +13,7 @@ HOST_PWD := $(shell cygpath -m "$(CURDIR)" 2>/dev/null || pwd -W 2>/dev/null || 
 PYTHON ?= python
 COMPONENT_INSTALLER := $(PYTHON) scripts/install_local_components.py
 COMPOSITION_VERIFIER := $(PYTHON) scripts/verify_composition.py
-COMPONENT_BUILD_TOOLS := setuptools==80.9.0 wheel==0.45.1 hatchling==1.27.0 uv_build==0.11.21
+COMPONENT_BUILD_TOOLS := setuptools==80.9.0 wheel==0.45.1 hatchling==1.27.0 uv_build==0.12.3
 
 FEATURE_060_FOCUSED_TESTS := \
 	tests/test_release_contract_schemas.py \

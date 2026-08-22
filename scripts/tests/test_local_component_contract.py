@@ -80,9 +80,9 @@ EXPECTED: dict[str, dict[str, Any]] = {
     },
     "lets": {
         "distribution": "lets-agent",
-        "version": "1.0.10",
+        "version": "1.0.11",
         "path": "components/LETS",
-        "contract": "1.0.10",
+        "contract": "1.0.11",
         "availability": "external-feature-gated",
         "import": "lets",
         "extras": ["client"],
@@ -126,7 +126,7 @@ def test_local_component_contract_matches_manifest_and_package_metadata() -> Non
         "setuptools==80.9.0",
         "wheel==0.45.1",
         "hatchling==1.27.0",
-        "uv_build==0.11.21",
+        "uv_build==0.12.3",
     ]
 
     manifest_path = REPOSITORY_ROOT / local["manifest"]

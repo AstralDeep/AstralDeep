@@ -6,7 +6,7 @@
 
 ## Summary
 
-Preserve AstralDeep as the independent orchestration and product-composition repository while replacing the legacy AstralProjection and AstralPlane contents through ordinary commits descended from their refreshed default histories. Projection becomes the sole owner of rendering, ROTE, the UI protocol, web assets, and complete Windows/Android/Apple clients. Plane becomes an embedded Python durable-state library over the existing PostgreSQL database and configured blob roots. AstralPrimitives remains the primitive-definition release train. LETS remains an external independently deployed warden, initially consumed from its signed immutable `v1.0.10` tag through public client/executor contracts.
+Preserve AstralDeep as the independent orchestration and product-composition repository while replacing the legacy AstralProjection and AstralPlane contents through ordinary commits descended from their refreshed default histories. Projection becomes the sole owner of rendering, ROTE, the UI protocol, web assets, and complete Windows/Android/Apple clients. Plane becomes an embedded Python durable-state library over the existing PostgreSQL database and configured blob roots. AstralPrimitives remains the primitive-definition release train. LETS remains an external independently deployed warden, initially consumed from its signed immutable `v1.0.10` tag through public client/executor contracts. The required successor was published as signed immutable `v1.0.11` and is the current composition pin; historical v1.0.10 evidence remains distinct.
 
 AstralDeep pins all four repositories as exact submodules and validates a machine-readable composition manifest at build/startup. Migration proceeds through default-branch normalization, component seed, dual-source parity, consumer cutover, duplicate removal, LETS off/shadow/enforce, and late local qualification checkpoints. No archive refs or history rewrites are used. Existing production remains on its monorepo-derived artifact. The active paper stays ignored/local; new Astral case-study evidence is exact-revision-bound and does not relabel v1.0.10 release evidence.
 
@@ -14,7 +14,7 @@ AstralDeep pins all four repositories as exact submodules and validates a machin
 
 **Language/Version**: Python 3.11; vanilla JavaScript; Python/PySide6; Kotlin/JVM 17; Swift 5.9-compatible sources; JSON Schema 2020-12; Git 2.x/PowerShell migration tooling
 
-**Primary Dependencies**: FastAPI/ASGI, existing PostgreSQL driver/pool and cryptography, Keycloak/RFC 8693, Docker/Compose, `astralprims`, ROTE/webrender, pinned LETS `lets-agent[client]==1.0.10` public client/executor contracts (`httpx` transport), existing LiveKit/native client SDKs
+**Primary Dependencies**: FastAPI/ASGI, existing PostgreSQL driver/pool and cryptography, Keycloak/RFC 8693, Docker/Compose, `astralprims`, ROTE/webrender, pinned LETS `lets-agent[client]==1.0.11` public client/executor contracts (`httpx` transport), existing LiveKit/native client SDKs
 
 **Storage**: Existing PostgreSQL 17-compatible database and configured filesystem roots; LETS warden storage remains external; executor replay stores/authority anchors and local manuscript/evidence remain persistent state outside repositories
 
@@ -89,7 +89,7 @@ components/
 ├── AstralProjection/                # exact private Git submodule
 ├── AstralPlane/                     # exact private Git submodule
 ├── AstralPrimitives/                # exact public Git submodule
-└── LETS/                            # signed v1.0.10 public Git submodule
+└── LETS/                            # signed v1.0.11 public Git submodule
 
 config/
 └── astral-composition.json
@@ -207,7 +207,7 @@ LETS/
 1. Strict configuration/trust and durable records with the feature flag off.
 2. Fixed six-scope profile, lifecycle adapter, and every-channel protected dispatch context.
 3. Shadow dynamic/user-authored populations.
-4. Final gateway host binding plus v1.0.10 verifier/replay claim.
+4. Final gateway host binding plus v1.0.11 verifier/replay claim.
 5. Enforce first for server-controlled generated runtimes; add BYO/external only after actuator conformance.
 6. Correct retry/concurrency/uncertain-outcome semantics and run fault/recovery tests.
 

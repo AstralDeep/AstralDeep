@@ -6,13 +6,13 @@ Two generation targets, sharing one LLM-written ``mcp_tools.py``:
 **backend** (feature 027 — server-hosted draft agents), 4 files:
 - {slug}_agent.py  — from template (not LLM)
 - mcp_server.py    — from template (not LLM)
-- protected_executor.py — deterministic LETS v1.0.10 final-boundary verifier
+- protected_executor.py — deterministic LETS v1.0.11 final-boundary verifier
 - mcp_tools.py     — LLM-generated tool implementations
 
 **byo** (feature 060/074 — user-hosted desktop agents), 4 executable files:
 - agent_main.py    — from template (not LLM): self-contained JSON-lines-over-stdio runner
 - astralprims_ui.py — deterministic tool-result/UI normalization boundary
-- protected_executor.py — deterministic LETS v1.0.10 final-boundary verifier
+- protected_executor.py — deterministic LETS v1.0.11 final-boundary verifier
 - mcp_tools.py     — LLM-generated tool implementations
 
 The four files are finalized together into one deterministic v3 runtime
@@ -58,7 +58,7 @@ BYO_LEGACY_RUNTIME_DISPOSITIONS = MappingProxyType(
 )
 BYO_RUNTIME_LOCK_ARTIFACT = "components/AstralProjection/windows-client/requirements-release.lock.txt"
 BYO_RUNTIME_LOCK_SHA256 = (
-    "948def355ae1e4c37478d2c87c287d41d3a81055a96ff813c341d1b466096943"
+    "f376ece93b3754b02498e8243a88b3c68282fd26d80c868d85c23bb7ac1d317d"
 )
 
 #: Exact executable files covered by the v3 immutable canonical-JSON digest.
@@ -71,7 +71,7 @@ def _protected_executor_source() -> str:
 
     The emitted module contains only Astral's typed envelope/host checks and
     delegates cryptography, receipt parsing, replay state, clock policy, and
-    rollback anchoring to the pinned public LETS v1.0.10 APIs.
+    rollback anchoring to the pinned public LETS v1.0.11 APIs.
     """
 
     source_path = Path(__file__).with_name("generated_lets_executor.py")

@@ -5,7 +5,7 @@
     "astral-projection": {
       "repository": "https://github.com/AstralDeep/AstralProjection.git",
       "path": "components/AstralProjection",
-      "commit": "77b31c36ea1ba7a69a3e450fa40ebc8efd3ad156",
+      "commit": "ea27b0f8c8e14e8d416adeac630867f076fe7e86",
       "contract_version": "astralprojection.contract/v1"
     },
     "astral-plane": {
@@ -23,9 +23,9 @@
     "lets": {
       "repository": "https://github.com/AstralDeep/LETS.git",
       "path": "components/LETS",
-      "commit": "82dbe4f5ddf410cc86778784bb612440725ec66d",
-      "ref": "v1.0.10",
-      "contract_version": "1.0.10"
+      "commit": "6245189920c686353c4ced7a208d56ec266f745c",
+      "ref": "v1.0.11",
+      "contract_version": "1.0.11"
     }
   },
   "availability": {
@@ -51,9 +51,9 @@
       "contract_sha256": "910d9f27c303cc30c171110ade2186cf7a07b5b72b32e97fefc7b8ab9d7422de"
     },
     "lets": {
-      "release": "v1.0.10",
+      "release": "v1.0.11",
       "api_version": "v1",
-      "openapi_sha256": "3394d91276cd687ecf551b9c77a955480038df7de32f8abdf1720254fa542103",
+      "openapi_sha256": "a5d99771f32f58ce5fd6d18c380bea1f310248a900bb6ddc672638ed6a0ce5fd",
       "receipt_wire_type": "lets.receipt/v1",
       "scope_profile_version": "astral.tools/v1"
     }

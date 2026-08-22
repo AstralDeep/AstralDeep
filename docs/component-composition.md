@@ -42,7 +42,7 @@ The verifier must reject:
 - a dirty component worktree;
 - a noncanonical `.gitmodules` URL or floating branch selector;
 - a mismatched UI protocol, Plane schema/migration contract, primitive contract, or LETS OpenAPI;
-- a LETS checkout other than the signed `v1.0.10` commit.
+- a LETS checkout other than the signed `v1.0.11` commit.
 
 ## Deliberate component re-pin
 

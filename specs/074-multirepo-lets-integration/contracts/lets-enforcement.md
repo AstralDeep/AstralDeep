@@ -2,7 +2,8 @@
 
 **Contract version**: `astral.lets-enforcement/v1`
 
-**LETS baseline**: immutable `v1.0.10` (`lets-agent[client]==1.0.10`)
+**Initial LETS baseline**: immutable `v1.0.10` (historical evidence only)
+**Current LETS pin**: immutable `v1.0.11` (`lets-agent[client]==1.0.11`), with its exact signed release anchor recorded in [`../execution/lets-v1.0.11-release-anchor.json`](../execution/lets-v1.0.11-release-anchor.json)
 **Receipt wire type**: `lets.receipt/v1`
 
 ## Purpose and authority ordering
@@ -248,4 +249,4 @@ Error output is typed and redacted. It may contain stable operation/correlation 
 
 ## Versioning rule
 
-If these contracts work against unchanged LETS v1.0.10 runtime behavior, the LETS tag remains untouched and new results are Astral integration evidence. Any LETS runtime defect fix or required wire/semantic change receives a successor release, updates the component pin, invalidates affected evidence, and is named accurately in the paper.
+The required successor was released as immutable v1.0.11 and is now the current runtime comparison anchor. Retained v1.0.10 bytes remain historical records bound to the prior tool, schema, and scanner revisions that produced them; the current validator does not relabel them as v1.0.11 evidence. Any later LETS runtime defect fix or required wire/semantic change receives another successor release, updates the component pin, invalidates affected current evidence, and is named accurately in the paper.

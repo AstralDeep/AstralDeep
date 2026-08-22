@@ -4,7 +4,7 @@
   "runtime_contract_version": 3,
   "digest_algorithm": "sha256",
   "lock_artifact": "components/AstralProjection/windows-client/requirements-release.lock.txt",
-  "lock_digest": "948def355ae1e4c37478d2c87c287d41d3a81055a96ff813c341d1b466096943",
+  "lock_digest": "f376ece93b3754b02498e8243a88b3c68282fd26d80c868d85c23bb7ac1d317d",
   "bundle_digest_contract": "canonical-json-utf8-v1",
   "bundle_digest_vector": {
     "files": {
@@ -19,20 +19,20 @@
     {
       "id": "exact-contract-and-lock",
       "advertised_runtime_contract_version": 3,
-      "advertised_lock_digest": "948def355ae1e4c37478d2c87c287d41d3a81055a96ff813c341d1b466096943",
+      "advertised_lock_digest": "f376ece93b3754b02498e8243a88b3c68282fd26d80c868d85c23bb7ac1d317d",
       "compatible": true
     },
     {
       "id": "legacy-v2-dispatch-mediated-only",
       "advertised_runtime_contract_version": 2,
-      "advertised_lock_digest": "948def355ae1e4c37478d2c87c287d41d3a81055a96ff813c341d1b466096943",
+      "advertised_lock_digest": "f376ece93b3754b02498e8243a88b3c68282fd26d80c868d85c23bb7ac1d317d",
       "compatible": false,
       "refusal_code": "legacy_runtime_dispatch_mediated_only"
     },
     {
       "id": "runtime-contract-mismatch",
       "advertised_runtime_contract_version": 1,
-      "advertised_lock_digest": "948def355ae1e4c37478d2c87c287d41d3a81055a96ff813c341d1b466096943",
+      "advertised_lock_digest": "f376ece93b3754b02498e8243a88b3c68282fd26d80c868d85c23bb7ac1d317d",
       "compatible": false,
       "refusal_code": "runtime_contract_unsupported"
     },
