@@ -20,7 +20,7 @@ build-tools = [
   "setuptools==80.9.0",
   "wheel==0.45.1",
   "hatchling==1.27.0",
-  "uv_build==0.11.21",
+  "uv_build==0.12.3",
 ]
 
 [tool.astraldeep.local-components.astral-projection]
@@ -93,9 +93,9 @@ required-wheel-paths = [
 
 [tool.astraldeep.local-components.lets]
 distribution = "lets-agent"
-version = "1.0.10"
+version = "1.0.11"
 path = "components/LETS"
-contract = "1.0.10"
+contract = "1.0.11"
 availability = "external-feature-gated"
 import = "lets"
 extras = ["client"]

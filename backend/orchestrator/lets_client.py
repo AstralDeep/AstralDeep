@@ -1,4 +1,4 @@
-"""Typed, redacted boundary around the signed LETS v1.0.10 public client."""
+"""Typed, redacted boundary around the signed LETS v1.0.11 public client."""
 
 from __future__ import annotations
 

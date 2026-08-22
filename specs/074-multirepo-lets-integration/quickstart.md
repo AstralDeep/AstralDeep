@@ -140,6 +140,8 @@ Initial pins:
 - Primitives: `c1feada40e104ff345c3a94348305dcf27870054` unless a coordinated primitive release becomes necessary;
 - LETS: signed `v1.0.10`, peeled commit `82dbe4f5ddf410cc86778784bb612440725ec66d`.
 
+The qualified successor is signed `v1.0.11`, peeled commit `6245189920c686353c4ced7a208d56ec266f745c`; it is the current composition pin while the initial v1.0.10 record remains historical. The exact tag, signature trust input, release assets, and OCI digest are recorded in [`execution/lets-v1.0.11-release-anchor.json`](execution/lets-v1.0.11-release-anchor.json).
+
 Generate `config/astral-composition.json` and validate it against `contracts/composition-manifest.schema.json`. Verify:
 
 - Gitlink, submodule HEAD, manifest commit, repository URL, contract version, and domain digest agree;
@@ -188,7 +190,7 @@ Use `contracts/lets-enforcement.md`.
 
 1. Add strict configuration/trust-manifest parsing and health diagnostics.
 2. Add Plane-owned authority binding/lifecycle/effect operation records and migration.
-3. Add the Astral-owned adapter over LETS public v1.0.10 client contracts.
+3. Add the Astral-owned adapter over LETS public v1.0.11 client contracts.
 4. Add `ProtectedDispatchContext` to every invocation channel and one lower gateway.
 5. With the flag off, prove current behavior and audit output remain unchanged and no fake LETS success appears.
 6. Implement shadow mode for server-dynamic and BYO-user populations.
@@ -237,7 +239,7 @@ Start from a clean recursive clone/check-out with authorized access to the two p
 
 ### LETS
 
-- LETS v1.0.10 acceptance/unit/integration suites;
+- LETS v1.0.11 acceptance/unit/integration suites;
 - off/shadow/enforce and all six scopes;
 - dynamic lifecycle, replica creation, single/parallel/recursive/MCP/A2A/background/stream paths;
 - exhaustion, expiry, quiesce/resume, close/revoke, outage, lost response, restart, policy/key epoch rotation;

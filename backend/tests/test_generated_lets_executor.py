@@ -38,7 +38,7 @@ from shared.protocol import MCP_PROTOCOL_VERSION, MCPRequest
 AGENT_ID = "ua-generated-test"
 
 
-def test_generator_emits_one_reviewed_public_v1010_adapter_for_v3() -> None:
+def test_generator_emits_one_reviewed_public_v1011_adapter_for_v3() -> None:
     generator = AgentCodeGenerator(llm_client=object(), llm_model="unused")
     byo = generator.generate_byo_scaffold(
         agent_name="Demo", description="description", agent_id=AGENT_ID
@@ -55,7 +55,7 @@ def test_generator_emits_one_reviewed_public_v1010_adapter_for_v3() -> None:
         "protected_executor.py",
         "mcp_tools.py",
     )
-    assert executor.LETS_RELEASE == "v1.0.10"
+    assert executor.LETS_RELEASE == "v1.0.11"
     assert byo["protected_executor.py"] == backend["protected_executor.py"]
     assert "from lets.executor import" in byo["protected_executor.py"]
     assert "from lets.executor_authority import" in byo["protected_executor.py"]

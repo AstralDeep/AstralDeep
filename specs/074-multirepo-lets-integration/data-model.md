@@ -20,7 +20,7 @@ An immutable component selected by one AstralDeep composition.
 | `repository` | string | Exact canonical `https://github.com/AstralDeep/<Repo>.git` URL |
 | `path` | string | Exact canonical relative submodule path under `components/`; no `..`, absolute path, or case ambiguity |
 | `commit` | SHA-1 hex | Exactly the Gitlink commit in the parent tree |
-| `ref` | string/null | Informational signed tag or release, e.g. `v1.0.10`; never used as the mutable resolver |
+| `ref` | string/null | Informational signed tag or release, e.g. `v1.0.11`; never used as the mutable resolver |
 | `contract_version` | semver-like string | Public component contract consumed by Deep |
 | `artifact_digest` | SHA-256/null | Wheel, manifest, or release artifact digest when applicable |
 | `qualified` | boolean | True only after the declared local qualification set passed |
@@ -31,7 +31,7 @@ An immutable component selected by one AstralDeep composition.
 - Gitlink commit, submodule HEAD, and manifest `commit` must be identical.
 - Repository URL must match `.gitmodules` after canonical normalization.
 - A dirty or uninitialized component is not deployable.
-- `lets.ref` is `v1.0.10` until a successor release is deliberately adopted.
+- `lets.ref` is the deliberately adopted signed successor `v1.0.11`; the initial v1.0.10 anchor remains historical evidence.
 
 ## 2. SystemComposition
 
@@ -344,7 +344,7 @@ Local research evidence for Astral as a LETS use case.
 | Field | Type | Rules |
 |---|---|---|
 | `format` | string | `lets.case-study-evidence/v1` |
-| `baseline_release` | string | `v1.0.10` unless successor clearly declared |
+| `baseline_release` | string | `v1.0.11` for new runs; retained v1.0.10 bytes remain distinct and validate only with their recorded prior tool/schema/scanner revision |
 | `repository_commits` | map | Exact LETS, Deep, Plane, Projection, Primitives commits |
 | `composition_digest` | SHA-256 | Exact system composition |
 | `policy_digest`, `machine_digest` | LETS digests | Exact authority semantics |

@@ -32,7 +32,7 @@ LetsMode: TypeAlias = Literal["off", "shadow", "enforce"]
 ManifestAuthenticator: TypeAlias = Callable[[bytes, Mapping[str, Any]], bool]
 
 LETS_ENFORCEMENT_CONTRACT: Final = "astral.lets-enforcement/v1"
-LETS_RELEASE: Final = "v1.0.10"
+LETS_RELEASE: Final = "v1.0.11"
 LETS_RECEIPT_WIRE_TYPE: Final = "lets.receipt/v1"
 INITIAL_GOVERNED_COHORTS: Final = ("server_dynamic", "byo_user")
 MAX_TRUST_MANIFEST_BYTES: Final = 16 * 1024 * 1024

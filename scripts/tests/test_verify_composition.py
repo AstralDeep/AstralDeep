@@ -144,9 +144,9 @@ def _lets(root: Path) -> None:
     component = root / COMPONENT_PATHS["lets"]
     _write(
         component / "pyproject.toml",
-        '[project]\nname = "lets-agent"\nversion = "1.0.10"\n',
+        '[project]\nname = "lets-agent"\nversion = "1.0.11"\n',
     )
-    _write(component / "src/lets/__init__.py", '__version__ = "1.0.10"\n')
+    _write(component / "src/lets/__init__.py", '__version__ = "1.0.11"\n')
     _write(component / "src/lets/api.py", 'API_VERSION = "v1"\n')
     _write(component / "src/lets/client.py", "class LETSClient: pass\n")
     _write(
@@ -177,7 +177,7 @@ def _lets(root: Path) -> None:
         json.dumps(
             {
                 "openapi": "3.1.0",
-                "info": {"title": "LETS Warden API", "version": "1.0.10"},
+                "info": {"title": "LETS Warden API", "version": "1.0.11"},
                 "paths": {"/v1/info": {}},
             },
             sort_keys=True,
@@ -220,8 +220,8 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 "repository": CANONICAL_REPOSITORIES["lets"],
                 "path": COMPONENT_PATHS["lets"],
                 "commit": commits["lets"],
-                "ref": "v1.0.10",
-                "contract_version": "1.0.10",
+                "ref": "v1.0.11",
+                "contract_version": "1.0.11",
             },
         },
         "availability": {
@@ -251,7 +251,7 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 ),
             },
             "lets": {
-                "release": "v1.0.10",
+                "release": "v1.0.11",
                 "api_version": "v1",
                 "openapi_sha256": hashlib.sha256(lets_openapi.read_bytes()).hexdigest(),
                 "receipt_wire_type": "lets.receipt/v1",
@@ -496,7 +496,7 @@ def test_incompatible_contract_digest_fails_closed(checkout: Path) -> None:
     assert "E_INCOMPATIBLE_CONTRACT" in _codes(report, "astral-projection")
 
 
-def test_lets_v1_0_10_public_exports_are_required(checkout: Path) -> None:
+def test_lets_v1_0_11_public_exports_are_required(checkout: Path) -> None:
     executor = checkout / COMPONENT_PATHS["lets"] / "src/lets/executor.py"
     _write(executor, "class InternalReceiptVerifier: pass\n")
     _repin_component(checkout, "lets")
@@ -507,7 +507,7 @@ def test_lets_v1_0_10_public_exports_are_required(checkout: Path) -> None:
     ]
 
     assert [item.message for item in export_errors] == [
-        "LETS v1.0.10 public export 'ReceiptVerifier' is unavailable"
+        "LETS v1.0.11 public export 'ReceiptVerifier' is unavailable"
     ]
 
 

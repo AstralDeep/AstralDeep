@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -246,6 +247,7 @@ def test_changed_or_incomplete_wheel_is_rejected_before_install(
 def test_pip_environment_cannot_inherit_index_or_find_links(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("PATH", os.pathsep.join(("/usr/bin", "/bin")))
     for key in (
         "PIP_INDEX_URL",
         "PIP_EXTRA_INDEX_URL",
@@ -262,7 +264,26 @@ def test_pip_environment_cannot_inherit_index_or_find_links(
     assert environment["SOURCE_DATE_EPOCH"] == "315532800"
     assert environment["TZ"] == "UTC"
     assert environment["PIP_CONFIG_FILE"]
+    assert environment["PATH"].split(os.pathsep)[0] == str(
+        Path(os.path.abspath(sys.executable)).parent
+    )
     assert all("credentials.invalid" not in value for value in environment.values())
+
+
+def test_pip_environment_preserves_symlinked_interpreter_entrypoint_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base_interpreter = tmp_path / "base/bin/python"
+    _write(base_interpreter)
+    venv_interpreter = tmp_path / "venv/bin/python"
+    venv_interpreter.parent.mkdir(parents=True)
+    venv_interpreter.symlink_to(base_interpreter)
+    monkeypatch.setattr(installer.sys, "executable", str(venv_interpreter))
+    monkeypatch.setenv("PATH", os.pathsep.join(("/usr/bin", "/bin")))
+
+    environment = installer._pip_environment()
+
+    assert environment["PATH"].split(os.pathsep)[0] == str(venv_interpreter.parent)
 
 
 def test_source_digest_refuses_sensitive_build_input_without_reading_it(
@@ -367,7 +388,7 @@ def _minimal_declaration(tmp_path: Path, *, installer_name: str = "pip-wheel/v1"
         "wheel-lock-format = 'astraldeep.component-wheel-lock/v1'\n"
         "install-order = ['demo']\n"
         "build-tools = ['setuptools==80.9.0', 'wheel==0.45.1', "
-        "'hatchling==1.27.0', 'uv_build==0.11.21']\n"
+        "'hatchling==1.27.0', 'uv_build==0.12.3']\n"
         "[tool.astraldeep.local-components.demo]\n"
         "distribution = 'demo-package'\n"
         "version = '1.2.3'\n"

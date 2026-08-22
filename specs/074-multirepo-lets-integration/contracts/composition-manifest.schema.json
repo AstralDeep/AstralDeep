@@ -114,7 +114,7 @@
             "scope_profile_version"
           ],
           "properties": {
-            "release": {"const": "v1.0.10"},
+            "release": {"const": "v1.0.11"},
             "api_version": {"const": "v1"},
             "openapi_sha256": {"$ref": "#/$defs/sha256"},
             "receipt_wire_type": {"const": "lets.receipt/v1"},
@@ -223,8 +223,8 @@
               "const": "https://github.com/AstralDeep/LETS.git"
             },
             "path": {"const": "components/LETS"},
-            "ref": {"const": "v1.0.10"},
-            "contract_version": {"const": "1.0.10"}
+            "ref": {"const": "v1.0.11"},
+            "contract_version": {"const": "1.0.11"}
           }
         }
       ]

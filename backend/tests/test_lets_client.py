@@ -1,4 +1,4 @@
-"""Pinned LETS v1.0.10 public-client boundary and redaction tests."""
+"""Pinned LETS v1.0.11 public-client boundary and redaction tests."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ from orchestrator.lets_client import (
 )
 from orchestrator.lets_config import (
     AuthenticatedTrustManifest,
+    LETS_RELEASE,
     LetsHostConfig,
     SecretFileReference,
 )
@@ -47,6 +48,10 @@ POLICY_DIGEST = "sha256:" + "1" * 64
 MACHINE_DIGEST = "sha256:" + "2" * 64
 DEFAULT_ALLOCATION = (2, 2, 2, 2, 2, 2)
 SYNTHETIC_TOKEN = "synthetic-test-value"
+
+
+def test_public_client_boundary_is_bound_to_lets_v1_0_11() -> None:
+    assert LETS_RELEASE == "v1.0.11"
 
 
 def _reference(name: str, *, size: int = 1) -> SecretFileReference:
