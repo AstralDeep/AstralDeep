@@ -40,6 +40,66 @@ class OfflineGrantError(RuntimeError):
     """Raised when a grant cannot be captured, is unavailable, or is expired/revoked."""
 
 
+class TokenEndpointUnconfigured(OfflineGrantError):
+    """The IdP token endpoint cannot be derived from the deployment's config.
+
+    An operator problem, not a consent problem: no refresh exchange is
+    attempted and the machine turn must fail closed with a reason that names
+    the missing setting instead of blaming the user's consent.
+    """
+
+
+def resolve_token_endpoint() -> str:
+    """Return the Keycloak token endpoint for refresh exchanges.
+
+    Precedence:
+      1. ``KEYCLOAK_TOKEN_URL`` — explicit full-URL override.
+      2. ``KEYCLOAK_AUTHORITY`` (the realm URL every other Keycloak caller
+         uses, e.g. ``https://idp.example/realms/Astral``) +
+         ``/protocol/openid-connect/token``.
+      3. Legacy ``KEYCLOAK_URL`` + ``/realms/<KEYCLOAK_REALM>`` — only when
+         ``KEYCLOAK_URL`` is explicitly set (no silent ``'astral'`` realm
+         guess against an empty host, which used to yield
+         ``/realms/astral/...`` — a relative, unusable URL).
+
+    Raises ``TokenEndpointUnconfigured`` when nothing usable is configured.
+    """
+
+    def _http_url(value: str) -> bool:
+        return value.startswith("https://") or value.startswith("http://")
+
+    explicit = (os.getenv("KEYCLOAK_TOKEN_URL") or "").strip()
+    if explicit:
+        if not _http_url(explicit):
+            raise TokenEndpointUnconfigured(
+                "KEYCLOAK_TOKEN_URL must be an absolute http(s) URL"
+            )
+        return explicit
+
+    authority = (os.getenv("KEYCLOAK_AUTHORITY") or "").strip().rstrip("/")
+    if authority:
+        if not _http_url(authority):
+            raise TokenEndpointUnconfigured(
+                "KEYCLOAK_AUTHORITY must be an absolute http(s) realm URL"
+            )
+        return f"{authority}/protocol/openid-connect/token"
+
+    legacy_base = (os.getenv("KEYCLOAK_URL") or "").strip().rstrip("/")
+    if legacy_base and _http_url(legacy_base):
+        realm = (os.getenv("KEYCLOAK_REALM") or "").strip()
+        if realm:
+            return f"{legacy_base}/realms/{realm}/protocol/openid-connect/token"
+        raise TokenEndpointUnconfigured(
+            "KEYCLOAK_URL is set but KEYCLOAK_REALM is empty; set "
+            "KEYCLOAK_AUTHORITY (preferred) or KEYCLOAK_REALM"
+        )
+
+    raise TokenEndpointUnconfigured(
+        "no IdP token endpoint configured: set KEYCLOAK_AUTHORITY "
+        "(realm URL) or KEYCLOAK_TOKEN_URL"
+    )
+
+
 _APPLICATION_STORE = None
 
 
@@ -191,14 +251,14 @@ class OfflineGrantStore:
         if grant.expires_at <= _now_ms():
             raise OfflineGrantError("offline grant expired (365-day cap reached); re-consent required")
 
+        # Resolve the endpoint BEFORE touching the refresh token: a
+        # misconfigured deployment must fail closed without decrypting
+        # anything (and without a doomed HTTP call).
+        token_url = resolve_token_endpoint()
+
         refresh_token = _fernet().decrypt(
             grant.encrypted_refresh_token
         ).decode("utf-8")
-
-        token_url = os.getenv("KEYCLOAK_TOKEN_URL") or (
-            f"{os.getenv('KEYCLOAK_URL', '').rstrip('/')}/realms/"
-            f"{os.getenv('KEYCLOAK_REALM', 'astral')}/protocol/openid-connect/token"
-        )
         client_id = os.getenv("KEYCLOAK_CLIENT_ID") or os.getenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
         data = {
             "grant_type": "refresh_token",

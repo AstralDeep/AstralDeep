@@ -149,8 +149,9 @@ class AuthoritySkip:
     """Fail-closed outcome: no derivable authority for this machine turn.
 
     ``reason`` ∈ {missing_consent, revoked_or_expired, mint_failed,
-    empty_scopes}. The caller records an authority-skip outcome and notifies
-    the user actionably (FR-013) — real-agent dispatch must not proceed.
+    token_endpoint_unconfigured, empty_scopes}. The caller records an
+    authority-skip outcome and notifies the user actionably (FR-013) —
+    real-agent dispatch must not proceed.
     """
     reason: str
     detail: str = ""
@@ -212,6 +213,14 @@ class MachineTurnAuthority:
                 user_id=user_id,
             )
         except Exception as exc:
+            # A missing/unusable IdP token endpoint is an OPERATOR problem:
+            # name it, so the owner is not told to re-consent for something
+            # re-consent cannot fix.
+            from orchestrator.offline_grant import TokenEndpointUnconfigured
+
+            if isinstance(exc, TokenEndpointUnconfigured):
+                self._log_skip(turn_class, user_id, "token_endpoint_unconfigured")
+                return AuthoritySkip("token_endpoint_unconfigured", str(exc)[:200])
             self._log_skip(turn_class, user_id, "mint_failed")
             return AuthoritySkip("mint_failed", str(exc)[:200])
 

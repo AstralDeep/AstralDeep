@@ -208,7 +208,10 @@ def _dummy_claim(label: str = "dummy", *, attempt_number: int = 1) -> Occurrence
             "target_chat_id": f"chat-{label}",
             "offline_grant_id": None,
         },
-        scheduled_for=datetime(2026, 1, 1, tzinfo=UTC),
+        # Just-due, not a fixed past date: the runner now completes
+        # occurrences older than SCHEDULER_STALE_GRACE_SECONDS as
+        # ``skipped_stale`` without dispatching.
+        scheduled_for=datetime.now(UTC) - timedelta(seconds=1),
         claim_generation=1,
         lease_token=uuid.uuid5(uuid.NAMESPACE_X500, f"scheduler-lease:{label}"),
         lease_owner="scheduler-test",

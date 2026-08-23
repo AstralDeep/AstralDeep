@@ -411,3 +411,114 @@ def test_auth_logout_revokes_real_offline_grant(
         session_store.delete(sid)
         _revoke_grants(plane_runtime, user_id)
         purge_revocations(plane_runtime, (user_id,))
+
+
+# ---------------------------------------------------------------------------
+# Token endpoint resolution — KEYCLOAK_AUTHORITY-derived, fail-closed
+# ---------------------------------------------------------------------------
+
+def _clear_keycloak_env(monkeypatch):
+    for name in (
+        "KEYCLOAK_TOKEN_URL",
+        "KEYCLOAK_AUTHORITY",
+        "KEYCLOAK_URL",
+        "KEYCLOAK_REALM",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_token_endpoint_derives_from_keycloak_authority(monkeypatch):
+    """Production sets only KEYCLOAK_AUTHORITY (realm 'Astral'); the refresh
+    exchange must hit that realm, not a guessed ``/realms/astral`` path on an
+    empty host."""
+    _clear_keycloak_env(monkeypatch)
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example.edu/realms/Astral/")
+    assert (
+        og.resolve_token_endpoint()
+        == "https://iam.example.edu/realms/Astral/protocol/openid-connect/token"
+    )
+
+
+def test_token_endpoint_explicit_override_wins(monkeypatch):
+    _clear_keycloak_env(monkeypatch)
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example.edu/realms/Astral")
+    monkeypatch.setenv("KEYCLOAK_TOKEN_URL", "https://idp.override/token")
+    assert og.resolve_token_endpoint() == "https://idp.override/token"
+
+
+def test_token_endpoint_legacy_pair_requires_both_and_never_guesses_realm(monkeypatch):
+    _clear_keycloak_env(monkeypatch)
+    monkeypatch.setenv("KEYCLOAK_URL", "https://legacy.example/")
+    monkeypatch.setenv("KEYCLOAK_REALM", "Astral")
+    assert (
+        og.resolve_token_endpoint()
+        == "https://legacy.example/realms/Astral/protocol/openid-connect/token"
+    )
+    monkeypatch.delenv("KEYCLOAK_REALM")
+    with pytest.raises(og.TokenEndpointUnconfigured, match="KEYCLOAK_REALM"):
+        og.resolve_token_endpoint()
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"KEYCLOAK_REALM": "astral"},                    # the old silent default
+        {"KEYCLOAK_AUTHORITY": "iam.example.edu/realms/Astral"},  # no scheme
+        {"KEYCLOAK_TOKEN_URL": "/realms/astral/protocol/openid-connect/token"},
+    ],
+)
+def test_token_endpoint_fails_closed_when_unusable(monkeypatch, env):
+    _clear_keycloak_env(monkeypatch)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(og.TokenEndpointUnconfigured):
+        og.resolve_token_endpoint()
+    assert issubclass(og.TokenEndpointUnconfigured, OfflineGrantError)
+
+
+def test_mint_uses_authority_derived_endpoint(
+    plane_runtime, grant_store, monkeypatch
+):
+    user_id = f"u-{uuid.uuid4()}"
+    _clear_keycloak_env(monkeypatch)
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "http://keycloak.test/realms/Astral")
+    captured = _install_fake_idp(
+        monkeypatch, status=200, payload={"access_token": "fresh-at-authority"}
+    )
+    try:
+        grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
+        token = asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))
+        assert token == "fresh-at-authority"
+        assert captured[0][0] == (
+            "http://keycloak.test/realms/Astral/protocol/openid-connect/token"
+        )
+    finally:
+        _revoke_grants(plane_runtime, user_id)
+
+
+def test_mint_refuses_before_idp_when_endpoint_unconfigured(
+    plane_runtime, grant_store, monkeypatch
+):
+    """No endpoint → fail closed BEFORE any HTTP and before decrypting the
+    refresh token; the derive() caller maps this to a named skip reason."""
+    user_id = f"u-{uuid.uuid4()}"
+    _clear_keycloak_env(monkeypatch)
+    calls = _install_exploding_idp(monkeypatch)
+    decrypts = []
+    real_fernet = og._fernet
+
+    def _spy_fernet():
+        decrypts.append(1)
+        return real_fernet()
+
+    monkeypatch.setattr(og, "_fernet", _spy_fernet)
+    try:
+        grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
+        decrypts.clear()  # capture legitimately encrypts
+        with pytest.raises(og.TokenEndpointUnconfigured, match="KEYCLOAK_AUTHORITY"):
+            asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))
+        assert calls == []
+        assert decrypts == []
+    finally:
+        _revoke_grants(plane_runtime, user_id)
