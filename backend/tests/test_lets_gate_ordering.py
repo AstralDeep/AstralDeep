@@ -126,7 +126,7 @@ async def test_taint_denial_precedes_lets(gate_orchestrator, monkeypatch) -> Non
     monkeypatch.setattr(taint, "check_flow", lambda _trust: "deny")
     monkeypatch.setattr(taint, "trust_name", lambda _trust: "untrusted")
     orchestrator._taint_tracker = lambda _chat: SimpleNamespace(
-        effective_trust_of_args=lambda _args: 0
+        effective_trust_of_args=lambda _args, user_text=None: 0
     )
     assert "untrusted" in str((await _deny(orchestrator, websocket)).response.error)
 
