@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import secrets
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +11,7 @@ from types import TracebackType
 from typing import Any, Self, TypeVar
 
 import httpx
+from lets.canonical import b64url_encode, canonical_json
 from lets.client import (
     AuthenticationFailedError,
     LETSClient,
@@ -28,8 +31,15 @@ from lets.integrations import (
     ReplicaProfile,
 )
 from lets.models import BranchRevocation, LeaseGrant, LeaseSnapshot, Receipt
+from nacl.signing import SigningKey
 
-from orchestrator.lets_config import LetsHostConfig, SecretFileReference
+from orchestrator.lets_config import (
+    IDENTITY_SEED_BYTES,
+    MAX_IDENTITY_TOKEN_TTL_SECONDS,
+    LetsHostConfig,
+    LetsIdentityConfig,
+    SecretFileReference,
+)
 from orchestrator.lets_scope_profile import (
     SCOPE_BINDINGS,
     ScopeBinding,
@@ -57,6 +67,162 @@ class LetsClientBoundaryError(RuntimeError):
         self.retryable = retryable
         self.status_code = status_code
         super().__init__(code)
+
+
+class LetsIdentityMinter:
+    """Mint short-lived EdDSA JWTs in the exact shape the warden verifies.
+
+    Header is exactly ``{alg, kid, typ}``; claims carry ``iss``, ``sub``,
+    ``aud``, ``tenant_id``, ``jti``, ``scope`` and an integer interval with
+    ``iat == nbf`` one second in the past (tolerating warden clock skew) and
+    ``exp - iat == ttl``.  The signing key never leaves this object and its
+    representation carries no values.
+    """
+
+    __slots__ = (
+        "_signing_key",
+        "_kid",
+        "_issuer",
+        "_audience",
+        "_subject",
+        "_tenant_id",
+        "_scope",
+        "_ttl_seconds",
+    )
+
+    def __init__(
+        self,
+        *,
+        seed: bytes,
+        identity: LetsIdentityConfig,
+        tenant_id: str,
+    ) -> None:
+        if not isinstance(seed, bytes) or len(seed) != IDENTITY_SEED_BYTES:
+            raise LetsClientBoundaryError("credential_invalid")
+        if not 0 < identity.token_ttl_seconds <= MAX_IDENTITY_TOKEN_TTL_SECONDS:
+            raise LetsClientBoundaryError("credential_invalid")
+        try:
+            self._signing_key = SigningKey(seed)
+        except Exception:
+            raise LetsClientBoundaryError("credential_invalid") from None
+        self._kid = identity.kid
+        self._issuer = identity.issuer
+        self._audience = identity.audience
+        self._subject = identity.subject
+        self._tenant_id = tenant_id
+        self._scope = " ".join(identity.scopes)
+        self._ttl_seconds = identity.token_ttl_seconds
+
+    def __repr__(self) -> str:
+        return "<LetsIdentityMinter>"
+
+    @property
+    def public_key(self) -> bytes:
+        return bytes(self._signing_key.verify_key)
+
+    def mint(self, *, now: int | None = None) -> str:
+        try:
+            issued_at = (int(time.time()) if now is None else int(now)) - 1
+            header = {"alg": "EdDSA", "kid": self._kid, "typ": "JWT"}
+            claims = {
+                "aud": self._audience,
+                "exp": issued_at + self._ttl_seconds,
+                "iat": issued_at,
+                "iss": self._issuer,
+                "jti": f"astral-{secrets.token_hex(16)}",
+                "nbf": issued_at,
+                "scope": self._scope,
+                "sub": self._subject,
+                "tenant_id": self._tenant_id,
+            }
+            signing_input = (
+                f"{b64url_encode(canonical_json(header))}"
+                f".{b64url_encode(canonical_json(claims))}"
+            )
+            signature = self._signing_key.sign(signing_input.encode("ascii")).signature
+            return f"{signing_input}.{b64url_encode(signature)}"
+        except Exception:
+            raise LetsClientBoundaryError("credential_mint_failed") from None
+
+
+class _MintingHTTPClient:
+    """Per-request bearer injection at the ``httpx.Client.stream`` seam.
+
+    ``LETSClient._request`` sends every attempt through
+    ``active_client.stream(...)`` while holding ``_request_lock``; wrapping the
+    client here attaches a freshly minted token to the exact request being
+    sent, under that lock, without ever mutating shared client headers.  The
+    inner client carries no ``authorization`` header at all, so a client
+    recreated by the total-deadline watchdog cannot send unauthenticated and a
+    concurrent caller cannot overwrite another caller's bearer.
+    """
+
+    __slots__ = ("_inner", "_token_minter")
+
+    def __init__(self, inner: httpx.Client, token_minter: LetsIdentityMinter) -> None:
+        self._inner = inner
+        self._token_minter = token_minter
+
+    def __repr__(self) -> str:
+        return "<_MintingHTTPClient>"
+
+    @property
+    def headers(self) -> httpx.Headers:
+        return self._inner.headers
+
+    def stream(
+        self,
+        method: str,
+        url: Any,
+        *,
+        headers: Mapping[str, str] | None = None,
+        **keywords: Any,
+    ) -> Any:
+        merged = dict(headers or {})
+        merged.pop("Authorization", None)
+        merged["authorization"] = f"Bearer {self._token_minter.mint()}"
+        return self._inner.stream(method, url, headers=merged, **keywords)
+
+    def close(self) -> None:
+        self._inner.close()
+
+    @property
+    def is_closed(self) -> bool:
+        return self._inner.is_closed
+
+
+class MintingLETSClient(LETSClient):
+    """LETS client that presents a freshly minted bearer on every request.
+
+    The live ``httpx.Client`` (and every client the deadline watchdog
+    recreates through ``_client_factory``) is wrapped in
+    :class:`_MintingHTTPClient`, so the token is minted and attached per
+    request inside the base class's ``_request_lock`` critical section.
+    Shared client headers are never written.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token_minter: LetsIdentityMinter,
+        **keywords: Any,
+    ) -> None:
+        if keywords.get("token") is not None:
+            raise ValueError("token and token_minter are mutually exclusive")
+        if not isinstance(token_minter, LetsIdentityMinter):
+            raise TypeError("token_minter must be a LetsIdentityMinter")
+        keywords.pop("token", None)
+        super().__init__(base_url, **keywords)
+        self._token_minter = token_minter
+        self._client = _MintingHTTPClient(self._client, token_minter)
+        inner_factory = self._client_factory
+        if inner_factory is not None:
+
+            def create_minting_client() -> Any:
+                return _MintingHTTPClient(inner_factory(), token_minter)
+
+            self._client_factory = create_minting_client
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,25 +584,55 @@ class LetsWardenClient:
 def create_lets_warden_client(
     config: LetsHostConfig,
     *,
-    client_factory: Callable[..., LETSClient] = LETSClient,
+    client_factory: Callable[..., LETSClient] | None = None,
     secret_reader: Callable[[SecretFileReference], str] | None = None,
+    seed_reader: Callable[[SecretFileReference], bytes] | None = None,
 ) -> LetsWardenClient:
-    """Create one hardened client from an already authenticated active config."""
+    """Create one hardened client from an already authenticated active config.
+
+    With ``LETS_SERVICE_TOKEN_FILE`` the static bearer is read once and baked
+    into the client.  With ``LETS_IDENTITY_SEED_FILE`` the seed is read once
+    and a :class:`MintingLETSClient` presents a fresh EdDSA JWT per request.
+    """
 
     values = _active_config(config)
-    read_secret = _read_service_token if secret_reader is None else secret_reader
-    try:
-        token = read_secret(values.service_token_file)
-    except LetsClientBoundaryError:
-        raise
-    except Exception:
-        raise LetsClientBoundaryError("credential_unavailable") from None
-    if (
-        not isinstance(token, str)
-        or not token
-        or any(character.isspace() for character in token)
-    ):
-        raise LetsClientBoundaryError("credential_invalid")
+    credential: dict[str, Any]
+    if values.identity is not None:
+        read_seed = _read_identity_seed if seed_reader is None else seed_reader
+        try:
+            seed = read_seed(values.identity.seed_file)
+        except LetsClientBoundaryError:
+            raise
+        except Exception:
+            raise LetsClientBoundaryError("credential_unavailable") from None
+        if not isinstance(seed, bytes) or len(seed) != IDENTITY_SEED_BYTES:
+            raise LetsClientBoundaryError("credential_invalid")
+        minter = LetsIdentityMinter(
+            seed=seed,
+            identity=values.identity,
+            tenant_id=values.tenant_id,
+        )
+        del seed
+        credential = {"token": None, "token_minter": minter}
+        if client_factory is None:
+            client_factory = MintingLETSClient
+    else:
+        read_secret = _read_service_token if secret_reader is None else secret_reader
+        try:
+            token = read_secret(values.service_token_file)
+        except LetsClientBoundaryError:
+            raise
+        except Exception:
+            raise LetsClientBoundaryError("credential_unavailable") from None
+        if (
+            not isinstance(token, str)
+            or not token
+            or any(character.isspace() for character in token)
+        ):
+            raise LetsClientBoundaryError("credential_invalid")
+        credential = {"token": token}
+        if client_factory is None:
+            client_factory = LETSClient
 
     verify: bool | str = (
         True if values.ca_bundle is None else str(values.ca_bundle.path)
@@ -450,7 +646,7 @@ def create_lets_warden_client(
     try:
         client = client_factory(
             values.warden_origin,
-            token=token,
+            **credential,
             verify=verify,
             cert=certificate,
             timeout=values.request_timeout_seconds,
@@ -512,10 +708,11 @@ def create_lets_warden_client(
 def _active_config(config: LetsHostConfig) -> LetsHostConfig:
     if not isinstance(config, LetsHostConfig) or config.mode == "off":
         raise LetsClientBoundaryError("client_not_configured")
+    if (config.service_token_file is None) == (config.identity is None):
+        raise LetsClientBoundaryError("client_not_configured")
     required = (
         config.master_enabled,
         config.warden_origin,
-        config.service_token_file,
         config.tenant_id,
         config.envelope_id,
         config.policy_digest,
@@ -543,6 +740,17 @@ def _read_service_token(reference: SecretFileReference) -> str:
         return raw.decode("utf-8").strip()
     except UnicodeDecodeError:
         raise LetsClientBoundaryError("credential_invalid") from None
+
+
+def _read_identity_seed(reference: SecretFileReference) -> bytes:
+    try:
+        with Path(reference.path).open("rb") as stream:
+            raw = stream.read(IDENTITY_SEED_BYTES + 1)
+    except OSError:
+        raise LetsClientBoundaryError("credential_unavailable") from None
+    if len(raw) != IDENTITY_SEED_BYTES:
+        raise LetsClientBoundaryError("credential_invalid")
+    return raw
 
 
 def _scope_bindings(scopes: Sequence[str]) -> tuple[ScopeBinding, ...]:
@@ -584,6 +792,8 @@ __all__ = (
     "MAX_SERVICE_TOKEN_BYTES",
     "LetsClientBoundaryError",
     "LetsClientIdentity",
+    "LetsIdentityMinter",
     "LetsWardenClient",
+    "MintingLETSClient",
     "create_lets_warden_client",
 )

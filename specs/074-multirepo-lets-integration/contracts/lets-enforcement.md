@@ -63,7 +63,14 @@ Configuration names are part of the host contract:
 | `LETS_GOVERNED_COHORTS` | Ordered allowlist of agent populations | Initial value contains only `server_dynamic,byo_user` |
 | `LETS_GOVERNED_AGENT_ALLOWLIST` | Optional narrower agent IDs | Empty means cohort rule only |
 | `LETS_WARDEN_URL` | Canonical HTTPS origin | No credentials, query, fragment, redirect, or insecure production scheme |
-| `LETS_SERVICE_TOKEN_FILE` | Bearer token secret path | Runtime secret file; never logged |
+| `LETS_SERVICE_TOKEN_FILE` | Static bearer token secret path | Runtime secret file; never logged. Exactly one of this or `LETS_IDENTITY_SEED_FILE` in active modes (`missing_service_identity` when neither is set). Combining it with ANY `LETS_IDENTITY_*` variable — even a stray one without a seed file — is refused as `conflicting_service_identity` |
+| `LETS_IDENTITY_SEED_FILE` | Raw 32-byte Ed25519 seed; the orchestrator mints one short-lived EdDSA JWT per warden request | Runtime secret file, exactly 32 bytes; contents never logged; public key registered in the warden's identity key file. This variable ALONE selects minted mode: the other `LETS_IDENTITY_*` values are validated only when it is set, and without it they select nothing (stray values with no token file → `missing_service_identity`). Each request is minted and attached inside the client's request lock, so a deadline-recreated client or a concurrent caller never sends an unauthenticated or foreign bearer |
+| `LETS_IDENTITY_KID` | JWT `kid` of that key | ASCII transport-safe key identifier (LETS `require_key_id`) |
+| `LETS_IDENTITY_ISSUER` | JWT `iss` | Equals the warden's `identity_issuer` |
+| `LETS_IDENTITY_AUDIENCE` | JWT `aud` | Equals the warden's `identity_audience` |
+| `LETS_IDENTITY_SUBJECT` | JWT `sub` | Canonical identifier (e.g. `astraldeep-orchestrator`) |
+| `LETS_IDENTITY_SCOPES` | Space-separated JWT `scope` | Non-empty, unique, ≤ 64 entries; lifecycle needs `lets.lease.issue lets.lease.manage lets.branch.revoke` |
+| `LETS_IDENTITY_TOKEN_TTL_SECONDS` | Minted token lifetime (`exp - iat`) | Default 120; 1..3600 and ≤ the warden's `identity_max_lifetime_s` |
 | `LETS_CA_BUNDLE` | Private CA path if required | Runtime mount; default system trust otherwise |
 | `LETS_CLIENT_CERT_FILE`, `LETS_CLIENT_KEY_FILE` | Optional mTLS identity | Both or neither; runtime secrets |
 | `LETS_TENANT_ID` | Exact tenant | Canonical LETS identifier |

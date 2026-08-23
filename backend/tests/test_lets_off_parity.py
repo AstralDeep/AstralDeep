@@ -97,5 +97,9 @@ def test_off_configuration_ignores_dormant_invalid_lets_settings() -> None:
     assert config.mode == "off"
     assert config.warden_origin is None
     assert config.service_token_file is None
+    assert config.identity is None
+    assert config.service_identity_mode is None
     assert config.trust_manifest is None
     assert config.redacted()["service_token_file"] == "<unset>"
+    assert config.redacted()["service_identity_mode"] is None
+    assert config.redacted()["identity"] is None

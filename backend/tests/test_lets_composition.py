@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Iterator
 
 import pytest
@@ -191,3 +192,110 @@ def test_shadow_client_failure_is_nonblocking_without_fabricated_ready_state(
     assert runtime.client is None
     assert runtime.authorization_gateway is None
     assert runtime.lifecycle is None
+
+
+def _minted_config(mode: str, seed_path: Path) -> LetsHostConfig:
+    from orchestrator.lets_config import (
+        AuthenticatedTrustManifest,
+        LetsIdentityConfig,
+        SecretFileReference,
+    )
+
+    digest_a = "sha256:" + "1" * 64
+    digest_b = "sha256:" + "2" * 64
+    return LetsHostConfig(
+        master_enabled=True,
+        mode=mode,  # type: ignore[arg-type]
+        environment="production",
+        governed_cohorts=INITIAL_GOVERNED_COHORTS,
+        governed_agent_allowlist=(),
+        warden_origin="https://warden.example",
+        service_token_file=None,
+        identity=LetsIdentityConfig(
+            seed_file=SecretFileReference(path=seed_path, size_bytes=32),
+            kid="astral-orch/ed25519-1",
+            issuer="https://astral.example/lets-identity",
+            audience="astral-lets-warden",
+            subject="astraldeep-orchestrator",
+            scopes=("lets.lease.issue", "lets.lease.manage", "lets.branch.revoke"),
+            token_ttl_seconds=120,
+        ),
+        tenant_id="tenant-a",
+        envelope_id="envelope-a",
+        policy_digest=digest_a,
+        machine_digest=digest_b,
+        default_allocation=(2, 2, 2, 2, 2, 2),
+        default_ttl_seconds=60,
+        request_timeout_seconds=2.5,
+        request_attempts=2,
+        trust_manifest=AuthenticatedTrustManifest(
+            path=Path("C:/synthetic/trust-manifest.json"),
+            sha256="3" * 64,
+            tenant_id="tenant-a",
+            envelope_id="envelope-a",
+            config_epoch=7,
+            warden_id="warden-a",
+            policy_digest=digest_a,
+            machine_digest=digest_b,
+            max_lease_ttl_ns=120_000_000_000,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_minted_identity_composes_a_per_request_minting_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from orchestrator.lets_client import MintingLETSClient
+
+    seed = tmp_path / "identity.seed"
+    seed.write_bytes(bytes(range(32)))
+    config = _minted_config("enforce", seed)
+    monkeypatch.setattr(
+        composition_module,
+        "load_lets_config",
+        lambda _environ=None: _load("enforce", config=config),
+    )
+    runtime = compose_lets_runtime(plane=FakePlane(), repository=AuthorityRepository())
+
+    assert runtime.ready is True
+    assert runtime.client is not None
+    assert isinstance(runtime.client._client, MintingLETSClient)
+    assert "authorization" not in runtime.client._client._client.headers
+    assert config.service_identity_mode == "minted"
+    assert config.redacted()["identity"] == {
+        "seed_file": "<configured>",
+        "scope_count": 3,
+        "token_ttl_seconds": 120,
+    }
+    await runtime.stop()
+
+
+def test_shadow_minted_identity_with_unreadable_seed_degrades_without_blocking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = _minted_config("shadow", tmp_path / "missing.seed")
+    monkeypatch.setattr(
+        composition_module,
+        "load_lets_config",
+        lambda _environ=None: _load("shadow", config=config),
+    )
+    runtime = compose_lets_runtime(plane=FakePlane(), repository=AuthorityRepository())
+
+    assert runtime.loaded.readiness.application_ready is True
+    assert runtime.ready is False
+    assert runtime.client is None
+
+
+def test_enforce_minted_identity_with_unreadable_seed_blocks_with_stable_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = _minted_config("enforce", tmp_path / "missing.seed")
+    monkeypatch.setattr(
+        composition_module,
+        "load_lets_config",
+        lambda _environ=None: _load("enforce", config=config),
+    )
+    with pytest.raises(LetsCompositionError, match="^credential_unavailable$") as raised:
+        compose_lets_runtime(plane=FakePlane(), repository=AuthorityRepository())
+    assert str(tmp_path) not in repr(raised.value)
