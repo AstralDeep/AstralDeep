@@ -282,24 +282,30 @@ async def _consented_scopes_for(orch, user_id: str,
                                 agent_id: Optional[str]) -> List[str]:
     """EFFECTIVE scopes a schedule consent covers (card + capture).
 
-    Agent-bound: ``get_enabled_scope_names`` for that agent. Agent-less: the
-    union of the same over every agent chat may offer this user
+    Agent-bound: ``get_enabled_scope_names`` for that agent — exactly as
+    before (a derivation error propagates and no job is created). Agent-less:
+    the union of the same over every agent chat may offer this user
     (:func:`orchestrator.tool_visibility.enabled_scope_union`, shared with
     ``MachineTurnAuthority.derive``), because the run is an ordinary assistant
-    turn whose tool calls route across all of them. Fail-closed to ``[]``.
+    turn whose tool calls route across all of them — MINUS the mutating scopes
+    the unattended scheduler refuses to run (``tools:write``/``tools:execute``,
+    ``scheduler.runner._UNREVIEWED_MUTATING_SCOPES``): consenting to them
+    would make ``assess_job`` mark the job ineligible and silently never
+    materialise it, while narrowing consent is always safe (FR-012). The
+    union fails closed to ``[]``.
     """
-    try:
-        if agent_id:
-            names = await asyncio.to_thread(
-                orch.tool_permissions.get_enabled_scope_names, user_id, agent_id)
-        else:
-            from orchestrator.tool_visibility import enabled_scope_union
-            names = await asyncio.to_thread(enabled_scope_union, orch, user_id)
+    if agent_id:
+        names = await asyncio.to_thread(
+            orch.tool_permissions.get_enabled_scope_names, user_id, agent_id)
         return list(names or [])
+    from orchestrator.tool_visibility import enabled_scope_union
+    from scheduler.runner import _UNREVIEWED_MUTATING_SCOPES
+    try:
+        names = await asyncio.to_thread(enabled_scope_union, orch, user_id)
     except Exception as exc:
-        logger.warning("consented scope derivation failed user=%s agent=%s: %s",
-                       user_id, agent_id, exc)
+        logger.warning("consented scope union failed user=%s: %s", user_id, exc)
         return []
+    return [n for n in (names or []) if n not in _UNREVIEWED_MUTATING_SCOPES]
 
 
 async def _capture_consent(orch, user_id: str, agent_id: Optional[str],

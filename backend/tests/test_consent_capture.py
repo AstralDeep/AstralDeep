@@ -155,6 +155,51 @@ async def test_agentless_job_captures_union_consent(orch, captured, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_agentless_consent_never_includes_unattended_mutating_scopes(
+    orch, captured, monkeypatch,
+):
+    """A default user's union contains tools:write (the safe-seeded general
+    agent edits data). The unattended scheduler refuses write/execute
+    (``assess_job`` → handler_downstream_idempotency_unreviewed), so consenting
+    to them would create a job that is silently never materialised. Agent-less
+    consent is therefore narrowed to the scopes the scheduler can run — and
+    the card/create rows must agree."""
+    from orchestrator import tool_visibility
+    monkeypatch.setattr(
+        tool_visibility, "enabled_scope_union",
+        lambda o, uid: ["tools:read", "tools:write", "tools:search", "tools:execute"])
+    audit = AsyncMock()
+    monkeypatch.setattr(scheduling_chat, "_audit", audit)
+    pid = _proposal(orch, agent_id="")
+    await scheduling_chat.handle_decision(
+        orch, MagicMock(), "u1", {"proposal_id": pid, "decision": "approve"})
+
+    assert captured["job_kwargs"]["consented_scopes"] == ["tools:read", "tools:search"]
+    by_type = {c.args[1]: c for c in audit.await_args_list}
+    assert by_type["schedule.consent_captured"].kwargs["inputs_meta"][
+        "consented_scopes"] == ["tools:read", "tools:search"]
+    # The created job passes the unattended eligibility assessment.
+    from scheduler.runner import _UNREVIEWED_MUTATING_SCOPES
+    assert not set(captured["job_kwargs"]["consented_scopes"]) & _UNREVIEWED_MUTATING_SCOPES
+
+
+@pytest.mark.asyncio
+async def test_agent_bound_scope_derivation_error_still_propagates(orch, captured, monkeypatch):
+    """Agent-bound approval is byte-identical to before: a scope-derivation
+    failure propagates and NO job or grant is created (never an empty-consent
+    grant that derive() would treat as unconstrained)."""
+    orch.tool_permissions.get_enabled_scope_names = MagicMock(
+        side_effect=RuntimeError("db down"))
+    monkeypatch.setattr(scheduling_chat, "_audit", AsyncMock())
+    pid = _proposal(orch, agent_id="web-research-1")
+    with pytest.raises(RuntimeError):
+        await scheduling_chat.handle_decision(
+            orch, MagicMock(), "u1", {"proposal_id": pid, "decision": "approve"})
+    captured["grants"].capture.assert_not_called()
+    assert "job_kwargs" not in captured
+
+
+@pytest.mark.asyncio
 async def test_agentless_job_union_failure_fails_closed(orch, captured, monkeypatch):
     """A union derivation error must never widen: the job captures [] scopes
     (a grant still exists, but derive() asserts nothing for an empty list)."""
