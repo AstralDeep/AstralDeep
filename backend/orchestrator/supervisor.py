@@ -22,6 +22,18 @@ Three independent, side-effect-free checks compose into the gate:
 The module is deliberately dependency-free: every external capability (the PHI
 detector, the destructive-tool catalogue) is *injected* by the caller, so this
 file imports nothing from the rest of the project and is trivially testable.
+
+MCP channel (feature 064)
+-------------------------
+``intent_aligned`` assumes a natural-language request from which intent verbs
+can be read. An MCP ``tools/call`` carries no such text — the caller names the
+tool explicitly, and that naming *is* the intent — so the orchestrator passes
+:func:`mcp_intent_text` (``"call tool <name>"``) as the request for
+``mcp``-channel dispatches. The tool's own name contributes its verb, so a
+destructive tool is aligned exactly when the caller asked for it by name, and
+an LLM-planned call over chat still needs the user's words. This only changes
+the supervisor's *input*; the permission gate, the feature-063 remote-compute
+destructive refusal, taint and HITL gates run unchanged over MCP.
 """
 from __future__ import annotations
 
@@ -187,6 +199,18 @@ def review_output(draft_text: str, *, phi_check=None) -> tuple:
 # --------------------------------------------------------------------------- #
 # Intent alignment                                                             #
 # --------------------------------------------------------------------------- #
+
+
+def mcp_intent_text(tool_name: str) -> str:
+    """Synthesized request text for an MCP-channel call (see module docstring).
+
+    The tool name is spelled twice — once verbatim and once with separators
+    replaced by spaces — so both ``delete_records`` and ``delete-records`` expose
+    their action verb to :func:`intent_aligned`.
+    """
+    name = (tool_name or "").strip()
+    words = re.sub(r"[_\-.:/]+", " ", name).strip()
+    return f"call tool {name} {words}".strip()
 
 
 def intent_aligned(request: str, tool_name: str, *, destructive_tools=None) -> bool:
