@@ -27,6 +27,9 @@ from a2a.types import (
     SecurityRequirement,
     StringList,
     OpenIdConnectSecurityScheme,
+    Task as A2ATask,
+    TaskState as A2ATaskState,
+    TaskStatus as A2ATaskStatus,
 )
 
 from shared.protocol import (
@@ -41,6 +44,25 @@ logger = logging.getLogger("A2ABridge")
 
 
 # ----- Part helpers (v1.0 proto Part uses a `content` oneof) -----
+
+async def ensure_task_created(context, event_queue) -> None:
+    """Enqueue the initial ``Task`` the a2a-sdk (>=1.1) server requires.
+
+    The SDK's active-task consumer refuses a ``TaskStatusUpdateEvent`` for a
+    task that was never enqueued ("Agent should enqueue Task before ..."), so
+    an executor handling a fresh ``message/send`` (no ``current_task``) must
+    publish the submitted Task before its first status update.
+    """
+    if getattr(context, "current_task", None) is not None:
+        return
+    message = getattr(context, "message", None)
+    await event_queue.enqueue_event(A2ATask(
+        id=context.task_id,
+        context_id=context.context_id,
+        status=A2ATaskStatus(state=A2ATaskState.TASK_STATE_SUBMITTED),
+        history=[message] if message is not None else [],
+    ))
+
 
 def make_text_part(text: str) -> Part:
     return Part(text=text)
