@@ -23948,19 +23948,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.info("MCP 2026-07-28 endpoint mounted at /mcp")
 
         # Mount A2A JSON-RPC server (orchestrator as A2A agent).
-        # 073: this mount is unauthenticated and its dispatch path bypasses
-        # _authorize_and_prepare entirely, so it is absent unless an operator
-        # deliberately enables it. There are no first-party callers; the
-        # orchestrator's OUTBOUND A2A client path (_execute_via_a2a, used when
-        # an agent's WebSocket is unavailable) does not go through this mount.
+        # 073: absent unless an operator deliberately enables it. When mounted,
+        # POST /a2a is bearer-gated BEFORE SDK dispatch (first-party user token:
+        # realm issuer, allow-listed azp, user/admin role, no delegation
+        # token), tasks are owner-scoped to the verified subject, tool
+        # discovery/resolution is projected per user like chat and /mcp, and
+        # dispatch runs through execute_authorized_tool (full gate stack). The
+        # anonymous card advertises only the public, owner-safe built-in
+        # catalog. There are no first-party callers; the orchestrator's
+        # OUTBOUND A2A client path (_execute_via_a2a, used when an agent's
+        # WebSocket is unavailable) does not go through this mount.
         if flags.is_enabled("a2a_server"):
             try:
                 from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
                 setup_orchestrator_a2a(app, self)
                 logger.warning(
                     "A2A JSON-RPC endpoint mounted at /a2a/ (FF_A2A_SERVER=true). "
-                    "This surface is unauthenticated and bypasses the tool "
-                    "authorization gate; do not expose it publicly."
+                    "POST /a2a requires a first-party Keycloak bearer and "
+                    "dispatches through the tool authorization gate; the "
+                    "anonymous agent card lists only the public safe catalog. "
+                    "Keep the reverse proxy rule for /a2a closed until the "
+                    "owner opens it."
                 )
             except Exception as e:
                 logger.warning(f"A2A server setup skipped: {e}")

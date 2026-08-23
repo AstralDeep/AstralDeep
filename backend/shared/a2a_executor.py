@@ -21,6 +21,7 @@ from a2a.types import (
 )
 
 from shared.a2a_bridge import (
+    ensure_task_created,
     a2a_message_to_mcp_request,
     mcp_response_to_a2a_message,
     extract_text_from_a2a_message,
@@ -66,6 +67,7 @@ class MCPAgentExecutor(AgentExecutor):
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
 
         try:
+            await ensure_task_created(context, event_queue)
             await updater.start_work()
 
             message = context.message

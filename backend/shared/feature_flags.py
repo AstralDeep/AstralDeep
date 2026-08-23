@@ -169,18 +169,21 @@ class FeatureFlags:
             # specs/064-mcp-2026-07-28-decision/.
             "mcp_server": self._read("FF_MCP_SERVER", False),
             # 073-remote-agents-and-a2a-gate: the orchestrator's OWN inbound A2A
-            # server, POST /a2a plus the aggregated card at
-            # /a2a/.well-known/agent-card.json. The mount was unconditional and
-            # unauthenticated: the executor constructs an A2ASecurityValidator
-            # and never calls it, so anonymous callers could read every
-            # connected agent's tool list and dispatch tool calls through
-            # execute_tool_and_wait, which skips _authorize_and_prepare and with
-            # it permissions, policy, HITL, taint and audit claims. FAIL CLOSED,
-            # default OFF; with the flag off neither route is mounted. It has no
-            # first-party callers: the orchestrator dials AGENTS' /a2a as a
-            # client (_execute_via_a2a), which is unaffected. Read once at
-            # import (container recreate to enable). Logged as a follow-up at
-            # specs/064-mcp-2026-07-28-decision/tasks.md:262.
+            # server, POST /a2a plus the public card at
+            # /a2a/.well-known/agent-card.json. Originally mounted
+            # unconditionally and unauthenticated (hence the flag). The mount
+            # is now hardened (orchestrator/a2a_orchestrator_executor.py):
+            # POST /a2a refuses any request without a first-party Keycloak
+            # bearer (realm issuer, allow-listed azp, user/admin role, never a
+            # delegation token) BEFORE the SDK dispatches, tasks are
+            # owner-scoped to the verified subject, tool listing/resolution is
+            # projected per user exactly like chat and /mcp, and dispatch goes
+            # through execute_authorized_tool. The anonymous card advertises
+            # only public, owner-safe built-ins. FAIL CLOSED, default OFF; with
+            # the flag off neither route is mounted. It has no first-party
+            # callers: the orchestrator dials AGENTS' /a2a as a client
+            # (_execute_via_a2a), which is unaffected. Read once at import
+            # (container recreate to enable).
             "a2a_server": self._read("FF_A2A_SERVER", False),
             # 065-conversational-voice: server-owned voice capability across
             # every shipping client. This is the operational kill switch for
