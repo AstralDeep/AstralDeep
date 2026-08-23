@@ -20,9 +20,11 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Dict, List, Optional
@@ -149,6 +151,7 @@ _SKIP_SUMMARY = {
     "missing_consent": "no durable authorization on record",
     "revoked_or_expired": "authorization revoked or expired",
     "mint_failed": "could not refresh authorization",
+    "token_endpoint_unconfigured": "identity provider token endpoint not configured",
     "empty_scopes": "consented scopes no longer granted",
 }
 _SKIP_BODY = {
@@ -160,11 +163,66 @@ _SKIP_BODY = {
         "Its authorization expired or was revoked. Re-confirm to resume."
     ),
     "mint_failed": "Could not refresh its authorization. Re-confirm to resume.",
+    "token_endpoint_unconfigured": (
+        "The server cannot reach its identity provider because the token "
+        "endpoint is not configured (KEYCLOAK_AUTHORITY). An administrator "
+        "must fix the server configuration; re-confirming will not help. "
+        "Resume the job once that is done."
+    ),
     "empty_scopes": (
         "The permissions it was granted are no longer enabled for "
         "that agent. Re-enable them (or re-confirm) to resume."
     ),
 }
+
+
+#: Retry cap per occurrence (pre-fix: a retryable failure was re-claimed
+#: every tick FOREVER — ``next_attempt_at = now + 1s`` with no ceiling).
+DEFAULT_MAX_ATTEMPTS = 3
+#: Catch-up storm guard: an occurrence whose ``scheduled_for`` is older than
+#: this many seconds when it is finally run is completed as ``skipped_stale``
+#: without an LLM turn. ``0`` (or negative) disables the guard.
+DEFAULT_STALE_GRACE_SECONDS = 2 * 60 * 60
+
+
+def _env_int(name: str, default: int, *, minimum: int) -> int:
+    """Read an integer knob per call (no import-time capture) with a floor."""
+
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("scheduler.bad_setting", extra={"setting": name})
+        return default
+    return max(value, minimum)
+
+
+def max_attempts() -> int:
+    """``SCHEDULER_MAX_ATTEMPTS`` (default 3, floor 1), read per call."""
+
+    return _env_int("SCHEDULER_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS, minimum=1)
+
+
+def stale_grace_seconds() -> int:
+    """``SCHEDULER_STALE_GRACE_SECONDS`` (default 2h; <= 0 disables)."""
+
+    return _env_int(
+        "SCHEDULER_STALE_GRACE_SECONDS", DEFAULT_STALE_GRACE_SECONDS, minimum=0
+    )
+
+
+def occurrence_is_stale(scheduled_for: datetime, *, now: datetime | None = None) -> bool:
+    """True when ``scheduled_for`` is older than the stale-grace window."""
+
+    grace = stale_grace_seconds()
+    if grace <= 0:
+        return False
+    if scheduled_for.tzinfo is None:
+        scheduled_for = scheduled_for.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
+    return (current - scheduled_for).total_seconds() > grace
 
 
 def _intersect_scopes(
@@ -434,6 +492,77 @@ class JobRunner:
         )
         self._observe_effect("published", effect_kind="notification")
 
+    async def _pause_and_notify_once(
+        self,
+        attempt: ScheduledAttempt,
+        *,
+        title: str,
+        body: str,
+        result_code: str,
+    ) -> None:
+        """Pause the job and deliver ONE owner notification (056 FR-013 shape).
+
+        Shared by the authority-skip and attempts-exhausted paths: pausing is
+        the structural collapse (a paused job is never due again) and the
+        ``_skip_notified`` set keeps the one-notification-per-pause rule even
+        if the same occurrence is settled twice.
+        """
+
+        job = attempt.job
+        user_id = str(job["user_id"])
+        job_id = str(job["id"])
+        already_notified = job_id in self._skip_notified
+        self.store.set_status(user_id, job_id, "paused")
+        if not already_notified:
+            self._skip_notified.add(job_id)
+            await self._notify_occurrence(
+                attempt, level="warning", title=title, body=body
+            )
+        self._observe_scheduler("terminal", job, result_code=result_code)
+
+    async def _exhaust_attempts(
+        self,
+        attempt: ScheduledAttempt,
+        *,
+        last_failure: str,
+        last_code: str,
+    ) -> OccurrenceRunResult:
+        """Terminal, NON-retryable settlement once the per-occurrence cap is hit."""
+
+        job = attempt.job
+        limit = max_attempts()
+        logger.warning(
+            "scheduler.attempts_exhausted",
+            extra={
+                "job_id": str(job["id"]),
+                "occurrence_id": str(attempt.claim.occurrence_id),
+                "attempt_number": attempt.claim.attempt_number,
+                "max_attempts": limit,
+                "last_code": last_code,
+            },
+        )
+        await self._pause_and_notify_once(
+            attempt,
+            title=f"Scheduled job paused: {job['name']}",
+            body=(
+                f"It failed {limit} time{'s' if limit != 1 else ''} in a row "
+                f"({last_failure}) and has been paused so it does not keep "
+                "retrying. Resume it from your schedules once the cause is fixed."
+            ),
+            result_code="attempts_exhausted",
+        )
+        summary = (
+            f"Gave up after {attempt.claim.attempt_number} attempts "
+            f"(limit {limit}); last failure: {last_failure}"
+        )
+        return OccurrenceRunResult(
+            "failure",
+            summary,
+            str(attempt.operation_id),
+            False,
+            "attempts_exhausted",
+        )
+
     async def _run_dreaming_occurrence(
         self, attempt: ScheduledAttempt
     ) -> OccurrenceRunResult:
@@ -573,12 +702,55 @@ class JobRunner:
             self._observe_scheduler(
                 "claim_recovered", attempt.job, result_code="claim_recovered"
             )
+        # Bounded retries, entry guard: every re-claim (retryable failure,
+        # lease loss, admission refusal) bumps attempt_count. Past the cap
+        # nothing is dispatched again — the occurrence is settled terminally
+        # and the job paused, instead of re-claiming every tick forever.
+        if attempt.claim.attempt_number > max_attempts():
+            return await self._exhaust_attempts(
+                attempt,
+                last_failure="the previous attempt did not settle",
+                last_code="attempt_cap_reached",
+            )
         if attempt.job.get("agent_id") == "__dreaming__":
             return await self._run_dreaming_occurrence(attempt)
 
         job = attempt.job
         user_id = str(job["user_id"])
         job_id = str(job["id"])
+
+        # Catch-up storm guard: a job whose next_run_at is far in the past
+        # materializes one occurrence per missed cadence. Firing N real turns
+        # (each an IdP mint + LLM turn + chat output) into the user's chat is
+        # never what they want; burn the backlog cheaply and honestly. The
+        # job's next_run_at advance is owned by the Plane materializer, so
+        # only this runner side changes. Checked BEFORE authority derivation
+        # so a stale backlog costs no IdP round-trips either.
+        scheduled_for = attempt.claim.scheduled_for
+        if occurrence_is_stale(scheduled_for):
+            age_s = int((datetime.now(UTC) - scheduled_for).total_seconds())
+            logger.info(
+                "scheduler.skipped_stale",
+                extra={
+                    "job_id": job_id,
+                    "occurrence_id": str(attempt.claim.occurrence_id),
+                    "age_seconds": age_s,
+                    "grace_seconds": stale_grace_seconds(),
+                },
+            )
+            self._observe_scheduler("terminal", job, result_code="skipped_stale")
+            return OccurrenceRunResult(
+                "failure",
+                (
+                    f"Skipped: scheduled for {scheduled_for.isoformat()} "
+                    f"({age_s // 3600}h {age_s % 3600 // 60}m ago), older than the "
+                    f"{stale_grace_seconds()}s stale-grace window; no turn was run"
+                ),
+                str(attempt.operation_id),
+                False,
+                "skipped_stale",
+            )
+
         from orchestrator.chain_authority import AuthoritySkip, MachineTurnAuthority
 
         authority = await MachineTurnAuthority(self.orch, self.grants).derive(
@@ -589,21 +761,14 @@ class JobRunner:
             turn_class="scheduled_job",
         )
         if isinstance(authority, AuthoritySkip):
-            already_notified = job_id in self._skip_notified
-            self.store.set_status(user_id, job_id, "paused")
-            if not already_notified:
-                self._skip_notified.add(job_id)
-                await self._notify_occurrence(
-                    attempt,
-                    level="warning",
-                    title=f"Scheduled job paused: {job['name']}",
-                    body=_SKIP_BODY.get(
-                        authority.reason,
-                        "Its authorization is no longer valid. Re-confirm to resume.",
-                    ),
-                )
-            self._observe_scheduler(
-                "terminal", job, result_code="authorization_unavailable"
+            await self._pause_and_notify_once(
+                attempt,
+                title=f"Scheduled job paused: {job['name']}",
+                body=_SKIP_BODY.get(
+                    authority.reason,
+                    "Its authorization is no longer valid. Re-confirm to resume.",
+                ),
+                result_code="authorization_unavailable",
             )
             return OccurrenceRunResult(
                 "skipped_auth",
@@ -693,12 +858,22 @@ class JobRunner:
                 llm_unavailable = False
             logger.exception("scheduled job execution failed", extra={"job_id": job_id})
             result_code = "llm_unavailable" if llm_unavailable else "operation_failed"
+            failure_summary = (
+                "System AI was unavailable"
+                if llm_unavailable
+                else "Scheduled turn failed"
+            )
+            if attempt.claim.attempt_number >= max_attempts():
+                # Bounded retries: this was the last permitted attempt.
+                return await self._exhaust_attempts(
+                    attempt,
+                    last_failure=failure_summary,
+                    last_code=result_code,
+                )
             self._observe_scheduler("terminal", job, result_code=result_code)
             return OccurrenceRunResult(
                 "failure",
-                "System AI was unavailable"
-                if llm_unavailable
-                else "Scheduled turn failed",
+                failure_summary,
                 str(attempt.operation_id),
                 True,
                 result_code,
