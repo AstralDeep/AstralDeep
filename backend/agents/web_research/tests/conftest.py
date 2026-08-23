@@ -17,6 +17,7 @@ from shared.tests._http_mock import HttpMock
 # Hosts that resolve to a public address in tests.
 SAFE_HOSTS = {
     "html.duckduckgo.com",
+    "lite.duckduckgo.com",
     "search.example.com",
     "example.com",
     "direct.example.org",
