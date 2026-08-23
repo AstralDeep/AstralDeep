@@ -229,7 +229,8 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
 
     agent_line = (f"Uses agent: {cleaned['agent_id']} (with only the permissions "
                   "you currently grant it)." if cleaned["agent_id"]
-                  else "Runs without agent tools (plain assistant run).")
+                  else "Runs as a normal assistant turn that may use whichever of "
+                       "your enabled agents' tools the request needs.")
     # 056 US2 (FR-011): approving this card creates DURABLE consent, so the card
     # must state exactly what is being granted, that it persists, and how to
     # revoke it. No durable consent is ever created without this explicit step.
@@ -240,25 +241,28 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                       "Nothing is scheduled until you approve."),
              variant="caption"),
     ]
-    if cleaned["agent_id"]:
-        # EFFECTIVE scopes (see the matching note at the capture step below):
-        # a raw agent_scopes read reports nothing for a safe-baseline user, so
-        # this card used to promise "no scopes yet" to someone whose tools run
-        # fine — misdescribing the very grant it is asking them to approve.
-        granting = await asyncio.to_thread(
-            orch.tool_permissions.get_enabled_scope_names,
-            user_id, cleaned["agent_id"])
-        card_content.append(Text(
-            content=("**Approving grants durable consent.** To run on your behalf "
-                     "while you are signed out, this job stores a revocable "
-                     "authorization for "
-                     f"**{cleaned['agent_id']}** limited to: "
-                     f"**{', '.join(granting) if granting else 'no scopes yet'}**. "
-                     "Each run acts under fresh authority narrowed to those scopes "
-                     "AND whatever you allow at that moment — never more. It expires "
-                     "within 365 days, and you can revoke it any time in Settings → "
-                     "Personalization → Schedule; signing out everywhere revokes it too."),
-            variant="markdown"))
+    # EFFECTIVE scopes (see the matching note at the capture step below):
+    # a raw agent_scopes read reports nothing for a safe-baseline user, so
+    # this card used to promise "no scopes yet" to someone whose tools run
+    # fine — misdescribing the very grant it is asking them to approve.
+    # An agent-less job is NOT exempt: every machine turn needs a grant
+    # (MachineTurnAuthority.derive is agent-independent), and its tool calls
+    # route across all of the user's enabled agents, so the card names that
+    # union rather than pretending the run has no tools.
+    granting = await _consented_scopes_for(orch, user_id, cleaned["agent_id"] or None)
+    subject = (f"**{cleaned['agent_id']}**" if cleaned["agent_id"]
+               else "this job (any of your enabled agents' tools)")
+    card_content.append(Text(
+        content=("**Approving grants durable consent.** To run on your behalf "
+                 "while you are signed out, this job stores a revocable "
+                 "authorization for "
+                 f"{subject} limited to: "
+                 f"**{', '.join(granting) if granting else 'no scopes yet'}**. "
+                 "Each run acts under fresh authority narrowed to those scopes "
+                 "AND whatever you allow at that moment — never more. It expires "
+                 "within 365 days, and you can revoke it any time in Settings → "
+                 "Personalization → Schedule; signing out everywhere revokes it too."),
+        variant="markdown"))
     card_content.extend([
         Button(label="Approve & create schedule", action="schedule_decision",
                payload={"proposal_id": proposal_id, "decision": "approve"}),
@@ -274,9 +278,37 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
     )
 
 
-async def _capture_consent(orch, user_id: str, agent_id: str,
+async def _consented_scopes_for(orch, user_id: str,
+                                agent_id: Optional[str]) -> List[str]:
+    """EFFECTIVE scopes a schedule consent covers (card + capture).
+
+    Agent-bound: ``get_enabled_scope_names`` for that agent. Agent-less: the
+    union of the same over every agent chat may offer this user
+    (:func:`orchestrator.tool_visibility.enabled_scope_union`, shared with
+    ``MachineTurnAuthority.derive``), because the run is an ordinary assistant
+    turn whose tool calls route across all of them. Fail-closed to ``[]``.
+    """
+    try:
+        if agent_id:
+            names = await asyncio.to_thread(
+                orch.tool_permissions.get_enabled_scope_names, user_id, agent_id)
+        else:
+            from orchestrator.tool_visibility import enabled_scope_union
+            names = await asyncio.to_thread(enabled_scope_union, orch, user_id)
+        return list(names or [])
+    except Exception as exc:
+        logger.warning("consented scope derivation failed user=%s agent=%s: %s",
+                       user_id, agent_id, exc)
+        return []
+
+
+async def _capture_consent(orch, user_id: str, agent_id: Optional[str],
                           consented: List[str]) -> Optional[str]:
     """Create the durable offline grant this job will act under (056 FR-011).
+
+    ``agent_id`` is ``None`` for an agent-less job: the grant is user-wide
+    (``OfflineGrantStore.capture`` accepts that) and ``consented`` is the
+    union across the user's enabled agents.
 
     Reads the user's ``offline_access`` refresh token from their live encrypted
     web session and hands it to :meth:`OfflineGrantStore.capture`, which
@@ -299,7 +331,9 @@ async def _capture_consent(orch, user_id: str, agent_id: str,
         logger.info("consent_capture: durable grant created user=%s agent=%s "
                     "grant=%s scopes=%s", user_id, agent_id, grant_id, consented)
         await _audit(user_id, "schedule.consent_captured",
-                     f"Captured durable offline consent for agent '{agent_id}'",
+                     (f"Captured durable offline consent for agent '{agent_id}'"
+                      if agent_id else
+                      "Captured durable offline consent for an agent-less job"),
                      correlation_id=grant_id,
                      inputs_meta={"agent_id": agent_id,
                                   "consented_scopes": consented,
@@ -355,30 +389,29 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         await _say(f"That schedule can no longer be created: {exc}", "warning")
         return
 
-    consented: List[str] = []
-    if cleaned["agent_id"]:
-        # EFFECTIVE scopes, matching the approval card and the dispatch gate.
-        # A raw agent_scopes read only sees explicit rows, so a user running on
-        # feature 040's safe baseline captured an EMPTY consented list — and an
-        # empty list is not "deny everything" downstream, it is read as "no
-        # constraint" by MachineTurnAuthority.derive. Capturing the effective
-        # set makes the containment real for exactly the users who never
-        # granted a scope explicitly.
-        consented = await asyncio.to_thread(
-            orch.tool_permissions.get_enabled_scope_names,
-            user_id, cleaned["agent_id"])
+    # EFFECTIVE scopes, matching the approval card and the dispatch gate.
+    # A raw agent_scopes read only sees explicit rows, so a user running on
+    # feature 040's safe baseline captured an EMPTY consented list — and an
+    # empty list is not "deny everything" downstream, it is read as "no
+    # constraint" by MachineTurnAuthority.derive. Capturing the effective
+    # set makes the containment real for exactly the users who never
+    # granted a scope explicitly. Agent-less jobs get the union across the
+    # user's enabled agents (their tool calls route across all of them).
+    consented: List[str] = await _consented_scopes_for(
+        orch, user_id, cleaned["agent_id"] or None)
 
     # 056 US2 (FR-011/D8): the EXPLICIT durable-consent capture step. The
     # approval card the user just confirmed named the scopes below, its durable
     # (365-day-capped) nature, and how to revoke it — so this is the one moment
     # a durable grant may be created. Nothing is captured implicitly: capture
-    # runs only here, only on approval, and only for a job that actually runs an
-    # agent. A capture failure is NOT fatal — the job is still created, it simply
-    # cannot run unattended (its first run records an authority skip and pauses,
-    # which is the honest fail-closed outcome).
-    grant_id: Optional[str] = None
-    if cleaned["agent_id"]:
-        grant_id = await _capture_consent(orch, user_id, cleaned["agent_id"], consented)
+    # runs only here, only on approval. EVERY machine turn needs a grant —
+    # derive() is agent-independent — so agent-less jobs capture too (before
+    # this, they were created with no grant and every run settled
+    # skipped_auth/missing_consent). A capture failure is NOT fatal — the job
+    # is still created, it simply cannot run unattended (its first run records
+    # an authority skip and pauses, which is the honest fail-closed outcome).
+    grant_id: Optional[str] = await _capture_consent(
+        orch, user_id, cleaned["agent_id"] or None, consented)
 
     store = _scheduler_store(orch)
     job = await asyncio.to_thread(
@@ -400,15 +433,13 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     logger.info("schedule created from chat: job=%s user=%s name=%r consent=%s",
                 job["id"], user_id, cleaned["name"], bool(grant_id))
 
-    if cleaned["agent_id"] and grant_id:
+    if grant_id:
         offline_hint = (" It can run while you are signed out; revoke that access "
                         "any time in Settings → Personalization → Schedule (signing "
                         "out everywhere also revokes it).")
-    elif cleaned["agent_id"]:
+    else:
         offline_hint = (" It cannot run while you are signed out yet — grant offline "
                         "access in Settings → Personalization → Schedule.")
-    else:
-        offline_hint = ""
     await orch.send_ui_render(websocket, [
         Alert(message=(f"Scheduled '{cleaned['name']}' — runs "
                        f"{human_cadence(cleaned['schedule_kind'], cleaned['schedule_expr'], cleaned['timezone'])}."

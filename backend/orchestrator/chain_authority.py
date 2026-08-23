@@ -253,6 +253,26 @@ class MachineTurnAuthority:
                 return AuthoritySkip(
                     "empty_scopes",
                     "consented scopes no longer intersect the user's current grants")
+        elif consented_scopes:
+            # Agent-less machine turn: the run is an ordinary assistant turn
+            # whose tool calls route across ALL of the user's eligible agents,
+            # so "current" is the union of their effective scopes (the same
+            # helper the consent capture used). A legacy job whose consent
+            # list is empty keeps asserting nothing — never widened here.
+            from orchestrator.tool_visibility import enabled_scope_union
+            from scheduler.runner import _intersect_scopes
+            try:
+                current_names = await asyncio.to_thread(
+                    enabled_scope_union, self.orch, user_id)
+                current = {scope: True for scope in current_names or []}
+            except Exception:
+                current = {}
+            allowed_scopes = _intersect_scopes(list(consented_scopes), current)
+            if not allowed_scopes:
+                self._log_skip(turn_class, user_id, "empty_scopes")
+                return AuthoritySkip(
+                    "empty_scopes",
+                    "consented scopes no longer intersect the user's current grants")
 
         authority = MachineAuthority(
             access_token=access_token,

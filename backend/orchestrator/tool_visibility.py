@@ -122,4 +122,43 @@ def eligible_tool_pairs(
     return eligible
 
 
-__all__ = ["eligible_tool_pairs"]
+def enabled_scope_union(orchestrator: Any, user_id: str) -> list[str]:
+    """Return the union of EFFECTIVE scopes across every agent chat may offer.
+
+    An agent-less machine turn (a scheduled job proposed without a specific
+    agent) runs as an ordinary assistant turn, so the per-tool permission gate
+    routes its tool calls across ALL of the user's eligible agents. The consent
+    it needs — and the containment ``MachineTurnAuthority.derive`` computes —
+    is therefore the union of ``get_enabled_scope_names`` over exactly the
+    agents :func:`eligible_tool_pairs` admits for this user: live, non-draft,
+    connected, not user-disabled, nothing identity-bound (a machine turn
+    carries no verified identity claims). Fail-closed to ``[]`` on any error,
+    ordered by ``VALID_SCOPES`` so the list is stable for audit rows.
+    """
+    from orchestrator.tool_permissions import VALID_SCOPES
+
+    try:
+        disabled = set(orchestrator.tool_permissions.list_disabled_agents(user_id))
+        pairs = eligible_tool_pairs(
+            orchestrator, user_id, disabled_agents=disabled, identity_claims=None)
+        agent_ids: list[str] = []
+        for agent_id, _skill in pairs:
+            if agent_id not in agent_ids:
+                agent_ids.append(agent_id)
+        union: set[str] = set()
+        for agent_id in agent_ids:
+            names = orchestrator.tool_permissions.get_enabled_scope_names(
+                user_id, agent_id) or []
+            union.update(str(name) for name in names)
+    except Exception as exc:
+        # Fail-closed: consent/containment must never widen on an error.
+        # The empty union captures no scopes and asserts none at run time.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "enabled_scope_union failed user=%s: %s", user_id, exc)
+        return []
+    return [scope for scope in VALID_SCOPES if scope in union]
+
+
+__all__ = ["eligible_tool_pairs", "enabled_scope_union"]
