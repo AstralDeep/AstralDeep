@@ -4007,6 +4007,10 @@ class AgentLifecycleManager:
         if not isinstance(coordinator, GovernedLifecycleCoordinator):
             raise TypeError("governed lifecycle coordinator is required")
         self.governed_lifecycle = coordinator
+        # Boot is the one moment no server_dynamic child of a previous
+        # orchestrator process can be alive, so retention-expired per-runtime
+        # executor roots are swept here.
+        self.sweep_dynamic_runtime_roots()
 
     def _active_governed_lifecycle(self) -> GovernedLifecycleCoordinator | None:
         if self.governed_lifecycle is not None:
@@ -4094,6 +4098,7 @@ class AgentLifecycleManager:
             DynamicRuntimeAuthorityError,
             dynamic_runtime_environment,
             prepare_dynamic_runtime_roots,
+            remove_dynamic_runtime_roots,
         )
 
         config = coordinator.service.config
@@ -4123,20 +4128,48 @@ class AgentLifecycleManager:
                 authority_root=authority_root,
             )
         except DynamicRuntimeAuthorityError as exc:
-            # Enforce is fail-closed: a runtime that cannot claim its receipts
-            # must not start.  Shadow keeps today's behaviour and only logs.
+            # No process ever held the roots prepared so far: drop them now
+            # rather than leaving an orphan for the retention sweep.
+            await asyncio.to_thread(remove_dynamic_runtime_roots, config, runtime_id)
             if enforce:
-                # The lease was already granted; release it so the refused
-                # runtime never holds authority nothing can claim.
+                # Fail-closed: a runtime that cannot claim its receipts must
+                # not start.  The lease was already granted; release it so the
+                # refused runtime never holds authority nothing can claim.
                 try:
                     await self._close_dynamic_runtime(draft)
                 except Exception:
                     logger.exception("LETS: close after refused hand-off failed")
                 raise LetsLifecycleError(exc.code) from None
+            # Shadow must NOT lose coverage: the child still spawns with its
+            # pre-existing environment AND the DispatchRuntime is registered
+            # under the SHARED audience (pre-§7.9 behaviour), so would-deny
+            # telemetry keeps observing what enforce would refuse.
             logger.warning(
-                "LETS shadow: dynamic runtime authority hand-off skipped (%s)",
+                "LETS shadow: dynamic runtime authority hand-off skipped "
+                "(%s); runtime %s registered with the shared audience "
+                "(enforce would refuse this spawn)",
                 exc.code,
+                runtime_id,
             )
+            await self._audit_shadow_handoff_refusal(
+                draft, binding=binding, runtime_id=runtime_id, code=exc.code
+            )
+            shared_audience = config.executor_instance_id
+            if self.orchestrator and isinstance(shared_audience, str) and shared_audience:
+                from orchestrator.governed_dispatch import DispatchRuntime
+
+                self.orchestrator.register_governed_dispatch_runtime(
+                    DispatchRuntime(
+                        owner_id=binding.owner_id,
+                        agent_id=binding.agent_id,
+                        population=binding.population.value,
+                        runtime_id=binding.runtime_id,
+                        runtime_generation=binding.runtime_generation,
+                        executor_audience=shared_audience,
+                        executor_conformant=True,
+                        dispatch_posture="protected_executor",
+                    )
+                )
             return result, None
         if self.orchestrator:
             from orchestrator.governed_dispatch import DispatchRuntime
@@ -4154,6 +4187,69 @@ class AgentLifecycleManager:
                 )
             )
         return result, child_env
+
+    async def _audit_shadow_handoff_refusal(
+        self,
+        draft: Mapping[str, Any],
+        *,
+        binding: Any,
+        runtime_id: str,
+        code: str,
+    ) -> None:
+        """Append a value-free ``lets.would_deny`` row for a shadow hand-off miss.
+
+        Non-strict: shadow telemetry must never fail the spawn it observes.
+        """
+
+        try:
+            from orchestrator.lets_audit import LetsAuditObserver
+
+            owner_id = str(draft["user_id"])
+            observer = LetsAuditObserver(
+                actor_user_id=owner_id,
+                auth_principal=owner_id,
+                agent_id=str(binding.agent_id),
+                strict=False,
+            )
+            await observer(
+                "would_deny",
+                {
+                    "audit_correlation_id": runtime_id,
+                    "agent_id": str(binding.agent_id),
+                    "runtime_id": runtime_id,
+                    "binding_id": str(binding.binding_id),
+                    "channel": "lifecycle",
+                    "enforced": False,
+                    "code": code,
+                },
+            )
+        except Exception:
+            logger.warning("LETS shadow: hand-off would-deny audit failed", exc_info=True)
+
+    def sweep_dynamic_runtime_roots(self) -> int:
+        """Boot-time retention sweep of per-runtime executor roots (§7.9).
+
+        See ``dynamic_runtime_authority`` for why roots are retained past
+        lease close and only swept here.  Best-effort; never raises.
+        """
+
+        coordinator = self.governed_lifecycle
+        config = getattr(getattr(coordinator, "service", None), "config", None)
+        if config is None or getattr(config, "mode", "off") == "off":
+            return 0
+        try:
+            from orchestrator.dynamic_runtime_authority import (
+                sweep_dynamic_runtime_roots,
+            )
+
+            running = {
+                str(getattr(proc, "process_id", ""))
+                for proc in self._draft_processes.values()
+            }
+            return sweep_dynamic_runtime_roots(config, keep=frozenset(running))
+        except Exception:
+            logger.warning("LETS: per-runtime executor root sweep failed", exc_info=True)
+            return 0
 
     async def _quiesce_dynamic_runtime(
         self,
@@ -5445,12 +5541,26 @@ class AgentLifecycleManager:
             sandbox_kwargs = {}
 
         process_id = uuid.uuid4()
-        _convergence, lets_env = await self._admit_dynamic_runtime(
-            draft,
-            runtime_id=str(process_id),
-            tools_file=os.path.join(agent_dir, "mcp_tools.py"),
-            base_env=sandbox_kwargs.get("env"),
-        )
+        try:
+            _convergence, lets_env = await self._admit_dynamic_runtime(
+                draft,
+                runtime_id=str(process_id),
+                tools_file=os.path.join(agent_dir, "mcp_tools.py"),
+                base_env=sandbox_kwargs.get("env"),
+            )
+        except LetsLifecycleError as exc:
+            # Pre-spawn refusal gets the same UX as a child that died after
+            # spawn: the draft row records the error and the client receives
+            # the ``agent_creation_progress`` error frame.  Still raised so
+            # callers see the fail-closed refusal.
+            error_msg = f"Agent runtime refused by LETS before start: {exc.code}"
+            logger.error(error_msg)
+            await asyncio.to_thread(
+                self.db.update_draft_agent, draft_id, status=ERROR, error_message=error_msg
+            )
+            await self._send_progress(websocket, draft_id, "error", error_msg, ERROR)
+            await asyncio.to_thread(self._append_log, draft_id, f"ERROR: {error_msg}")
+            raise
         if lets_env is not None:
             # LETS hand-off (design §7.9): the child receives its admitted
             # binding and per-runtime executor identity at spawn.  Without an
