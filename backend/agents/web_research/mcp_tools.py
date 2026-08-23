@@ -3,7 +3,8 @@
 MCP Tools for the Web Research agent — tool functions that return UI Primitives.
 
 Includes:
-- web_search: keyless DuckDuckGo HTML search, or an operator/user-configured
+- web_search: keyless DuckDuckGo HTML search (one retry via the Lite endpoint
+  when DuckDuckGo answers its bot challenge), or an operator/user-configured
   Tavily-compatible JSON search provider (SEARCH_API_URL + SEARCH_API_KEY)
 - fetch_page: egress-gated page fetch (1 MB / 15 s) with readable-text extraction
 - research_brief: search -> fetch top sources -> one LLM synthesis call that
@@ -54,6 +55,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DDG_HTML_URL = "https://html.duckduckgo.com/html/"
+# Second keyless endpoint, tried once when the HTML one answers with its
+# bot challenge. Different markup (a results table), so it has its own parser.
+DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -75,12 +79,38 @@ BRIEF_TIME_BUDGET_S = 110
 MAX_REDIRECT_HOPS = 3
 
 DDG_BACKEND = "DuckDuckGo HTML search"
+DDG_LITE_BACKEND = "DuckDuckGo Lite search"
 PROVIDER_BACKEND = "the configured search provider (SEARCH_API_URL)"
 
 _CREDENTIAL_REMEDY = (
     "You can configure a search provider via the optional SEARCH_API_URL and "
     "SEARCH_API_KEY credentials in the agent's settings."
 )
+
+# DuckDuckGo intermittently answers non-browser traffic from datacenter
+# addresses with HTTP 202 and a ~14 KB "bots use DuckDuckGo too" puzzle page
+# that carries no result anchors at all. Parsing it as an ordinary page yields
+# an EMPTY result list — which research_brief then reported as "returned no
+# results" — so the challenge is recognised explicitly. The markers are the
+# specific class names / phrase seen on the live challenge page rather than
+# the bare words "anomaly"/"challenge"/"bots": a genuine (well-formed, empty)
+# results page echoes the user's query, and a query such as "anomaly
+# detection challenge" must still be reported honestly as no results.
+_DDG_CHALLENGE_MARKERS = (
+    "anomaly-modal",
+    "js-anomaly",
+    "challenge-form",
+    "bots use duckduckgo",
+)
+
+
+class DDGChallengeError(ServiceUnreachableError):
+    """DuckDuckGo refused the keyless search with its bot challenge.
+
+    A transient backend refusal (the same address is served real results a
+    moment later), raised only after the Lite endpoint retry also failed, so
+    the caller reports an actionable error instead of an empty result set.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +145,13 @@ class DDGResultParser(HTMLParser):
     sibling element carrying class ``result__snippet``. The parser extracts
     ``(title, url, snippet)`` triples and survives nested inline markup
     (``<b>``, ``<span>``, …) inside either element.
+
+    The class names are attributes so the Lite-endpoint parser below can
+    reuse the capture machinery against its own markup.
     """
+
+    LINK_CLASS = "result__a"
+    SNIPPET_CLASS = "result__snippet"
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -124,6 +160,10 @@ class DDGResultParser(HTMLParser):
         self._capture_tag: Optional[str] = None  # tag that opened the capture
         self._depth = 0
 
+    def _skip_element(self, tag: str, classes: List[str]) -> bool:
+        """Hook: return True to ignore this start tag (no capture begins)."""
+        return False
+
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         attr_map = dict(attrs)
         classes = (attr_map.get("class") or "").split()
@@ -131,14 +171,16 @@ class DDGResultParser(HTMLParser):
             if tag == self._capture_tag:
                 self._depth += 1
             return
-        if tag == "a" and "result__a" in classes:
+        if self._skip_element(tag, classes):
+            return
+        if tag == "a" and self.LINK_CLASS in classes:
             self.results.append({
                 "title": "",
                 "url": _decode_ddg_href(attr_map.get("href") or ""),
                 "snippet": "",
             })
             self._capture, self._capture_tag, self._depth = "title", tag, 1
-        elif "result__snippet" in classes and self.results:
+        elif self.SNIPPET_CLASS in classes and self.results:
             self._capture, self._capture_tag, self._depth = "snippet", tag, 1
 
     def handle_endtag(self, tag: str) -> None:
@@ -153,9 +195,35 @@ class DDGResultParser(HTMLParser):
             self.results[-1][self._capture] += data
 
 
-def _parse_ddg_html(html_text: str, max_results: int) -> List[Dict[str, str]]:
+class DDGLiteResultParser(DDGResultParser):
+    """Tolerant parser for ``lite.duckduckgo.com/lite`` result pages.
+
+    Results are table rows: ``<a class="result-link" href=…>`` carries the
+    title (``uddg``-wrapped href like the HTML endpoint) and a following
+    ``<td class="result-snippet">`` carries the snippet. Rows marked
+    ``result-sponsored`` are ads whose "more info" anchor is also a
+    ``result-link`` (pointing at a DuckDuckGo help page), so whole sponsored
+    rows are skipped rather than surfacing "more info" as a result.
+    """
+
+    LINK_CLASS = "result-link"
+    SNIPPET_CLASS = "result-snippet"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._in_sponsored_row = False
+
+    def _skip_element(self, tag: str, classes: List[str]) -> bool:
+        if tag == "tr":
+            self._in_sponsored_row = "result-sponsored" in classes
+            return True
+        return self._in_sponsored_row
+
+
+def _parse_ddg_html(html_text: str, max_results: int,
+                    parser_cls: type = DDGResultParser) -> List[Dict[str, str]]:
     """Parse a DDG HTML page into cleaned, de-duplicated result dicts."""
-    parser = DDGResultParser()
+    parser = parser_cls()
     parser.feed(html_text)
     parser.close()
     seen: set = set()
@@ -219,17 +287,70 @@ def _search_via_provider(query: str, max_results: int,
     return results
 
 
-def _search_via_duckduckgo(query: str, max_results: int) -> List[Dict[str, str]]:
-    """GET the keyless DuckDuckGo HTML endpoint and parse result anchors."""
-    resp = external_http.request(
-        "GET", DDG_HTML_URL,
+def _ddg_get(url: str, query: str):
+    """Egress-gated GET of one keyless DuckDuckGo endpoint (no redirects)."""
+    return external_http.request(
+        "GET", url,
         api_key="",
         params={"q": query},
         timeout=SEARCH_TIMEOUT_S,
         max_response_bytes=FETCH_MAX_BYTES,
         extra_headers={"User-Agent": USER_AGENT},
     )
-    return _parse_ddg_html(resp.text, max_results)
+
+
+def _is_ddg_challenge(status: int, html_text: str, results: List[Dict[str, str]]) -> bool:
+    """True when a DDG response is the bot-challenge page, not a results page.
+
+    HTTP 202 is the challenge (the HTML and Lite endpoints answer 200 for a
+    real results page, empty or not). A 200 with zero result anchors is a
+    challenge only when the body also carries the challenge markers — a
+    well-formed empty page stays an honest "no results".
+    """
+    if status == 202:
+        return True
+    if results:
+        return False
+    lowered = (html_text or "").lower()
+    return any(marker in lowered for marker in _DDG_CHALLENGE_MARKERS)
+
+
+def _search_via_duckduckgo(query: str, max_results: int) -> Tuple[List[Dict[str, str]], str]:
+    """Keyless DuckDuckGo search; returns (results, backend name).
+
+    GETs the HTML endpoint first. When it answers with the bot challenge
+    (a transient refusal of non-browser traffic, not an empty result set),
+    retries ONCE against the Lite endpoint. If that is refused or fails too,
+    raises :class:`DDGChallengeError` so the caller renders an actionable
+    error — results are never fabricated (FR-012).
+    """
+    resp = _ddg_get(DDG_HTML_URL, query)
+    results = _parse_ddg_html(resp.text, max_results)
+    if not _is_ddg_challenge(resp.status_code, resp.text, results):
+        return results, DDG_BACKEND
+
+    logger.warning(
+        "DuckDuckGo HTML endpoint answered its bot challenge (HTTP %s, %d bytes); "
+        "retrying once via the Lite endpoint", resp.status_code, len(resp.content or b""))
+    html_verdict = f"the HTML endpoint answered HTTP {resp.status_code} with a challenge page"
+    try:
+        lite = _ddg_get(DDG_LITE_URL, query)
+    except ExternalHttpError as e:
+        raise DDGChallengeError(
+            f"DuckDuckGo's bot challenge blocked the keyless search: {html_verdict} "
+            f"and the Lite endpoint retry failed ({e}). This is a transient refusal "
+            "of non-browser traffic from this server's address, not an empty result "
+            "set — retry shortly.") from e
+    lite_results = _parse_ddg_html(lite.text, max_results, parser_cls=DDGLiteResultParser)
+    if _is_ddg_challenge(lite.status_code, lite.text, lite_results):
+        logger.warning("DuckDuckGo Lite endpoint also answered its bot challenge (HTTP %s)",
+                       lite.status_code)
+        raise DDGChallengeError(
+            f"DuckDuckGo's bot challenge blocked the keyless search: {html_verdict} "
+            f"and the Lite endpoint retry answered HTTP {lite.status_code} with a "
+            "challenge page too. This is a transient refusal of non-browser traffic "
+            "from this server's address, not an empty result set — retry shortly.")
+    return lite_results, DDG_LITE_BACKEND
 
 
 def _perform_search(query: str, max_results: int,
@@ -238,7 +359,7 @@ def _perform_search(query: str, max_results: int,
     api_url, api_key = _search_credentials(kwargs)
     if api_url:
         return _search_via_provider(query, max_results, api_url, api_key), PROVIDER_BACKEND
-    return _search_via_duckduckgo(query, max_results), DDG_BACKEND
+    return _search_via_duckduckgo(query, max_results)
 
 
 def _search_backend_name(kwargs: Dict[str, Any]) -> str:
@@ -247,7 +368,18 @@ def _search_backend_name(kwargs: Dict[str, Any]) -> str:
 
 
 def _search_failure_alert(backend: str, exc: Exception) -> Alert:
-    """FR-012: actionable error naming the failed backend; never fabricate."""
+    """FR-012: actionable error naming the failed backend; never fabricate.
+
+    A DuckDuckGo bot-challenge refusal gets its own title so the user can
+    tell a transient upstream refusal apart from a misconfigured provider;
+    the remedy (SEARCH_API_URL) is the same either way.
+    """
+    if isinstance(exc, DDGChallengeError):
+        return Alert(
+            variant="error",
+            title="Search blocked by DuckDuckGo's bot challenge",
+            message=f"{exc} No results were fabricated. {_CREDENTIAL_REMEDY}",
+        )
     return Alert(
         variant="error",
         title="Search failed",
