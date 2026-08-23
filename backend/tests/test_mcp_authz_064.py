@@ -8,7 +8,11 @@ from orchestrator import mcp_authz
 @pytest.mark.asyncio
 async def test_scope_hierarchy_and_insufficient_scope_challenge(monkeypatch):
     async def decode(_token):
-        return {"sub": "u1", "scope": "mcp:tools:read offline_access"}
+        return {
+            "sub": "u1",
+            "scope": "mcp:tools:read offline_access",
+            "realm_access": {"roles": ["user"]},
+        }
 
     monkeypatch.setattr(mcp_authz, "decode_mcp_token", decode)
     claims = await mcp_authz.authorize_mcp_request(
@@ -30,7 +34,7 @@ async def test_scope_hierarchy_and_insufficient_scope_challenge(monkeypatch):
     assert raised.value.required_scopes == ("mcp:tools:invoke",)
 
     async def decode_discover_only(_token):
-        return {"sub": "u1", "scope": "mcp:discover"}
+        return {"sub": "u1", "scope": "mcp:discover", "realm_access": {"roles": ["admin"]}}
 
     monkeypatch.setattr(mcp_authz, "decode_mcp_token", decode_discover_only)
     with pytest.raises(mcp_authz.MCPAuthError) as multiple:
@@ -54,7 +58,11 @@ async def test_token_value_is_not_returned_or_forwarded(monkeypatch):
 
     async def decode(token):
         assert token == tripwire
-        return {"sub": "u1", "scope": "mcp:tools:invoke"}
+        return {
+            "sub": "u1",
+            "scope": "mcp:tools:invoke",
+            "realm_access": {"roles": ["user"]},
+        }
 
     monkeypatch.setattr(mcp_authz, "decode_mcp_token", decode)
     claims = await mcp_authz.authorize_mcp_request(

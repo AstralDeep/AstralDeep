@@ -17563,6 +17563,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 request_text = _ACTIVE_REQUEST_TEXT.get() or getattr(
                     self, "_active_request", {}
                 ).get(chat_id, "")
+                if _session_claims.get("_invocation_channel") == "mcp":
+                    # Over MCP there is no natural-language turn: the caller
+                    # names the tool explicitly, which IS the expressed
+                    # intent. Supply it as the supervisor's request text so a
+                    # delete_/send_/drop_ tool is not refused as "an action
+                    # you didn't ask for" on every call. Every other gate
+                    # (permissions, 063 destructive refusal, taint, HITL) is
+                    # unchanged (see orchestrator.supervisor docstring).
+                    request_text = _sup.mcp_intent_text(tool_name)
                 if not _sup.intent_aligned(request_text, tool_name):
                     msg = (f"'{tool_name}' looks like a destructive action you "
                            f"didn't ask for — please confirm before it runs.")
@@ -17717,7 +17726,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # — sending them to a correctly configured realm is a dead end.
                 permissions_fault = await self._delegation_denied_for_permissions(
                     websocket, agent_id, user_id)
-                if permissions_fault:
+                signing_key_fault = (
+                    (self.ui_sessions.get(websocket, {}) or {}).get("_delegation_fault")
+                    == "signing_key_unset"
+                )
+                if signing_key_fault:
+                    # MCP channel only: the locally signed mint failed because
+                    # the server's signing key is unset. Sending the caller to
+                    # register IdP client scopes would be a dead end.
+                    err_msg = (
+                        "Tool execution is disabled: the server delegation "
+                        "signing key is not configured, so the orchestrator "
+                        "cannot mint delegated authority for agent "
+                        f"'{agent_id}'. An operator must set "
+                        "DELEGATION_CHILD_SIGNING_KEY."
+                    )
+                elif permissions_fault:
                     err_msg = (
                         f"Tool execution is disabled: you haven't granted '{agent_id}' "
                         "any tool permissions, so it cannot act on your behalf. "
@@ -17734,7 +17758,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
                 logger.error(
                     "Delegation required but unavailable (%s): agent=%s user=%s — refusing dispatch",
-                    "no_enabled_scopes" if permissions_fault else "exchange_unavailable",
+                    "signing_key_unset" if signing_key_fault
+                    else "no_enabled_scopes" if permissions_fault
+                    else "exchange_unavailable",
                     agent_id, user_id,
                 )
                 return GateRefusal(
@@ -20110,11 +20136,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 return None
             session = self.ui_sessions.get(websocket, {})
             if session.get("_invocation_channel") == "mcp":
-                return await self._mint_mcp_delegation_token(
-                    agent_id,
-                    user_id,
-                    session,
-                )
+                from orchestrator import delegation as _dg
+                try:
+                    return await self._mint_mcp_delegation_token(
+                        agent_id,
+                        user_id,
+                        session,
+                    )
+                except _dg.DelegationConfigError:
+                    # The MCP mint is signed locally (no IdP exchange), so a
+                    # missing DELEGATION_CHILD_SIGNING_KEY / MEMORY_HMAC_KEY
+                    # is an operator fault distinct from "realm lacks the
+                    # tools:* scopes". Mark the request-local session so the
+                    # refusal names the real cause; warn once, never the key.
+                    session["_delegation_fault"] = "signing_key_unset"
+                    if not getattr(self, "_mcp_signing_key_warned", False):
+                        self._mcp_signing_key_warned = True
+                        logger.warning(
+                            "MCP delegation refused: server delegation signing key "
+                            "is not configured (set DELEGATION_CHILD_SIGNING_KEY); "
+                            "logged once")
+                    return None
             raw_token = session.get("_raw_token")
             if not raw_token:
                 return None

@@ -17,6 +17,10 @@ from shared.jwks_cache import get_jwks
 
 
 MCP_AUDIENCE = "astral-mcp"
+# Same entry requirement as the web callback (feature 028 FR-005): an
+# authenticated account must carry the ``user`` or ``admin`` realm role. The
+# MCP channel must not become a side door for accounts the product refuses.
+MCP_ENTRY_ROLES = frozenset({"user", "admin"})
 MCP_SCOPES = (
     "mcp:discover",
     "mcp:tools:read",
@@ -92,6 +96,26 @@ def _scope_values(payload: Mapping[str, Any]) -> frozenset[str]:
         values = []
     # offline_access is intentionally neither published nor authoritative here.
     return frozenset(value for value in values if value != "offline_access")
+
+
+def realm_roles(payload: Mapping[str, Any]) -> frozenset[str]:
+    """Realm roles from verified claims (``realm_access.roles`` only).
+
+    Client roles (``resource_access``) are deliberately ignored: the web gate's
+    permissive union exists for shell-render UX, while here the outcome is an
+    authorization decision, so only the realm-level grant counts.
+    """
+    realm_access = payload.get("realm_access")
+    if not isinstance(realm_access, Mapping):
+        return frozenset()
+    roles = realm_access.get("roles")
+    if not isinstance(roles, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(role for role in roles if isinstance(role, str))
+
+
+def has_mcp_entry_role(payload: Mapping[str, Any]) -> bool:
+    return bool(realm_roles(payload) & MCP_ENTRY_ROLES)
 
 
 def effective_mcp_scopes(payload: Mapping[str, Any]) -> frozenset[str]:
@@ -176,6 +200,24 @@ async def decode_mcp_token(token: str) -> dict[str, Any]:
     return payload
 
 
+def require_mcp_entry_role(
+    payload: Mapping[str, Any], required_scopes: Iterable[str]
+) -> None:
+    """Refuse a validly signed token whose account lacks the entry role.
+
+    Mirrors ``web_auth``'s callback gate. The refusal is a 403 with a fixed
+    description and the generic ``insufficient_scope`` challenge error so no
+    claim value (roles, sub, issuer) is echoed back to the caller.
+    """
+    if not has_mcp_entry_role(payload):
+        raise MCPAuthError(
+            403,
+            "insufficient_scope",
+            "account lacks the required realm role",
+            tuple(required_scopes),
+        )
+
+
 async def authorize_mcp_request(
     *,
     headers: Mapping[str, str],
@@ -196,6 +238,10 @@ async def authorize_mcp_request(
         raise
     except Exception as exc:
         raise MCPAuthError(401, "invalid_token", "invalid bearer token", required) from exc
+    # Role check precedes the scope check: the scope challenge lists what a
+    # correctly enrolled client should request, which is moot for an account
+    # the product does not admit at all.
+    require_mcp_entry_role(payload, required)
     missing = tuple(scope for scope in required if scope not in effective_mcp_scopes(payload))
     if missing:
         raise MCPAuthError(403, "insufficient_scope", "required MCP scope is missing", missing)
@@ -206,6 +252,7 @@ async def authorize_mcp_request(
 
 __all__ = [
     "MCP_AUDIENCE",
+    "MCP_ENTRY_ROLES",
     "MCP_SCOPES",
     "MCPAuthError",
     "authorize_mcp_request",
@@ -213,7 +260,10 @@ __all__ = [
     "challenge_header",
     "decode_mcp_token",
     "effective_mcp_scopes",
+    "has_mcp_entry_role",
     "protected_resource_metadata",
+    "realm_roles",
+    "require_mcp_entry_role",
     "resource_identifier",
     "resource_metadata_url",
 ]
