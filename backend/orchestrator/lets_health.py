@@ -367,12 +367,15 @@ def _runtime_failure_codes(status: LetsRuntimeStatus) -> tuple[str, str]:
 
 
 def observe_lets_runtime(runtime: object | None) -> LetsRuntimeObservation | None:
-    """Derive a value-free observation from the composition's cached boot state.
+    """Derive a value-free observation from the composition's cached state.
 
-    The warden client is bound exactly once, at composition; readiness never
-    opens a new connection.  A fully wired graph was reachable when it was
-    composed; an active mode that fell back to the explicit degraded graph
-    (no client) was not.  Off mode and invalid configuration carry no runtime
+    This reads only; it never contacts the warden.  A fully wired graph
+    carries a cached LIVE reachability observation (``runtime.reachability``,
+    ``orchestrator.lets_probe``) whose ``observed_at_ns`` is the time of the
+    last probe — ``None`` from the cache means the warden has never answered
+    and projects as ``starting``.  An active mode that fell back to the
+    explicit degraded graph (no client, so no probe) is ``unavailable`` as of
+    composition.  Off mode and invalid configuration carry no runtime
     observation and are projected from the configuration posture alone.
     """
 
@@ -386,9 +389,19 @@ def observe_lets_runtime(runtime: object | None) -> LetsRuntimeObservation | Non
     observed_at_ns = getattr(runtime, "composed_at_ns", 0)
     if type(observed_at_ns) is not int or observed_at_ns < 0:
         observed_at_ns = 0
-    if getattr(runtime, "ready", False) is True:
-        return LetsRuntimeObservation("healthy", observed_at_ns)
-    return LetsRuntimeObservation("unavailable", observed_at_ns, retryable=True)
+    if getattr(runtime, "ready", False) is not True:
+        return LetsRuntimeObservation("unavailable", observed_at_ns, retryable=True)
+    cached = getattr(getattr(runtime, "reachability", None), "cached", None)
+    if not callable(cached):
+        # A wired graph with no probe seam cannot prove reachability: never
+        # fabricate "healthy" from the mere existence of a client.
+        return None
+    observation = cached()
+    if observation is None:
+        return None
+    if not isinstance(observation, LetsRuntimeObservation):
+        return LetsRuntimeObservation("unavailable", observed_at_ns, retryable=True)
+    return observation
 
 
 def project_runtime_health(
@@ -418,7 +431,8 @@ def readiness_entry(snapshot: LetsHealthSnapshot) -> dict[str, object]:
     Off mode is exactly ``{"mode": "off", "status": "disabled"}`` so a
     flag-off deployment exposes no LETS vocabulary beyond the fact that it is
     off.  Active modes add the operator code, whether existing (ungoverned)
-    behavior may proceed, and the boot-time observation stamp.
+    behavior may proceed, and the observation stamp: the time of the last
+    live probe (``lets_probe``), or ``0`` when the warden never answered.
     """
 
     if not isinstance(snapshot, LetsHealthSnapshot):

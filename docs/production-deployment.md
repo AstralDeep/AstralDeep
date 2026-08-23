@@ -253,6 +253,39 @@ Both are ungated (no user data) and excluded from access logs.
 `docker-compose.yml` wires `/readyz` as the container healthcheck
 (`start_period: 90s` covers agent auto-start).
 
+### `/readyz` `lets` entry
+
+The `/readyz` body carries a bounded `lets` object describing the LETS
+(external warden) posture. With the feature off it is exactly
+`{"mode": "off", "status": "disabled"}` and no warden is ever contacted.
+In `shadow` or `enforce` mode it reads:
+
+```json
+"lets": {"mode": "enforce", "status": "healthy", "reason": "lets_healthy",
+         "governed_effects_permitted": true, "governed_dispatch_ready": true,
+         "retryable": false, "observed_at_ns": 1724400000000000000}
+```
+
+- `status` is the LIVE observation: the orchestrator periodically sends a
+  cheap `GET /health/ready` to the warden (on a worker thread, never on the
+  tool-dispatch path; a caller waits at most 2 s) and caches the answer for
+  `LETS_HEALTH_PROBE_INTERVAL_SECONDS` (default `30`, range 1–3600). The
+  first probe runs at boot. `observed_at_ns` is the time of that last probe;
+  `0` means the warden has never answered (`reason: lets_starting`).
+- `reason` is an operator code only (`lets_healthy`, `lets_starting`,
+  `lets_unavailable`, `lets_trust_failed`, `lets_configuration_invalid`, …);
+  no warden response, exception text, path, or secret is ever echoed.
+- **503 semantics:** `enforce` + `status: blocked` is the only LETS-driven
+  503 (`"status": "degraded"` at the top level, `db` still `ok`). It is
+  reached when the probe finds the warden down, unresolvable, mis-certified,
+  rejecting the service credential, or when configuration is invalid — so an
+  enforce instance whose warden went away is taken out of rotation within
+  one probe interval. A failed probe never changes boot: the process still
+  starts and the readiness probe, not the constructor, gates traffic.
+  `shadow` degradation stays 200 (`status: degraded`, existing behavior
+  unchanged). Admins can read the full redacted projection at
+  `GET /lets/health`.
+
 ## Sessions, sign-out, multi-instance
 
 - Sessions live in Postgres (`web_session`, encrypted) — restarts and N>1

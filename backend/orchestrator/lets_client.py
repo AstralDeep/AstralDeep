@@ -113,6 +113,18 @@ class LetsWardenClient:
             except Exception:
                 raise LetsClientBoundaryError("client_close_failed") from None
 
+    def probe(self) -> None:
+        """Cheap live reachability check (``GET /health/ready``, idempotent).
+
+        Used only by the cached readiness probe (``orchestrator.lets_probe``),
+        never by tool dispatch.  Shares the client's request lock, so one
+        in-flight probe is bounded by the configured request timeout like any
+        other call; the probe layer waits a much shorter window on top.
+        Returns nothing: success is the only value, failure is a boundary code.
+        """
+
+        self._invoke(lambda: self._client.readiness())
+
     def provision_agent(
         self,
         *,

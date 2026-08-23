@@ -238,6 +238,9 @@ class StubClient:
     def lease(self, lease_id: str) -> Mapping[str, Any]:
         return self._call("lease", lease_id)
 
+    def readiness(self) -> Mapping[str, Any]:
+        return self._call("readiness")
+
     def revoke_branch(
         self, lease_id: str, payload: Mapping[str, Any]
     ) -> Mapping[str, Any]:
@@ -770,6 +773,25 @@ def test_transport_local_and_unexpected_errors_are_redacted(
     assert raised.value.status_code is None
     assert "synthetic-sensitive-marker" not in repr(raised.value)
     boundary.close()
+
+
+def test_probe_is_a_cheap_idempotent_readiness_call_through_the_boundary() -> None:
+    boundary, stub, _factory = _boundary({"readiness": {"status": "ready"}})
+    assert boundary.probe() is None
+    assert stub.calls == [("readiness", ())]
+
+    failing, _stub, _factory = _boundary(
+        {"readiness": httpx.ConnectError("synthetic-sensitive-marker")}
+    )
+    with pytest.raises(LetsClientBoundaryError) as raised:
+        failing.probe()
+    assert raised.value.code == "transport_unavailable"
+    assert raised.value.retryable is True
+    assert "synthetic-sensitive-marker" not in repr(raised.value)
+
+    boundary.close()
+    with pytest.raises(LetsClientBoundaryError, match="^client_closed$"):
+        boundary.probe()
 
 
 def test_non_mapping_success_and_closed_client_are_denied() -> None:

@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 import orchestrator.lets_composition as composition_module
 from orchestrator.auth import get_current_user_payload
+from orchestrator.lets_client import LetsClientBoundaryError
 from orchestrator.lets_composition import compose_lets_runtime
 from orchestrator.lets_config import (
     INITIAL_GOVERNED_COHORTS,
@@ -36,7 +37,11 @@ from orchestrator.lets_health import (
     project_runtime_health,
     readiness_entry,
 )
-from orchestrator.lets_health_api import lets_router, readyz_body
+from orchestrator.lets_health_api import (
+    lets_router,
+    readyz_body,
+    refresh_lets_reachability,
+)
 
 LEGACY_READYZ_KEYS = ("status", "db", "generated_agent_publication", "agents")
 SECRET_PATH = "/etc/astral/lets/service-token-must-not-escape"
@@ -52,6 +57,17 @@ class FakePlane(PlaneRuntime):
 
 
 class FakeClient:
+    """Warden client stub whose ``probe`` answers like the real boundary."""
+
+    def __init__(self, failure: LetsClientBoundaryError | None = None) -> None:
+        self.failure = failure
+        self.probes = 0
+
+    def probe(self) -> None:
+        self.probes += 1
+        if self.failure is not None:
+            raise self.failure
+
     def close(self) -> None:  # pragma: no cover - shutdown only
         pass
 
@@ -92,7 +108,13 @@ def _config(mode: str) -> LetsHostConfig:
     )
 
 
-def _compose(monkeypatch: pytest.MonkeyPatch, mode: str, *, reachable: bool):
+def _compose(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    *,
+    reachable: bool,
+    probe_failure: LetsClientBoundaryError | None = None,
+):
     config = _config(mode)
     monkeypatch.setattr(
         composition_module,
@@ -103,7 +125,7 @@ def _compose(monkeypatch: pytest.MonkeyPatch, mode: str, *, reachable: bool):
         monkeypatch.setattr(
             composition_module,
             "create_lets_warden_client",
-            lambda _config: FakeClient(),
+            lambda _config: FakeClient(probe_failure),
         )
     else:
         monkeypatch.setattr(
@@ -158,10 +180,13 @@ def test_enforce_reachable_at_boot_is_ready_and_governed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _compose(monkeypatch, "enforce", reachable=True)
+    # The first LIVE probe ran at composition; healthy is its answer, not an
+    # inference from the client merely existing.
+    assert runtime.client.probes == 1
     observation = observe_lets_runtime(runtime)
     assert observation is not None
     assert observation.status == "healthy"
-    assert observation.observed_at_ns == runtime.composed_at_ns > 0
+    assert observation.observed_at_ns > 0
 
     body, code = readyz_body(_orch(runtime))
     assert code == 200
@@ -173,8 +198,88 @@ def test_enforce_reachable_at_boot_is_ready_and_governed(
         "governed_effects_permitted": True,
         "governed_dispatch_ready": True,
         "retryable": False,
-        "observed_at_ns": runtime.composed_at_ns,
+        "observed_at_ns": observation.observed_at_ns,
     }
+
+
+def test_enforce_warden_down_at_boot_is_blocked_503_but_composes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A composed client proves nothing about reachability: the first probe
+    # fails, composition still succeeds (boot semantics unchanged) and the
+    # readiness probe takes the instance out of rotation.
+    runtime = _compose(
+        monkeypatch,
+        "enforce",
+        reachable=True,
+        probe_failure=LetsClientBoundaryError("transport_unavailable", retryable=True),
+    )
+    assert runtime.ready is True
+    body, code = readyz_body(_orch(runtime))
+    assert code == 503
+    assert body["status"] == "degraded"
+    assert body["lets"]["status"] == "blocked"
+    assert body["lets"]["reason"] == "lets_unavailable"
+    assert body["lets"]["retryable"] is True
+    assert body["lets"]["observed_at_ns"] > 0
+
+
+def test_enforce_credential_rejected_is_trust_failed_not_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _compose(
+        monkeypatch,
+        "enforce",
+        reachable=True,
+        probe_failure=LetsClientBoundaryError("authentication_failed", status_code=401),
+    )
+    body, code = readyz_body(_orch(runtime))
+    assert code == 503
+    assert body["lets"]["reason"] == "lets_trust_failed"
+    assert body["lets"]["retryable"] is False
+
+
+def test_readyz_recovers_when_the_warden_comes_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _compose(
+        monkeypatch,
+        "enforce",
+        reachable=True,
+        probe_failure=LetsClientBoundaryError("transport_unavailable", retryable=True),
+    )
+    assert readyz_body(_orch(runtime))[1] == 503
+    runtime.client.failure = None
+    runtime.reachability.refresh_if_due(force=True)
+    body, code = readyz_body(_orch(runtime))
+    assert code == 200
+    assert body["lets"]["status"] == "healthy"
+
+
+def test_wired_graph_without_an_observation_is_starting_not_healthy() -> None:
+    class NeverAnswered:
+        def cached(self):
+            return None
+
+    runtime = SimpleNamespace(
+        loaded=_load("enforce", config=_config("enforce")),
+        ready=True,
+        composed_at_ns=7,
+        reachability=NeverAnswered(),
+    )
+    assert observe_lets_runtime(runtime) is None
+    body, code = readyz_body(_orch(runtime))
+    assert code == 503
+    assert body["lets"]["reason"] == "lets_starting"
+    assert body["lets"]["observed_at_ns"] == 0
+
+    # A wired graph with no probe seam at all must not read as healthy either.
+    bare = SimpleNamespace(
+        loaded=_load("enforce", config=_config("enforce")),
+        ready=True,
+        composed_at_ns=7,
+    )
+    assert observe_lets_runtime(bare) is None
 
 
 def test_enforce_blocked_turns_readiness_into_503() -> None:
@@ -250,6 +355,42 @@ def test_shadow_reachable_is_healthy_probe_only(
     assert code == 200
     assert body["lets"]["status"] == "healthy"
     assert body["lets"]["governed_dispatch_ready"] is False
+
+
+def test_shadow_warden_down_is_degraded_but_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _compose(
+        monkeypatch,
+        "shadow",
+        reachable=True,
+        probe_failure=LetsClientBoundaryError("request_timeout", retryable=True),
+    )
+    body, code = readyz_body(_orch(runtime))
+    assert code == 200
+    assert body["status"] == "ok"
+    assert body["lets"]["status"] == "degraded"
+    assert body["lets"]["reason"] == "lets_unavailable"
+
+
+def test_off_mode_binds_no_probe_and_refresh_is_a_no_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _compose(monkeypatch, "off", reachable=True)
+    assert runtime.reachability is None
+    refresh_lets_reachability(_orch(runtime))  # no network, no error
+    refresh_lets_reachability(_orch(None, bind=False))
+    assert readyz_body(_orch(runtime))[0]["lets"] == {"mode": "off", "status": "disabled"}
+
+
+def test_refresh_runs_the_cached_probe_only_when_due(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _compose(monkeypatch, "enforce", reachable=True)
+    assert runtime.client.probes == 1
+    refresh_lets_reachability(_orch(runtime))
+    refresh_lets_reachability(_orch(runtime))
+    assert runtime.client.probes == 1  # cache fresh: no new network
 
 
 def test_unbound_active_mode_is_projected_as_starting_not_ready(

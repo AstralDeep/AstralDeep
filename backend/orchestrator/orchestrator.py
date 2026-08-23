@@ -23741,10 +23741,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     {"status": "degraded", "persistence": "unready"},
                     status_code=503,
                 )
-            # LETS posture rides the same probe (no network; cached boot
-            # state only). Enforce + blocked is the only LETS-driven 503.
-            from orchestrator.lets_health_api import readyz_body
+            # LETS posture rides the same probe. The only network it may
+            # cause is the bounded, cached warden reachability probe
+            # (lets_probe; off the event loop, ≤ 2 s, once per
+            # LETS_HEALTH_PROBE_INTERVAL_SECONDS; none at all in off mode).
+            # Enforce + blocked is the only LETS-driven 503, and with the
+            # live probe it is reached whenever the warden stopped answering.
+            from orchestrator.lets_health_api import (
+                readyz_body,
+                refresh_lets_reachability,
+            )
 
+            await asyncio.to_thread(refresh_lets_reachability, self)
             body, code = readyz_body(self)
             if code != 200:
                 return _JSON(body, status_code=code)

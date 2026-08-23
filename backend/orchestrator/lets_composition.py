@@ -25,6 +25,11 @@ from orchestrator.lets_client import (
 from orchestrator.lets_config import LetsConfigLoad, LetsHostConfig, load_lets_config
 from orchestrator.lets_effects import PlaneProtectedEffectCoordinator
 from orchestrator.lets_gateway import LetsAuthorizationGateway
+from orchestrator.lets_probe import (
+    LetsProbeConfigError,
+    LetsReachabilityProbe,
+    probe_interval_seconds,
+)
 from orchestrator.lets_lifecycle import (
     GovernedLifecycleCoordinator,
     LetsLifecycleError,
@@ -57,10 +62,13 @@ class LetsRuntimeComposition:
     byo_lifecycle: GovernedByoAgentLifecycle | None
     lifecycle_reconciler: LetsLifecycleReconciler | None
     effect_reconciler: LetsEffectReconciler | None
-    # Boot-time observation stamp for the no-network readiness projection
-    # (orchestrator.lets_health): the warden client is bound exactly once, at
-    # composition, so this is when its reachability was last actually known.
+    # Boot-time stamp used by the readiness projection when no live probe can
+    # exist (the degraded graph bound no client): the last moment anything
+    # about the warden was actually known.
     composed_at_ns: int = field(default_factory=time.time_ns)
+    # Cached live reachability (orchestrator.lets_probe); None whenever no
+    # client is bound (off mode, invalid configuration, degraded shadow).
+    reachability: LetsReachabilityProbe | None = None
     _stop: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     _tasks: tuple[asyncio.Task[None], ...] = field(default=(), repr=False)
 
@@ -158,6 +166,8 @@ class LetsRuntimeComposition:
         tasks, self._tasks = self._tasks, ()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if self.reachability is not None:
+            self.reachability.close()
         if self.client is not None:
             try:
                 await asyncio.to_thread(self.client.close)
@@ -181,6 +191,13 @@ def compose_lets_runtime(
     if not loaded.readiness.application_ready:
         raise LetsCompositionError(loaded.readiness.reason)
     config = loaded.config
+    # Off mode never parses the probe knob: flag-off stays byte-identical.
+    probe_interval: float | None = None
+    if config is not None and config.mode != "off":
+        try:
+            probe_interval = probe_interval_seconds(environ)
+        except LetsProbeConfigError as exc:
+            raise LetsCompositionError(exc.code) from None
     if config is None:
         # Invalid shadow configuration is deliberately nonblocking and binds no
         # client, Plane operation, or fabricated success evidence.
@@ -236,6 +253,18 @@ def compose_lets_runtime(
             client=client,
         )
         lifecycle = GovernedLifecycleCoordinator(lifecycle_service)
+        assert probe_interval is not None
+        probe = getattr(client, "probe", None)
+        if not callable(probe):
+            raise LetsClientBoundaryError("client_configuration")
+        reachability = LetsReachabilityProbe(probe, interval_seconds=probe_interval)
+        # First live observation at composition. Bounded (≤ PROBE_WAIT_SECONDS)
+        # and never fatal: in shadow a failed probe is a degraded reading, in
+        # enforce it is reported as blocked on /readyz — boot semantics are
+        # deliberately unchanged (a composed enforce graph still boots; the
+        # readiness probe, not the constructor, takes the instance out of
+        # rotation until the warden answers).
+        reachability.refresh_if_due(force=True)
         return LetsRuntimeComposition(
             loaded=loaded,
             plane=plane,
@@ -254,6 +283,7 @@ def compose_lets_runtime(
                 plane=plane,
                 repository=repository,
             ),
+            reachability=reachability,
         )
     except (LetsClientBoundaryError, LetsLifecycleError) as exc:
         if client is not None:
