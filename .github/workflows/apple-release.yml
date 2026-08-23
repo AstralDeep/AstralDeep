@@ -29,8 +29,9 @@ on:
     tags: ["apple-v*"]
   workflow_dispatch:
 
+# The macOS job only checks out; publish-assets elevates to contents: write on its own.
 permissions:
-  contents: read # the macOS job only checks out; publish-assets elevates on its own
+  contents: read
 
 env:
   PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
@@ -392,7 +393,7 @@ jobs:
   publish-assets:
     name: Attach bundles to the GitHub Release
     needs: release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (startsWith(github.ref, 'refs/tags/')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
