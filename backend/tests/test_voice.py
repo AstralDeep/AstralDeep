@@ -159,8 +159,15 @@ def test_speech_server_available_reflects_the_voice_runtime(
     assert orch.speech_server_available() is expected
 
 
-def test_speech_server_available_fails_closed_on_an_unconstructed_runtime() -> None:
+def test_speech_server_available_fails_closed_on_an_unconstructed_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A process whose voice bootstrap failed reports no speech server."""
+    from orchestrator import orchestrator as orchestrator_module
+
+    # Pin the flag ON so the assertion exercises the missing-runtime branch,
+    # not the flag branch (FF_CONVERSATIONAL_VOICE is not ambient-stripped).
+    monkeypatch.setattr(orchestrator_module.flags, "is_enabled", lambda name: True)
     orch = _bare_orchestrator()
     assert orch.speech_server_available() is False
 

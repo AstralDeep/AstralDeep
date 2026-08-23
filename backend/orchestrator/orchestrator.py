@@ -21166,7 +21166,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if worker_pool is None:
                 return False
             return worker_pool.readiness().worker_count > 0
-        except Exception:  # pragma: no cover — a hint must never break the handshake
+        except Exception:  # a hint must never break the handshake
             return False
 
     async def publish_voice_composer_state(
