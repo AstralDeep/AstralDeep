@@ -182,6 +182,26 @@ BYO_TARGET = "byo"           # 058: self-contained bundle, run on the owner's de
 #: the authoring journey.
 BYO_ORIGIN = "byo_client"
 
+#: Junk ``agent_ownership`` ids written by a since-removed legacy "local-agent
+#: filesystem discovery" in the old ``shared/database.py`` (2026-08-03): it
+#: upserted one public ownership row per ``backend/agents/<dir>`` keyed by the
+#: DIRECTORY name instead of the agent's runtime id (``<slug>-1``), and swept
+#: up ``agents/tests`` along the way. These are EXACT literal ids — the boot
+#: sweep never matches by pattern, so ``weather-1`` etc. are untouched.
+LEGACY_DIRECTORY_AGENT_IDS = frozenset({
+    "connectors",
+    "dice_roller",
+    "general",
+    "journal_review",
+    "medical",
+    "ml_services",
+    "remote_compute",
+    "summarizer",
+    "tests",
+    "weather",
+    "web_research",
+})
+
 AGENT_LIFECYCLE_LABELS = {
     "starting": "Starting",
     "online": "Online",
@@ -6217,3 +6237,42 @@ class AgentLifecycleManager:
         except Exception:
             logger.warning("orphaned-draft permission sweep failed", exc_info=True)
         return purged
+
+    def reconcile_legacy_directory_ownership(self, agent_ids=None) -> dict:
+        """Boot-time sweep: delete the junk ownership/permission rows that the
+        removed legacy filesystem discovery keyed by agents/ DIRECTORY names.
+
+        Guarded + idempotent + repeat-safe: only an ``agent_id`` that is
+        string-equal to one of :data:`LEGACY_DIRECTORY_AGENT_IDS` is touched
+        (never a pattern, so real ``<slug>-1`` runtime ids are untouched), and
+        a boot that finds nothing writes nothing. All row removal goes through
+        Plane (``PlaneDraftStore.purge_exact_agent_ids``); no SQL lives here.
+        Returns the per-table removal counts (all zero when nothing matched).
+
+        Args:
+            agent_ids: optional restriction of the candidate set (tests use
+                this to stay scoped); it is intersected with the literal
+                allow-list so a caller can never widen the sweep.
+        """
+        targets = set(LEGACY_DIRECTORY_AGENT_IDS)
+        if agent_ids is not None:
+            targets &= {str(a) for a in agent_ids}
+        empty = {"agent_ownership": 0, "policy_rows": 0, "agent_trust_neutralised": 0}
+        if not targets:
+            return empty
+        try:
+            removed = self.draft_store.purge_exact_agent_ids(
+                sorted(targets),
+                marked_by="system:legacy-directory-ownership-sweep",
+            )
+        except Exception:
+            logger.warning("legacy directory-id ownership sweep failed", exc_info=True)
+            return empty
+        if any(removed.values()):
+            logger.info(
+                "Purged legacy directory-name agent rows: ownership=%d "
+                "policy_rows=%d trust_neutralised=%d (candidates=%s)",
+                removed["agent_ownership"], removed["policy_rows"],
+                removed["agent_trust_neutralised"], sorted(targets),
+            )
+        return removed
