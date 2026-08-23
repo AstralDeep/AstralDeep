@@ -178,6 +178,85 @@ async def test_derive_agentless_job_has_no_scope_skip():
 
 
 @pytest.mark.asyncio
+async def test_derive_agentless_narrows_to_consented_union(monkeypatch):
+    """Agent-less job with consent: allowed = consented ∩ (union across the
+    user's enabled agents), the same helper the capture used."""
+    from orchestrator import tool_visibility
+    seen = []
+    monkeypatch.setattr(tool_visibility, "enabled_scope_union",
+                        lambda o, uid: seen.append(uid) or ["tools:read", "tools:files"])
+    mta, orch, _ = _mta()
+    out = await mta.derive(user_id="u1", agent_id=None,
+                           consented_scopes=["tools:read", "tools:search"],
+                           grant_id="g1", turn_class="scheduled_job")
+    assert isinstance(out, MachineAuthority)
+    assert out.allowed_scopes == ["tools:read"]
+    assert seen == ["u1"]
+    orch.tool_permissions.get_enabled_scope_names.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_derive_agentless_skips_on_empty_intersection(monkeypatch):
+    from orchestrator import tool_visibility
+    monkeypatch.setattr(tool_visibility, "enabled_scope_union",
+                        lambda o, uid: ["tools:files"])
+    mta, _, _ = _mta()
+    out = await mta.derive(user_id="u1", agent_id=None,
+                           consented_scopes=["tools:read"],
+                           grant_id="g1", turn_class="scheduled_job")
+    assert isinstance(out, AuthoritySkip)
+    assert out.reason == "empty_scopes"
+
+
+@pytest.mark.asyncio
+async def test_derive_agentless_union_error_fails_closed(monkeypatch):
+    from orchestrator import tool_visibility
+
+    def boom(o, uid):
+        raise RuntimeError("db")
+    monkeypatch.setattr(tool_visibility, "enabled_scope_union", boom)
+    mta, _, _ = _mta()
+    out = await mta.derive(user_id="u1", agent_id=None,
+                           consented_scopes=["tools:read"],
+                           grant_id="g1", turn_class="scheduled_job")
+    assert isinstance(out, AuthoritySkip)
+    assert out.reason == "empty_scopes"
+
+
+@pytest.mark.asyncio
+async def test_derive_agentless_legacy_empty_consent_does_not_consult_union(monkeypatch):
+    """Legacy agent-less rows (consented_scopes=[]) keep today's behaviour:
+    nothing asserted, nothing widened, union never consulted."""
+    from orchestrator import tool_visibility
+    called = []
+    monkeypatch.setattr(tool_visibility, "enabled_scope_union",
+                        lambda o, uid: called.append(uid) or ["tools:read"])
+    mta, _, _ = _mta()
+    out = await mta.derive(user_id="u1", agent_id=None, consented_scopes=[],
+                           grant_id="g1", turn_class="scheduled_job")
+    assert isinstance(out, MachineAuthority)
+    assert out.allowed_scopes == []
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_derive_agent_bound_path_unchanged(monkeypatch):
+    """Agent-bound: per-agent effective scopes, union helper untouched."""
+    from orchestrator import tool_visibility
+    called = []
+    monkeypatch.setattr(tool_visibility, "enabled_scope_union",
+                        lambda o, uid: called.append(uid) or ["tools:files"])
+    mta, orch, _ = _mta()
+    out = await mta.derive(user_id="u1", agent_id="a1",
+                           consented_scopes=["tools:read", "tools:write"],
+                           grant_id="g1", turn_class="scheduled_job")
+    assert isinstance(out, MachineAuthority)
+    assert out.allowed_scopes == ["tools:read"]
+    orch.tool_permissions.get_enabled_scope_names.assert_called_once_with("u1", "a1")
+    assert called == []
+
+
+@pytest.mark.asyncio
 async def test_derive_refuses_unknown_turn_class():
     mta, _, _ = _mta()
     out = await mta.derive(user_id="u1", agent_id="a1", consented_scopes=[],
