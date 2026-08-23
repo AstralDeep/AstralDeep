@@ -224,6 +224,7 @@ async def record_llm_call(
     outcome: str,
     upstream_error_class: Optional[str] = None,
     correlation_id: Optional[str] = None,
+    routed_model: Optional[str] = None,
 ) -> None:
     """Emit an ``llm_call`` audit event for every LLM-dependent invocation
     (FR-007a). The ``credential_source`` field is the cornerstone of
@@ -237,6 +238,11 @@ async def record_llm_call(
             or ``None`` if the upstream omitted ``usage``.
         outcome: ``"success"`` or ``"failure"``.
         upstream_error_class: Only set on failure.
+        routed_model: The model the request was ACTUALLY issued with when the
+            model router (``FF_MODEL_ROUTER``) re-tiered a SYSTEM call. When
+            given, ``model`` records it and ``configured_model`` keeps the
+            record's default so the row names what was called, not merely
+            what was configured.
     """
     if outcome not in ("success", "failure"):
         raise ValueError(f"unknown outcome: {outcome!r}")
@@ -245,8 +251,10 @@ async def record_llm_call(
         "feature": feature,
         "credential_source": credential_source.value,
         "base_url": resolved.base_url,
-        "model": resolved.model,
+        "model": routed_model or resolved.model,
     }
+    if routed_model and routed_model != resolved.model:
+        inputs_meta["configured_model"] = resolved.model
     outputs_meta: Dict[str, Any] = {}
     if total_tokens is not None:
         outputs_meta["total_tokens"] = int(total_tokens)

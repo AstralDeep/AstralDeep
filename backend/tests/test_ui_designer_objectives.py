@@ -170,3 +170,52 @@ async def test_driver_objectives_default_off_does_not_select(monkeypatch):
     )
     assert out is not None
     assert not any(n.get("type") == "hero" for n in out)
+
+
+# ───────────────────────── orchestrator wiring ──────────────────────────────
+
+async def test_run_designer_passes_connecting_device(monkeypatch):
+    """``Orchestrator._run_designer`` hands the connecting socket's ROTE
+    profile to ``design_round`` as the plain device model the objectives
+    read — without it every candidate scores against a desktop browser."""
+    from types import SimpleNamespace
+    from orchestrator import ui_designer
+    from orchestrator.orchestrator import Orchestrator
+    from rote.capabilities import DeviceProfile
+
+    seen = {}
+
+    async def _fake_design(**kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(ui_designer, "design_round", _fake_design)
+
+    ws = object()
+    profile = DeviceProfile.from_dict({"device_type": "mobile"})
+    fake = SimpleNamespace(
+        rote=SimpleNamespace(get_profile=lambda s: profile if s is ws else None),
+        workspace=SimpleNamespace(live_layouts=lambda c, u: [],
+                                  live_rows=lambda c, u: []),
+    )
+    out = await Orchestrator._run_designer(
+        fake, ws, _COMPS, "chat", "user", "show me", "lk", progress=False)
+    assert out is None
+    assert seen["device"] == {
+        "device_type": "mobile", "is_small": True, "is_voice": False,
+        "max_grid_columns": profile.max_grid_columns,
+    }
+    assert seen["device"]["max_grid_columns"] == 1
+
+
+def test_designer_device_fail_open():
+    from types import SimpleNamespace
+    from orchestrator.orchestrator import _designer_device
+
+    def _boom(_s):
+        raise RuntimeError("no profile")
+
+    rote = SimpleNamespace(get_profile=_boom)
+    assert _designer_device(rote, object()) is None
+    assert _designer_device(rote, None) is None
+    assert _designer_device(None, object()) is None

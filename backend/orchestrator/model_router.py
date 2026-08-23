@@ -107,6 +107,21 @@ def confidence_ok(text: Optional[str], *, min_chars: int = 1) -> bool:
     return not any(m in low for m in _HEDGE_MARKERS)
 
 
+_BAD_TIER_MAP_WARNED = False
+
+
+def _warn_bad_tier_map_once(reason: str) -> None:
+    """Log a malformed ``MODEL_TIERS`` exactly once per process (the map is
+    re-read per call; a per-call WARNING would flood the log). The raw value
+    is never logged."""
+    global _BAD_TIER_MAP_WARNED
+    if _BAD_TIER_MAP_WARNED:
+        return
+    _BAD_TIER_MAP_WARNED = True
+    logger.warning("model_router: %s — ignoring MODEL_TIERS, "
+                   "every tier falls back to the default model", reason)
+
+
 def _env_tier_map() -> Dict[int, str]:
     raw = os.getenv("MODEL_TIERS")
     if not raw:
@@ -114,8 +129,10 @@ def _env_tier_map() -> Dict[int, str]:
     try:
         data = json.loads(raw)
     except (ValueError, TypeError):
+        _warn_bad_tier_map_once("MODEL_TIERS is not valid JSON")
         return {}
     if not isinstance(data, dict):
+        _warn_bad_tier_map_once("MODEL_TIERS must be a JSON object of tier -> model")
         return {}
     by_name = {n: t for t, n in _TIER_NAMES.items()}
     out: Dict[int, str] = {}

@@ -1094,6 +1094,30 @@ def _transactional_runtime_construction(initializer):
     return guarded
 
 
+
+def _designer_device(rote, websocket) -> Optional[Dict[str, Any]]:
+    """The connecting device as the plain model ``rote.objectives._device``
+    reads (``{device_type, is_small, is_voice, max_grid_columns}``), derived
+    from the socket's ROTE profile. Fail-open: ``None`` (the objectives'
+    desktop-browser default) on any error or when there is no socket."""
+    try:
+        if websocket is None or rote is None:
+            return None
+        prof = rote.get_profile(websocket)
+        if prof is None:
+            return None
+        dt = prof.device_type.value if prof.device_type else "browser"
+        return {
+            "device_type": dt,
+            "is_small": dt in ("mobile", "watch"),
+            "is_voice": dt == "voice",
+            "max_grid_columns": int(prof.max_grid_columns),
+        }
+    except Exception:
+        logger.debug("designer device profile unavailable", exc_info=True)
+        return None
+
+
 class Orchestrator:
     @_transactional_runtime_construction
     def __init__(self):
@@ -16206,16 +16230,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # Assemble the optional enhancement params, minus any this endpoint
         # already told us it doesn't support (probe cache). The in-loop except
         # strips any that draw a fresh rejection.
-        cap_key = (getattr(resolved, "base_url", None), call_model)
-        unsupported = getattr(self, "_llm_unsupported_params", {}).get(cap_key, set())
         effort = reasoning_effort if reasoning_effort is not None else getattr(
             self, "llm_reasoning_effort", None)
         effort = self._valid_reasoning_effort(effort)
-        extra_kwargs: Dict[str, Any] = {}
-        if response_format is not None and "response_format" not in unsupported:
-            extra_kwargs["response_format"] = response_format
-        if effort is not None and "reasoning_effort" not in unsupported:
-            extra_kwargs["reasoning_effort"] = effort
         # Device-capability-aware model router. Cheap-first — pick the cheapest
         # tier that fits this task, capped by the connecting device; a
         # low-confidence response escalates one tier (below). Flag-gated
@@ -16239,6 +16256,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     device_caps=getattr(prof, "capabilities", None))
                 if source != self._CredentialSource.USER:
                     call_model, _route_tier = dec.model, dec.tier
+                    if call_model != resolved.model:
+                        # Low-cardinality: tier + model only.
+                        logger.info("model_router: routed tier=%s model=%s",
+                                    model_router.tier_name(dec.tier), call_model)
                 # On-device lane (C-D6): record whether this turn could run on a
                 # capable client's local model, so the client/operator can offload.
                 self._last_route_ondevice = bool(dec.ondevice)
@@ -16248,6 +16269,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("model_router: selection failed — using default model",
                              exc_info=True)
+        # The probe cache is keyed on the model ACTUALLY called — computed
+        # after routing so a routed tier's rejections never land on (or are
+        # read from) the default model's entry.
+        cap_key = (getattr(resolved, "base_url", None), call_model)
+        unsupported = getattr(self, "_llm_unsupported_params", {}).get(cap_key, set())
+        extra_kwargs: Dict[str, Any] = {}
+        if response_format is not None and "response_format" not in unsupported:
+            extra_kwargs["response_format"] = response_format
+        if effort is not None and "reasoning_effort" not in unsupported:
+            extra_kwargs["reasoning_effort"] = effort
         if not allow_stream and _NARRATIVE_STREAM_CHAT.get() is not None:
             allow_stream = True
             stream_chat_id = _NARRATIVE_STREAM_CHAT.get()
@@ -16324,6 +16355,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     feature=feature,
                     credential_source=source,
                     resolved=resolved,
+                    routed_model=call_model,
                     total_tokens=total_tokens,
                     outcome="success",
                 )
@@ -16404,6 +16436,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         feature=feature,
                         credential_source=source,
                         resolved=resolved,
+                        routed_model=call_model,
                         total_tokens=None,
                         outcome="failure",
                         upstream_error_class=error.upstream_error_class,
@@ -21633,6 +21666,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 allowed_types=set(allowed_primitive_types()),
                 llm_call=_designer_llm,
                 current_layout=_current_layout,
+                device=_designer_device(getattr(self, "rote", None), websocket),
             )
 
     async def _deliver_round_components(self, websocket, components: List[Dict], chat_id: str,
