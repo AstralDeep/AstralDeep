@@ -23,6 +23,7 @@ docs/*
 !docs/mcp-server-endpoint.md
 !docs/component-composition.md
 !docs/migration-rollback-074.md
+!docs/lets-external-warden.md
 /.ruff_cache/
 Qualifying_Exam/
 .docker-cache/
