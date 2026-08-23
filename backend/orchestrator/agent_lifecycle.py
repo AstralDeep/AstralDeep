@@ -4061,40 +4061,99 @@ class AgentLifecycleManager:
         *,
         runtime_id: str,
         tools_file: str,
-    ) -> LifecycleConvergence:
+        base_env: Mapping[str, str] | None = None,
+    ) -> tuple[LifecycleConvergence, Dict[str, str] | None]:
+        """Admit the runtime to LETS and build its process-environment hand-off.
+
+        Returns the convergence plus, when an ACTIVE binding exists, the exact
+        child environment carrying that binding, a PER-RUNTIME executor
+        audience and private executor roots (design §7.9).  The same audience
+        is published to final dispatch so the receipts the orchestrator
+        requests for this runtime verify inside the child.  ``None`` means
+        the child must be spawned with its pre-existing environment.
+        """
+
         coordinator = self._active_governed_lifecycle()
         if coordinator is None:
-            return LifecycleConvergence(protected=False)
+            return LifecycleConvergence(protected=False), None
+        owner_id = str(draft["user_id"])
+        agent_id = self._runtime_agent_id(draft)
         result = await coordinator.admit_new_runtime(
-            owner_id=str(draft["user_id"]),
-            agent_id=self._runtime_agent_id(draft),
+            owner_id=owner_id,
+            agent_id=agent_id,
             runtime_id=runtime_id,
             population=AuthorityPopulation.SERVER_DYNAMIC,
             declared_scopes=self._declared_scopes_from_tools_file(tools_file),
             executor_conformant=True,
         )
         binding = result.binding
-        if binding is not None and binding.state.value == "active" and self.orchestrator:
+        if binding is None or binding.state.value != "active":
+            return result, None
+        from orchestrator.dynamic_runtime_authority import (
+            DynamicRuntimeAuthority,
+            DynamicRuntimeAuthorityError,
+            dynamic_runtime_environment,
+            prepare_dynamic_runtime_roots,
+        )
+
+        config = coordinator.service.config
+        enforce = config.mode == "enforce"
+        try:
+            instance_id = config.executor_instance_id
+            if not isinstance(instance_id, str) or not instance_id:
+                raise DynamicRuntimeAuthorityError("executor_audience_unavailable")
+            manifest = config.trust_manifest
+            if manifest is None:
+                raise DynamicRuntimeAuthorityError("warden_id_unavailable")
+            authority = DynamicRuntimeAuthority.from_binding(
+                binding,
+                owner_id=owner_id,
+                agent_id=agent_id,
+                runtime_id=runtime_id,
+                executor_instance_id=instance_id,
+            )
+            database_root, authority_root = await asyncio.to_thread(
+                prepare_dynamic_runtime_roots, config, runtime_id
+            )
+            child_env = dynamic_runtime_environment(
+                base_env,
+                authority,
+                warden_id=manifest.warden_id,
+                database_root=database_root,
+                authority_root=authority_root,
+            )
+        except DynamicRuntimeAuthorityError as exc:
+            # Enforce is fail-closed: a runtime that cannot claim its receipts
+            # must not start.  Shadow keeps today's behaviour and only logs.
+            if enforce:
+                # The lease was already granted; release it so the refused
+                # runtime never holds authority nothing can claim.
+                try:
+                    await self._close_dynamic_runtime(draft)
+                except Exception:
+                    logger.exception("LETS: close after refused hand-off failed")
+                raise LetsLifecycleError(exc.code) from None
+            logger.warning(
+                "LETS shadow: dynamic runtime authority hand-off skipped (%s)",
+                exc.code,
+            )
+            return result, None
+        if self.orchestrator:
             from orchestrator.governed_dispatch import DispatchRuntime
 
-            audience = coordinator.service.config.executor_instance_id
-            if not isinstance(audience, str) or not audience:
-                if coordinator.service.config.mode == "enforce":
-                    raise LetsLifecycleError("executor_audience_unavailable")
-                return result
             self.orchestrator.register_governed_dispatch_runtime(
                 DispatchRuntime(
-                    owner_id=binding.owner_id,
-                    agent_id=binding.agent_id,
-                    population=binding.population.value,
-                    runtime_id=binding.runtime_id,
-                    runtime_generation=binding.runtime_generation,
-                    executor_audience=audience,
+                    owner_id=authority.owner_id,
+                    agent_id=authority.agent_id,
+                    population=authority.population,
+                    runtime_id=authority.runtime_id,
+                    runtime_generation=authority.runtime_generation,
+                    executor_audience=authority.executor_audience,
                     executor_conformant=True,
                     dispatch_posture="protected_executor",
                 )
             )
-        return result
+        return result, child_env
 
     async def _quiesce_dynamic_runtime(
         self,
@@ -5386,11 +5445,17 @@ class AgentLifecycleManager:
             sandbox_kwargs = {}
 
         process_id = uuid.uuid4()
-        await self._admit_dynamic_runtime(
+        _convergence, lets_env = await self._admit_dynamic_runtime(
             draft,
             runtime_id=str(process_id),
             tools_file=os.path.join(agent_dir, "mcp_tools.py"),
+            base_env=sandbox_kwargs.get("env"),
         )
+        if lets_env is not None:
+            # LETS hand-off (design §7.9): the child receives its admitted
+            # binding and per-runtime executor identity at spawn.  Without an
+            # active binding the kwargs are exactly what they were above.
+            sandbox_kwargs["env"] = lets_env
         try:
             proc = self.process_supervisor.spawn(
                 process_id=process_id,
