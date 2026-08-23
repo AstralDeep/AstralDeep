@@ -7,8 +7,9 @@ to talk to user-configured endpoints safely. Provides:
 - ``validate_egress_url`` — rejects loopback / RFC1918 / link-local / non-http
   schemes (DNS rebinding is mitigated by resolving all A/AAAA records and
   rejecting if any resolve into a private range).
-- ``request`` — Bearer-auth wrapper over ``requests`` with bounded timeout,
-  redirect-disable by default, and a response-size cap.
+- ``request`` — wrapper over ``requests`` with optional Bearer auth (only when
+  a non-blank key is supplied), bounded timeout, redirect-disable by default,
+  and a response-size cap.
 
 All upstream error classes are mapped to typed exceptions defined here, so
 agent tools can render targeted user-facing messages (FR-021, FR-022).
@@ -180,9 +181,12 @@ def request(
 ) -> requests.Response:
     """Make an HTTP request to a user-supplied external service.
 
-    Enforces the SSRF guard, sets ``Authorization: Bearer <api_key>``, caps
-    the response body at ``max_response_bytes``, and maps upstream error
-    classes to typed exceptions:
+    Enforces the SSRF guard, sets ``Authorization: Bearer <api_key>`` when
+    ``api_key`` is non-blank (keyless callers pass ``""`` and get NO
+    ``Authorization`` header — a bare ``Bearer `` is malformed and some
+    origins, e.g. Wikipedia, answer it with 400), caps the response body at
+    ``max_response_bytes``, and maps upstream error classes to typed
+    exceptions:
 
     - 401 / 403 → :class:`AuthFailedError`
     - 429 / 5xx → :class:`RateLimitedError`
@@ -194,7 +198,9 @@ def request(
     ``allow_redirects=True``). The caller is responsible for parsing JSON.
     """
     validate_egress_url(url, allowed_private_hosts=allowed_private_hosts)
-    headers = {"Authorization": f"Bearer {api_key}"}
+    headers: Dict[str, str] = {}
+    if isinstance(api_key, str) and api_key.strip():
+        headers["Authorization"] = f"Bearer {api_key}"
     if extra_headers:
         headers.update(extra_headers)
     if files is None and data is None and json_body is not None:

@@ -50,6 +50,52 @@ def test_authorization_header_is_bearer(rmock: HttpMock) -> None:
     assert rmock.calls[0]["headers"]["Authorization"] == "Bearer sentinel-api-key-deadbeef"
 
 
+@pytest.mark.parametrize("blank_key", ["", "   ", "\t\n"])
+def test_blank_api_key_sends_no_authorization_header(rmock: HttpMock, blank_key: str) -> None:
+    """Keyless callers (summarizer/web_research/journal_review pass ``""``)
+    must not emit a malformed ``Authorization: Bearer `` — some origins
+    (Wikipedia, verified live) answer ANY bearer header with 400."""
+    rmock.add("GET", SAFE_URL, status=200, body=b"{}")
+    ext_request("GET", SAFE_URL, api_key=blank_key)
+    sent = rmock.calls[0]["headers"]
+    assert not any(k.lower() == "authorization" for k in sent)
+
+
+def test_blank_api_key_keeps_extra_headers(rmock: HttpMock) -> None:
+    rmock.add("GET", SAFE_URL, status=200, body=b"{}")
+    ext_request("GET", SAFE_URL, api_key="",
+                extra_headers={"User-Agent": "AstralBot/1.0", "Accept": "text/html"})
+    sent = rmock.calls[0]["headers"]
+    assert "Authorization" not in sent
+    assert sent["User-Agent"] == "AstralBot/1.0"
+    assert sent["Accept"] == "text/html"
+
+
+def test_non_empty_api_key_merges_extra_headers(rmock: HttpMock) -> None:
+    rmock.add("GET", SAFE_URL, status=200, body=b"{}")
+    ext_request("GET", SAFE_URL, api_key="sk-live",
+                extra_headers={"User-Agent": "AstralBot/1.0"})
+    sent = rmock.calls[0]["headers"]
+    assert sent["Authorization"] == "Bearer sk-live"
+    assert sent["User-Agent"] == "AstralBot/1.0"
+
+
+def test_extra_headers_may_override_authorization(rmock: HttpMock) -> None:
+    """``extra_headers`` merge AFTER the bearer (pre-existing precedence)."""
+    rmock.add("GET", SAFE_URL, status=200, body=b"{}")
+    ext_request("GET", SAFE_URL, api_key="sk-live",
+                extra_headers={"Authorization": "Basic abc"})
+    assert rmock.calls[0]["headers"]["Authorization"] == "Basic abc"
+
+
+def test_json_body_content_type_set_without_api_key(rmock: HttpMock) -> None:
+    rmock.add("POST", SAFE_URL, status=200, body=b"{}")
+    ext_request("POST", SAFE_URL, api_key="", json_body={"q": 1})
+    sent = rmock.calls[0]["headers"]
+    assert "Authorization" not in sent
+    assert sent["Content-Type"] == "application/json"
+
+
 @pytest.mark.parametrize("status", [401, 403])
 def test_auth_failed_mapped(rmock: HttpMock, status: int) -> None:
     rmock.add("GET", SAFE_URL, status=status, body=b"{}")
