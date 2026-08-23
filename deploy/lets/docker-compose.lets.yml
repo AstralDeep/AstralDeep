@@ -16,7 +16,7 @@
 
 services:
   astral-lets:
-    image: ${ASTRAL_LETS_IMAGE:-astral-lets:v1.0.11-soft-sign-1}   # derived operator image (registry digest preferred when pullable)
+    image: ${ASTRAL_LETS_IMAGE:-astral-lets:v1.0.11-soft-sign-2}   # derived operator image; base = cosign-verified ghcr.io/astraldeep/lets@sha256:73f6b442… (verify per components/LETS/docs/release.md, cosign >= v3)
     container_name: astral-lets-warden
     init: true
     user: "10001:10001"
