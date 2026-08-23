@@ -792,6 +792,11 @@ _ASSET_TOKEN_RE = re.compile(r"%%ASTRAL_V:([^%]+)%%")
 # the historical signature keep working unchanged.
 _NARRATIVE_STREAM_CHAT: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_stream_chat", default=None)
+# True once the route call has actually pushed narrative ``ui_stream_data``
+# frames for the draft this turn — the MoA panel (C-N9) consults it so a draft
+# the user has already read is never silently swapped for a panel winner.
+_NARRATIVE_STREAMED: contextvars.ContextVar = contextvars.ContextVar(
+    "narrative_streamed", default=False)
 
 
 def _static_asset_version(static_dir: str) -> str:
@@ -15162,6 +15167,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     except Exception:
                         logger.debug("phase step start failed (non-fatal)", exc_info=True)
                 _stream_token = _NARRATIVE_STREAM_CHAT.set(chat_id)
+                _NARRATIVE_STREAMED.set(False)
                 try:
                     with perf_span("turn.route", chat=chat_id):
                         llm_msg, usage = await self._call_llm(
@@ -15446,6 +15452,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if not content:
                         content = "I'm not sure how to help with that."
 
+                    # 033 — Mixture-of-Agents panel (C-N9): for a genuinely
+                    # hard pure-reasoning answer, draft a small candidate panel
+                    # and let one judge call pick the winner. Runs BEFORE the
+                    # supervisor review so the supervisor's verdict on what is
+                    # actually sent is final (a block can never be undone by a
+                    # winning candidate). Plain text only; no-op when off
+                    # (default) and fail-open to the draft on any error.
+                    _plain = not content.lstrip().startswith(("{", "["))
+                    if _plain and _tools_used == 0:
+                        content = await self._moa_panel(
+                            websocket, messages, message, content, chat_id)
+
                     # 033 — supervisor drafted-answer review (C-S5): block an
                     # answer that leaks a secret / PHI before it is sent. Skill
                     # induction (C-N10): remember this turn's successful tool
@@ -15460,27 +15478,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if _ledger is not None and _plan_tools:
                         _ledger.plan = list(_plan_tools)
                         logger.info("ledger chat=%s plan=%s", chat_id, _ledger.plan)
-
-                    # 033 — Mixture-of-Agents panel (C-N9): for a hard pure-
-                    # reasoning answer, draft a small candidate panel and let moa
-                    # aggregate. Plain text only; no-op when off (default).
-                    _plain = not content.lstrip().startswith(("{", "["))
-                    if _plain and turn_hooks.should_debate(
-                            difficulty=(0.7 if (_tools_used == 0 and len(content) > 400) else 0.2),
-                            confidence=0.4):
-                        _panel = [("draft", content, float(len(content)))]
-                        for _k in range(2):
-                            try:
-                                _pm, _ = await self._call_llm(websocket, messages, [], feature="moa_panel")
-                                _pt = _sanitize_text_response(_pm.content or "") if _pm else ""
-                                if _pt:
-                                    _panel.append((f"cand{_k}", _pt, float(len(_pt))))
-                            except Exception:
-                                break
-                        _agg = turn_hooks.aggregate_candidates(_panel)
-                        if _agg:
-                            logger.info("moa.panel chat=%s candidates=%d", chat_id, len(_panel))
-                            content = _agg
 
                     parsed_components = None
                     needs_retry = False
@@ -16469,6 +16466,126 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # Defensive: unreachable for a positive MAX_RETRIES value.
         return None, None
 
+    _MOA_CANDIDATE_LABELS = "ABCDEFGH"
+
+    @staticmethod
+    def _moa_panel_timeout() -> float:
+        """Whole-panel wall-clock budget (candidates + judge), env-tunable."""
+        try:
+            return max(1.0, float(os.getenv("MOA_PANEL_TIMEOUT_SECONDS", "45")))
+        except ValueError:
+            return 45.0
+
+    async def _moa_panel(self, websocket, messages, request: str, draft: str,
+                         chat_id: Optional[str]) -> str:
+        """033 C-N9: return the panel's winning answer for a hard turn, or
+        ``draft`` unchanged.
+
+        Gates (all must hold, cheapest first):
+          * ``FF_MOA_DEBATE`` on AND :func:`turn_hooks.should_debate_turn` —
+            a deterministic difficulty score from the user's request plus
+            hedge markers in the draft, against ``MOA_DIFFICULTY_THRESHOLD``;
+          * an interactive UI turn — background turns (scheduled jobs, parser
+            auto-continue, draft self-tests on a ``VirtualWebSocket``) and MCP
+            invocations are skipped so the admin System LLM is never tripled;
+          * the draft was NOT already streamed to the user. A streamed draft
+            has been read; replacing it with a different answer after the
+            fact is more surprising than the silent pause the panel avoids,
+            so such turns keep their draft (documented: with
+            ``FF_LLM_STREAMING`` on the panel only runs when the route call
+            did not stream — JSON-shaped drafts, a streaming fallback, or
+            ``FF_LLM_STREAMING=0``).
+
+        Cost is bounded: two candidate drafts plus ONE judge call, all inside
+        ``MOA_PANEL_TIMEOUT_SECONDS``. The user sees a ``chat_status`` frame
+        while it runs. Any error / timeout / unparsable verdict ⇒ ``draft``.
+        """
+        try:
+            from orchestrator import turn_hooks
+            if not turn_hooks.should_debate_turn(request, draft):
+                return draft
+            if self._protected_dispatch_channel(websocket) != "websocket":
+                logger.info("moa.panel skipped chat=%s reason=background_turn", chat_id)
+                return draft
+            if _NARRATIVE_STREAMED.get():
+                logger.info("moa.panel skipped chat=%s reason=draft_streamed", chat_id)
+                return draft
+        except Exception:
+            logger.debug("moa.panel gate failed (skipping)", exc_info=True)
+            return draft
+
+        await self._safe_send(websocket, json.dumps({
+            "type": "chat_status",
+            "status": "thinking",
+            "message": "Comparing candidate answers...",
+        }))
+        try:
+            winner = await asyncio.wait_for(
+                self._moa_panel_run(websocket, messages, request, draft, chat_id),
+                timeout=self._moa_panel_timeout())
+        except asyncio.TimeoutError:
+            logger.info("moa.panel chat=%s outcome=timeout (kept draft)", chat_id)
+            return draft
+        except Exception:
+            logger.debug("moa.panel failed (kept draft)", exc_info=True)
+            return draft
+        return winner or draft
+
+    async def _moa_panel_run(self, websocket, messages, request: str, draft: str,
+                             chat_id: Optional[str]) -> str:
+        """Draft up to two alternative candidates, then ONE judge call ranks the
+        set; :func:`turn_hooks.aggregate_candidates` runs the debate tournament
+        over that ranking. Scores are set so every fallback path (judge error,
+        partial ranking) resolves to the draft."""
+        from orchestrator import turn_hooks
+        candidates = [("draft", draft, 1.0)]
+        for k in range(2):
+            try:
+                cand_msg, _ = await self._call_llm(
+                    websocket, messages, [], feature="moa_panel")
+                text = _sanitize_text_response(cand_msg.content or "") if cand_msg else ""
+                if text and not text.lstrip().startswith(("{", "[")):
+                    candidates.append((f"cand{k}", text, 0.0))
+            except Exception:
+                logger.debug("moa.panel candidate %d failed", k, exc_info=True)
+                break
+        if len(candidates) < 2:
+            return draft
+
+        labels = self._MOA_CANDIDATE_LABELS
+        listing = "\n\n".join(
+            f"### Candidate {labels[i]}\n{text}" for i, (_, text, _) in enumerate(candidates))
+        judge_messages = [
+            {"role": "system", "content": (
+                "You are an impartial judge comparing candidate answers to the "
+                "same request. Pick the single most accurate, complete and "
+                "well-reasoned answer. Reply with ONLY the candidate letter.")},
+            {"role": "user", "content": (
+                f"Request:\n{request}\n\n{listing}\n\nWhich candidate is best? "
+                f"Answer with one letter ({', '.join(labels[:len(candidates)])}).")},
+        ]
+        ranking = None
+        try:
+            judge_msg, _ = await self._call_llm(
+                websocket, judge_messages, [], feature="moa_judge")
+            verdict = (judge_msg.content or "").strip().upper() if judge_msg else ""
+            match = re.search(r"\b([A-H])\b", verdict)
+            if match:
+                idx = labels.index(match.group(1))
+                if idx < len(candidates):
+                    ranking = {a: (0 if i == idx else 1)
+                               for i, (a, _, _) in enumerate(candidates)}
+        except Exception:
+            logger.debug("moa.panel judge failed (falling back to draft)", exc_info=True)
+        if ranking is None:
+            logger.info("moa.panel chat=%s candidates=%d outcome=no_verdict",
+                        chat_id, len(candidates))
+            return draft
+        winner = turn_hooks.aggregate_candidates(candidates, ranking=ranking)
+        logger.info("moa.panel chat=%s candidates=%d outcome=%s", chat_id,
+                    len(candidates), "winner" if winner else "fallback")
+        return winner or draft
+
     @staticmethod
     def _llm_streaming_enabled() -> bool:
         """FF_LLM_STREAMING kill switch (default on), env-read per call so
@@ -16577,6 +16694,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     seq += 1
                     emitted = True
             if emitted:
+                _NARRATIVE_STREAMED.set(True)
                 await self._emit_narrative_frame(
                     websocket, chat_id, stream_id, seq, "", terminal=True)
         except Exception:

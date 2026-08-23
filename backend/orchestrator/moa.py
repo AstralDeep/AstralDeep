@@ -14,19 +14,146 @@ callable, which keeps this logic trivially testable and provider-agnostic.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from functools import reduce
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 __all__ = [
     "Proposal",
     "moa_enabled",
     "should_invoke",
+    "difficulty_threshold",
+    "request_difficulty",
+    "draft_uncertainty",
+    "turn_difficulty",
     "aggregate",
     "majority_answer",
     "debate_judge",
+    "ranking_judge",
     "panel",
 ]
+
+DEFAULT_DIFFICULTY_THRESHOLD = 0.6
+
+
+def difficulty_threshold() -> float:
+    """Panel trigger threshold, read PER CALL from ``MOA_DIFFICULTY_THRESHOLD``.
+
+    Clamped to ``[0, 1]``; an unset or unparsable value falls back to
+    :data:`DEFAULT_DIFFICULTY_THRESHOLD` so a typo can never open the gate
+    for every turn.
+    """
+    raw = os.getenv("MOA_DIFFICULTY_THRESHOLD", "").strip()
+    if not raw:
+        return DEFAULT_DIFFICULTY_THRESHOLD
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_DIFFICULTY_THRESHOLD
+    if value != value:  # NaN
+        return DEFAULT_DIFFICULTY_THRESHOLD
+    return min(1.0, max(0.0, value))
+
+
+# Request-side markers of a reasoning-heavy ask. Each distinct marker that
+# appears adds a fixed step, capped — three markers already mean "hard".
+_REASONING_MARKERS = (
+    "why", "how does", "how do", "how would", "how should", "explain",
+    "compare", "contrast", "analyze", "analyse", "analysis", "evaluate",
+    "assess", "trade-off", "tradeoff", "trade off", "pros and cons",
+    "advantages", "disadvantages", "versus", " vs ", " vs.", "justify",
+    "argue", "critique", "implications", "in depth", "in-depth", "prove",
+    "derive", "step by step", "step-by-step", "which is better",
+    "should i", "should we", "recommend", "reason", "design",
+)
+# Multi-part asks: enumerations, explicit "also/then/additionally" chaining.
+_MULTIPART_RE = re.compile(
+    r"(?:(?:^|\n)\s*(?:\d+[.)]|[-*•])\s)|\b(?:and also|also|then|additionally|"
+    r"as well as|secondly|finally|furthermore)\b",
+    re.IGNORECASE,
+)
+
+# Draft-side hedges. Reused from the model router when importable so the two
+# capabilities agree on what "the model is unsure" looks like.
+try:  # pragma: no cover — exercised whichever branch the import takes
+    from orchestrator.model_router import _HEDGE_MARKERS as HEDGE_MARKERS
+except Exception:  # pragma: no cover
+    HEDGE_MARKERS = (
+        "i'm not sure", "i am not sure", "not certain", "cannot determine",
+        "i cannot", "i can't", "unable to", "as an ai", "i don't have enough",
+        "insufficient information", "it is unclear", "it's unclear",
+    )
+
+
+def _clamp01(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def request_difficulty(request: str) -> float:
+    """Cheap, deterministic difficulty estimate of the USER'S REQUEST in [0, 1].
+
+    Signals (additive, then clamped):
+
+    * length — ≥15 words ``+0.10``, ≥40 words ``+0.20``;
+    * question marks — one ``+0.05``, two or more ``+0.15``;
+    * reasoning markers (why / compare / analyze / trade-off / …) —
+      ``+0.15`` each distinct marker, capped at ``+0.45``;
+    * multi-part asks (enumerations, "also/then/additionally") ``+0.10``.
+
+    A short factual question ("What's the capital of France?") scores well
+    under the default threshold; a multi-part compare-and-justify ask scores
+    over it.
+    """
+    text = (request or "").strip()
+    if not text:
+        return 0.0
+    low = " " + text.lower() + " "
+    score = 0.0
+    words = len(text.split())
+    if words >= 40:
+        score += 0.20
+    elif words >= 15:
+        score += 0.10
+    qmarks = text.count("?")
+    if qmarks >= 2:
+        score += 0.15
+    elif qmarks == 1:
+        score += 0.05
+    hits = sum(1 for marker in _REASONING_MARKERS if marker in low)
+    score += min(0.45, 0.15 * hits)
+    if _MULTIPART_RE.search(text):
+        score += 0.10
+    return _clamp01(score)
+
+
+def draft_uncertainty(draft: str) -> float:
+    """Uncertainty signal from the DRAFT ANSWER in [0, 1].
+
+    ``+0.25`` when the draft hedges (any :data:`HEDGE_MARKERS` phrase) and
+    ``+0.10`` for a very long (>1500 char) draft, which tends to mean the
+    model was working through something. Deterministic, no model calls.
+    """
+    text = (draft or "")
+    if not text.strip():
+        return 0.0
+    low = text.lower()
+    score = 0.0
+    if any(marker in low for marker in HEDGE_MARKERS):
+        score += 0.25
+    if len(text) > 1500:
+        score += 0.10
+    return _clamp01(score)
+
+
+def turn_difficulty(request: str, draft: str = "") -> float:
+    """Combined request + draft difficulty in [0, 1] — the panel's gate signal.
+
+    Hedges alone never open the gate: a short hedged reply to a simple ask
+    stays well under the default threshold, because the request term is what
+    carries most of the weight.
+    """
+    return _clamp01(request_difficulty(request) + draft_uncertainty(draft))
 
 
 def moa_enabled() -> bool:
@@ -179,6 +306,27 @@ def debate_judge(
         return b
     # verdict < 0 (a wins) and verdict == 0 (tie -> a) both pick `a`.
     return a
+
+
+def ranking_judge(ranking: Dict[str, int]) -> Callable[[Proposal, Proposal], int]:
+    """Build a pairwise judge from ONE precomputed ranking (agent → rank, lower
+    is better).
+
+    This lets the caller pay for a single model judgement over the whole
+    candidate set and still run it through :func:`panel`'s tournament. An
+    agent missing from ``ranking`` raises ``KeyError`` inside the judge, which
+    :func:`debate_judge` turns into its score-based fallback — so a partial
+    or malformed ranking degrades to the scores the caller assigned rather
+    than to an arbitrary winner.
+    """
+    def judge(a: Proposal, b: Proposal) -> int:
+        ra, rb = ranking[a.agent], ranking[b.agent]
+        if ra < rb:
+            return -1
+        if rb < ra:
+            return 1
+        return 0
+    return judge
 
 
 def panel(

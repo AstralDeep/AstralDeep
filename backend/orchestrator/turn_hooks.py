@@ -137,21 +137,63 @@ def review_answer(content: str, phi_check=None):
 # --- MoA debate (C-N9) ----------------------------------------------------- #
 
 def should_debate(difficulty: float, confidence: float) -> bool:
-    """Whether to run the multi-candidate panel for this (hard) turn."""
+    """Whether to run the multi-candidate panel for this (hard) turn.
+
+    The difficulty threshold is ``MOA_DIFFICULTY_THRESHOLD`` (read per call,
+    default 0.6)."""
     try:
         from orchestrator import moa
         return moa.moa_enabled() and moa.should_invoke(
-            difficulty=difficulty, confidence=confidence)
+            difficulty=difficulty, confidence=confidence,
+            difficulty_threshold=moa.difficulty_threshold())
     except Exception:
         return False
 
 
-def aggregate_candidates(candidates) -> Optional[str]:
-    """candidates: iterable of (agent, text, score). Return the winning text."""
+def turn_difficulty(request: str, draft: str = "") -> float:
+    """Deterministic request+draft difficulty in [0, 1] (0.0 on any error)."""
+    try:
+        from orchestrator import moa
+        return moa.turn_difficulty(request, draft)
+    except Exception:
+        return 0.0
+
+
+def should_debate_turn(request: str, draft: str = "") -> bool:
+    """Gate the panel on a REAL signal computed from the turn: the user's
+    request (length, question marks, reasoning / compare / why markers,
+    multi-part asks) plus hedge markers in the drafted answer. Simple short
+    answers never trigger the panel; only the combined score crossing
+    ``MOA_DIFFICULTY_THRESHOLD`` does. Off-flag / any error ⇒ False."""
+    try:
+        from orchestrator import moa
+        if not moa.moa_enabled():
+            return False
+        # confidence=1.0 so only the difficulty term can open the gate: the
+        # draft's hedges are already folded into the difficulty score.
+        return moa.should_invoke(
+            difficulty=moa.turn_difficulty(request, draft), confidence=1.0,
+            difficulty_threshold=moa.difficulty_threshold())
+    except Exception:
+        return False
+
+
+def aggregate_candidates(candidates, ranking=None) -> Optional[str]:
+    """candidates: iterable of (agent, text, score). Return the winning text.
+
+    With ``ranking`` (agent → rank, lower is better — one judge verdict over
+    the whole set) the winner is picked by the debate tournament
+    (:func:`moa.panel` + :func:`moa.ranking_judge`); a candidate the ranking
+    does not cover falls back to score. Without a ranking the highest score
+    wins."""
     try:
         from orchestrator import moa
         props = [moa.Proposal(agent=a, text=t, score=s) for (a, t, s) in candidates]
-        return moa.aggregate(props).text if props else None
+        if not props:
+            return None
+        if ranking:
+            return moa.panel(props, judge=moa.ranking_judge(dict(ranking))).text
+        return moa.aggregate(props).text
     except Exception:
         return None
 
