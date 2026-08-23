@@ -1,0 +1,48 @@
+{
+  "format": "astral.sandbox-lets-enablement/v1",
+  "recordedAtUtc": "2026-08-23T17:25:00Z",
+  "host": "sandbox.ai.uky.edu",
+  "deepCommit": "861a6b8",
+  "letsComponent": {
+    "commit": "6245189920c686353c4ced7a208d56ec266f745c",
+    "tag": "v1.0.11",
+    "registryDigestPullable": false,
+    "wardenImage": "astral-lets:v1.0.11-soft-sign-1"
+  },
+  "warden": {
+    "id": "astral-warden-1",
+    "tenant": "astral-sandbox",
+    "envelope": "astral-tools-2026-08",
+    "configEpoch": 1,
+    "provider": "generic-production",
+    "signer": "software Ed25519 helper (owner-accepted)",
+    "mtls": true,
+    "manifestSha256": "53060dd750cc401c7aa11e0da3195bf4ac53d894629647274edcc9ea4298403c",
+    "policyDigest": "sha256:9674e86ed8418c60c5ada9d7dbdb2f22a2cc2d41c1a30c19a856bf134644ee73",
+    "machineDigest": "sha256:b9d2ee31a4202ee6e06b858bad9c57b0da002522e8a7cd50e7a67f28ea524143"
+  },
+  "orchestrator": {
+    "mode": "enforce",
+    "identity": "minted (LETS_IDENTITY_* per-request EdDSA)",
+    "governedCohorts": [
+      "server_dynamic",
+      "byo_user"
+    ],
+    "executorInstanceId": "astral-orchestrator-sandbox-1"
+  },
+  "proved": [
+    "shadow readiness healthy via live probe",
+    "minted identity accepted (provision/close)",
+    "enforce readiness healthy, governed_dispatch_ready=true",
+    "enforce canary: provision\u2192authorize\u2192verify_and_claim\u2192replay rejected\u2192close",
+    "outage drill: /readyz 503 blocked, provision transport_unavailable, recovery to healthy"
+  ],
+  "notProved": [
+    "real governed agent turn (no draft/BYO agents exist yet)",
+    "LETS drain/backup/verify/activate cycle on this instance",
+    "GHCR digest pull + cosign verification",
+    "3-node fault-injection soak (single-warden host)"
+  ],
+  "storageAttestation": "five Docker named volumes on one disk (/dev/sda2) \u2014 honest, not independent failure domains; no disk-level restores of state/authority/audit",
+  "hostEvidence": "/home/sam/astral-lets/EVIDENCE-2026-08-23.md (host-local, redacted)"
+}

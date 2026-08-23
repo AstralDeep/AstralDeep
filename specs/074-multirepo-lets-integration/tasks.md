@@ -329,6 +329,8 @@
 
 ## Phase 9: Final Local Qualification and Review Checkpoints
 
+> Sandbox enablement (2026-08-23): owner authorized production use of LETS. One warden (`astral-warden-1`, v1.0.11, generic-production + software signer, mTLS) runs beside the sandbox stack; the orchestrator is in `LETS_MODE=enforce` with per-request EdDSA identity. T230 partially closed (composed boot + readiness + enforce canary live); T231 partially closed (single-warden outage/replay/idempotency/exhaustion/revocation drills on this host; no 3-node soak). See execution/sandbox-lets-enablement-2026-08-23.json and docs/lets-external-warden.md.
+
 **Purpose**: Run broad CI-equivalent and live checks only after narrow migration work is stable. The owner's 2026-08-21 direction authorizes qualified PR merges where every gate and required independent review passes; it does not authorize production deployment, release, store submission, paper submission, protection bypass, or gate weakening.
 
 - [X] T222 [P] Re-run AstralPlane unit, architecture, migration, PostgreSQL integration, recovery, outbox, purge, audit-retention, and authority suites from `Y:/WORK/MCP/AstralPlane/pyproject.toml`
