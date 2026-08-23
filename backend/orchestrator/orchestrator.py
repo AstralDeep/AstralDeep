@@ -16269,13 +16269,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # The probe cache is keyed on the model ACTUALLY called — computed
         # after routing so a routed tier's rejections never land on (or are
         # read from) the default model's entry.
-        cap_key = (getattr(resolved, "base_url", None), call_model)
-        unsupported = getattr(self, "_llm_unsupported_params", {}).get(cap_key, set())
-        extra_kwargs: Dict[str, Any] = {}
-        if response_format is not None and "response_format" not in unsupported:
-            extra_kwargs["response_format"] = response_format
-        if effort is not None and "reasoning_effort" not in unsupported:
-            extra_kwargs["reasoning_effort"] = effort
+        def _probe_state(model_name: str):
+            """(cap_key, extra_kwargs) for the model this attempt will call.
+
+            Recomputed whenever ``call_model`` changes (initial routing and
+            the one-shot escalation below) so a tier's rejected params are
+            remembered under — and read from — that tier's own entry.
+            """
+            key = (getattr(resolved, "base_url", None), model_name)
+            rejected = getattr(self, "_llm_unsupported_params", {}).get(key, set())
+            kwargs: Dict[str, Any] = {}
+            if response_format is not None and "response_format" not in rejected:
+                kwargs["response_format"] = response_format
+            if effort is not None and "reasoning_effort" not in rejected:
+                kwargs["reasoning_effort"] = effort
+            return key, kwargs
+
+        cap_key, extra_kwargs = _probe_state(call_model)
         if not allow_stream and _NARRATIVE_STREAM_CHAT.get() is not None:
             allow_stream = True
             stream_chat_id = _NARRATIVE_STREAM_CHAT.get()
@@ -16381,6 +16391,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                    if _next is not None else None)
                     if _next_model and _next_model != call_model:
                         escalated, _route_tier, call_model = True, _next, _next_model
+                        cap_key, extra_kwargs = _probe_state(call_model)
                         logger.info("model_router: low-confidence → escalating to "
                                     "tier %s (%s)", model_router.tier_name(_next),
                                     _next_model)

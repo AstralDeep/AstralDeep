@@ -133,3 +133,37 @@ async def test_failure_row_names_routed_model(monkeypatch):
     assert ev.outcome == "failure"
     assert ev.inputs_meta["model"] == comp.calls[0]["model"]
     assert ev.inputs_meta["model"] != "default-model"
+
+
+async def test_probe_cache_follows_the_escalated_model(monkeypatch):
+    """The one-shot low-confidence escalation re-issues the call on a higher
+    tier; a param rejection on THAT model must be remembered under the
+    escalated model's key, and the escalated call must not inherit the
+    lower tier's stripped params."""
+    _router_on(monkeypatch)
+    # chat_title routes to the small tier (see model_router.route); the
+    # hedged first answer triggers the escalation to mid-70b.
+    from tests.test_call_llm_wave0 import _Resp as _Resp_
+
+    class _Comp(_FakeCompletions):
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["model"] == "tiny-8b":
+                return _Resp_("I'm not sure about that at all.")
+            if "reasoning_effort" in kwargs:
+                raise Exception("400 unknown parameter: reasoning_effort")
+            return _Resp_(_CONFIDENT)
+
+    comp = _Comp()
+    orch = _orch(comp)
+    msg, _ = await orch._call_llm(None, [{"role": "user", "content": "hi"}],
+                                  feature="chat_title", reasoning_effort="high")
+    assert msg is not None and msg.content == _CONFIDENT
+    models = [c["model"] for c in comp.calls]
+    assert models[0] == "tiny-8b" and models[-1] == "mid-70b", models
+    # The escalated call carried reasoning_effort (not stripped by the
+    # lower tier's state), was rejected, and the rejection is keyed on the
+    # ESCALATED model — never on tiny-8b or the default.
+    assert ("https://ep/v1", "mid-70b") in orch._llm_unsupported_params
+    assert ("https://ep/v1", "tiny-8b") not in orch._llm_unsupported_params
+    assert ("https://ep/v1", "default-model") not in orch._llm_unsupported_params
