@@ -81,3 +81,102 @@ def test_legacy_proxy_dependencies_and_process_local_helpers_stay_absent() -> No
         "websockets.connect",
     ):
         assert retired_symbol not in source
+
+
+def test_legacy_speech_server_env_is_gone_from_the_orchestrator() -> None:
+    """The retired dedicated speech-server URL setting has no reader left.
+
+    The ``rote_config`` handshake used to report ``speech_server_available``
+    from an ambient ``SPEACHES_URL`` value the orchestrator never consumed
+    otherwise. The worker's speech endpoint is ``VOICE_SPEECH_BASE_URL`` and
+    this process must not grow a second, unused speech-server knob back.
+    """
+    from orchestrator import orchestrator as orchestrator_module
+
+    source = inspect.getsource(orchestrator_module)
+    assert "SPEACHES_URL" not in source
+    assert 'os.getenv("SPEACHES' not in source
+
+
+def _bare_orchestrator():
+    from orchestrator.orchestrator import Orchestrator
+
+    return Orchestrator.__new__(Orchestrator)
+
+
+class _WorkerPool:
+    def __init__(self, worker_count: int) -> None:
+        self._worker_count = worker_count
+        self.calls = 0
+
+    def readiness(self):
+        from orchestrator.voice_coordinator import WorkerPoolReadiness
+
+        self.calls += 1
+        return WorkerPoolReadiness(
+            ready=self._worker_count > 0,
+            reason="ready" if self._worker_count else "worker_unavailable",
+            worker_count=self._worker_count,
+            capacity_total=self._worker_count,
+            capacity_available=self._worker_count,
+        )
+
+
+@pytest.mark.parametrize(
+    ("flag_on", "runtime_built", "worker_count", "expected"),
+    (
+        (True, True, 1, True),
+        (True, True, 0, False),
+        (True, False, 1, False),
+        (False, True, 1, False),
+    ),
+)
+def test_speech_server_available_reflects_the_voice_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    flag_on: bool,
+    runtime_built: bool,
+    worker_count: int,
+    expected: bool,
+) -> None:
+    """``speech_server_available`` keeps its wire name but answers from voice.
+
+    True only when ``FF_CONVERSATIONAL_VOICE`` is on, the voice services were
+    constructed, and a preflight-gated speech worker is live — never from an
+    ambient URL.
+    """
+    from orchestrator import orchestrator as orchestrator_module
+
+    monkeypatch.setattr(
+        orchestrator_module.flags,
+        "is_enabled",
+        lambda name: flag_on if name == "conversational_voice" else False,
+    )
+    monkeypatch.setenv("SPEACHES_URL", "http://speech.invalid")
+    orch = _bare_orchestrator()
+    orch.voice_runtime = object() if runtime_built else None
+    orch.voice_worker_pool = _WorkerPool(worker_count) if runtime_built else None
+
+    assert orch.speech_server_available() is expected
+
+
+def test_speech_server_available_fails_closed_on_an_unconstructed_runtime() -> None:
+    """A process whose voice bootstrap failed reports no speech server."""
+    orch = _bare_orchestrator()
+    assert orch.speech_server_available() is False
+
+
+def test_speech_server_available_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from orchestrator import orchestrator as orchestrator_module
+
+    monkeypatch.setattr(
+        orchestrator_module.flags, "is_enabled", lambda name: True
+    )
+    orch = _bare_orchestrator()
+    orch.voice_runtime = object()
+
+    class _Broken:
+        def readiness(self):
+            raise RuntimeError("pool exploded")
+
+    orch.voice_worker_pool = _Broken()
+    assert orch.speech_server_available() is False

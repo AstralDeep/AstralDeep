@@ -183,6 +183,14 @@ async def test_register_ui_delivers_welcome_and_dashboard(
     # their device profile before any adapted content lands.
     assert frame_types.index("rote_config") < frame_types.index("system_config")
 
+    # The frame keeps its shape: device_profile plus the boolean
+    # speech_server_available hint, now derived from the voice runtime rather
+    # than a retired ambient speech-server URL.
+    rote_frame = next(f for f in ws.task.outputs if f.get("type") == "rote_config")
+    assert set(rote_frame) == {"type", "device_profile", "speech_server_available"}
+    assert isinstance(rote_frame["speech_server_available"], bool)
+    assert rote_frame["speech_server_available"] is orch.speech_server_available()
+
 
 async def test_register_ui_audit_events_recorded_in_order(
     orch, isolated_mock_identity
