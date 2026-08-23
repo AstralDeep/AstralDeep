@@ -890,21 +890,18 @@ class PlaneDraftStore:
         if not targets:
             return removed
         with self._runtime.transaction() as transaction:
-            ownership = self._agents.list_ownership_for_administration(
-                transaction,
-                limit=5000,
-            )
-            for record in ownership:
-                if record.agent_id not in targets:
-                    continue
-                removed["agent_ownership"] += int(
-                    self._agents.remove_ownership(
-                        transaction,
-                        agent_id=record.agent_id,
-                        owner_email=record.owner_email,
-                    )
-                )
             for agent_id in targets:
+                # Exact-id lookup (agent_id is the ownership key), so the sweep
+                # is independent of table size and never pages past a target.
+                record = self._agents.get_ownership(transaction, agent_id=agent_id)
+                if record is not None:
+                    removed["agent_ownership"] += int(
+                        self._agents.remove_ownership(
+                            transaction,
+                            agent_id=record.agent_id,
+                            owner_email=record.owner_email,
+                        )
+                    )
                 # The inventory verb is suffix-based ("...ends with"); using the
                 # full id as the suffix over-matches (e.g. "x-weather"), so the
                 # exact-equality filter below is what authorises each delete.

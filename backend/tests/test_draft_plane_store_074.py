@@ -1019,10 +1019,15 @@ def test_purge_exact_agent_ids_matches_by_equality_only(boundary) -> None:
             created_at=1, updated_at=2,
         )
 
-    agents.list_ownership_for_administration.return_value = (
-        _own("weather"), _own("weather-1"), _own("weather", "second@example.test"),
-        _own("tests"), _own("x-weather"),
-    )
+    # Ownership is keyed by agent_id, so the sweep asks Plane for each literal
+    # id exactly (never a listing it would have to page or pattern-filter).
+    ownership_rows = {
+        "weather": _own("weather"),
+        "weather-1": _own("weather-1"),
+        "tests": _own("tests"),
+        "x-weather": _own("x-weather"),
+    }
+    agents.get_ownership.side_effect = lambda _t, *, agent_id: ownership_rows.get(agent_id)
     agents.remove_ownership.return_value = True
     tool_policy.list_scoped_agent_owners_for_administration.return_value = (
         SimpleNamespace(owner_id="u1", agent_id="weather"),
@@ -1043,10 +1048,13 @@ def test_purge_exact_agent_ids_matches_by_equality_only(boundary) -> None:
     }
     assert removed_ownership == {
         ("weather", "owner@example.test"),
-        ("weather", "second@example.test"),
         ("tests", "owner@example.test"),
     }
-    assert removed["agent_ownership"] == 3
+    assert removed["agent_ownership"] == 2
+    agents.list_ownership_for_administration.assert_not_called()
+    assert {c.kwargs["agent_id"] for c in agents.get_ownership.call_args_list} == {
+        "weather", "tests",
+    }
     removed_state = {
         (c.kwargs["owner_id"], c.kwargs["agent_id"])
         for c in tool_policy.remove_agent_state.call_args_list

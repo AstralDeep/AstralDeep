@@ -182,12 +182,12 @@ BYO_TARGET = "byo"           # 058: self-contained bundle, run on the owner's de
 #: the authoring journey.
 BYO_ORIGIN = "byo_client"
 
-#: Junk ``agent_ownership`` ids written by a since-removed legacy "local-agent
-#: filesystem discovery" in the old ``shared/database.py`` (2026-08-03): it
-#: upserted one public ownership row per ``backend/agents/<dir>`` keyed by the
-#: DIRECTORY name instead of the agent's runtime id (``<slug>-1``), and swept
-#: up ``agents/tests`` along the way. These are EXACT literal ids — the boot
-#: sweep never matches by pattern, so ``weather-1`` etc. are untouched.
+#: Junk ``agent_ownership`` ids observed on the production database
+#: (created 2026-08-03, seconds before the real ``<slug>-1`` rows, by a
+#: seeding path that no longer exists in Deep or Plane): one public ownership
+#: row per ``backend/agents/<dir>`` keyed by the DIRECTORY name instead of the
+#: agent's runtime id, ``agents/tests`` included. These are EXACT literal ids —
+#: the boot sweep never matches by pattern, so ``weather-1`` etc. are untouched.
 LEGACY_DIRECTORY_AGENT_IDS = frozenset({
     "connectors",
     "dice_roller",
