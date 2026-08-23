@@ -941,7 +941,15 @@ class JobRunner:
         # Checked BEFORE authority derivation so a stale backlog costs no IdP
         # round-trips either.
         scheduled_for = attempt.claim.scheduled_for
-        if self._should_skip_stale(job, scheduled_for):
+        # The decision re-reads the job row (sync Plane round-trip): keep it
+        # off the event loop like the surrounding store calls.
+        skip_stale = await asyncio.to_thread(self._should_skip_stale, job, scheduled_for)
+        if not skip_stale:
+            # Any occurrence of this job that proceeds past the guard ends the
+            # current backlog, so the NEXT backlog notifies again — regardless
+            # of how this run settles (success, failure, or an auth pause).
+            self._stale_notified.discard(job_id)
+        if skip_stale:
             age_s = int(occurrence_age_seconds(scheduled_for))
             logger.info(
                 "scheduler.skipped_stale",
