@@ -24054,12 +24054,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     {"status": "degraded", "persistence": "unready"},
                     status_code=503,
                 )
-            return {
-                "status": "ok",
-                "db": "ok",
-                "generated_agent_publication": "ok",
-                "agents": len(self.agent_cards),
-            }
+            # LETS posture rides the same probe. The only network it may
+            # cause is the bounded, cached warden reachability probe
+            # (lets_probe; off the event loop, ≤ 2 s, once per
+            # LETS_HEALTH_PROBE_INTERVAL_SECONDS; none at all in off mode).
+            # Enforce + blocked is the only LETS-driven 503, and with the
+            # live probe it is reached whenever the warden stopped answering.
+            from orchestrator.lets_health_api import (
+                readyz_body,
+                refresh_lets_reachability,
+            )
+
+            await asyncio.to_thread(refresh_lets_reachability, self)
+            body, code = readyz_body(self)
+            if code != 200:
+                return _JSON(body, status_code=code)
+            return body
 
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
@@ -24211,6 +24221,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(draft_router)
         app.include_router(dashboard_router)
         app.include_router(chrome_router)  # Feature 042 — GET /api/chrome/menu
+        from orchestrator.lets_health_api import lets_router
+        app.include_router(lets_router)  # admin-only GET /lets/health
         # Feature 055 US5 — flag-gated export/share (routes 404 while off)
         app.include_router(export_router)
         app.include_router(share_router)

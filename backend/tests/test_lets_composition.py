@@ -46,6 +46,10 @@ class FakePlane(PlaneRuntime):
 class FakeClient:
     def __init__(self) -> None:
         self.closed = False
+        self.probes = 0
+
+    def probe(self) -> None:
+        self.probes += 1
 
     def close(self) -> None:
         self.closed = True
@@ -164,6 +168,8 @@ async def test_active_composition_wires_plane_gateway_lifecycle_and_owner_recove
         200,
     )
 
+    assert client.probes == 1  # first live reachability probe at composition
+    assert runtime.reachability is not None
     await runtime.stop()
     assert client.closed is True
 
@@ -299,3 +305,57 @@ def test_enforce_minted_identity_with_unreadable_seed_blocks_with_stable_code(
     with pytest.raises(LetsCompositionError, match="^credential_unavailable$") as raised:
         compose_lets_runtime(plane=FakePlane(), repository=AuthorityRepository())
     assert str(tmp_path) not in repr(raised.value)
+
+
+def test_invalid_probe_interval_refuses_active_composition_but_not_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environ = {"LETS_HEALTH_PROBE_INTERVAL_SECONDS": "0"}
+    enforce = _config("enforce")
+    monkeypatch.setattr(
+        composition_module,
+        "load_lets_config",
+        lambda _environ=None: _load("enforce", config=enforce),
+    )
+    monkeypatch.setattr(
+        composition_module,
+        "create_lets_warden_client",
+        lambda _config: FakeClient(),
+    )
+    with pytest.raises(LetsCompositionError, match="^invalid_health_probe_interval$"):
+        compose_lets_runtime(
+            plane=FakePlane(), repository=AuthorityRepository(), environ=environ
+        )
+
+    off = _config("off")
+    monkeypatch.setattr(
+        composition_module,
+        "load_lets_config",
+        lambda _environ=None: _load("off", config=off),
+    )
+    runtime = compose_lets_runtime(
+        plane=FakePlane(), repository=AuthorityRepository(), environ=environ
+    )
+    assert runtime.reachability is None
+
+
+def test_client_without_a_probe_seam_is_refused_in_enforce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NoProbe:
+        def close(self) -> None:
+            pass
+
+    enforce = _config("enforce")
+    monkeypatch.setattr(
+        composition_module,
+        "load_lets_config",
+        lambda _environ=None: _load("enforce", config=enforce),
+    )
+    monkeypatch.setattr(
+        composition_module,
+        "create_lets_warden_client",
+        lambda _config: NoProbe(),
+    )
+    with pytest.raises(LetsCompositionError, match="^client_configuration$"):
+        compose_lets_runtime(plane=FakePlane(), repository=AuthorityRepository())
