@@ -1,0 +1,131 @@
+# Tracked, secret-free TEMPLATE of the host-local docker-compose.override.yml for the LETS warden
+# (feature 074 Phase B; design: one LETS v1.0.11 warden, Option A identity). Copy to
+# /opt/AstralDeep/docker-compose.override.yml (gitignored) and replace the placeholders, or use it
+# directly:  docker compose -f docker-compose.yml -f deploy/lets/docker-compose.lets.yml ...
+#
+# Placeholders (interpolated from the environment / .env):
+#   ASTRAL_LETS_HOME   host directory holding etc/config.json (staged immutable warden config) and
+#                      orchestrator/ (lets-ca.pem, client-cert.pem, client-key.pem, lets-manifest.json,
+#                      lets-operator-trust.json, identity.seed) -- e.g. /home/sam/astral-lets (mode 0700)
+#   ASTRAL_LETS_IMAGE  derived operator image = signed LETS runtime + /usr/local/bin/lets-soft-sign;
+#                      prefer the cosign-verified registry digest once the GHCR package is readable.
+# Named volumes are provisioned out-of-band (see /home/sam/astral-lets/RUNBOOK.md): trust/signer/tls are
+# read-only root-owned volumes (Compose file secrets do not honour uid/mode on this host); state/authority/
+# audit are uid 10001; exec-db/exec-authority are the orchestrator's executor replay store + anchor.
+# NO secret belongs in this file or in the override: credentials live only in the volumes / ASTRAL_LETS_HOME.
+
+services:
+  astral-lets:
+    image: ${ASTRAL_LETS_IMAGE:-astral-lets:v1.0.11-soft-sign-1}   # derived operator image (registry digest preferred when pullable)
+    container_name: astral-lets-warden
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - lets
+      - --config
+      - /var/lib/lets/config.json
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8443"
+      - --production
+      - --runtime-provider
+      - generic-production
+      - --tls-cert
+      - /etc/lets/tls/server-cert.pem        # ro named volume instead of /run/secrets (Compose ignores secret uid/mode on this host, design §0.2 #2)
+      - --tls-key
+      - /etc/lets/tls/server-key.pem
+      - --client-ca
+      - /etc/lets/tls/ca.pem                  # inbound mTLS is mandatory in --production
+      - --peer-ca
+      - /etc/lets/tls/ca.pem
+      - --peer-cert
+      - /etc/lets/tls/peer-cert.pem
+      - --peer-key
+      - /etc/lets/tls/peer-key.pem
+      - --limit-concurrency
+      - "64"
+      - --backlog
+      - "128"
+      - --request-body-timeout
+      - "30"
+      - --peer-request-timeout-seconds
+      - "60"                                   # production admits 30..60
+      - --timeout-keep-alive
+      - "5"
+      - --timeout-graceful-shutdown
+      - "30"
+    environment:
+      LETS_HEALTHCHECK_HOST: 127.0.0.1
+      LETS_HEALTHCHECK_PORT: "8443"
+      LETS_HEALTHCHECK_SERVER_NAME: astral-lets
+      LETS_HEALTHCHECK_CA: /etc/lets/tls/ca.pem
+      LETS_HEALTHCHECK_CERT: /etc/lets/tls/peer-cert.pem
+      LETS_HEALTHCHECK_KEY: /etc/lets/tls/peer-key.pem
+    volumes:
+      - astral-lets-state:/var/lib/lets
+      - type: bind
+        source: ${ASTRAL_LETS_HOME:?set ASTRAL_LETS_HOME}/etc/config.json       # staged immutable config: nested ro bind over the writable state dir
+        target: /var/lib/lets/config.json
+        read_only: true
+        bind:
+          create_host_path: false
+          propagation: rprivate
+      - astral-lets-authority:/var/lib/lets-authority
+      - astral-lets-audit:/var/lib/lets-audit
+      - astral-lets-trust:/etc/lets/trust:ro
+      - astral-lets-signer:/etc/lets/signer:ro
+      - astral-lets-tls:/etc/lets/tls:ro
+    ports:
+      - "127.0.0.1:8443:8443"                  # loopback only; the orchestrator uses the service name on astraldeep_default
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    pids_limit: 256
+    cpus: "2.0"
+    mem_limit: 1g
+    memswap_limit: 1g
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    healthcheck:
+      test: [CMD, python, /app/deploy/production/healthcheck.py]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 600s                       # cold admission scans; never shorten below the measured bound
+    stop_signal: SIGTERM
+    stop_grace_period: 120s                    # shutdown inequality (LETS deploy README)
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # Orchestrator additions (design §2.4). The LETS_* posture itself comes from .env (orchestrator.env.snippet);
+  # the operator recreates this service later (`docker compose up -d --force-recreate astraldeep`).
+  astraldeep:
+    environment:
+      LETS_WARDEN_URL: https://astral-lets:8443
+    volumes:
+      - ${ASTRAL_LETS_HOME:?set ASTRAL_LETS_HOME}/orchestrator:/etc/astral/lets:ro
+      - astral-lets-exec-db:/var/lib/astral-lets-executor
+      - astral-lets-exec-authority:/var/lib/astral-lets-executor-authority
+    depends_on:
+      astral-lets:
+        condition: service_healthy          # shadow degrades gracefully anyway; enforce refuses to boot without the warden
+
+volumes:
+  astral-lets-state:          {external: true}
+  astral-lets-authority:      {external: true}
+  astral-lets-audit:          {external: true}
+  astral-lets-trust:          {external: true}
+  astral-lets-signer:         {external: true}
+  astral-lets-tls:            {external: true}
+  astral-lets-exec-db:        {external: true}
+  astral-lets-exec-authority: {external: true}

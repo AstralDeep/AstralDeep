@@ -131,3 +131,6 @@ verification_log.txt
 # Feature 032 — verification harness run artifacts (gitignored, per-run namespaced)
 backend/verification/.runs/
 ._*
+
+# Host-local Compose override (LETS warden wiring, feature 074 Phase B) -- never commit; template lives in deploy/lets/
+docker-compose.override.yml
