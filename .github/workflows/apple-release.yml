@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read # checkout only; the App Store is the channel, not a GH Release
+  contents: read # the macOS job only checks out; publish-assets elevates on its own
 
 env:
   PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
@@ -310,6 +310,29 @@ jobs:
           echo "IPA=$IPA" >> "$GITHUB_ENV"
           echo "PKG=$PKG" >> "$GITHUB_ENV"
 
+      # The App Store stays the install channel, but the exact bundles that
+      # were validated and uploaded are also kept as downloadable release
+      # assets (evidence + sideload for Apple-registered devices). Staged as a
+      # workflow artifact so the publish job can run with `contents: write`
+      # on a Linux runner while this signing job keeps `contents: read`.
+      - name: Stage the exported bundles for the release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          STAGE="$RUNNER_TEMP/release-assets"
+          mkdir -p "$STAGE"
+          cp "$IPA" "$STAGE/AstralDeep-ios-${GITHUB_REF_NAME}.ipa"
+          cp "$PKG" "$STAGE/AstralDeep-macos-${GITHUB_REF_NAME}.pkg"
+          ( cd "$STAGE" && shasum -a 256 *.ipa *.pkg > SHA256SUMS && cat SHA256SUMS )
+          echo "ASSET_STAGE=$STAGE" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: apple-release-assets
+          path: ${{ env.ASSET_STAGE }}
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Materialize the App Store Connect API key
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -362,3 +385,45 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/astral-signing.keychain-db" 2>/dev/null || true
           rm -f ~/.appstoreconnect/private_keys/*.p8 2>/dev/null || true
+
+  # Tag pushes only: attach the validated bundles to the GitHub Release for the
+  # tag. The release job above keeps `contents: read`; this Linux job is the
+  # only step that writes to the repository (the release object).
+  publish-assets:
+    name: Attach bundles to the GitHub Release
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: apple-release-assets
+          path: release-assets
+
+      - name: Verify the staged checksums
+        working-directory: release-assets
+        run: |
+          ls -la
+          sha256sum -c SHA256SUMS
+
+      - name: Create / update the GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            release-assets/*.ipa
+            release-assets/*.pkg
+            release-assets/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            Apple clients ${{ github.ref_name }} (iOS + embedded watchOS, and macOS).
+
+            **Install channel: App Store / TestFlight.** Both bundles were validated
+            and uploaded to the Universal Purchase record by this run. The attached
+            `.ipa` / `.pkg` are the exact App-Store-signed bundles (not Developer-ID
+            notarized), kept here as evidence and for Apple-registered devices;
+            `SHA256SUMS` covers both.
+

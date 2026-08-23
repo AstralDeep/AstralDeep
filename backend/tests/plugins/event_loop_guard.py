@@ -96,8 +96,16 @@ def _wrap(method_name: str, original):
 
 
 def install() -> None:
-    """Idempotently install the guard wrapper on ``PlaneRuntime``."""
-    from astralplane import PlaneRuntime
+    """Idempotently install the guard wrapper on ``PlaneRuntime``.
+
+    The Plane is a composed component: CI lanes that exercise only
+    Deep-owned tooling run a handful of backend tests WITHOUT the
+    component wheels installed, and the guard has nothing to wrap there.
+    """
+    try:
+        from astralplane import PlaneRuntime
+    except ImportError:
+        return
 
     for name in GUARDED_METHODS:
         current = getattr(PlaneRuntime, name, None)
@@ -109,6 +117,8 @@ def install() -> None:
 
 def uninstall() -> None:
     """Restore the original ``PlaneRuntime`` method."""
+    if not _originals:
+        return
     from astralplane import PlaneRuntime
 
     for name, original in _originals.items():
