@@ -38,6 +38,19 @@ INITIAL_GOVERNED_COHORTS: Final = ("server_dynamic", "byo_user")
 MAX_TRUST_MANIFEST_BYTES: Final = 16 * 1024 * 1024
 MAX_REQUEST_TIMEOUT_SECONDS: Final = 30.0
 MAX_REQUEST_ATTEMPTS: Final = 3
+IDENTITY_SEED_BYTES: Final = 32
+DEFAULT_IDENTITY_TOKEN_TTL_SECONDS: Final = 120
+MAX_IDENTITY_TOKEN_TTL_SECONDS: Final = 3600
+MAX_IDENTITY_SCOPES: Final = 64
+_IDENTITY_VARIABLES: Final = (
+    "LETS_IDENTITY_SEED_FILE",
+    "LETS_IDENTITY_KID",
+    "LETS_IDENTITY_ISSUER",
+    "LETS_IDENTITY_AUDIENCE",
+    "LETS_IDENTITY_SUBJECT",
+    "LETS_IDENTITY_SCOPES",
+    "LETS_IDENTITY_TOKEN_TTL_SECONDS",
+)
 _MAX_RESOURCE: Final = (1 << 63) - 1
 _ACTIVE_MODES: Final = frozenset({"shadow", "enforce"})
 _DEVELOPMENT_ENVIRONMENTS: Final = frozenset({"dev", "development", "test"})
@@ -46,6 +59,8 @@ _POSITIVE_INTEGER = re.compile(r"^[1-9][0-9]*$")
 _NON_NEGATIVE_INTEGER = re.compile(r"^(?:0|[1-9][0-9]*)$")
 _DECIMAL = re.compile(r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
 _DNS_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+# Mirrors LETS ``require_key_id``: ASCII, HTTP-header-safe key identifiers.
+_KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~:/+-]{0,511}$")
 _COHORTS = frozenset(INITIAL_GOVERNED_COHORTS)
 _MANIFEST_FIELDS = frozenset(
     {
@@ -85,6 +100,31 @@ class SecretFileReference:
 
 
 @dataclass(frozen=True, slots=True)
+class LetsIdentityConfig:
+    """Per-request EdDSA service-identity minting parameters.
+
+    The Ed25519 seed stays unread here; only its file reference is retained.
+    Every other field is public JWT metadata that the warden already holds in
+    its identity key registry, so the redacted view exposes counts only.
+    """
+
+    seed_file: SecretFileReference = field(repr=False)
+    kid: str = field(repr=False)
+    issuer: str = field(repr=False)
+    audience: str = field(repr=False)
+    subject: str = field(repr=False)
+    scopes: tuple[str, ...] = field(repr=False)
+    token_ttl_seconds: int = DEFAULT_IDENTITY_TOKEN_TTL_SECONDS
+
+    def redacted(self) -> dict[str, object]:
+        return {
+            "seed_file": self.seed_file.redacted(),
+            "scope_count": len(self.scopes),
+            "token_ttl_seconds": self.token_ttl_seconds,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AuthenticatedTrustManifest:
     """Safe metadata retained after external signature authentication."""
 
@@ -110,6 +150,7 @@ class LetsHostConfig:
     governed_agent_allowlist: tuple[str, ...]
     warden_origin: str | None = None
     service_token_file: SecretFileReference | None = field(default=None, repr=False)
+    identity: LetsIdentityConfig | None = field(default=None, repr=False)
     ca_bundle: SecretFileReference | None = field(default=None, repr=False)
     client_cert_file: SecretFileReference | None = field(default=None, repr=False)
     client_key_file: SecretFileReference | None = field(default=None, repr=False)
@@ -169,12 +210,16 @@ class LetsHostConfig:
             _required(values, "LETS_WARDEN_URL", "missing_warden_url"),
             production=production,
         )
-        service_token = _required_file(
+        service_token = _optional_file(
             values,
             "LETS_SERVICE_TOKEN_FILE",
-            missing_code="missing_service_token_file",
             invalid_code="invalid_service_token_file",
         )
+        identity = _identity(values)
+        if service_token is not None and identity is not None:
+            raise LetsConfigError("conflicting_service_identity")
+        if service_token is None and identity is None:
+            raise LetsConfigError("missing_service_identity")
         ca_bundle = _optional_file(
             values,
             "LETS_CA_BUNDLE",
@@ -272,6 +317,7 @@ class LetsHostConfig:
             governed_agent_allowlist=agent_allowlist,
             warden_origin=warden_origin,
             service_token_file=service_token,
+            identity=identity,
             ca_bundle=ca_bundle,
             client_cert_file=client_cert,
             client_key_file=client_key,
@@ -289,6 +335,16 @@ class LetsHostConfig:
             executor_authority_root=executor_authority_root,
         )
 
+    @property
+    def service_identity_mode(self) -> Literal["token_file", "minted"] | None:
+        """How the warden client authenticates: a static bearer or per-request JWTs."""
+
+        if self.identity is not None:
+            return "minted"
+        if self.service_token_file is not None:
+            return "token_file"
+        return None
+
     def redacted(self) -> dict[str, object]:
         """Return diagnostics that contain no file paths or secret material."""
 
@@ -299,7 +355,9 @@ class LetsHostConfig:
             "governed_cohorts": self.governed_cohorts,
             "governed_agent_allowlist_count": len(self.governed_agent_allowlist),
             "warden_origin": self.warden_origin,
+            "service_identity_mode": self.service_identity_mode,
             "service_token_file": _configured(self.service_token_file),
+            "identity": None if self.identity is None else self.identity.redacted(),
             "ca_bundle": _configured(self.ca_bundle),
             "mtls_identity": self.client_cert_file is not None,
             "trust_manifest": _configured(self.trust_manifest),
@@ -554,6 +612,70 @@ def _file_reference(raw: str, code: str) -> SecretFileReference:
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0:
         raise LetsConfigError(code)
     return SecretFileReference(path=path, size_bytes=metadata.st_size)
+
+
+def _identity(values: Mapping[str, str]) -> LetsIdentityConfig | None:
+    """Parse the minted-identity block; ``None`` when no variable is set."""
+
+    present = [
+        name
+        for name in _IDENTITY_VARIABLES
+        if isinstance(values.get(name), str) and values[name].strip()
+    ]
+    if not present:
+        return None
+    seed_file = _required_file(
+        values,
+        "LETS_IDENTITY_SEED_FILE",
+        missing_code="missing_identity_seed_file",
+        invalid_code="invalid_identity_seed_file",
+    )
+    if seed_file.size_bytes != IDENTITY_SEED_BYTES:
+        raise LetsConfigError("invalid_identity_seed_file")
+    kid = values.get("LETS_IDENTITY_KID")
+    if not isinstance(kid, str) or _KEY_ID.fullmatch(kid) is None:
+        raise LetsConfigError("invalid_identity_kid")
+    issuer = _identifier(values, "LETS_IDENTITY_ISSUER", "invalid_identity_issuer")
+    audience = _identifier(
+        values, "LETS_IDENTITY_AUDIENCE", "invalid_identity_audience"
+    )
+    subject = _identifier(
+        values, "LETS_IDENTITY_SUBJECT", "invalid_identity_subject", maximum=256
+    )
+    scopes = _identity_scopes(values)
+    raw_ttl = values.get("LETS_IDENTITY_TOKEN_TTL_SECONDS")
+    if raw_ttl is None or (isinstance(raw_ttl, str) and not raw_ttl.strip()):
+        ttl = DEFAULT_IDENTITY_TOKEN_TTL_SECONDS
+    else:
+        ttl = _positive_integer(
+            values,
+            "LETS_IDENTITY_TOKEN_TTL_SECONDS",
+            "invalid_identity_token_ttl",
+            maximum=MAX_IDENTITY_TOKEN_TTL_SECONDS,
+        )
+    return LetsIdentityConfig(
+        seed_file=seed_file,
+        kid=kid,
+        issuer=issuer,
+        audience=audience,
+        subject=subject,
+        scopes=scopes,
+        token_ttl_seconds=ttl,
+    )
+
+
+def _identity_scopes(values: Mapping[str, str]) -> tuple[str, ...]:
+    raw = values.get("LETS_IDENTITY_SCOPES")
+    if not isinstance(raw, str) or not raw or raw != raw.strip() or "  " in raw:
+        raise LetsConfigError("invalid_identity_scopes")
+    scopes = tuple(raw.split(" "))
+    if len(scopes) > MAX_IDENTITY_SCOPES or len(set(scopes)) != len(scopes):
+        raise LetsConfigError("invalid_identity_scopes")
+    for scope in scopes:
+        _require_identifier_value(scope, "invalid_identity_scopes", maximum=128)
+        if any(character.isspace() for character in scope):
+            raise LetsConfigError("invalid_identity_scopes")
+    return scopes
 
 
 def _identifier(
@@ -872,13 +994,17 @@ def _configured(value: object | None) -> str:
 
 __all__ = (
     "AuthenticatedTrustManifest",
+    "DEFAULT_IDENTITY_TOKEN_TTL_SECONDS",
+    "IDENTITY_SEED_BYTES",
     "INITIAL_GOVERNED_COHORTS",
     "LETS_ENFORCEMENT_CONTRACT",
     "LETS_RECEIPT_WIRE_TYPE",
     "LETS_RELEASE",
+    "MAX_IDENTITY_TOKEN_TTL_SECONDS",
     "LetsConfigError",
     "LetsConfigLoad",
     "LetsHostConfig",
+    "LetsIdentityConfig",
     "LetsMode",
     "LetsReadiness",
     "ManifestAuthenticator",

@@ -732,3 +732,162 @@ def test_default_environment_mapping_can_be_loaded(
 
     assert direct.environment == "test"
     assert loaded.config == direct
+
+
+# --- Minted service identity (LETS_IDENTITY_*) -----------------------------
+
+
+def _identity_environment(tmp_path: Path, **overrides: str) -> dict[str, str]:
+    values = _active_environment(tmp_path)
+    del values["LETS_SERVICE_TOKEN_FILE"]
+    seed = tmp_path / "identity.seed"
+    seed.write_bytes(b"\x07" * 32)
+    values.update(
+        {
+            "LETS_IDENTITY_SEED_FILE": str(seed),
+            "LETS_IDENTITY_KID": "astral-orch/ed25519-1",
+            "LETS_IDENTITY_ISSUER": "https://astral.example/lets-identity",
+            "LETS_IDENTITY_AUDIENCE": "astral-lets-warden",
+            "LETS_IDENTITY_SUBJECT": "astraldeep-orchestrator",
+            "LETS_IDENTITY_SCOPES": "lets.lease.issue lets.lease.manage lets.branch.revoke",
+        }
+    )
+    values.update(overrides)
+    return values
+
+
+def test_minted_identity_is_parsed_bounded_and_redacted(tmp_path: Path) -> None:
+    values = _identity_environment(tmp_path)
+
+    loaded = load_lets_config(values, authenticate_manifest=_authenticate)
+    config = loaded.config
+
+    assert config is not None
+    assert config.service_token_file is None
+    assert config.service_identity_mode == "minted"
+    assert config.identity is not None
+    assert config.identity.kid == "astral-orch/ed25519-1"
+    assert config.identity.issuer == "https://astral.example/lets-identity"
+    assert config.identity.audience == "astral-lets-warden"
+    assert config.identity.subject == "astraldeep-orchestrator"
+    assert config.identity.scopes == (
+        "lets.lease.issue",
+        "lets.lease.manage",
+        "lets.branch.revoke",
+    )
+    assert config.identity.token_ttl_seconds == lets_config.DEFAULT_IDENTITY_TOKEN_TTL_SECONDS
+    assert loaded.readiness.status == "configured"
+
+    redacted = config.redacted()
+    assert redacted["service_identity_mode"] == "minted"
+    assert redacted["service_token_file"] == "<unset>"
+    assert redacted["identity"] == {
+        "seed_file": "<configured>",
+        "scope_count": 3,
+        "token_ttl_seconds": 120,
+    }
+    rendered = repr(config) + repr(config.identity) + repr(redacted)
+    for sensitive in (values["LETS_IDENTITY_SEED_FILE"], "\x07", "astral-orch/ed25519-1"):
+        assert sensitive not in rendered
+
+
+def test_token_file_identity_mode_is_reported_without_values(tmp_path: Path) -> None:
+    loaded = load_lets_config(_active_environment(tmp_path), authenticate_manifest=_authenticate)
+    config = loaded.config
+
+    assert config is not None
+    assert config.identity is None
+    assert config.service_identity_mode == "token_file"
+    assert config.redacted()["service_identity_mode"] == "token_file"
+    assert config.redacted()["identity"] is None
+
+
+@pytest.mark.parametrize("mode", ["shadow", "enforce"])
+def test_both_credential_sources_is_a_configuration_error(tmp_path: Path, mode: str) -> None:
+    values = _identity_environment(tmp_path, LETS_MODE=mode)
+    token = tmp_path / "service-token"
+    token.write_bytes(b"opaque")
+    values["LETS_SERVICE_TOKEN_FILE"] = str(token)
+
+    with pytest.raises(LetsConfigError, match="^conflicting_service_identity$"):
+        LetsHostConfig.from_environ(values, authenticate_manifest=_authenticate)
+    loaded = load_lets_config(values, authenticate_manifest=_authenticate)
+    assert loaded.config is None
+    assert loaded.readiness.reason == "conflicting_service_identity"
+    assert loaded.readiness.status == ("degraded" if mode == "shadow" else "blocked")
+
+
+def test_neither_credential_source_is_missing_service_identity(tmp_path: Path) -> None:
+    values = _active_environment(tmp_path)
+    values["LETS_SERVICE_TOKEN_FILE"] = ""
+
+    with pytest.raises(LetsConfigError, match="^missing_service_identity$"):
+        LetsHostConfig.from_environ(values, authenticate_manifest=_authenticate)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"LETS_IDENTITY_SEED_FILE": ""}, "missing_identity_seed_file"),
+        ({"LETS_IDENTITY_SEED_FILE": "relative.seed"}, "invalid_identity_seed_file"),
+        ({"LETS_IDENTITY_KID": ""}, "invalid_identity_kid"),
+        ({"LETS_IDENTITY_KID": "has space"}, "invalid_identity_kid"),
+        ({"LETS_IDENTITY_KID": "-leading-dash"}, "invalid_identity_kid"),
+        ({"LETS_IDENTITY_ISSUER": ""}, "invalid_identity_issuer"),
+        ({"LETS_IDENTITY_ISSUER": " padded"}, "invalid_identity_issuer"),
+        ({"LETS_IDENTITY_AUDIENCE": ""}, "invalid_identity_audience"),
+        ({"LETS_IDENTITY_SUBJECT": "ctl\x01"}, "invalid_identity_subject"),
+        ({"LETS_IDENTITY_SCOPES": ""}, "invalid_identity_scopes"),
+        ({"LETS_IDENTITY_SCOPES": "a  b"}, "invalid_identity_scopes"),
+        ({"LETS_IDENTITY_SCOPES": " a"}, "invalid_identity_scopes"),
+        ({"LETS_IDENTITY_SCOPES": "a a"}, "invalid_identity_scopes"),
+        ({"LETS_IDENTITY_SCOPES": "a\tb"}, "invalid_identity_scopes"),
+        ({"LETS_IDENTITY_TOKEN_TTL_SECONDS": "0"}, "invalid_identity_token_ttl"),
+        ({"LETS_IDENTITY_TOKEN_TTL_SECONDS": "3601"}, "invalid_identity_token_ttl"),
+        ({"LETS_IDENTITY_TOKEN_TTL_SECONDS": "12.5"}, "invalid_identity_token_ttl"),
+        ({"LETS_IDENTITY_TOKEN_TTL_SECONDS": "-5"}, "invalid_identity_token_ttl"),
+    ],
+)
+def test_invalid_identity_fields_are_rejected_value_free(
+    tmp_path: Path, overrides: dict[str, str], reason: str
+) -> None:
+    values = _identity_environment(tmp_path, **overrides)
+
+    with pytest.raises(LetsConfigError, match=f"^{reason}$") as caught:
+        LetsHostConfig.from_environ(values, authenticate_manifest=_authenticate)
+    assert str(tmp_path) not in str(caught.value)
+
+
+@pytest.mark.parametrize("size", [0, 31, 33, 64])
+def test_identity_seed_must_be_exactly_thirty_two_bytes(tmp_path: Path, size: int) -> None:
+    values = _identity_environment(tmp_path)
+    Path(values["LETS_IDENTITY_SEED_FILE"]).write_bytes(b"\x01" * size)
+
+    with pytest.raises(LetsConfigError, match="^invalid_identity_seed_file$"):
+        LetsHostConfig.from_environ(values, authenticate_manifest=_authenticate)
+
+
+@pytest.mark.parametrize("ttl", ["1", str(lets_config.MAX_IDENTITY_TOKEN_TTL_SECONDS)])
+def test_identity_ttl_bounds_accept_one_and_max(tmp_path: Path, ttl: str) -> None:
+    config = LetsHostConfig.from_environ(
+        _identity_environment(tmp_path, LETS_IDENTITY_TOKEN_TTL_SECONDS=ttl),
+        authenticate_manifest=_authenticate,
+    )
+    assert config.identity is not None
+    assert config.identity.token_ttl_seconds == int(ttl)
+
+
+def test_off_mode_ignores_dormant_identity_values(tmp_path: Path) -> None:
+    loaded = load_lets_config(
+        {
+            "LETS_MODE": "off",
+            "LETS_IDENTITY_SEED_FILE": "missing.seed",
+            "LETS_IDENTITY_TOKEN_TTL_SECONDS": "999999",
+        }
+    )
+
+    assert loaded.config is not None
+    assert loaded.config.identity is None
+    assert loaded.config.service_identity_mode is None
+    assert loaded.config.redacted()["service_identity_mode"] is None
+    assert loaded.readiness.status == "disabled"
