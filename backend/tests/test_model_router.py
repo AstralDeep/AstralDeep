@@ -148,3 +148,18 @@ def test_route_sets_ondevice_hint():
                  device_caps={"has_browser_ai": True})
     assert d.ondevice is True
     assert ONDEVICE < d.tier  # server still resolves a real tier as fallback
+
+
+def test_env_tier_map_bad_json_warns_once(monkeypatch, caplog):
+    """A malformed MODEL_TIERS must not be silently ignored — one WARNING per
+    process (not per call), and the raw value never appears in the record."""
+    import logging
+    monkeypatch.setattr(mr, "_BAD_TIER_MAP_WARNED", False)
+    monkeypatch.setenv("MODEL_TIERS", "{not json secret-looking}")
+    with caplog.at_level(logging.WARNING, logger="orchestrator.model_router"):
+        assert mr.resolve_model(SMALL, "default") == "default"
+        assert mr.resolve_model(LARGE, "default") == "default"
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING
+             and "MODEL_TIERS" in r.getMessage()]
+    assert len(warns) == 1
+    assert "secret-looking" not in warns[0].getMessage()
