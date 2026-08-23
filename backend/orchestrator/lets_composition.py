@@ -9,6 +9,7 @@ implementation module is imported here.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Mapping
@@ -56,6 +57,10 @@ class LetsRuntimeComposition:
     byo_lifecycle: GovernedByoAgentLifecycle | None
     lifecycle_reconciler: LetsLifecycleReconciler | None
     effect_reconciler: LetsEffectReconciler | None
+    # Boot-time observation stamp for the no-network readiness projection
+    # (orchestrator.lets_health): the warden client is bound exactly once, at
+    # composition, so this is when its reachability was last actually known.
+    composed_at_ns: int = field(default_factory=time.time_ns)
     _stop: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     _tasks: tuple[asyncio.Task[None], ...] = field(default=(), repr=False)
 

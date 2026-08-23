@@ -366,10 +366,126 @@ def _runtime_failure_codes(status: LetsRuntimeStatus) -> tuple[str, str]:
     return "lets_unavailable", "remote_unavailable"
 
 
+def observe_lets_runtime(runtime: object | None) -> LetsRuntimeObservation | None:
+    """Derive a value-free observation from the composition's cached boot state.
+
+    The warden client is bound exactly once, at composition; readiness never
+    opens a new connection.  A fully wired graph was reachable when it was
+    composed; an active mode that fell back to the explicit degraded graph
+    (no client) was not.  Off mode and invalid configuration carry no runtime
+    observation and are projected from the configuration posture alone.
+    """
+
+    if runtime is None:
+        return None
+    loaded = getattr(runtime, "loaded", None)
+    if not isinstance(loaded, LetsConfigLoad):
+        return None
+    if loaded.readiness.mode == "off" or loaded.config is None:
+        return None
+    observed_at_ns = getattr(runtime, "composed_at_ns", 0)
+    if type(observed_at_ns) is not int or observed_at_ns < 0:
+        observed_at_ns = 0
+    if getattr(runtime, "ready", False) is True:
+        return LetsRuntimeObservation("healthy", observed_at_ns)
+    return LetsRuntimeObservation("unavailable", observed_at_ns, retryable=True)
+
+
+def project_runtime_health(
+    runtime: object | None,
+    *,
+    fallback: LetsConfigLoad | None = None,
+) -> LetsHealthSnapshot:
+    """Project the application-scoped composition (or its absence) to health.
+
+    Without a composition there is no evidence that LETS was ever wired, so
+    ``fallback`` (the configuration posture alone) is projected with no
+    observation: an active mode reads as not yet observed, which blocks
+    readiness in enforce and degrades it in shadow.  Off mode stays disabled.
+    """
+
+    loaded = getattr(runtime, "loaded", None)
+    if isinstance(loaded, LetsConfigLoad):
+        return project_lets_health(loaded, observe_lets_runtime(runtime))
+    if not isinstance(fallback, LetsConfigLoad):
+        raise TypeError("invalid_config_load")
+    return project_lets_health(fallback)
+
+
+def readiness_entry(snapshot: LetsHealthSnapshot) -> dict[str, object]:
+    """The bounded ``lets`` object carried by ``/readyz``.
+
+    Off mode is exactly ``{"mode": "off", "status": "disabled"}`` so a
+    flag-off deployment exposes no LETS vocabulary beyond the fact that it is
+    off.  Active modes add the operator code, whether existing (ungoverned)
+    behavior may proceed, and the boot-time observation stamp.
+    """
+
+    if not isinstance(snapshot, LetsHealthSnapshot):
+        raise TypeError("invalid_health_snapshot")
+    if snapshot.mode == "off":
+        return {"mode": "off", "status": "disabled"}
+    return {
+        "mode": snapshot.mode,
+        "status": snapshot.component_status,
+        "reason": snapshot.operator_code,
+        "governed_effects_permitted": snapshot.existing_behavior_permitted,
+        "governed_dispatch_ready": snapshot.governed_dispatch_ready,
+        "retryable": snapshot.retryable,
+        "observed_at_ns": snapshot.observed_at_ns,
+    }
+
+
+def health_report(
+    runtime: object | None,
+    *,
+    fallback: LetsConfigLoad | None = None,
+) -> dict[str, object]:
+    """Full redacted projection for the admin-only ``GET /lets/health``.
+
+    Carries the snapshot, the configuration posture codes, and the redacted
+    host configuration (``LetsHostConfig.redacted()``): never a file path,
+    token, key, or raw LETS response.
+    """
+
+    snapshot = project_runtime_health(runtime, fallback=fallback)
+    loaded = getattr(runtime, "loaded", None)
+    if not isinstance(loaded, LetsConfigLoad):
+        loaded = fallback
+    readiness: dict[str, object] | None = None
+    config: dict[str, object] | None = None
+    if isinstance(loaded, LetsConfigLoad):
+        posture = loaded.readiness
+        readiness = {
+            "mode": posture.mode,
+            "status": posture.status,
+            "reason": posture.reason,
+            "application_ready": posture.application_ready,
+            "lets_configured": posture.lets_configured,
+            "governed_effects_permitted": posture.governed_effects_permitted,
+            "diagnostic_only": posture.diagnostic_only,
+        }
+        if loaded.config is not None:
+            config = dict(loaded.config.redacted())
+    return {
+        "health": snapshot.to_dict(),
+        "readiness": readiness,
+        "config": config,
+        "composition_bound": isinstance(
+            getattr(runtime, "loaded", None),
+            LetsConfigLoad,
+        ),
+    }
+
+
 __all__ = [
     "LetsDenyReason",
     "LetsHealthSnapshot",
     "LetsRuntimeObservation",
+    "health_report",
+    "observe_lets_runtime",
     "project_deny_reason",
     "project_lets_health",
+    "project_runtime_health",
+    "readiness_entry",
 ]
