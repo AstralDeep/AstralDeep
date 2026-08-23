@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -291,6 +292,163 @@ def test_minting_client_header_survives_deadline_client_recreation() -> None:
         client.close()
 
     assert len(seen) == 2 and None not in seen and seen[0] != seen[1]
+
+
+def _verified_jti(bearer: str | None) -> str:
+    """Return the jti of a bearer after proving its signature and audience."""
+
+    assert bearer is not None and bearer.startswith("Bearer ")
+    header, claims, signature, signing_input = _decode(bearer.removeprefix("Bearer "))
+    VerifyKey(bytes(SigningKey(SEED).verify_key)).verify(
+        signing_input.encode("ascii"), signature
+    )
+    assert header == {"alg": "EdDSA", "kid": KID, "typ": "JWT"}
+    assert claims["aud"] == AUDIENCE
+    return str(claims["jti"])
+
+
+def test_minting_client_never_writes_a_bearer_onto_shared_client_headers() -> None:
+    seen: list[str | None] = []
+    client = MintingLETSClient(
+        "https://warden.example",
+        token_minter=_minter(),
+        transport=_recording_transport(seen),
+        total_timeout_s=2.0,
+    )
+    try:
+        client.info()
+        assert "authorization" not in client._client.headers
+        assert "authorization" not in client._client._inner.headers
+        factory = client._client_factory
+        assert factory is not None
+        recreated = factory()
+        assert "authorization" not in recreated.headers
+        recreated.close()
+    finally:
+        client.close()
+    assert len(seen) == 1
+    _verified_jti(seen[0])
+
+
+def test_queued_request_after_deadline_recreation_carries_its_own_bearer() -> None:
+    """Thread A's total deadline recreates the client while B waits on the lock.
+
+    Pre-fix, B had stamped its bearer on the OLD client's shared headers and
+    then sent on the NEW (header-less) client: a spurious 401 in enforce.
+    """
+
+    seen: list[tuple[int, str | None]] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((threading.get_ident(), request.headers.get("authorization")))
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(5.0)
+        return httpx.Response(
+            200, json={"tenant_id": TENANT}, headers={"content-type": "application/json"}
+        )
+
+    client = MintingLETSClient(
+        "https://warden.example",
+        token_minter=_minter(),
+        transport=httpx.MockTransport(handler),
+        total_timeout_s=0.3,
+    )
+    outcomes: dict[str, object] = {}
+
+    def run(name: str) -> None:
+        try:
+            outcomes[name] = client.info()
+        except BaseException as error:  # noqa: BLE001 - recorded for assertion
+            outcomes[name] = error
+
+    try:
+        original = client._client
+        thread_a = threading.Thread(target=run, args=("a",))
+        thread_b = threading.Thread(target=run, args=("b",))
+        thread_a.start()
+        assert entered.wait(5.0)
+        thread_b.start()  # queues on _request_lock behind A
+        time.sleep(0.6)  # A's 0.3 s total deadline fires while B is queued
+        release.set()
+        thread_a.join(5.0)
+        thread_b.join(5.0)
+        assert not thread_a.is_alive() and not thread_b.is_alive()
+    finally:
+        release.set()
+        client.close()
+
+    assert isinstance(outcomes["a"], httpx.TimeoutException)
+    assert outcomes["b"] == {"tenant_id": TENANT}
+    assert client._client is not original  # the deadline recreated the client
+    assert len(seen) == 2
+    assert seen[0][0] != seen[1][0]
+    assert len({_verified_jti(bearer) for _, bearer in seen}) == 2
+
+
+def test_concurrent_callers_each_send_the_bearer_they_minted() -> None:
+    class RecordingMinter(LetsIdentityMinter):
+        __slots__ = ("minted",)
+
+        def __init__(self) -> None:
+            super().__init__(
+                seed=SEED,
+                identity=_identity(Path("C:/synthetic/identity.seed")),
+                tenant_id=TENANT,
+            )
+            self.minted: dict[int, list[str]] = {}
+
+        def mint(self, *, now: int | None = None) -> str:
+            token = super().mint(now=now)
+            self.minted.setdefault(threading.get_ident(), []).append(
+                _verified_jti(f"Bearer {token}")
+            )
+            return token
+
+    minter = RecordingMinter()
+    wire: dict[int, list[str]] = {}
+    gate = threading.Barrier(8)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        wire.setdefault(threading.get_ident(), []).append(
+            _verified_jti(request.headers.get("authorization"))
+        )
+        return httpx.Response(
+            200, json={"tenant_id": TENANT}, headers={"content-type": "application/json"}
+        )
+
+    client = MintingLETSClient(
+        "https://warden.example",
+        token_minter=minter,
+        transport=httpx.MockTransport(handler),
+        total_timeout_s=5.0,
+    )
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            gate.wait(5.0)
+            for _ in range(5):
+                assert client.info() == {"tenant_id": TENANT}
+        except BaseException as error:  # noqa: BLE001 - recorded for assertion
+            errors.append(error)
+
+    threads = [threading.Thread(target=run) for _ in range(8)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10.0)
+    finally:
+        client.close()
+
+    assert errors == []
+    assert len(wire) == 8 and len(minter.minted) == 8
+    assert wire == minter.minted
+    all_jtis = [jti for jtis in wire.values() for jti in jtis]
+    assert len(all_jtis) == 40 and len(set(all_jtis)) == 40
 
 
 def test_minting_client_refuses_a_static_token() -> None:

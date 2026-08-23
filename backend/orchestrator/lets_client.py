@@ -145,11 +145,60 @@ class LetsIdentityMinter:
             raise LetsClientBoundaryError("credential_mint_failed") from None
 
 
+class _MintingHTTPClient:
+    """Per-request bearer injection at the ``httpx.Client.stream`` seam.
+
+    ``LETSClient._request`` sends every attempt through
+    ``active_client.stream(...)`` while holding ``_request_lock``; wrapping the
+    client here attaches a freshly minted token to the exact request being
+    sent, under that lock, without ever mutating shared client headers.  The
+    inner client carries no ``authorization`` header at all, so a client
+    recreated by the total-deadline watchdog cannot send unauthenticated and a
+    concurrent caller cannot overwrite another caller's bearer.
+    """
+
+    __slots__ = ("_inner", "_token_minter")
+
+    def __init__(self, inner: httpx.Client, token_minter: LetsIdentityMinter) -> None:
+        self._inner = inner
+        self._token_minter = token_minter
+
+    def __repr__(self) -> str:
+        return "<_MintingHTTPClient>"
+
+    @property
+    def headers(self) -> httpx.Headers:
+        return self._inner.headers
+
+    def stream(
+        self,
+        method: str,
+        url: Any,
+        *,
+        headers: Mapping[str, str] | None = None,
+        **keywords: Any,
+    ) -> Any:
+        merged = dict(headers or {})
+        merged.pop("Authorization", None)
+        merged["authorization"] = f"Bearer {self._token_minter.mint()}"
+        return self._inner.stream(method, url, headers=merged, **keywords)
+
+    def close(self) -> None:
+        self._inner.close()
+
+    @property
+    def is_closed(self) -> bool:
+        return self._inner.is_closed
+
+
 class MintingLETSClient(LETSClient):
     """LETS client that presents a freshly minted bearer on every request.
 
-    The header is written onto the live ``httpx.Client`` immediately before
-    delegating, so the deadline-recreated client path is covered too.
+    The live ``httpx.Client`` (and every client the deadline watchdog
+    recreates through ``_client_factory``) is wrapped in
+    :class:`_MintingHTTPClient`, so the token is minted and attached per
+    request inside the base class's ``_request_lock`` critical section.
+    Shared client headers are never written.
     """
 
     def __init__(
@@ -161,13 +210,19 @@ class MintingLETSClient(LETSClient):
     ) -> None:
         if keywords.get("token") is not None:
             raise ValueError("token and token_minter are mutually exclusive")
+        if not isinstance(token_minter, LetsIdentityMinter):
+            raise TypeError("token_minter must be a LetsIdentityMinter")
         keywords.pop("token", None)
         super().__init__(base_url, **keywords)
         self._token_minter = token_minter
+        self._client = _MintingHTTPClient(self._client, token_minter)
+        inner_factory = self._client_factory
+        if inner_factory is not None:
 
-    def _request(self, method: str, path: str, /, *arguments: Any, **keywords: Any) -> Any:
-        self._client.headers["authorization"] = f"Bearer {self._token_minter.mint()}"
-        return super()._request(method, path, *arguments, **keywords)
+            def create_minting_client() -> Any:
+                return _MintingHTTPClient(inner_factory(), token_minter)
+
+            self._client_factory = create_minting_client
 
 
 @dataclass(frozen=True, slots=True)

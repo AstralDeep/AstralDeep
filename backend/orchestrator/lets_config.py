@@ -215,9 +215,12 @@ class LetsHostConfig:
             "LETS_SERVICE_TOKEN_FILE",
             invalid_code="invalid_service_token_file",
         )
-        identity = _identity(values)
-        if service_token is not None and identity is not None:
+        # Minted mode is keyed on LETS_IDENTITY_SEED_FILE alone.  A static
+        # token file combined with ANY LETS_IDENTITY_* variable is ambiguous
+        # operator intent and is refused before either block is parsed.
+        if service_token is not None and _identity_variables_present(values):
             raise LetsConfigError("conflicting_service_identity")
+        identity = _identity(values)
         if service_token is None and identity is None:
             raise LetsConfigError("missing_service_identity")
         ca_bundle = _optional_file(
@@ -614,22 +617,27 @@ def _file_reference(raw: str, code: str) -> SecretFileReference:
     return SecretFileReference(path=path, size_bytes=metadata.st_size)
 
 
-def _identity(values: Mapping[str, str]) -> LetsIdentityConfig | None:
-    """Parse the minted-identity block; ``None`` when no variable is set."""
-
-    present = [
-        name
+def _identity_variables_present(values: Mapping[str, str]) -> bool:
+    return any(
+        isinstance(values.get(name), str) and bool(values[name].strip())
         for name in _IDENTITY_VARIABLES
-        if isinstance(values.get(name), str) and values[name].strip()
-    ]
-    if not present:
-        return None
-    seed_file = _required_file(
+    )
+
+
+def _identity(values: Mapping[str, str]) -> LetsIdentityConfig | None:
+    """Parse the minted-identity block; ``None`` unless the seed file is set.
+
+    ``LETS_IDENTITY_SEED_FILE`` alone selects minted mode; the remaining
+    ``LETS_IDENTITY_*`` variables are validated only once it is present.
+    """
+
+    seed_file = _optional_file(
         values,
         "LETS_IDENTITY_SEED_FILE",
-        missing_code="missing_identity_seed_file",
         invalid_code="invalid_identity_seed_file",
     )
+    if seed_file is None:
+        return None
     if seed_file.size_bytes != IDENTITY_SEED_BYTES:
         raise LetsConfigError("invalid_identity_seed_file")
     kid = values.get("LETS_IDENTITY_KID")

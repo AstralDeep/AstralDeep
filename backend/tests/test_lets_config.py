@@ -826,9 +826,54 @@ def test_neither_credential_source_is_missing_service_identity(tmp_path: Path) -
 
 
 @pytest.mark.parametrize(
+    "stray",
+    [
+        {"LETS_IDENTITY_KID": "astral-orch/ed25519-1"},
+        {"LETS_IDENTITY_SCOPES": "lets.lease.issue"},
+        {"LETS_IDENTITY_TOKEN_TTL_SECONDS": "60"},
+        {"LETS_IDENTITY_ISSUER": " "},  # blank is "unset"; this one is not blank
+    ],
+)
+def test_token_file_with_a_stray_identity_variable_is_conflicting(
+    tmp_path: Path, stray: dict[str, str]
+) -> None:
+    values = _active_environment(tmp_path)
+    values.update(stray)
+    # Whitespace-only values are treated as unset and must NOT conflict.
+    if all(not value.strip() for value in stray.values()):
+        config = LetsHostConfig.from_environ(values, authenticate_manifest=_authenticate)
+        assert config.service_identity_mode == "token_file"
+        return
+
+    with pytest.raises(LetsConfigError, match="^conflicting_service_identity$"):
+        LetsHostConfig.from_environ(values, authenticate_manifest=_authenticate)
+    loaded = load_lets_config(values, authenticate_manifest=_authenticate)
+    assert loaded.config is None
+    assert loaded.readiness.reason == "conflicting_service_identity"
+
+
+def test_stray_identity_variables_without_seed_file_select_nothing(tmp_path: Path) -> None:
+    values = _identity_environment(tmp_path)
+    del values["LETS_IDENTITY_SEED_FILE"]
+
+    with pytest.raises(LetsConfigError, match="^missing_service_identity$"):
+        LetsHostConfig.from_environ(values, authenticate_manifest=_authenticate)
+
+
+def test_seed_file_alone_selects_minted_mode_and_then_validates_the_block(
+    tmp_path: Path,
+) -> None:
+    values = _identity_environment(tmp_path)
+    del values["LETS_IDENTITY_KID"]
+
+    with pytest.raises(LetsConfigError, match="^invalid_identity_kid$"):
+        LetsHostConfig.from_environ(values, authenticate_manifest=_authenticate)
+
+
+@pytest.mark.parametrize(
     ("overrides", "reason"),
     [
-        ({"LETS_IDENTITY_SEED_FILE": ""}, "missing_identity_seed_file"),
+        ({"LETS_IDENTITY_SEED_FILE": ""}, "missing_service_identity"),
         ({"LETS_IDENTITY_SEED_FILE": "relative.seed"}, "invalid_identity_seed_file"),
         ({"LETS_IDENTITY_KID": ""}, "invalid_identity_kid"),
         ({"LETS_IDENTITY_KID": "has space"}, "invalid_identity_kid"),
