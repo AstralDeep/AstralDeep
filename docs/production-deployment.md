@@ -242,6 +242,18 @@ its two top suspects — stale recreated env and a worker that preflighted
 before the speech service was live — are the observed production failure
 modes.
 
+## External LETS warden (feature 074 Phase B — default `off`)
+
+The orchestrator can bind to an independent LETS warden for finite,
+lineage-bound authority over the governed agent cohorts (`server_dynamic`,
+`byo_user`). Modes, the `LETS_*` environment block, the Compose template and
+the sandbox deployment facts are in
+[docs/lets-external-warden.md](lets-external-warden.md); the wire/host
+contract is
+[specs/074-multirepo-lets-integration/contracts/lets-enforcement.md](../specs/074-multirepo-lets-integration/contracts/lets-enforcement.md).
+With `LETS_MODE=off` (the default) behaviour is byte-identical to a build
+without LETS.
+
 ## Health probes
 
 | Endpoint | Meaning | Use |
