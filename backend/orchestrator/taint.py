@@ -16,6 +16,32 @@ Pure + deterministic; a content fingerprint identifies a value. Flag
 additive + fail-open: an unknown value is treated as trusted (constants, user
 intent), so with the flag off — or on with no untrusted sources seen — nothing
 changes.
+
+What counts as a sink
+---------------------
+A sink is a call whose arguments leave the system as a *write* or *egress*
+effect the user cannot take back: sending mail/messages, posting, creating /
+updating / deleting records, writing files, executing commands, uploading,
+webhooks, transfers.  A **read-only page fetch is NOT a sink**: ``fetch_page``,
+``web_search`` and ``summarize_url`` are GET-only readers (``scope:
+tools:read`` / ``tools:search`` in their registries) whose *output* is already
+recorded UNTRUSTED by this module, and whose *destination* is validated by the
+SSRF / private-network egress guard in ``shared.external_http`` (loopback,
+link-local, RFC1918, metadata endpoints and redirects are refused there).
+Treating them as sinks denied the ordinary research flow — ``web_search`` emits
+each result URL as a plain string leaf, so ``fetch_page(<result url>)`` in the
+same chat was refused even when the user typed that URL themselves — without
+adding a control the egress guard does not already provide.
+
+User intent
+-----------
+A value that appears **verbatim in the user's own current message** is
+user-supplied, not untrusted, for that check: the user typing a URL they saw in
+a search result is the normal way to ask for it to be read.  The exemption is
+exact (whitespace-trimmed substring of the request text), never a fuzzy match,
+so a sink argument the model composed from fetched content still trips the
+gate.  A denial for a built-in agent is recorded as an ``agent_tool_call``
+audit row (``tool.<name>.denied``) by the dispatch gate.
 """
 from __future__ import annotations
 
@@ -40,11 +66,12 @@ _UNTRUSTED_AGENTS = {"web-research-1", "summarizer-1",
                      "remote-compute-1"}
 
 #: Write / egress sinks — untrusted data must not flow into their arguments.
-#: (``fetch_page``/``web_search`` are BOTH sources and sinks: a URL built from
-#: untrusted data is an SSRF-class risk.)
+#: Read-only fetchers (``fetch_page``/``web_search``/``summarize_url``) are
+#: deliberately absent — see the module docstring; their destinations are
+#: validated by ``shared.external_http`` and their outputs stay UNTRUSTED.
 _SINK_TOOLS = {
-    "send_email", "send_message", "post_*", "create_*", "update_*",
-    "delete_*", "write_*", "execute_*", "fetch_page", "web_search",
+    "send_*", "post_*", "create_*", "update_*",
+    "delete_*", "write_*", "execute_*", "upload_*", "webhook*",
     "http_*", "wire_*", "transfer_*",
 }
 
@@ -104,6 +131,17 @@ def _iter_strings(value: Any) -> Iterable[str]:
             yield from _iter_strings(v)
 
 
+def user_supplied(value: str, user_text: Optional[str]) -> bool:
+    """True iff ``value`` appears verbatim (whitespace-trimmed, case-sensitive)
+    in the user's current request text. Exact substring only — no
+    normalisation beyond trimming, so only what the user literally typed is
+    exempted."""
+    if not user_text or not isinstance(value, str):
+        return False
+    v = value.strip()
+    return bool(v) and v in user_text
+
+
 class TaintTracker:
     """Per-scope content-taint store. A value is keyed by a content fingerprint;
     its trust is the minimum ever recorded for it. Multi-hop laundering survives
@@ -129,10 +167,18 @@ class TaintTracker:
         values are constants / user intent)."""
         return self._trust.get(self.fingerprint(value), TRUSTED)
 
-    def effective_trust_of_args(self, args: Any) -> int:
+    def effective_trust_of_args(self, args: Any,
+                                user_text: Optional[str] = None) -> int:
         """The call's effective trust = MIN over every string leaf in its args
-        (only as trusted as its least-trusted input value)."""
-        return combine(self.trust_of(s) for s in _iter_strings(args))
+        (only as trusted as its least-trusted input value).
+
+        ``user_text`` is the user's own current message: a leaf that appears
+        in it verbatim is user-supplied intent and counts as TRUSTED for this
+        check even if the same value was earlier recorded untrusted (e.g. a
+        search-result URL the user then typed back)."""
+        return combine(
+            TRUSTED if user_supplied(s, user_text) else self.trust_of(s)
+            for s in _iter_strings(args))
 
     def record_output(self, output: Any, source_trust: int, input_trust: int) -> int:
         """Record a tool's output values at ``min(source_trust, input_trust)`` so

@@ -61,12 +61,71 @@ def test_classify_source(agent, tool, trust):
 
 
 @pytest.mark.parametrize("tool,sink", [
-    ("send_email", True), ("post_update", True), ("transfer_funds", True),
-    ("fetch_page", True), ("delete_user", True),
+    ("send_email", True), ("send_message", True), ("post_update", True),
+    ("transfer_funds", True), ("delete_user", True), ("write_file", True),
+    ("execute_command", True), ("upload_file", True), ("webhook", True),
+    ("http_post", True),
+    # Read-only GET fetchers are NOT sinks (destination validated by
+    # shared.external_http; their output stays UNTRUSTED as a source).
+    ("fetch_page", False), ("web_search", False), ("summarize_url", False),
     ("read_text", False), ("classify_submit_dataset", False), ("search", False),
 ])
 def test_is_sink(tool, sink):
     assert is_sink(None, tool) is sink
+
+
+def test_read_only_fetchers_remain_untrusted_sources():
+    """Dropping fetch_page/web_search from the sink list must not bleach
+    their OUTPUT: they still introduce untrusted data."""
+    for tool in ("fetch_page", "web_search", "summarize_url"):
+        assert classify_source(None, tool) == UNTRUSTED
+
+
+def test_search_then_fetch_is_not_denied():
+    """The user-facing regression: web_search emits each result URL as a
+    plain string leaf; fetch_page(<that url>) in the same chat must NOT be a
+    sink check at all."""
+    t = TaintTracker()
+    url = "https://example.org/article"
+    t.record_output([{"type": "text", "content": url}],
+                    classify_source("web-research-1", "web_search"), TRUSTED)
+    assert t.trust_of(url) == UNTRUSTED            # still tainted as data
+    assert is_sink("web-research-1", "fetch_page") is False
+    # ...but the same URL into a genuine sink is still refused.
+    assert check_flow(t.effective_trust_of_args({"body": url})) == "deny"
+
+
+# ───────────────────────── user-intent exemption ─────────────────────────────
+
+def test_user_supplied_is_verbatim_substring():
+    assert taint.user_supplied("https://a.example/x", "read https://a.example/x please")
+    assert taint.user_supplied("  https://a.example/x ", "read https://a.example/x")
+    assert not taint.user_supplied("https://a.example/x", "read https://A.example/x")
+    assert not taint.user_supplied("https://a.example/x", "")
+    assert not taint.user_supplied("https://a.example/x", None)
+    assert not taint.user_supplied("   ", "anything")
+
+
+def test_value_typed_by_user_is_trusted_for_the_check():
+    t = TaintTracker()
+    url = "https://example.org/article"
+    t.mark(url, UNTRUSTED)
+    # Without the user's text the tainted URL is untrusted.
+    assert t.effective_trust_of_args({"to": url}) == UNTRUSTED
+    # The user typed it verbatim this turn ⇒ user-supplied for this check.
+    assert t.effective_trust_of_args({"to": url}, user_text=f"send {url} to bob") == TRUSTED
+    # The exemption is per-value: a second tainted leaf the user did NOT type
+    # still drags the call down.
+    t.mark("leaked-secret", UNTRUSTED)
+    assert t.effective_trust_of_args(
+        {"to": url, "body": "leaked-secret"}, user_text=f"send {url}") == UNTRUSTED
+
+
+def test_user_exemption_does_not_persist_in_the_store():
+    t = TaintTracker()
+    t.mark("evil", UNTRUSTED)
+    t.effective_trust_of_args({"x": "evil"}, user_text="evil")
+    assert t.trust_of("evil") == UNTRUSTED   # the stored label is untouched
 
 
 # ───────────────────────── flow policy ───────────────────────────────────────

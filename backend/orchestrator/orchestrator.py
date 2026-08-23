@@ -17286,6 +17286,67 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             store[key] = tracker
         return tracker
 
+    def _current_request_text(self, chat_id: Optional[str]) -> str:
+        """The user's own message for the turn being dispatched: the
+        task-local ``_ACTIVE_REQUEST_TEXT`` context var set by
+        ``handle_chat_message``, else the per-chat ``_active_request`` map
+        (what the legacy/test paths populate). Empty when unknown."""
+        try:
+            text = _ACTIVE_REQUEST_TEXT.get()
+        except LookupError:
+            text = ""
+        if not text:
+            store = getattr(self, "_active_request", None)
+            text = store.get(chat_id, "") if isinstance(store, dict) else ""
+        return text if isinstance(text, str) else ""
+
+    async def _audit_gate_denial(self, websocket, user_id, agent_id, tool_name,
+                                 chat_id, args, *, gate: str, detail: str = ""):
+        """Record a gate refusal as an ``agent_tool_call`` audit row
+        (``tool.<name>.denied``), attributed like ``ToolDispatchAudit`` would
+        attribute the call had it run — same claims resolution, same
+        arg-metadata sanitisation (never values). Best-effort, never raises:
+        auditability must not change the refusal itself."""
+        try:
+            from audit.hooks import (ToolDispatchAudit, actor_principal_from_claims,
+                                     make_correlation_id, now_utc)
+            from audit.recorder import get_recorder
+            from audit.schemas import AuditEventCreate
+            rec = get_recorder()
+            if rec is None:
+                return
+            claims = self.ui_sessions.get(websocket) if websocket is not None else None
+            if claims is None and websocket is not None:
+                claims = getattr(websocket, "machine_claims", None)
+            if not isinstance(claims, dict):
+                claims = None
+            user, principal = actor_principal_from_claims(claims)
+            if user == "legacy":
+                # No session claims (in-process/virtual callers): attribute to
+                # the dispatching user id rather than dropping the row.
+                user = principal = str(user_id or "unknown")
+            meta = ToolDispatchAudit._sanitize_args_meta(
+                args if isinstance(args, dict) else {})
+            meta["gate"] = gate
+            await rec.record(AuditEventCreate(
+                actor_user_id=user,
+                auth_principal=principal,
+                agent_id=agent_id,
+                event_class="agent_tool_call",
+                action_type=f"tool.{tool_name}.denied",
+                description=(f"Tool {tool_name} refused by the {gate} gate "
+                             f"for agent {agent_id or '?'}")[:1024],
+                conversation_id=chat_id,
+                correlation_id=make_correlation_id(),
+                outcome="failure",
+                outcome_detail=(detail or None),
+                inputs_meta=meta,
+                started_at=now_utc(),
+                completed_at=now_utc(),
+            ))
+        except Exception:
+            logger.debug("%s: denial audit record failed", gate, exc_info=True)
+
     def _skill_store(self, user_id):
         """Per-user in-memory learned-recipe store (skill memory, C-N10)."""
         if not hasattr(self, "_skill_recipes"):
@@ -17540,13 +17601,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from orchestrator import taint as _taint
             if _taint.taint_enabled() and _taint.is_sink(agent_id, tool_name):
                 tracker = self._taint_tracker(chat_id)
-                trust = tracker.effective_trust_of_args(args)
+                # User-intent exemption: a value the user typed VERBATIM in
+                # this turn's message is user-supplied, not untrusted.
+                trust = tracker.effective_trust_of_args(
+                    args, user_text=self._current_request_text(chat_id))
                 if _taint.check_flow(trust) == "deny":
                     msg = (f"'{tool_name}' was blocked: it would send untrusted "
                            f"data (from a web/third-party source) into a "
                            f"write/egress action.")
                     logger.warning("taint.deny user=%s tool=%s agent=%s trust=%s",
                                    user_id, tool_name, agent_id, _taint.trust_name(trust))
+                    # The refusal returns BEFORE ToolDispatchAudit, so record
+                    # the denial itself (non-blocking) — otherwise a taint
+                    # denial for a built-in agent leaves no audit row.
+                    await self._audit_gate_denial(
+                        websocket, user_id, agent_id, tool_name, chat_id, args,
+                        gate="taint", detail=f"trust={_taint.trust_name(trust)}")
                     alert = Alert(message=msg, variant="warning")
                     return GateRefusal(
                         response=MCPResponse(
@@ -17560,9 +17630,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if user_id and agent_id:
             from orchestrator import supervisor as _sup
             if _sup.supervisor_enabled():
-                request_text = _ACTIVE_REQUEST_TEXT.get() or getattr(
-                    self, "_active_request", {}
-                ).get(chat_id, "")
+                request_text = self._current_request_text(chat_id)
                 if not _sup.intent_aligned(request_text, tool_name):
                     msg = (f"'{tool_name}' looks like a destructive action you "
                            f"didn't ask for — please confirm before it runs.")
@@ -17579,7 +17647,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     from orchestrator import taint as _tnt
                     if _tnt.taint_enabled():
                         trust = _tnt.trust_name(
-                            self._taint_tracker(chat_id).effective_trust_of_args(args))
+                            self._taint_tracker(chat_id).effective_trust_of_args(
+                                args, user_text=self._current_request_text(chat_id)))
                 except Exception:
                     trust = "trusted"
                 risks = _hitl.assess_risk(tool_name, args, actor_principal=user_id, trust=trust)
