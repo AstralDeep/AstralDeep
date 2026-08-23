@@ -9704,7 +9704,7 @@ class Orchestrator:
                     await self._safe_send(websocket, json.dumps({
                         "type": "rote_config",
                         "device_profile": rote_profile.to_dict(),
-                        "speech_server_available": bool(os.getenv("SPEACHES_URL", "").strip()),
+                        "speech_server_available": self.speech_server_available(),
                     }))
 
                     # Feature 042: native SDUI clients (Windows/Android) render
@@ -11024,7 +11024,7 @@ class Orchestrator:
                     await self._safe_send(websocket, json.dumps({
                         "type": "rote_config",
                         "device_profile": new_profile.to_dict(),
-                        "speech_server_available": bool(os.getenv("SPEACHES_URL", "").strip()),
+                        "speech_server_available": self.speech_server_available(),
                     }))
                     # A device change re-renders the FULL persisted workspace
                     # from server state. A single-slot _last_components replay
@@ -21139,6 +21139,35 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if device_bindings.get(device_key) == socket_id:
             device_bindings.pop(device_key, None)
             getattr(self, "_voice_device_kinds", {}).pop(device_key, None)
+
+    def speech_server_available(self) -> bool:
+        """Credential-free ``rote_config.speech_server_available`` hint.
+
+        This key predates feature 065: it used to mirror the presence of a
+        legacy dedicated speech-proxy URL setting, which no longer exists —
+        the isolated voice worker reaches the speech gateway through its own
+        ``VOICE_SPEECH_BASE_URL`` and this process never holds that endpoint.
+        The key name is kept for wire stability; its value now answers the
+        same question honestly from the included conversational-voice
+        runtime: ``FF_CONVERSATIONAL_VOICE`` is on, the voice services were
+        constructed, and at least one preflight-gated speech worker is live.
+        A worker is admitted only after its model-inventory/ASR/TTS probes
+        pass, so a live worker is the credential-free proof that a speech
+        server is configured and reachable. Synchronous and in-memory so the
+        handshake never waits on a probe; any failure reads as ``False``.
+        """
+
+        try:
+            if not flags.is_enabled("conversational_voice"):
+                return False
+            if getattr(self, "voice_runtime", None) is None:
+                return False
+            worker_pool = getattr(self, "voice_worker_pool", None)
+            if worker_pool is None:
+                return False
+            return worker_pool.readiness().worker_count > 0
+        except Exception:  # pragma: no cover — a hint must never break the handshake
+            return False
 
     async def publish_voice_composer_state(
         self,

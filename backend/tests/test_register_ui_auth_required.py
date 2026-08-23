@@ -103,6 +103,10 @@ def _make_fake(*, validate=None):
     fake.validate_token = validate if validate is not None else (
         types.MethodType(Orchestrator.validate_token, fake))
     fake._parsed_ui_frame = Orchestrator._parsed_ui_frame
+    # The rote_config handshake hint reads the voice runtime (absent here, so
+    # it honestly reports False) through the real fail-closed predicate.
+    fake.speech_server_available = types.MethodType(
+        Orchestrator.speech_server_available, fake)
     fake.handle_ui_message = types.MethodType(Orchestrator.handle_ui_message, fake)
     fake._sent = sent
     fake._renders = renders
