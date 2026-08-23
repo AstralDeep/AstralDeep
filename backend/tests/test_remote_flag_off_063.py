@@ -222,3 +222,72 @@ def test_flag_off_surface_components_is_disabled(monkeypatch):
     flat = str(components).lower()
     assert "disabled" in flat
     assert "cred_type" not in flat  # no add-machine form is offered
+
+
+# ── the boot supervisor (start.py) never starts the agent either ─────────────
+#
+# register_built_ins is the in-process path; start.py is the subprocess path.
+# Flag-off must be byte-identical on BOTH: the old supervisor only consulted
+# BUILT_IN_AGENT_DIRS, so it Popen'd remote_compute on a port regardless of the
+# flag (and, flag-on, a second copy of remote-compute-1 registered over WS).
+
+
+def _supervised_agents(monkeypatch, tmp_path, *, inprocess: bool):
+    import sys
+    from pathlib import Path
+    backend_dir = Path(__file__).resolve().parents[1]
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    import start
+
+    fake_backend = tmp_path / "backend"
+    for name in ("remote_compute", "weather"):
+        (fake_backend / "agents" / name).mkdir(parents=True, exist_ok=True)
+        (fake_backend / "agents" / name / f"{name}_agent.py").write_text(
+            "", encoding="utf-8")
+    monkeypatch.setattr(start, "__file__", str(fake_backend / "start.py"))
+    monkeypatch.setattr(start, "_wait_for_orchestrator", lambda *a, **k: True)
+    monkeypatch.setattr(start.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setenv("FF_INPROCESS_AGENTS", "1" if inprocess else "0")
+
+    class _Orch:
+        returncode = 0
+        polls = 0
+
+        def poll(self):
+            self.polls += 1
+            return None if self.polls <= 1 else 0
+
+    class _Supervisor:
+        def __init__(self):
+            self.spawned = []
+
+        def spawn(self, **kwargs):
+            self.spawned.append(kwargs)
+            return _Orch()
+
+        def terminate_all(self, *, reason):
+            return ()
+
+    sup = _Supervisor()
+    start.main(process_supervisor=sup)
+    return [s["owner"].owner_id for s in sup.spawned
+            if s["owner"].owner_kind == "server_agent"]
+
+
+def test_flag_off_supervisor_never_spawns_remote_compute(monkeypatch, tmp_path):
+    _set_flag(monkeypatch, False)
+    assert "remote_compute" not in _supervised_agents(
+        monkeypatch, tmp_path, inprocess=True)
+    assert "remote_compute" not in _supervised_agents(
+        monkeypatch, tmp_path, inprocess=False)
+
+
+def test_flag_on_contrast_supervisor_defers_to_in_process_registration(
+        monkeypatch, tmp_path):
+    _set_flag(monkeypatch, True)
+    # In-process on: register_built_ins owns remote-compute-1 — no second copy.
+    assert _supervised_agents(monkeypatch, tmp_path, inprocess=True) == []
+    # In-process kill-switch: the networked subprocess path carries it.
+    assert sorted(_supervised_agents(monkeypatch, tmp_path, inprocess=False)) == [
+        "remote_compute", "weather"]

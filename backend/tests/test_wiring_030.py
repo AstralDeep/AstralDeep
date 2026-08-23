@@ -672,6 +672,86 @@ def test_orphan_draft_permission_sweep_and_delete_purge(
     assert manager.get_agent_scopes(user_id, keeper)["tools:read"] is False
 
 
+def test_legacy_directory_ownership_sweep_deletes_exact_ids_only(
+    perms,
+    plane_runtime,
+):
+    """Boot sweep for the junk rows a removed legacy filesystem discovery keyed
+    by agents/ DIRECTORY names: every table is cleared for the literal id, the
+    real ``<slug>-1`` runtime id and an id that merely ENDS with a target are
+    untouched, and a second run is a no-op."""
+    from orchestrator.agent_lifecycle import (
+        LEGACY_DIRECTORY_AGENT_IDS,
+        AgentLifecycleManager,
+    )
+    from orchestrator.draft_plane_store import PlaneDraftStore
+    from orchestrator.user_agents import UserAgentRegistry
+
+    manager, user_id = perms
+    registry = UserAgentRegistry(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+    )
+    fake = types.SimpleNamespace(
+        draft_store=PlaneDraftStore(
+            plane_runtime=plane_runtime,
+            plane_repositories=plane_runtime.repositories,
+        ),
+    )
+    sweep = types.MethodType(
+        AgentLifecycleManager.reconcile_legacy_directory_ownership, fake)
+    other_user = f"{user_id}-other"
+    email = f"{user_id}@example.test"
+    junk, real, lookalike = "weather", "weather-1", "pytest-weather"
+    assert junk in LEGACY_DIRECTORY_AGENT_IDS
+    assert real not in LEGACY_DIRECTORY_AGENT_IDS
+    assert "tests" in LEGACY_DIRECTORY_AGENT_IDS
+    try:
+        for agent_id in (junk, real, lookalike, "tests"):
+            registry.set_agent_ownership(agent_id, email, is_public=True)
+            manager.set_agent_scopes(user_id, agent_id, {"tools:read": True})
+        # An ownerless override (no scope row to enumerate its owner from).
+        manager.set_tool_overrides(other_user, junk, {"get_weather": False})
+        assert manager.get_tool_overrides(other_user, junk) == {"get_weather": False}
+        registry.upsert_agent_safe(junk, True, marked_by="pytest")
+        registry.upsert_agent_safe(real, True, marked_by="pytest")
+
+        removed = sweep(agent_ids=[junk, "tests", real, lookalike])
+        assert removed["agent_ownership"] == 2            # weather + tests
+        assert removed["policy_rows"] >= 3                # 2 scope rows + 1 override
+        assert removed["agent_trust_neutralised"] == 1    # weather only
+
+        assert registry.get_agent_ownership(junk) is None
+        assert registry.get_agent_ownership("tests") is None
+        assert registry.get_agent_ownership(real)["owner_email"] == email
+        assert registry.get_agent_ownership(lookalike)["owner_email"] == email
+        assert manager.get_agent_scopes(user_id, junk)["tools:read"] is False
+        assert manager.get_agent_scopes(user_id, real)["tools:read"] is True
+        assert manager.get_agent_scopes(user_id, lookalike)["tools:read"] is True
+        assert manager.get_tool_overrides(other_user, junk) == {}
+        assert registry.get_agent_is_safe(junk) is False
+        assert registry.get_agent_is_safe(real) is True
+
+        # Repeat-safe: nothing left to match, nothing written.
+        assert sweep(agent_ids=[junk, "tests", real, lookalike]) == {
+            "agent_ownership": 0, "policy_rows": 0, "agent_trust_neutralised": 0,
+        }
+        # The candidate restriction can only narrow the literal set.
+        assert sweep(agent_ids=[real, lookalike, "not-a-legacy-id"]) == {
+            "agent_ownership": 0, "policy_rows": 0, "agent_trust_neutralised": 0,
+        }
+    finally:
+        with plane_runtime.transaction() as transaction:
+            repos = plane_runtime.repositories
+            for agent_id in (junk, real, lookalike, "tests"):
+                repos.agents.remove_ownership(
+                    transaction, agent_id=agent_id, owner_email=email)
+                repos.tool_policy_state.remove_agent_state(
+                    transaction, owner_id=user_id, agent_id=agent_id)
+            repos.tool_policy_state.remove_owner_state(
+                transaction, owner_id=other_user)
+
+
 # ---------------------------------------------------------------------------
 # Chat-vs-canvas narrative split (030 wave 3)
 # ---------------------------------------------------------------------------

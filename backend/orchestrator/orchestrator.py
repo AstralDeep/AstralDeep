@@ -23516,6 +23516,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception:
             logger.debug("draft permission sweep failed (non-fatal)", exc_info=True)
 
+        # Delete the junk agent_ownership/permission rows a removed legacy
+        # filesystem discovery keyed by agents/ DIRECTORY names (exact literal
+        # ids only — see agent_lifecycle.LEGACY_DIRECTORY_AGENT_IDS). Same
+        # posture as the 030 sweep: thread, idempotent, never blocks boot.
+        try:
+            await asyncio.to_thread(
+                self.lifecycle_manager.reconcile_legacy_directory_ownership)
+        except Exception:
+            logger.debug("legacy directory-id sweep failed (non-fatal)", exc_info=True)
+
         # Auto-discover agents (continuous monitor)
         agent_port = int(os.getenv("AGENT_PORT", 8003))
         max_agents = int(os.getenv("MAX_AGENTS", 10))

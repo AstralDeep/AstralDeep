@@ -21,6 +21,45 @@ except ImportError:
 
 EX_UNAVAILABLE = getattr(os, "EX_UNAVAILABLE", 69)
 
+#: Directories under ``agents/`` that are never agent packages. ``agents/tests``
+#: holds the feature-063 verb suites; ``test_remote_compute_agent.py`` ends in
+#: ``_agent.py``, which the old suffix match mistook for an entrypoint and
+#: Popen'd as "the tests agent" (ModuleNotFoundError: No module named 'agents'
+#: in production). ``agents/`` is bind-mounted from the host in production, so
+#: the tests dir is always present at runtime.
+_NON_AGENT_DIRS = frozenset({"tests", "__pycache__"})
+
+
+def _agent_entrypoint(agents_dir: str, item: str):
+    """Return ``<agents_dir>/<item>/<item>_agent.py`` when ``item`` is a
+    subprocess-startable agent package, else ``None``.
+
+    Mirrors the convention ``orchestrator/local_agents.py::_load_agent_class``
+    uses (``agents.<dir>.<dir>_agent``): ONLY the module named after its
+    directory is an entrypoint. Dunder / ``tests`` / ``__pycache__`` directories
+    and any ``test_*`` name are never candidates, so a test file that happens to
+    end in ``_agent.py`` can no longer be started as an agent.
+    """
+    if item.startswith("__") or item.startswith("test_") or item in _NON_AGENT_DIRS:
+        return None
+    item_path = os.path.join(agents_dir, item)
+    if not os.path.isdir(item_path):
+        return None
+    script = os.path.join(item_path, f"{item}_agent.py")
+    if not os.path.isfile(script):
+        return None
+    return script
+
+
+def _remote_compute_enabled() -> bool:
+    """Feature 063: read FF_REMOTE_COMPUTE exactly as the orchestrator does
+    (``shared.feature_flags``); fail closed if the flag module is unusable."""
+    try:
+        from shared.feature_flags import flags
+        return bool(flags.is_enabled("remote_compute"))
+    except Exception:
+        return False
+
 
 def _wait_for_orchestrator(port: int, process, timeout_s: float = 60.0,
                            interval_s: float = 0.5) -> bool:
@@ -81,15 +120,13 @@ def main(process_supervisor=None):
         valid_agents = []
         if os.path.exists(agents_dir):
             for item in os.listdir(agents_dir):
-                item_path = os.path.join(agents_dir, item)
-                if os.path.isdir(item_path) and not item.startswith("__"):
-                    # Skip draft agents from port count
-                    if os.path.exists(os.path.join(item_path, ".draft")):
-                        continue
-                    agent_scripts = [f for f in os.listdir(item_path) if f.endswith("_agent.py")]
-                    if agent_scripts:
-                        valid_agents.append(item)
-        
+                if _agent_entrypoint(agents_dir, item) is None:
+                    continue
+                # Skip draft agents from port count
+                if os.path.exists(os.path.join(agents_dir, item, ".draft")):
+                    continue
+                valid_agents.append(item)
+
         # Set MAX_AGENTS based on what we found, defaulting to 1 if none found to avoid errors
         max_agents = max(1, len(valid_agents))
         env = os.environ.copy()
@@ -118,38 +155,59 @@ def main(process_supervisor=None):
             from orchestrator.local_agents import BUILT_IN_AGENT_DIRS
         except Exception:
             BUILT_IN_AGENT_DIRS = ()
+        # Feature 063: remote_compute is registered in-process by
+        # local_agents.register_built_ins ONLY when FF_REMOTE_COMPUTE is on; it
+        # lives in _REMOTE_COMPUTE_AGENT_DIRS, not BUILT_IN_AGENT_DIRS.
+        try:
+            from orchestrator.local_agents import _REMOTE_COMPUTE_AGENT_DIRS
+        except Exception:
+            _REMOTE_COMPUTE_AGENT_DIRS = ("remote_compute",)
+        remote_compute_enabled = _remote_compute_enabled()
 
         next_port = int(os.environ.get("AGENT_PORT", 8003))
         for item in os.listdir(agents_dir):
-            item_path = os.path.join(agents_dir, item)
-            if os.path.isdir(item_path) and not item.startswith("__"):
-                # Skip draft agents — they are started on-demand via the UI
-                if os.path.exists(os.path.join(item_path, ".draft")):
-                    print(f"Skipping draft agent: {item}")
+            custom_agent_script = _agent_entrypoint(agents_dir, item)
+            if custom_agent_script is None:
+                continue
+            item_path = os.path.dirname(custom_agent_script)
+            # Skip draft agents — they are started on-demand via the UI
+            if os.path.exists(os.path.join(item_path, ".draft")):
+                print(f"Skipping draft agent: {item}")
+                continue
+            # Feature 040: bundled built-ins run in-process — no subprocess.
+            if inprocess_enabled and item in BUILT_IN_AGENT_DIRS:
+                print(f"Running {item} in-process (no port)")
+                continue
+            if item in _REMOTE_COMPUTE_AGENT_DIRS:
+                # Feature 063 (FR-005): flag OFF is byte-identical to pre-063 —
+                # the agent must not start at all, in-process or as a subprocess.
+                if not remote_compute_enabled:
+                    print(f"Skipping {item} (FF_REMOTE_COMPUTE is off)")
                     continue
-                # Feature 040: bundled built-ins run in-process — no subprocess.
-                if inprocess_enabled and item in BUILT_IN_AGENT_DIRS:
+                # Flag ON + in-process: the orchestrator already registers
+                # remote-compute-1 itself; a subprocess would re-register the
+                # same id over WebSocket (redundant — dispatch prefers
+                # orch.local_agents). Only the in-process kill-switch falls
+                # through to the networked subprocess path.
+                if inprocess_enabled:
                     print(f"Running {item} in-process (no port)")
                     continue
-                agent_scripts = [f for f in os.listdir(item_path) if f.endswith("_agent.py")]
-                if agent_scripts:
-                    custom_agent_script = os.path.join(item_path, agent_scripts[0])
-                    print(f"Starting {item} agent on port {next_port}...")
-                    process_supervisor.spawn(
-                        process_id=uuid.uuid4(),
-                        owner=ProcessOwner(
-                            owner_kind="server_agent",
-                            owner_id=item,
-                        ),
-                        argv=(
-                            python_exe,
-                            custom_agent_script,
-                            "--port",
-                            str(next_port),
-                        ),
-                        cwd=item_path,
-                    )
-                    next_port += 1
+            print(f"Starting {item} agent on port {next_port}...")
+            process_supervisor.spawn(
+                process_id=uuid.uuid4(),
+                owner=ProcessOwner(
+                    owner_kind="server_agent",
+                    owner_id=item,
+                ),
+                argv=(
+                    python_exe,
+                    custom_agent_script,
+                    "--port",
+                    str(next_port),
+                ),
+                cwd=item_path,
+            )
+            next_port += 1
 
         print()
         print("-" * 60)

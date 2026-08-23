@@ -16,7 +16,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import fields
 from datetime import datetime
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from astralplane.repositories import RepositoryConflictError
 from astralplane.repositories.drafts import DraftAgentRecord
@@ -863,6 +863,83 @@ class PlaneDraftStore:
                 limit=5000,
             )
         return tuple((record.owner_id, record.agent_id) for record in records)
+
+    def purge_exact_agent_ids(
+        self,
+        agent_ids: Iterable[str],
+        *,
+        marked_by: str = "system",
+    ) -> dict[str, int]:
+        """Remove ownership + policy rows keyed by EXACTLY the given agent ids.
+
+        Every match is by string equality against ``agent_ids`` — never a
+        prefix/suffix pattern — so a runtime id such as ``weather-1`` is
+        untouched when ``weather`` is the target. Repeat-safe: a second run
+        finds no rows and writes nothing. Touches, in one transaction:
+
+        * ``agent_ownership`` — every row for a target id (any owner_email);
+        * ``agent_scopes`` / ``tool_overrides`` / legacy ``tool_permissions`` —
+          every owner's rows for a target id, plus ownerless ``tool_overrides``
+          rows (no scope row to enumerate an owner from);
+        * ``agent_trust`` — Plane exposes no delete verb, so a target row that
+          is currently ``is_safe`` is neutralised to ``False`` (only then, so
+          repeat boots do not rewrite ``marked_at``).
+        """
+        targets = sorted({a for a in agent_ids if isinstance(a, str) and a.strip()})
+        removed = {"agent_ownership": 0, "policy_rows": 0, "agent_trust_neutralised": 0}
+        if not targets:
+            return removed
+        with self._runtime.transaction() as transaction:
+            ownership = self._agents.list_ownership_for_administration(
+                transaction,
+                limit=5000,
+            )
+            for record in ownership:
+                if record.agent_id not in targets:
+                    continue
+                removed["agent_ownership"] += int(
+                    self._agents.remove_ownership(
+                        transaction,
+                        agent_id=record.agent_id,
+                        owner_email=record.owner_email,
+                    )
+                )
+            for agent_id in targets:
+                # The inventory verb is suffix-based ("...ends with"); using the
+                # full id as the suffix over-matches (e.g. "x-weather"), so the
+                # exact-equality filter below is what authorises each delete.
+                owners = self._tool_policy.list_scoped_agent_owners_for_administration(
+                    transaction,
+                    agent_id_suffix=agent_id,
+                    limit=5000,
+                )
+                for owner in owners:
+                    if owner.agent_id != agent_id:
+                        continue
+                    removed["policy_rows"] += int(
+                        self._tool_policy.remove_agent_state(
+                            transaction,
+                            owner_id=owner.owner_id,
+                            agent_id=agent_id,
+                        )
+                    )
+                removed["policy_rows"] += int(
+                    self._tool_policy.prune_agent_overrides(
+                        transaction,
+                        agent_id=agent_id,
+                        live_tool_names=(),
+                    )
+                )
+                trust = self._agents.get_trust(transaction, agent_id=agent_id)
+                if trust is not None and trust.is_safe:
+                    self._agents.set_trust(
+                        transaction,
+                        agent_id=agent_id,
+                        is_safe=False,
+                        marked_by=marked_by,
+                    )
+                    removed["agent_trust_neutralised"] += 1
+        return removed
 
 
 __all__ = ("PlaneDraftStore", "draft_record_to_dict")
