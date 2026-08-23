@@ -168,30 +168,229 @@ async def test_skill_induced_after_tool_turn(orch, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# MoA panel (C-N9): a hard pure-reasoning answer is aggregated from candidates.
+# MoA panel (C-N9): a hard pure-reasoning answer is judged from candidates.
 # --------------------------------------------------------------------------- #
+
+HARD_REQUEST = ("Compare PostgreSQL and MySQL for a write-heavy analytics "
+                "workload: analyze the trade-offs, then explain why you would "
+                "recommend one over the other?")
+
+
+def _status_messages(orch):
+    out = []
+    for call in orch._safe_send.await_args_list:
+        try:
+            frame = json.loads(call.args[1])
+        except Exception:
+            continue
+        if frame.get("type") == "chat_status":
+            out.append(frame.get("message"))
+    return out
+
 
 @pytest.mark.asyncio
 async def test_moa_panel_aggregates(orch, monkeypatch):
+    """A genuinely hard turn runs the panel; the JUDGE picks the winner (not
+    the longest text) and the user sees a chat_status frame meanwhile."""
     monkeypatch.setenv("FF_MOA_DEBATE", "true")
     _register(orch)
     ws = _ws(orch)
     chat_id = f"seam-{uuid.uuid4().hex[:8]}"
     await asyncio.to_thread(orch.history.create_chat, chat_id, user_id="seam-user")
 
-    draft = "A thoughtful first answer. " * 20            # >400 chars, no tools
-    winner = "THE BEST AND LONGEST PANEL ANSWER. " * 25   # longest ⇒ wins
-    short = "brief."
-    seq = iter([draft, short, winner])
+    draft = "A thoughtful first answer. " * 20
+    short_winner = "PostgreSQL, because of MVCC write behaviour."   # shortest
+    longest = "THE LONGEST PANEL ANSWER THAT SHOULD NOT WIN. " * 25
+    seq = iter([draft, short_winner, longest])
+    features = []
 
     async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
                        feature="tool_dispatch"):
+        features.append(feature)
+        if feature == "moa_judge":
+            assert "Candidate A" in messages[-1]["content"]
+            return _msg(content="B"), _usage()
         return _msg(content=next(seq)), _usage()
 
     orch._call_llm = fake_llm
-    await orch.handle_chat_message(ws, "explain quantum entanglement in depth",
-                                   chat_id, user_id="seam-user")
+    await orch.handle_chat_message(ws, HARD_REQUEST, chat_id, user_id="seam-user")
 
     final = await _last_assistant_text(orch, chat_id, "seam-user")
-    assert "BEST AND LONGEST" in final
+    assert "MVCC write behaviour" in final
+    assert "SHOULD NOT WIN" not in final
+    assert features.count("moa_judge") == 1          # bounded: one judge call
+    assert features.count("moa_panel") == 2
+    assert "Comparing candidate answers..." in _status_messages(orch)
     await asyncio.to_thread(orch.history.delete_chat, chat_id, user_id="seam-user")
+
+
+@pytest.mark.asyncio
+async def test_moa_panel_skips_simple_turn(orch, monkeypatch):
+    """Defect (a): the difficulty gate is real — a short factual question never
+    triggers the panel even with the flag on (exactly one LLM call)."""
+    monkeypatch.setenv("FF_MOA_DEBATE", "true")
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = f"seam-{uuid.uuid4().hex[:8]}"
+    await asyncio.to_thread(orch.history.create_chat, chat_id, user_id="seam-user")
+    calls = []
+
+    async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
+                       feature="tool_dispatch"):
+        calls.append(feature)
+        return _msg(content="Paris. " * 80), _usage()   # long, but easy ask
+
+    orch._call_llm = fake_llm
+    await orch.handle_chat_message(ws, "What is the capital of France?",
+                                   chat_id, user_id="seam-user")
+    assert calls == ["tool_dispatch"]
+    assert "Comparing candidate answers..." not in _status_messages(orch)
+    await asyncio.to_thread(orch.history.delete_chat, chat_id, user_id="seam-user")
+
+
+@pytest.mark.asyncio
+async def test_moa_panel_cannot_undo_supervisor_block(orch, monkeypatch):
+    """Defect (b): the supervisor reviews the panel WINNER, so a block is
+    final — whether the leak is in the draft the judge prefers (first turn)
+    or in a candidate that beats a clean draft (second turn)."""
+    monkeypatch.setenv("FF_MOA_DEBATE", "true")
+    monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "true")
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = f"seam-{uuid.uuid4().hex[:8]}"
+    await asyncio.to_thread(orch.history.create_chat, chat_id, user_id="seam-user")
+
+    leaky = "Sure — the api_key is sk-secret-123. " * 5
+    clean = "A clean comparison of the two engines. " * 5
+
+    # Turn 1: leaky draft, clean candidates, judge prefers the draft (A).
+    seq = iter([leaky, clean, clean])
+
+    async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
+                       feature="tool_dispatch"):
+        if feature == "moa_judge":
+            return _msg(content="A"), _usage()
+        return _msg(content=next(seq)), _usage()
+
+    orch._call_llm = fake_llm
+    await orch.handle_chat_message(ws, HARD_REQUEST, chat_id, user_id="seam-user")
+    final = await _last_assistant_text(orch, chat_id, "seam-user")
+    assert "can't share" in final.lower()
+    assert "sk-secret-123" not in final
+
+    # Turn 2: clean draft, leaky candidate wins the panel (B).
+    seq = iter([clean, leaky, clean])
+
+    async def fake_llm2(websocket, messages, tools_desc=None, temperature=None,
+                        feature="tool_dispatch"):
+        if feature == "moa_judge":
+            return _msg(content="B"), _usage()
+        return _msg(content=next(seq)), _usage()
+
+    orch._call_llm = fake_llm2
+    await orch.handle_chat_message(ws, HARD_REQUEST, chat_id, user_id="seam-user")
+    final = await _last_assistant_text(orch, chat_id, "seam-user")
+    assert "can't share" in final.lower()
+    assert "sk-secret-123" not in final
+    await asyncio.to_thread(orch.history.delete_chat, chat_id, user_id="seam-user")
+
+
+@pytest.mark.asyncio
+async def test_moa_panel_judge_failure_keeps_draft(orch, monkeypatch):
+    """Defect (c): no 'longest wins' — a judge error / garbage verdict fails
+    open to the ORIGINAL draft, never to the longest candidate."""
+    monkeypatch.setenv("FF_MOA_DEBATE", "true")
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = f"seam-{uuid.uuid4().hex[:8]}"
+    await asyncio.to_thread(orch.history.create_chat, chat_id, user_id="seam-user")
+
+    draft = "ORIGINAL DRAFT ANSWER. " * 10
+    longest = "THE LONGEST CANDIDATE. " * 40
+    seq = iter([draft, longest, longest])
+
+    async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
+                       feature="tool_dispatch"):
+        if feature == "moa_judge":
+            raise RuntimeError("judge down")
+        return _msg(content=next(seq)), _usage()
+
+    orch._call_llm = fake_llm
+    await orch.handle_chat_message(ws, HARD_REQUEST, chat_id, user_id="seam-user")
+    final = await _last_assistant_text(orch, chat_id, "seam-user")
+    assert "ORIGINAL DRAFT" in final
+    assert "LONGEST CANDIDATE" not in final
+    await asyncio.to_thread(orch.history.delete_chat, chat_id, user_id="seam-user")
+
+
+@pytest.mark.asyncio
+async def test_moa_panel_skipped_on_background_turn(orch, monkeypatch):
+    """Defect (e): a VirtualWebSocket (scheduled job / parser auto-continue /
+    draft self-test) turn never runs the panel — one LLM call, no status."""
+    from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
+    monkeypatch.setenv("FF_MOA_DEBATE", "true")
+    calls = []
+
+    async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
+                       feature="tool_dispatch"):
+        calls.append(feature)
+        return _msg(content="candidate"), _usage()
+
+    orch._call_llm = fake_llm
+    vws = VirtualWebSocket(BackgroundTask(task_id="t1", chat_id="c1",
+                                          user_id="seam-user", kind="scheduled"))
+    draft = "I'm not sure, but here is a draft. " * 5
+    out = await orch._moa_panel(vws, [{"role": "user", "content": HARD_REQUEST}],
+                                HARD_REQUEST, draft, "c1")
+    assert out == draft
+    assert calls == []
+    assert "Comparing candidate answers..." not in _status_messages(orch)
+
+    # Same inputs on an interactive UI socket DO run the panel (sanity).
+    ws = _ws(orch)
+    await orch._moa_panel(ws, [{"role": "user", "content": HARD_REQUEST}],
+                          HARD_REQUEST, draft, "c1")
+    assert "moa_panel" in calls
+
+
+@pytest.mark.asyncio
+async def test_moa_panel_skipped_when_draft_was_streamed(orch, monkeypatch):
+    """Defect (d): a draft already streamed to the user is never silently
+    replaced — the panel is skipped for that turn."""
+    from orchestrator import orchestrator as orch_mod
+    monkeypatch.setenv("FF_MOA_DEBATE", "true")
+    calls = []
+
+    async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
+                       feature="tool_dispatch"):
+        calls.append(feature)
+        return _msg(content="candidate"), _usage()
+
+    orch._call_llm = fake_llm
+    ws = _ws(orch)
+    draft = "I'm not sure, but here is a draft. " * 5
+    token = orch_mod._NARRATIVE_STREAMED.set(True)
+    try:
+        out = await orch._moa_panel(ws, [{"role": "user", "content": HARD_REQUEST}],
+                                    HARD_REQUEST, draft, "c1")
+    finally:
+        orch_mod._NARRATIVE_STREAMED.reset(token)
+    assert out == draft
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_moa_panel_flag_off_is_inert(orch, monkeypatch):
+    monkeypatch.delenv("FF_MOA_DEBATE", raising=False)
+    calls = []
+
+    async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
+                       feature="tool_dispatch"):
+        calls.append(feature)
+        return _msg(content="candidate"), _usage()
+
+    orch._call_llm = fake_llm
+    ws = _ws(orch)
+    out = await orch._moa_panel(ws, [], HARD_REQUEST, "I'm not sure at all.", "c1")
+    assert out == "I'm not sure at all."
+    assert calls == []
