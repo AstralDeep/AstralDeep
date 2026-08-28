@@ -120,6 +120,26 @@ def _playout() -> dict[str, object]:
     }
 
 
+def _local_playout() -> dict[str, object]:
+    return {
+        "type": "voice_local_playout_event",
+        "schema_version": "2",
+        "speech_backend": "client_local",
+        "device_id": DEVICE_ID,
+        "connection_generation": CONNECTION_GENERATION,
+        "session_id": SESSION_ID,
+        "generation": 1,
+        "speech_revision": 2,
+        "announcement_id": ANNOUNCEMENT_ID,
+        "announcement_sequence": 1,
+        "turn_id": None,
+        "kind": "greeting",
+        "phase": "finished",
+        "client_sequence": 2,
+        "observed_at": "2026-08-28T12:00:02Z",
+    }
+
+
 def test_register_ui_round_trips_canonical_device_and_fresh_connection() -> None:
     frame = RegisterUI(
         capabilities=["render", "voice_media"],
@@ -585,6 +605,17 @@ def test_content_free_playout_event_round_trips_under_two_kibibytes() -> None:
     encoded = parsed.to_json().encode("utf-8")
     assert len(encoded) <= 2 * 1024
     assert not ({"text", "content", "audio", "binding", "transcript_proof"} & set(json.loads(parsed.to_json())))
+
+
+def test_remote_v1_playout_cannot_accept_a_client_local_v2_golden_frame() -> None:
+    """The future local parser must remain separate from remote v1 proof/media."""
+
+    remote = VoicePlayoutEvent.from_dict(_playout())
+    assert remote.schema_version == "1"
+    assert remote.media_grant_revision == 2
+
+    with pytest.raises(ProtocolValidationError):
+        VoicePlayoutEvent.from_dict(_local_playout())
 
 
 def test_greeting_single_and_result_continuation_playout_shapes() -> None:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,49 @@ WINDOWS_LOCK = WINDOWS_ROOT / "requirements-release.lock.txt"
 CONTRACT_ROOT = REPO_ROOT / "tooling" / "contract-ci"
 CONTRACT_INPUT = CONTRACT_ROOT / "requirements.in"
 CONTRACT_LOCK = CONTRACT_ROOT / "requirements.lock.txt"
+FEATURE_075_DEPENDENCY_AUTHORITIES = {
+    "Dockerfile": "292dbb485a05b3af0734a18d7822fbc8b574d0bf22e8a8b85e1047860d2364fe",
+    "Dockerfile.voice": "86c246452f4c2d720f70a49b26d57f1ddd47e53d506173f87e316a6f7a83e943",
+    "backend/requirements.txt": (
+        "6cb717ba80c99dfe33728b247e835ad68d38cbce94ddf51c56cdcbe590a753ff"
+    ),
+    "backend/security_benchmark/requirements-eval.txt": (
+        "bb0a37d68c78018092f71ac1b64ae83b6bdf297330670edf4e18d82ff9a8d65c"
+    ),
+    "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
+        "8cfc0c8d2c83149f30e295cf8269ed88e2ab244b1c477453cbdbfac8bf44fdb6"
+    ),
+    "backend/voice_agent/models/silero_vad.onnx": (
+        "597d30b3ec076608d059477bb14cfeffdf951bf5cae370d38f65d33bbfe82004"
+    ),
+    "backend/voice_agent/requirements-test.in": (
+        "6f8f0601ae8495c1fa96617e9b1cf0eda31fba04a61f96b3a3f0de38da3a9f8f"
+    ),
+    "backend/voice_agent/requirements-test.lock.txt": (
+        "755d9407a376ea9a64307f65fba53d125fdaa808c80e858be898f004c7336215"
+    ),
+    "backend/voice_agent/requirements.in": (
+        "aa59e2e6b8bae7fb23b758d2ce2a31fd995fbf15fd3e566c09d7b5d6c04ab6a1"
+    ),
+    "backend/voice_agent/requirements.lock.txt": (
+        "fb86c9318d01ce59afaccba57842ddde1d098444e527c70b272b81af4ebc61b3"
+    ),
+    "pyproject.toml": (
+        "e78a2c21410fbbd77a49374fe0a0d7803b900294f811619681c6c6871e0d97d8"
+    ),
+    "tooling/contract-ci/requirements.in": (
+        "3a6ed2112bd654add123d3732b0c0c72bc95129ac2b228b9efe2e3beb8a12d4e"
+    ),
+    "tooling/contract-ci/requirements.lock.txt": (
+        "5f8429e4d43b3ee30d87c587a115c844590a8c73050fdd4f426f1314015d01b4"
+    ),
+    "tooling/python-ci/requirements.in": (
+        "d4b2d288fe8cb11b805ed1f37375cdc583ac7e4c5cf23c4d17e284f459285064"
+    ),
+    "tooling/python-ci/requirements.lock.txt": (
+        "53a13f8fdc29757212ffe792ce361a8e17ef4e4acd52c3f723b726c84f62d15f"
+    ),
+}
 
 if not (REPO_ROOT / "specs").is_dir():
     pytest.skip(
@@ -141,3 +186,33 @@ def test_contract_validator_dependencies_stay_out_of_product_manifests() -> None
         assert "tooling/contract-ci" not in text, path
         assert "openapi-spec-validator" not in text, path
         assert re.search(r"(?m)^jsonschema(?:\[.*\])?\s*[=<>~!]", text) is None, path
+
+
+def test_feature_075_adds_no_runtime_model_development_or_lock_drift() -> None:
+    """Freeze every tracked Deep dependency/model authority at the 075 base."""
+
+    authority_pattern = re.compile(
+        r"(^|/)(?:pyproject\.toml|uv\.lock|requirements[^/]*\.(?:txt|in)|"
+        r"package(?:-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|gradle\.lockfile|"
+        r"libs\.versions\.toml|Package\.resolved|Package\.swift|[^/]+\.csproj|"
+        r"runtime-lock-contract\.json|Dockerfile(?:\.voice)?)$|"
+        r"\.(?:onnx|pt|pth|safetensors|gguf|tflite|mlmodel|mlpackage)$"
+    )
+    tracked = subprocess.run(
+        ["git", "ls-files"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.splitlines()
+    observed = {
+        path
+        for path in tracked
+        if not path.startswith("components/") and authority_pattern.search(path)
+    }
+
+    assert observed == set(FEATURE_075_DEPENDENCY_AUTHORITIES)
+    for relative, expected_sha256 in FEATURE_075_DEPENDENCY_AUTHORITIES.items():
+        actual_sha256 = hashlib.sha256((REPO_ROOT / relative).read_bytes()).hexdigest()
+        assert actual_sha256 == expected_sha256, relative

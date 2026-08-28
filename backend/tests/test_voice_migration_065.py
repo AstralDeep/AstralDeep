@@ -14,6 +14,7 @@ from astralplane.database.migrations import (
     MIGRATION_REGISTRY,
     PLANE_SCHEMA_074_004_MIGRATION,
 )
+from astralplane.database import migrations as plane_migrations
 from astralplane.repositories.voice import VoiceRepository
 
 from orchestrator.voice_sessions import VoiceSessionRepository
@@ -57,17 +58,24 @@ _EXPECTED_VOICE_RECORD_OPERATIONS = {
 def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
     """Deep consumes, but does not recreate, Plane's guarded schema lineage."""
 
-    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "074.004"
+    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "075.001"
     assert CURRENT_DATA_PLANE_REVISION.migration_digest == MIGRATION_REGISTRY.digest
+    migration_075 = getattr(plane_migrations, "PLANE_SCHEMA_075_MIGRATION", None)
+    assert migration_075 is not None
+    assert migration_075.source_revisions == ("074.004",)
+    assert migration_075.target_revision == "075.001"
     assert PLANE_SCHEMA_074_004_MIGRATION.target_revision == "074.004"
     assert PLANE_SCHEMA_074_004_MIGRATION.checksum == (
         "c46e2f8ca8060f7ed5ca48da8ac33d2f7078a1b141185d9c843ace66821f01df"
     )
-    assert MIGRATION_REGISTRY.digest == (
+    assert getattr(plane_migrations, "PLANE_SCHEMA_074_004_REGISTRY_DIGEST", None) == (
         "31495e9b916301e5d9d5011f256224e62e0a0822e25fdf3b9c339beb695eff50"
     )
+    assert MIGRATION_REGISTRY.digest == (
+        "755faecd45a7d8ca9956f25a239bed476802b885efdce29a36dc3b66981f94df"
+    )
     assert CURRENT_SCHEMA_VERIFIER_CHECKSUM == (
-        "bd5ff43f781e08fe127a6e28ae9bd9b57a796190360215ee485941bc56870e69"
+        "bc32928ec26f75eec92c632a536cb9853d3e6db6e3fc45c271ea69abde5510fe"
     )
     assert LEGACY_BASELINE_SOURCE_BLOB == "39cdc1d328f17840305b88158a892f5fd09c96dd"
     assert {"voice_session", "voice_turn"} <= BASELINE_REQUIRED_TABLES
