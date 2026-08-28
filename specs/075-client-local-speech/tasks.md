@@ -19,7 +19,7 @@ unrelated work.
 
 - [X] T001 Re-fetch and revalidate clean `origin/main` ownership, remote feature-number uniqueness, submodule anchors, and current status in Deep `.git/HEAD`, Plane `.git/HEAD`, Projection `.git/HEAD`, Primitives `.git/HEAD`, LETS `.git/HEAD`, and wiki `.git/HEAD`; stop on newly ambiguous ownership
 - [X] T002 [P] Create local unpushed `codex/075-client-local-speech` branches from refreshed `origin/main` in Plane `.git/HEAD` and Projection `.git/HEAD`, recording exact baselines in `specs/075-client-local-speech/quickstart.md`
-- [ ] T003 [P] Add a dependency-drift assertion for Feature 075 to Deep `backend/tests/test_voice_dependency_locks_065.py` and Projection `tests/test_protocol.py`, proving no new third-party runtime/model package is introduced
+- [X] T003 [P] Add a dependency-drift assertion for Feature 075 to Deep `backend/tests/test_voice_dependency_locks_065.py` and Projection `tests/test_protocol.py`, proving no new third-party runtime/model package is introduced
 - [X] T004 Inventory the obsolete Deep root `android-client/`, `apple-clients/`, root `.gitignore`, and `.git/info/exclude` paths without moving/deleting anything; record the exact recoverable cleanup targets in `specs/075-client-local-speech/quickstart.md`
 
 ---
@@ -50,10 +50,10 @@ conversation story. This phase blocks all user stories.
 
 ### Deep contract and exact component pins
 
-- [ ] T018 [P] Add failing Draft-2020-12/OpenAPI/golden-vector/strict-extra-key/local-v2/remote-v1 contract tests in Deep `backend/tests/test_voice_contract_075.py` and `backend/tests/test_voice_protocol_065.py`
-- [ ] T019 Add failing exact Plane `075.001` commit/revision/migration-digest pin assertions in Deep `backend/tests/test_voice_migration_065.py`, `backend/tests/test_schema_revision_guard.py`, and `scripts/tests/test_verify_composition.py`
-- [ ] T020 Advance Deep `components/AstralPlane` plus Plane commit/schema/migration digest in `config/astral-composition.json` only to the exact locally qualified T012 candidate; change no Deep SQL or database pool
-- [ ] T021 Run Deep `backend/tests/test_voice_migration_065.py`, `backend/tests/test_schema_revision_guard.py`, `scripts/tests/test_verify_composition.py`, `backend/tests/test_voice_contract_075.py`, and `backend/tests/test_voice_protocol_065.py` against the exact local Plane object and keep the Projection gitlink/hash unchanged until its later standalone qualification
+- [X] T018 [P] Add failing Draft-2020-12/OpenAPI/golden-vector/strict-extra-key/local-v2/remote-v1 contract tests in Deep `backend/tests/test_voice_contract_075.py` and `backend/tests/test_voice_protocol_065.py`
+- [X] T019 Add failing exact Plane `075.001` commit/revision/migration-digest pin assertions in Deep `backend/tests/test_voice_migration_065.py`, `backend/tests/test_schema_revision_guard.py`, and `scripts/tests/test_verify_composition.py`
+- [X] T020 Advance Deep `components/AstralPlane` plus Plane commit/schema/migration digest in `config/astral-composition.json` only to the exact locally qualified T012 candidate; change no Deep SQL or database pool
+- [X] T021 Run Deep `backend/tests/test_voice_migration_065.py`, `backend/tests/test_schema_revision_guard.py`, `scripts/tests/test_verify_composition.py`, `backend/tests/test_voice_contract_075.py`, and `backend/tests/test_voice_protocol_065.py` against the exact local Plane object and keep the Projection gitlink/hash unchanged until its later standalone qualification
 
 **Checkpoint**: Plane `075.001`, the shared local wire contract, ROTE reasons, and Deep's exact Plane
 pin are test-green locally. No product branch has been pushed.

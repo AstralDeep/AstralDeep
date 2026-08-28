@@ -145,6 +145,23 @@ Qualified local Projection shared-foundation checkpoint (not pushed):
    pointer to Projection. Move recoverable build/IDE residue to a dated Trash directory; remove
    only the now-obsolete root ignore entries.
 
+Qualified local Deep contract/composition checkpoint (not pushed):
+
+- Base: `6d9931dbc43c6c9ff2f0435000c91dd1106e9409`
+- Candidate: `5c1fd7cc1fa53fe8b7e335c07282c0bc7bcc9b05` (composition `eec1cfa` plus
+  review repair `5c1fd7c`)
+- Plane gitlink/manifest: `4a1d990387428436041dd70d9c417e9e86000b6c`, revision `075.001`,
+  migration digest `755faecd45a7d8ca9956f25a239bed476802b885efdce29a36dc3b66981f94df`.
+- Projection gitlink/manifest remained `0dcf1699951671f111d4c1a5689c435e3cf50496`; its protocol
+  digest remained `cf30e7a25087cef4dc9bcff4d272d501eef6b128fa48582d2bdb753a68caf904`.
+- Evidence: the required isolated unfiltered owning lane passed 162 tests with zero skips/warnings;
+  contract-validator tooling passed 26 tests; Ruff, composition, JSON, dependency, gitlink/export/
+  source-origin, and diff checks passed.
+- Independent review: four Important proof-strength gaps were found (dependency authority policy,
+  complete REST goldens, mandatory validator versions, embedded Plane import origin), repaired
+  test-first, and a fresh final specification/code-quality review was clean.
+- Scope: T018–T021 and the Deep half of T003. No selector/session/dispatcher runtime was added.
+
 ## 4. Narrow local tests while implementing
 
 Start with a failing test for each behavior and run the smallest owning suite after each slice.
