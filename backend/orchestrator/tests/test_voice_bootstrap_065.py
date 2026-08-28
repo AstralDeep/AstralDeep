@@ -273,6 +273,119 @@ async def test_client_local_services_cover_the_content_free_lifecycle() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_announcement_delivery_failure_discards_ephemeral_authority() -> None:
+    now = datetime.now(UTC)
+    session = SimpleNamespace(
+        session_id="00000000-0000-4000-8000-000000000031",
+        device_id="00000000-0000-4000-8000-000000000021",
+        owner_connection_generation="00000000-0000-4000-8000-000000000022",
+        generation=1,
+        media_grant_revision=2,
+        foreground_active=True,
+        speech_muted=False,
+        state="active",
+        speech_backend="client_local",
+        ended_at=None,
+        control_owner_id="voice-coordinator-local-1",
+        control_lease_expires_at=now + timedelta(minutes=1),
+        lease_expires_at=now + timedelta(minutes=2),
+    )
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=SimpleNamespace(get_session=Mock(return_value=session)),
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+    )
+    turn = _voice_turn(session_id=session.session_id)
+
+    with pytest.raises(TypeError, match="publisher must be callable"):
+        services.bind_local_announcement_publisher(None)  # type: ignore[arg-type]
+    with pytest.raises(
+        VoiceBootstrapError, match="local_announcement_publisher_unavailable"
+    ):
+        await services._publish_local_announcement(turn, kind="failure")
+    assert services.local_announcements._announcements == {}
+
+    publisher = AsyncMock(side_effect=RuntimeError("socket unavailable"))
+    services.bind_local_announcement_publisher(publisher)
+    with pytest.raises(RuntimeError, match="socket unavailable"):
+        await services._publish_local_announcement(turn, kind="failure")
+    assert services.local_announcements._announcements == {}
+    with pytest.raises(RuntimeError, match="already_bound"):
+        services.bind_local_announcement_publisher(publisher)
+
+
+@pytest.mark.asyncio
+async def test_local_rejection_cleans_preacceptance_but_preserves_accepted_replay() -> None:
+    authority = SimpleNamespace(turn_id="00000000-0000-4000-8000-000000000032")
+    bindings = SimpleNamespace(
+        get_turn=Mock(return_value=authority),
+        release_turn=Mock(),
+    )
+    repository = SimpleNamespace(reject_transcript=Mock())
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=repository,
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=bindings,
+    )
+    client_turn_id = "00000000-0000-4000-8000-000000000042"
+    now = datetime.now(UTC)
+
+    await services.reject_local_turn(
+        user_id="user-a",
+        client_turn_id=client_turn_id,
+        reason="untrusted_detail",
+        now=now,
+    )
+    repository.reject_transcript.assert_called_once_with(
+        user_id="user-a",
+        turn_id=authority.turn_id,
+        reason="invalid_binding",
+        retry_policy="explicit_user_retry",
+        now=now,
+    )
+    bindings.release_turn.assert_called_once_with(
+        user_id="user-a",
+        client_turn_id=client_turn_id,
+    )
+
+    repository.reject_transcript.side_effect = RuntimeError("already accepted")
+    bindings.release_turn.reset_mock()
+    await services.reject_local_turn(
+        user_id="user-a",
+        client_turn_id=client_turn_id,
+        reason="malformed_final",
+        now=now,
+    )
+    bindings.release_turn.assert_called_once_with(
+        user_id="user-a",
+        client_turn_id=client_turn_id,
+    )
+
+    bindings.get_turn.side_effect = VoiceControlBindingError("invalid_binding")
+    bindings.release_turn.reset_mock()
+    await services.reject_local_turn(
+        user_id="user-a",
+        client_turn_id=client_turn_id,
+        reason="stale_session",
+        now=now,
+    )
+    bindings.release_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_local_recognition_authority_precedes_every_durable_insert() -> None:
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session = SimpleNamespace(

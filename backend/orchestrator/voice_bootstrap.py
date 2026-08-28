@@ -1107,6 +1107,7 @@ class VoiceServices:
         )
         publisher = self.local_announcement_publisher
         if publisher is None:
+            self.local_announcements.discard(frame.announcement_id)
             raise VoiceBootstrapError("local_announcement_publisher_unavailable")
         try:
             await publisher(frame)
