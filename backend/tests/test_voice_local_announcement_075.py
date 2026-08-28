@@ -91,6 +91,36 @@ def test_greeting_has_null_turn_and_result_must_be_explicitly_authorized() -> No
         )
 
 
+def test_authorized_recap_is_nfc_control_free_and_bounded_after_canonicalization() -> None:
+    registry = ClientLocalAnnouncementRegistry()
+    session = _session()
+    frame = registry.issue(
+        session=session,
+        kind="result",
+        turn_id=_id(),
+        requested_text="Cafe\u0301",
+        output_policy="full_recap",
+        mute_revision=1,
+        consent_revision=1,
+        now=NOW,
+        server_authorized=True,
+    )
+    assert frame.text == "Caf\u00e9"
+    for text in ("safe\x00unsafe", "safe\nunsafe", "é" * 301):
+        with pytest.raises(ClaimUnavailable, match="local_announcement_text_invalid"):
+            registry.issue(
+                session=session,
+                kind="result",
+                turn_id=_id(),
+                requested_text=text,
+                output_policy="full_recap",
+                mute_revision=1,
+                consent_revision=1,
+                now=NOW,
+                server_authorized=True,
+            )
+
+
 @pytest.mark.parametrize(
     "changes",
     [

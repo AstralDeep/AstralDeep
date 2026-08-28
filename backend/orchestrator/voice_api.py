@@ -272,7 +272,7 @@ async def get_voice_capability_v2(
         if services is None or getattr(services, "speech_backend", None) is None:
             raise VoiceApiError("backend_selection_invalid", status_code=503)
         value = await _invoke(_runtime(request), "get_capability", user_id=user_id)
-        return _response(value)
+        return _response(_capability_v2(value, services.speech_backend))
     except Exception as exc:
         return _v2_error_response(exc)
 
@@ -305,8 +305,11 @@ async def get_voice_status_v2(
 ) -> Response:
     try:
         _status_rate_limiter(request).check(user_id)
-        value = await _invoke(_voice_services(request), "voice_status")
-        return _response(value)
+        services = _voice_services(request)
+        if getattr(services, "speech_backend", None) is None:
+            raise VoiceApiError("backend_selection_invalid", status_code=503)
+        value = await _invoke(services, "voice_status")
+        return _response(_status_v2(value, services.speech_backend))
     except Exception as exc:
         return _v2_error_response(exc)
 
@@ -915,6 +918,27 @@ def _v2_error_response(exc: Exception) -> JSONResponse:
         "invalid_request": "invalid_binding" if status_code == 403 else "client_readiness_required",
         "voice_rate_limited": "capacity_exhausted",
     }.get(code, code)
+    allowed_reasons = {
+        "backend_selection_invalid", "unsupported_speech_backend", "backend_mismatch",
+        "authentication_required", "client_contract_upgrade_required",
+        "client_readiness_required", "takeover_required", "stale_connection",
+        "stale_session", "stale_speech_revision", "stale_chat_context",
+        "stale_local_turn", "duplicate_local_final", "altered_local_final",
+        "local_final_empty", "local_final_oversized", "local_language_mismatch",
+        "local_processing_not_guaranteed", "local_synthesis_unavailable",
+        "local_language_download_required", "microphone_permission_denied",
+        "local_recognition_unavailable", "local_recognition_locale_unavailable",
+        "local_synthesis_locale_unavailable", "local_language_installing",
+        "local_language_install_failed", "speech_recognition_permission_not_determined",
+        "speech_recognition_permission_denied", "microphone_permission_not_determined",
+        "no_microphone", "no_audio_output", "local_capture_not_ready",
+        "local_session_not_ready", "local_recognition_failed",
+        "local_recognition_cancelled", "local_synthesis_failed",
+        "local_audio_interrupted", "local_engine_lost",
+        "invalid_binding", "capacity_exhausted", "internal_error",
+    }
+    if reason not in allowed_reasons:
+        reason = "internal_error"
     body = {
         "error": "voice_unavailable",
         "reason": reason,
@@ -923,6 +947,59 @@ def _v2_error_response(exc: Exception) -> JSONResponse:
     safe_headers = dict(headers)
     safe_headers.update(_NO_STORE)
     return JSONResponse(body, status_code=status_code, headers=safe_headers)
+
+
+def _voice_requirements(*, local: bool) -> dict[str, Any]:
+    return {
+        "session_contract": "voice-rest/v2-client-local" if local else "voice-rest/v1",
+        "local_frame_contract": "client_local/v1" if local else None,
+        "configured_locale": "en-US",
+        "recognition_must_be_local": local,
+        "synthesis_must_be_local": local,
+        "installation_policy": "explicit_user_action_only",
+        "requirement_revision": 1,
+        "max_final_unicode_scalars": 8000,
+        "max_announcement_utf8_bytes": 600,
+        "announcement_ttl_seconds": 10,
+        "echo_suppression_milliseconds": 500,
+    }
+
+
+def _capability_v2(value: Mapping[str, Any], backend: VoiceSpeechBackend) -> dict[str, Any]:
+    if backend is VoiceSpeechBackend.CLIENT_LOCAL:
+        return dict(value)
+    status = str(value.get("status", "unavailable"))
+    reason = str(value.get("reason", "worker_unavailable"))
+    if status not in {"ready", "unavailable"}:
+        status = "unavailable"
+    if reason not in {"ready", "feature_disabled", "worker_unavailable", "asr_unavailable", "tts_unavailable", "capacity_exhausted", "internal_error"}:
+        reason = "worker_unavailable"
+    return {
+        "schema_version": "2",
+        "speech_backend": "llm_factory",
+        "status": status,
+        "reason": reason,
+        "checked_at": value["checked_at"],
+        "expires_at": value["expires_at"],
+        "supported_transports": list(value["supported_transports"]),
+        "requirements": _voice_requirements(local=False),
+    }
+
+
+def _status_v2(value: Mapping[str, Any], backend: VoiceSpeechBackend) -> dict[str, Any]:
+    if backend is VoiceSpeechBackend.CLIENT_LOCAL:
+        return dict(value)
+    ready = bool(value.get("ready"))
+    reason = str(value.get("reason", "worker_unavailable"))
+    if reason not in {"ready", "feature_disabled", "worker_unavailable", "asr_unavailable", "tts_unavailable", "capacity_exhausted", "internal_error"}:
+        reason = "worker_unavailable"
+    return {
+        "schema_version": "2",
+        "speech_backend": "llm_factory",
+        "state": "ready" if ready else "unavailable",
+        "reason": reason,
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
 
 
 def _error_response(exc: Exception) -> JSONResponse:

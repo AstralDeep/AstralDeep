@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -239,6 +240,82 @@ async def test_local_activation_claims_and_applies_without_remote_media() -> Non
     )
     with pytest.raises(RuntimeError, match="chat_context_not_applied"):
         await runtime._activate_local(session, create)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("apply failed"), asyncio.CancelledError()])
+async def test_local_activation_failure_or_cancellation_aborts_exact_session(
+    failure: BaseException,
+) -> None:
+    ended = SimpleNamespace(**{
+        "session_id": "00000000-0000-4000-8000-000000000206",
+        "generation": 1,
+    })
+    repository = SimpleNamespace(
+        claim_control_lease=AsyncMock(
+            return_value=SimpleNamespace(owner_id="replica-a")
+        ),
+        apply_chat_context=Mock(side_effect=failure),
+        end_session=Mock(return_value=ended),
+    )
+    media = SimpleNamespace(abort=AsyncMock())
+    runtime = VoiceSessionRuntime(
+        repository=repository,
+        capability=SimpleNamespace(),
+        media=media,
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+    ended_handler = AsyncMock()
+    runtime.bind_session_end_handler(ended_handler)
+    create = runtime._create_request(
+        "user-a",
+        {
+            "device_id": DEVICE,
+            "connection_generation": CONNECTION,
+            "binding_id": BINDING,
+            "binding_expires_at": NOW + timedelta(minutes=5),
+        },
+        {
+            "activation_id": ACTIVATION,
+            "device_id": DEVICE,
+            "device_kind": "web",
+            "visible_chat_id": CHAT,
+            "foreground_active": True,
+            "capability": {
+                "transport": "client_local",
+                "has_microphone": True,
+                "has_audio_output": True,
+                "microphone_permission": "authorized",
+                "recognition_permission": "authorized",
+                "recognition_processing": "guaranteed_local",
+                "recognition_locale": "ready",
+                "recognition_installation": "ready",
+                "synthesis_processing": "guaranteed_local",
+                "synthesis_locale": "ready",
+                "configured_locale": "en-US",
+                "contract": "client_local/v1",
+                "full_duplex": False,
+            },
+        },
+        now=NOW,
+    )
+    session = SimpleNamespace(
+        ended_at=None,
+        speech_backend="client_local",
+        user_id="user-a",
+        session_id=ended.session_id,
+        generation=1,
+        media_grant_revision=1,
+        visible_chat_id=CHAT,
+        chat_context_revision=1,
+    )
+    with pytest.raises(type(failure)):
+        await runtime._activate_local(session, create)
+    media.abort.assert_awaited_once_with(session)
+    repository.end_session.assert_called_once()
+    ended_handler.assert_awaited_once_with(ended, "media_error")
 
 
 def test_local_cleanup_binding_and_capability_shape_fail_closed() -> None:

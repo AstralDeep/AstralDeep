@@ -3439,6 +3439,29 @@ class VoiceSessionRepository:
             now=now,
         )
 
+    def abandon_preacceptance_turns(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        generation: int,
+        now: datetime,
+    ) -> None:
+        """Abandon only recognizing/submitting rows for one exact generation."""
+
+        checked_now = _aware(now, "invalid_current_time")
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
+            if int(row["generation"]) != generation:
+                raise StaleSessionFence("stale_generation")
+            self._abandon_unaccepted_session_turns(
+                transaction,
+                owner_id=str(row["user_id"]),
+                session_id=str(row["session_id"]),
+                generation=generation,
+                now=checked_now,
+            )
+
     def _end_session_row(
         self,
         transaction: Any,

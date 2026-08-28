@@ -13,7 +13,9 @@ from fastapi.testclient import TestClient
 from orchestrator.auth import require_user_id
 from orchestrator.voice_api import (
     VoiceHttpResult,
+    _capability_v2,
     _local_session_response,
+    _status_v2,
     _v2_error_response,
     router,
 )
@@ -210,6 +212,47 @@ def test_v2_capability_and_status_are_authenticated_bounded_and_no_store(api) ->
     )
 
 
+def test_remote_v2_projection_and_invalid_selection_use_closed_v2_shapes(api) -> None:
+    capability = _capability_v2(
+        {
+            "schema_version": "1",
+            "status": "ready",
+            "reason": "ready",
+            "checked_at": "2026-08-28T16:00:00Z",
+            "expires_at": "2026-08-28T16:00:30Z",
+            "supported_transports": ["livekit", "watch_pcm_websocket"],
+        },
+        VoiceSpeechBackend.LLM_FACTORY,
+    )
+    status = _status_v2(
+        {"ready": True, "reason": "ready"},
+        VoiceSpeechBackend.LLM_FACTORY,
+    )
+    assert capability == {
+        **capability,
+        "schema_version": "2",
+        "speech_backend": "llm_factory",
+        "status": "ready",
+        "reason": "ready",
+    }
+    assert status["schema_version"] == "2"
+    assert status["speech_backend"] == "llm_factory"
+    assert status["state"] == status["reason"] == "ready"
+    assert capability["requirements"]["session_contract"] == "voice-rest/v1"
+    assert capability["requirements"]["local_frame_contract"] is None
+
+    client, orchestrator = api
+    orchestrator.voice_services.speech_backend = None
+    for path in ("/api/voice/v2/capability", "/api/voice/v2/status"):
+        response = client.get(path)
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "voice_unavailable",
+            "reason": "backend_selection_invalid",
+            "retryable": False,
+        }
+
+
 def test_v2_routes_keep_keycloak_authentication_dependency() -> None:
     app = FastAPI()
     app.state.orchestrator = _Orchestrator()
@@ -380,7 +423,7 @@ def test_v2_runtime_projection_and_non_enumerating_error_fallbacks() -> None:
     assert unknown.status_code == 503
     assert json.loads(unknown.body) == {
         "error": "voice_unavailable",
-        "reason": "voice_unavailable",
+        "reason": "internal_error",
         "retryable": False,
     }
 

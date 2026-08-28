@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -335,12 +336,17 @@ class ClientLocalAnnouncementRegistry:
         if kind == "result":
             if output_policy != "full_recap" or not server_authorized:
                 raise ClaimUnavailable("local_result_not_authorized")
-            text = requested_text
+            text = unicodedata.normalize("NFC", requested_text)
         else:
             if output_policy != "lifecycle" or kind not in APPROVED_PHRASE_KEYS:
                 raise ClaimUnavailable("local_announcement_policy_invalid")
             text = APPROVED_PHRASE_TEXT[APPROVED_PHRASE_KEYS[kind][0]]
-        if not isinstance(text, str) or not text or len(text.encode("utf-8")) > 600:
+        if (
+            not isinstance(text, str)
+            or not text
+            or any(ord(char) == 0 or unicodedata.category(char) == "Cc" for char in text)
+            or len(text.encode("utf-8")) > 600
+        ):
             raise ClaimUnavailable("local_announcement_text_invalid")
         self._prune(checked_now)
         if len(self._announcements) >= self._capacity:
@@ -434,6 +440,11 @@ class ClientLocalAnnouncementRegistry:
                 and record["generation"] == generation
             )
         }
+
+    def discard(self, announcement_id: str) -> None:
+        """Drop one undelivered announcement without retaining its content."""
+
+        self._announcements.pop(announcement_id, None)
 
     def fence_session(
         self,

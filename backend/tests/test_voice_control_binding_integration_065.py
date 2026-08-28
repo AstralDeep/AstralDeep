@@ -6,7 +6,7 @@ import io
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 
@@ -516,6 +516,10 @@ async def test_reregistration_rotates_bearer_but_cannot_change_socket_scope() ->
 @pytest.mark.asyncio
 async def test_new_connection_for_same_user_device_fences_prior_socket() -> None:
     orchestrator = _orchestrator()
+    local_cleanup = Mock()
+    orchestrator.voice_services = SimpleNamespace(
+        clear_local_connection=local_cleanup
+    )
     first_socket = object()
     second_socket = object()
     claims = {
@@ -536,6 +540,10 @@ async def test_new_connection_for_same_user_device_fences_prior_socket() -> None
 
     assert id(first_socket) not in orchestrator._voice_control_bindings
     assert id(second_socket) in orchestrator._voice_control_bindings
+    local_cleanup.assert_called_once_with(
+        ANY,
+        socket_id=id(first_socket),
+    )
     with pytest.raises(VoiceControlBindingError, match="binding_not_current"):
         orchestrator.validate_voice_control_binding(
             bearer=first_frame["binding"],

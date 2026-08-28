@@ -20,6 +20,7 @@ from orchestrator.livekit_service import (
 )
 from orchestrator.voice_control_binding import (
     ClientLocalBindingRegistry,
+    ClientLocalTurnAuthority,
     VoiceControlClaims,
 )
 from orchestrator.voice_coordinator import (
@@ -1088,6 +1089,7 @@ class VoiceServices:
             user_id=turn.user_id,
             session_id=turn.session_id,
         )
+        self._require_current_local_control(session, now=datetime.now(UTC))
         mute_revision, consent_revision = self.local_announcements.next_revisions(
             session_id=session.session_id,
             generation=session.generation,
@@ -1106,7 +1108,11 @@ class VoiceServices:
         publisher = self.local_announcement_publisher
         if publisher is None:
             raise VoiceBootstrapError("local_announcement_publisher_unavailable")
-        await publisher(frame)
+        try:
+            await publisher(frame)
+        except BaseException:
+            self.local_announcements.discard(frame.announcement_id)
+            raise
 
     def voice_status(self) -> dict[str, Any]:
         """Project the FR-034 operator surface: readiness, workers, refusals.
@@ -1441,6 +1447,29 @@ class VoiceServices:
         if self.speech_backend is not VoiceSpeechBackend.CLIENT_LOCAL:
             raise VoiceBootstrapError("client_local_not_available")
 
+    def _require_current_local_control(
+        self,
+        session: VoiceSessionRecord,
+        *,
+        now: datetime,
+    ) -> None:
+        """Require this replica's exact, live session/control lease."""
+
+        checked_now = now.astimezone(UTC)
+        try:
+            valid = (
+                session.speech_backend == "client_local"
+                and session.state == "active"
+                and session.ended_at is None
+                and session.control_owner_id == self.runtime._replica_id
+                and session.control_lease_expires_at > checked_now
+                and session.lease_expires_at > checked_now
+            )
+        except (AttributeError, TypeError):
+            valid = False
+        if not valid:
+            raise VoiceBootstrapError("local_control_unavailable")
+
     async def local_ready(
         self,
         *,
@@ -1468,6 +1497,7 @@ class VoiceServices:
             ),
             now=now,
         )
+        self._require_current_local_control(session, now=now)
         self.local_bindings.authorize_ready(
             socket_id=socket_id,
             current_socket_id=current_socket_id,
@@ -1507,33 +1537,63 @@ class VoiceServices:
             ),
             now=now,
         )
-        if session.control_owner_id is None:
-            raise VoiceBootstrapError("local_control_unavailable")
-        mutation = await asyncio.to_thread(
-            self.repository.bind_recognition_turn,
-            RecognitionBinding(
-                user_id=user_id,
-                session_id=frame.session_id,
-                session_generation=frame.generation,
-                media_grant_revision=frame.speech_revision,
-                client_turn_id=frame.client_turn_id,
-                chat_id=frame.chat_id,
-                chat_context_revision=frame.chat_context_revision,
-                execution_base_render_revision=execution_base_render_revision,
-                control_owner_id=session.control_owner_id,
-            ),
-            now=now,
-        )
-        authority = self.local_bindings.bind_turn(
+        self._require_current_local_control(session, now=now)
+        reserved = self.local_bindings.reserve_turn(
             socket_id=socket_id,
             current_socket_id=current_socket_id,
             user_id=user_id,
             claims=claims,
             session=session,
             frame=frame,
-            turn=mutation.turn,
             now=now,
         )
+        if isinstance(reserved, ClientLocalTurnAuthority):
+            turn = await asyncio.to_thread(
+                self.repository.get_turn,
+                user_id=user_id,
+                turn_id=reserved.turn_id,
+            )
+            return turn, reserved
+        try:
+            mutation = await asyncio.to_thread(
+                self.repository.bind_recognition_turn,
+                RecognitionBinding(
+                    user_id=user_id,
+                    session_id=frame.session_id,
+                    session_generation=frame.generation,
+                    media_grant_revision=frame.speech_revision,
+                    client_turn_id=frame.client_turn_id,
+                    chat_id=frame.chat_id,
+                    chat_context_revision=frame.chat_context_revision,
+                    execution_base_render_revision=execution_base_render_revision,
+                    control_owner_id=session.control_owner_id,
+                ),
+                now=now,
+            )
+            try:
+                authority = self.local_bindings.finalize_turn(
+                    reservation=reserved,
+                    turn=mutation.turn,
+                    now=now,
+                )
+            except BaseException:
+                try:
+                    await asyncio.shield(
+                        asyncio.to_thread(
+                            self.repository.reject_transcript,
+                            user_id=user_id,
+                            turn_id=mutation.turn.turn_id,
+                            reason="invalid_binding",
+                            retry_policy="none",
+                            now=now,
+                        )
+                    )
+                except BaseException:
+                    logger.warning("voice_local_reservation_abandon_unavailable")
+                raise
+        except BaseException:
+            self.local_bindings.release_reservation(reserved)
+            raise
         return mutation.turn, authority
 
     async def admit_local_final(
@@ -1547,8 +1607,7 @@ class VoiceServices:
     ) -> TranscriptAdmission:
         """Verify and admit one local final without worker proof authority."""
 
-        self._require_local_backend()
-        canonical, _registry_replay = self.local_bindings.verify_final(
+        canonical = await self.verify_local_final_authority(
             socket_id=socket_id,
             current_socket_id=current_socket_id,
             user_id=user_id,
@@ -1571,11 +1630,104 @@ class VoiceServices:
             now=now,
         )
 
-    def clear_local_connection(self, claims: VoiceControlClaims) -> None:
+    async def verify_local_final_authority(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        frame: Any,
+        now: datetime,
+    ) -> str:
+        """Verify ephemeral and current durable authority before replay lookup."""
+
+        self._require_local_backend()
+        canonical, _registry_replay = self.local_bindings.verify_final(
+            socket_id=socket_id,
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            frame=frame,
+            now=now,
+        )
+        authority = self.local_bindings.get_turn(
+            user_id=user_id,
+            client_turn_id=frame.client_turn_id,
+            now=now,
+        )
+        session = await asyncio.to_thread(
+            self.repository.get_session,
+            user_id=user_id,
+            session_id=authority.session_id,
+        )
+        self._require_current_local_control(session, now=now)
+        if not (
+            session.generation == authority.generation
+            and session.media_grant_revision == authority.speech_revision
+            and session.device_id == authority.device_id
+            and session.owner_connection_generation
+            == authority.connection_generation
+            and session.control_binding_id == authority.binding_id
+            and session.control_binding_expires_at > now
+        ):
+            raise VoiceBootstrapError("local_control_unavailable")
+        return canonical
+
+    async def reject_local_turn(
+        self,
+        *,
+        user_id: str,
+        client_turn_id: str,
+        reason: str,
+        now: datetime,
+    ) -> None:
+        """Content-free terminal cleanup for a refused preacceptance final."""
+
+        try:
+            authority = self.local_bindings.get_turn(
+                user_id=user_id,
+                client_turn_id=client_turn_id,
+                now=now,
+            )
+        except Exception:
+            return
+        safe_reason = reason if reason in {
+            "capacity_exhausted",
+            "chat_unavailable",
+            "invalid_binding",
+            "permission_denied",
+            "stale_session",
+            "malformed_final",
+        } else "invalid_binding"
+        try:
+            await asyncio.to_thread(
+                self.repository.reject_transcript,
+                user_id=user_id,
+                turn_id=authority.turn_id,
+                reason=safe_reason,
+                retry_policy="explicit_user_retry",
+                now=now,
+            )
+        except Exception:
+            # An exact accepted replay is already beyond preacceptance and
+            # must not be rolled back. The repository enforces that boundary.
+            logger.debug("voice_local_rejection_already_terminal_or_accepted")
+        finally:
+            self.local_bindings.release_turn(
+                user_id=user_id,
+                client_turn_id=client_turn_id,
+            )
+
+    def clear_local_connection(
+        self,
+        claims: VoiceControlClaims,
+        *,
+        socket_id: int | None = None,
+    ) -> None:
         self.local_bindings.clear_connection(
             user_id=claims.subject,
             device_id=claims.device_id,
             connection_generation=claims.connection_generation,
+            socket_id=socket_id,
         )
 
     def clear_local_session(self, session: VoiceSessionRecord) -> None:
@@ -1585,11 +1737,20 @@ class VoiceServices:
         )
 
     async def cleanup_local_buffers(self, session: VoiceSessionRecord) -> None:
-        self.clear_local_session(session)
-        self.local_announcements.fence_session(
-            session_id=session.session_id,
-            generation=session.generation,
-        )
+        try:
+            await asyncio.to_thread(
+                self.repository.abandon_preacceptance_turns,
+                user_id=session.user_id,
+                session_id=session.session_id,
+                generation=session.generation,
+                now=datetime.now(UTC),
+            )
+        finally:
+            self.clear_local_session(session)
+            self.local_announcements.fence_session(
+                session_id=session.session_id,
+                generation=session.generation,
+            )
 
     async def _record_submission_event(
         self,
@@ -2213,6 +2374,7 @@ class VoiceServices:
             ),
             now=now,
         )
+        self._require_current_local_control(session, now=now)
         self.local_announcements.observe_current(
             session=session,
             event=event,
@@ -2877,6 +3039,7 @@ class VoiceServices:
         except VoiceRecapError as exc:
             raise VoiceApiError(exc.code, status_code=409) from None
         if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            self._require_current_local_control(session, now=datetime.now(UTC))
             self.local_announcements.fence_session(
                 session_id=session.session_id,
                 generation=session.generation,
@@ -3168,6 +3331,7 @@ def build_voice_services(
             speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
             observability=observability,
         )
+        runtime.bind_speech_stop_handler(services.stop_session_speech)
         runtime.bind_session_end_handler(services.handle_runtime_session_end)
         runtime.bind_local_buffer_cleanup_handler(services.cleanup_local_buffers)
         return services

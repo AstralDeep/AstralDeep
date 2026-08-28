@@ -60,6 +60,35 @@ class ClientLocalTurnAuthority:
     expires_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ClientLocalTurnReservation:
+    """One content-free, bounded reservation made before durable insertion."""
+
+    reservation_id: str
+    socket_id: int
+    user_id: str
+    device_id: str
+    connection_generation: str
+    binding_id: str
+    session_id: str
+    generation: int
+    speech_revision: int
+    client_turn_id: str
+    chat_id: str
+    chat_context_revision: int
+    recognition_sequence: int
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _ClientLocalSequenceFence:
+    user_id: str
+    device_id: str
+    connection_generation: str
+    sequence: int
+    expires_at: datetime
+
+
 class ClientLocalBindingRegistry:
     """Bounded, process-local socket and turn fencing for local speech.
 
@@ -74,7 +103,10 @@ class ClientLocalBindingRegistry:
         if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
             raise ValueError("invalid_local_binding_capacity")
         self._capacity = capacity
-        self._sequences: dict[tuple[int, str], int] = {}
+        self._sequences: dict[tuple[int, str], _ClientLocalSequenceFence] = {}
+        self._reservations: dict[
+            tuple[str, str], ClientLocalTurnReservation
+        ] = {}
         self._turns: dict[tuple[str, str], ClientLocalTurnAuthority] = {}
         self._inflight_final_digests: dict[tuple[str, str], str] = {}
 
@@ -131,11 +163,24 @@ class ClientLocalBindingRegistry:
         socket_id: int,
         session_id: str,
         sequence: int,
+        user_id: str,
+        device_id: str,
+        connection_generation: str,
+        expires_at: datetime,
     ) -> None:
         key = (socket_id, session_id)
-        if sequence <= self._sequences.get(key, 0):
+        current = self._sequences.get(key)
+        if current is None and len(self._sequences) >= self._capacity:
+            raise VoiceControlBindingError("capacity_exhausted")
+        if current is not None and sequence <= current.sequence:
             raise VoiceControlBindingError("invalid_binding")
-        self._sequences[key] = sequence
+        self._sequences[key] = _ClientLocalSequenceFence(
+            user_id=user_id,
+            device_id=device_id,
+            connection_generation=connection_generation,
+            sequence=sequence,
+            expires_at=expires_at,
+        )
 
     def authorize_ready(
         self,
@@ -148,7 +193,8 @@ class ClientLocalBindingRegistry:
         frame: Any,
         now: datetime,
     ) -> None:
-        self._authorize(
+        self._prune(now)
+        expires_at = self._authorize(
             socket_id=socket_id,
             current_socket_id=current_socket_id,
             user_id=user_id,
@@ -161,6 +207,10 @@ class ClientLocalBindingRegistry:
             socket_id=socket_id,
             session_id=frame.session_id,
             sequence=frame.client_sequence,
+            user_id=user_id,
+            device_id=frame.device_id,
+            connection_generation=frame.connection_generation,
+            expires_at=expires_at,
         )
 
     def authorize_recognition_start(
@@ -174,6 +224,7 @@ class ClientLocalBindingRegistry:
         frame: Any,
         now: datetime,
     ) -> datetime:
+        self._prune(now)
         expires_at = self._authorize(
             socket_id=socket_id,
             current_socket_id=current_socket_id,
@@ -192,10 +243,14 @@ class ClientLocalBindingRegistry:
             socket_id=socket_id,
             session_id=frame.session_id,
             sequence=frame.recognition_sequence,
+            user_id=user_id,
+            device_id=frame.device_id,
+            connection_generation=frame.connection_generation,
+            expires_at=expires_at,
         )
         return expires_at
 
-    def bind_turn(
+    def reserve_turn(
         self,
         *,
         socket_id: int,
@@ -204,25 +259,23 @@ class ClientLocalBindingRegistry:
         claims: Any,
         session: Any,
         frame: Any,
-        turn: Any,
         now: datetime,
-    ) -> ClientLocalTurnAuthority:
-        existing = self._turns.get((user_id, frame.client_turn_id))
+    ) -> ClientLocalTurnReservation | ClientLocalTurnAuthority:
+        """Reserve ephemeral authority before a durable recognizing row exists."""
+
+        self._prune(now)
+        key = (user_id, frame.client_turn_id)
+        existing = self._turns.get(key)
         if existing is not None:
-            if (
-                existing.socket_id == socket_id
-                and existing.session_id == frame.session_id
-                and existing.generation == frame.generation
-                and existing.speech_revision == frame.speech_revision
-                and existing.chat_id == frame.chat_id
-                and existing.chat_context_revision == frame.chat_context_revision
-                and existing.recognition_sequence == frame.recognition_sequence
-                and existing.expires_at > now
-            ):
+            if self._matches_start(existing, socket_id=socket_id, frame=frame, now=now):
                 return existing
             raise VoiceControlBindingError("invalid_binding")
-        self._prune(now)
-        if len(self._turns) >= self._capacity:
+        pending = self._reservations.get(key)
+        if pending is not None:
+            if self._matches_start(pending, socket_id=socket_id, frame=frame, now=now):
+                return pending
+            raise VoiceControlBindingError("invalid_binding")
+        if len(self._turns) + len(self._reservations) >= self._capacity:
             raise VoiceControlBindingError("capacity_exhausted")
         authority_expiry = min(
             self.authorize_recognition_start(
@@ -236,7 +289,8 @@ class ClientLocalBindingRegistry:
             ),
             _aware(now, "now") + timedelta(minutes=2),
         )
-        authority = ClientLocalTurnAuthority(
+        reservation = ClientLocalTurnReservation(
+            reservation_id=str(uuid4()),
             socket_id=socket_id,
             user_id=user_id,
             device_id=frame.device_id,
@@ -246,16 +300,95 @@ class ClientLocalBindingRegistry:
             generation=frame.generation,
             speech_revision=frame.speech_revision,
             client_turn_id=frame.client_turn_id,
-            turn_id=turn.turn_id,
-            submission_id=turn.submission_id,
-            request_generation=turn.request_generation,
             chat_id=frame.chat_id,
             chat_context_revision=frame.chat_context_revision,
             recognition_sequence=frame.recognition_sequence,
             expires_at=authority_expiry,
         )
-        self._turns[(user_id, frame.client_turn_id)] = authority
+        self._reservations[key] = reservation
+        return reservation
+
+    @staticmethod
+    def _matches_start(authority: Any, *, socket_id: int, frame: Any, now: datetime) -> bool:
+        return (
+            authority.socket_id == socket_id
+            and authority.session_id == frame.session_id
+            and authority.generation == frame.generation
+            and authority.speech_revision == frame.speech_revision
+            and authority.chat_id == frame.chat_id
+            and authority.chat_context_revision == frame.chat_context_revision
+            and authority.recognition_sequence == frame.recognition_sequence
+            and authority.expires_at > now
+        )
+
+    def finalize_turn(
+        self,
+        *,
+        reservation: ClientLocalTurnReservation,
+        turn: Any,
+        now: datetime,
+    ) -> ClientLocalTurnAuthority:
+        """Convert the exact live reservation into final ephemeral authority."""
+
+        self._prune(now)
+        key = (reservation.user_id, reservation.client_turn_id)
+        if self._reservations.get(key) != reservation or reservation.expires_at <= now:
+            raise VoiceControlBindingError("invalid_binding")
+        authority = ClientLocalTurnAuthority(
+            socket_id=reservation.socket_id,
+            user_id=reservation.user_id,
+            device_id=reservation.device_id,
+            connection_generation=reservation.connection_generation,
+            binding_id=reservation.binding_id,
+            session_id=reservation.session_id,
+            generation=reservation.generation,
+            speech_revision=reservation.speech_revision,
+            client_turn_id=reservation.client_turn_id,
+            turn_id=turn.turn_id,
+            submission_id=turn.submission_id,
+            request_generation=turn.request_generation,
+            chat_id=reservation.chat_id,
+            chat_context_revision=reservation.chat_context_revision,
+            recognition_sequence=reservation.recognition_sequence,
+            expires_at=reservation.expires_at,
+        )
+        self._reservations.pop(key, None)
+        self._turns[key] = authority
         return authority
+
+    def release_reservation(self, reservation: ClientLocalTurnReservation) -> None:
+        key = (reservation.user_id, reservation.client_turn_id)
+        if self._reservations.get(key) == reservation:
+            self._reservations.pop(key, None)
+            sequence_key = (reservation.socket_id, reservation.session_id)
+            fence = self._sequences.get(sequence_key)
+            if fence is not None and fence.sequence == reservation.recognition_sequence:
+                self._sequences.pop(sequence_key, None)
+
+    def bind_turn(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        claims: Any,
+        session: Any,
+        frame: Any,
+        turn: Any,
+        now: datetime,
+    ) -> ClientLocalTurnAuthority:
+        reserved = self.reserve_turn(
+            socket_id=socket_id,
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            claims=claims,
+            session=session,
+            frame=frame,
+            now=now,
+        )
+        if isinstance(reserved, ClientLocalTurnAuthority):
+            return reserved
+        return self.finalize_turn(reservation=reserved, turn=turn, now=now)
 
     def get_turn(
         self,
@@ -360,24 +493,25 @@ class ClientLocalBindingRegistry:
         user_id: str,
         device_id: str,
         connection_generation: str,
+        socket_id: int | None = None,
     ) -> None:
-        removed_sockets = {
-            authority.socket_id
-            for authority in self._turns.values()
-            if (
+        def matches(authority: Any) -> bool:
+            return (
                 authority.user_id == user_id
                 and authority.device_id == device_id
                 and authority.connection_generation == connection_generation
+                and (socket_id is None or authority.socket_id == socket_id)
             )
-        }
+
         self._turns = {
             key: authority
             for key, authority in self._turns.items()
-            if not (
-                authority.user_id == user_id
-                and authority.device_id == device_id
-                and authority.connection_generation == connection_generation
-            )
+            if not matches(authority)
+        }
+        self._reservations = {
+            key: reservation
+            for key, reservation in self._reservations.items()
+            if not matches(reservation)
         }
         self._inflight_final_digests = {
             key: digest
@@ -387,15 +521,15 @@ class ClientLocalBindingRegistry:
         self._sequences = {
             key: value
             for key, value in self._sequences.items()
-            if key[0] not in removed_sockets
+            if not (
+                value.user_id == user_id
+                and value.device_id == device_id
+                and value.connection_generation == connection_generation
+                and (socket_id is None or key[0] == socket_id)
+            )
         }
 
     def clear_session(self, *, session_id: str, generation: int) -> None:
-        removed_sockets = {
-            authority.socket_id
-            for authority in self._turns.values()
-            if authority.session_id == session_id and authority.generation == generation
-        }
         self._turns = {
             key: authority
             for key, authority in self._turns.items()
@@ -404,6 +538,14 @@ class ClientLocalBindingRegistry:
                 and authority.generation == generation
             )
         }
+        self._reservations = {
+            key: reservation
+            for key, reservation in self._reservations.items()
+            if not (
+                reservation.session_id == session_id
+                and reservation.generation == generation
+            )
+        }
         self._inflight_final_digests = {
             key: digest
             for key, digest in self._inflight_final_digests.items()
@@ -412,7 +554,7 @@ class ClientLocalBindingRegistry:
         self._sequences = {
             key: value
             for key, value in self._sequences.items()
-            if not (key[0] in removed_sockets and key[1] == session_id)
+            if key[1] != session_id
         }
 
     def _prune(self, now: datetime) -> None:
@@ -421,6 +563,16 @@ class ClientLocalBindingRegistry:
             key: authority
             for key, authority in self._turns.items()
             if authority.expires_at > checked_now
+        }
+        self._reservations = {
+            key: reservation
+            for key, reservation in self._reservations.items()
+            if reservation.expires_at > checked_now
+        }
+        self._sequences = {
+            key: fence
+            for key, fence in self._sequences.items()
+            if fence.expires_at > checked_now
         }
         self._inflight_final_digests = {
             key: digest

@@ -641,6 +641,11 @@ class VoiceSessionRuntime:
             control=_control(control),
             now=self._now(),
         )
+        if (
+            self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
+            and self._local_buffer_cleanup_handler is not None
+        ):
+            await self._local_buffer_cleanup_handler(session)
         if self._speech_stop_handler is not None:
             await self._speech_stop_handler(
                 session.session_id,
@@ -963,29 +968,36 @@ class VoiceSessionRuntime:
             raise VoiceApiError("activation_replay_ended", status_code=409)
         if session.speech_backend != "client_local":
             raise VoiceApiError("backend_mismatch", status_code=409)
-        await self._claim_control(session, self._now())
-        applied = await asyncio.to_thread(
-            self._repository.apply_chat_context,
-            user_id=create.user_id,
-            session_id=session.session_id,
-            expected_generation=session.generation,
-            expected_media_grant_revision=session.media_grant_revision,
-            control_owner_id=self._replica_id,
-            visible_chat_id=session.visible_chat_id,
-            chat_context_revision=session.chat_context_revision,
-            now=self._now(),
-        )
-        active = await asyncio.to_thread(
-            self._repository.mark_session_active,
-            user_id=create.user_id,
-            session_id=session.session_id,
-            expected_generation=session.generation,
-            expected_media_grant_revision=session.media_grant_revision,
-            now=self._now(),
-        )
-        if not applied.session.chat_context_synced or not active.chat_context_synced:
-            raise RuntimeError("chat_context_not_applied")
-        return active
+        try:
+            await self._claim_control(session, self._now())
+            applied = await asyncio.to_thread(
+                self._repository.apply_chat_context,
+                user_id=create.user_id,
+                session_id=session.session_id,
+                expected_generation=session.generation,
+                expected_media_grant_revision=session.media_grant_revision,
+                control_owner_id=self._replica_id,
+                visible_chat_id=session.visible_chat_id,
+                chat_context_revision=session.chat_context_revision,
+                now=self._now(),
+            )
+            active = await asyncio.to_thread(
+                self._repository.mark_session_active,
+                user_id=create.user_id,
+                session_id=session.session_id,
+                expected_generation=session.generation,
+                expected_media_grant_revision=session.media_grant_revision,
+                now=self._now(),
+            )
+            if not applied.session.chat_context_synced or not active.chat_context_synced:
+                raise RuntimeError("chat_context_not_applied")
+            return active
+        except asyncio.CancelledError:
+            await asyncio.shield(self._abort_activation(session, create))
+            raise
+        except Exception:
+            await self._abort_activation(session, create)
+            raise
 
     def _watch_nonce(
         self,
@@ -1090,28 +1102,34 @@ class VoiceSessionRuntime:
     ) -> None:
         try:
             await self._media.abort(session)
-        finally:
+        except BaseException:
+            # Activation cleanup is best effort and must never mask the
+            # original activation exception or cancellation.
+            pass
+        try:
+            ended = await asyncio.to_thread(
+                self._repository.end_session,
+                user_id=create.user_id,
+                session_id=session.session_id,
+                expected_generation=session.generation,
+                expected_media_grant_revision=session.media_grant_revision,
+                control=SessionControl(
+                    device_id=create.device_id,
+                    connection_generation=create.owner_connection_generation,
+                    binding_id=create.control_binding_id,
+                    binding_expires_at=create.control_binding_expires_at,
+                ),
+                reason="media_error",
+                now=self._now(),
+            )
+        except BaseException:
+            ended = None
+        if ended is not None:
             try:
-                ended = await asyncio.to_thread(
-                    self._repository.end_session,
-                    user_id=create.user_id,
-                    session_id=session.session_id,
-                    expected_generation=session.generation,
-                    expected_media_grant_revision=session.media_grant_revision,
-                    control=SessionControl(
-                        device_id=create.device_id,
-                        connection_generation=create.owner_connection_generation,
-                        binding_id=create.control_binding_id,
-                        binding_expires_at=create.control_binding_expires_at,
-                    ),
-                    reason="media_error",
-                    now=self._now(),
-                )
-            except Exception:
-                ended = None
-            if ended is not None:
                 await self._notify_session_end(ended, "media_error")
-            self._forget_worker_assignment(session)
+            except BaseException:
+                pass
+        self._forget_worker_assignment(session)
 
     async def _fail_media_session(
         self,

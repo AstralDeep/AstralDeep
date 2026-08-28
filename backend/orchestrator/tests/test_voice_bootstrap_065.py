@@ -21,7 +21,12 @@ from orchestrator.voice_bootstrap import (
     install_voice_worker_control,
 )
 from orchestrator.voice_backend import VoiceSpeechBackend
-from orchestrator.voice_control_binding import VoiceControlClaims
+from orchestrator.voice_control_binding import (
+    ClientLocalBindingRegistry,
+    VoiceControlBindingError,
+    VoiceControlClaims,
+)
+from shared.protocol import VoiceLocalReady, VoiceLocalRecognitionStarted
 from orchestrator.voice_api import VoiceApiError
 from orchestrator.voice_coordinator import (
     APPROVED_PHRASE_KEYS,
@@ -149,6 +154,10 @@ async def test_client_local_services_cover_the_content_free_lifecycle() -> None:
         speech_backend="client_local",
         ended_at=None,
         control_owner_id="voice-coordinator-local-1",
+        control_lease_expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        lease_expires_at=datetime.now(UTC) + timedelta(minutes=2),
+        control_binding_id="00000000-0000-4000-8000-000000000023",
+        control_binding_expires_at=datetime.now(UTC) + timedelta(minutes=4),
     )
     turn = _voice_turn()
     authority = SimpleNamespace(
@@ -173,10 +182,14 @@ async def test_client_local_services_cover_the_content_free_lifecycle() -> None:
         bind_recognition_turn=Mock(return_value=SimpleNamespace(turn=turn)),
         admit_local_transcript=Mock(return_value=admission),
         get_session=Mock(return_value=session),
+        get_turn=Mock(return_value=turn),
+        abandon_preacceptance_turns=Mock(),
     )
     bindings = SimpleNamespace(
         authorize_ready=Mock(),
-        bind_turn=Mock(return_value=authority),
+        reserve_turn=Mock(return_value=authority),
+        finalize_turn=Mock(return_value=authority),
+        release_reservation=Mock(),
         verify_final=Mock(return_value=("hello", False)),
         get_turn=Mock(return_value=authority),
         clear_connection=Mock(),
@@ -253,7 +266,293 @@ async def test_client_local_services_cover_the_content_free_lifecycle() -> None:
     )
     publisher.assert_awaited_once()
     assert services.voice_status()["speech_backend"] == "client_local"
+    session.control_owner_id = "replica-b"
+    with pytest.raises(VoiceBootstrapError, match="local_control_unavailable"):
+        await services._publish_local_announcement(turn, kind="failure")
+    publisher.assert_awaited_once()
 
+
+@pytest.mark.asyncio
+async def test_local_recognition_authority_precedes_every_durable_insert() -> None:
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session = SimpleNamespace(
+        session_id="00000000-0000-4000-8000-000000000031",
+        user_id="user-a",
+        device_id="00000000-0000-4000-8000-000000000021",
+        owner_connection_generation="00000000-0000-4000-8000-000000000022",
+        control_binding_id="00000000-0000-4000-8000-000000000023",
+        control_binding_expires_at=now + timedelta(minutes=4),
+        lease_expires_at=now + timedelta(minutes=2),
+        control_owner_id="voice-coordinator-local-1",
+        control_lease_expires_at=now + timedelta(seconds=30),
+        generation=1,
+        media_grant_revision=1,
+        speech_backend="client_local",
+        state="active",
+        ended_at=None,
+        foreground_active=True,
+        microphone_enabled=True,
+        speech_muted=False,
+        visible_chat_id="00000000-0000-4000-8000-000000000072",
+        chat_context_revision=1,
+        applied_visible_chat_id="00000000-0000-4000-8000-000000000072",
+        applied_chat_context_revision=1,
+    )
+    claims = VoiceControlClaims(
+        subject="user-a",
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        binding_id=session.control_binding_id,
+        issued_at=now,
+        expires_at=now + timedelta(minutes=4),
+    )
+    first = VoiceLocalRecognitionStarted(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=1,
+        speech_revision=1,
+        client_turn_id="00000000-0000-4000-8000-000000000041",
+        chat_id=session.visible_chat_id,
+        chat_context_revision=1,
+        recognition_sequence=1,
+    )
+    second = VoiceLocalRecognitionStarted(
+        **{
+            **first.__dict__,
+            "client_turn_id": "00000000-0000-4000-8000-000000000042",
+            "recognition_sequence": 2,
+        }
+    )
+    turn = _voice_turn(client_turn_id=first.client_turn_id)
+    registry = ClientLocalBindingRegistry(capacity=1)
+    registry.bind_turn(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        session=session,
+        frame=first,
+        turn=turn,
+        now=now,
+    )
+    repository = SimpleNamespace(
+        get_controlled_session=Mock(return_value=session),
+        bind_recognition_turn=Mock(
+            return_value=SimpleNamespace(turn=_voice_turn(client_turn_id=second.client_turn_id))
+        ),
+    )
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=repository,
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+
+    with pytest.raises(VoiceControlBindingError, match="capacity_exhausted"):
+        await services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=second,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    assert repository.bind_recognition_turn.call_count == 0
+
+    registry.clear_session(session_id=session.session_id, generation=1)
+    registry.authorize_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        session=session,
+        frame=VoiceLocalReady(
+            device_id=session.device_id,
+            connection_generation=session.owner_connection_generation,
+            session_id=session.session_id,
+            generation=1,
+            speech_revision=1,
+            client_sequence=3,
+        ),
+        now=now,
+    )
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=second,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await services.bind_local_recognition(
+            socket_id=8,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=VoiceLocalRecognitionStarted(
+                **{**second.__dict__, "recognition_sequence": 4}
+            ),
+            execution_base_render_revision=0,
+            now=now,
+        )
+    assert repository.bind_recognition_turn.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_local_reservation_releases_on_bind_and_finalize_failures() -> None:
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session = SimpleNamespace(
+        session_id="00000000-0000-4000-8000-000000000031",
+        user_id="user-a",
+        device_id="00000000-0000-4000-8000-000000000021",
+        owner_connection_generation="00000000-0000-4000-8000-000000000022",
+        control_binding_id="00000000-0000-4000-8000-000000000023",
+        control_binding_expires_at=now + timedelta(minutes=4),
+        lease_expires_at=now + timedelta(minutes=2),
+        control_owner_id="voice-coordinator-local-1",
+        control_lease_expires_at=now + timedelta(seconds=30),
+        generation=1,
+        media_grant_revision=1,
+        speech_backend="client_local",
+        state="active",
+        ended_at=None,
+        foreground_active=True,
+        microphone_enabled=True,
+        speech_muted=False,
+        visible_chat_id="00000000-0000-4000-8000-000000000072",
+        chat_context_revision=1,
+        applied_visible_chat_id="00000000-0000-4000-8000-000000000072",
+        applied_chat_context_revision=1,
+    )
+    claims = VoiceControlClaims(
+        subject="user-a",
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        binding_id=session.control_binding_id,
+        issued_at=now,
+        expires_at=now + timedelta(minutes=4),
+    )
+    frame = VoiceLocalRecognitionStarted(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=1,
+        speech_revision=1,
+        client_turn_id="00000000-0000-4000-8000-000000000042",
+        chat_id=session.visible_chat_id,
+        chat_context_revision=1,
+        recognition_sequence=1,
+    )
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    registry = ClientLocalBindingRegistry()
+    repository = SimpleNamespace(
+        get_controlled_session=Mock(return_value=session),
+        bind_recognition_turn=Mock(side_effect=RuntimeError("database unavailable")),
+        reject_transcript=Mock(),
+    )
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=repository,
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    assert registry._reservations == registry._sequences == {}
+
+    repository.bind_recognition_turn.side_effect = None
+    repository.bind_recognition_turn.return_value = SimpleNamespace(turn=turn)
+    registry.finalize_turn = Mock(side_effect=VoiceControlBindingError("invalid_binding"))
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    repository.reject_transcript.assert_called_once_with(
+        user_id="user-a",
+        turn_id=turn.turn_id,
+        reason="invalid_binding",
+        retry_policy="none",
+        now=now,
+    )
+    assert registry._reservations == registry._sequences == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner,lease_delta", [("replica-b", 30), ("voice-coordinator-local-1", -1)])
+async def test_local_ready_requires_this_replica_and_live_control_lease(
+    owner: str,
+    lease_delta: int,
+) -> None:
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session = SimpleNamespace(
+        speech_backend="client_local",
+        state="active",
+        ended_at=None,
+        control_owner_id=owner,
+        control_lease_expires_at=now + timedelta(seconds=lease_delta),
+        lease_expires_at=now + timedelta(minutes=1),
+    )
+    bindings = SimpleNamespace(authorize_ready=Mock())
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=SimpleNamespace(get_controlled_session=Mock(return_value=session)),
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=bindings,
+    )
+    claims = SimpleNamespace(
+        device_id="00000000-0000-4000-8000-000000000021",
+        connection_generation="00000000-0000-4000-8000-000000000022",
+        binding_id="00000000-0000-4000-8000-000000000023",
+        expires_at=now + timedelta(minutes=1),
+    )
+    frame = SimpleNamespace(session_id="session", generation=1, speech_revision=1)
+    with pytest.raises(VoiceBootstrapError, match="local_control_unavailable"):
+        await services.local_ready(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            now=now,
+        )
+    bindings.authorize_ready.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_client_local_bootstrap_constructs_no_remote_dependency() -> None:

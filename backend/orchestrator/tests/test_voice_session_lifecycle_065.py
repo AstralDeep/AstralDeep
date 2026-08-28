@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from orchestrator.voice_api import VoiceApiError
+from orchestrator.voice_backend import VoiceSpeechBackend
 from orchestrator.voice_bootstrap import VoiceServices
 from orchestrator.voice_coordinator import (
     FIXED_VOICE_PROFILE,
@@ -839,6 +840,37 @@ async def test_stop_and_end_are_fenced_media_controls_not_task_cancellation() ->
     assert ("end", "user") in media.calls
     assert ended == [(SESSION, 1, "user")]
     assert not any(name == "cancel" for name, _ in repository.calls)
+
+
+@pytest.mark.asyncio
+async def test_client_local_stop_cleans_preacceptance_before_output_stop() -> None:
+    runtime, repository, _capability, media = _runtime()
+    runtime.speech_backend = VoiceSpeechBackend.CLIENT_LOCAL
+    repository.session = replace(
+        repository.session,
+        state="active",
+        speech_backend="client_local",
+    )
+    order: list[str] = []
+
+    async def cleanup(session) -> None:
+        assert session is repository.session
+        order.append("cleanup")
+
+    async def stop(session_id: str, generation: int) -> None:
+        assert (session_id, generation) == (SESSION, 1)
+        order.append("stop")
+
+    runtime.bind_local_buffer_cleanup_handler(cleanup)
+    runtime.bind_speech_stop_handler(stop)
+    await runtime.stop_speech(
+        user_id="user-a",
+        session_id=SESSION,
+        control=_control(),
+        request={"expected_generation": 1, "expected_media_grant_revision": 1},
+    )
+    assert order == ["cleanup", "stop"]
+    assert not any(name == "barge_in" for name, _ in media.calls)
 
 
 @pytest.mark.asyncio

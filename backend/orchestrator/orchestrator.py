@@ -7490,21 +7490,30 @@ class Orchestrator:
         if payload_chat is not None and self._canonical_uuid4(payload_chat) is None:
             return None
         session_chat = frame.get("session_id")
+        is_local_voice_final = frame.get("type") == "voice_local_final"
         # Historical no-chat transport sentinels (for example ``win-client``)
         # are not conversation identities.  Ignore them rather than admitting
         # an invalid scope that would make the canonical accepted frame
         # impossible to serialize.
-        chat_value = payload_chat or (
-            session_chat
-            if self._canonical_uuid4(session_chat) is not None
-            else None
-        )
-        if (
-            payload_chat is not None
-            and self._canonical_uuid4(session_chat) is not None
-            and payload_chat != session_chat
-        ):
-            return None
+        if is_local_voice_final:
+            if (
+                payload_chat is None
+                or self._canonical_uuid4(session_chat) is None
+            ):
+                return None
+            chat_value = payload_chat
+        else:
+            chat_value = payload_chat or (
+                session_chat
+                if self._canonical_uuid4(session_chat) is not None
+                else None
+            )
+            if (
+                payload_chat is not None
+                and self._canonical_uuid4(session_chat) is not None
+                and payload_chat != session_chat
+            ):
+                return None
         if not chat_value and action in _CONVERSATION_MUTATION_ACTIONS:
             # Older component-action clients omitted chat_id because the
             # active canvas made it appear redundant.  Resolve it before
@@ -7532,7 +7541,6 @@ class Orchestrator:
             action == "chat_message"
             and isinstance(payload.get("voice_origin"), dict)
         )
-        is_local_voice_final = frame.get("type") == "voice_local_final"
         if is_credential_save:
             # The owner-scoped submission is the durable retry identity across
             # connections.  Never hash credential/config values; a fixed
@@ -7822,6 +7830,59 @@ class Orchestrator:
         while context.ingress:
             batch = list(context.ingress)
             context.ingress.clear()
+            verified_batch: list[_ConnectionIngressFrame] = []
+            for ingress_frame in batch:
+                if ingress_frame.parsed.get("type") != "voice_local_final":
+                    verified_batch.append(ingress_frame)
+                    continue
+                local_frame = None
+                try:
+                    local_frame = VoiceLocalFinal.from_dict(ingress_frame.parsed)
+                    origin, user_id, _binding, current_socket_id = (
+                        self._client_local_socket_authority(context.websocket)
+                    )
+                    services = getattr(self, "voice_services", None)
+                    if services is None:
+                        raise VoiceControlBindingError("invalid_binding")
+                    await services.verify_local_final_authority(
+                        socket_id=id(origin),
+                        current_socket_id=current_socket_id,
+                        user_id=user_id,
+                        frame=local_frame,
+                        now=datetime.now(UTC),
+                    )
+                except Exception as exc:
+                    if local_frame is not None:
+                        services = getattr(self, "voice_services", None)
+                        if services is not None:
+                            await services.reject_local_turn(
+                                user_id=(
+                                    getattr(self, "ui_sessions", {})
+                                    .get(context.websocket, {})
+                                    .get("sub", "")
+                                ),
+                                client_turn_id=local_frame.client_turn_id,
+                                reason=getattr(exc, "code", "invalid_binding"),
+                                now=datetime.now(UTC),
+                            )
+                        await self._send_voice_local_rejection(
+                            context.websocket,
+                            local_frame,
+                            reason=getattr(exc, "code", "invalid_binding"),
+                            retry_policy="explicit_user_retry",
+                        )
+                    else:
+                        await self._send_frame_refusal(
+                            context.websocket,
+                            ingress_frame.parsed,
+                            code="invalid_input",
+                            retryable=False,
+                        )
+                    continue
+                verified_batch.append(ingress_frame)
+            batch = verified_batch
+            if not batch:
+                continue
             results = await self._call_work_admission(
                 self._submit_connection_batch,
                 context,
@@ -8929,10 +8990,37 @@ class Orchestrator:
                 runtime_websocket.scrub()
                 work.runtime_websocket = None
             work.auth_claims.clear()
+            if work.frame.parsed.get("type") == "voice_local_final":
+                self._scrub_terminal_voice_operation(context, work)
             if work.lane_complete is not None:
                 context.pending_reads.discard(work.lane_complete)
                 if not work.lane_complete.done():
                     work.lane_complete.set_result(None)
+
+    @staticmethod
+    def _scrub_terminal_voice_operation(
+        context: ConnectionContext,
+        work: _ConnectionOperation,
+    ) -> None:
+        """Evict a terminal local final and erase its transient text material."""
+
+        if work.frame.parsed.get("type") != "voice_local_final":
+            return
+        context.operations.pop(work.operation_id, None)
+        work.subscribers.clear()
+        work.frame.raw = ""
+        retained_fields = {
+            "type", "schema_version", "speech_backend", "device_id",
+            "connection_generation", "session_id", "generation",
+            "speech_revision", "client_turn_id", "turn_id", "submission_id",
+            "request_generation", "chat_id", "chat_context_revision",
+            "recognition_sequence", "locale",
+        }
+        work.frame.parsed = {
+            key: value
+            for key, value in work.frame.parsed.items()
+            if key in retained_fields
+        }
 
     async def _run_ui_control(
         self,
@@ -9830,6 +9918,12 @@ class Orchestrator:
             user_id=user_id,
         )
         if chat is None:
+            await services.reject_local_turn(
+                user_id=user_id,
+                client_turn_id=frame.client_turn_id,
+                reason="chat_unavailable",
+                now=datetime.now(UTC),
+            )
             await self._send_voice_local_rejection(
                 origin,
                 frame,
@@ -9845,6 +9939,12 @@ class Orchestrator:
                 now=datetime.now(UTC),
             )
         except Exception as exc:
+            await services.reject_local_turn(
+                user_id=user_id,
+                client_turn_id=frame.client_turn_id,
+                reason=getattr(exc, "code", getattr(exc, "reason", "invalid_binding")),
+                now=datetime.now(UTC),
+            )
             await self._send_voice_local_rejection(
                 origin,
                 frame,
@@ -9880,11 +9980,16 @@ class Orchestrator:
                 operation_context=_CONNECTION_OPERATION_CONTEXT.get(),
                 voice_dispatch=voice_dispatch,
             )
-        finally:
-            services.local_bindings.release_turn(
-                user_id=user_id,
-                client_turn_id=frame.client_turn_id,
+        except BaseException:
+            await asyncio.shield(
+                services.reject_local_turn(
+                    user_id=user_id,
+                    client_turn_id=frame.client_turn_id,
+                    reason="invalid_binding",
+                    now=datetime.now(UTC),
+                )
             )
+            raise
 
     async def publish_voice_local_announcement(self, frame: Any) -> None:
         """Deliver one server-authorized local announcement to its exact socket."""
@@ -9920,6 +10025,24 @@ class Orchestrator:
             or binding.subject != user_id
             or binding.device_id != frame.device_id
             or binding.connection_generation != frame.connection_generation
+        ):
+            raise VoiceControlBindingError("invalid_binding")
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            raise VoiceControlBindingError("invalid_binding")
+        session = await asyncio.to_thread(
+            services.repository.get_session,
+            user_id=user_id,
+            session_id=frame.session_id,
+        )
+        services._require_current_local_control(session, now=datetime.now(UTC))
+        if not (
+            session.device_id == frame.device_id
+            and session.owner_connection_generation == frame.connection_generation
+            and session.generation == frame.generation
+            and session.media_grant_revision == frame.speech_revision
+            and session.control_binding_id == binding.binding_id
+            and binding.expires_at > datetime.now(UTC)
         ):
             raise VoiceControlBindingError("invalid_binding")
         if not await self._safe_send(websocket, frame.to_json()):
@@ -21786,6 +21909,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 device_kinds[device_key] = prior_device_kind
             return False
         if displaced_socket_id is not None and displaced_socket_id != socket_id:
+            displaced_claims = self._voice_control_bindings.get(displaced_socket_id)
+            services = getattr(self, "voice_services", None)
+            if displaced_claims is not None and services is not None:
+                try:
+                    services.clear_local_connection(
+                        displaced_claims,
+                        socket_id=displaced_socket_id,
+                    )
+                except Exception:
+                    logger.debug("voice_local_displaced_cleanup_unavailable")
             self._voice_control_bindings.pop(displaced_socket_id, None)
             displaced_task = composer_tasks.pop(
                 displaced_socket_id, None
@@ -21824,7 +21957,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         services = getattr(self, "voice_services", None)
         if services is not None:
             try:
-                services.clear_local_connection(claims)
+                services.clear_local_connection(claims, socket_id=socket_id)
             except Exception:
                 logger.debug("voice_local_connection_cleanup_unavailable")
         device_bindings = getattr(self, "_voice_device_bindings", {})
