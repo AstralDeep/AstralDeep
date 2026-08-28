@@ -113,6 +113,7 @@ class _LocalRecognitionRequest:
 
     user_id: str
     client_turn_id: str
+    settled: bool = field(default=False, repr=False)
 
 
 @dataclass(slots=True)
@@ -1637,7 +1638,8 @@ class VoiceServices:
                 coordination=coordination,
             )
         finally:
-            await self._join_local_recognition_request_release(coordination)
+            if not coordination.settled:
+                await self._join_local_recognition_request_release(coordination)
 
     async def _bind_local_recognition_owned(
         self,
@@ -2014,6 +2016,7 @@ class VoiceServices:
         if not force and self._local_recognition_is_retained_locked(request):
             return
         self.local_recognition_requests.discard(request)
+        request.settled = True
         key = self._local_recognition_key(request)
         state = self.local_recognition_keys.get(key)
         if state is None:
@@ -2239,18 +2242,58 @@ class VoiceServices:
         if error is not None:
             raise error
         if not acquired:
+            if authority is not None:
+                self.local_bindings.release_request_authority(authority)
             if cancellation is not None:
                 raise cancellation
-            return
+            raise VoiceControlBindingError("invalid_binding")
         pending = None
+        settlement_error: BaseException | None = None
         try:
             key = (reserved.user_id, reserved.client_turn_id)
             if cancellation is None:
-                self.pending_local_rejection_reservations.pop(key, None)
+                try:
+                    current_authority = self.local_bindings.get_turn(
+                        user_id=reserved.user_id,
+                        client_turn_id=reserved.client_turn_id,
+                        now=now,
+                    )
+                except BaseException:
+                    current_authority = None
+                if authority is None or current_authority is not authority:
+                    settlement_error = VoiceControlBindingError(
+                        "invalid_binding"
+                    )
+                    if replayed:
+                        self.pending_local_rejection_reservations.pop(
+                            key,
+                            None,
+                        )
+                        if authority is not None:
+                            self.local_bindings.release_request_authority(
+                                authority
+                            )
+                        self._release_local_recognition_request_locked(
+                            reserved.coordination
+                        )
+                    else:
+                        pending = self._promote_pending_local_rejection_locked(
+                            reserved,
+                            turn_id=turn_id,
+                            authority_finalized=True,
+                        )
+                else:
+                    self.pending_local_rejection_reservations.pop(key, None)
+                    self._release_local_recognition_request_locked(
+                        reserved.coordination
+                    )
             elif replayed:
                 self.pending_local_rejection_reservations.pop(key, None)
                 if authority is not None:
                     self.local_bindings.release_request_authority(authority)
+                self._release_local_recognition_request_locked(
+                    reserved.coordination
+                )
             else:
                 pending = self._promote_pending_local_rejection_locked(
                     reserved,
@@ -2269,7 +2312,11 @@ class VoiceServices:
                 logger.warning(
                     "voice_local_finalized_cancel_reconciliation_unavailable"
                 )
+            if settlement_error is not None:
+                raise settlement_error
             raise cancellation
+        if settlement_error is not None:
+            raise settlement_error
 
     async def _join_pending_local_rejection_state_change(
         self,
