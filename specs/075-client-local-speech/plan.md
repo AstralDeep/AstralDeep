@@ -141,9 +141,9 @@ backend/orchestrator/
 ├── livekit_service.py           # remote v1 capability/grant path retained
 └── ...                          # narrow websocket/dispatch/telemetry integration seams
 
-backend/voice_worker/
-├── adapters/                    # total-deadline remote ASR/TTS
-└── ...                          # exact preflight, fixed-phrase warm admission, timings
+backend/voice_agent/
+├── speech_adapters.py          # total-deadline remote ASR/TTS
+└── ...                         # exact preflight, fixed-phrase warm admission, timings
 
 backend/tests/                   # selector/API/socket/auth/replay/PHI/retention/integration
 specs/075-client-local-speech/   # authoritative feature artifacts/contracts
