@@ -34,6 +34,29 @@ from shared.watch_ticket import derive_watch_nonce, watch_participant_identity
 logger = logging.getLogger(__name__)
 
 
+async def _join_task_outcome_through_cancellation(
+    task: asyncio.Task[Any],
+) -> tuple[Any, BaseException | None, asyncio.CancelledError | None]:
+    """Join retained repository work despite repeated caller cancellation."""
+
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                cancellation = cancellation or exc
+            if task.done():
+                break
+        except BaseException:
+            break
+    try:
+        return task.result(), None, cancellation
+    except BaseException as error:
+        return None, error, cancellation
+
+
 @dataclass(frozen=True, slots=True)
 class ActivatedVoiceMedia:
     """Safe activation receipt; only the client grant is returned over REST."""
@@ -364,25 +387,24 @@ class VoiceSessionRuntime:
         )
         try:
             mutation = await asyncio.shield(mutation_task)
-        except asyncio.CancelledError:
-            mutation = None
-            try:
-                mutation = await asyncio.shield(mutation_task)
-            except BaseException:
-                pass
+        except asyncio.CancelledError as cancellation:
+            mutation, _mutation_error, _extra_cancellation = (
+                await _join_task_outcome_through_cancellation(mutation_task)
+            )
             if (
                 mutation is not None
                 and self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
             ):
-                await asyncio.shield(
+                cleanup_task = asyncio.create_task(
                     self._reconcile_local_activation_abort(
                         mutation.session,
                         create,
                     )
                 )
+                await _join_task_outcome_through_cancellation(cleanup_task)
             elif self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
                 await self._release_local_activation(create)
-            raise
+            raise cancellation
         except TakeoverRequired as exc:
             if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
                 await self._release_local_activation(create)
@@ -475,25 +497,24 @@ class VoiceSessionRuntime:
         )
         try:
             mutation = await asyncio.shield(mutation_task)
-        except asyncio.CancelledError:
-            mutation = None
-            try:
-                mutation = await asyncio.shield(mutation_task)
-            except BaseException:
-                pass
+        except asyncio.CancelledError as cancellation:
+            mutation, _mutation_error, _extra_cancellation = (
+                await _join_task_outcome_through_cancellation(mutation_task)
+            )
             if (
                 mutation is not None
                 and self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
             ):
-                await asyncio.shield(
+                cleanup_task = asyncio.create_task(
                     self._reconcile_local_activation_abort(
                         mutation.session,
                         create,
                     )
                 )
+                await _join_task_outcome_through_cancellation(cleanup_task)
             elif self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
                 await self._release_local_activation(create)
-            raise
+            raise cancellation
         except Exception:
             if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
                 await self._release_local_activation(create)
@@ -507,18 +528,19 @@ class VoiceSessionRuntime:
                 media_grant = None
             else:
                 session, media_grant = await self._activate(mutation.session, create)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancellation:
             if (
                 self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
                 and not activation_started
             ):
-                await asyncio.shield(
+                cleanup_task = asyncio.create_task(
                     self._reconcile_local_activation_abort(
                         mutation.session,
                         create,
                     )
                 )
-            raise
+                await _join_task_outcome_through_cancellation(cleanup_task)
+            raise cancellation
         except Exception:
             if (
                 self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL

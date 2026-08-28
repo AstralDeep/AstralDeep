@@ -43,7 +43,11 @@ from orchestrator.voice_coordinator import (
 )
 from orchestrator.voice_media import ClientPlayoutObservation
 from orchestrator.runtime_observability import RuntimeObservability
-from orchestrator.voice_sessions import ChatUnavailableMutation, VoiceTurnRecord
+from orchestrator.voice_sessions import (
+    ChatUnavailableMutation,
+    VoiceSessionRepositoryError,
+    VoiceTurnRecord,
+)
 from orchestrator.voice_worker_endpoint import (
     WORKER_CONTROL_PATH,
     WorkerControlConfigError,
@@ -324,7 +328,11 @@ async def test_local_announcement_delivery_failure_discards_ephemeral_authority(
 
 @pytest.mark.asyncio
 async def test_local_rejection_cleans_preacceptance_but_preserves_accepted_replay() -> None:
-    authority = SimpleNamespace(turn_id="00000000-0000-4000-8000-000000000032")
+    authority = SimpleNamespace(
+        turn_id="00000000-0000-4000-8000-000000000032",
+        session_id="00000000-0000-4000-8000-000000000031",
+        generation=1,
+    )
     bindings = SimpleNamespace(
         get_turn=Mock(return_value=authority),
         release_turn=Mock(),
@@ -363,7 +371,9 @@ async def test_local_rejection_cleans_preacceptance_but_preserves_accepted_repla
         client_turn_id=client_turn_id,
     )
 
-    repository.reject_transcript.side_effect = RuntimeError("already accepted")
+    repository.reject_transcript.side_effect = VoiceSessionRepositoryError(
+        "voice_turn_already_accepted"
+    )
     bindings.release_turn.reset_mock()
     await services.reject_local_turn(
         user_id="user-a",
@@ -385,6 +395,221 @@ async def test_local_rejection_cleans_preacceptance_but_preserves_accepted_repla
         now=now,
     )
     bindings.release_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_transient_local_rejection_retains_and_drains_content_free_authority() -> None:
+    client_turn_id = "00000000-0000-4000-8000-000000000042"
+    authority = SimpleNamespace(
+        user_id="user-a",
+        client_turn_id=client_turn_id,
+        turn_id="00000000-0000-4000-8000-000000000032",
+        session_id="00000000-0000-4000-8000-000000000031",
+        generation=1,
+    )
+    bindings = SimpleNamespace(
+        get_turn=Mock(return_value=authority),
+        release_turn=Mock(),
+    )
+    repository = SimpleNamespace(
+        reject_transcript=Mock(
+            side_effect=[RuntimeError("database unavailable"), None]
+        )
+    )
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=repository,
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=bindings,
+    )
+
+    await services.reject_local_turn(
+        user_id="user-a",
+        client_turn_id=client_turn_id,
+        reason="invalid_binding",
+        now=datetime.now(UTC),
+    )
+
+    assert len(services.pending_local_rejections) == 1
+    retained = next(iter(services.pending_local_rejections.values()))
+    assert not hasattr(retained, "text")
+    assert not hasattr(retained, "text_digest_sha256")
+    bindings.release_turn.assert_not_called()
+
+    await services._drain_pending_local_rejections(now=datetime.now(UTC))
+
+    assert services.pending_local_rejections == {}
+    bindings.release_turn.assert_called_once_with(
+        user_id="user-a",
+        client_turn_id=client_turn_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_local_rejection_capacity_fails_closed_without_release() -> None:
+    authority = SimpleNamespace(
+        user_id="user-a",
+        client_turn_id="new-turn",
+        turn_id="00000000-0000-4000-8000-000000000032",
+        session_id="00000000-0000-4000-8000-000000000031",
+        generation=1,
+    )
+    bindings = SimpleNamespace(
+        get_turn=Mock(return_value=authority),
+        release_turn=Mock(),
+    )
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=SimpleNamespace(
+            reject_transcript=Mock(side_effect=RuntimeError("database unavailable"))
+        ),
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=bindings,
+    )
+    services.pending_local_rejections.update(
+        {
+            ("user-a", f"turn-{index}"): SimpleNamespace(
+                user_id="user-a",
+                client_turn_id=f"turn-{index}",
+                turn_id=f"00000000-0000-4000-8000-{index:012d}",
+                session_id="00000000-0000-4000-8000-000000000031",
+                generation=1,
+                reason="invalid_binding",
+                retry_policy="explicit_user_retry",
+                reservation=None,
+            )
+            for index in range(256)
+        }
+    )
+
+    with pytest.raises(VoiceBootstrapError, match="local_cleanup_capacity_exhausted"):
+        await services.reject_local_turn(
+            user_id="user-a",
+            client_turn_id="new-turn",
+            reason="invalid_binding",
+            now=datetime.now(UTC),
+        )
+    bindings.release_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_repeatedly_cancelled_rejection_reconciles_before_propagating() -> None:
+    client_turn_id = "00000000-0000-4000-8000-000000000042"
+    authority = SimpleNamespace(
+        user_id="user-a",
+        client_turn_id=client_turn_id,
+        turn_id="00000000-0000-4000-8000-000000000032",
+        session_id="00000000-0000-4000-8000-000000000031",
+        generation=1,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    def reject_transcript(**_kwargs: Any) -> None:
+        entered.set()
+        assert release.wait(timeout=2)
+
+    bindings = SimpleNamespace(
+        get_turn=Mock(return_value=authority),
+        release_turn=Mock(),
+    )
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=SimpleNamespace(reject_transcript=reject_transcript),
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=bindings,
+    )
+    task = asyncio.create_task(
+        services.reject_local_turn(
+            user_id="user-a",
+            client_turn_id=client_turn_id,
+            reason="invalid_binding",
+            now=datetime.now(UTC),
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    assert len(services.pending_local_rejections) == 1
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert services.pending_local_rejections == {}
+    bindings.release_turn.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_session_cleanup_retains_then_clears_pending_rejection_handle() -> None:
+    session = SimpleNamespace(
+        user_id="user-a",
+        session_id="00000000-0000-4000-8000-000000000031",
+        generation=1,
+    )
+    authority = SimpleNamespace(
+        user_id="user-a",
+        client_turn_id="00000000-0000-4000-8000-000000000042",
+        turn_id="00000000-0000-4000-8000-000000000032",
+        session_id=session.session_id,
+        generation=session.generation,
+    )
+    repository = SimpleNamespace(
+        reject_transcript=Mock(side_effect=RuntimeError("database unavailable")),
+        abandon_preacceptance_turns=Mock(
+            side_effect=[RuntimeError("database unavailable"), None]
+        ),
+    )
+    bindings = SimpleNamespace(
+        get_turn=Mock(return_value=authority),
+        release_turn=Mock(),
+        clear_session=Mock(),
+    )
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=repository,
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=bindings,
+    )
+    await services.reject_local_turn(
+        user_id="user-a",
+        client_turn_id=authority.client_turn_id,
+        reason="invalid_binding",
+        now=datetime.now(UTC),
+    )
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await services.cleanup_local_buffers(session)
+    assert len(services.pending_local_rejections) == 1
+
+    await services.cleanup_local_buffers(session)
+    assert services.pending_local_rejections == {}
 
 
 @pytest.mark.asyncio
@@ -624,9 +849,9 @@ async def test_local_reservation_releases_on_bind_and_finalize_failures() -> Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reject_fails", [False, True])
+@pytest.mark.parametrize("repository_outcome", ["rejected", "reject_fails", "bind_fails"])
 async def test_cancelled_local_recognition_reconciles_late_thread_commit(
-    reject_fails: bool,
+    repository_outcome: str,
 ) -> None:
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session = SimpleNamespace(
@@ -674,6 +899,8 @@ async def test_cancelled_local_recognition_reconciles_late_thread_commit(
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
     entered = threading.Event()
     release = threading.Event()
+    rejection_entered = threading.Event()
+    rejection_release = threading.Event()
     durable = {"state": "absent"}
 
     class Repository:
@@ -683,11 +910,15 @@ async def test_cancelled_local_recognition_reconciles_late_thread_commit(
         def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
             entered.set()
             assert release.wait(timeout=2)
+            if repository_outcome == "bind_fails":
+                raise RuntimeError("late repository failure")
             durable["state"] = "recognizing"
             return SimpleNamespace(turn=turn)
 
         def reject_transcript(self, **_kwargs: Any) -> None:
-            if reject_fails:
+            rejection_entered.set()
+            assert rejection_release.wait(timeout=2)
+            if repository_outcome == "reject_fails":
                 raise RuntimeError("database unavailable")
             durable["state"] = "refused"
 
@@ -718,19 +949,30 @@ async def test_cancelled_local_recognition_reconciles_late_thread_commit(
     assert await asyncio.to_thread(entered.wait, 1)
     task.cancel()
     await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
     try:
         assert not task.done()
         assert len(registry._reservations) == 1
     finally:
         release.set()
+        if repository_outcome != "bind_fails":
+            assert await asyncio.to_thread(rejection_entered.wait, 1)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            rejection_release.set()
         result = await asyncio.gather(task, return_exceptions=True)
     assert isinstance(result[0], asyncio.CancelledError)
-    if reject_fails:
+    if repository_outcome == "reject_fails":
         assert durable["state"] == "recognizing"
         assert len(registry._reservations) == len(registry._sequences) == 1
         assert registry._turns == {}
-    else:
+    elif repository_outcome == "rejected":
         assert durable["state"] == "refused"
+        assert registry._reservations == registry._turns == registry._sequences == {}
+    else:
+        assert durable["state"] == "absent"
         assert registry._reservations == registry._turns == registry._sequences == {}
 
 

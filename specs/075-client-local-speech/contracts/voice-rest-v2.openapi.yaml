@@ -33,11 +33,7 @@ paths:
                 $ref: "#/components/schemas/VoiceCapabilityV2"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
-        "503":
-          description: Selection is invalid or its selected backend is unavailable.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VoiceError" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/voice/v2/status:
     get:
@@ -55,11 +51,7 @@ paths:
               schema: { $ref: "#/components/schemas/VoiceStatusV2" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
-        "503":
-          description: Selection is invalid or its selected backend is unavailable.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VoiceError" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/voice/v2/sessions:
     post:
@@ -102,16 +94,8 @@ paths:
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/ControlBindingRejected" }
-        "409":
-          description: Existing ownership needs takeover or selected backend differs.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VoiceError" }
-        "422":
-          description: Client cannot prove all selected-backend eligibility fields.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VoiceError" }
+        "409": { $ref: "#/components/responses/StaleOrBackendMismatch" }
+        "422": { $ref: "#/components/responses/InvalidEligibility" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
@@ -144,11 +128,7 @@ paths:
         "403": { $ref: "#/components/responses/ControlBindingRejected" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/StaleOrBackendMismatch" }
-        "422":
-          description: Replacement client cannot prove local eligibility.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VoiceError" }
+        "422": { $ref: "#/components/responses/InvalidEligibility" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
@@ -485,15 +465,76 @@ components:
   responses:
     Unauthorized:
       description: Missing, expired, or invalid Keycloak bearer authentication.
+      headers:
+        Cache-Control:
+          required: true
+          schema: { const: no-store }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/VoiceError" }
     RateLimited:
       description: Bounded voice control rate exceeded.
+      headers:
+        Cache-Control:
+          required: true
+          schema: { const: no-store }
+        Retry-After:
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 300 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/VoiceError" }
     InvalidRequest:
       description: Strict body/header validation failed without enumerating ownership.
+      headers:
+        Cache-Control:
+          required: true
+          schema: { const: no-store }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/VoiceError" }
     ControlBindingRejected:
       description: Device, connection, owner, or control binding is invalid or stale.
+      headers:
+        Cache-Control:
+          required: true
+          schema: { const: no-store }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/VoiceError" }
     NotFound:
       description: No owner-visible current session exists.
+      headers:
+        Cache-Control:
+          required: true
+          schema: { const: no-store }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/VoiceError" }
     StaleOrBackendMismatch:
       description: Session generation/revision is stale or the selected backend differs.
+      headers:
+        Cache-Control:
+          required: true
+          schema: { const: no-store }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/VoiceError" }
+    InvalidEligibility:
+      description: Client cannot prove all selected-backend eligibility fields.
+      headers:
+        Cache-Control:
+          required: true
+          schema: { const: no-store }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/VoiceError" }
     Unavailable:
       description: Selected voice backend is unavailable; typed chat remains available.
+      headers:
+        Cache-Control:
+          required: true
+          schema: { const: no-store }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/VoiceError" }

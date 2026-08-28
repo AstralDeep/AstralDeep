@@ -406,6 +406,8 @@ async def test_cancelled_local_create_reconciles_late_repository_commit(
 ) -> None:
     entered = threading.Event()
     release = threading.Event()
+    abort_entered = threading.Event()
+    abort_release = threading.Event()
     session = _round2_session()
     durable = {"state": "absent"}
 
@@ -417,6 +419,8 @@ async def test_cancelled_local_create_reconciles_late_repository_commit(
             return SimpleNamespace(session=session, replayed=False)
 
         def end_session(self, **_kwargs: Any) -> Any:
+            abort_entered.set()
+            assert abort_release.wait(timeout=2)
             if abort_fails:
                 raise RuntimeError("database unavailable")
             durable["state"] = "ended"
@@ -440,10 +444,17 @@ async def test_cancelled_local_create_reconciles_late_repository_commit(
     assert await asyncio.to_thread(entered.wait, 1)
     task.cancel()
     await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
     try:
         assert not task.done()
     finally:
         release.set()
+        assert await asyncio.to_thread(abort_entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        abort_release.set()
         result = await asyncio.gather(task, return_exceptions=True)
     assert isinstance(result[0], asyncio.CancelledError)
     if abort_fails:
@@ -504,6 +515,10 @@ async def test_cancelled_local_takeover_cleanup_aborts_replacement_only() -> Non
     )
     await asyncio.wait_for(cleanup_entered.wait(), timeout=1)
     task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
     cleanup_release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -553,6 +568,8 @@ async def test_cancelled_local_takeover_reconciles_late_repository_commit() -> N
         )
     )
     assert await asyncio.to_thread(entered.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
     task.cancel()
     await asyncio.sleep(0)
     assert not task.done()

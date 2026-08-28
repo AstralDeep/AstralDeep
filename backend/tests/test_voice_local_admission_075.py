@@ -1039,6 +1039,61 @@ async def test_admission_refusal_branches_clean_exact_local_final(
     services.reject_local_turn.assert_awaited_once()
     orchestrator._send_voice_local_rejection.assert_awaited_once()
 
+
+@pytest.mark.asyncio
+async def test_real_admission_refusal_retains_transient_rejection_handle() -> None:
+    final = _final()
+    registry = ClientLocalBindingRegistry()
+    authority = _authority(final)
+    authority.expires_at = datetime.now(UTC) + timedelta(minutes=2)
+    registry._turns[("owner-a", final.client_turn_id)] = authority
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=SimpleNamespace(
+            reject_transcript=Mock(side_effect=RuntimeError("database unavailable"))
+        ),
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    orchestrator, websocket = _local_orchestrator(final, services)
+    orchestrator._send_voice_local_rejection = AsyncMock()
+    orchestrator._ws_active_chat = {id(websocket): final.chat_id}
+    context = ConnectionContext(
+        websocket=websocket,
+        connection_scope_id=uuid.uuid4(),
+        registration_deadline=999_999.0,
+        connection_generation=uuid.UUID(final.connection_generation),
+        registered=True,
+    )
+    parsed = json.loads(final.to_json())
+    ingress = orchestrator._connection_frame(context, final.to_json(), parsed)
+    assert ingress is not None
+
+    assert await orchestrator._send_connection_admission_refusal(
+        context,
+        ingress,
+        code="capacity_exceeded",
+        retryable=True,
+    )
+
+    orchestrator._send_voice_local_rejection.assert_awaited_once()
+    assert ("owner-a", final.client_turn_id) in services.pending_local_rejections
+    assert ("owner-a", final.client_turn_id) in registry._turns
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await services.verify_local_final_authority(
+            socket_id=id(websocket),
+            current_socket_id=id(websocket),
+            user_id="owner-a",
+            frame=final,
+            now=NOW,
+        )
+
 @pytest.mark.asyncio
 async def test_local_control_frames_enter_only_their_bounded_handlers() -> None:
     final = _final()

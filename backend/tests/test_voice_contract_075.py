@@ -347,6 +347,37 @@ def test_voice_rest_v2_is_valid_openapi_31_with_exact_local_operations() -> None
     ) == {"200", "201", "400", "401", "403", "409", "422", "429", "503"}
 
 
+def test_every_v2_error_response_resolves_to_schema_and_required_headers() -> None:
+    operations = [
+        operation
+        for path_item in openapi["paths"].values()
+        for operation in path_item.values()
+    ]
+    representative_statuses = {"400", "401", "403", "404", "409", "429", "503"}
+    observed: set[str] = set()
+    for operation in operations:
+        for status, declared in operation["responses"].items():
+            if status not in representative_statuses:
+                continue
+            observed.add(status)
+            if "$ref" in declared:
+                name = declared["$ref"].removeprefix("#/components/responses/")
+                declared = openapi["components"]["responses"][name]
+            assert declared["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/VoiceError"
+            }
+            assert declared["headers"]["Cache-Control"] == {
+                "required": True,
+                "schema": {"const": "no-store"},
+            }
+            if status == "429":
+                assert declared["headers"]["Retry-After"] == {
+                    "required": True,
+                    "schema": {"type": "integer", "minimum": 1, "maximum": 300},
+                }
+    assert observed == representative_statuses
+
+
 def test_every_client_local_frame_golden_vector_is_strict() -> None:
     frames = _golden_local_frames()
     assert set(frames) == {

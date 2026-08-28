@@ -16,8 +16,9 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Literal, Mapping
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from orchestrator.auth import require_user_id
@@ -25,7 +26,37 @@ from orchestrator.voice_backend import VoiceSpeechBackend, backend_value
 from orchestrator.voice_control_binding import VoiceControlBindingError
 
 
-router = APIRouter(prefix="/api/voice", tags=["Voice"])
+class _VoiceApiRoute(APIRoute):
+    """Project dependency-time authentication failures on v2 only."""
+
+    def get_route_handler(self) -> Any:
+        handler = super().get_route_handler()
+
+        async def v2_error_handler(request: Request) -> Response:
+            try:
+                return await handler(request)
+            except HTTPException as exc:
+                if (
+                    request.url.path.startswith("/api/voice/v2/")
+                    and exc.status_code == 401
+                ):
+                    return _v2_error_response(
+                        VoiceApiError(
+                            "authentication_required",
+                            status_code=401,
+                            headers=exc.headers,
+                        )
+                    )
+                raise
+
+        return v2_error_handler
+
+
+router = APIRouter(
+    prefix="/api/voice",
+    tags=["Voice"],
+    route_class=_VoiceApiRoute,
+)
 
 _UUID4_PATTERN = (
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -269,10 +300,11 @@ async def get_voice_capability_v2(
     try:
         _capability_rate_limiter(request).check(user_id)
         services = getattr(_orchestrator(request), "voice_services", None)
-        if services is None or getattr(services, "speech_backend", None) is None:
+        selected = backend_value(getattr(services, "speech_backend", None))
+        if services is None or selected is None:
             raise VoiceApiError("backend_selection_invalid", status_code=503)
         value = await _invoke(_runtime(request), "get_capability", user_id=user_id)
-        return _response(_capability_v2(value, services.speech_backend))
+        return _response(_capability_v2(value, selected))
     except Exception as exc:
         return _v2_error_response(exc)
 
@@ -306,10 +338,11 @@ async def get_voice_status_v2(
     try:
         _status_rate_limiter(request).check(user_id)
         services = _voice_services(request)
-        if getattr(services, "speech_backend", None) is None:
+        selected = backend_value(getattr(services, "speech_backend", None))
+        if selected is None:
             raise VoiceApiError("backend_selection_invalid", status_code=503)
         value = await _invoke(services, "voice_status")
-        return _response(_status_v2(value, services.speech_backend))
+        return _response(_status_v2(value, selected))
     except Exception as exc:
         return _v2_error_response(exc)
 
@@ -705,7 +738,10 @@ def _require_local_v2(request: Request) -> None:
     configured = getattr(runtime, "speech_backend", None)
     if configured is None:
         configured = getattr(services, "speech_backend", None)
-    if backend_value(configured) is not VoiceSpeechBackend.CLIENT_LOCAL:
+    selected = backend_value(configured)
+    if selected is None:
+        raise VoiceApiError("backend_selection_invalid", status_code=503)
+    if selected is not VoiceSpeechBackend.CLIENT_LOCAL:
         raise VoiceApiError("backend_mismatch", status_code=409)
 
 
@@ -918,6 +954,17 @@ def _v2_error_response(exc: Exception) -> JSONResponse:
         "invalid_request": "invalid_binding" if status_code == 403 else "client_readiness_required",
         "voice_rate_limited": "capacity_exhausted",
         "voice_takeover_required": "takeover_required",
+        "stale_generation": "stale_session",
+        "stale_media_grant_revision": "stale_speech_revision",
+        "stale_chat_context_revision": "stale_chat_context",
+        "chat_context_sync_pending": "stale_chat_context",
+        "context_sync_pending": "stale_chat_context",
+        "session_already_ended": "stale_session",
+        "activation_id_payload_mismatch": "invalid_binding",
+        "idempotency_conflict": "invalid_binding",
+        "voice_session_not_found": "invalid_binding",
+        "session_not_found": "invalid_binding",
+        "local_cleanup_capacity_exhausted": "capacity_exhausted",
     }.get(code, code)
     allowed_reasons = {
         "backend_selection_invalid", "unsupported_speech_backend", "backend_mismatch",
@@ -943,7 +990,11 @@ def _v2_error_response(exc: Exception) -> JSONResponse:
     body = {
         "error": "voice_unavailable",
         "reason": reason,
-        "retryable": code in {"voice_rate_limited", "capacity_exhausted"},
+        "retryable": code in {
+            "voice_rate_limited",
+            "capacity_exhausted",
+            "local_cleanup_capacity_exhausted",
+        },
     }
     safe_headers = dict(headers)
     safe_headers.update(_NO_STORE)
@@ -1042,6 +1093,7 @@ def _status_for_code(code: object) -> int:
         "stale_media_grant_revision",
         "stale_chat_context_revision",
         "idempotency_conflict",
+        "activation_id_payload_mismatch",
         "context_sync_pending",
         # The repository raises ContextSyncPending("chat_context_sync_pending")
         # and StaleSessionFence("session_already_ended"); both are ordinary

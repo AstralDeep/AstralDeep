@@ -69,6 +69,12 @@ class _Services:
         }
 
 
+class _CodedRuntimeError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 class _Orchestrator:
     def __init__(self) -> None:
         self.voice_runtime = _Runtime()
@@ -254,14 +260,73 @@ def test_remote_v2_projection_and_invalid_selection_use_closed_v2_shapes(api) ->
         }
 
 
+@pytest.mark.parametrize("selector", [None, "unknown_backend"])
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("get", "/api/voice/v2/capability", None),
+        ("get", "/api/voice/v2/status", None),
+        ("post", "/api/voice/v2/sessions", _create_body()),
+        (
+            "post",
+            f"/api/voice/v2/sessions/{SESSION}/takeover",
+            _create_body(
+                expected_generation=1,
+                expected_speech_revision=1,
+            ),
+        ),
+    ],
+)
+def test_every_v2_route_maps_invalid_selector_to_503(
+    api,
+    selector: object,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
+) -> None:
+    client, orchestrator = api
+    orchestrator.voice_runtime.speech_backend = selector
+    orchestrator.voice_services.speech_backend = selector
+
+    response = client.request(method, path, headers=_headers(), json=body)
+
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "error": "voice_unavailable",
+        "reason": "backend_selection_invalid",
+        "retryable": False,
+    }
+
+
 def test_v2_routes_keep_keycloak_authentication_dependency() -> None:
     app = FastAPI()
     app.state.orchestrator = _Orchestrator()
     app.include_router(router)
     client = TestClient(app)
 
-    assert client.get("/api/voice/v2/capability").status_code == 401
-    assert client.post("/api/voice/v2/sessions", json=_create_body()).status_code == 401
+    for response in (
+        client.get("/api/voice/v2/capability"),
+        client.post("/api/voice/v2/sessions", json=_create_body()),
+    ):
+        assert response.status_code == 401
+        assert response.headers["cache-control"] == "no-store"
+        assert response.json() == {
+            "error": "voice_unavailable",
+            "reason": "authentication_required",
+            "retryable": False,
+        }
+
+
+def test_v1_authentication_error_shape_is_unchanged() -> None:
+    app = FastAPI()
+    app.state.orchestrator = _Orchestrator()
+    app.include_router(router)
+    response = TestClient(app).get("/api/voice/capability")
+
+    assert response.status_code == 401
+    assert response.headers.get("cache-control") is None
+    assert response.json() == {"detail": "Not authenticated"}
 
 
 def test_v2_create_is_strict_header_bound_and_has_no_media_grant(api) -> None:
@@ -305,6 +370,70 @@ def test_v2_exact_create_replay_and_takeover_reason_use_frozen_shapes(api) -> No
     )
     assert takeover.status_code == 409
     assert json.loads(takeover.body)["reason"] == "takeover_required"
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        ("stale_generation", "stale_session"),
+        ("stale_media_grant_revision", "stale_speech_revision"),
+        ("stale_chat_context_revision", "stale_chat_context"),
+        ("activation_id_payload_mismatch", "invalid_binding"),
+    ],
+)
+def test_v2_error_response_has_exact_closed_conflict_mapping(
+    code: str,
+    reason: str,
+) -> None:
+    response = _v2_error_response(_CodedRuntimeError(code))
+
+    assert response.status_code == 409
+    assert json.loads(response.body) == {
+        "error": "voice_unavailable",
+        "reason": reason,
+        "retryable": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("route", "runtime_method", "code", "reason"),
+    [
+        (
+            "/api/voice/v2/sessions",
+            "create_session",
+            "activation_id_payload_mismatch",
+            "invalid_binding",
+        ),
+        (
+            f"/api/voice/v2/sessions/{SESSION}/takeover",
+            "take_over_session",
+            "stale_media_grant_revision",
+            "stale_speech_revision",
+        ),
+    ],
+)
+def test_real_v2_mutation_routes_apply_exact_repository_conflict_mapping(
+    api,
+    route: str,
+    runtime_method: str,
+    code: str,
+    reason: str,
+) -> None:
+    client, orchestrator = api
+
+    async def fail(**_kwargs: Any) -> VoiceHttpResult:
+        raise _CodedRuntimeError(code)
+
+    setattr(orchestrator.voice_runtime, runtime_method, fail)
+    body = _create_body()
+    if runtime_method == "take_over_session":
+        body.update(expected_generation=1, expected_speech_revision=1)
+
+    response = client.post(route, headers=_headers(), json=body)
+
+    assert response.status_code == 409
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["reason"] == reason
 
 
 @pytest.mark.parametrize(
