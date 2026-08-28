@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import inspect
 import re
+from pathlib import Path
 
+import astralplane
+import pytest
 from astralplane import create_repository_catalog
 from astralplane.database.baseline import BASELINE_REQUIRED_TABLES
 from astralplane.database.legacy_baseline_066 import LEGACY_BASELINE_SOURCE_BLOB
@@ -19,6 +22,8 @@ from astralplane.repositories.voice import VoiceRepository
 
 from orchestrator.voice_sessions import VoiceSessionRepository
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+EMBEDDED_PLANE_SOURCE = (REPO_ROOT / "components/AstralPlane/src").resolve()
 _EXPECTED_VOICE_RECORD_OPERATIONS = {
     "abandon_chat_turns",
     "abandon_unaccepted_session_turns",
@@ -55,9 +60,23 @@ _EXPECTED_VOICE_RECORD_OPERATIONS = {
 }
 
 
+def _require_embedded_plane_source(module_file: str | None) -> Path:
+    if module_file is None:
+        raise AssertionError("astralplane has no import source")
+    resolved = Path(module_file).resolve(strict=True)
+    try:
+        resolved.relative_to(EMBEDDED_PLANE_SOURCE)
+    except ValueError as exc:
+        raise AssertionError(
+            f"astralplane resolved outside embedded source: {resolved}"
+        ) from exc
+    return resolved
+
+
 def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
     """Deep consumes, but does not recreate, Plane's guarded schema lineage."""
 
+    _require_embedded_plane_source(astralplane.__file__)
     assert CURRENT_DATA_PLANE_REVISION.schema_revision == "075.001"
     assert CURRENT_DATA_PLANE_REVISION.migration_digest == MIGRATION_REGISTRY.digest
     migration_075 = getattr(plane_migrations, "PLANE_SCHEMA_075_MIGRATION", None)
@@ -104,3 +123,10 @@ def test_deep_voice_coordinator_matches_the_plane_catalog_exactly() -> None:
     assert not (operations - set(dir(catalog_voice)))
     assert "shared.database" not in source
     assert ".cursor(" not in source
+
+
+def test_imported_astralplane_is_bound_to_embedded_source() -> None:
+    source = _require_embedded_plane_source(astralplane.__file__)
+    assert source == EMBEDDED_PLANE_SOURCE / "astralplane/__init__.py"
+    with pytest.raises(AssertionError, match="outside embedded source"):
+        _require_embedded_plane_source(re.__file__)

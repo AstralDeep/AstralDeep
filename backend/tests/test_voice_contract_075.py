@@ -5,25 +5,17 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import jsonschema
+import openapi_spec_validator
 import pytest
+import yaml
 
-jsonschema = pytest.importorskip(
-    "jsonschema",
-    reason="Feature-075 contract tests run in the isolated hash-locked contract tool",
-)
-pytest.importorskip(
-    "openapi_spec_validator",
-    reason="Feature-075 OpenAPI tests run in the isolated hash-locked contract tool",
-)
-pytest.importorskip(
-    "yaml",
-    reason="Feature-075 OpenAPI tests run in the isolated hash-locked contract tool",
-)
 Draft202012Validator = jsonschema.Draft202012Validator
 FormatChecker = jsonschema.FormatChecker
 ValidationError = jsonschema.ValidationError
@@ -56,6 +48,19 @@ def _load_contract_validator() -> ModuleType:
 
 
 validator = _load_contract_validator()
+
+
+def _enforce_locked_validator_environment(repo_root: Path = REPO_ROOT) -> None:
+    """Fail unless the required standards tools match the reviewed hash lock."""
+
+    for required_module in (jsonschema, openapi_spec_validator, yaml):
+        if required_module is None:
+            raise AssertionError("required standards validator import is unavailable")
+    validator.validate_dependency_lock(repo_root)
+    validator._validate_installed_versions()
+
+
+_enforce_locked_validator_environment()
 local_schema = validator.strict_load_json(LOCAL_SCHEMA_PATH)
 openapi = validator.strict_load_yaml(OPENAPI_PATH)
 local_frame_validator = Draft202012Validator(
@@ -225,6 +230,93 @@ def _requirements(*, local: bool) -> dict[str, Any]:
     }
 
 
+def _client_local_capability() -> dict[str, Any]:
+    return {
+        "contract": "client_local/v1",
+        "transport": "client_local",
+        "configured_locale": "en-US",
+        "full_duplex": False,
+        "has_microphone": True,
+        "has_audio_output": True,
+        "microphone_permission": "authorized",
+        "recognition_permission": "authorized",
+        "recognition_processing": "guaranteed_local",
+        "recognition_locale": "ready",
+        "recognition_installation": "ready",
+        "synthesis_processing": "guaranteed_local",
+        "synthesis_locale": "ready",
+    }
+
+
+def _rest_v2_golden_vectors() -> dict[str, dict[str, Any]]:
+    return {
+        "VoiceCapabilityV2": {
+            "schema_version": "2",
+            "speech_backend": "client_local",
+            "status": "requires_client_readiness",
+            "reason": "client_readiness_required",
+            "checked_at": "2026-08-28T12:00:00Z",
+            "expires_at": "2026-08-28T12:00:10Z",
+            "supported_transports": ["client_local"],
+            "requirements": _requirements(local=True),
+        },
+        "ClientLocalCapability": _client_local_capability(),
+        "VoiceStatusV2": {
+            "schema_version": "2",
+            "speech_backend": "client_local",
+            "state": "ready",
+            "reason": "ready",
+            "checked_at": "2026-08-28T12:00:00Z",
+            "phase_timings_ms": {"configuration": 12},
+        },
+        "CreateClientLocalSessionRequest": {
+            "schema_version": "2",
+            "activation_id": REQUEST_GENERATION,
+            "device_id": DEVICE_ID,
+            "device_kind": "web",
+            "visible_chat_id": CHAT_ID,
+            "foreground_active": True,
+            "client_capability": _client_local_capability(),
+        },
+        "TakeoverClientLocalSessionRequest": {
+            "schema_version": "2",
+            "activation_id": REQUEST_GENERATION,
+            "device_id": DEVICE_ID,
+            "device_kind": "windows",
+            "expected_generation": 1,
+            "expected_speech_revision": 2,
+            "visible_chat_id": CHAT_ID,
+            "foreground_active": True,
+            "client_capability": _client_local_capability(),
+        },
+        "ClientLocalSession": {
+            "schema_version": "2",
+            "session_id": SESSION_ID,
+            "speech_backend": "client_local",
+            "transport": "client_local",
+            "generation": 1,
+            "speech_revision": 2,
+            "state": "active",
+            "visible_chat_id": CHAT_ID,
+            "chat_context_revision": 3,
+            "applied_chat_context_revision": 3,
+            "chat_context_synced": True,
+            "foreground_active": True,
+            "microphone_enabled": True,
+            "speech_muted": False,
+            "configured_locale": "en-US",
+            "idle_expires_at": "2026-08-28T12:10:00Z",
+        },
+        "VoiceError": {
+            "error": "voice_unavailable",
+            "reason": "local_recognition_unavailable",
+            "retryable": True,
+            "retry_after_seconds": 5,
+            "current_session_id": None,
+        },
+    }
+
+
 def test_voice_local_schema_is_valid_draft_2020_12() -> None:
     assert local_schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     validator.validate_json_schema_document(local_schema, LOCAL_SCHEMA_PATH.name)
@@ -269,55 +361,15 @@ def test_every_client_local_frame_golden_vector_is_strict() -> None:
 
 
 def test_voice_rest_v2_golden_vectors_reject_extra_keys() -> None:
-    vectors = {
-        "VoiceCapabilityV2": {
-            "schema_version": "2",
-            "speech_backend": "client_local",
-            "status": "requires_client_readiness",
-            "reason": "client_readiness_required",
-            "checked_at": "2026-08-28T12:00:00Z",
-            "expires_at": "2026-08-28T12:00:10Z",
-            "supported_transports": ["client_local"],
-            "requirements": _requirements(local=True),
-        },
-        "ClientLocalCapability": {
-            "contract": "client_local/v1",
-            "transport": "client_local",
-            "configured_locale": "en-US",
-            "full_duplex": False,
-            "has_microphone": True,
-            "has_audio_output": True,
-            "microphone_permission": "authorized",
-            "recognition_permission": "authorized",
-            "recognition_processing": "guaranteed_local",
-            "recognition_locale": "ready",
-            "recognition_installation": "ready",
-            "synthesis_processing": "guaranteed_local",
-            "synthesis_locale": "ready",
-        },
-        "CreateClientLocalSessionRequest": {
-            "schema_version": "2",
-            "activation_id": REQUEST_GENERATION,
-            "device_id": DEVICE_ID,
-            "device_kind": "web",
-            "visible_chat_id": CHAT_ID,
-            "foreground_active": True,
-            "client_capability": {
-                "contract": "client_local/v1",
-                "transport": "client_local",
-                "configured_locale": "en-US",
-                "full_duplex": False,
-                "has_microphone": True,
-                "has_audio_output": True,
-                "microphone_permission": "authorized",
-                "recognition_permission": "authorized",
-                "recognition_processing": "guaranteed_local",
-                "recognition_locale": "ready",
-                "recognition_installation": "ready",
-                "synthesis_processing": "guaranteed_local",
-                "synthesis_locale": "ready",
-            },
-        },
+    vectors = _rest_v2_golden_vectors()
+    assert set(vectors) == {
+        "VoiceCapabilityV2",
+        "ClientLocalCapability",
+        "VoiceStatusV2",
+        "CreateClientLocalSessionRequest",
+        "TakeoverClientLocalSessionRequest",
+        "ClientLocalSession",
+        "VoiceError",
     }
     for schema_name, payload in vectors.items():
         schema_validator = _openapi_validator(schema_name)
@@ -353,3 +405,78 @@ def test_local_v2_and_remote_v1_contracts_remain_disjoint() -> None:
     remote_v1_playout.pop("speech_backend")
     with pytest.raises(ValidationError):
         local_frame_validator.validate(remote_v1_playout)
+
+
+def test_every_external_rest_v2_schema_has_strict_goldens() -> None:
+    required_field = {
+        "VoiceCapabilityV2": "requirements",
+        "ClientLocalCapability": "recognition_processing",
+        "VoiceStatusV2": "state",
+        "CreateClientLocalSessionRequest": "activation_id",
+        "TakeoverClientLocalSessionRequest": "expected_generation",
+        "ClientLocalSession": "session_id",
+        "VoiceError": "error",
+    }
+    discriminator_mutation = {
+        "VoiceCapabilityV2": ("speech_backend", "device_selected"),
+        "ClientLocalCapability": ("transport", "livekit"),
+        "VoiceStatusV2": ("schema_version", "1"),
+        "CreateClientLocalSessionRequest": ("schema_version", "1"),
+        "TakeoverClientLocalSessionRequest": ("foreground_active", False),
+        "ClientLocalSession": ("speech_backend", "llm_factory"),
+        "VoiceError": ("reason", "unknown_reason"),
+    }
+
+    for schema_name, payload in _rest_v2_golden_vectors().items():
+        schema_validator = _openapi_validator(schema_name)
+        missing = copy.deepcopy(payload)
+        missing.pop(required_field[schema_name])
+        with pytest.raises(ValidationError):
+            schema_validator.validate(missing)
+
+        field, invalid_value = discriminator_mutation[schema_name]
+        mutated = copy.deepcopy(payload)
+        mutated[field] = invalid_value
+        with pytest.raises(ValidationError):
+            schema_validator.validate(mutated)
+
+    for schema_name in (
+        "CreateClientLocalSessionRequest",
+        "TakeoverClientLocalSessionRequest",
+    ):
+        nested_extra = copy.deepcopy(_rest_v2_golden_vectors()[schema_name])
+        nested_extra["client_capability"]["unexpected"] = True
+        with pytest.raises(ValidationError, match="Additional properties"):
+            _openapi_validator(schema_name).validate(nested_extra)
+
+
+def test_feature_075_standards_require_locked_validator_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _enforce_locked_validator_environment()
+
+    original_version = validator.importlib.metadata.version
+    for package in ("jsonschema", "openapi-spec-validator", "pyyaml"):
+        with monkeypatch.context() as context:
+            context.setattr(
+                validator.importlib.metadata,
+                "version",
+                lambda candidate, package=package: (
+                    "0.0.0" if candidate == package else original_version(candidate)
+                ),
+            )
+            with pytest.raises(validator.ContractValidationError, match="expected"):
+                _enforce_locked_validator_environment()
+
+    tool_root = tmp_path / "tooling/contract-ci"
+    tool_root.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "tooling/contract-ci/requirements.in", tool_root)
+    lock = (REPO_ROOT / "tooling/contract-ci/requirements.lock.txt").read_text(
+        encoding="utf-8"
+    )
+    (tool_root / "requirements.lock.txt").write_text(
+        lock.replace("pyyaml==6.0.3", "pyyaml==6.0.2"),
+        encoding="utf-8",
+    )
+    with pytest.raises(validator.ContractValidationError, match="missing exact pyyaml pin"):
+        _enforce_locked_validator_environment(tmp_path)

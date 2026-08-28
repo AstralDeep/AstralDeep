@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -17,6 +17,7 @@ WINDOWS_LOCK = WINDOWS_ROOT / "requirements-release.lock.txt"
 CONTRACT_ROOT = REPO_ROOT / "tooling" / "contract-ci"
 CONTRACT_INPUT = CONTRACT_ROOT / "requirements.in"
 CONTRACT_LOCK = CONTRACT_ROOT / "requirements.lock.txt"
+FEATURE_075_BASE_COMMIT = "6d9931dbc43c6c9ff2f0435000c91dd1106e9409"
 FEATURE_075_DEPENDENCY_AUTHORITIES = {
     "Dockerfile": "292dbb485a05b3af0734a18d7822fbc8b574d0bf22e8a8b85e1047860d2364fe",
     "Dockerfile.voice": "86c246452f4c2d720f70a49b26d57f1ddd47e53d506173f87e316a6f7a83e943",
@@ -60,6 +61,76 @@ FEATURE_075_DEPENDENCY_AUTHORITIES = {
         "53a13f8fdc29757212ffe792ce361a8e17ef4e4acd52c3f723b726c84f62d15f"
     ),
 }
+DEEP_DEPENDENCY_AUTHORITY_POLICY = {
+    "roots": frozenset({".github", "backend", "scripts", "tooling"}),
+    "excluded_parts": frozenset(
+        {"components", "docs", "examples", "fixtures", "snapshots", "specs", "tests"}
+    ),
+    "lookalike_tokens": frozenset(
+        {"backup", "copy", "example", "fixture", "old", "sample", "snapshot"}
+    ),
+    "exact_paths": frozenset(
+        {
+            "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json"
+        }
+    ),
+    "manifest_names": frozenset(
+        {
+            "Cargo.lock",
+            "Cargo.toml",
+            "Directory.Build.props",
+            "Directory.Build.targets",
+            "Directory.Packages.props",
+            "Package.resolved",
+            "Package.swift",
+            "Pipfile",
+            "Pipfile.lock",
+            "build.gradle",
+            "build.gradle.kts",
+            "bun.lock",
+            "bun.lockb",
+            "global.json",
+            "go.mod",
+            "go.sum",
+            "gradle.lockfile",
+            "libs.versions.toml",
+            "npm-shrinkwrap.json",
+            "package-lock.json",
+            "package.json",
+            "packages.config",
+            "packages.lock.json",
+            "pnpm-lock.yaml",
+            "poetry.lock",
+            "pom.xml",
+            "pyproject.toml",
+            "settings.gradle",
+            "settings.gradle.kts",
+            "setup.cfg",
+            "setup.py",
+            "uv.lock",
+            "yarn.lock",
+        }
+    ),
+    "project_suffixes": frozenset({".csproj", ".fsproj", ".vbproj"}),
+    "model_suffixes": frozenset(
+        {
+            ".bin",
+            ".gguf",
+            ".mlmodel",
+            ".mlpackage",
+            ".onnx",
+            ".ort",
+            ".pt",
+            ".pth",
+            ".safetensors",
+            ".tflite",
+        }
+    ),
+}
+_REQUIREMENTS_AUTHORITY_RE = re.compile(
+    r"requirements(?:-[a-z0-9][a-z0-9_.-]*)?(?:\.lock)?\.(?:in|txt)$"
+)
+_DOCKERFILE_AUTHORITY_RE = re.compile(r"Dockerfile(?:\.[A-Za-z0-9_-]+)*$")
 
 if not (REPO_ROOT / "specs").is_dir():
     pytest.skip(
@@ -113,6 +184,62 @@ def _hashes(path: Path) -> dict[str, set[str]]:
         assert values, f"requirement has no SHA-256 hash: {requirement}"
         result[name] = values
     return result
+
+
+def _deep_dependency_authority_kind(relative_path: str) -> str | None:
+    """Classify only tracked, Deep-owned dependency and model authorities."""
+
+    normalized = PurePosixPath(relative_path).as_posix()
+    policy = DEEP_DEPENDENCY_AUTHORITY_POLICY
+    if normalized in policy["exact_paths"]:
+        return "exact-evidence"
+
+    path = PurePosixPath(normalized)
+    parts = path.parts
+    if not parts or parts[0] == "components":
+        return None
+    if len(parts) > 1 and parts[0] not in policy["roots"]:
+        return None
+    if any(part.lower() in policy["excluded_parts"] for part in parts[:-1]):
+        return None
+
+    name = path.name
+    suffix = path.suffix.lower()
+    if set(re.split(r"[._-]+", name.lower())) & policy["lookalike_tokens"]:
+        return None
+    if name in policy["manifest_names"] or suffix in policy["project_suffixes"]:
+        return "package-manifest"
+    if _REQUIREMENTS_AUTHORITY_RE.fullmatch(name.lower()):
+        return "python-requirements"
+    if _DOCKERFILE_AUTHORITY_RE.fullmatch(name) and not name.endswith(".dockerignore"):
+        return "container-build"
+    if suffix in policy["model_suffixes"] and any(
+        part.lower() in {"model", "models"} for part in parts[:-1]
+    ):
+        return "model-artifact"
+    return None
+
+
+def _git_tracked_paths(*args: str) -> set[str]:
+    return set(
+        subprocess.run(
+            ["git", *args],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.splitlines()
+    )
+
+
+def _git_blob(commit: str, relative_path: str) -> bytes:
+    return subprocess.run(
+        ["git", "show", f"{commit}:{relative_path}"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
 
 
 def test_windows_livekit_direct_pin_and_win_amd64_wheel_are_exact() -> None:
@@ -191,28 +318,68 @@ def test_contract_validator_dependencies_stay_out_of_product_manifests() -> None
 def test_feature_075_adds_no_runtime_model_development_or_lock_drift() -> None:
     """Freeze every tracked Deep dependency/model authority at the 075 base."""
 
-    authority_pattern = re.compile(
-        r"(^|/)(?:pyproject\.toml|uv\.lock|requirements[^/]*\.(?:txt|in)|"
-        r"package(?:-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|gradle\.lockfile|"
-        r"libs\.versions\.toml|Package\.resolved|Package\.swift|[^/]+\.csproj|"
-        r"runtime-lock-contract\.json|Dockerfile(?:\.voice)?)$|"
-        r"\.(?:onnx|pt|pth|safetensors|gguf|tflite|mlmodel|mlpackage)$"
+    base_tracked = _git_tracked_paths(
+        "ls-tree", "-r", "--name-only", FEATURE_075_BASE_COMMIT
     )
-    tracked = subprocess.run(
-        ["git", "ls-files"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    ).stdout.splitlines()
-    observed = {
-        path
-        for path in tracked
-        if not path.startswith("components/") and authority_pattern.search(path)
+    current_tracked = _git_tracked_paths("ls-files")
+    base_observed = {
+        path for path in base_tracked if _deep_dependency_authority_kind(path) is not None
+    }
+    current_observed = {
+        path for path in current_tracked if _deep_dependency_authority_kind(path) is not None
+    }
+    expected = set(FEATURE_075_DEPENDENCY_AUTHORITIES)
+
+    assert base_observed == expected
+    assert current_observed == expected
+    for relative, expected_sha256 in FEATURE_075_DEPENDENCY_AUTHORITIES.items():
+        base_sha256 = hashlib.sha256(
+            _git_blob(FEATURE_075_BASE_COMMIT, relative)
+        ).hexdigest()
+        current_sha256 = hashlib.sha256((REPO_ROOT / relative).read_bytes()).hexdigest()
+        assert base_sha256 == expected_sha256, relative
+        assert current_sha256 == base_sha256, relative
+
+
+def test_deep_dependency_authority_policy_is_scoped_and_complete() -> None:
+    accepted = {
+        "backend/service/setup.py": "package-manifest",
+        "tooling/lint/setup.cfg": "package-manifest",
+        "backend/service/Pipfile": "package-manifest",
+        "backend/service/poetry.lock": "package-manifest",
+        "backend/web/npm-shrinkwrap.json": "package-manifest",
+        "backend/native/build.gradle.kts": "package-manifest",
+        "backend/native/settings.gradle": "package-manifest",
+        "backend/native/gradle/libs.versions.toml": "package-manifest",
+        "backend/native/pom.xml": "package-manifest",
+        "tooling/audit/go.mod": "package-manifest",
+        "tooling/audit/Cargo.lock": "package-manifest",
+        "backend/native/Package.resolved": "package-manifest",
+        "backend/native/packages.lock.json": "package-manifest",
+        "backend/native/Helper.csproj": "package-manifest",
+        ".github/actions/contract/package.json": "package-manifest",
+        "scripts/release/Cargo.toml": "package-manifest",
+        "Dockerfile.local-arm64": "container-build",
+        "backend/voice_agent/models/vad.ort": "model-artifact",
+        "backend/voice_agent/models/tokenizer.bin": "model-artifact",
+    }
+    rejected = {
+        "component-internal": "components/AstralProjection/package.json",
+        "documentation": "docs/examples/requirements.txt",
+        "spec-example": "specs/075-client-local-speech/package-lock.json",
+        "fixture-lookalike": "backend/tests/fixtures/requirements-snapshot.txt",
+        "snapshot-lookalike": "backend/snapshots/Pipfile",
+        "filename-lookalike": "backend/service/requirements-prod.snapshot.txt",
+        "model-fixture": "backend/voice_agent/fixtures/tokenizer.bin",
+        "docker-ignore": "Dockerfile.voice.dockerignore",
+        "unknown-root": "vendor/tool/package.json",
+        "requirements-notes": "backend/voice_agent/requirements-notes.md",
     }
 
-    assert observed == set(FEATURE_075_DEPENDENCY_AUTHORITIES)
-    for relative, expected_sha256 in FEATURE_075_DEPENDENCY_AUTHORITIES.items():
-        actual_sha256 = hashlib.sha256((REPO_ROOT / relative).read_bytes()).hexdigest()
-        assert actual_sha256 == expected_sha256, relative
+    assert {
+        path: _deep_dependency_authority_kind(path)
+        for path in accepted
+    } == accepted
+    assert all(
+        _deep_dependency_authority_kind(path) is None for path in rejected.values()
+    )
