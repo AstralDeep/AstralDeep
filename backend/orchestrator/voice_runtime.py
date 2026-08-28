@@ -1108,13 +1108,25 @@ class VoiceSessionRuntime:
             if not applied.session.chat_context_synced or not active.chat_context_synced:
                 raise RuntimeError("chat_context_not_applied")
             return active
-        except asyncio.CancelledError:
-            await asyncio.shield(
-                self._reconcile_local_activation_abort(session, create)
+        except asyncio.CancelledError as cancellation:
+            cleanup_task = asyncio.create_task(
+                self._reconcile_local_activation_abort(session, create),
+                name=f"voice-local-activation-abort-{session.session_id}",
             )
-            raise
+            await _join_task_outcome_through_cancellation(cleanup_task)
+            raise cancellation
         except Exception:
-            await self._reconcile_local_activation_abort(session, create)
+            cleanup_task = asyncio.create_task(
+                self._reconcile_local_activation_abort(session, create),
+                name=f"voice-local-activation-abort-{session.session_id}",
+            )
+            _result, cleanup_error, cancellation = (
+                await _join_task_outcome_through_cancellation(cleanup_task)
+            )
+            if cancellation is not None:
+                raise cancellation
+            if cleanup_error is not None:
+                raise cleanup_error
             raise
 
     def _watch_nonce(

@@ -582,6 +582,176 @@ async def test_cancelled_local_takeover_reconciles_late_repository_commit() -> N
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", ["create", "takeover"])
+@pytest.mark.parametrize("stage", ["claim", "apply", "activate"])
+async def test_repeated_cancel_during_local_activation_joins_exact_abort(
+    mutation: str,
+    stage: str,
+) -> None:
+    """A second cancel must not outrun exact durable activation cleanup."""
+
+    previous = _round2_session(ended=True)
+    replacement = _round2_session(generation=2 if mutation == "takeover" else 1)
+    stage_entered = threading.Event()
+    stage_release = threading.Event()
+    abort_entered = threading.Event()
+    abort_release = threading.Event()
+    durable = {"state": "starting"}
+
+    def block_if(target: str) -> None:
+        if stage == target:
+            stage_entered.set()
+            assert stage_release.wait(timeout=2)
+
+    class Repository:
+        def get_session(self, **_kwargs: Any) -> Any:
+            return previous
+
+        def create_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(session=replacement, replayed=False)
+
+        def take_over_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(session=replacement, replayed=False)
+
+        async def claim_control_lease(self, **_kwargs: Any) -> Any:
+            if stage == "claim":
+                await asyncio.to_thread(block_if, "claim")
+            return SimpleNamespace(owner_id="replica-a")
+
+        def apply_chat_context(self, **_kwargs: Any) -> Any:
+            block_if("apply")
+            return SimpleNamespace(
+                session=SimpleNamespace(
+                    **{**replacement.__dict__, "chat_context_synced": True}
+                )
+            )
+
+        def mark_session_active(self, **_kwargs: Any) -> Any:
+            block_if("activate")
+            if durable["state"] == "ended":
+                raise RuntimeError("activation already ended")
+            durable["state"] = "active"
+            return SimpleNamespace(
+                **{**replacement.__dict__, "chat_context_synced": True}
+            )
+
+        def end_session(self, **kwargs: Any) -> Any:
+            assert kwargs["session_id"] == replacement.session_id
+            assert kwargs["expected_generation"] == replacement.generation
+            abort_entered.set()
+            assert abort_release.wait(timeout=2)
+            durable["state"] = "ended"
+            return SimpleNamespace(**{**replacement.__dict__, "ended_at": NOW})
+
+    media = SimpleNamespace(end=AsyncMock(), abort=AsyncMock())
+    runtime = VoiceSessionRuntime(
+        repository=Repository(),  # type: ignore[arg-type]
+        capability=SimpleNamespace(),
+        media=media,  # type: ignore[arg-type]
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+    if mutation == "create":
+        coroutine = runtime.create_session(
+            user_id="user-a",
+            control=_round2_control(),
+            request=_round2_request(),
+        )
+    else:
+        coroutine = runtime.take_over_session(
+            user_id="user-a",
+            session_id=previous.session_id,
+            control=_round2_control(),
+            request=_round2_request(
+                activation_id="00000000-0000-4000-8000-000000000207",
+                expected_generation=1,
+                expected_media_grant_revision=1,
+            ),
+        )
+    task = asyncio.create_task(coroutine)
+    assert await asyncio.to_thread(stage_entered.wait, 1)
+    task.cancel()
+    assert await asyncio.to_thread(abort_entered.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert not task.done()
+    finally:
+        stage_release.set()
+        abort_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert durable["state"] == "ended"
+    assert runtime._pending_local_activation_cleanup == {}
+    assert runtime._local_activation_reservations == set()
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancel_records_failed_local_activation_abort_before_return() -> None:
+    """A failed exact end must retain its bounded production drain handle."""
+
+    session = _round2_session()
+    stage_entered = threading.Event()
+    stage_release = threading.Event()
+    abort_entered = threading.Event()
+    abort_release = threading.Event()
+
+    class Repository:
+        def create_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(session=session, replayed=False)
+
+        async def claim_control_lease(self, **_kwargs: Any) -> Any:
+            return SimpleNamespace(owner_id="replica-a")
+
+        def apply_chat_context(self, **_kwargs: Any) -> Any:
+            stage_entered.set()
+            assert stage_release.wait(timeout=2)
+            return SimpleNamespace(
+                session=SimpleNamespace(
+                    **{**session.__dict__, "chat_context_synced": True}
+                )
+            )
+
+        def end_session(self, **_kwargs: Any) -> Any:
+            abort_entered.set()
+            assert abort_release.wait(timeout=2)
+            raise RuntimeError("database unavailable")
+
+    runtime = VoiceSessionRuntime(
+        repository=Repository(),  # type: ignore[arg-type]
+        capability=SimpleNamespace(),
+        media=SimpleNamespace(abort=AsyncMock()),
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+    task = asyncio.create_task(
+        runtime.create_session(
+            user_id="user-a",
+            control=_round2_control(),
+            request=_round2_request(),
+        )
+    )
+    assert await asyncio.to_thread(stage_entered.wait, 1)
+    task.cancel()
+    assert await asyncio.to_thread(abort_entered.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert not task.done()
+    finally:
+        stage_release.set()
+        abort_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert tuple(runtime._pending_local_activation_cleanup) == (
+        (session.session_id, session.generation),
+    )
+    assert runtime._local_activation_reservations == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["create", "takeover"])
 async def test_local_repository_mutation_exception_releases_reserved_capacity(
     mutation: str,
 ) -> None:

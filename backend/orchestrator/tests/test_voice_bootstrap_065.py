@@ -121,6 +121,57 @@ def _voice_turn(
     )
 
 
+def _local_recognition_context(
+    now: datetime,
+    *,
+    client_turn_id: str = "00000000-0000-4000-8000-000000000042",
+    recognition_sequence: int = 1,
+) -> tuple[Any, VoiceControlClaims, VoiceLocalRecognitionStarted]:
+    session = SimpleNamespace(
+        session_id="00000000-0000-4000-8000-000000000031",
+        user_id="user-a",
+        device_id="00000000-0000-4000-8000-000000000021",
+        owner_connection_generation="00000000-0000-4000-8000-000000000022",
+        control_binding_id="00000000-0000-4000-8000-000000000023",
+        control_binding_expires_at=now + timedelta(minutes=4),
+        lease_expires_at=now + timedelta(minutes=2),
+        control_owner_id="voice-coordinator-local-1",
+        control_lease_expires_at=now + timedelta(seconds=30),
+        generation=1,
+        media_grant_revision=1,
+        speech_backend="client_local",
+        state="active",
+        ended_at=None,
+        foreground_active=True,
+        microphone_enabled=True,
+        speech_muted=False,
+        visible_chat_id="00000000-0000-4000-8000-000000000072",
+        chat_context_revision=1,
+        applied_visible_chat_id="00000000-0000-4000-8000-000000000072",
+        applied_chat_context_revision=1,
+    )
+    claims = VoiceControlClaims(
+        subject="user-a",
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        binding_id=session.control_binding_id,
+        issued_at=now,
+        expires_at=now + timedelta(minutes=4),
+    )
+    frame = VoiceLocalRecognitionStarted(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=1,
+        speech_revision=1,
+        client_turn_id=client_turn_id,
+        chat_id=session.visible_chat_id,
+        chat_context_revision=1,
+        recognition_sequence=recognition_sequence,
+    )
+    return session, claims, frame
+
+
 def test_remote_bootstrap_keeps_legacy_backend_when_selector_is_missing() -> None:
     services = build_voice_services(
         plane_runtime=_PlaneRuntime(),
@@ -974,6 +1025,182 @@ async def test_cancelled_local_recognition_reconciles_late_thread_commit(
     else:
         assert durable["state"] == "absent"
         assert registry._reservations == registry._turns == registry._sequences == {}
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancel_during_late_bind_promotion_cannot_orphan_turn() -> None:
+    """Promotion must stay joined while its pre-reserved slot lock is blocked."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    insert_entered = threading.Event()
+    insert_release = threading.Event()
+    insert_committed = threading.Event()
+    rejection_entered = threading.Event()
+    rejection_release = threading.Event()
+    durable = {"state": "absent"}
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            insert_entered.set()
+            assert insert_release.wait(timeout=2)
+            durable["state"] = "recognizing"
+            insert_committed.set()
+            return SimpleNamespace(turn=turn)
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            rejection_entered.set()
+            assert rejection_release.wait(timeout=2)
+            durable["state"] = "refused"
+
+    registry = ClientLocalBindingRegistry()
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    task = asyncio.create_task(
+        services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    )
+    assert await asyncio.to_thread(insert_entered.wait, 1)
+    await services.pending_local_rejection_lock.acquire()
+    task.cancel()
+    insert_release.set()
+    assert await asyncio.to_thread(insert_committed.wait, 1)
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert not task.done()
+        assert len(services.pending_local_rejection_reservations) == 1
+        reserved = next(iter(services.pending_local_rejection_reservations.values()))
+        assert not hasattr(reserved, "text")
+        assert not hasattr(reserved, "text_digest_sha256")
+    finally:
+        services.pending_local_rejection_lock.release()
+    assert await asyncio.to_thread(rejection_entered.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    rejection_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert durable["state"] == "refused"
+    assert services.pending_local_rejection_reservations == {}
+    assert services.pending_local_rejections == {}
+    assert registry._reservations == registry._turns == registry._sequences == {}
+
+
+@pytest.mark.asyncio
+async def test_local_rejection_capacity_is_reserved_before_repository_insert() -> None:
+    """The last cleanup slot fences a later insert before it can become durable."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, first = _local_recognition_context(now)
+    _, _, second = _local_recognition_context(
+        now,
+        client_turn_id="00000000-0000-4000-8000-000000000043",
+        recognition_sequence=2,
+    )
+    insert_entered = threading.Event()
+    insert_release = threading.Event()
+    inserted: list[str] = []
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            raise RuntimeError("pending cleanup unavailable")
+
+        def bind_recognition_turn(self, binding: Any, **_kwargs: Any) -> Any:
+            inserted.append(binding.client_turn_id)
+            if binding.client_turn_id == first.client_turn_id:
+                insert_entered.set()
+                assert insert_release.wait(timeout=2)
+                raise RuntimeError("late repository failure")
+            return SimpleNamespace(
+                turn=_voice_turn(client_turn_id=binding.client_turn_id)
+            )
+
+    registry = ClientLocalBindingRegistry()
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    services.pending_local_rejections.update(
+        {
+            ("other-user", f"turn-{index}"): SimpleNamespace(
+                user_id="other-user",
+                client_turn_id=f"turn-{index}",
+                turn_id=f"00000000-0000-4000-8000-{index:012d}",
+                session_id="other-session",
+                generation=1,
+                reason="invalid_binding",
+                retry_policy="none",
+                reservation=None,
+            )
+            for index in range(255)
+        }
+    )
+    first_task = asyncio.create_task(
+        services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=first,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    )
+    assert await asyncio.to_thread(insert_entered.wait, 1)
+    try:
+        with pytest.raises(VoiceControlBindingError, match="capacity_exhausted"):
+            await services.bind_local_recognition(
+                socket_id=7,
+                current_socket_id=7,
+                user_id="user-a",
+                claims=claims,
+                frame=second,
+                execution_base_render_revision=0,
+                now=now,
+            )
+    finally:
+        insert_release.set()
+    with pytest.raises(RuntimeError, match="late repository failure"):
+        await first_task
+    assert inserted == [first.client_turn_id]
+    assert services.pending_local_rejection_reservations == {}
+    assert len(services.pending_local_rejections) == 255
+    assert registry._reservations == registry._turns == registry._sequences == {}
 
 
 @pytest.mark.asyncio

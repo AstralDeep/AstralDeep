@@ -124,6 +124,19 @@ class _PendingLocalRejection:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingLocalRejectionReservation:
+    """Content-free capacity held before one recognition insert can commit."""
+
+    user_id: str
+    client_turn_id: str
+    session_id: str
+    generation: int
+    reason: str
+    retry_policy: str
+    reservation: ClientLocalTurnReservation = field(repr=False)
+
+
 @dataclass(slots=True)
 class _AnnouncementCommand:
     """One in-process lifecycle mutation for a session-owned output stream."""
@@ -1099,6 +1112,9 @@ class VoiceServices:
     pending_local_rejections: dict[
         tuple[str, str], _PendingLocalRejection
     ] = field(default_factory=dict, init=False, repr=False)
+    pending_local_rejection_reservations: dict[
+        tuple[str, str], _PendingLocalRejectionReservation
+    ] = field(default_factory=dict, init=False, repr=False)
     pending_local_rejection_lock: asyncio.Lock = field(
         default_factory=asyncio.Lock,
         init=False,
@@ -1577,10 +1593,6 @@ class VoiceServices:
 
         self._require_local_backend()
         await self._drain_pending_local_rejections(now=now)
-        if len(self.pending_local_rejections) >= _MAX_PENDING_LOCAL_REJECTIONS:
-            raise VoiceControlBindingError("capacity_exhausted")
-        if (user_id, frame.client_turn_id) in self.pending_local_rejections:
-            raise VoiceControlBindingError("invalid_binding")
         session = await asyncio.to_thread(
             self.repository.get_controlled_session,
             user_id=user_id,
@@ -1613,8 +1625,12 @@ class VoiceServices:
             )
             return turn, reserved
         mutation = None
-        release_reservation = True
+        release_binding_reservation = True
+        cleanup_reservation: _PendingLocalRejectionReservation | None = None
         try:
+            cleanup_reservation = await self._reserve_pending_local_rejection(
+                reserved
+            )
             bind_task = asyncio.create_task(
                 asyncio.to_thread(
                     self.repository.bind_recognition_turn,
@@ -1641,24 +1657,21 @@ class VoiceServices:
                     await _join_task_outcome_through_cancellation(bind_task)
                 )
                 if mutation is not None:
-                    pending = _PendingLocalRejection(
-                        user_id=user_id,
-                        client_turn_id=frame.client_turn_id,
-                        turn_id=mutation.turn.turn_id,
-                        session_id=frame.session_id,
-                        generation=frame.generation,
-                        reason="invalid_binding",
-                        retry_policy="none",
-                        reservation=reserved,
-                    )
-                    release_reservation = False
-                    try:
-                        await self._retain_pending_local_rejection(pending)
-                    except BaseException:
-                        logger.warning(
-                            "voice_local_cancel_reconciliation_capacity_unavailable"
+                    release_binding_reservation = False
+                    pending, _promotion_cancellation = (
+                        await self._join_pending_local_rejection_state_change(
+                            self._promote_pending_local_rejection(
+                                cleanup_reservation,
+                                turn_id=mutation.turn.turn_id,
+                            ),
+                            name=(
+                                "voice-local-rejection-promote-"
+                                f"{frame.client_turn_id}"
+                            ),
                         )
-                    else:
+                    )
+                    cleanup_reservation = None
+                    if pending is not None:
                         cleanup_error, _cleanup_cancellation = (
                             await self._attempt_pending_local_rejection(
                                 pending,
@@ -1680,26 +1693,24 @@ class VoiceServices:
                     turn=mutation.turn,
                     now=now,
                 )
-            except BaseException:
-                pending = _PendingLocalRejection(
-                    user_id=user_id,
-                    client_turn_id=frame.client_turn_id,
-                    turn_id=mutation.turn.turn_id,
-                    session_id=frame.session_id,
-                    generation=frame.generation,
-                    reason="invalid_binding",
-                    retry_policy="none",
-                    reservation=reserved,
-                )
-                release_reservation = False
-                try:
-                    await self._retain_pending_local_rejection(pending)
-                except BaseException:
-                    logger.warning(
-                        "voice_local_reservation_abandon_capacity_unavailable"
+            except BaseException as failure:
+                release_binding_reservation = False
+                pending, promotion_cancellation = (
+                    await self._join_pending_local_rejection_state_change(
+                        self._promote_pending_local_rejection(
+                            cleanup_reservation,
+                            turn_id=mutation.turn.turn_id,
+                        ),
+                        name=(
+                            "voice-local-rejection-promote-"
+                            f"{frame.client_turn_id}"
+                        ),
                     )
-                else:
-                    cleanup_error, _cleanup_cancellation = (
+                )
+                cleanup_reservation = None
+                cleanup_cancellation = None
+                if pending is not None:
+                    cleanup_error, cleanup_cancellation = (
                         await self._attempt_pending_local_rejection(
                             pending,
                             now=now,
@@ -1709,11 +1720,45 @@ class VoiceServices:
                         logger.warning(
                             "voice_local_reservation_abandon_unavailable"
                         )
-                raise
-        except BaseException:
-            if release_reservation:
+                if promotion_cancellation is not None:
+                    raise promotion_cancellation
+                if cleanup_cancellation is not None:
+                    raise cleanup_cancellation
+                raise failure
+            release_binding_reservation = False
+            _released, release_cancellation = (
+                await self._join_pending_local_rejection_state_change(
+                    self._release_pending_local_rejection_reservation(
+                        cleanup_reservation
+                    ),
+                    name=(
+                        "voice-local-rejection-release-"
+                        f"{frame.client_turn_id}"
+                    ),
+                )
+            )
+            cleanup_reservation = None
+            if release_cancellation is not None:
+                raise release_cancellation
+        except BaseException as failure:
+            release_cancellation = None
+            if cleanup_reservation is not None:
+                _released, release_cancellation = (
+                    await self._join_pending_local_rejection_state_change(
+                        self._release_pending_local_rejection_reservation(
+                            cleanup_reservation
+                        ),
+                        name=(
+                            "voice-local-rejection-release-"
+                            f"{frame.client_turn_id}"
+                        ),
+                    )
+                )
+            if release_binding_reservation:
                 self.local_bindings.release_reservation(reserved)
-            raise
+            if release_cancellation is not None:
+                raise release_cancellation
+            raise failure
         return mutation.turn, authority
 
     async def admit_local_final(
@@ -1848,14 +1893,104 @@ class VoiceServices:
     ) -> None:
         key = (pending.user_id, pending.client_turn_id)
         async with self.pending_local_rejection_lock:
+            if key in self.pending_local_rejection_reservations:
+                raise VoiceBootstrapError("invalid_binding")
             current = self.pending_local_rejections.get(key)
             if current is not None:
                 if current != pending:
                     raise VoiceBootstrapError("invalid_binding")
                 return
-            if len(self.pending_local_rejections) >= _MAX_PENDING_LOCAL_REJECTIONS:
+            if (
+                len(self.pending_local_rejections)
+                + len(self.pending_local_rejection_reservations)
+                >= _MAX_PENDING_LOCAL_REJECTIONS
+            ):
                 raise VoiceBootstrapError("local_cleanup_capacity_exhausted")
             self.pending_local_rejections[key] = pending
+
+    async def _reserve_pending_local_rejection(
+        self,
+        reservation: ClientLocalTurnReservation,
+    ) -> _PendingLocalRejectionReservation:
+        pending = _PendingLocalRejectionReservation(
+            user_id=reservation.user_id,
+            client_turn_id=reservation.client_turn_id,
+            session_id=reservation.session_id,
+            generation=reservation.generation,
+            reason="invalid_binding",
+            retry_policy="none",
+            reservation=reservation,
+        )
+        key = (pending.user_id, pending.client_turn_id)
+        async with self.pending_local_rejection_lock:
+            if (
+                key in self.pending_local_rejections
+                or key in self.pending_local_rejection_reservations
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+            if (
+                len(self.pending_local_rejections)
+                + len(self.pending_local_rejection_reservations)
+                >= _MAX_PENDING_LOCAL_REJECTIONS
+            ):
+                raise VoiceControlBindingError("capacity_exhausted")
+            self.pending_local_rejection_reservations[key] = pending
+        return pending
+
+    async def _promote_pending_local_rejection(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+        *,
+        turn_id: str,
+    ) -> _PendingLocalRejection | None:
+        pending = _PendingLocalRejection(
+            user_id=reserved.user_id,
+            client_turn_id=reserved.client_turn_id,
+            turn_id=turn_id,
+            session_id=reserved.session_id,
+            generation=reserved.generation,
+            reason=reserved.reason,
+            retry_policy=reserved.retry_policy,
+            reservation=reserved.reservation,
+        )
+        key = (pending.user_id, pending.client_turn_id)
+        async with self.pending_local_rejection_lock:
+            current = self.pending_local_rejection_reservations.get(key)
+            if current is None:
+                existing = self.pending_local_rejections.get(key)
+                if existing is not None:
+                    if existing != pending:
+                        raise VoiceBootstrapError("invalid_binding")
+                    return existing
+                # A successful session-wide abandon is the only other owner
+                # permitted to remove a reserved slot.
+                return None
+            if current != reserved or key in self.pending_local_rejections:
+                raise VoiceBootstrapError("invalid_binding")
+            self.pending_local_rejection_reservations.pop(key, None)
+            self.pending_local_rejections[key] = pending
+        return pending
+
+    async def _release_pending_local_rejection_reservation(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+    ) -> None:
+        key = (reserved.user_id, reserved.client_turn_id)
+        async with self.pending_local_rejection_lock:
+            if self.pending_local_rejection_reservations.get(key) == reserved:
+                self.pending_local_rejection_reservations.pop(key, None)
+
+    async def _join_pending_local_rejection_state_change(
+        self,
+        operation: Awaitable[Any],
+        *,
+        name: str,
+    ) -> tuple[Any, asyncio.CancelledError | None]:
+        task = asyncio.create_task(operation, name=name)
+        result, error, cancellation = await _join_task_outcome_through_cancellation(task)
+        if error is not None:
+            raise error
+        return result, cancellation
 
     async def _attempt_pending_local_rejection(
         self,
@@ -1946,6 +2081,17 @@ class VoiceServices:
                             and pending.generation == session.generation
                         ):
                             self.pending_local_rejections.pop(key, None)
+                    for key, reserved in tuple(
+                        self.pending_local_rejection_reservations.items()
+                    ):
+                        if (
+                            reserved.session_id == session.session_id
+                            and reserved.generation == session.generation
+                        ):
+                            self.pending_local_rejection_reservations.pop(
+                                key,
+                                None,
+                            )
             self.clear_local_session(session)
             self.local_announcements.fence_session(
                 session_id=session.session_id,
