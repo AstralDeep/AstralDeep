@@ -1344,6 +1344,133 @@ async def test_local_recognition_cancellation_phase_table_terminalizes_commit(
         assert registry._sequences == {}
 
 
+_LOCAL_RECOGNITION_REPLAY_CANCELLATION_PHASES = (
+    "insert",
+    "finalize",
+    "slot_release",
+    "pre_return",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", _LOCAL_RECOGNITION_REPLAY_CANCELLATION_PHASES)
+async def test_local_recognition_replay_cancellation_preserves_durable_turn(
+    phase: str,
+) -> None:
+    """A cancelled exact replay owns no durable recognition row."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    phase_entered = threading.Event()
+    settlement_entered = threading.Event()
+    phase_release = threading.Event()
+    durable = {"state": "recognizing"}
+    rejection_calls = 0
+    public_task: asyncio.Task[Any] | None = None
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            if phase == "insert" and not phase_entered.is_set():
+                phase_entered.set()
+                assert phase_release.wait(timeout=3)
+            return SimpleNamespace(turn=turn, replayed=True)
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            nonlocal rejection_calls
+            rejection_calls += 1
+            durable["state"] = "refused"
+
+    class Registry(ClientLocalBindingRegistry):
+        def finalize_turn(self, **kwargs: Any) -> Any:
+            authority = super().finalize_turn(**kwargs)
+            if phase == "finalize" and not phase_entered.is_set():
+                assert public_task is not None
+                phase_entered.set()
+                public_task.cancel()
+            return authority
+
+    class Services(VoiceServices):
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            if phase in {"finalize", "slot_release"}:
+                settlement_entered.set()
+            if phase == "slot_release" and not phase_entered.is_set():
+                phase_entered.set()
+            if phase in {"finalize", "slot_release"}:
+                await asyncio.to_thread(phase_release.wait, 3)
+            acquired = await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+            if phase == "pre_return" and not phase_entered.is_set():
+                phase_entered.set()
+                await asyncio.to_thread(phase_release.wait, 3)
+            return acquired
+
+    registry = Registry()
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    public_task = asyncio.create_task(
+        services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    )
+    assert await asyncio.to_thread(phase_entered.wait, 1)
+    if phase == "finalize":
+        assert await asyncio.to_thread(settlement_entered.wait, 1)
+    if phase != "finalize":
+        public_task.cancel()
+    public_task.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert not public_task.done()
+    finally:
+        phase_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await public_task
+
+    assert durable["state"] == "recognizing"
+    assert rejection_calls == 0
+    assert services.pending_local_rejection_reservations == {}
+    assert services.pending_local_rejections == {}
+    assert registry._reservations == registry._turns == registry._sequences == {}
+
+    retry_turn, retry_authority = await services.bind_local_recognition(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=frame,
+        execution_base_render_revision=0,
+        now=now,
+    )
+    assert retry_turn is turn
+    assert retry_authority.turn_id == turn.turn_id
+    assert durable["state"] == "recognizing"
+    assert rejection_calls == 0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner,lease_delta", [("replica-b", 30), ("voice-coordinator-local-1", -1)])
 async def test_local_ready_requires_this_replica_and_live_control_lease(

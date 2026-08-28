@@ -1657,31 +1657,43 @@ class VoiceServices:
                     await _join_task_outcome_through_cancellation(bind_task)
                 )
                 if mutation is not None:
-                    release_binding_reservation = False
-                    pending, _promotion_cancellation = (
+                    if bool(getattr(mutation, "replayed", False)):
                         await self._join_pending_local_rejection_state_change(
-                            self._promote_pending_local_rejection(
-                                cleanup_reservation,
-                                turn_id=mutation.turn.turn_id,
+                            self._release_pending_local_rejection_reservation(
+                                cleanup_reservation
                             ),
                             name=(
-                                "voice-local-rejection-promote-"
+                                "voice-local-replay-release-"
                                 f"{frame.client_turn_id}"
                             ),
                         )
-                    )
-                    cleanup_reservation = None
-                    if pending is not None:
-                        cleanup_error, _cleanup_cancellation = (
-                            await self._attempt_pending_local_rejection(
-                                pending,
-                                now=now,
+                        cleanup_reservation = None
+                    else:
+                        release_binding_reservation = False
+                        pending, _promotion_cancellation = (
+                            await self._join_pending_local_rejection_state_change(
+                                self._promote_pending_local_rejection(
+                                    cleanup_reservation,
+                                    turn_id=mutation.turn.turn_id,
+                                ),
+                                name=(
+                                    "voice-local-rejection-promote-"
+                                    f"{frame.client_turn_id}"
+                                ),
                             )
                         )
-                        if cleanup_error is not None:
-                            logger.warning(
-                                "voice_local_cancel_reconciliation_unavailable"
+                        cleanup_reservation = None
+                        if pending is not None:
+                            cleanup_error, _cleanup_cancellation = (
+                                await self._attempt_pending_local_rejection(
+                                    pending,
+                                    now=now,
+                                )
                             )
+                            if cleanup_error is not None:
+                                logger.warning(
+                                    "voice_local_cancel_reconciliation_unavailable"
+                                )
                 elif mutation_error is not None:
                     logger.debug(
                         "voice_local_cancelled_recognition_insert_failed"
@@ -1694,6 +1706,18 @@ class VoiceServices:
                     now=now,
                 )
             except BaseException as failure:
+                if bool(getattr(mutation, "replayed", False)):
+                    await self._join_pending_local_rejection_state_change(
+                        self._release_pending_local_rejection_reservation(
+                            cleanup_reservation
+                        ),
+                        name=(
+                            "voice-local-replay-release-"
+                            f"{frame.client_turn_id}"
+                        ),
+                    )
+                    cleanup_reservation = None
+                    raise failure
                 release_binding_reservation = False
                 pending, promotion_cancellation = (
                     await self._join_pending_local_rejection_state_change(
@@ -1730,6 +1754,8 @@ class VoiceServices:
                 cleanup_reservation,
                 turn_id=mutation.turn.turn_id,
                 now=now,
+                replayed=bool(getattr(mutation, "replayed", False)),
+                authority=authority,
             )
             cleanup_reservation = None
         except BaseException as failure:
@@ -2021,6 +2047,8 @@ class VoiceServices:
         *,
         turn_id: str,
         now: datetime,
+        replayed: bool = False,
+        authority: ClientLocalTurnAuthority | None = None,
     ) -> None:
         acquire_task = asyncio.create_task(
             self._acquire_pending_local_rejection_release(reserved),
@@ -2040,6 +2068,10 @@ class VoiceServices:
             key = (reserved.user_id, reserved.client_turn_id)
             if cancellation is None:
                 self.pending_local_rejection_reservations.pop(key, None)
+            elif replayed:
+                self.pending_local_rejection_reservations.pop(key, None)
+                if authority is not None:
+                    self.local_bindings.release_request_authority(authority)
             else:
                 pending = self._promote_pending_local_rejection_locked(
                     reserved,
@@ -2048,6 +2080,8 @@ class VoiceServices:
                 )
         finally:
             self.pending_local_rejection_lock.release()
+        if replayed and cancellation is not None:
+            raise cancellation
         if pending is not None:
             cleanup_error, _cleanup_cancellation = (
                 await self._attempt_pending_local_rejection(pending, now=now)

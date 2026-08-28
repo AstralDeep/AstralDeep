@@ -419,6 +419,26 @@ class ClientLocalBindingRegistry:
         self._turns.pop((user_id, client_turn_id), None)
         self._inflight_final_digests.pop((user_id, client_turn_id), None)
 
+    def release_request_authority(
+        self,
+        authority: ClientLocalTurnAuthority,
+    ) -> None:
+        """Release only authority and sequence created by one failed request."""
+
+        key = (authority.user_id, authority.client_turn_id)
+        if self._turns.get(key) is not authority:
+            return
+        self._turns.pop(key, None)
+        self._inflight_final_digests.pop(key, None)
+        sequence_key = (
+            authority.socket_id,
+            authority.session_id,
+            authority.generation,
+        )
+        fence = self._sequences.get(sequence_key)
+        if fence is not None and fence.sequence == authority.recognition_sequence:
+            self._sequences.pop(sequence_key, None)
+
     def verify_final(
         self,
         *,
