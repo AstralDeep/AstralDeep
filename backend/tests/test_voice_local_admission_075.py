@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
+import threading
 import unicodedata
 import uuid
 from contextlib import nullcontext
@@ -16,6 +18,9 @@ import pytest
 
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.orchestrator import ConnectionContext
+from orchestrator.orchestrator import CONNECTION_INGRESS_LIMIT
+from orchestrator.voice_backend import VoiceSpeechBackend
+from orchestrator.voice_bootstrap import VoiceServices
 from orchestrator.voice_control_binding import (
     ClientLocalBindingRegistry,
     VoiceControlBindingError,
@@ -26,6 +31,8 @@ from orchestrator.voice_sessions import (
     VoiceSessionRepository,
     canonicalize_local_transcript,
 )
+from orchestrator.voice_coordinator import ClientLocalAnnouncementRegistry
+from orchestrator.work_admission import OperationOwner, OperationState, OwnerScope
 from shared.protocol import (
     VoiceLocalFinal,
     VoiceLocalPlayoutEvent,
@@ -154,6 +161,7 @@ def test_local_submission_is_content_redacted_and_remote_hmac_lane_unchanged() -
     request = LocalTranscriptSubmission.from_authority(
         user_id="owner-a",
         authority=_authority(frame),
+        expected_control_owner_id="voice-coordinator-local-1",
         detected_language="en",
         canonical_text="Café\nstatus",
     )
@@ -173,6 +181,7 @@ def test_real_local_repository_admission_transitions_and_replays_exact_turn() ->
     request = LocalTranscriptSubmission.from_authority(
         user_id="owner-a",
         authority=authority,
+        expected_control_owner_id="voice-coordinator-local-1",
         detected_language="en",
         canonical_text="hello",
     )
@@ -205,6 +214,8 @@ def test_real_local_repository_admission_transitions_and_replays_exact_turn() ->
         "owner_connection_generation": frame.connection_generation,
         "control_binding_id": authority.binding_id,
         "control_binding_expires_at": NOW + timedelta(minutes=4),
+        "control_owner_id": "voice-coordinator-local-1",
+        "control_lease_expires_at": NOW + timedelta(minutes=1),
         "lease_expires_at": NOW + timedelta(minutes=2),
         "generation": 1,
         "media_grant_revision": 1,
@@ -249,6 +260,15 @@ def test_real_local_repository_admission_transitions_and_replays_exact_turn() ->
     replay = repository.admit_local_transcript(request, now=NOW)
     assert replay.turn.turn_id == frame.turn_id
     assert replay.replayed is True
+
+    session["control_owner_id"] = "another-replica"
+    with pytest.raises(TranscriptSubmissionRejected, match="invalid_binding"):
+        repository.admit_local_transcript(request, now=NOW)
+    session["control_owner_id"] = "voice-coordinator-local-1"
+    session["control_lease_expires_at"] = NOW
+    with pytest.raises(TranscriptSubmissionRejected, match="invalid_binding"):
+        repository.admit_local_transcript(request, now=NOW)
+    session["control_lease_expires_at"] = NOW + timedelta(minutes=1)
 
     row["detected_language"] = "fr"
     with pytest.raises(TranscriptSubmissionRejected, match="invalid_binding"):
@@ -425,6 +445,7 @@ async def test_local_socket_handlers_bind_admit_dispatch_and_publish_exactly() -
         session_id=final.session_id,
         generation=final.generation,
         speech_revision=final.speech_revision,
+        announcement_id=_id(),
         to_json=lambda: '{"type":"voice_local_announcement"}',
     )
     live_session = SimpleNamespace(
@@ -439,6 +460,10 @@ async def test_local_socket_handlers_bind_admit_dispatch_and_publish_exactly() -
     )
     services.repository = SimpleNamespace(get_session=Mock(return_value=live_session))
     services._require_current_local_control = Mock()
+    services.local_announcements = SimpleNamespace(
+        authorize_delivery=Mock(),
+        discard=Mock(),
+    )
     await orchestrator.publish_voice_local_announcement(announcement)
     orchestrator._safe_send.reset_mock()
     services._require_current_local_control.side_effect = VoiceControlBindingError(
@@ -465,6 +490,121 @@ async def test_local_socket_handlers_bind_admit_dispatch_and_publish_exactly() -
     )
     await orchestrator._handle_voice_local_playout_event(websocket, playout)
     services.handle_local_playout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "socket_displaced",
+        "speech_muted",
+        "backgrounded",
+        "generation_fenced",
+        "expired",
+        "consent_advanced",
+        "mute_advanced",
+    ],
+)
+async def test_delayed_local_announcement_reauthorizes_after_repository_await(
+    mutation: str,
+) -> None:
+    now = datetime.now(UTC)
+    session = SimpleNamespace(
+        session_id=_id(),
+        user_id="owner-a",
+        device_id=_id(),
+        owner_connection_generation=_id(),
+        generation=1,
+        media_grant_revision=1,
+        foreground_active=True,
+        microphone_enabled=True,
+        speech_muted=False,
+        state="active",
+        speech_backend="client_local",
+        ended_at=None,
+        control_owner_id="voice-coordinator-local-1",
+        control_lease_expires_at=now + timedelta(minutes=1),
+        lease_expires_at=now + timedelta(minutes=2),
+        control_binding_id=_id(),
+        control_binding_expires_at=now + timedelta(minutes=2),
+    )
+    announcements = ClientLocalAnnouncementRegistry()
+    frame = announcements.issue(
+        session=session,
+        kind="failure",
+        turn_id=_id(),
+        requested_text="ignored",
+        output_policy="lifecycle",
+        mute_revision=1,
+        consent_revision=1,
+        now=now,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Repository:
+        def get_session(self, **_kwargs: object) -> object:
+            entered.set()
+            assert release.wait(timeout=2)
+            return session
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_announcements=announcements,
+    )
+    websocket = object()
+    claims = SimpleNamespace(
+        subject="owner-a",
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        binding_id=session.control_binding_id,
+        expires_at=now + timedelta(minutes=2),
+    )
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.voice_services = services
+    orchestrator.ui_sessions = {websocket: {"sub": "owner-a"}}
+    orchestrator._voice_control_bindings = {id(websocket): claims}
+    orchestrator._voice_device_bindings = {
+        ("owner-a", session.device_id): id(websocket)
+    }
+    orchestrator._safe_send = AsyncMock(return_value=True)
+
+    task = asyncio.create_task(orchestrator.publish_voice_local_announcement(frame))
+    assert await asyncio.to_thread(entered.wait, 1)
+    if mutation == "socket_displaced":
+        orchestrator._voice_device_bindings[("owner-a", session.device_id)] = 999
+    elif mutation == "speech_muted":
+        session.speech_muted = True
+    elif mutation == "backgrounded":
+        session.foreground_active = False
+    elif mutation == "generation_fenced":
+        session.generation = 2
+    elif mutation == "expired":
+        announcements._announcements[frame.announcement_id]["expires_at"] = (
+            now - timedelta(seconds=1)
+        )
+    else:
+        announcements.fence_session(
+            session_id=frame.session_id,
+            generation=frame.generation,
+            bump_mute=mutation == "mute_advanced",
+            bump_consent=mutation == "consent_advanced",
+            now=now,
+        )
+    release.set()
+
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await task
+    orchestrator._safe_send.assert_not_awaited()
+    assert announcements.retained_counts()["announcements"] == 0
 
 
 @pytest.mark.asyncio
@@ -530,6 +670,7 @@ async def test_local_socket_handlers_fail_closed_with_correlated_rejections() ->
         session_id=final.session_id,
         generation=final.generation,
         speech_revision=final.speech_revision,
+        announcement_id=_id(),
         to_json=lambda: "{}",
     )
     with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
@@ -547,6 +688,10 @@ async def test_local_socket_handlers_fail_closed_with_correlated_rejections() ->
         get_session=Mock(return_value=session)
     )
     orchestrator.voice_services._require_current_local_control = Mock()
+    orchestrator.voice_services.local_announcements = SimpleNamespace(
+        authorize_delivery=Mock(),
+        discard=Mock(),
+    )
     with pytest.raises(
         VoiceControlBindingError, match="local_announcement_delivery_failed"
     ):
@@ -560,6 +705,8 @@ async def test_local_final_enters_through_real_connection_ingress_once() -> None
         admit_local_final=AsyncMock(
             return_value=SimpleNamespace(canonical_text="hello")
         ),
+        verify_local_final_authority=AsyncMock(return_value="hello"),
+        reject_local_turn=AsyncMock(),
         local_bindings=SimpleNamespace(release_turn=Mock()),
     )
     orchestrator, websocket = _local_orchestrator(final, services)
@@ -645,11 +792,252 @@ async def test_local_final_verification_precedes_durable_operation_replay_lookup
     verify.reset_mock(side_effect=True)
     verify.side_effect = VoiceControlBindingError("altered_local_final")
     orchestrator._call_work_admission.reset_mock()
+    ingress.local_final_verified = False
     context.ingress.append(ingress)
     await orchestrator._connection_admission_pump(context)
     orchestrator._send_voice_local_rejection.assert_awaited_once()
     services.reject_local_turn.assert_awaited_once()
     orchestrator._call_work_admission.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_same_socket_local_final_retry_is_verified_before_any_suppression() -> None:
+    final = _final()
+    verify = AsyncMock(return_value="Café\nstatus")
+    services = SimpleNamespace(
+        verify_local_final_authority=verify,
+        reject_local_turn=AsyncMock(),
+    )
+    orchestrator, websocket = _local_orchestrator(final, services)
+    orchestrator._ws_active_chat = {id(websocket): final.chat_id}
+    routed: list[str] = []
+
+    async def pump(context: ConnectionContext) -> None:
+        routed.extend(frame.raw for frame in context.ingress)
+        context.ingress.clear()
+
+    orchestrator._connection_admission_pump = pump
+    context = ConnectionContext(
+        websocket=websocket,
+        connection_scope_id=uuid.uuid4(),
+        registration_deadline=999_999.0,
+        connection_generation=uuid.UUID(final.connection_generation),
+        registered=True,
+    )
+
+    for _ in range(2):
+        assert await orchestrator._route_ui_frame(context, final.to_json())
+        assert context.admission_task is not None
+        await context.admission_task
+
+    assert verify.await_count == 2
+    assert routed == [final.to_json(), final.to_json()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reuse", ["altered_text", "invalid_digest"])
+async def test_same_socket_altered_local_final_reuse_is_rejected_and_cleaned(
+    reuse: str,
+) -> None:
+    final = _final()
+    verify = AsyncMock(
+        side_effect=[
+            "Café\nstatus",
+            VoiceControlBindingError("altered_local_final"),
+        ]
+    )
+    services = SimpleNamespace(
+        verify_local_final_authority=verify,
+        reject_local_turn=AsyncMock(),
+    )
+    orchestrator, websocket = _local_orchestrator(final, services)
+    orchestrator._ws_active_chat = {id(websocket): final.chat_id}
+    orchestrator._send_voice_local_rejection = AsyncMock()
+
+    async def pump(context: ConnectionContext) -> None:
+        context.ingress.clear()
+
+    orchestrator._connection_admission_pump = pump
+    context = ConnectionContext(
+        websocket=websocket,
+        connection_scope_id=uuid.uuid4(),
+        registration_deadline=999_999.0,
+        connection_generation=uuid.UUID(final.connection_generation),
+        registered=True,
+    )
+    assert await orchestrator._route_ui_frame(context, final.to_json())
+    assert context.admission_task is not None
+    await context.admission_task
+
+    reused = json.loads(final.to_json())
+    if reuse == "altered_text":
+        reused["text"] = "altered private text"
+        reused["text_digest_sha256"] = hashlib.sha256(
+            reused["text"].encode()
+        ).hexdigest()
+    else:
+        reused["text_digest_sha256"] = "b" * 64
+    assert await orchestrator._route_ui_frame(context, json.dumps(reused))
+
+    assert verify.await_count == 2
+    services.reject_local_turn.assert_awaited_once()
+    orchestrator._send_voice_local_rejection.assert_awaited_once()
+    assert not context.ingress
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "projection_fails"),
+    [
+        (OperationState.COMPLETED, False),
+        (OperationState.FAILED, False),
+        (OperationState.CANCELLED, False),
+        (OperationState.RETRYABLE, False),
+        (OperationState.COMPLETED, True),
+    ],
+)
+async def test_terminal_local_replay_scrubs_through_actual_admission_pump(
+    state: OperationState,
+    projection_fails: bool,
+) -> None:
+    final = _final(text="private replay text")
+    services = SimpleNamespace(
+        verify_local_final_authority=AsyncMock(return_value="private replay text"),
+        reject_local_turn=AsyncMock(),
+    )
+    orchestrator, websocket = _local_orchestrator(final, services)
+    orchestrator._ws_active_chat = {id(websocket): final.chat_id}
+    context = ConnectionContext(
+        websocket=websocket,
+        connection_scope_id=uuid.uuid4(),
+        registration_deadline=999_999.0,
+        connection_generation=uuid.UUID(final.connection_generation),
+        registered=True,
+    )
+    operation_id = uuid.uuid4()
+    owner = OperationOwner(
+        owner_scope=OwnerScope.USER,
+        owner_user_id="owner-a",
+        connection_scope_id=context.connection_scope_id,
+    )
+    result = SimpleNamespace(accepted=True, operation_id=operation_id)
+    projection = SimpleNamespace(
+        operation_id=operation_id,
+        state=state,
+    )
+    captured: list[object] = []
+
+    async def admit(_method: object, _context: object, batch: list[object]) -> object:
+        captured.extend(batch)
+        return [(batch[0], owner, result, projection)]
+
+    orchestrator._call_work_admission = admit
+    orchestrator._send_operation_projection = AsyncMock(
+        side_effect=(RuntimeError("send unavailable") if projection_fails else None)
+    )
+    orchestrator._replay_voice_ack_if_accepted = AsyncMock()
+
+    assert await orchestrator._route_ui_frame(context, final.to_json())
+    assert context.admission_task is not None
+    if projection_fails:
+        with pytest.raises(RuntimeError, match="send unavailable"):
+            await context.admission_task
+    else:
+        await context.admission_task
+
+    ingress = captured[0]
+    assert operation_id not in context.operations
+    assert operation_id not in orchestrator._reconnectable_operations
+    assert ingress.raw == ""  # type: ignore[attr-defined]
+    assert "text" not in ingress.parsed  # type: ignore[attr-defined]
+    assert "text_digest_sha256" not in ingress.parsed  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_ingress_capacity_refusal_verifies_and_cleans_local_final() -> None:
+    final = _final()
+    services = SimpleNamespace(
+        verify_local_final_authority=AsyncMock(return_value="Café\nstatus"),
+        reject_local_turn=AsyncMock(),
+    )
+    orchestrator, websocket = _local_orchestrator(final, services)
+    orchestrator._ws_active_chat = {id(websocket): final.chat_id}
+    orchestrator._send_voice_local_rejection = AsyncMock()
+    context = ConnectionContext(
+        websocket=websocket,
+        connection_scope_id=uuid.uuid4(),
+        registration_deadline=999_999.0,
+        connection_generation=uuid.UUID(final.connection_generation),
+        registered=True,
+    )
+    context.ingress.extend([object()] * CONNECTION_INGRESS_LIMIT)
+
+    assert await orchestrator._route_ui_frame(context, final.to_json())
+
+    services.verify_local_final_authority.assert_awaited_once()
+    services.reject_local_turn.assert_awaited_once()
+    orchestrator._send_voice_local_rejection.assert_awaited_once()
+    assert len(context.ingress) == CONNECTION_INGRESS_LIMIT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["exception", "conflict", "projection_failure"])
+async def test_admission_refusal_branches_clean_exact_local_final(
+    outcome: str,
+) -> None:
+    final = _final()
+    services = SimpleNamespace(
+        verify_local_final_authority=AsyncMock(return_value="Café\nstatus"),
+        reject_local_turn=AsyncMock(),
+    )
+    orchestrator, websocket = _local_orchestrator(final, services)
+    orchestrator._ws_active_chat = {id(websocket): final.chat_id}
+    orchestrator._send_voice_local_rejection = AsyncMock()
+    context = ConnectionContext(
+        websocket=websocket,
+        connection_scope_id=uuid.uuid4(),
+        registration_deadline=999_999.0,
+        connection_generation=uuid.UUID(final.connection_generation),
+        registered=True,
+    )
+    operation_id = uuid.uuid4()
+    owner = OperationOwner(
+        owner_scope=OwnerScope.USER,
+        owner_user_id="owner-a",
+        connection_scope_id=context.connection_scope_id,
+    )
+
+    async def admit(_method: object, _context: object, batch: list[object]) -> object:
+        frame = batch[0]
+        if outcome == "exception":
+            result: object = RuntimeError("repository unavailable")
+        elif outcome == "conflict":
+            result = SimpleNamespace(
+                accepted=False,
+                code="idempotency_conflict",
+                retryable=False,
+                retry_after_ms=None,
+            )
+        else:
+            result = SimpleNamespace(accepted=True, operation_id=operation_id)
+        return [(frame, owner, result, None)]
+
+    orchestrator._call_work_admission = admit
+    orchestrator._send_operation_accepted = AsyncMock(
+        side_effect=(
+            RuntimeError("projection unavailable")
+            if outcome == "projection_failure"
+            else None
+        )
+    )
+    orchestrator.work_admission = SimpleNamespace(cancel=Mock())
+
+    assert await orchestrator._route_ui_frame(context, final.to_json())
+    assert context.admission_task is not None
+    await context.admission_task
+
+    services.reject_local_turn.assert_awaited_once()
+    orchestrator._send_voice_local_rejection.assert_awaited_once()
 
 @pytest.mark.asyncio
 async def test_local_control_frames_enter_only_their_bounded_handlers() -> None:

@@ -143,6 +143,11 @@ class VoiceSessionRuntime:
             Callable[[VoiceSessionRecord], Awaitable[None]] | None
         ) = None
         self._active_worker_assignments: dict[str, _ActiveWorkerAssignment] = {}
+        self._pending_local_activation_cleanup: dict[
+            tuple[str, int], tuple[VoiceSessionRecord, CreateSession]
+        ] = {}
+        self._local_activation_reservations: set[str] = set()
+        self._local_activation_capacity_lock = asyncio.Lock()
 
     def bind_speech_mute_handler(
         self,
@@ -348,18 +353,48 @@ class VoiceSessionRuntime:
         now = self._now()
         await self._require_ready()
         create = self._create_request(user_id, control, request, now=now)
-        try:
-            mutation = await asyncio.to_thread(
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            await self._reserve_local_activation(create)
+        mutation_task = asyncio.create_task(
+            asyncio.to_thread(
                 self._repository.create_session,
                 create,
                 now=now,
             )
+        )
+        try:
+            mutation = await asyncio.shield(mutation_task)
+        except asyncio.CancelledError:
+            mutation = None
+            try:
+                mutation = await asyncio.shield(mutation_task)
+            except BaseException:
+                pass
+            if (
+                mutation is not None
+                and self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
+            ):
+                await asyncio.shield(
+                    self._reconcile_local_activation_abort(
+                        mutation.session,
+                        create,
+                    )
+                )
+            elif self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+                await self._release_local_activation(create)
+            raise
         except TakeoverRequired as exc:
+            if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+                await self._release_local_activation(create)
             raise VoiceApiError(
                 "voice_takeover_required",
                 status_code=409,
                 payload={"owner": _session_projection(exc.current)},
             ) from None
+        except Exception:
+            if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+                await self._release_local_activation(create)
+            raise
         try:
             if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
                 session = await self._activate_local(mutation.session, create)
@@ -382,6 +417,8 @@ class VoiceSessionRuntime:
                 reason="internal_error",
             )
             raise
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            await self._release_local_activation(create)
         self._observe_session_timing(
             session,
             "activation",
@@ -427,17 +464,73 @@ class VoiceSessionRuntime:
             user_id=user_id,
             session_id=session_id,
         )
-        mutation = await asyncio.to_thread(
-            self._repository.take_over_session,
-            takeover,
-            now=now,
-        )
-        await self._cleanup_ended_session(previous, "takeover", fail_open=True)
         if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
-            session = await self._activate_local(mutation.session, create)
-            media_grant = None
-        else:
-            session, media_grant = await self._activate(mutation.session, create)
+            await self._reserve_local_activation(create)
+        mutation_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._repository.take_over_session,
+                takeover,
+                now=now,
+            )
+        )
+        try:
+            mutation = await asyncio.shield(mutation_task)
+        except asyncio.CancelledError:
+            mutation = None
+            try:
+                mutation = await asyncio.shield(mutation_task)
+            except BaseException:
+                pass
+            if (
+                mutation is not None
+                and self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
+            ):
+                await asyncio.shield(
+                    self._reconcile_local_activation_abort(
+                        mutation.session,
+                        create,
+                    )
+                )
+            elif self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+                await self._release_local_activation(create)
+            raise
+        except Exception:
+            if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+                await self._release_local_activation(create)
+            raise
+        activation_started = False
+        try:
+            await self._cleanup_ended_session(previous, "takeover", fail_open=True)
+            if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+                activation_started = True
+                session = await self._activate_local(mutation.session, create)
+                media_grant = None
+            else:
+                session, media_grant = await self._activate(mutation.session, create)
+        except asyncio.CancelledError:
+            if (
+                self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
+                and not activation_started
+            ):
+                await asyncio.shield(
+                    self._reconcile_local_activation_abort(
+                        mutation.session,
+                        create,
+                    )
+                )
+            raise
+        except Exception:
+            if (
+                self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
+                and not activation_started
+            ):
+                await self._reconcile_local_activation_abort(
+                    mutation.session,
+                    create,
+                )
+            raise
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            await self._release_local_activation(create)
         self._record_session_event(
             session,
             "takeover",
@@ -871,6 +964,7 @@ class VoiceSessionRuntime:
 
     async def _require_ready(self) -> None:
         if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            await self._drain_pending_local_activation_cleanup()
             return
         capability = await self._capability.readiness()
         if capability.status == "ready" and capability.reason == "ready":
@@ -993,10 +1087,12 @@ class VoiceSessionRuntime:
                 raise RuntimeError("chat_context_not_applied")
             return active
         except asyncio.CancelledError:
-            await asyncio.shield(self._abort_activation(session, create))
+            await asyncio.shield(
+                self._reconcile_local_activation_abort(session, create)
+            )
             raise
         except Exception:
-            await self._abort_activation(session, create)
+            await self._reconcile_local_activation_abort(session, create)
             raise
 
     def _watch_nonce(
@@ -1097,9 +1193,57 @@ class VoiceSessionRuntime:
             await self._abort_activation(session, create)
             raise
 
+    async def _reconcile_local_activation_abort(
+        self,
+        session: VoiceSessionRecord,
+        create: CreateSession,
+    ) -> None:
+        key = (session.session_id, session.generation)
+        if await self._abort_activation(session, create):
+            self._pending_local_activation_cleanup.pop(key, None)
+            await self._release_local_activation(create)
+            return
+        async with self._local_activation_capacity_lock:
+            if (
+                key not in self._pending_local_activation_cleanup
+                and len(self._pending_local_activation_cleanup)
+                >= 256
+            ):
+                raise VoiceApiError(
+                    "local_cleanup_capacity_exhausted",
+                    status_code=503,
+                )
+            self._pending_local_activation_cleanup[key] = (session, create)
+            self._local_activation_reservations.discard(create.activation_id)
+
+    async def _reserve_local_activation(self, create: CreateSession) -> None:
+        async with self._local_activation_capacity_lock:
+            if create.activation_id in self._local_activation_reservations:
+                return
+            retained = len(self._pending_local_activation_cleanup)
+            reserved = len(self._local_activation_reservations)
+            if retained + reserved >= 256:
+                raise VoiceApiError(
+                    "local_cleanup_capacity_exhausted",
+                    status_code=503,
+                )
+            self._local_activation_reservations.add(create.activation_id)
+
+    async def _release_local_activation(self, create: CreateSession) -> None:
+        async with self._local_activation_capacity_lock:
+            self._local_activation_reservations.discard(create.activation_id)
+
+    async def _drain_pending_local_activation_cleanup(self) -> None:
+        for key, (session, create) in tuple(
+            self._pending_local_activation_cleanup.items()
+        ):
+            if await self._abort_activation(session, create):
+                async with self._local_activation_capacity_lock:
+                    self._pending_local_activation_cleanup.pop(key, None)
+
     async def _abort_activation(
         self, session: VoiceSessionRecord, create: CreateSession
-    ) -> None:
+    ) -> bool:
         try:
             await self._media.abort(session)
         except BaseException:
@@ -1130,6 +1274,16 @@ class VoiceSessionRuntime:
             except BaseException:
                 pass
         self._forget_worker_assignment(session)
+        try:
+            return bool(
+                ended is not None
+                and ended.session_id == session.session_id
+                and ended.generation == session.generation
+                and ended.media_grant_revision == session.media_grant_revision
+                and ended.ended_at is not None
+            )
+        except AttributeError:
+            return False
 
     async def _fail_media_session(
         self,

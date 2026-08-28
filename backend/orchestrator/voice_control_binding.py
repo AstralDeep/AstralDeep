@@ -85,6 +85,8 @@ class _ClientLocalSequenceFence:
     user_id: str
     device_id: str
     connection_generation: str
+    session_id: str
+    generation: int
     sequence: int
     expires_at: datetime
 
@@ -103,7 +105,7 @@ class ClientLocalBindingRegistry:
         if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
             raise ValueError("invalid_local_binding_capacity")
         self._capacity = capacity
-        self._sequences: dict[tuple[int, str], _ClientLocalSequenceFence] = {}
+        self._sequences: dict[tuple[int, str, int], _ClientLocalSequenceFence] = {}
         self._reservations: dict[
             tuple[str, str], ClientLocalTurnReservation
         ] = {}
@@ -162,13 +164,14 @@ class ClientLocalBindingRegistry:
         *,
         socket_id: int,
         session_id: str,
+        generation: int,
         sequence: int,
         user_id: str,
         device_id: str,
         connection_generation: str,
         expires_at: datetime,
     ) -> None:
-        key = (socket_id, session_id)
+        key = (socket_id, session_id, generation)
         current = self._sequences.get(key)
         if current is None and len(self._sequences) >= self._capacity:
             raise VoiceControlBindingError("capacity_exhausted")
@@ -178,6 +181,8 @@ class ClientLocalBindingRegistry:
             user_id=user_id,
             device_id=device_id,
             connection_generation=connection_generation,
+            session_id=session_id,
+            generation=generation,
             sequence=sequence,
             expires_at=expires_at,
         )
@@ -206,6 +211,7 @@ class ClientLocalBindingRegistry:
         self._advance_sequence(
             socket_id=socket_id,
             session_id=frame.session_id,
+            generation=frame.generation,
             sequence=frame.client_sequence,
             user_id=user_id,
             device_id=frame.device_id,
@@ -242,6 +248,7 @@ class ClientLocalBindingRegistry:
         self._advance_sequence(
             socket_id=socket_id,
             session_id=frame.session_id,
+            generation=frame.generation,
             sequence=frame.recognition_sequence,
             user_id=user_id,
             device_id=frame.device_id,
@@ -272,8 +279,9 @@ class ClientLocalBindingRegistry:
             raise VoiceControlBindingError("invalid_binding")
         pending = self._reservations.get(key)
         if pending is not None:
-            if self._matches_start(pending, socket_id=socket_id, frame=frame, now=now):
-                return pending
+            # A matching reservation is still owned by the first uncancellable
+            # repository insert. A concurrent retry must not start a second
+            # insert; it may retry after that exact reservation resolves.
             raise VoiceControlBindingError("invalid_binding")
         if len(self._turns) + len(self._reservations) >= self._capacity:
             raise VoiceControlBindingError("capacity_exhausted")
@@ -360,7 +368,11 @@ class ClientLocalBindingRegistry:
         key = (reservation.user_id, reservation.client_turn_id)
         if self._reservations.get(key) == reservation:
             self._reservations.pop(key, None)
-            sequence_key = (reservation.socket_id, reservation.session_id)
+            sequence_key = (
+                reservation.socket_id,
+                reservation.session_id,
+                reservation.generation,
+            )
             fence = self._sequences.get(sequence_key)
             if fence is not None and fence.sequence == reservation.recognition_sequence:
                 self._sequences.pop(sequence_key, None)
@@ -554,7 +566,10 @@ class ClientLocalBindingRegistry:
         self._sequences = {
             key: value
             for key, value in self._sequences.items()
-            if key[1] != session_id
+            if not (
+                value.session_id == session_id
+                and value.generation == generation
+            )
         }
 
     def _prune(self, now: datetime) -> None:

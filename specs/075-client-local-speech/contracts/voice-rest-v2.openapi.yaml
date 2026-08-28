@@ -55,6 +55,11 @@ paths:
               schema: { $ref: "#/components/schemas/VoiceStatusV2" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: Selection is invalid or its selected backend is unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoiceError" }
 
   /api/voice/v2/sessions:
     post:
@@ -78,6 +83,14 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateClientLocalSessionRequest" }
       responses:
+        "200":
+          description: Exact activation replay returned the existing client-local ownership.
+          headers:
+            Cache-Control:
+              schema: { const: no-store }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientLocalSession" }
         "201":
           description: Durable client-local ownership created; no media grant exists.
           headers:

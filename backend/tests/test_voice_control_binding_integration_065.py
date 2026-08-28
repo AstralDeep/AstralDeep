@@ -143,6 +143,61 @@ def test_local_ready_is_fenced_to_current_socket_control_and_session() -> None:
         )
 
 
+def test_local_sequence_cleanup_is_exact_to_session_generation() -> None:
+    registry = ClientLocalBindingRegistry(capacity=4)
+    claims = type(
+        "Claims",
+        (),
+        {
+            "subject": "user-a",
+            "device_id": DEVICE,
+            "connection_generation": CONNECTION,
+            "binding_id": "00000000-0000-4000-8000-000000000006",
+            "expires_at": NOW + timedelta(minutes=4),
+        },
+    )()
+
+    registry.authorize_ready(
+        socket_id=41,
+        current_socket_id=41,
+        user_id="user-a",
+        claims=claims,
+        session=_local_session(generation=1),
+        frame=_local_ready(generation=1, client_sequence=1),
+        now=NOW,
+    )
+    registry.authorize_ready(
+        socket_id=41,
+        current_socket_id=41,
+        user_id="user-a",
+        claims=claims,
+        session=_local_session(generation=2),
+        frame=_local_ready(generation=2, client_sequence=1),
+        now=NOW,
+    )
+
+    registry.clear_session(session_id=SESSION, generation=1)
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        registry.authorize_ready(
+            socket_id=41,
+            current_socket_id=41,
+            user_id="user-a",
+            claims=claims,
+            session=_local_session(generation=2),
+            frame=_local_ready(generation=2, client_sequence=1),
+            now=NOW,
+        )
+    registry.authorize_ready(
+        socket_id=41,
+        current_socket_id=41,
+        user_id="user-a",
+        claims=claims,
+        session=_local_session(generation=2),
+        frame=_local_ready(generation=2, client_sequence=2),
+        now=NOW,
+    )
+
+
 @pytest.mark.parametrize(
     "session_change, frame_change",
     [
@@ -236,6 +291,39 @@ def test_local_turn_binding_expires_within_two_minutes_and_is_bounded() -> None:
             turn=turn,
             now=NOW,
         )
+
+
+def test_exact_retry_cannot_double_use_pending_local_reservation() -> None:
+    registry = ClientLocalBindingRegistry()
+    claims = SimpleNamespace(
+        subject="user-a",
+        device_id=DEVICE,
+        connection_generation=CONNECTION,
+        binding_id="00000000-0000-4000-8000-000000000006",
+        expires_at=NOW + timedelta(minutes=4),
+    )
+    frame = _recognition_started()
+    reservation = registry.reserve_turn(
+        socket_id=41,
+        current_socket_id=41,
+        user_id="user-a",
+        claims=claims,
+        session=_local_session(),
+        frame=frame,
+        now=NOW,
+    )
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        registry.reserve_turn(
+            socket_id=41,
+            current_socket_id=41,
+            user_id="user-a",
+            claims=claims,
+            session=_local_session(),
+            frame=frame,
+            now=NOW,
+        )
+    assert len(registry._reservations) == 1
+    assert next(iter(registry._reservations.values())) is reservation
 
 
 def test_local_registry_replay_validation_and_cleanup_are_exact() -> None:
@@ -453,6 +541,9 @@ async def test_binding_is_current_before_websocket_delivery_completes() -> None:
 @pytest.mark.asyncio
 async def test_failed_delivery_restores_prior_device_binding() -> None:
     orchestrator = _orchestrator()
+    orchestrator.voice_services = SimpleNamespace(
+        clear_local_connection=Mock()
+    )
     first_socket = object()
     second_socket = object()
     claims = {
@@ -551,6 +642,46 @@ async def test_new_connection_for_same_user_device_fences_prior_socket() -> None
             device_id=DEVICE,
             connection_generation=CONNECTION,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_state", ["missing", "failure"])
+async def test_displacement_cleanup_failure_retains_old_authority(
+    service_state: str,
+) -> None:
+    orchestrator = _orchestrator()
+    if service_state == "failure":
+        orchestrator.voice_services = SimpleNamespace(
+            clear_local_connection=Mock(side_effect=RuntimeError("cleanup unavailable"))
+        )
+    first_socket = object()
+    second_socket = object()
+    claims = {
+        "sub": "user-a",
+        "exp": int((NOW + timedelta(minutes=10)).timestamp()),
+    }
+    await orchestrator._issue_voice_control_binding(
+        first_socket,
+        _registration(),
+        claims,
+    )
+    orchestrator._safe_send.reset_mock()
+
+    with pytest.raises(VoiceControlBindingError, match="displacement_cleanup_unavailable"):
+        await orchestrator._issue_voice_control_binding(
+            second_socket,
+            _registration(
+                connection_generation="00000000-0000-4000-8000-000000000003"
+            ),
+            claims,
+        )
+
+    assert orchestrator._voice_device_bindings[("user-a", DEVICE)] == id(
+        first_socket
+    )
+    assert id(first_socket) in orchestrator._voice_control_bindings
+    assert id(second_socket) not in orchestrator._voice_control_bindings
+    orchestrator._safe_send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

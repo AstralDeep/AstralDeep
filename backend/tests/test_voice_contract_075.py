@@ -339,6 +339,12 @@ def test_voice_rest_v2_is_valid_openapi_31_with_exact_local_operations() -> None
             "takeOverClientLocalVoiceSession",
         ),
     }
+    assert set(
+        openapi["paths"]["/api/voice/v2/status"]["get"]["responses"]
+    ) == {"200", "401", "429", "503"}
+    assert set(
+        openapi["paths"]["/api/voice/v2/sessions"]["post"]["responses"]
+    ) == {"200", "201", "400", "401", "403", "409", "422", "429", "503"}
 
 
 def test_every_client_local_frame_golden_vector_is_strict() -> None:

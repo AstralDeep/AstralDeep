@@ -423,6 +423,7 @@ class LocalTranscriptSubmission:
     device_id: str
     connection_generation: str
     binding_id: str
+    expected_control_owner_id: str
     detected_language: str
     canonical_text: str = field(repr=False)
 
@@ -446,6 +447,15 @@ class LocalTranscriptSubmission:
             )
         for name in ("generation", "speech_revision", "chat_context_revision"):
             _positive(getattr(self, name), f"invalid_{name}")
+        object.__setattr__(
+            self,
+            "expected_control_owner_id",
+            _opaque(
+                self.expected_control_owner_id,
+                "invalid_control_owner_id",
+                max_length=128,
+            ),
+        )
         if self.detected_language != "en":
             raise ValueError("invalid_detected_language")
         if not isinstance(self.canonical_text, str):
@@ -457,6 +467,7 @@ class LocalTranscriptSubmission:
         *,
         user_id: str,
         authority: Any,
+        expected_control_owner_id: str,
         detected_language: str,
         canonical_text: str,
     ) -> "LocalTranscriptSubmission":
@@ -474,6 +485,7 @@ class LocalTranscriptSubmission:
             device_id=authority.device_id,
             connection_generation=authority.connection_generation,
             binding_id=authority.binding_id,
+            expected_control_owner_id=expected_control_owner_id,
             detected_language=detected_language,
             canonical_text=canonical_text,
         )
@@ -2586,6 +2598,10 @@ class VoiceSessionRepository:
                 == request.connection_generation
                 and str(session["control_binding_id"]) == request.binding_id
                 and session["control_binding_expires_at"] > now
+                and session.get("control_owner_id")
+                == request.expected_control_owner_id
+                and session.get("control_lease_expires_at") is not None
+                and session["control_lease_expires_at"] > now
                 and session["lease_expires_at"] > now
                 and int(session["generation"]) == request.generation
                 and int(session["media_grant_revision"])

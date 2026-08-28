@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -619,6 +621,117 @@ async def test_local_reservation_releases_on_bind_and_finalize_failures() -> Non
         now=now,
     )
     assert registry._reservations == registry._sequences == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reject_fails", [False, True])
+async def test_cancelled_local_recognition_reconciles_late_thread_commit(
+    reject_fails: bool,
+) -> None:
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session = SimpleNamespace(
+        session_id="00000000-0000-4000-8000-000000000031",
+        user_id="user-a",
+        device_id="00000000-0000-4000-8000-000000000021",
+        owner_connection_generation="00000000-0000-4000-8000-000000000022",
+        control_binding_id="00000000-0000-4000-8000-000000000023",
+        control_binding_expires_at=now + timedelta(minutes=4),
+        lease_expires_at=now + timedelta(minutes=2),
+        control_owner_id="voice-coordinator-local-1",
+        control_lease_expires_at=now + timedelta(seconds=30),
+        generation=1,
+        media_grant_revision=1,
+        speech_backend="client_local",
+        state="active",
+        ended_at=None,
+        foreground_active=True,
+        microphone_enabled=True,
+        speech_muted=False,
+        visible_chat_id="00000000-0000-4000-8000-000000000072",
+        chat_context_revision=1,
+        applied_visible_chat_id="00000000-0000-4000-8000-000000000072",
+        applied_chat_context_revision=1,
+    )
+    claims = VoiceControlClaims(
+        subject="user-a",
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        binding_id=session.control_binding_id,
+        issued_at=now,
+        expires_at=now + timedelta(minutes=4),
+    )
+    frame = VoiceLocalRecognitionStarted(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=1,
+        speech_revision=1,
+        client_turn_id="00000000-0000-4000-8000-000000000042",
+        chat_id=session.visible_chat_id,
+        chat_context_revision=1,
+        recognition_sequence=1,
+    )
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    entered = threading.Event()
+    release = threading.Event()
+    durable = {"state": "absent"}
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            entered.set()
+            assert release.wait(timeout=2)
+            durable["state"] = "recognizing"
+            return SimpleNamespace(turn=turn)
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            if reject_fails:
+                raise RuntimeError("database unavailable")
+            durable["state"] = "refused"
+
+    registry = ClientLocalBindingRegistry()
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    task = asyncio.create_task(
+        services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert not task.done()
+        assert len(registry._reservations) == 1
+    finally:
+        release.set()
+        result = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(result[0], asyncio.CancelledError)
+    if reject_fails:
+        assert durable["state"] == "recognizing"
+        assert len(registry._reservations) == len(registry._sequences) == 1
+        assert registry._turns == {}
+    else:
+        assert durable["state"] == "refused"
+        assert registry._reservations == registry._turns == registry._sequences == {}
 
 
 @pytest.mark.asyncio

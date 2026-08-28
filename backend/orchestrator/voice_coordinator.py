@@ -287,8 +287,33 @@ class ClientLocalAnnouncementRegistry:
         if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
             raise ValueError("invalid_local_announcement_capacity")
         self._capacity = capacity
-        self._sessions: dict[tuple[str, int], dict[str, int]] = {}
+        self._sessions: dict[tuple[str, int], dict[str, Any]] = {}
         self._announcements: dict[str, dict[str, Any]] = {}
+
+    def _session_state(
+        self,
+        key: tuple[str, int],
+        *,
+        now: datetime,
+    ) -> dict[str, Any]:
+        state = self._sessions.get(key)
+        if state is not None:
+            state["expires_at"] = max(
+                state["expires_at"],
+                now + LOCAL_ANNOUNCEMENT_LIFETIME,
+            )
+            return state
+        if len(self._sessions) >= self._capacity:
+            raise ClaimUnavailable("local_announcement_capacity_exhausted")
+        state = {
+            "sequence": 0,
+            "mute_revision": 0,
+            "consent_revision": 0,
+            "client_sequence": 0,
+            "expires_at": now + LOCAL_ANNOUNCEMENT_LIFETIME,
+        }
+        self._sessions[key] = state
+        return state
 
     def issue(
         self,
@@ -316,23 +341,6 @@ class ClientLocalAnnouncementRegistry:
             raise ClaimUnavailable("local_announcement_not_authorized")
         _positive(mute_revision, "invalid_mute_revision")
         _positive(consent_revision, "invalid_consent_revision")
-        key = (session.session_id, session.generation)
-        state = self._sessions.setdefault(
-            key,
-            {
-                "sequence": 0,
-                "mute_revision": 0,
-                "consent_revision": 0,
-                "client_sequence": 0,
-            },
-        )
-        if (
-            mute_revision < state["mute_revision"]
-            or consent_revision < state["consent_revision"]
-        ):
-            raise ClaimUnavailable("stale_local_announcement_revision")
-        state["mute_revision"] = mute_revision
-        state["consent_revision"] = consent_revision
         if kind == "result":
             if output_policy != "full_recap" or not server_authorized:
                 raise ClaimUnavailable("local_result_not_authorized")
@@ -349,11 +357,21 @@ class ClientLocalAnnouncementRegistry:
         ):
             raise ClaimUnavailable("local_announcement_text_invalid")
         self._prune(checked_now)
+        key = (session.session_id, session.generation)
+        state = self._session_state(key, now=checked_now)
+        if (
+            mute_revision < state["mute_revision"]
+            or consent_revision < state["consent_revision"]
+        ):
+            raise ClaimUnavailable("stale_local_announcement_revision")
+        state["mute_revision"] = mute_revision
+        state["consent_revision"] = consent_revision
         if len(self._announcements) >= self._capacity:
             raise ClaimUnavailable("local_announcement_capacity_exhausted")
         state["sequence"] += 1
         announcement_id = str(uuid4())
         expires = checked_now + LOCAL_ANNOUNCEMENT_LIFETIME
+        state["expires_at"] = max(state["expires_at"], expires)
         self._announcements[announcement_id] = {
             "session_id": session.session_id,
             "generation": session.generation,
@@ -430,6 +448,62 @@ class ClientLocalAnnouncementRegistry:
         if event.phase in {"finished", "interrupted", "failed"}:
             self._announcements.pop(event.announcement_id, None)
 
+    def authorize_delivery(
+        self,
+        *,
+        session: Any,
+        frame: Any,
+        now: datetime,
+    ) -> None:
+        """Reauthorize one still-ephemeral announcement immediately before send."""
+
+        checked_now = _aware(now, "invalid_current_time")
+        frame.validate()
+        self._prune(checked_now)
+        key = (session.session_id, session.generation)
+        state = self._sessions.get(key)
+        record = self._announcements.get(frame.announcement_id)
+        if state is None or record is None:
+            raise ClaimUnavailable("local_announcement_not_authorized")
+        try:
+            valid = (
+                session.speech_backend == "client_local"
+                and session.state == "active"
+                and session.ended_at is None
+                and session.foreground_active is True
+                and session.microphone_enabled is True
+                and session.speech_muted is False
+                and frame.session_id == session.session_id == record["session_id"]
+                and frame.generation == session.generation == record["generation"]
+                and frame.speech_revision
+                == session.media_grant_revision
+                == record["speech_revision"]
+                and frame.device_id == session.device_id
+                and frame.connection_generation
+                == session.owner_connection_generation
+                and frame.announcement_sequence == record["sequence"]
+                and frame.turn_id == record["turn_id"]
+                and frame.kind == record["kind"]
+                and checked_now < record["expires_at"]
+                and _parse_timestamp(
+                    frame.expires_at,
+                    "local_announcement_not_authorized",
+                )
+                == record["expires_at"]
+                and frame.mute_revision
+                == record["mute_revision"]
+                == state["mute_revision"]
+                and frame.consent_revision
+                == record["consent_revision"]
+                == state["consent_revision"]
+                and hashlib.sha256(frame.text.encode("utf-8")).hexdigest()
+                == frame.text_digest_sha256
+            )
+        except (AttributeError, KeyError, TypeError, UnicodeError):
+            valid = False
+        if not valid:
+            raise ClaimUnavailable("local_announcement_not_authorized")
+
     def clear_session(self, *, session_id: str, generation: int) -> None:
         self._sessions.pop((session_id, generation), None)
         self._announcements = {
@@ -453,17 +527,13 @@ class ClientLocalAnnouncementRegistry:
         generation: int,
         bump_mute: bool = True,
         bump_consent: bool = True,
+        now: datetime | None = None,
     ) -> None:
+        checked_now = _aware(now or datetime.now(UTC), "invalid_current_time")
+        if now is not None:
+            self._prune(checked_now)
         key = (session_id, generation)
-        state = self._sessions.setdefault(
-            key,
-            {
-                "sequence": 0,
-                "mute_revision": 0,
-                "consent_revision": 0,
-                "client_sequence": 0,
-            },
-        )
+        state = self._session_state(key, now=checked_now)
         if bump_mute:
             state["mute_revision"] = max(1, state["mute_revision"] + 1)
         if bump_consent:
@@ -506,6 +576,15 @@ class ClientLocalAnnouncementRegistry:
             announcement_id: record
             for announcement_id, record in self._announcements.items()
             if record["expires_at"] > now
+        }
+        active_sessions = {
+            (record["session_id"], record["generation"])
+            for record in self._announcements.values()
+        }
+        self._sessions = {
+            key: state
+            for key, state in self._sessions.items()
+            if key in active_sessions or state["expires_at"] > now
         }
 
 

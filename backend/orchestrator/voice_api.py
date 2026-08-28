@@ -917,6 +917,7 @@ def _v2_error_response(exc: Exception) -> JSONResponse:
         "binding_not_current": "invalid_binding",
         "invalid_request": "invalid_binding" if status_code == 403 else "client_readiness_required",
         "voice_rate_limited": "capacity_exhausted",
+        "voice_takeover_required": "takeover_required",
     }.get(code, code)
     allowed_reasons = {
         "backend_selection_invalid", "unsupported_speech_backend", "backend_mismatch",

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from orchestrator.auth import require_user_id
 from orchestrator.voice_api import (
+    VoiceApiError,
     VoiceHttpResult,
     _capability_v2,
     _local_session_response,
@@ -280,6 +281,30 @@ def test_v2_create_is_strict_header_bound_and_has_no_media_grant(api) -> None:
     assert name == "create_session"
     assert call["control"]["device_id"] == DEVICE
     assert call["request"]["capability"]["transport"] == "client_local"
+
+
+def test_v2_exact_create_replay_and_takeover_reason_use_frozen_shapes(api) -> None:
+    client, orchestrator = api
+
+    async def replay(**kwargs: Any) -> VoiceHttpResult:
+        orchestrator.voice_runtime.calls.append(("create_session", kwargs))
+        return VoiceHttpResult(_session_response(), status_code=200)
+
+    orchestrator.voice_runtime.create_session = replay  # type: ignore[method-assign]
+    response = client.post(
+        "/api/voice/v2/sessions",
+        headers=_headers(),
+        json=_create_body(),
+    )
+    assert response.status_code == 200
+    assert response.json() == _session_response()
+    assert response.headers["cache-control"] == "no-store"
+
+    takeover = _v2_error_response(
+        VoiceApiError("voice_takeover_required", status_code=409)
+    )
+    assert takeover.status_code == 409
+    assert json.loads(takeover.body)["reason"] == "takeover_required"
 
 
 @pytest.mark.parametrize(

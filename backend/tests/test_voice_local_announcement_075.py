@@ -320,3 +320,45 @@ def test_local_announcement_policy_revision_and_order_denials_are_stable() -> No
     )
     with pytest.raises(ClaimUnavailable, match="local_playout_out_of_order"):
         registry.observe_current(session=session, event=finished, now=NOW)
+
+
+def test_refused_announcement_and_distinct_fence_state_remain_bounded() -> None:
+    registry = ClientLocalAnnouncementRegistry(capacity=1)
+    sessions = [_session() for _ in range(201)]
+
+    for session in sessions:
+        with pytest.raises(ClaimUnavailable):
+            registry.issue(
+                session=session,
+                kind="failure",
+                turn_id=_id(),
+                requested_text="ignored",
+                output_policy="full_recap",
+                mute_revision=1,
+                consent_revision=1,
+                now=NOW,
+            )
+    assert registry.retained_counts() == {"sessions": 0, "announcements": 0}
+
+    registry.fence_session(
+        session_id=sessions[0].session_id,
+        generation=1,
+        now=NOW,
+    )
+    for session in sessions[1:]:
+        with pytest.raises(
+            ClaimUnavailable, match="local_announcement_capacity_exhausted"
+        ):
+            registry.fence_session(
+                session_id=session.session_id,
+                generation=1,
+                now=NOW,
+            )
+    assert registry.retained_counts() == {"sessions": 1, "announcements": 0}
+
+    registry.fence_session(
+        session_id=sessions[1].session_id,
+        generation=1,
+        now=NOW + timedelta(seconds=11),
+    )
+    assert registry.retained_counts() == {"sessions": 1, "announcements": 0}

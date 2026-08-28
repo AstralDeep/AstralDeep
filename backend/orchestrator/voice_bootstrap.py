@@ -1555,22 +1555,53 @@ class VoiceServices:
                 turn_id=reserved.turn_id,
             )
             return turn, reserved
+        mutation = None
+        release_reservation = True
         try:
-            mutation = await asyncio.to_thread(
-                self.repository.bind_recognition_turn,
-                RecognitionBinding(
-                    user_id=user_id,
-                    session_id=frame.session_id,
-                    session_generation=frame.generation,
-                    media_grant_revision=frame.speech_revision,
-                    client_turn_id=frame.client_turn_id,
-                    chat_id=frame.chat_id,
-                    chat_context_revision=frame.chat_context_revision,
-                    execution_base_render_revision=execution_base_render_revision,
-                    control_owner_id=session.control_owner_id,
-                ),
-                now=now,
+            bind_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.repository.bind_recognition_turn,
+                    RecognitionBinding(
+                        user_id=user_id,
+                        session_id=frame.session_id,
+                        session_generation=frame.generation,
+                        media_grant_revision=frame.speech_revision,
+                        client_turn_id=frame.client_turn_id,
+                        chat_id=frame.chat_id,
+                        chat_context_revision=frame.chat_context_revision,
+                        execution_base_render_revision=(
+                            execution_base_render_revision
+                        ),
+                        control_owner_id=session.control_owner_id,
+                    ),
+                    now=now,
+                )
             )
+            try:
+                mutation = await asyncio.shield(bind_task)
+            except asyncio.CancelledError:
+                try:
+                    mutation = await asyncio.shield(bind_task)
+                except BaseException:
+                    mutation = None
+                if mutation is not None:
+                    try:
+                        await asyncio.shield(
+                            asyncio.to_thread(
+                                self.repository.reject_transcript,
+                                user_id=user_id,
+                                turn_id=mutation.turn.turn_id,
+                                reason="invalid_binding",
+                                retry_policy="none",
+                                now=now,
+                            )
+                        )
+                    except BaseException:
+                        release_reservation = False
+                        logger.warning(
+                            "voice_local_cancel_reconciliation_unavailable"
+                        )
+                raise
             try:
                 authority = self.local_bindings.finalize_turn(
                     reservation=reserved,
@@ -1590,10 +1621,12 @@ class VoiceServices:
                         )
                     )
                 except BaseException:
+                    release_reservation = False
                     logger.warning("voice_local_reservation_abandon_unavailable")
                 raise
         except BaseException:
-            self.local_bindings.release_reservation(reserved)
+            if release_reservation:
+                self.local_bindings.release_reservation(reserved)
             raise
         return mutation.turn, authority
 
@@ -1625,6 +1658,7 @@ class VoiceServices:
             LocalTranscriptSubmission.from_authority(
                 user_id=user_id,
                 authority=authority,
+                expected_control_owner_id=self.runtime._replica_id,
                 detected_language="en",
                 canonical_text=canonical,
             ),

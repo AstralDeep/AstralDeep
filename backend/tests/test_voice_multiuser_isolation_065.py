@@ -8,7 +8,9 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, Iterator, Mapping
+from unittest.mock import Mock
 
 import pytest
 
@@ -562,6 +564,9 @@ async def test_five_control_bindings_reject_cross_user_device_and_connection() -
     replacement_socket = object()
     replacement_connection = deterministic_uuid4(
         "voice-isolation-replacement-connection"
+    )
+    orchestrator.voice_services = SimpleNamespace(
+        clear_local_connection=Mock()
     )
     assert await orchestrator._issue_voice_control_binding(
         replacement_socket,
