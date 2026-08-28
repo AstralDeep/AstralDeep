@@ -1255,11 +1255,19 @@ async def test_local_recognition_cancellation_phase_table_terminalizes_commit(
             return authority
 
     class Services(VoiceServices):
-        async def _reserve_pending_local_rejection(self, reservation: Any) -> Any:
+        async def _reserve_pending_local_rejection(
+            self,
+            reservation: Any,
+            *,
+            coordination: Any,
+        ) -> Any:
             if phase == "reserve":
                 phase_entered.set()
                 await asyncio.to_thread(phase_release.wait, 3)
-            return await super()._reserve_pending_local_rejection(reservation)
+            return await super()._reserve_pending_local_rejection(
+                reservation,
+                coordination=coordination,
+            )
 
         async def _promote_pending_local_rejection(
             self,
@@ -1469,6 +1477,441 @@ async def test_local_recognition_replay_cancellation_preserves_durable_turn(
     assert retry_authority.turn_id == turn.turn_id
     assert durable["state"] == "recognizing"
     assert rejection_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_exact_recognition_replay_waits_for_originating_cleanup_settlement() -> None:
+    """A replay cannot receive authority that its in-flight origin may reject."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    settlement_entered = asyncio.Event()
+    settlement_release = asyncio.Event()
+    rejection_entered = threading.Event()
+    rejection_release = threading.Event()
+    durable = {"state": "absent"}
+    get_turn_calls = 0
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            durable["state"] = "recognizing"
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def get_turn(self, **_kwargs: Any) -> Any:
+            nonlocal get_turn_calls
+            get_turn_calls += 1
+            return turn
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            rejection_entered.set()
+            assert rejection_release.wait(timeout=3)
+            durable["state"] = "refused"
+
+    class Services(VoiceServices):
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            settlement_entered.set()
+            await settlement_release.wait()
+            return await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    first = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    await asyncio.wait_for(settlement_entered.wait(), timeout=1)
+    second = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    try:
+        assert not second.done()
+        assert get_turn_calls == 0
+        first.cancel()
+        first.cancel()
+        settlement_release.set()
+        assert await asyncio.to_thread(rejection_entered.wait, 1)
+        assert not second.done()
+    finally:
+        rejection_release.set()
+        settlement_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert durable["state"] == "refused"
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await second
+    assert get_turn_calls == 0
+    assert services.pending_local_rejection_reservations == {}
+    assert services.pending_local_rejections == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "identity",
+    ["different_user", "different_turn"],
+)
+async def test_distinct_recognition_identities_insert_concurrently(
+    identity: str,
+) -> None:
+    """Only an exact user/client-turn pair is serialized."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    first_session, first_claims, first_frame = _local_recognition_context(now)
+    second_user = "user-b" if identity == "different_user" else "user-a"
+    second_turn_id = (
+        first_frame.client_turn_id
+        if identity == "different_user"
+        else "00000000-0000-4000-8000-000000000043"
+    )
+    second_session_id = (
+        "00000000-0000-4000-8000-000000000034"
+        if identity == "different_user"
+        else first_session.session_id
+    )
+    second_session = SimpleNamespace(
+        **{
+            **first_session.__dict__,
+            "user_id": second_user,
+            "session_id": second_session_id,
+        }
+    )
+    second_claims = VoiceControlClaims(
+        subject=second_user,
+        device_id=second_session.device_id,
+        connection_generation=second_session.owner_connection_generation,
+        binding_id=second_session.control_binding_id,
+        issued_at=now,
+        expires_at=now + timedelta(minutes=4),
+    )
+    second_frame = VoiceLocalRecognitionStarted(
+        **{
+            **first_frame.__dict__,
+            "session_id": second_session_id,
+            "client_turn_id": second_turn_id,
+            "recognition_sequence": (
+                1 if identity == "different_user" else 2
+            ),
+        }
+    )
+    turns = {
+        ("user-a", first_frame.client_turn_id): _voice_turn(
+            client_turn_id=first_frame.client_turn_id
+        ),
+        (second_user, second_turn_id): replace(
+            _voice_turn(
+                turn_id="00000000-0000-4000-8000-000000000033",
+                client_turn_id=second_turn_id,
+                session_id=second_session_id,
+            ),
+            user_id=second_user,
+        ),
+    }
+    entered = [threading.Event(), threading.Event()]
+    release = threading.Event()
+    call_lock = threading.Lock()
+    calls = 0
+
+    class Repository:
+        def get_controlled_session(self, *, user_id: str, **_kwargs: Any) -> Any:
+            return first_session if user_id == "user-a" else second_session
+
+        def bind_recognition_turn(self, binding: Any, **_kwargs: Any) -> Any:
+            nonlocal calls
+            with call_lock:
+                index = calls
+                calls += 1
+            entered[index].set()
+            assert release.wait(timeout=3)
+            return SimpleNamespace(
+                turn=turns[(binding.user_id, binding.client_turn_id)],
+                replayed=False,
+            )
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+
+    def invoke(user_id: str, claims: Any, frame: Any, socket_id: int) -> Any:
+        return services.bind_local_recognition(
+            socket_id=socket_id,
+            current_socket_id=socket_id,
+            user_id=user_id,
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+
+    first = asyncio.create_task(invoke("user-a", first_claims, first_frame, 7))
+    assert await asyncio.to_thread(entered[0].wait, 1)
+    second = asyncio.create_task(
+        invoke(
+            second_user,
+            second_claims,
+            second_frame,
+            8 if identity == "different_user" else 7,
+        )
+    )
+    try:
+        assert await asyncio.to_thread(entered[1].wait, 1)
+    finally:
+        release.set()
+    first_result, second_result = await asyncio.gather(first, second)
+    assert first_result[0].client_turn_id == first_frame.client_turn_id
+    assert second_result[0].client_turn_id == second_turn_id
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_recognition_rejection_retains_key_until_drain() -> None:
+    """Transient terminalization keeps same-turn replay behind its exact owner."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    settlement_entered = asyncio.Event()
+    settlement_release = asyncio.Event()
+    reject_fails = True
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            if reject_fails:
+                raise RuntimeError("database unavailable")
+
+    class Services(VoiceServices):
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            settlement_entered.set()
+            await settlement_release.wait()
+            return await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    first = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    await asyncio.wait_for(settlement_entered.wait(), timeout=1)
+    second = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    first.cancel()
+    first.cancel()
+    settlement_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert len(services.pending_local_rejections) == 1
+    assert not second.done()
+    second.cancel()
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    assert len(services.local_recognition_requests) == 1
+    assert len(services.local_recognition_keys) == 1
+    reject_fails = False
+    await services._drain_pending_local_rejections(now=now)
+    assert services.pending_local_rejections == {}
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+async def test_recognition_coordinator_capacity_fails_before_repository_access() -> None:
+    """The bounded key registry refuses a 257th live request before mutation."""
+
+    repository = SimpleNamespace(get_controlled_session=Mock())
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=repository,
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+    )
+    requests = [
+        await services._acquire_local_recognition_request(
+            user_id="user-a",
+            client_turn_id=f"00000000-0000-4000-8000-{index:012d}",
+        )
+        for index in range(256)
+    ]
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    _session, claims, frame = _local_recognition_context(
+        now,
+        client_turn_id="10000000-0000-4000-8000-000000000257",
+    )
+    with pytest.raises(VoiceControlBindingError, match="capacity_exhausted"):
+        await services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    repository.get_controlled_session.assert_not_called()
+    for request in requests:
+        await services._release_local_recognition_request(request)
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "phase",
+    ["insert", "finalize", "slot_release", "pre_return"],
+)
+async def test_exact_recognition_replay_waits_at_every_return_phase(
+    phase: str,
+) -> None:
+    """A successful origin owns its turn key until its return is committed."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    phase_entered = threading.Event()
+    phase_release = threading.Event()
+    get_turn_calls = 0
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            if phase == "insert":
+                phase_entered.set()
+                assert phase_release.wait(timeout=3)
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def get_turn(self, **_kwargs: Any) -> Any:
+            nonlocal get_turn_calls
+            get_turn_calls += 1
+            return turn
+
+    class Registry(ClientLocalBindingRegistry):
+        def finalize_turn(self, **kwargs: Any) -> Any:
+            authority = super().finalize_turn(**kwargs)
+            if phase == "finalize":
+                phase_entered.set()
+            return authority
+
+    class Services(VoiceServices):
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            if phase in {"finalize", "slot_release"}:
+                if phase == "slot_release":
+                    phase_entered.set()
+                await asyncio.to_thread(phase_release.wait, 3)
+            acquired = await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+            if phase == "pre_return":
+                phase_entered.set()
+                await asyncio.to_thread(phase_release.wait, 3)
+            return acquired
+
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=Registry(),
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    first = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    assert await asyncio.to_thread(phase_entered.wait, 1)
+    second = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    try:
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not second.done()
+        assert get_turn_calls == 0
+    finally:
+        phase_release.set()
+    first_result = await first
+    second_result = await second
+    assert first_result[0].turn_id == turn.turn_id
+    assert second_result[0].turn_id == turn.turn_id
+    assert get_turn_calls == 1
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
 
 
 @pytest.mark.asyncio

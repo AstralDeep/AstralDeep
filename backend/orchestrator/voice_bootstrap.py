@@ -107,6 +107,22 @@ class VoiceBootstrapError(RuntimeError):
     """Content-free deployment refusal that leaves ordinary chat untouched."""
 
 
+@dataclass(eq=False, slots=True)
+class _LocalRecognitionRequest:
+    """Exact request-owned reference for one content-free recognition key."""
+
+    user_id: str
+    client_turn_id: str
+
+
+@dataclass(slots=True)
+class _LocalRecognitionKeyState:
+    """Bounded FIFO ownership for one content-free recognition identity."""
+
+    owner: _LocalRecognitionRequest
+    waiters: deque[tuple[_LocalRecognitionRequest, asyncio.Future[None]]]
+
+
 @dataclass(frozen=True, slots=True)
 class _PendingLocalRejection:
     """Content-free durable-terminalization handle for one local turn."""
@@ -119,6 +135,10 @@ class _PendingLocalRejection:
     reason: str
     retry_policy: str
     reservation: ClientLocalTurnReservation | None = field(
+        default=None,
+        repr=False,
+    )
+    coordination: _LocalRecognitionRequest | None = field(
         default=None,
         repr=False,
     )
@@ -135,6 +155,7 @@ class _PendingLocalRejectionReservation:
     reason: str
     retry_policy: str
     reservation: ClientLocalTurnReservation = field(repr=False)
+    coordination: _LocalRecognitionRequest = field(repr=False)
 
 
 @dataclass(slots=True)
@@ -1120,6 +1141,14 @@ class VoiceServices:
         init=False,
         repr=False,
     )
+    local_recognition_requests: set[_LocalRecognitionRequest] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
+    local_recognition_keys: dict[
+        tuple[str, str], _LocalRecognitionKeyState
+    ] = field(default_factory=dict, init=False, repr=False)
 
     def bind_terminal_turn_notifier(
         self,
@@ -1592,6 +1621,38 @@ class VoiceServices:
         """Bind a local recognition start to one durable content-free turn."""
 
         self._require_local_backend()
+        coordination = await self._acquire_local_recognition_request(
+            user_id=user_id,
+            client_turn_id=frame.client_turn_id,
+        )
+        try:
+            return await self._bind_local_recognition_owned(
+                socket_id=socket_id,
+                current_socket_id=current_socket_id,
+                user_id=user_id,
+                claims=claims,
+                frame=frame,
+                execution_base_render_revision=execution_base_render_revision,
+                now=now,
+                coordination=coordination,
+            )
+        finally:
+            await self._join_local_recognition_request_release(coordination)
+
+    async def _bind_local_recognition_owned(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        claims: VoiceControlClaims,
+        frame: Any,
+        execution_base_render_revision: int,
+        now: datetime,
+        coordination: _LocalRecognitionRequest,
+    ) -> tuple[VoiceTurnRecord, Any]:
+        """Run one recognition bind while its exact identity is exclusively owned."""
+
         await self._drain_pending_local_rejections(now=now)
         session = await asyncio.to_thread(
             self.repository.get_controlled_session,
@@ -1629,7 +1690,8 @@ class VoiceServices:
         cleanup_reservation: _PendingLocalRejectionReservation | None = None
         try:
             cleanup_reservation = await self._reserve_pending_local_rejection(
-                reserved
+                reserved,
+                coordination=coordination,
             )
             bind_task = asyncio.create_task(
                 asyncio.to_thread(
@@ -1926,9 +1988,123 @@ class VoiceServices:
                 raise VoiceBootstrapError("local_cleanup_capacity_exhausted")
             self.pending_local_rejections[key] = pending
 
+    @staticmethod
+    def _local_recognition_key(
+        request: _LocalRecognitionRequest,
+    ) -> tuple[str, str]:
+        return request.user_id, request.client_turn_id
+
+    def _local_recognition_is_retained_locked(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> bool:
+        return any(
+            getattr(pending, "coordination", None) is request
+            for pending in self.pending_local_rejections.values()
+        )
+
+    def _release_local_recognition_request_locked(
+        self,
+        request: _LocalRecognitionRequest,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Release one exact owner/waiter and advance only its FIFO key."""
+
+        if not force and self._local_recognition_is_retained_locked(request):
+            return
+        self.local_recognition_requests.discard(request)
+        key = self._local_recognition_key(request)
+        state = self.local_recognition_keys.get(key)
+        if state is None:
+            return
+        if state.owner is not request:
+            state.waiters = deque(
+                (candidate, waiter)
+                for candidate, waiter in state.waiters
+                if candidate is not request
+            )
+            return
+        while state.waiters:
+            candidate, waiter = state.waiters.popleft()
+            if candidate in self.local_recognition_requests and not waiter.done():
+                state.owner = candidate
+                waiter.set_result(None)
+                return
+        self.local_recognition_keys.pop(key, None)
+
+    async def _release_local_recognition_request(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> None:
+        async with self.pending_local_rejection_lock:
+            self._release_local_recognition_request_locked(request)
+
+    async def _join_local_recognition_request_release(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> None:
+        task = asyncio.create_task(
+            self._release_local_recognition_request(request),
+            name=(
+                "voice-local-recognition-owner-release-"
+                f"{request.client_turn_id}"
+            ),
+        )
+        _result, error, cancellation = (
+            await _join_task_outcome_through_cancellation(task)
+        )
+        if cancellation is not None:
+            raise cancellation
+        if error is not None:
+            raise error
+
+    async def _acquire_local_recognition_request(
+        self,
+        *,
+        user_id: str,
+        client_turn_id: str,
+    ) -> _LocalRecognitionRequest:
+        request = _LocalRecognitionRequest(user_id, client_turn_id)
+        waiter: asyncio.Future[None] | None = None
+        async with self.pending_local_rejection_lock:
+            if len(self.local_recognition_requests) >= _MAX_PENDING_LOCAL_REJECTIONS:
+                raise VoiceControlBindingError("capacity_exhausted")
+            self.local_recognition_requests.add(request)
+            key = self._local_recognition_key(request)
+            state = self.local_recognition_keys.get(key)
+            if state is None:
+                self.local_recognition_keys[key] = _LocalRecognitionKeyState(
+                    owner=request,
+                    waiters=deque(),
+                )
+            else:
+                waiter = asyncio.get_running_loop().create_future()
+                state.waiters.append((request, waiter))
+        if waiter is not None:
+            try:
+                await waiter
+            except BaseException as failure:
+                task = asyncio.create_task(
+                    self._release_local_recognition_request(request),
+                    name=(
+                        "voice-local-recognition-waiter-release-"
+                        f"{client_turn_id}"
+                    ),
+                )
+                _result, error, _cancellation = (
+                    await _join_task_outcome_through_cancellation(task)
+                )
+                if error is not None:
+                    raise error
+                raise failure
+        return request
+
     async def _reserve_pending_local_rejection(
         self,
         reservation: ClientLocalTurnReservation,
+        *,
+        coordination: _LocalRecognitionRequest,
     ) -> _PendingLocalRejectionReservation:
         pending = _PendingLocalRejectionReservation(
             user_id=reservation.user_id,
@@ -1938,6 +2114,7 @@ class VoiceServices:
             reason="invalid_binding",
             retry_policy="none",
             reservation=reservation,
+            coordination=coordination,
         )
         key = (pending.user_id, pending.client_turn_id)
         async with self.pending_local_rejection_lock:
@@ -1970,6 +2147,7 @@ class VoiceServices:
             reason=reserved.reason,
             retry_policy=reserved.retry_policy,
             reservation=reserved.reservation,
+            coordination=reserved.coordination,
         )
         key = (pending.user_id, pending.client_turn_id)
         async with self.pending_local_rejection_lock:
@@ -2034,6 +2212,7 @@ class VoiceServices:
             reason=reserved.reason,
             retry_policy=reserved.retry_policy,
             reservation=None if authority_finalized else reserved.reservation,
+            coordination=reserved.coordination,
         )
         if key in self.pending_local_rejections:
             raise VoiceBootstrapError("invalid_binding")
@@ -2132,6 +2311,11 @@ class VoiceServices:
             async with self.pending_local_rejection_lock:
                 if self.pending_local_rejections.get(key) == pending:
                     self.pending_local_rejections.pop(key, None)
+                    if pending.coordination is not None:
+                        self._release_local_recognition_request_locked(
+                            pending.coordination,
+                            force=True,
+                        )
             if pending.reservation is not None:
                 self.local_bindings.release_reservation(pending.reservation)
             else:
@@ -2193,6 +2377,11 @@ class VoiceServices:
                             and pending.generation == session.generation
                         ):
                             self.pending_local_rejections.pop(key, None)
+                            if pending.coordination is not None:
+                                self._release_local_recognition_request_locked(
+                                    pending.coordination,
+                                    force=True,
+                                )
                     for key, reserved in tuple(
                         self.pending_local_rejection_reservations.items()
                     ):

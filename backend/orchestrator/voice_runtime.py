@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable, Mapping, Protocol
@@ -81,7 +82,18 @@ class _ActiveWorkerAssignment:
 class _LocalActivationReservation:
     """Exact request-owned capacity reserved before one local mutation."""
 
+    user_id: str
     activation_id: str
+
+
+@dataclass(slots=True)
+class _LocalActivationKeyState:
+    """Bounded FIFO ownership for one content-free activation identity."""
+
+    owner: _LocalActivationReservation
+    waiters: deque[
+        tuple[_LocalActivationReservation, asyncio.Future[None]]
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +200,9 @@ class VoiceSessionRuntime:
         self._local_activation_reservations: set[
             _LocalActivationReservation
         ] = set()
+        self._local_activation_keys: dict[
+            tuple[str, str], _LocalActivationKeyState
+        ] = {}
         self._local_activation_capacity_lock = asyncio.Lock()
 
     def bind_speech_mute_handler(
@@ -1317,6 +1332,41 @@ class VoiceSessionRuntime:
         self._local_activation_reservations.remove(reservation)
         return pending
 
+    @staticmethod
+    def _local_activation_key(
+        reservation: _LocalActivationReservation,
+    ) -> tuple[str, str]:
+        return reservation.user_id, reservation.activation_id
+
+    def _release_local_activation_locked(
+        self,
+        reservation: _LocalActivationReservation,
+    ) -> None:
+        """Release only one exact owner/waiter and advance its FIFO key."""
+
+        self._local_activation_reservations.discard(reservation)
+        key = self._local_activation_key(reservation)
+        state = self._local_activation_keys.get(key)
+        if state is None:
+            return
+        if state.owner is not reservation:
+            state.waiters = deque(
+                (candidate, waiter)
+                for candidate, waiter in state.waiters
+                if candidate is not reservation
+            )
+            return
+        while state.waiters:
+            candidate, waiter = state.waiters.popleft()
+            if (
+                candidate in self._local_activation_reservations
+                and not waiter.done()
+            ):
+                state.owner = candidate
+                waiter.set_result(None)
+                return
+        self._local_activation_keys.pop(key, None)
+
     async def _reconcile_local_activation_abort(
         self,
         session: VoiceSessionRecord,
@@ -1332,7 +1382,7 @@ class VoiceSessionRuntime:
         if await self._abort_activation(session, create):
             async with self._local_activation_capacity_lock:
                 self._pending_local_activation_cleanup.pop(reservation, None)
-                self._local_activation_reservations.discard(reservation)
+                self._release_local_activation_locked(reservation)
             return
 
     async def _join_local_activation_release(
@@ -1476,6 +1526,7 @@ class VoiceSessionRuntime:
                 if current is not pending:
                     raise RuntimeError("local_activation_cleanup_identity_mismatch")
                 self._pending_local_activation_cleanup.pop(exact_reservation)
+                self._release_local_activation_locked(exact_reservation)
         finally:
             self._local_activation_capacity_lock.release()
         if cancellation is None:
@@ -1494,7 +1545,11 @@ class VoiceSessionRuntime:
         self,
         create: CreateSession,
     ) -> _LocalActivationReservation:
-        reservation = _LocalActivationReservation(create.activation_id)
+        reservation = _LocalActivationReservation(
+            create.user_id,
+            create.activation_id,
+        )
+        waiter: asyncio.Future[None] | None = None
         async with self._local_activation_capacity_lock:
             retained = len(self._pending_local_activation_cleanup)
             reserved = len(self._local_activation_reservations)
@@ -1504,6 +1559,33 @@ class VoiceSessionRuntime:
                     status_code=503,
                 )
             self._local_activation_reservations.add(reservation)
+            key = self._local_activation_key(reservation)
+            state = self._local_activation_keys.get(key)
+            if state is None:
+                self._local_activation_keys[key] = _LocalActivationKeyState(
+                    owner=reservation,
+                    waiters=deque(),
+                )
+            else:
+                waiter = asyncio.get_running_loop().create_future()
+                state.waiters.append((reservation, waiter))
+        if waiter is not None:
+            try:
+                await waiter
+            except BaseException as failure:
+                cleanup = asyncio.create_task(
+                    self._release_local_activation(reservation),
+                    name=(
+                        "voice-local-activation-waiter-release-"
+                        f"{reservation.activation_id}"
+                    ),
+                )
+                _result, error, _cancellation = (
+                    await _join_task_outcome_through_cancellation(cleanup)
+                )
+                if error is not None:
+                    raise error
+                raise failure
         return reservation
 
     async def _release_local_activation(
@@ -1511,7 +1593,7 @@ class VoiceSessionRuntime:
         reservation: _LocalActivationReservation,
     ) -> None:
         async with self._local_activation_capacity_lock:
-            self._local_activation_reservations.discard(reservation)
+            self._release_local_activation_locked(reservation)
 
     async def _drain_pending_local_activation_cleanup(self) -> None:
         for reservation, pending in tuple(
@@ -1527,6 +1609,7 @@ class VoiceSessionRuntime:
                             reservation,
                             None,
                         )
+                        self._release_local_activation_locked(reservation)
 
     async def _abort_activation(
         self, session: VoiceSessionRecord, create: CreateSession

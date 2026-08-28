@@ -809,7 +809,25 @@ async def test_local_ownership_cancellation_phase_table_preserves_exact_owner(
     """Every await boundary either rolls back new ownership or preserves replay."""
 
     previous = _round2_session(ended=True)
-    session = _round2_session(generation=2 if mutation_kind == "takeover" else 1)
+    session = SimpleNamespace(
+        **{
+            **_round2_session(
+                generation=2 if mutation_kind == "takeover" else 1
+            ).__dict__,
+            "state": "active",
+            "applied_visible_chat_id": CHAT,
+            "applied_chat_context_revision": 1,
+            "chat_context_synced": True,
+            "foreground_active": True,
+            "foreground_reason": "foreground",
+            "updated_at": NOW,
+            "speech_muted": False,
+            "microphone_enabled": True,
+            "lease_expires_at": NOW + timedelta(minutes=1),
+            "started_at": NOW,
+            "idle_expires_at": None,
+        }
+    )
     if replayed:
         session.state = "active"
     phase_entered = threading.Event()
@@ -1331,7 +1349,7 @@ async def test_local_early_validation_settlement_joins_repeated_cancellation(
 async def test_same_activation_id_reservations_have_exact_request_ownership(
     mutation_kind: str,
 ) -> None:
-    """One cancelled same-ID request cannot release its concurrent sibling."""
+    """A cancelled same-ID waiter cannot release the current exact owner."""
 
     active = SimpleNamespace(**{**_round2_session().__dict__, "state": "active"})
     entered = [threading.Event(), threading.Event()]
@@ -1387,22 +1405,494 @@ async def test_same_activation_id_reservations_have_exact_request_ownership(
     first = asyncio.create_task(request_coroutine())
     assert await asyncio.to_thread(entered[0].wait, 1)
     second = asyncio.create_task(request_coroutine())
-    assert await asyncio.to_thread(entered[1].wait, 1)
+    for _ in range(100):
+        if len(runtime._local_activation_reservations) == 2:
+            break
+        await asyncio.sleep(0)
+    assert not entered[1].is_set()
     assert len(runtime._local_activation_reservations) == 2
     assert len({id(item) for item in runtime._local_activation_reservations}) == 2
+
+    second.cancel()
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    assert len(runtime._local_activation_reservations) == 1
+    assert not entered[1].is_set()
 
     first.cancel()
     release[0].set()
     with pytest.raises(asyncio.CancelledError):
         await first
-    assert len(runtime._local_activation_reservations) == 1
+    assert runtime._local_activation_reservations == set()
+    assert runtime._local_activation_keys == {}
+    assert runtime._pending_local_activation_cleanup == {}
 
-    second.cancel()
-    release[1].set()
-    with pytest.raises(asyncio.CancelledError):
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation_kind", ["create", "takeover"])
+@pytest.mark.parametrize("origin_outcome", ["cancel", "failure"])
+async def test_exact_activation_replay_waits_for_originating_abort_settlement(
+    mutation_kind: str,
+    origin_outcome: str,
+) -> None:
+    """A replay cannot receive authority that its in-flight origin may revoke."""
+
+    previous = _round2_session(ended=True)
+    starting = _round2_session(generation=2 if mutation_kind == "takeover" else 1)
+    first_apply_entered = threading.Event()
+    first_apply_release = threading.Event()
+    second_mutation_entered = threading.Event()
+    abort_entered = threading.Event()
+    abort_release = threading.Event()
+    call_lock = threading.Lock()
+    mutation_calls = 0
+    apply_calls = 0
+    durable = {"state": "starting"}
+
+    class Repository:
+        def get_session(self, **_kwargs: Any) -> Any:
+            return previous
+
+        def _mutation(self) -> Any:
+            nonlocal mutation_calls
+            with call_lock:
+                index = mutation_calls
+                mutation_calls += 1
+            if index:
+                second_mutation_entered.set()
+            snapshot = SimpleNamespace(
+                **{
+                    **starting.__dict__,
+                    "ended_at": NOW if durable["state"] == "ended" else None,
+                }
+            )
+            return SimpleNamespace(session=snapshot, replayed=bool(index))
+
+        def create_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            return self._mutation()
+
+        def take_over_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            return self._mutation()
+
+        async def claim_control_lease(self, **_kwargs: Any) -> Any:
+            return SimpleNamespace(owner_id="replica-a")
+
+        def apply_chat_context(self, **_kwargs: Any) -> Any:
+            nonlocal apply_calls
+            with call_lock:
+                index = apply_calls
+                apply_calls += 1
+            if index == 0:
+                first_apply_entered.set()
+                assert first_apply_release.wait(timeout=3)
+                if origin_outcome == "failure":
+                    raise RuntimeError("activation failed")
+            return SimpleNamespace(
+                session=SimpleNamespace(
+                    **{**starting.__dict__, "chat_context_synced": True}
+                )
+            )
+
+        def mark_session_active(self, **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                **{**starting.__dict__, "chat_context_synced": True}
+            )
+
+        def end_session(self, **_kwargs: Any) -> Any:
+            abort_entered.set()
+            assert abort_release.wait(timeout=3)
+            durable["state"] = "ended"
+            return SimpleNamespace(**{**starting.__dict__, "ended_at": NOW})
+
+    runtime = VoiceSessionRuntime(
+        repository=Repository(),  # type: ignore[arg-type]
+        capability=SimpleNamespace(),
+        media=SimpleNamespace(end=AsyncMock(), abort=AsyncMock()),
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+    request = _round2_request()
+    if mutation_kind == "takeover":
+        request.update(
+            activation_id="00000000-0000-4000-8000-000000000207",
+            expected_generation=1,
+            expected_media_grant_revision=1,
+        )
+
+    def invoke() -> Any:
+        if mutation_kind == "create":
+            return runtime.create_session(
+                user_id="user-a",
+                control=_round2_control(),
+                request=request,
+            )
+        return runtime.take_over_session(
+            user_id="user-a",
+            session_id=previous.session_id,
+            control=_round2_control(),
+            request=request,
+        )
+
+    first = asyncio.create_task(invoke())
+    assert await asyncio.to_thread(first_apply_entered.wait, 1)
+    second = asyncio.create_task(invoke())
+    try:
+        assert not await asyncio.to_thread(second_mutation_entered.wait, 0.1)
+        assert not second.done()
+        if origin_outcome == "cancel":
+            first.cancel()
+            first.cancel()
+        else:
+            first_apply_release.set()
+        assert await asyncio.to_thread(abort_entered.wait, 1)
+        assert not second_mutation_entered.is_set()
+    finally:
+        first_apply_release.set()
+        abort_release.set()
+    if origin_outcome == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await first
+    else:
+        with pytest.raises(RuntimeError, match="activation failed"):
+            await first
+    assert await asyncio.to_thread(second_mutation_entered.wait, 1)
+    with pytest.raises(VoiceApiError, match="activation_replay_ended"):
         await second
     assert runtime._local_activation_reservations == set()
     assert runtime._pending_local_activation_cleanup == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation_kind", ["create", "takeover"])
+@pytest.mark.parametrize(
+    "identity",
+    ["different_user", "different_activation"],
+)
+async def test_distinct_activation_identities_mutate_concurrently(
+    mutation_kind: str,
+    identity: str,
+) -> None:
+    """Only an exact user/activation pair is serialized."""
+
+    entered = [threading.Event(), threading.Event()]
+    release = threading.Event()
+    call_lock = threading.Lock()
+    calls = 0
+    session = SimpleNamespace(**{**_round2_session().__dict__, "state": "active"})
+
+    class Repository:
+        def get_session(self, **_kwargs: Any) -> Any:
+            return _round2_session(ended=True)
+
+        def _mutation(self) -> Any:
+            nonlocal calls
+            with call_lock:
+                index = calls
+                calls += 1
+            entered[index].set()
+            assert release.wait(timeout=3)
+            return SimpleNamespace(session=session, replayed=True)
+
+        def create_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            return self._mutation()
+
+        def take_over_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            return self._mutation()
+
+    runtime = VoiceSessionRuntime(
+        repository=Repository(),  # type: ignore[arg-type]
+        capability=SimpleNamespace(),
+        media=SimpleNamespace(abort=AsyncMock()),
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+
+    def invoke(index: int) -> Any:
+        user_id = "user-b" if index and identity == "different_user" else "user-a"
+        activation_id = (
+            "00000000-0000-4000-8000-000000000209"
+            if index and identity == "different_activation"
+            else ACTIVATION
+        )
+        request = _round2_request(activation_id=activation_id)
+        if mutation_kind == "create":
+            return runtime.create_session(
+                user_id=user_id,
+                control=_round2_control(),
+                request=request,
+            )
+        request.update(
+            expected_generation=1,
+            expected_media_grant_revision=1,
+        )
+        return runtime.take_over_session(
+            user_id=user_id,
+            session_id=_round2_session().session_id,
+            control=_round2_control(),
+            request=request,
+        )
+
+    first = asyncio.create_task(invoke(0))
+    assert await asyncio.to_thread(entered[0].wait, 1)
+    second = asyncio.create_task(invoke(1))
+    try:
+        assert await asyncio.to_thread(entered[1].wait, 1)
+    finally:
+        first.cancel()
+        second.cancel()
+        release.set()
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert all(isinstance(result, asyncio.CancelledError) for result in results)
+    assert runtime._local_activation_reservations == set()
+    assert runtime._local_activation_keys == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_activation_abort_retains_key_until_production_drain() -> None:
+    """A retained abort handle keeps an exact replay from racing its later end."""
+
+    starting = _round2_session()
+    apply_entered = threading.Event()
+    apply_release = threading.Event()
+    second_mutation_entered = threading.Event()
+    abort_attempts = 0
+    mutation_calls = 0
+
+    class Repository:
+        def create_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            nonlocal mutation_calls
+            mutation_calls += 1
+            if mutation_calls > 1:
+                second_mutation_entered.set()
+            return SimpleNamespace(session=starting, replayed=mutation_calls > 1)
+
+        async def claim_control_lease(self, **_kwargs: Any) -> Any:
+            return SimpleNamespace(owner_id="replica-a")
+
+        def apply_chat_context(self, **_kwargs: Any) -> Any:
+            apply_entered.set()
+            assert apply_release.wait(timeout=3)
+            return SimpleNamespace(
+                session=SimpleNamespace(
+                    **{**starting.__dict__, "chat_context_synced": True}
+                )
+            )
+
+        def end_session(self, **_kwargs: Any) -> Any:
+            nonlocal abort_attempts
+            abort_attempts += 1
+            if abort_attempts == 1:
+                raise RuntimeError("database unavailable")
+            return SimpleNamespace(**{**starting.__dict__, "ended_at": NOW})
+
+    runtime = VoiceSessionRuntime(
+        repository=Repository(),  # type: ignore[arg-type]
+        capability=SimpleNamespace(),
+        media=SimpleNamespace(abort=AsyncMock()),
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+    kwargs = {
+        "user_id": "user-a",
+        "control": _round2_control(),
+        "request": _round2_request(),
+    }
+    first = asyncio.create_task(runtime.create_session(**kwargs))
+    assert await asyncio.to_thread(apply_entered.wait, 1)
+    second = asyncio.create_task(runtime.create_session(**kwargs))
+    first.cancel()
+    first.cancel()
+    apply_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert len(runtime._pending_local_activation_cleanup) == 1
+    assert not second_mutation_entered.is_set()
+    second.cancel()
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    assert len(runtime._local_activation_reservations) == 0
+    assert len(runtime._local_activation_keys) == 1
+    await runtime._drain_pending_local_activation_cleanup()
+    assert runtime._pending_local_activation_cleanup == {}
+    assert runtime._local_activation_keys == {}
+
+
+_LOCAL_ACTIVATION_OVERLAP_SUCCESS_PHASES = (
+    ("create", "claim"),
+    ("create", "apply"),
+    ("create", "activate"),
+    ("create", "release"),
+    ("create", "pre_return"),
+    ("takeover", "predecessor"),
+    ("takeover", "claim"),
+    ("takeover", "apply"),
+    ("takeover", "activate"),
+    ("takeover", "release"),
+    ("takeover", "pre_return"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation_kind", "phase"),
+    _LOCAL_ACTIVATION_OVERLAP_SUCCESS_PHASES,
+    ids=[
+        f"{mutation_kind}-{phase}"
+        for mutation_kind, phase in _LOCAL_ACTIVATION_OVERLAP_SUCCESS_PHASES
+    ],
+)
+async def test_exact_activation_replay_waits_at_every_postmutation_phase(
+    mutation_kind: str,
+    phase: str,
+) -> None:
+    """A successful origin exclusively owns its key through return commit."""
+
+    previous = _round2_session(ended=True)
+    session = SimpleNamespace(
+        **{
+            **_round2_session(
+                generation=2 if mutation_kind == "takeover" else 1
+            ).__dict__,
+            "state": "active",
+            "applied_visible_chat_id": CHAT,
+            "applied_chat_context_revision": 1,
+            "chat_context_synced": True,
+            "foreground_active": True,
+            "foreground_reason": "foreground",
+            "updated_at": NOW,
+            "speech_muted": False,
+            "microphone_enabled": True,
+            "lease_expires_at": NOW + timedelta(minutes=1),
+            "started_at": NOW,
+            "idle_expires_at": None,
+        }
+    )
+    phase_entered = threading.Event()
+    phase_release = threading.Event()
+    second_mutation_entered = threading.Event()
+    mutation_calls = 0
+    phase_calls = 0
+
+    def gate(target: str) -> None:
+        nonlocal phase_calls
+        if phase != target:
+            return
+        index = phase_calls
+        phase_calls += 1
+        if index == 0:
+            phase_entered.set()
+            assert phase_release.wait(timeout=3)
+
+    class Repository:
+        def get_session(self, **_kwargs: Any) -> Any:
+            return previous
+
+        def _mutation(self) -> Any:
+            nonlocal mutation_calls
+            index = mutation_calls
+            mutation_calls += 1
+            if index:
+                second_mutation_entered.set()
+            return SimpleNamespace(session=session, replayed=bool(index))
+
+        def create_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            return self._mutation()
+
+        def take_over_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            return self._mutation()
+
+        async def claim_control_lease(self, **_kwargs: Any) -> Any:
+            if phase == "claim":
+                await asyncio.to_thread(gate, "claim")
+            return SimpleNamespace(owner_id="replica-a")
+
+        def apply_chat_context(self, **_kwargs: Any) -> Any:
+            gate("apply")
+            return SimpleNamespace(
+                session=SimpleNamespace(
+                    **{**session.__dict__, "chat_context_synced": True}
+                )
+            )
+
+        def mark_session_active(self, **_kwargs: Any) -> Any:
+            gate("activate")
+            return SimpleNamespace(
+                **{**session.__dict__, "chat_context_synced": True}
+            )
+
+    class Media:
+        async def end(self, _session: Any, _reason: str) -> None:
+            if phase == "predecessor":
+                await asyncio.to_thread(gate, "predecessor")
+
+        async def abort(self, _session: Any) -> None:
+            return None
+
+    runtime = VoiceSessionRuntime(
+        repository=Repository(),  # type: ignore[arg-type]
+        capability=SimpleNamespace(),
+        media=Media(),  # type: ignore[arg-type]
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+    original_handoff = runtime._acquire_local_activation_return_handoff
+
+    async def gated_handoff(
+        active_session: Any,
+        create: CreateSession,
+        reservation: Any,
+    ) -> Any:
+        if phase == "release":
+            await asyncio.to_thread(gate, "release")
+        pending = await original_handoff(active_session, create, reservation)
+        if phase == "pre_return":
+            await asyncio.to_thread(gate, "pre_return")
+        return pending
+
+    runtime._acquire_local_activation_return_handoff = gated_handoff  # type: ignore[method-assign]
+    request = _round2_request()
+    if mutation_kind == "takeover":
+        request.update(
+            activation_id="00000000-0000-4000-8000-000000000207",
+            expected_generation=1,
+            expected_media_grant_revision=1,
+        )
+
+    def invoke() -> Any:
+        if mutation_kind == "create":
+            return runtime.create_session(
+                user_id="user-a",
+                control=_round2_control(),
+                request=request,
+            )
+        return runtime.take_over_session(
+            user_id="user-a",
+            session_id=previous.session_id,
+            control=_round2_control(),
+            request=request,
+        )
+
+    first = asyncio.create_task(invoke())
+    assert await asyncio.to_thread(phase_entered.wait, 1)
+    second = asyncio.create_task(invoke())
+    try:
+        assert not await asyncio.to_thread(second_mutation_entered.wait, 0.05)
+        assert not second.done()
+    finally:
+        phase_release.set()
+    first_result = await first
+    assert first_result.status_code == (201 if mutation_kind == "create" else 200)
+    assert await asyncio.to_thread(second_mutation_entered.wait, 1)
+    second_result = await second
+    assert second_result.status_code == 200
+    assert runtime._local_activation_reservations == set()
+    assert runtime._local_activation_keys == {}
 
 
 @pytest.mark.asyncio
