@@ -30,7 +30,7 @@ attempts during LLM Factory OOM failure.
 
 **Storage**: Existing PostgreSQL `voice_session`/`voice_turn` through AstralPlane migration `075.001`; bounded ephemeral local and worker speech buffers; no audio, transcript copy/digest/proof, engine inventory/path, endpoint, credential, or local capability persistence
 
-**Testing**: pytest/ruff/diff-cover; JSON Schema/OpenAPI/manifest/fixture/drift guards; JavaScript lint/unit/coverage/Playwright; PySide6 offscreen pytest plus packaged helper/plugin probe; Android Gradle ktlint/lint/unit/Kover/assemble/connected tests; Swift format/Swift Package/XCTest/xcodebuild/xccov; isolated PostgreSQL migration/recovery; candidate-bound real Keycloak/PostgreSQL/LLM Factory and physical-client/acoustic qualification
+**Testing**: pytest/ruff/diff-cover; JSON Schema/OpenAPI/manifest/fixture/drift guards; JavaScript lint/unit/coverage/Playwright; PySide6 offscreen pytest plus packaged helper/plugin probe; pinned development-only .NET tests, `dotnet format`, Cobertura output, and the shared changed-line parser for first-party C# helper source; Android Gradle ktlint/lint/unit/Kover/assemble/connected tests; Swift format/Swift Package/XCTest/xcodebuild/xccov; isolated PostgreSQL migration/recovery; deterministic 20-trial latency-evidence validation; candidate-bound real Keycloak/PostgreSQL/LLM Factory and physical-client/acoustic qualification
 
 **Target Platform**: Linux Python 3.11 orchestrator/voice-worker containers; PostgreSQL and Keycloak; same-origin supported browser; Windows desktop; Android API 26+ app with local voice enabled only on eligible API 33+ devices; supported iOS, macOS, and watchOS hardware
 
@@ -52,16 +52,16 @@ attempts during LLM Factory OOM failure.
 | Server authority | PASS — `VOICE_SPEECH_BACKEND` is parsed once; clients only report bounded untrusted eligibility. No client preference, endpoint, credential, model, voice, automatic fallback, or active-session backend mutation exists. |
 | Existing security and dispatch | PASS — local text is user-controlled and a sibling `admit_local_transcript` verifies client/session fences instead of worker HMAC, then returns the same admission consumed by ordinary `handle_chat_message`. Keycloak, owner/device/socket/control, LLM-selection, permission/policy, PHI, confirmation, tool, audit, execution, cancellation, commit, and publication gates remain decisive. |
 | Privacy and retention | PASS by design — local audio remains on-device; interim text remains client-memory-only; no audio/transcript copy/digest/proof/engine/path/endpoint/credential/hidden reasoning reaches durable state, logs, metrics, audits, crash reports, or generic frame capture. Tests block remote speech egress in local mode. |
-| Dependency control | PASS — only existing locked libraries and platform/browser APIs are used. The Windows helper is first-party source built in the existing packaging lane and introduces no product package. Discovery of a required new dependency stops for explicit approval. |
+| Dependency control | PASS — only existing locked runtime libraries and platform/browser APIs are used. The Windows helper is first-party source built in the existing packaging lane and introduces no shipped package dependency. Its pinned Microsoft test adapter/coverage tooling is development-only and owner-approved in the 2026-08-28 conversation; it lives only in the test project's separate manifest/lock, is excluded from publish/package inputs, and has an automated runtime-isolation guard. The PR dependency note remains mandatory. Discovery of any additional dependency stops for explicit approval. |
 | Schema ownership/migration/recovery | PASS by design — Plane `075.001` requires exact `074.004`, performs nullable-add/backfill/NOT-NULL, replaces only verified named constraints, enforces exhaustive remote/local rows, is repeat-safe, tests representative upgrades/empty DB/wrong predecessor, and documents backup restore or forward-migration recovery. Deep repins only the exact qualified Plane revision/digest. |
 | Cross-client contract | PASS by design — REST schema v2 plus `client_local/v1` strict frames land with `ui_protocol.json`, fixtures, ROTE, and web/Windows/Android/iOS/macOS/watch dispositions. Remote v1 is unchanged; old clients receive a v1-safe unavailable/upgrade result in local deployments. |
-| Language quality gates | PASS by plan — Python uses repository ruff `py311`, pytest/coverage/diff-cover; JavaScript uses Projection's committed ESLint/test/Playwright coverage; Kotlin uses ktlint, Android lint, unit/connected tests, Kover; Swift uses strict recursive swift-format, XCTest/xcodebuild, xccov; C# helper uses deterministic Windows build, protocol tests, hash/signature/package probes. Every changed lane retains at least 90% changed-line coverage. |
-| Performance and resource bounds | PASS by design — strict frame/text/rate/sequence/expiry limits, bounded buffers, one serialized local playout owner, total remote deadlines, admission only after fixed-phrase readiness, and low-cardinality phase timings. Connection pooling is excluded until measurements justify a separate security review. |
+| Language quality gates | PASS by plan — Python uses repository ruff `py311`, pytest/coverage/diff-cover; JavaScript uses Projection's committed ESLint/test/Playwright coverage; Kotlin uses ktlint, Android lint, unit/connected tests, Kover; Swift uses strict recursive swift-format, XCTest/xcodebuild, xccov; C# helper uses deterministic Windows build, `dotnet format`, pinned tests, Cobertura output, and an explicit `windows_csharp` producer in the shared changed-line policy. Every changed lane retains at least 90% changed-line coverage. |
+| Performance and resource bounds | PASS by design — strict frame/text/rate/sequence/expiry limits, bounded buffers, one serialized local playout owner, total remote deadlines, admission only after fixed-phrase readiness, and low-cardinality phase timings. A privacy-safe matrix bound to all three candidate SHAs closes the six-client posture inventory; SC-001/002/003/011 use 20 consecutive non-discarded trials per supported matrix slot, explicit monotonic clock boundaries, at least 19 passing trials, and physical/loopback audio onset where audibility is claimed. Unknown/missing slots fail. Connection pooling is excluded until measurements justify a separate security review. |
 | Runtime staging | REQUIRED, NOT YET CLAIMED — final candidate qualification must use persistent external staging with representative migrated PostgreSQL data, real Keycloak, ordinary dispatcher/agent dependencies, configured LLM Factory, and the same exact artifacts exercised by supported physical clients. Unit/simulator evidence cannot satisfy this gate. |
 | Native/acoustic evidence | REQUIRED, NOT YET CLAIMED — supported browser, Windows host, Android device, iOS, macOS, and watchOS must prove local-only operation, interruption, typed fallback, and audible output. Callback success is not audibility. Missing evidence blocks merge/release readiness. |
 | Temporary platform exception | NOT USED — `candidate_staging` and `apple_first_login_llm` remain non-waivable; no seven-day client exception ledger is requested. Unavailable native evidence is reported as unavailable, not passed. |
 | Candidate-independent release verification | PASS by plan — local collection is diagnostic. Protected workflows/policy from current default branch reconstruct trusted inputs and independently validate candidate identities, digests, staging, coverage, trust, privacy, and any allowed exception. Candidate workflows remain unprivileged. |
-| Local-before-push evidence | PASS by plan — after final local reports, run `python3 scripts/prepare_release_evidence.py --repo . --evidence-dir build/060/evidence --coverage-dir build/060/coverage --base-sha <BASE> --candidate-sha <CANDIDATE> --coverage-mode strict --repository-profile deep --output build/060/local-release-evidence.json`; Projection uses the same tool with `--repository-profile projection` and all named report slots. Results are diagnostic and cannot authorize release. |
+| Local-before-push evidence | PASS by plan — after exact local candidate commits exist, run `python3 scripts/prepare_release_evidence.py --repo . --evidence-dir build/075/evidence --coverage-dir build/075/coverage --base-sha <DEEP_BASE> --candidate-sha <DEEP_CANDIDATE> --coverage-mode strict --repository-profile deep --output build/075/local-release-evidence-deep.json`; run the same Deep-owned script with `--repo ../AstralProjection`, Projection's exact base/candidate, `--repository-profile projection`, and every named Projection report slot to produce `build/075/local-release-evidence-projection.json`. Plane has no false shared profile: retain and hash-bind its own pytest coverage XML and diff-cover result beside its exact base/candidate. Results are diagnostic and cannot authorize release. |
 | Principle-X bootstrap | NOT USED — all implementation, test, coverage, migration, packaging, and local evidence work can precede the first product push. No structurally remote-only canonical input is being used to bypass local-first order. If such a blocker emerges, work stops rather than inventing an exception. |
 | Publication/release | NOT IN SCOPE — no merge, deploy, store submission, tag, package, image publication, signing, or protected debt/exception mutation is authorized. Any later publication retains separately pinned protected publishers with native short-lived job identity and create-only collision policy; no repository-scoped GitHub App/token broker is introduced. |
 | Knowledge-vault checkpoint | PASS by plan — durable decisions and completed spec/plan/tasks, implementation, candidate push/PR, merge, and release-state changes receive separate curated kos-wiki updates, commits, and pushes. |
@@ -92,8 +92,9 @@ specs/075-client-local-speech/
 ├── contracts/
 │   ├── voice-rest-v2.openapi.yaml
 │   ├── voice-local.schema.json
+│   ├── voice-latency-evidence.schema.json
 │   └── media-plane.md
-└── tasks.md                    # generated by speckit-tasks after this plan
+└── tasks.md                    # analyzed test-first implementation ledger
 ```
 
 ### AstralPlane (durable voice backend identity)
@@ -142,8 +143,8 @@ backend/orchestrator/
 └── ...                          # narrow websocket/dispatch/telemetry integration seams
 
 backend/voice_agent/
-├── speech_adapters.py          # total-deadline remote ASR/TTS
-└── ...                         # exact preflight, fixed-phrase warm admission, timings
+├── speech_adapters.py           # total-deadline remote ASR/TTS
+└── ...                          # exact preflight, fixed-phrase warm admission, timings
 
 backend/tests/                   # selector/API/socket/auth/replay/PHI/retention/integration
 specs/075-client-local-speech/   # authoritative feature artifacts/contracts
@@ -200,17 +201,28 @@ lifecycle, not a parallel conversation or agent path.
 3. Repair Windows/Android v1 current-grant recovery and stale identity/revision rejection.
 4. Relocate obsolete root client residue to the recorded recoverable Trash archive and clean only
    its obsolete ignore rules.
+5. Close the already-approved Feature-066 Apple R-3/R-4/R-5 items as isolated changes: a ten-second
+   default-mic unavailable degradation, content-keyed quiet status, and distinct stop/mute glyphs.
 
 ### Phase E — Local gates, candidate evidence, and PRs
 
-1. Run narrow TDD suites throughout, then mirror every changed repository's local CI commands,
-   module-local suites, changed-line coverage, packaging, migration, privacy, and composition checks.
-2. Run real local LLM Factory comparison and blocked-egress local integration. Build exact candidate
-   commits and run diagnostic evidence normalization/parsing locally.
-3. Qualify the same artifacts in persistent staging and on supported physical clients; distinguish
-   code-tested, device-tested, audible, staging-qualified, and release-ready states.
-4. Only after local completion, push and open draft PRs in Plane → Projection → Deep dependency
-   order. Do not manually dispatch hosted CI. Update kos-wiki before each checkpoint claim.
+1. Run narrow TDD suites throughout, reconcile documentation, and freeze exact local Plane,
+   Projection, and Deep candidate commits before any candidate-bound claim. Each repository keeps a
+   CI-skipped content commit plus one already-created empty automatic-CI trigger child; Deep pins the
+   exact trigger commits for Plane and Projection.
+2. Against those exact trigger commits, mirror every changed repository's local CI commands,
+   module-local suites, changed-line coverage (including C#), packaging, migration, privacy,
+   composition, deterministic latency parser, recovered Factory comparison, and blocked-egress
+   local integration.
+3. Freeze the privacy-safe six-client qualification matrix against all exact candidate SHAs, then
+   qualify every supported slot in persistent staging and on supported physical clients, including
+   the 20-trial SC-001/002/003/011 matrices; run separate Deep and Projection local
+   evidence parsers and hash-bind Plane's native reports. Any SHA change invalidates all affected
+   matrix/evidence and returns to candidate freezing.
+4. Update kos-wiki, explicitly push only the CI-skipped parent commits, and open all three draft PRs
+   in Plane → Projection → Deep order. Only after every PR exists, fast-forward each branch to
+   its already-qualified trigger child so normal automatic PR CI begins. Do not manually dispatch
+   hosted CI.
 
 ## Complexity Tracking
 

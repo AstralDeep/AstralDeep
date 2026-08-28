@@ -42,9 +42,9 @@ conversation story. This phase blocks all user stories.
 
 ### Shared Projection contract — tests before manifest
 
-- [ ] T013 [P] Add failing strict schema-v2 resource, unchanged-remote-v1, extra-key, disposition, and every-consumer tests in Projection `tests/test_protocol.py`, `tests/test_resources.py`, and `tests/webrender/test_voice_renderer_065.py`
+- [ ] T013 [P] Add failing strict schema-v2 resource, unchanged-remote-v1, extra-key, disposition, every-consumer, and native-CI-path-filter tests in Projection `tests/test_protocol.py`, `tests/test_resources.py`, `tests/webrender/test_voice_renderer_065.py`, and `tests/ci/test_workflows.py`
 - [ ] T014 Add canonical supported/unavailable/stale/denial/local-final/announcement/playout vectors in Projection `contracts/fixtures/voice_075/client_local_conformance.json`, separate from `contracts/fixtures/voice_065/client_conformance.json`
-- [ ] T015 Update Projection `contracts/ui_protocol.json` with REST-v2 requirements, `client_local/v1`, exact local frame fields, `speech_revision`, closed reasons/dispositions, and a remote-v1 byte invariant
+- [ ] T015 Update Projection `contracts/ui_protocol.json` with REST-v2 requirements, `client_local/v1`, exact local frame fields, `speech_revision`, closed reasons/dispositions, and a remote-v1 byte invariant; add exact `contracts/fixtures/voice_075/client_local_conformance.json` push/PR filters to `.github/workflows/android-ci.yml` and `.github/workflows/apple-ci.yml`
 - [ ] T016 [P] Add failing half-duplex/local-unavailable/typed-fallback ROTE tests in Projection `tests/rote/test_voice_rote_capabilities_065.py`, `tests/rote/test_android_profile.py`, `tests/rote/test_apple_profiles.py`, and `tests/rote/test_windows_profile.py`
 - [ ] T017 Implement local capability/disposition adaptation and typed fallback in Projection `backend/rote/capabilities.py`, `backend/rote/adapter.py`, and `backend/rote/fallback.py`
 
@@ -149,11 +149,11 @@ fallback journeys; physical-device evidence is collected later as a distinct rel
 
 ### Windows local adapter and package
 
-- [ ] T055 [P] [US3] Add fake-helper/fake-TTS tests for readiness, bounded PCM, final dedupe, half-duplex/500-ms fence, crash/stop/logout, and no file/secret/network leakage in Projection `windows-client/tests/test_local_speech_075.py`
-- [ ] T056 [US3] Define and test the length-bounded inherited-pipe helper protocol, build/hash inputs, no listening socket, no temporary audio, and scrubbed environment in Projection `windows-client/asr-helper/PROTOCOL.md` and `windows-client/tests/test_local_speech_075.py`
+- [ ] T055 [P] [US3] Add fake-helper/fake-TTS plus first-party helper unit tests for readiness, bounded PCM, final dedupe, half-duplex/500-ms fence, crash/stop/logout, and no file/secret/network leakage in Projection `windows-client/tests/test_local_speech_075.py` and `windows-client/asr-helper/tests/AstralSpeechHelper.Tests.csproj`
+- [ ] T056 [US3] Define and test the length-bounded inherited-pipe helper protocol, deterministic warning-as-error product project/build/hash inputs, scrubbed environment, no listening socket, and no temporary audio in Projection `windows-client/asr-helper/PROTOCOL.md` and `windows-client/asr-helper/AstralSpeechHelper.csproj`; declare/lock owner-approved Microsoft test/coverage packages only in `windows-client/asr-helper/tests/AstralSpeechHelper.Tests.csproj` and `windows-client/asr-helper/tests/packages.lock.json`, with no production PackageReference or published test asset
 - [ ] T057 [US3] Implement first-party System.Speech helper source/build metadata in Projection `windows-client/asr-helper/` and integrate bounded desktop-owned PCM in `windows-client/astral_client/voice.py`
-- [ ] T058 [P] [US3] Add failing QtTextToSpeech/helper/plugin/frozen-package/typed-fallback probes in Projection `windows-client/tests/test_voice_package_065.py` and `windows-client/tests/test_voice_lifecycle_065.py`
-- [ ] T059 [US3] Implement local Qt TTS, helper lifecycle, announcement serialization, stop/fallback, and PyInstaller collection in Projection `windows-client/astral_client/voice.py` and `windows-client/AstralDeep.spec`
+- [ ] T058 [P] [US3] Add failing QtTextToSpeech/helper/plugin/frozen-package/typed-fallback and test-dependency-isolation probes in Projection `windows-client/tests/test_voice_package_065.py` and `windows-client/tests/test_voice_lifecycle_065.py`, proving the product project/publish/package imports no test package or DLL; add failing `windows_csharp` Cobertura/path/threshold/profile tests in Deep `scripts/tests/test_check_changed_coverage.py`
+- [ ] T059 [US3] Implement local Qt TTS, helper lifecycle, announcement serialization, stop/fallback, PyInstaller collection, and the measured C# coverage producer in Projection `windows-client/astral_client/voice.py`, `windows-client/AstralDeep.spec`, and Deep `scripts/check_changed_coverage.py`
 
 ### Android local adapter
 
@@ -168,7 +168,7 @@ fallback journeys; physical-device evidence is collected later as a distinct rel
 - [ ] T065 [P] [US3] Add fake authorization/on-device/locale/final/announcement-expiry/TTS-error/echo/interruption/background/route tests in Projection `apple-clients/AstralApp/AstralAppTests/VoiceSessionController065Tests.swift`
 - [ ] T066 [US3] Implement injected Speech/AVAudioEngine/retained-AVSpeechSynthesizer local adapter separate from LiveKit in Projection `apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift`
 - [ ] T067 [P] [US3] Add failing target-specific Speech framework, usage-description, privacy-manifest, and no-overdeclaration tests in Projection `apple-clients/AstralCore/Tests/AstralCoreTests/VoiceContract065Tests.swift` and `apple-clients/AstralApp/AstralAppTests/VoiceSessionController065Tests.swift`
-- [ ] T068 [US3] Add Speech linkage and `NSSpeechRecognitionUsageDescription` only to invoking targets in Projection `apple-clients/AstralApp/Info.plist`, `WatchInfo.plist`, `AstralApp.xcodeproj/project.pbxproj`, and target `PrivacyInfo.xcprivacy` files
+- [ ] T068 [US3] Add Speech linkage and `NSSpeechRecognitionUsageDescription` only to invoking targets in Projection `apple-clients/AstralApp/Info.plist`, `apple-clients/AstralApp/WatchInfo.plist`, `apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj`, `apple-clients/AstralApp/AstralApp/PrivacyInfo.xcprivacy`, and `apple-clients/AstralWatch/PrivacyInfo.xcprivacy`
 - [ ] T069 [P] [US3] Add watch-local fake contract/adapter tests while retaining remote PCM regressions in Projection `apple-clients/AstralWatchTests/VoiceContract065Tests.swift` and `WatchVoiceBridge065Tests.swift`
 - [ ] T070 [US3] Implement capability-gated watch-local recognition/synthesis in a new Projection `apple-clients/AstralWatch/WatchLocalSpeech.swift` without routing local mode through `WatchVoiceBridge.swift`
 
@@ -195,7 +195,7 @@ still exercises permission, PHI, confirmation, tool, audit, cancellation, and co
 
 - [ ] T075 [P] [US5] Expand cross-user/device/socket/control/session/chat/takeover/reconnect/replay denial tests in Deep `backend/tests/test_voice_multiuser_isolation_065.py`, `backend/tests/test_voice_control_binding_integration_065.py`, and `backend/tests/test_voice_local_admission_075.py`
 - [ ] T076 [P] [US5] Expand permission/policy/PHI/confirmation/tool/LLM-selection/audit/cancellation/commit parity tests in Deep `backend/tests/test_voice_dispatch_parity_065.py` and `backend/tests/test_voice_admission_065.py`
-- [ ] T077 [P] [US5] Add local blocked-egress and forbidden audio/interim/final/digest/engine/path/endpoint/credential/reasoning retention scans in Deep `backend/tests/test_voice_zero_retention_065.py`, `backend/tests/test_voice_env_isolation_065.py`, and Projection platform tests
+- [ ] T077 [P] [US5] Add local blocked-egress and forbidden audio/interim/final/digest/engine/path/endpoint/credential/reasoning retention scans in Deep `backend/tests/test_voice_zero_retention_065.py` and `backend/tests/test_voice_env_isolation_065.py`, plus Projection `tests/webrender/test_voice_renderer_065.py`, `windows-client/tests/test_local_speech_075.py`, `android-client/app/src/test/kotlin/com/personalailabs/astraldeep/app/voice/VoiceSessionController065Test.kt`, `apple-clients/AstralApp/AstralAppTests/VoiceSessionController065Tests.swift`, and `apple-clients/AstralWatchTests/VoiceContract065Tests.swift`
 - [ ] T078 [US5] Harden local admission/cleanup/redaction until T075–T077 pass without changing remote proof semantics in Deep `backend/orchestrator/voice_sessions.py`, `voice_runtime.py`, `runtime_observability.py`, and `orchestrator.py`
 - [ ] T079 [P] [US5] Add content-free local capability/activation/recognition/submission/announcement/playout/interruption telemetry tests and forbidden-label checks in Deep `backend/tests/test_voice_telemetry_075.py` and `backend/tests/test_voice_observability_065.py`
 - [ ] T080 [US5] Implement reviewed low-cardinality local timings/outcomes and v2 status projection in Deep `backend/orchestrator/runtime_observability.py`, `voice_bootstrap.py`, and `voice_api.py`
@@ -220,7 +220,7 @@ recover once within the lease and reject stale grant/worker/turn data.
 - [ ] T083 [US4] Replace per-attempt timeout multiplication with one injected monotonic operation deadline in Deep `backend/voice_agent/speech_adapters.py` while preserving `backend/shared/streaming_egress.py` bounds and adding no pool
 - [ ] T084 [P] [US4] Add startup-order tests proving inventory+real ASR+real TTS, synchronous greeting/earliest-ack warm-up before registration, async remaining warm-up, and fail-closed warm failure in Deep `backend/voice_agent/tests/test_speech_preflight_065.py`, `test_preflight_recheck_066.py`, `test_tts_phrase_cache_066.py`, and `test_worker_runtime_integration_065.py`
 - [ ] T085 [US4] Implement preflight/fixed-phrase warm ordering before `PoolClient.run_forever` in Deep `backend/voice_agent/main.py` and bounded cache behavior in `backend/voice_agent/speech_adapters.py`
-- [ ] T086 [P] [US4] Add content-free configuration/preflight/warm-up/registration/recognition/synthesis/playout phase-timing tests in Deep `backend/tests/test_voice_telemetry_075.py` and `backend/orchestrator/tests/test_voice_status_066.py`
+- [ ] T086 [P] [US4] Add content-free configuration/preflight/warm-up/registration/connection-setup/recognition/synthesis/playout phase-timing tests in Deep `backend/tests/test_voice_telemetry_075.py` and `backend/orchestrator/tests/test_voice_status_066.py`
 - [ ] T087 [US4] Implement remote phase metrics/status without identifiers, URLs, bodies, text, audio, or secrets in Deep `backend/orchestrator/runtime_observability.py`, `voice_bootstrap.py`, and `voice_api.py`
 - [ ] T088 [P] [US4] Add failing Windows current-state/grant recovery, socket rotation, stale-worker/grant/session rejection, single-rejoin, and no-duplicate-final tests in Projection `windows-client/tests/test_voice_lifecycle_065.py`
 - [ ] T089 [US4] Implement Windows current-state/grant recovery with one bounded rejoin and stale-proof rejection in Projection `windows-client/astral_client/voice.py` and `windows-client/astral_client/protocol.py`
@@ -240,35 +240,42 @@ candidate-bound evidence, wiki checkpoints, and only then intentional product pu
 
 ### Recoverable repository cleanup
 
-- [ ] T093 Move the root Android SDK pointer into ignored Deep `components/AstralProjection/android-client/local.properties`, relocate obsolete Deep root `android-client/` and `apple-clients/` residues to one explicit dated recoverable Trash directory, and record the archive path in `specs/075-client-local-speech/quickstart.md`
-- [ ] T094 Remove only obsolete root-client patterns/comments from Deep `.gitignore` and the exact obsolete `/apple-clients/` entry from Deep `.git/info/exclude`, then prove `components/AstralProjection/android-client/`, `components/AstralProjection/apple-clients/`, and Windows residue are unchanged
+- [ ] T093 Revalidate T004's exact source/destination manifest and abort on any path/content drift, then move the root Android SDK pointer into ignored Deep `components/AstralProjection/android-client/local.properties`, relocate obsolete Deep root `android-client/` and `apple-clients/` residues to one explicit dated recoverable `/Users/sam/.Trash/AstralDeep-obsolete-clients-075-*` directory, and record its exact path and manifest digest in `specs/075-client-local-speech/quickstart.md`
+- [ ] T094 Remove only obsolete root-client patterns/comments from Deep `.gitignore` and the exact obsolete `/apple-clients/` entry from Deep `.git/info/exclude`, then prove against T004's manifest that `components/AstralProjection/android-client/`, `components/AstralProjection/apple-clients/`, and Windows residue are unchanged
 
 ### Isolated small Apple follow-ups
 
-- [ ] T095 [P] Add failing bounded voice-unavailable timeout tests in Projection `apple-clients/AstralApp/AstralAppTests/VoiceSessionController065Tests.swift`
-- [ ] T096 Implement the smallest R-3 timeout fix in Projection `apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift`
-- [ ] T097 [P] Add failing quiet-at-rest status predicate and distinct mute/stop glyph tests in Projection `apple-clients/AstralApp/AstralAppTests/VoiceSessionController065Tests.swift` and `apple-clients/AstralWatchTests/VoiceContract065Tests.swift`
-- [ ] T098 Implement isolated R-4/R-5 quiet predicate and glyph mapping in Projection `apple-clients/AstralApp/AstralApp/Views/ChatView.swift` and `apple-clients/AstralWatch/Views/WatchChatView.swift`; do not include unrelated drawer clamping
+- [ ] T095 [P] Add failing Feature-066 R-3 tests proving the default microphone placeholder degrades after ten seconds to an explicit voice-unavailable typed-fallback state in Projection `apple-clients/AstralApp/AstralAppTests/VoiceSessionController065Tests.swift` and `apple-clients/AstralWatchTests/VoiceContract065Tests.swift`
+- [ ] T096 Implement only Feature-066 R-3's ten-second default-microphone degradation in Projection `apple-clients/AstralApp/AstralApp/Views/ChatView.swift` and `apple-clients/AstralWatch/Views/WatchChatView.swift`
+- [ ] T097 [P] Add failing Feature-066 R-4/R-5 content-keyed quiet-at-rest predicate and visually distinct speaker-stop/speaker-muted glyph tests in Projection `apple-clients/AstralApp/AstralAppTests/VoiceSessionController065Tests.swift` and `apple-clients/AstralWatchTests/VoiceContract065Tests.swift`
+- [ ] T098 Implement only Feature-066 R-4/R-5's content-keyed quiet predicate and distinct glyph mapping in Projection `apple-clients/AstralApp/AstralApp/Views/ChatView.swift` and `apple-clients/AstralWatch/Views/WatchChatView.swift`; do not include Feature-066 R-1/R-2 or drawer clamping
 
-### Documentation and local CI-equivalent gates
+### Deterministic latency evidence
 
-- [ ] T099 [P] Reconcile final behavior/commands/reasons with Deep `specs/075-client-local-speech/`, tracked `docs/production-deployment.md`, Plane `docs/migration-and-recovery.md`, and Projection client READMEs without adding stale implementation claims
-- [ ] T100 Run Plane lock/sync/ruff/architecture/full pytest+branch coverage/diff-cover/real isolated-PostgreSQL upgrade+empty-start/recovery/evidence/build/actionlint commands from Deep `specs/075-client-local-speech/quickstart.md`; retain exact reports and zero skipped required migrations
-- [ ] T101 [P] Run Projection locked Python install, ruff, pytest/branch coverage/diff-cover, resource/protocol/ROTE, web lint/unit/coverage/Playwright, and Windows offscreen/helper/package gates using Projection `.github/workflows/ci.yml`, `tooling/web-ci/package.json`, and `windows-client/README.md`
-- [ ] T102 [P] Run Projection Android `ktlintCheck`, lint, core/app unit tests, Kover verify/XML, assemble, and connected local-only/remote-recovery tests from `android-client/gradlew`
-- [ ] T103 [P] Run Projection strict recursive swift-format, AstralCore tests/coverage, unsigned iOS/macOS/watchOS xcodebuild tests, xccov union, privacy/package, and local-speech test hooks using `apple-clients/README.md` and `.github/workflows/apple-ci.yml`
-- [ ] T104 Run Deep `make sync`, ruff, root backend pytest, every touched module-local orchestrator/voice-agent/shared suite, doc links, composition, security/privacy, and container image/boot checks with both selector postures using `Makefile` and `.github/workflows/ci.yml`
-- [ ] T105 Run final base/candidate-aware changed-line coverage for every changed Deep/Plane/Projection Python, JavaScript, Windows, Android app/core, iOS, macOS, watchOS, and helper lane using Deep `scripts/check_changed_coverage.py`; require at least 90% per lane
-- [ ] T106 Run a final healthy LLM Factory exact preflight/synthesized-retranscribed comparison and blocked-endpoint local two-turn integration, recording only content-free phase/outcome evidence under Deep `build/075/`
+- [ ] T099 [P] Add failing Draft-2020-12 and parser tests for a privacy-safe six-client matrix bound to exact Plane/Projection/Deep SHAs, opaque posture IDs, required supported/typed-only slots, missing/unknown/duplicate/mismatched slot rejection, 20 consecutive non-discarded monotonic trials, cold/warm markers, 19-of-20 threshold decisions, clock boundaries, physical/loopback audio-onset proof, two-second typed fallback, and forbidden content in Deep `backend/tests/test_voice_latency_evidence_075.py` and `scripts/tests/test_measure_voice_latency_075.py`
+- [ ] T100 Implement the bounded content-free matrix/evidence schema and deterministic completeness/threshold parser in Deep `specs/075-client-local-speech/contracts/voice-latency-evidence.schema.json` and `scripts/measure_voice_latency_075.py`
 
-### Candidate-bound live evidence, commits, PRs, and vault
+### Documentation, exact candidates, and local CI-equivalent gates
 
-- [ ] T107 Qualify the exact assembled artifacts in persistent staging with representative migrated PostgreSQL, real Keycloak/ordinary dispatcher, configured Factory, supported browser/Windows/Android/iOS/macOS/watchOS devices, blocked-egress local mode, and separate physical/acoustic audibility evidence under Deep `build/075/staging/`; treat missing staging/native evidence as blocking
-- [ ] T108 Create final local Plane, Projection, and Deep candidate commits, revalidate clean exact bases/components, and run diagnostic local normalization/parsing with Deep `scripts/prepare_release_evidence.py` using strict profiles and all report slots; retain digests and prove the local result cannot authorize release
-- [ ] T109 Reread wiki `CLAUDE.md`, update `wiki/synthesis-astral-client-local-speech.md`, `wiki/project-astral.md`, `wiki/astral-open-follow-ups.md`, `wiki/astral-ci-gates.md`, affected Apple pages, `index.md`, and `log.md`, then commit/push the vault separately before declaring implementation/candidate checkpoints
-- [ ] T110 Re-fetch/prune and recheck remote branch/PR state, then make the first intentional product pushes from Plane, Projection, and Deep `.git/refs/heads/codex/075-client-local-speech` and open draft PRs in that dependency order; do not manually dispatch/enable GitHub Actions and keep staging/native blockers explicit
-- [ ] T111 Review automatic PR check outcomes only after T110, fix any candidate-caused failures locally first, update Deep `config/astral-composition.json` and `build/075/` evidence if SHAs change, and never weaken a gate or use Principle-X bootstrap for convenience
-- [ ] T112 Update and separately push wiki `wiki/synthesis-astral-client-local-speech.md`, `wiki/project-astral.md`, `wiki/astral-open-follow-ups.md`, `index.md`, and `log.md` for every opened PR/final status; report exact tests/results/coverage, live verification, selector/migration/contracts, cleanup archive/recoverability, PR URLs, and residual release risks without claiming merge/deploy/release
+- [ ] T101 [P] Reconcile final behavior/commands/reasons with Deep `specs/075-client-local-speech/`, tracked `docs/production-deployment.md`, Plane `docs/migration-and-recovery.md`, Projection client READMEs, and Feature-066 R-3/R-4/R-5 in `specs/066-canvas-first-uiux/tasks.md` without adding stale implementation claims
+- [ ] T102 Create and freeze clean local Plane and Projection `[skip ci]` content commits plus one empty non-skipping automatic-CI trigger child each; repin Deep to those exact trigger SHAs, create Deep's equivalent content/trigger pair, record all six identities in `specs/075-client-local-speech/quickstart.md`, and require any later tree/SHA change to return to T102
+- [ ] T103 Run Plane lock/sync/ruff/architecture/full pytest+branch coverage/diff-cover/real isolated-PostgreSQL upgrade+empty-start/recovery/evidence/build/actionlint commands from Deep `specs/075-client-local-speech/quickstart.md` against the exact T102 Plane trigger commit; retain exact reports and zero skipped required migrations
+- [ ] T104 [P] Run Projection locked Python install, ruff, pytest/branch coverage/diff-cover, resource/protocol/ROTE, web lint/unit/coverage/Playwright, Windows offscreen/package, `dotnet format`, helper unit, and Cobertura gates using Projection `.github/workflows/ci.yml`, `tooling/web-ci/package.json`, and `windows-client/README.md` against the exact T102 Projection trigger commit
+- [ ] T105 [P] Run Projection Android `ktlintCheck`, lint, core/app unit tests, Kover verify/XML, assemble, and connected local-only/remote-recovery tests from `android-client/gradlew` against the exact T102 Projection trigger commit
+- [ ] T106 [P] Run Projection strict recursive swift-format, AstralCore tests/coverage, unsigned iOS/macOS/watchOS xcodebuild tests, xccov union, privacy/package, and local-speech test hooks using `apple-clients/README.md` and `.github/workflows/apple-ci.yml` against the exact T102 Projection trigger commit
+- [ ] T107 Run Deep `make sync`, ruff, root backend pytest, every touched module-local orchestrator/voice-agent/shared suite, doc links, composition, security/privacy, and container image/boot checks with both selector postures using `Makefile` and `.github/workflows/ci.yml` against the exact T102 Deep trigger commit
+- [ ] T108 Run Plane's own candidate-aware diff-cover gate and separately run Deep `scripts/check_changed_coverage.py` with `deep` and `projection` repository profiles, including the new `windows_csharp` producer; require at least 90% for every changed lane and retain/hash all three repositories' report identities under Deep `build/075/coverage/`
+- [ ] T109 Run a healthy LLM Factory exact preflight/synthesized-retranscribed comparison, blocked-endpoint local two-turn integration, and deterministic non-physical latency-parser fixtures against the exact T102 candidates, recording only content-free evidence under Deep `build/075/`
+
+### Candidate-bound live evidence, PRs, automatic CI, and vault
+
+- [ ] T110 Freeze a privacy-safe six-client posture matrix bound to all exact T102 trigger SHAs, then qualify every supported slot in persistent staging with representative migrated PostgreSQL, real Keycloak/ordinary dispatcher, configured Factory, blocked-egress local mode, separate physical/loopback audibility evidence, and the 20-trial SC-001/002/003/011 matrix under Deep `build/075/staging/`; reject unknown/missing slots and treat unavailable staging/native evidence as a draft-PR blocker rather than a pass
+- [ ] T111 Run Deep `scripts/prepare_release_evidence.py` separately for the exact Deep and Projection base/trigger commits with `deep` and `projection` strict profiles and all named report slots, write `build/075/local-release-evidence-deep.json` and `build/075/local-release-evidence-projection.json`, and hash-bind Plane's independent coverage/diff-cover/migration reports; prove all local results remain diagnostic
+- [ ] T112 Reread wiki `CLAUDE.md`, update `wiki/synthesis-astral-client-local-speech.md`, `wiki/project-astral.md`, `wiki/astral-open-follow-ups.md`, `wiki/astral-ci-gates.md`, affected Apple pages, `index.md`, and `log.md`, then commit/push the vault separately before declaring implementation/candidate checkpoints
+- [ ] T113 Re-fetch/prune and recheck remote branch/PR state, explicitly push only each T102 `[skip ci]` parent SHA to its Plane, Projection, and Deep `codex/075-client-local-speech` branch, verify no `push`/`pull_request` Actions were triggered by those parent SHAs, and open all three draft PRs in dependency order with staging/native blockers explicit; unrelated scheduled runs do not satisfy or invalidate this check
+- [ ] T114 Only after all three draft PRs are visible, fast-forward Plane, Projection, and Deep `.git/refs/heads/codex/075-client-local-speech` branches to their already-qualified T102 trigger children in dependency order so normal automatic PR CI begins; do not manually dispatch or enable any workflow
+- [ ] T115 Review automatic PR outcomes after T114 in each repository's `.github/workflows/`; any product, pin, or evidence-changing fix invalidates affected T102–T112 evidence and MUST repeat that exact candidate-bound loop and replace affected Deep `build/075/` records before its next trigger push, without weakening a gate or using Principle-X bootstrap for convenience
+- [ ] T116 Update and separately push wiki `wiki/synthesis-astral-client-local-speech.md`, `wiki/project-astral.md`, `wiki/astral-open-follow-ups.md`, `index.md`, and `log.md` for every opened PR/final status; report exact tests/results/coverage, live verification, selector/migration/contracts, cleanup archive/recoverability, PR URLs, and residual release risks without claiming merge/deploy/release
 
 ---
 
@@ -312,8 +319,8 @@ Foundational ── US4 remote fix ─┘
   parallel after their protocol tasks; web is already independently delivered by US1.
 - US4 worker deadline/warm-up (T082–T087) can run beside native local-client work. T088–T091 must
   be sequenced with same-file Windows/Android controller changes.
-- T100–T103 are repository/platform-local gates that can run concurrently when resources permit;
-  T104–T108 require the assembled exact candidates.
+- T103–T106 are repository/platform-local gates that can run concurrently after T102 freezes exact
+  candidates; T107–T112 consume those exact identities and any SHA change restarts the loop.
 
 ## Parallel examples
 
@@ -357,7 +364,8 @@ Task: T049–T070 native local-client lanes
 2. Implement the smallest production behavior that makes that test pass without weakening v1 or
    security boundaries.
 3. Run the owning narrow suite, then nearby regressions.
-4. Commit logical local checkpoints; hold all product pushes until T100–T109 are complete.
+4. Commit logical local checkpoints; hold all product pushes until T103–T112 are complete. T113
+   pushes only CI-skipped parents to open every draft PR; automatic CI begins only at T114.
 
 ### Release posture
 

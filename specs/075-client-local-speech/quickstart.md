@@ -65,7 +65,11 @@ ordinary logs. A model-list success is insufficient: exercise real ASR and TTS i
 3. Stop capture/synthesis synchronously on lifecycle loss, serialize announcements, enforce the
    500 ms echo fence, and submit finals only after server turn binding.
 4. Add packaging/privacy declarations: Windows helper and Qt speech plugin, Android API-33 runtime/
-   gates, Apple Speech usage/privacy declarations. Add no third-party product dependency.
+   gates, Apple Speech usage/privacy declarations. Add no third-party product dependency. Pin the
+   owner-approved development-only Microsoft test/coverage packages only in the helper test
+   project's separate manifest/lock; an automated guard must prove the product project and publish
+   assets contain none of them. Emit Cobertura consumed by the shared `windows_csharp` changed-line
+   gate.
 5. Fix existing Windows/Android remote grant recovery while retaining v1 bytes.
 
 ### 3.3 AstralDeep
@@ -93,9 +97,16 @@ include:
 - Deep selector, v2 API, socket schema, ownership/replay/authorization/PHI/retention, local
   no-worker/no-egress, ordinary dispatcher parity, remote deadline/cache, and composition tests;
 - Projection schema/fixture/drift/ROTE tests plus web, Windows, Android, and Apple controller tests;
+- first-party Windows helper warning-as-error build, `dotnet format`, unit tests, Cobertura, and
+  frozen-package/hash/plugin probes;
 - malformed/oversized/extra-key/stale/wrong-owner/wrong-device/wrong-chat/duplicate/out-of-order
   denials and typed fallback;
 - blocked-network local journeys proving zero speech egress and no audio/text retention.
+
+Before full qualification, freeze exact clean local candidates. In each repository create a final
+content commit whose message contains `[skip ci]`, then create one empty child without the skip
+instruction. Deep must pin the exact Plane and Projection child SHAs. Record both parent and child
+SHAs; any subsequent tree or SHA change invalidates the affected evidence and restarts this freeze.
 
 ## 5. Merge-level local gates
 
@@ -120,9 +131,10 @@ not success.
 ### AstralProjection
 
 Run locked Python install/lint/pytest/diff-cover, web lint/unit/coverage/Playwright, Windows
-offscreen pytest plus packaged-helper probe, Android Gradle lint/unit/Kover/assemble/connected tests,
-and recursive Swift formatting, AstralCore tests, unsigned iOS/macOS/watchOS xcodebuild coverage,
-and xccov union. Use the exact current commands in Projection's workflows/README.
+offscreen pytest plus packaged-helper probe, `dotnet format`, helper unit/Cobertura coverage, Android
+Gradle lint/unit/Kover/assemble/connected tests, and recursive Swift formatting, AstralCore tests,
+unsigned iOS/macOS/watchOS xcodebuild coverage, and xccov union. Use the exact current commands in
+Projection's workflows/README.
 
 ### AstralDeep
 
@@ -137,12 +149,18 @@ python scripts/check_doc_links.py
 Also run every module-local suite and release/composition/changed-coverage command named by the
 current Deep workflows. A container restart alone does not copy changed source; rebuild/sync first.
 
+Run Plane's own candidate-aware diff-cover independently. Run Deep's changed-coverage policy once
+with the `deep` profile and once against the standalone Projection candidate with the `projection`
+profile, including `windows_csharp`; do not claim that this collector owns Plane coverage. Require
+at least 90% in every changed lane and retain all report identities under `build/075/coverage/`.
+
 ## 6. Candidate-bound live qualification
 
-Only after the local gates are green, create exact candidate commits and locally regenerate/parse
-canonical release evidence. The local parser is diagnostic; protected CI remains authoritative.
-Then make the first intentional product push and open draft PRs in dependency order: Plane,
-Projection, Deep. Do not manually dispatch GitHub Actions.
+Run all gates and locally regenerate/parse canonical release evidence against the already-frozen
+trigger-child commits. Invoke Deep's parser separately for the exact Deep and Projection bases/
+candidates with `deep` and `projection` strict profiles, writing distinct `build/075` results; bind
+Plane's native coverage/diff-cover/migration report digests separately. The local parser is
+diagnostic; protected CI remains authoritative.
 
 Against the same candidate SHAs/artifacts, qualify:
 
@@ -153,9 +171,28 @@ Against the same candidate SHAs/artifacts, qualify:
    result; typed fallback; zero microphone egress.
 3. Persistent staging: real PostgreSQL/Keycloak/ordinary agent dispatcher and representative
    migration dataset. Record exact SHAs, manifests, report digests, environment identity, and times.
+4. Performance: for every exact supported client posture, record 20 consecutive non-discarded
+   trials (one cold, 19 warm) for SC-001/002/003/011 and require at least 19 within each bound. Use
+   monotonic timestamps and physical or loopback audio onset where audibility is claimed; retain no
+   audio, transcript, identity, endpoint, credential, or engine-path content.
+
+Before those trials, freeze a privacy-safe matrix bound to the exact Plane, Projection, and Deep
+candidate SHAs. It must use opaque posture IDs, contain an explicit web/Windows/Android/iOS/macOS/
+watchOS slot, and record only client/OS/hardware-class/browser/locale/asset-state plus supported or
+typed-only disposition. The parser rejects missing, duplicate, unknown, or SHA-mismatched slots;
+changing the matrix invalidates all dependent evidence.
 
 Do not claim audibility from TTS callbacks alone. Physical/acoustic evidence is required. Missing
 native/staging evidence blocks merge/release readiness and is not waived by local unit tests.
+
+After the implementation/candidate wiki checkpoint is pushed, re-fetch remote state. Explicitly
+push only each repository's `[skip ci]` parent SHA and open all three draft PRs in Plane →
+Projection → Deep order. Confirm no workflow uses `pull_request_target` and no `push` or
+`pull_request` Actions were triggered by those parent SHAs; unrelated scheduled runs can still
+exist. Only
+after all three PRs are visible, fast-forward each remote branch to its already-qualified trigger
+child so ordinary automatic `push`/`pull_request` CI starts. Never manually dispatch a workflow.
+The skipped checks may remain pending until that child arrives; the PRs remain draft and blocked.
 
 ## 7. Rollback and recovery
 

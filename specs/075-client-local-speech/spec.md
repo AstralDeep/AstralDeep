@@ -177,6 +177,34 @@ As a user or security reviewer, I can rely on local speech being only a differen
 - **SC-011**: When local speech is unsupported or becomes unavailable, users receive a specific explanation and usable typed conversation within 2 seconds, with zero silent remote fallbacks.
 - **SC-012**: Local speech can be disabled and remote speech restored solely through the documented deployment selection, without data migration or loss of existing conversations.
 
+### Qualification Measurement Protocol
+
+- Before trials, qualification MUST freeze a privacy-safe matrix bound to the exact Plane,
+  Projection, and Deep candidate SHAs. The matrix MUST contain opaque posture IDs and at least one
+  explicit slot for web, Windows, Android, iOS, macOS, and watchOS; each slot records only client
+  kind/version, operating-system family/version, hardware class, browser family/version when
+  applicable, configured locale, local-asset state, and supported or typed-only disposition. It
+  MUST contain no user/device identifier. Any matrix or candidate-SHA change invalidates all
+  dependent measurements.
+- SC-001, SC-002, SC-003, and SC-011 MUST each be evaluated over 20 consecutive, non-discarded
+  trials for every exact supported posture in that frozen matrix; at least 19 of 20 trials MUST satisfy the
+  stated bound. The first asset-ready trial MUST be marked cold and the remaining trials warm so a
+  warm-only result cannot hide startup behavior.
+- SC-001 measures from the user's activation action until the client has both the current server
+  ready fence and an actually listening local recognizer. SC-002 measures from that ready fence to
+  physical or loopback-observed audio onset, not merely a synthesis callback. SC-003 measures from
+  the recognizer's terminal end-of-utterance event to both visible acknowledgement rendering and
+  physical or loopback-observed acknowledgement audio onset; downstream conversational-model time
+  is excluded by measuring the server's fixed immediate acknowledgement. SC-011 measures from the
+  first authoritative unsupported/unavailable determination to a rendered explanation plus an
+  enabled, usable typed composer.
+- Trials MUST use monotonic clocks, record only client kind/version, categorical cold/warm posture,
+  bounded phase durations, and outcomes, and MUST contain no audio, transcript text/digest, user,
+  device, chat, endpoint, credential, engine path, or hidden reasoning. Simulator/callback-only
+  evidence may test the collector but cannot satisfy physical/audio-onset criteria. The parser MUST
+  reject missing matrix slots, duplicate/unknown posture IDs, and evidence whose candidate SHAs or
+  posture fields differ from the frozen matrix.
+
 ## Assumptions
 
 - The initial configured speech language remains United States English; additional languages require their own policy and qualification evidence.
