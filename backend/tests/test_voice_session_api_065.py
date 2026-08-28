@@ -169,6 +169,33 @@ def _capability() -> dict[str, Any]:
     }
 
 
+def test_legacy_v1_capability_fails_voice_closed_on_local_deployment(api) -> None:
+    client, runtime, _orchestrator = api
+    runtime.speech_backend = "client_local"
+
+    response = client.get("/api/voice/capability")
+
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "type": "urn:astraldeep:voice:client_contract_upgrade_required",
+        "title": "Voice request could not be completed",
+        "status": 503,
+        "code": "client_contract_upgrade_required",
+    }
+
+
+def test_legacy_v1_create_never_accepts_client_backend_override(api) -> None:
+    client, runtime, _orchestrator = api
+    body = _create_body()
+    body["speech_backend"] = "llm_factory"
+
+    response = client.post("/api/voice/sessions", headers=_headers(), json=body)
+
+    assert response.status_code == 400
+    assert runtime.calls == []
+
+
 def _create_body(**changes: Any) -> dict[str, Any]:
     values = {
         "device_id": DEVICE,

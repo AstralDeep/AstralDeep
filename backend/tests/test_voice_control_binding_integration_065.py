@@ -5,21 +5,27 @@ from __future__ import annotations
 import io
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.voice_control_binding import (
+    ClientLocalBindingRegistry,
     VoiceControlBindingError,
     VoiceControlBindingIssuer,
 )
+from shared.protocol import VoiceLocalReady, VoiceLocalRecognitionStarted
 from shared.protocol import RegisterUI
 
 
 NOW = datetime(2026, 7, 31, 18, 0, tzinfo=UTC)
 DEVICE = "00000000-0000-4000-8000-000000000001"
 CONNECTION = "00000000-0000-4000-8000-000000000002"
+SESSION = "00000000-0000-4000-8000-000000000003"
+CHAT = "00000000-0000-4000-8000-000000000004"
+TURN = "00000000-0000-4000-8000-000000000005"
 
 
 class _NonClosingStringIO(io.StringIO):
@@ -45,6 +51,321 @@ def _registration(**changes: object) -> RegisterUI:
     }
     values.update(changes)
     return RegisterUI(**values)
+
+
+def _local_session(**changes: object):
+    values = {
+        "session_id": SESSION,
+        "user_id": "user-a",
+        "device_id": DEVICE,
+        "owner_connection_generation": CONNECTION,
+        "control_binding_id": "00000000-0000-4000-8000-000000000006",
+        "control_binding_expires_at": NOW + timedelta(minutes=4),
+        "lease_expires_at": NOW + timedelta(minutes=3),
+        "speech_backend": "client_local",
+        "state": "active",
+        "generation": 1,
+        "media_grant_revision": 1,
+        "visible_chat_id": CHAT,
+        "chat_context_revision": 1,
+        "applied_visible_chat_id": CHAT,
+        "applied_chat_context_revision": 1,
+        "foreground_active": True,
+        "microphone_enabled": True,
+        "speech_muted": False,
+    }
+    values.update(changes)
+    return type("LocalSession", (), values)()
+
+
+def _local_ready(**changes: object) -> VoiceLocalReady:
+    values = {
+        "device_id": DEVICE,
+        "connection_generation": CONNECTION,
+        "session_id": SESSION,
+        "generation": 1,
+        "speech_revision": 1,
+        "client_sequence": 1,
+    }
+    values.update(changes)
+    return VoiceLocalReady(**values)
+
+
+def _recognition_started(**changes: object) -> VoiceLocalRecognitionStarted:
+    values = {
+        "device_id": DEVICE,
+        "connection_generation": CONNECTION,
+        "session_id": SESSION,
+        "generation": 1,
+        "speech_revision": 1,
+        "client_turn_id": TURN,
+        "chat_id": CHAT,
+        "chat_context_revision": 1,
+        "recognition_sequence": 1,
+    }
+    values.update(changes)
+    return VoiceLocalRecognitionStarted(**values)
+
+
+def test_local_ready_is_fenced_to_current_socket_control_and_session() -> None:
+    registry = ClientLocalBindingRegistry(capacity=2)
+    claims = type(
+        "Claims",
+        (),
+        {
+            "subject": "user-a",
+            "device_id": DEVICE,
+            "connection_generation": CONNECTION,
+            "binding_id": "00000000-0000-4000-8000-000000000006",
+            "expires_at": NOW + timedelta(minutes=4),
+        },
+    )()
+
+    registry.authorize_ready(
+        socket_id=41,
+        current_socket_id=41,
+        user_id="user-a",
+        claims=claims,
+        session=_local_session(),
+        frame=_local_ready(),
+        now=NOW,
+    )
+
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        registry.authorize_ready(
+            socket_id=42,
+            current_socket_id=41,
+            user_id="user-a",
+            claims=claims,
+            session=_local_session(),
+            frame=_local_ready(client_sequence=2),
+            now=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    "session_change, frame_change",
+    [
+        ({"user_id": "user-b"}, {}),
+        ({"device_id": "00000000-0000-4000-8000-000000000099"}, {}),
+        ({"foreground_active": False}, {}),
+        ({"microphone_enabled": False}, {}),
+        ({"speech_muted": True}, {}),
+        ({"chat_context_revision": 2}, {}),
+        ({}, {"speech_revision": 2}),
+        ({}, {"chat_id": "00000000-0000-4000-8000-000000000099"}),
+    ],
+)
+def test_local_start_rejects_stale_or_ineligible_authority(
+    session_change: dict[str, object],
+    frame_change: dict[str, object],
+) -> None:
+    registry = ClientLocalBindingRegistry()
+    claims = type(
+        "Claims",
+        (),
+        {
+            "subject": "user-a",
+            "device_id": DEVICE,
+            "connection_generation": CONNECTION,
+            "binding_id": "00000000-0000-4000-8000-000000000006",
+            "expires_at": NOW + timedelta(minutes=4),
+        },
+    )()
+
+    with pytest.raises(VoiceControlBindingError):
+        registry.authorize_recognition_start(
+            socket_id=41,
+            current_socket_id=41,
+            user_id="user-a",
+            claims=claims,
+            session=_local_session(**session_change),
+            frame=_recognition_started(**frame_change),
+            now=NOW,
+        )
+
+
+def test_local_turn_binding_expires_within_two_minutes_and_is_bounded() -> None:
+    registry = ClientLocalBindingRegistry(capacity=1)
+    claims = type(
+        "Claims",
+        (),
+        {
+            "subject": "user-a",
+            "device_id": DEVICE,
+            "connection_generation": CONNECTION,
+            "binding_id": "00000000-0000-4000-8000-000000000006",
+            "expires_at": NOW + timedelta(minutes=4),
+        },
+    )()
+    session = _local_session()
+    frame = _recognition_started()
+    turn = type(
+        "Turn",
+        (),
+        {
+            "turn_id": "00000000-0000-4000-8000-000000000007",
+            "submission_id": "00000000-0000-4000-8000-000000000008",
+            "request_generation": "00000000-0000-4000-8000-000000000009",
+        },
+    )()
+
+    authority = registry.bind_turn(
+        socket_id=41,
+        current_socket_id=41,
+        user_id="user-a",
+        claims=claims,
+        session=session,
+        frame=frame,
+        turn=turn,
+        now=NOW,
+    )
+    assert authority.expires_at == NOW + timedelta(minutes=2)
+
+    with pytest.raises(VoiceControlBindingError, match="capacity_exhausted"):
+        registry.bind_turn(
+            socket_id=41,
+            current_socket_id=41,
+            user_id="user-a",
+            claims=claims,
+            session=session,
+            frame=_recognition_started(
+                client_turn_id="00000000-0000-4000-8000-000000000010",
+                recognition_sequence=2,
+            ),
+            turn=turn,
+            now=NOW,
+        )
+
+
+def test_local_registry_replay_validation_and_cleanup_are_exact() -> None:
+    with pytest.raises(ValueError, match="invalid_local_binding_capacity"):
+        ClientLocalBindingRegistry(capacity=0)
+
+    registry = ClientLocalBindingRegistry()
+    claims = type(
+        "Claims",
+        (),
+        {
+            "subject": "user-a",
+            "device_id": DEVICE,
+            "connection_generation": CONNECTION,
+            "binding_id": "00000000-0000-4000-8000-000000000006",
+            "expires_at": NOW + timedelta(minutes=4),
+        },
+    )()
+    session = _local_session()
+    frame = _recognition_started()
+    turn = type(
+        "Turn",
+        (),
+        {
+            "turn_id": "00000000-0000-4000-8000-000000000007",
+            "submission_id": "00000000-0000-4000-8000-000000000008",
+            "request_generation": "00000000-0000-4000-8000-000000000009",
+        },
+    )()
+    authority = registry.bind_turn(
+        socket_id=41,
+        current_socket_id=41,
+        user_id="user-a",
+        claims=claims,
+        session=session,
+        frame=frame,
+        turn=turn,
+        now=NOW,
+    )
+    bound_frame = SimpleNamespace(
+        **frame.__dict__,
+        turn_id=turn.turn_id,
+        submission_id=turn.submission_id,
+        request_generation=turn.request_generation,
+        validate=frame.validate,
+    )
+    assert registry.bind_turn(
+        socket_id=41,
+        current_socket_id=41,
+        user_id="user-a",
+        claims=claims,
+        session=session,
+        frame=bound_frame,
+        turn=turn,
+        now=NOW,
+    ) is authority
+    assert registry.verify_turn_frame(
+        socket_id=41,
+        current_socket_id=41,
+        user_id="user-a",
+        frame=bound_frame,
+        now=NOW,
+    ) is authority
+
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        registry.bind_turn(
+            socket_id=41,
+            current_socket_id=41,
+            user_id="user-a",
+            claims=claims,
+            session=session,
+            frame=_recognition_started(recognition_sequence=2),
+            turn=turn,
+            now=NOW,
+        )
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        registry.authorize_ready(
+            socket_id=41,
+            current_socket_id=41,
+            user_id="user-a",
+            claims=claims,
+            session=session,
+            frame=_local_ready(client_sequence=1),
+            now=NOW,
+        )
+    final_frame = SimpleNamespace(
+        **bound_frame.__dict__,
+        text="hello",
+        text_digest_sha256="2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    )
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        registry.verify_final(
+            socket_id=41,
+            current_socket_id=42,
+            user_id="user-a",
+            frame=final_frame,
+            now=NOW,
+        )
+
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        registry.verify_turn_frame(
+            socket_id=41,
+            current_socket_id=42,
+            user_id="user-a",
+            frame=bound_frame,
+            now=NOW,
+        )
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        registry.authorize_ready(
+            socket_id=41,
+            current_socket_id=41,
+            user_id="user-a",
+            claims=claims,
+            session=session,
+            frame=SimpleNamespace(validate=lambda: (_ for _ in ()).throw(ValueError())),
+            now=NOW,
+        )
+
+    registry.clear_connection(
+        user_id="user-a",
+        device_id=DEVICE,
+        connection_generation=CONNECTION,
+    )
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        registry.get_turn(
+            user_id="user-a",
+            client_turn_id=TURN,
+            now=NOW,
+        )
+    registry.release_turn(user_id="user-a", client_turn_id=TURN)
 
 
 @pytest.mark.asyncio

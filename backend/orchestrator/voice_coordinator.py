@@ -37,6 +37,8 @@ MAX_CLIENT_PLAYOUT_FRAME_BYTES = 2 * 1024
 MAX_ANNOUNCEMENT_MANIFEST_BYTES = 4 * 1024
 MAX_CLIENT_PLAYOUT_EVENTS_PER_SECOND = 8
 MAX_PENDING_TRANSCRIPTS = 4
+LOCAL_ECHO_FENCE_SECONDS = 0.5
+LOCAL_ANNOUNCEMENT_LIFETIME = timedelta(seconds=10)
 
 FIXED_VOICE_PROFILE = MappingProxyType(
     {
@@ -275,6 +277,225 @@ class StaleFence(VoiceCoordinatorError):
 
 class ClaimUnavailable(VoiceCoordinatorError):
     """A durable coordinator lease or announcement claim cannot be acquired."""
+
+
+class ClientLocalAnnouncementRegistry:
+    """Content-free authority for bounded local announcements and playout."""
+
+    def __init__(self, *, capacity: int = 256) -> None:
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+            raise ValueError("invalid_local_announcement_capacity")
+        self._capacity = capacity
+        self._sessions: dict[tuple[str, int], dict[str, int]] = {}
+        self._announcements: dict[str, dict[str, Any]] = {}
+
+    def issue(
+        self,
+        *,
+        session: Any,
+        kind: str,
+        turn_id: str | None,
+        requested_text: str,
+        output_policy: str,
+        mute_revision: int,
+        consent_revision: int,
+        now: datetime,
+        server_authorized: bool = False,
+    ) -> Any:
+        from shared.protocol import VoiceLocalAnnouncement
+
+        checked_now = _aware(now, "invalid_current_time")
+        if not (
+            getattr(session, "speech_backend", None) == "client_local"
+            and getattr(session, "state", None) == "active"
+            and getattr(session, "foreground_active", None) is True
+            and getattr(session, "speech_muted", None) is False
+            and getattr(session, "ended_at", None) is None
+        ):
+            raise ClaimUnavailable("local_announcement_not_authorized")
+        _positive(mute_revision, "invalid_mute_revision")
+        _positive(consent_revision, "invalid_consent_revision")
+        key = (session.session_id, session.generation)
+        state = self._sessions.setdefault(
+            key,
+            {
+                "sequence": 0,
+                "mute_revision": 0,
+                "consent_revision": 0,
+                "client_sequence": 0,
+            },
+        )
+        if (
+            mute_revision < state["mute_revision"]
+            or consent_revision < state["consent_revision"]
+        ):
+            raise ClaimUnavailable("stale_local_announcement_revision")
+        state["mute_revision"] = mute_revision
+        state["consent_revision"] = consent_revision
+        if kind == "result":
+            if output_policy != "full_recap" or not server_authorized:
+                raise ClaimUnavailable("local_result_not_authorized")
+            text = requested_text
+        else:
+            if output_policy != "lifecycle" or kind not in APPROVED_PHRASE_KEYS:
+                raise ClaimUnavailable("local_announcement_policy_invalid")
+            text = APPROVED_PHRASE_TEXT[APPROVED_PHRASE_KEYS[kind][0]]
+        if not isinstance(text, str) or not text or len(text.encode("utf-8")) > 600:
+            raise ClaimUnavailable("local_announcement_text_invalid")
+        self._prune(checked_now)
+        if len(self._announcements) >= self._capacity:
+            raise ClaimUnavailable("local_announcement_capacity_exhausted")
+        state["sequence"] += 1
+        announcement_id = str(uuid4())
+        expires = checked_now + LOCAL_ANNOUNCEMENT_LIFETIME
+        self._announcements[announcement_id] = {
+            "session_id": session.session_id,
+            "generation": session.generation,
+            "speech_revision": session.media_grant_revision,
+            "sequence": state["sequence"],
+            "turn_id": turn_id,
+            "kind": kind,
+            "expires_at": expires,
+            "mute_revision": mute_revision,
+            "consent_revision": consent_revision,
+            "phase": None,
+        }
+        return VoiceLocalAnnouncement(
+            device_id=session.device_id,
+            connection_generation=session.owner_connection_generation,
+            session_id=session.session_id,
+            generation=session.generation,
+            speech_revision=session.media_grant_revision,
+            announcement_id=announcement_id,
+            announcement_sequence=state["sequence"],
+            turn_id=turn_id,
+            kind=kind,
+            output_policy=output_policy,
+            text=text,
+            text_digest_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            expires_at=expires.isoformat().replace("+00:00", "Z"),
+            mute_revision=mute_revision,
+            consent_revision=consent_revision,
+        )
+
+    def observe(
+        self,
+        *,
+        session: Any,
+        event: Any,
+        mute_revision: int,
+        consent_revision: int,
+        now: datetime,
+    ) -> None:
+        checked_now = _aware(now, "invalid_current_time")
+        event.validate()
+        key = (session.session_id, session.generation)
+        state = self._sessions.get(key)
+        record = self._announcements.get(event.announcement_id)
+        if state is None or record is None:
+            raise ClaimUnavailable("local_playout_not_authorized")
+        if not (
+            event.session_id == session.session_id == record["session_id"]
+            and event.generation == session.generation == record["generation"]
+            and event.speech_revision
+            == session.media_grant_revision
+            == record["speech_revision"]
+            and event.device_id == session.device_id
+            and event.connection_generation
+            == session.owner_connection_generation
+            and event.announcement_sequence == record["sequence"]
+            and event.turn_id == record["turn_id"]
+            and event.kind == record["kind"]
+            and checked_now <= record["expires_at"]
+            and mute_revision == record["mute_revision"] == state["mute_revision"]
+            and consent_revision
+            == record["consent_revision"]
+            == state["consent_revision"]
+            and event.client_sequence > state["client_sequence"]
+        ):
+            raise ClaimUnavailable("local_playout_not_authorized")
+        if event.phase == "started":
+            if record["phase"] is not None:
+                raise ClaimUnavailable("local_playout_out_of_order")
+        elif record["phase"] != "started":
+            raise ClaimUnavailable("local_playout_out_of_order")
+        state["client_sequence"] = event.client_sequence
+        record["phase"] = event.phase
+        if event.phase in {"finished", "interrupted", "failed"}:
+            self._announcements.pop(event.announcement_id, None)
+
+    def clear_session(self, *, session_id: str, generation: int) -> None:
+        self._sessions.pop((session_id, generation), None)
+        self._announcements = {
+            announcement_id: record
+            for announcement_id, record in self._announcements.items()
+            if not (
+                record["session_id"] == session_id
+                and record["generation"] == generation
+            )
+        }
+
+    def fence_session(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        bump_mute: bool = True,
+        bump_consent: bool = True,
+    ) -> None:
+        key = (session_id, generation)
+        state = self._sessions.setdefault(
+            key,
+            {
+                "sequence": 0,
+                "mute_revision": 0,
+                "consent_revision": 0,
+                "client_sequence": 0,
+            },
+        )
+        if bump_mute:
+            state["mute_revision"] = max(1, state["mute_revision"] + 1)
+        if bump_consent:
+            state["consent_revision"] = max(1, state["consent_revision"] + 1)
+        self._announcements = {
+            announcement_id: record
+            for announcement_id, record in self._announcements.items()
+            if not (
+                record["session_id"] == session_id
+                and record["generation"] == generation
+            )
+        }
+
+    def retained_counts(self) -> dict[str, int]:
+        return {
+            "sessions": len(self._sessions),
+            "announcements": len(self._announcements),
+        }
+
+    def observe_current(self, *, session: Any, event: Any, now: datetime) -> None:
+        record = self._announcements.get(event.announcement_id)
+        if record is None:
+            raise ClaimUnavailable("local_playout_not_authorized")
+        self.observe(
+            session=session,
+            event=event,
+            mute_revision=record["mute_revision"],
+            consent_revision=record["consent_revision"],
+            now=now,
+        )
+
+    def next_revisions(self, *, session_id: str, generation: int) -> tuple[int, int]:
+        state = self._sessions.get((session_id, generation))
+        if state is None:
+            return 1, 1
+        return max(1, state["mute_revision"]), max(1, state["consent_revision"])
+
+    def _prune(self, now: datetime) -> None:
+        self._announcements = {
+            announcement_id: record
+            for announcement_id, record in self._announcements.items()
+            if record["expires_at"] > now
+        }
 
 
 class WorkerSocket(Protocol):

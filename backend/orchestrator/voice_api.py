@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from orchestrator.auth import require_user_id
+from orchestrator.voice_backend import VoiceSpeechBackend, backend_value
 from orchestrator.voice_control_binding import VoiceControlBindingError
 
 
@@ -36,6 +37,7 @@ _NO_STORE = {"Cache-Control": "no-store"}
 _CAPABILITY_RATE_LIMIT = 30
 _CAPABILITY_RATE_WINDOW_SECONDS = 60.0
 _CAPABILITY_RATE_MAX_SUBJECTS = 4_096
+_SESSION_RATE_LIMIT = 12
 _CAPABILITY_LIMITER_INSTALL_LOCK = Lock()
 
 Uuid4 = str
@@ -53,6 +55,44 @@ class ClientMediaCapability(_StrictModel):
     ]
     full_duplex: bool = False
     transport: Literal["livekit", "watch_pcm_websocket"]
+
+
+class ClientLocalCapability(_StrictModel):
+    contract: Literal["client_local/v1"]
+    transport: Literal["client_local"]
+    configured_locale: Literal["en-US"]
+    full_duplex: Literal[False]
+    has_microphone: bool
+    has_audio_output: bool
+    microphone_permission: Literal[
+        "not_determined", "authorized", "denied", "restricted", "unavailable"
+    ]
+    recognition_permission: Literal[
+        "not_determined", "authorized", "denied", "restricted", "unavailable"
+    ]
+    recognition_processing: Literal["guaranteed_local", "unavailable", "unsupported"]
+    recognition_locale: Literal["ready", "unavailable", "unknown"]
+    recognition_installation: Literal[
+        "ready", "downloadable", "installing", "failed", "unavailable", "not_applicable"
+    ]
+    synthesis_processing: Literal["guaranteed_local", "unavailable", "unsupported"]
+    synthesis_locale: Literal["ready", "unavailable", "unknown"]
+
+
+class CreateClientLocalSessionRequest(_StrictModel):
+    schema_version: Literal["2"]
+    activation_id: str = Field(pattern=_UUID4_PATTERN)
+    device_id: str = Field(pattern=_UUID4_PATTERN)
+    device_kind: Literal["web", "windows", "android", "ios", "macos", "watch"]
+    device_label: str | None = Field(default=None, max_length=80)
+    visible_chat_id: str = Field(pattern=_UUID4_PATTERN)
+    foreground_active: Literal[True]
+    client_capability: ClientLocalCapability
+
+
+class TakeoverClientLocalSessionRequest(CreateClientLocalSessionRequest):
+    expected_generation: int = Field(ge=1, strict=True)
+    expected_speech_revision: int = Field(ge=1, strict=True)
 
 
 class CreateSessionRequest(_StrictModel):
@@ -212,12 +252,29 @@ async def get_voice_capability(
     user_id: str = Depends(require_user_id),
 ) -> Response:
     try:
+        _require_remote_v1(request)
         _capability_rate_limiter(request).check(user_id)
         runtime = _runtime(request)
         value = await _invoke(runtime, "get_capability", user_id=user_id)
         return _response(value)
     except Exception as exc:
         return _error_response(exc)
+
+
+@router.get("/v2/capability")
+async def get_voice_capability_v2(
+    request: Request,
+    user_id: str = Depends(require_user_id),
+) -> Response:
+    try:
+        _capability_rate_limiter(request).check(user_id)
+        services = getattr(_orchestrator(request), "voice_services", None)
+        if services is None or getattr(services, "speech_backend", None) is None:
+            raise VoiceApiError("backend_selection_invalid", status_code=503)
+        value = await _invoke(_runtime(request), "get_capability", user_id=user_id)
+        return _response(value)
+    except Exception as exc:
+        return _v2_error_response(exc)
 
 
 @router.get("/status")
@@ -232,6 +289,7 @@ async def get_voice_status(
     """
 
     try:
+        _require_remote_v1(request)
         _status_rate_limiter(request).check(user_id)
         services = _voice_services(request)
         value = await _invoke(services, "voice_status")
@@ -240,12 +298,106 @@ async def get_voice_status(
         return _error_response(exc)
 
 
+@router.get("/v2/status")
+async def get_voice_status_v2(
+    request: Request,
+    user_id: str = Depends(require_user_id),
+) -> Response:
+    try:
+        _status_rate_limiter(request).check(user_id)
+        value = await _invoke(_voice_services(request), "voice_status")
+        return _response(value)
+    except Exception as exc:
+        return _v2_error_response(exc)
+
+
+@router.post("/v2/sessions")
+async def create_client_local_voice_session(
+    request: Request,
+    user_id: str = Depends(require_user_id),
+) -> Response:
+    try:
+        _require_local_v2(request)
+        _session_rate_limiter(request).check(user_id)
+        body = await _body(request, CreateClientLocalSessionRequest)
+        _validate_local_eligibility(body.client_capability)
+        context = _control_context(request, user_id, body.device_id)
+        runtime_request = body.model_dump(mode="json", exclude_none=True)
+        runtime_request["capability"] = runtime_request.pop("client_capability")
+        runtime_request["device_kind"] = (
+            "watchos" if runtime_request["device_kind"] == "watch" else runtime_request["device_kind"]
+        )
+        runtime_request.pop("schema_version")
+        runtime_request.pop("device_label", None)
+        value = await _invoke(
+            _runtime(request),
+            "create_session",
+            user_id=user_id,
+            control=context,
+            request=runtime_request,
+        )
+        await _publish_composer(
+            request,
+            user_id,
+            context,
+            selected_chat_id=body.visible_chat_id,
+        )
+        return _local_session_response(value, default_status=201)
+    except Exception as exc:
+        await _publish_composer(request, user_id)
+        return _v2_error_response(exc)
+
+
+@router.post("/v2/sessions/{session_id}/takeover")
+async def take_over_client_local_voice_session(
+    session_id: str,
+    request: Request,
+    user_id: str = Depends(require_user_id),
+) -> Response:
+    try:
+        _require_local_v2(request)
+        _session_rate_limiter(request).check(user_id)
+        checked_session_id = _uuid4(session_id, "invalid_session_id")
+        body = await _body(request, TakeoverClientLocalSessionRequest)
+        _validate_local_eligibility(body.client_capability)
+        context = _control_context(request, user_id, body.device_id)
+        runtime_request = body.model_dump(mode="json", exclude_none=True)
+        runtime_request["capability"] = runtime_request.pop("client_capability")
+        runtime_request["expected_media_grant_revision"] = runtime_request.pop(
+            "expected_speech_revision"
+        )
+        runtime_request["device_kind"] = (
+            "watchos" if runtime_request["device_kind"] == "watch" else runtime_request["device_kind"]
+        )
+        runtime_request.pop("schema_version")
+        runtime_request.pop("device_label", None)
+        value = await _invoke(
+            _runtime(request),
+            "take_over_session",
+            user_id=user_id,
+            session_id=checked_session_id,
+            control=context,
+            request=runtime_request,
+        )
+        await _publish_composer(
+            request,
+            user_id,
+            context,
+            selected_chat_id=body.visible_chat_id,
+        )
+        return _local_session_response(value)
+    except Exception as exc:
+        await _publish_composer(request, user_id)
+        return _v2_error_response(exc)
+
+
 @router.post("/sessions")
 async def create_voice_session(
     request: Request,
     user_id: str = Depends(require_user_id),
 ) -> Response:
     try:
+        _require_remote_v1(request)
         body = await _body(request, CreateSessionRequest)
         context = _control_context(request, user_id, body.device_id)
         runtime = _runtime(request)
@@ -275,6 +427,7 @@ async def take_over_voice_session(
     user_id: str = Depends(require_user_id),
 ) -> Response:
     try:
+        _require_remote_v1(request)
         checked_session_id = _uuid4(session_id, "invalid_session_id")
         body = await _body(request, TakeoverSessionRequest)
         context = _control_context(request, user_id, body.device_id)
@@ -486,8 +639,19 @@ def _status_rate_limiter(request: Request) -> _CapabilityRateLimiter:
     return _installed_rate_limiter(request, "voice_status_rate_limiter")
 
 
+def _session_rate_limiter(request: Request) -> _CapabilityRateLimiter:
+    return _installed_rate_limiter(
+        request,
+        "voice_session_rate_limiter",
+        limit=_SESSION_RATE_LIMIT,
+    )
+
+
 def _installed_rate_limiter(
-    request: Request, state_key: str
+    request: Request,
+    state_key: str,
+    *,
+    limit: int = _CAPABILITY_RATE_LIMIT,
 ) -> _CapabilityRateLimiter:
     state = request.app.state
     limiter = getattr(state, state_key, None)
@@ -496,7 +660,7 @@ def _installed_rate_limiter(
     with _CAPABILITY_LIMITER_INSTALL_LOCK:
         limiter = getattr(state, state_key, None)
         if limiter is None:
-            limiter = _CapabilityRateLimiter()
+            limiter = _CapabilityRateLimiter(limit=limit)
             setattr(state, state_key, limiter)
         if not isinstance(limiter, _CapabilityRateLimiter):
             raise VoiceApiError("voice_unavailable", status_code=503)
@@ -509,6 +673,77 @@ def _runtime(request: Request) -> Any:
     if runtime is None:
         raise VoiceApiError("voice_unavailable", status_code=503)
     return runtime
+
+
+def _require_remote_v1(request: Request) -> None:
+    """Keep the legacy surface exact and fail closed on local deployments."""
+
+    orchestrator = _orchestrator(request)
+    runtime = getattr(orchestrator, "voice_runtime", None)
+    services = getattr(orchestrator, "voice_services", None)
+    configured = getattr(runtime, "speech_backend", None)
+    if configured is None:
+        configured = getattr(services, "speech_backend", None)
+    if configured is None:
+        return
+    backend = backend_value(configured)
+    if backend is VoiceSpeechBackend.CLIENT_LOCAL:
+        raise VoiceApiError(
+            "client_contract_upgrade_required",
+            status_code=503,
+        )
+    if backend is not VoiceSpeechBackend.LLM_FACTORY:
+        raise VoiceApiError("backend_selection_invalid", status_code=503)
+
+
+def _require_local_v2(request: Request) -> None:
+    runtime = getattr(_orchestrator(request), "voice_runtime", None)
+    services = getattr(_orchestrator(request), "voice_services", None)
+    configured = getattr(runtime, "speech_backend", None)
+    if configured is None:
+        configured = getattr(services, "speech_backend", None)
+    if backend_value(configured) is not VoiceSpeechBackend.CLIENT_LOCAL:
+        raise VoiceApiError("backend_mismatch", status_code=409)
+
+
+def _validate_local_eligibility(capability: ClientLocalCapability) -> None:
+    checks = (
+        (capability.has_microphone, "no_microphone"),
+        (capability.has_audio_output, "no_audio_output"),
+        (
+            capability.microphone_permission == "authorized",
+            "microphone_permission_denied"
+            if capability.microphone_permission in {"denied", "restricted", "unavailable"}
+            else "microphone_permission_not_determined",
+        ),
+        (
+            capability.recognition_permission == "authorized",
+            "speech_recognition_permission_denied"
+            if capability.recognition_permission in {"denied", "restricted", "unavailable"}
+            else "speech_recognition_permission_not_determined",
+        ),
+        (
+            capability.recognition_processing == "guaranteed_local",
+            "local_processing_not_guaranteed",
+        ),
+        (capability.recognition_locale == "ready", "local_recognition_locale_unavailable"),
+        (
+            capability.recognition_installation == "ready",
+            {
+                "downloadable": "local_language_download_required",
+                "installing": "local_language_installing",
+                "failed": "local_language_install_failed",
+            }.get(capability.recognition_installation, "local_recognition_unavailable"),
+        ),
+        (
+            capability.synthesis_processing == "guaranteed_local",
+            "local_synthesis_unavailable",
+        ),
+        (capability.synthesis_locale == "ready", "local_synthesis_locale_unavailable"),
+    )
+    for allowed, reason in checks:
+        if not allowed:
+            raise VoiceApiError(reason, status_code=422)
 
 
 def _voice_services(request: Request) -> Any:
@@ -626,6 +861,68 @@ def _response(value: Any, *, default_status: int = 200) -> Response:
     if not isinstance(payload, Mapping):
         raise VoiceApiError("invalid_voice_runtime_response", status_code=503)
     return JSONResponse(dict(payload), status_code=status_code, headers=headers)
+
+
+def _local_session_response(value: Any, *, default_status: int = 200) -> Response:
+    if isinstance(value, VoiceHttpResult):
+        status_code = value.status_code
+        payload = dict(value.payload or {})
+    else:
+        status_code = default_status
+        payload = dict(value)
+    session = payload.get("session", payload)
+    if not isinstance(session, Mapping):
+        raise VoiceApiError("invalid_voice_runtime_response", status_code=503)
+    if session.get("speech_backend") == "client_local" and "schema_version" not in session:
+        session = {
+            "schema_version": "2",
+            "session_id": session["session_id"],
+            "speech_backend": "client_local",
+            "transport": "client_local",
+            "generation": session["generation"],
+            "speech_revision": session["media_grant_revision"],
+            "state": session["state"],
+            "visible_chat_id": session["visible_chat_id"],
+            "chat_context_revision": session["chat_context_revision"],
+            "applied_chat_context_revision": session["applied_chat_context_revision"],
+            "chat_context_synced": session["chat_context_synced"],
+            "foreground_active": session["foreground_active"],
+            "microphone_enabled": session["microphone_enabled"],
+            "speech_muted": session["speech_muted"],
+            "configured_locale": "en-US",
+            "idle_expires_at": session["idle_expires_at"],
+        }
+    return JSONResponse(dict(session), status_code=status_code, headers=_NO_STORE)
+
+
+def _v2_error_response(exc: Exception) -> JSONResponse:
+    if isinstance(exc, VoiceApiError):
+        code = exc.code
+        status_code = exc.status_code
+        headers = exc.headers
+    elif isinstance(exc, VoiceControlBindingError):
+        code = "invalid_binding"
+        status_code = 403
+        headers = {}
+    else:
+        code = str(getattr(exc, "code", "voice_unavailable"))
+        status_code = _status_for_code(code)
+        headers = {}
+    reason = {
+        "binding_scope_mismatch": "invalid_binding",
+        "binding_expired": "invalid_binding",
+        "binding_not_current": "invalid_binding",
+        "invalid_request": "invalid_binding" if status_code == 403 else "client_readiness_required",
+        "voice_rate_limited": "capacity_exhausted",
+    }.get(code, code)
+    body = {
+        "error": "voice_unavailable",
+        "reason": reason,
+        "retryable": code in {"voice_rate_limited", "capacity_exhausted"},
+    }
+    safe_headers = dict(headers)
+    safe_headers.update(_NO_STORE)
+    return JSONResponse(body, status_code=status_code, headers=safe_headers)
 
 
 def _error_response(exc: Exception) -> JSONResponse:

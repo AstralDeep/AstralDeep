@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from orchestrator.voice_api import VoiceApiError, VoiceHttpResult
+from orchestrator.voice_backend import VoiceSpeechBackend
 from orchestrator.voice_sessions import (
     CreateSession,
     GRANT_REPLAY_WINDOW,
@@ -100,6 +101,7 @@ class VoiceSessionRuntime:
         media_grant_seconds: int = 300,
         media_grant_secret: bytes | None = None,
         observability: Any | None = None,
+        speech_backend: VoiceSpeechBackend = VoiceSpeechBackend.LLM_FACTORY,
     ) -> None:
         if not 15 <= lease_seconds <= 300:
             raise ValueError("invalid_voice_lease")
@@ -121,6 +123,7 @@ class VoiceSessionRuntime:
             raise ValueError("invalid_media_grant_secret")
         self._media_grant_secret = media_grant_secret
         self._observability = observability
+        self.speech_backend = speech_backend
         self._speech_mute_handler: (
             Callable[[str, int, bool], Awaitable[None]] | None
         ) = None
@@ -134,6 +137,9 @@ class VoiceSessionRuntime:
             Callable[[VoiceSessionRecord, str], Awaitable[None]] | None
         ) = None
         self._session_state_publisher: (
+            Callable[[VoiceSessionRecord], Awaitable[None]] | None
+        ) = None
+        self._local_buffer_cleanup_handler: (
             Callable[[VoiceSessionRecord], Awaitable[None]] | None
         ) = None
         self._active_worker_assignments: dict[str, _ActiveWorkerAssignment] = {}
@@ -185,6 +191,16 @@ class VoiceSessionRuntime:
         if self._session_end_handler is not None:
             raise RuntimeError("session_end_handler_already_bound")
         self._session_end_handler = handler
+
+    def bind_local_buffer_cleanup_handler(
+        self,
+        handler: Callable[[VoiceSessionRecord], Awaitable[None]],
+    ) -> None:
+        if not callable(handler):
+            raise TypeError("local buffer cleanup handler must be callable")
+        if self._local_buffer_cleanup_handler is not None:
+            raise RuntimeError("local_buffer_cleanup_handler_already_bound")
+        self._local_buffer_cleanup_handler = handler
 
     def bind_session_state_publisher(
         self,
@@ -345,7 +361,11 @@ class VoiceSessionRuntime:
                 payload={"owner": _session_projection(exc.current)},
             ) from None
         try:
-            session, media_grant = await self._activate(mutation.session, create)
+            if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+                session = await self._activate_local(mutation.session, create)
+                media_grant = None
+            else:
+                session, media_grant = await self._activate(mutation.session, create)
         except asyncio.CancelledError:
             self._record_session_event(
                 mutation.session,
@@ -377,8 +397,11 @@ class VoiceSessionRuntime:
         else:
             self._record_session_event(session, "session", "started")
             self._record_session_state(session, "starting", "none")
+        payload = {"session": _session_projection(session)}
+        if media_grant is not None:
+            payload["grant"] = media_grant
         return VoiceHttpResult(
-            {"session": _session_projection(session), "grant": media_grant},
+            payload,
             status_code=200 if mutation.replayed else 201,
         )
 
@@ -410,7 +433,11 @@ class VoiceSessionRuntime:
             now=now,
         )
         await self._cleanup_ended_session(previous, "takeover", fail_open=True)
-        session, media_grant = await self._activate(mutation.session, create)
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            session = await self._activate_local(mutation.session, create)
+            media_grant = None
+        else:
+            session, media_grant = await self._activate(mutation.session, create)
         self._record_session_event(
             session,
             "takeover",
@@ -424,8 +451,11 @@ class VoiceSessionRuntime:
             reason="takeover",
         )
         self._record_session_state(session, "starting", "takeover")
+        payload = {"session": _session_projection(session)}
+        if media_grant is not None:
+            payload["grant"] = media_grant
         return VoiceHttpResult(
-            {"session": _session_projection(session), "grant": media_grant},
+            payload,
             status_code=200,
         )
 
@@ -470,6 +500,20 @@ class VoiceSessionRuntime:
             now=now,
         )
         await self._claim_control(session, now)
+        if (
+            self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
+            and self._local_buffer_cleanup_handler is not None
+            and any(
+                request.get(name) is not None
+                for name in (
+                    "visible_chat_id",
+                    "speech_muted",
+                    "microphone_enabled",
+                    "foreground_active",
+                )
+            )
+        ):
+            await self._local_buffer_cleanup_handler(session)
         if request.get("visible_chat_id") is not None:
             await self._media.apply_context(session)
             applied = await asyncio.to_thread(
@@ -821,6 +865,8 @@ class VoiceSessionRuntime:
         )
 
     async def _require_ready(self) -> None:
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            return
         capability = await self._capability.readiness()
         if capability.status == "ready" and capability.reason == "ready":
             return
@@ -836,8 +882,31 @@ class VoiceSessionRuntime:
         now: datetime,
     ) -> CreateSession:
         _validate_activation(request)
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            _validate_local_activation(request)
         activation_id = request["activation_id"]
         transport = request["capability"]["transport"]
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            if transport != "client_local":
+                raise VoiceApiError("unsupported_transport", status_code=400)
+            return CreateSession(
+                user_id=user_id,
+                activation_id=activation_id,
+                device_id=request["device_id"],
+                device_kind=request["device_kind"],
+                speech_backend="client_local",
+                transport="client_local",
+                room_name=None,
+                participant_identity=None,
+                visible_chat_id=request["visible_chat_id"],
+                owner_connection_generation=control["connection_generation"],
+                control_binding_id=control["binding_id"],
+                control_binding_expires_at=control["binding_expires_at"],
+                lease_expires_at=now + self._lease,
+                media_grant_nonce_hash=None,
+                media_grant_issued_at=None,
+                media_grant_expires_at=None,
+            )
         if request["device_kind"] == "watchos":
             if transport != "watch_pcm_websocket":
                 raise VoiceApiError("unsupported_transport", status_code=400)
@@ -880,7 +949,43 @@ class VoiceSessionRuntime:
             media_grant_nonce_hash=nonce_hash,
             media_grant_issued_at=now,
             media_grant_expires_at=now + self._grant_lifetime,
+            speech_backend="llm_factory",
         )
+
+    async def _activate_local(
+        self,
+        session: VoiceSessionRecord,
+        create: CreateSession,
+    ) -> VoiceSessionRecord:
+        """Activate durable local ownership without constructing media work."""
+
+        if session.ended_at is not None:
+            raise VoiceApiError("activation_replay_ended", status_code=409)
+        if session.speech_backend != "client_local":
+            raise VoiceApiError("backend_mismatch", status_code=409)
+        await self._claim_control(session, self._now())
+        applied = await asyncio.to_thread(
+            self._repository.apply_chat_context,
+            user_id=create.user_id,
+            session_id=session.session_id,
+            expected_generation=session.generation,
+            expected_media_grant_revision=session.media_grant_revision,
+            control_owner_id=self._replica_id,
+            visible_chat_id=session.visible_chat_id,
+            chat_context_revision=session.chat_context_revision,
+            now=self._now(),
+        )
+        active = await asyncio.to_thread(
+            self._repository.mark_session_active,
+            user_id=create.user_id,
+            session_id=session.session_id,
+            expected_generation=session.generation,
+            expected_media_grant_revision=session.media_grant_revision,
+            now=self._now(),
+        )
+        if not applied.session.chat_context_synced or not active.chat_context_synced:
+            raise RuntimeError("chat_context_not_applied")
+        return active
 
     def _watch_nonce(
         self,
@@ -1410,6 +1515,46 @@ def _validate_activation(request: Mapping[str, Any]) -> None:
         raise VoiceApiError(reason, status_code=400)
 
 
+def _validate_local_activation(request: Mapping[str, Any]) -> None:
+    capability = request.get("capability")
+    if not isinstance(capability, Mapping):
+        raise VoiceApiError("invalid_request", status_code=400)
+    exact = {
+        "contract",
+        "transport",
+        "configured_locale",
+        "full_duplex",
+        "has_microphone",
+        "has_audio_output",
+        "microphone_permission",
+        "recognition_permission",
+        "recognition_processing",
+        "recognition_locale",
+        "recognition_installation",
+        "synthesis_processing",
+        "synthesis_locale",
+    }
+    if set(capability) != exact:
+        raise VoiceApiError("invalid_request", status_code=400)
+    required = {
+        "contract": "client_local/v1",
+        "transport": "client_local",
+        "configured_locale": "en-US",
+        "full_duplex": False,
+        "has_microphone": True,
+        "has_audio_output": True,
+        "microphone_permission": "authorized",
+        "recognition_permission": "authorized",
+        "recognition_processing": "guaranteed_local",
+        "recognition_locale": "ready",
+        "recognition_installation": "ready",
+        "synthesis_processing": "guaranteed_local",
+        "synthesis_locale": "ready",
+    }
+    if any(capability.get(name) != value for name, value in required.items()):
+        raise VoiceApiError("client_readiness_required", status_code=422)
+
+
 def session_state_frame(
     session: VoiceSessionRecord,
     *,
@@ -1457,7 +1602,7 @@ def session_state_frame(
 def _session_projection(session: VoiceSessionRecord) -> dict[str, Any]:
     """Return only the non-secret client session vocabulary."""
 
-    return {
+    projection = {
         "session_id": session.session_id,
         "device_id": session.device_id,
         "device_kind": session.device_kind,
@@ -1482,6 +1627,11 @@ def _session_projection(session: VoiceSessionRecord) -> dict[str, Any]:
             None if session.idle_expires_at is None else _iso(session.idle_expires_at)
         ),
     }
+    # The v1 remote response must remain byte-compatible.  The discriminator
+    # is emitted only for the separately versioned client-local v2 surface.
+    if session.speech_backend == "client_local":
+        projection["speech_backend"] = "client_local"
+    return projection
 
 
 def _media_grant_state(

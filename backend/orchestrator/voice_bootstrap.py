@@ -10,7 +10,7 @@ import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Mapping
 
 from orchestrator.livekit_service import (
@@ -18,7 +18,10 @@ from orchestrator.livekit_service import (
     LiveKitSettings,
     VoiceCapabilityService,
 )
-from orchestrator.voice_control_binding import VoiceControlClaims
+from orchestrator.voice_control_binding import (
+    ClientLocalBindingRegistry,
+    VoiceControlClaims,
+)
 from orchestrator.voice_coordinator import (
     APPROVED_PHRASE_TEXT,
     PREACCEPTANCE_REJECTION_PHRASES,
@@ -26,6 +29,7 @@ from orchestrator.voice_coordinator import (
     AnnouncementMutation,
     CADENCE_HARD_GAP_SECONDS,
     CadenceDecision,
+    ClientLocalAnnouncementRegistry,
     CoordinatorClock,
     HANDOFF_BUDGET_SECONDS,
     PlayoutCompletion,
@@ -39,11 +43,14 @@ from orchestrator.voice_coordinator import (
 )
 from orchestrator.voice_media import DirectRtcVoiceMedia
 from orchestrator.voice_api import VoiceApiError
+from orchestrator.voice_backend import SpeechBackendSelection, VoiceSpeechBackend
 from orchestrator.voice_recap import SensitiveRecapRegistry, VoiceRecapError
 from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.voice_runtime import VoiceSessionRuntime
 from orchestrator.voice_sessions import (
     ChatUnavailableMutation,
+    LocalTranscriptSubmission,
+    RecognitionBinding,
     SessionControl,
     TranscriptAdmission,
     TranscriptSubmissionRejected,
@@ -948,14 +955,15 @@ class _SessionAnnouncementRunner:
 
 @dataclass(slots=True)
 class VoiceServices:
-    livekit: LiveKitService
-    worker_pool: WorkerPool
+    livekit: LiveKitService | None
+    worker_pool: WorkerPool | None
     repository: VoiceSessionRepository
-    coordinator: VoiceCoordinator
-    capability: VoiceCapabilityService
-    media: DirectRtcVoiceMedia
-    runtime: VoiceSessionRuntime
-    worker_control_settings: WorkerControlSettings = field(repr=False)
+    coordinator: VoiceCoordinator | None
+    capability: Any | None
+    media: Any | None
+    runtime: VoiceSessionRuntime | None
+    worker_control_settings: WorkerControlSettings | None = field(repr=False)
+    speech_backend: VoiceSpeechBackend | None = None
     observability: RuntimeObservability | None = field(default=None, repr=False)
     worker_endpoint: WorkerControlEndpoint | None = field(
         default=None,
@@ -1018,6 +1026,9 @@ class VoiceServices:
         init=False,
         repr=False,
     )
+    local_announcement_publisher: (
+        Callable[[Any], Awaitable[None]] | None
+    ) = field(default=None, init=False, repr=False)
     listening_sessions: set[tuple[str, int]] = field(
         default_factory=set,
         init=False,
@@ -1030,6 +1041,14 @@ class VoiceServices:
     )
     sensitive_recaps: SensitiveRecapRegistry = field(
         default_factory=SensitiveRecapRegistry,
+        repr=False,
+    )
+    local_bindings: ClientLocalBindingRegistry = field(
+        default_factory=ClientLocalBindingRegistry,
+        repr=False,
+    )
+    local_announcements: ClientLocalAnnouncementRegistry = field(
+        default_factory=ClientLocalAnnouncementRegistry,
         repr=False,
     )
 
@@ -1045,6 +1064,50 @@ class VoiceServices:
             raise RuntimeError("terminal_turn_notifier_already_bound")
         self.terminal_turn_notifier = notifier
 
+    def bind_local_announcement_publisher(
+        self,
+        publisher: Callable[[Any], Awaitable[None]],
+    ) -> None:
+        if not callable(publisher):
+            raise TypeError("local announcement publisher must be callable")
+        if self.local_announcement_publisher is not None:
+            raise RuntimeError("local_announcement_publisher_already_bound")
+        self.local_announcement_publisher = publisher
+
+    async def _publish_local_announcement(
+        self,
+        turn: VoiceTurnRecord,
+        *,
+        kind: str,
+        text: str = "",
+        output_policy: str = "lifecycle",
+        server_authorized: bool = False,
+    ) -> None:
+        session = await asyncio.to_thread(
+            self.repository.get_session,
+            user_id=turn.user_id,
+            session_id=turn.session_id,
+        )
+        mute_revision, consent_revision = self.local_announcements.next_revisions(
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+        frame = self.local_announcements.issue(
+            session=session,
+            kind=kind,
+            turn_id=turn.turn_id,
+            requested_text=text,
+            output_policy=output_policy,
+            mute_revision=mute_revision,
+            consent_revision=consent_revision,
+            now=datetime.now(UTC),
+            server_authorized=server_authorized,
+        )
+        publisher = self.local_announcement_publisher
+        if publisher is None:
+            raise VoiceBootstrapError("local_announcement_publisher_unavailable")
+        await publisher(frame)
+
     def voice_status(self) -> dict[str, Any]:
         """Project the FR-034 operator surface: readiness, workers, refusals.
 
@@ -1055,6 +1118,28 @@ class VoiceServices:
         def _stamp(value: datetime) -> str:
             return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
+        # Preserve the pre-075 projection contract for focused harnesses (and
+        # embedders) that provide only the established remote worker fields.
+        speech_backend = getattr(
+            self, "speech_backend", VoiceSpeechBackend.LLM_FACTORY
+        )
+        if speech_backend is None:
+            return {
+                "schema_version": "2",
+                "speech_backend": None,
+                "state": "invalid_configuration",
+                "reason": "backend_selection_invalid",
+                "checked_at": _iso_datetime(datetime.now(UTC)),
+            }
+        if speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            return {
+                "schema_version": "2",
+                "speech_backend": "client_local",
+                "state": "ready",
+                "reason": "ready",
+                "checked_at": _iso_datetime(datetime.now(UTC)),
+            }
+        assert self.worker_pool is not None
         readiness = self.worker_pool.readiness()
         endpoint = self.worker_endpoint
         refusals = endpoint.admission_refusals() if endpoint is not None else ()
@@ -1093,6 +1178,10 @@ class VoiceServices:
         """Mount the authenticated pool socket exactly once on the root app."""
 
         del environ
+        if self.speech_backend is not VoiceSpeechBackend.LLM_FACTORY:
+            raise VoiceBootstrapError("worker_control_not_available")
+        assert self.worker_pool is not None
+        assert self.worker_control_settings is not None
         endpoint = install_router(
             app,
             self.worker_pool,
@@ -1348,6 +1437,160 @@ class VoiceServices:
             )
         return admission
 
+    def _require_local_backend(self) -> None:
+        if self.speech_backend is not VoiceSpeechBackend.CLIENT_LOCAL:
+            raise VoiceBootstrapError("client_local_not_available")
+
+    async def local_ready(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        claims: VoiceControlClaims,
+        frame: Any,
+        now: datetime,
+    ) -> VoiceSessionRecord:
+        """Authorize one readiness observation against server-held state."""
+
+        self._require_local_backend()
+        session = await asyncio.to_thread(
+            self.repository.get_controlled_session,
+            user_id=user_id,
+            session_id=frame.session_id,
+            expected_generation=frame.generation,
+            expected_media_grant_revision=frame.speech_revision,
+            control=SessionControl(
+                device_id=claims.device_id,
+                connection_generation=claims.connection_generation,
+                binding_id=claims.binding_id,
+                binding_expires_at=claims.expires_at,
+            ),
+            now=now,
+        )
+        self.local_bindings.authorize_ready(
+            socket_id=socket_id,
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            claims=claims,
+            session=session,
+            frame=frame,
+            now=now,
+        )
+        return session
+
+    async def bind_local_recognition(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        claims: VoiceControlClaims,
+        frame: Any,
+        execution_base_render_revision: int,
+        now: datetime,
+    ) -> tuple[VoiceTurnRecord, Any]:
+        """Bind a local recognition start to one durable content-free turn."""
+
+        self._require_local_backend()
+        session = await asyncio.to_thread(
+            self.repository.get_controlled_session,
+            user_id=user_id,
+            session_id=frame.session_id,
+            expected_generation=frame.generation,
+            expected_media_grant_revision=frame.speech_revision,
+            control=SessionControl(
+                device_id=claims.device_id,
+                connection_generation=claims.connection_generation,
+                binding_id=claims.binding_id,
+                binding_expires_at=claims.expires_at,
+            ),
+            now=now,
+        )
+        if session.control_owner_id is None:
+            raise VoiceBootstrapError("local_control_unavailable")
+        mutation = await asyncio.to_thread(
+            self.repository.bind_recognition_turn,
+            RecognitionBinding(
+                user_id=user_id,
+                session_id=frame.session_id,
+                session_generation=frame.generation,
+                media_grant_revision=frame.speech_revision,
+                client_turn_id=frame.client_turn_id,
+                chat_id=frame.chat_id,
+                chat_context_revision=frame.chat_context_revision,
+                execution_base_render_revision=execution_base_render_revision,
+                control_owner_id=session.control_owner_id,
+            ),
+            now=now,
+        )
+        authority = self.local_bindings.bind_turn(
+            socket_id=socket_id,
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            claims=claims,
+            session=session,
+            frame=frame,
+            turn=mutation.turn,
+            now=now,
+        )
+        return mutation.turn, authority
+
+    async def admit_local_final(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        frame: Any,
+        now: datetime,
+    ) -> TranscriptAdmission:
+        """Verify and admit one local final without worker proof authority."""
+
+        self._require_local_backend()
+        canonical, _registry_replay = self.local_bindings.verify_final(
+            socket_id=socket_id,
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            frame=frame,
+            now=now,
+        )
+        authority = self.local_bindings.get_turn(
+            user_id=user_id,
+            client_turn_id=frame.client_turn_id,
+            now=now,
+        )
+        return await asyncio.to_thread(
+            self.repository.admit_local_transcript,
+            LocalTranscriptSubmission.from_authority(
+                user_id=user_id,
+                authority=authority,
+                detected_language="en",
+                canonical_text=canonical,
+            ),
+            now=now,
+        )
+
+    def clear_local_connection(self, claims: VoiceControlClaims) -> None:
+        self.local_bindings.clear_connection(
+            user_id=claims.subject,
+            device_id=claims.device_id,
+            connection_generation=claims.connection_generation,
+        )
+
+    def clear_local_session(self, session: VoiceSessionRecord) -> None:
+        self.local_bindings.clear_session(
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+
+    async def cleanup_local_buffers(self, session: VoiceSessionRecord) -> None:
+        self.clear_local_session(session)
+        self.local_announcements.fence_session(
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+
     async def _record_submission_event(
         self,
         request: TranscriptSubmission,
@@ -1571,7 +1814,11 @@ class VoiceServices:
         now = datetime.now(UTC)
         await asyncio.to_thread(
             self.repository.renew_owned_control_leases,
-            owner_id=self.coordinator.replica_id,
+            owner_id=(
+                self.coordinator.replica_id
+                if self.coordinator is not None
+                else self.runtime._replica_id
+            ),
             now=now,
         )
         lease_expired, idle_expired = await asyncio.gather(
@@ -1678,6 +1925,12 @@ class VoiceServices:
         if callable(release_fence):
             release_fence(session)
         key = (session.session_id, session.generation)
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            self.clear_local_session(session)
+            self.local_announcements.clear_session(
+                session_id=session.session_id,
+                generation=session.generation,
+            )
         self.listening_sessions.discard(key)
         self.reconnecting_sessions.discard(key)
         async with self.announcement_runner_lock:
@@ -1935,11 +2188,55 @@ class VoiceServices:
                 fence.announcement_id,
             )
 
+    async def handle_local_playout(
+        self,
+        *,
+        user_id: str,
+        claims: VoiceControlClaims,
+        event: Any,
+        now: datetime,
+    ) -> None:
+        """Apply one content-free local playout observation under all fences."""
+
+        self._require_local_backend()
+        session = await asyncio.to_thread(
+            self.repository.get_controlled_session,
+            user_id=user_id,
+            session_id=event.session_id,
+            expected_generation=event.generation,
+            expected_media_grant_revision=event.speech_revision,
+            control=SessionControl(
+                device_id=claims.device_id,
+                connection_generation=claims.connection_generation,
+                binding_id=claims.binding_id,
+                binding_expires_at=claims.expires_at,
+            ),
+            now=now,
+        )
+        self.local_announcements.observe_current(
+            session=session,
+            event=event,
+            now=now,
+        )
+
     async def start_turn_announcements(self, turn: VoiceTurnRecord) -> None:
         """Queue one exactly-once acknowledgement on the session stream."""
 
         if not isinstance(turn, VoiceTurnRecord):
             raise TypeError("turn must be VoiceTurnRecord")
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            try:
+                await self._publish_local_announcement(
+                    turn,
+                    kind="acknowledgement",
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Local synthesis/delivery degradation never rolls back the
+                # already accepted ordinary chat turn.
+                logger.warning("voice_local_acknowledgement_unavailable")
+            return
         await self._set_turn_idle(
             turn,
             listening=False,
@@ -2109,6 +2406,47 @@ class VoiceServices:
 
         if terminal_kind not in {"succeeded", "failed", "refused", "cancelled"}:
             raise ValueError("invalid_terminal_kind")
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            terminal = await asyncio.to_thread(
+                self.repository.terminalize_turn,
+                user_id=turn.user_id,
+                turn_id=turn.turn_id,
+                terminal_kind=terminal_kind,
+                result_commit_id=result_commit_id,
+                recap_source=recap_source,
+                sensitivity=sensitivity,
+                now=datetime.now(UTC),
+            )
+            terminal_turn = terminal.turn
+            kind = {
+                "succeeded": "result",
+                "failed": "failure",
+                "refused": "refusal",
+                "cancelled": "cancellation",
+            }[terminal_kind]
+            try:
+                if kind == "result" and sensitivity == "non_sensitive" and recap_text:
+                    await self._publish_local_announcement(
+                        terminal_turn,
+                        kind=kind,
+                        text=recap_text,
+                        output_policy="full_recap",
+                        server_authorized=True,
+                    )
+                elif kind != "result":
+                    await self._publish_local_announcement(
+                        terminal_turn,
+                        kind=kind,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("voice_local_terminal_announcement_unavailable")
+            delivery = VoiceTerminalAnnouncementResult(
+                turn=terminal_turn,
+                speech_outcome="source_finished",
+            )
+            return delivery if with_delivery_status else terminal_turn
         future = asyncio.get_running_loop().create_future()
         try:
             runner = await self._announcement_runner(turn)
@@ -2538,6 +2876,26 @@ class VoiceServices:
             )
         except VoiceRecapError as exc:
             raise VoiceApiError(exc.code, status_code=409) from None
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            self.local_announcements.fence_session(
+                session_id=session.session_id,
+                generation=session.generation,
+                bump_mute=False,
+                bump_consent=True,
+            )
+            try:
+                await self._publish_local_announcement(
+                    turn,
+                    kind="result",
+                    text=text,
+                    output_policy="full_recap",
+                    server_authorized=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("voice_local_sensitive_recap_unavailable")
+            return
         future = asyncio.get_running_loop().create_future()
         runner = await self._announcement_runner(turn)
         runner.submit(
@@ -2647,7 +3005,11 @@ class VoiceServices:
         try:
             ended = await asyncio.to_thread(
                 self.repository.end_owned_sessions,
-                owner_id=self.coordinator.replica_id,
+                owner_id=(
+                    self.coordinator.replica_id
+                    if self.coordinator is not None
+                    else self.runtime._replica_id
+                ),
                 reason="shutdown",
                 now=datetime.now(UTC),
             )
@@ -2679,10 +3041,75 @@ class VoiceServices:
                 return_exceptions=True,
             )
         await self.sensitive_recaps.clear()
-        try:
+        if self.worker_pool is not None:
             await self.worker_pool.shutdown()
-        finally:
+        if self.livekit is not None:
             await self.livekit.close()
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalCapabilitySnapshot:
+    status: str = "requires_client_readiness"
+    reason: str = "client_readiness_required"
+
+    def to_dict(self) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        return {
+            "schema_version": "2",
+            "speech_backend": "client_local",
+            "status": self.status,
+            "reason": self.reason,
+            "checked_at": _iso_datetime(now),
+            "expires_at": _iso_datetime(now + timedelta(seconds=30)),
+            "supported_transports": ["client_local"],
+            "requirements": {
+                "session_contract": "voice-rest/v2-client-local",
+                "local_frame_contract": "client_local/v1",
+                "configured_locale": "en-US",
+                "recognition_must_be_local": True,
+                "synthesis_must_be_local": True,
+                "installation_policy": "explicit_user_action_only",
+                "requirement_revision": 1,
+                "max_final_unicode_scalars": 8000,
+                "max_announcement_utf8_bytes": 600,
+                "announcement_ttl_seconds": 10,
+                "echo_suppression_milliseconds": 500,
+            },
+        }
+
+
+class _ClientLocalCapability:
+    async def readiness(self) -> _LocalCapabilitySnapshot:
+        return _LocalCapabilitySnapshot()
+
+
+class _ClientLocalMedia:
+    """No-op lifecycle adapter that has no network or media dependencies."""
+
+    async def apply_context(self, _session: VoiceSessionRecord) -> None:
+        return None
+
+    async def set_capture(self, _session: VoiceSessionRecord, _enabled: bool) -> None:
+        return None
+
+    async def barge_in(self, _session: VoiceSessionRecord) -> None:
+        return None
+
+    async def stop_speech(self, _session: VoiceSessionRecord) -> None:
+        return None
+
+    async def end(self, _session: VoiceSessionRecord, _reason: str) -> None:
+        return None
+
+    async def abort(self, _session: VoiceSessionRecord) -> None:
+        return None
+
+    async def current_session(
+        self,
+        _session_id: str,
+        _generation: int,
+    ) -> None:
+        return None
 
 
 def build_voice_services(
@@ -2693,6 +3120,57 @@ def build_voice_services(
     observability: RuntimeObservability | None = None,
 ) -> VoiceServices:
     values = environ if environ is not None else os.environ
+    selection = SpeechBackendSelection.from_environ(values)
+    repository = VoiceSessionRepository(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_repositories,
+    )
+    if not selection.valid:
+        return VoiceServices(
+            livekit=None,
+            worker_pool=None,
+            repository=repository,
+            coordinator=None,
+            capability=None,
+            media=None,
+            runtime=None,
+            worker_control_settings=None,
+            speech_backend=None,
+            observability=observability,
+        )
+    if selection.value is VoiceSpeechBackend.CLIENT_LOCAL:
+        environment = values.get("ASTRAL_ENV", "").strip().lower() or "production"
+        development = environment in {"development", "dev", "test"}
+        replica_id = values.get("VOICE_COORDINATOR_REPLICA_ID", "").strip()
+        if not replica_id:
+            if not development:
+                raise VoiceBootstrapError("missing_voice_replica_id")
+            replica_id = "voice-coordinator-local-1"
+        capability = _ClientLocalCapability()
+        media = _ClientLocalMedia()
+        runtime = VoiceSessionRuntime(
+            repository=repository,
+            capability=capability,
+            media=media,
+            replica_id=replica_id,
+            observability=observability,
+            speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        )
+        services = VoiceServices(
+            livekit=None,
+            worker_pool=None,
+            repository=repository,
+            coordinator=None,
+            capability=capability,
+            media=media,
+            runtime=runtime,
+            worker_control_settings=None,
+            speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+            observability=observability,
+        )
+        runtime.bind_session_end_handler(services.handle_runtime_session_end)
+        runtime.bind_local_buffer_cleanup_handler(services.cleanup_local_buffers)
+        return services
     environment = values.get("ASTRAL_ENV", "").strip().lower() or "production"
     development = environment in {"development", "dev", "test"}
     closure = values.get("VOICE_WORKER_CLOSURE_SHA256", "").strip()
@@ -2753,10 +3231,6 @@ def build_voice_services(
         )
     )
     livekit = LiveKitService(livekit_settings)
-    repository = VoiceSessionRepository(
-        plane_runtime=plane_runtime,
-        plane_repositories=plane_repositories,
-    )
     coordinator = VoiceCoordinator(
         worker_pool,
         repository,
@@ -2783,6 +3257,7 @@ def build_voice_services(
         replica_id=replica_id,
         media_grant_secret=worker_control_settings.secret,
         observability=voice_observability,
+        speech_backend=VoiceSpeechBackend.LLM_FACTORY,
     )
     services = VoiceServices(
         livekit=livekit,
@@ -2793,6 +3268,7 @@ def build_voice_services(
         media=media,
         runtime=runtime,
         worker_control_settings=worker_control_settings,
+        speech_backend=VoiceSpeechBackend.LLM_FACTORY,
         observability=voice_observability,
     )
     runtime.bind_speech_mute_handler(services.set_session_speech_muted)
@@ -2810,7 +3286,10 @@ def install_voice_worker_control(
 ) -> WorkerControlEndpoint | None:
     """Keep the route absent when fail-closed voice construction did not pass."""
 
-    if services is None:
+    if (
+        services is None
+        or services.speech_backend is not VoiceSpeechBackend.LLM_FACTORY
+    ):
         return None
     return services.install_worker_control(app, environ=environ)
 
@@ -2861,6 +3340,10 @@ def _safe_failure_reason(exc: BaseException) -> str:
     if isinstance(exc, ValueError | TypeError):
         return "invalid_state"
     return "internal_error"
+
+
+def _iso_datetime(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _result_quanta(text: str, *, attribution: str | None = None) -> list[str]:

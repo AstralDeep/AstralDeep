@@ -11,6 +11,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 COMPOSITION_PATH = ROOT / "config" / "astral-composition.json"
+VOICE_LOCAL_SCHEMA_PATH = (
+    ROOT
+    / "specs"
+    / "075-client-local-speech"
+    / "contracts"
+    / "voice-local.schema.json"
+)
 
 UI_SEND_MODULES = (
     "orchestrator/orchestrator.py",
@@ -59,6 +66,27 @@ _TYPE_LITERAL = re.compile(r'"type": "([a-z_]+)"')
 _DATACLASS_DEFAULT = re.compile(r'type: str = "([a-z_]+)"')
 _ACTION_LITERAL = re.compile(r'action == "([a-z_]+)"')
 _CHROME_KEY = re.compile(r'"((?:chrome|draft|revision)_[a-z_]+)"\s*:')
+
+
+def _voice_local_types() -> set[str]:
+    """Read the separately owned speech sideband vocabulary."""
+
+    document = json.loads(VOICE_LOCAL_SCHEMA_PATH.read_text(encoding="utf-8"))
+    discovered: set[str] = set()
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            constant = value.get("const")
+            if isinstance(constant, str) and constant.startswith("voice_local_"):
+                discovered.add(constant)
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(document)
+    return discovered
 
 
 def _canonical_json_sha256(document: object) -> str:
@@ -125,6 +153,10 @@ def test_server_push_literals_are_declared_by_projection() -> None:
     }
     declared.update(manifest["component_types"])  # type: ignore[arg-type]
     declared.update(NON_PUSH_TYPES)
+    # Feature 075 speech sideband frames are not Projection UI primitives or
+    # chrome pushes. Their exact vocabulary is owned by the separately pinned
+    # voice-local schema and is still drift-checked here rather than waived.
+    declared.update(_voice_local_types())
 
     missing: dict[str, list[str]] = {}
     for relative in UI_SEND_MODULES:

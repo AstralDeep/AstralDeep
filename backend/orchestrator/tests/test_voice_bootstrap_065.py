@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from astralplane import create_repository_catalog
@@ -19,6 +20,8 @@ from orchestrator.voice_bootstrap import (
     build_voice_services,
     install_voice_worker_control,
 )
+from orchestrator.voice_backend import VoiceSpeechBackend
+from orchestrator.voice_control_binding import VoiceControlClaims
 from orchestrator.voice_api import VoiceApiError
 from orchestrator.voice_coordinator import (
     APPROVED_PHRASE_KEYS,
@@ -105,6 +108,187 @@ def _voice_turn(
         created_at=now,
         updated_at=now,
     )
+
+
+def test_remote_bootstrap_keeps_legacy_backend_when_selector_is_missing() -> None:
+    services = build_voice_services(
+        plane_runtime=_PlaneRuntime(),
+        plane_repositories=_PlaneRuntime().repositories,
+        environ={
+            "ASTRAL_ENV": "development",
+            "VOICE_WORKER_CLOSURE_SHA256": "0" * 64,
+            "LIVEKIT_INTERNAL_URL": "http://livekit:7880",
+            "LIVEKIT_PUBLIC_URL": "ws://localhost:7880",
+            "LIVEKIT_API_KEY": "development-key",
+            "LIVEKIT_API_SECRET": "development-secret-with-32-bytes-minimum",
+            "VOICE_CONTROL_SECRET": "development-worker-secret-with-32-bytes",
+        },
+    )
+
+    assert services.speech_backend.value == "llm_factory"
+    assert services.runtime is not None
+    assert services.worker_pool is not None
+
+
+@pytest.mark.asyncio
+async def test_client_local_services_cover_the_content_free_lifecycle() -> None:
+    session = SimpleNamespace(
+        session_id="00000000-0000-4000-8000-000000000031",
+        user_id="user-a",
+        device_id="00000000-0000-4000-8000-000000000021",
+        owner_connection_generation="00000000-0000-4000-8000-000000000022",
+        generation=1,
+        media_grant_revision=2,
+        visible_chat_id="00000000-0000-4000-8000-000000000072",
+        chat_context_revision=1,
+        applied_chat_context_revision=1,
+        foreground_active=True,
+        microphone_enabled=True,
+        speech_muted=False,
+        state="active",
+        speech_backend="client_local",
+        ended_at=None,
+        control_owner_id="voice-coordinator-local-1",
+    )
+    turn = _voice_turn()
+    authority = SimpleNamespace(
+        user_id="user-a",
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        binding_id="00000000-0000-4000-8000-000000000023",
+        session_id=session.session_id,
+        generation=1,
+        speech_revision=2,
+        client_turn_id=turn.client_turn_id,
+        turn_id=turn.turn_id,
+        submission_id=turn.submission_id,
+        request_generation=turn.request_generation,
+        chat_id=turn.chat_id,
+        chat_context_revision=1,
+        recognition_sequence=1,
+    )
+    admission = SimpleNamespace(canonical_text="hello", turn=turn, replayed=False)
+    repository = SimpleNamespace(
+        get_controlled_session=Mock(return_value=session),
+        bind_recognition_turn=Mock(return_value=SimpleNamespace(turn=turn)),
+        admit_local_transcript=Mock(return_value=admission),
+        get_session=Mock(return_value=session),
+    )
+    bindings = SimpleNamespace(
+        authorize_ready=Mock(),
+        bind_turn=Mock(return_value=authority),
+        verify_final=Mock(return_value=("hello", False)),
+        get_turn=Mock(return_value=authority),
+        clear_connection=Mock(),
+        clear_session=Mock(),
+    )
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=repository,
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=bindings,
+    )
+    claims = VoiceControlClaims(
+        subject="user-a",
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        binding_id="00000000-0000-4000-8000-000000000023",
+        issued_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(minutes=4),
+    )
+    ready = SimpleNamespace(session_id=session.session_id, generation=1, speech_revision=2)
+    assert await services.local_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=ready,
+        now=datetime.now(UTC),
+    ) is session
+
+    started = SimpleNamespace(
+        session_id=session.session_id,
+        generation=1,
+        speech_revision=2,
+        client_turn_id=turn.client_turn_id,
+        chat_id=turn.chat_id,
+        chat_context_revision=1,
+    )
+    assert (await services.bind_local_recognition(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=started,
+        execution_base_render_revision=4,
+        now=datetime.now(UTC),
+    )) == (turn, authority)
+
+    final = SimpleNamespace(client_turn_id=turn.client_turn_id)
+    assert await services.admit_local_final(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        frame=final,
+        now=datetime.now(UTC),
+    ) is admission
+
+    services.clear_local_connection(claims)
+    services.clear_local_session(session)
+    await services.cleanup_local_buffers(session)
+    assert bindings.clear_connection.called
+    assert bindings.clear_session.call_count == 2
+
+    publisher = AsyncMock()
+    services.bind_local_announcement_publisher(publisher)
+    await services._publish_local_announcement(
+        turn,
+        kind="failure",
+    )
+    publisher.assert_awaited_once()
+    assert services.voice_status()["speech_backend"] == "client_local"
+
+
+@pytest.mark.asyncio
+async def test_client_local_bootstrap_constructs_no_remote_dependency() -> None:
+    plane = _PlaneRuntime()
+    services = build_voice_services(
+        plane_runtime=plane,
+        plane_repositories=plane.repositories,
+        environ={
+            "ASTRAL_ENV": "development",
+            "VOICE_SPEECH_BACKEND": "client_local",
+        },
+    )
+    assert services.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
+    assert services.worker_pool is None
+    assert services.livekit is None
+    assert services.worker_control_settings is None
+    snapshot = await services.capability.readiness()
+    assert snapshot.to_dict()["requirements"]["max_announcement_utf8_bytes"] == 600
+    for operation in (
+        services.media.apply_context,
+        services.media.set_capture,
+        services.media.barge_in,
+        services.media.stop_speech,
+        services.media.end,
+        services.media.abort,
+        services.media.current_session,
+    ):
+        if operation.__name__ == "set_capture":
+            assert await operation(SimpleNamespace(), True) is None
+        elif operation.__name__ == "end":
+            assert await operation(SimpleNamespace(), "ended") is None
+        elif operation.__name__ == "current_session":
+            assert await operation("session", 1) is None
+        else:
+            assert await operation(SimpleNamespace()) is None
 
 
 class _RunnerClock:
