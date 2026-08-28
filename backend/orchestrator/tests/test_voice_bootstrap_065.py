@@ -1203,6 +1203,147 @@ async def test_local_rejection_capacity_is_reserved_before_repository_insert() -
     assert registry._reservations == registry._turns == registry._sequences == {}
 
 
+_LOCAL_RECOGNITION_CANCELLATION_PHASES = (
+    "reserve",
+    "insert",
+    "promotion",
+    "finalize",
+    "slot_release",
+    "pre_return",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", _LOCAL_RECOGNITION_CANCELLATION_PHASES)
+async def test_local_recognition_cancellation_phase_table_terminalizes_commit(
+    phase: str,
+) -> None:
+    """A cancellation after durable insert always owns exact terminal cleanup."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    phase_entered = threading.Event()
+    phase_release = threading.Event()
+    insert_entered = threading.Event()
+    insert_release = threading.Event()
+    durable = {"state": "absent"}
+    public_task: asyncio.Task[Any] | None = None
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            insert_entered.set()
+            if phase in {"insert", "promotion"}:
+                if phase == "insert":
+                    phase_entered.set()
+                assert insert_release.wait(timeout=3)
+            durable["state"] = "recognizing"
+            return SimpleNamespace(turn=turn)
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            durable["state"] = "refused"
+
+    class Registry(ClientLocalBindingRegistry):
+        def finalize_turn(self, **kwargs: Any) -> Any:
+            authority = super().finalize_turn(**kwargs)
+            if phase == "finalize":
+                assert public_task is not None
+                public_task.cancel()
+            return authority
+
+    class Services(VoiceServices):
+        async def _reserve_pending_local_rejection(self, reservation: Any) -> Any:
+            if phase == "reserve":
+                phase_entered.set()
+                await asyncio.to_thread(phase_release.wait, 3)
+            return await super()._reserve_pending_local_rejection(reservation)
+
+        async def _promote_pending_local_rejection(
+            self,
+            reserved: Any,
+            *,
+            turn_id: str,
+        ) -> Any:
+            if phase == "promotion":
+                phase_entered.set()
+                await asyncio.to_thread(phase_release.wait, 3)
+            return await super()._promote_pending_local_rejection(
+                reserved,
+                turn_id=turn_id,
+            )
+
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            if phase in {"finalize", "slot_release"}:
+                phase_entered.set()
+                await asyncio.to_thread(phase_release.wait, 3)
+            acquired = await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+            if phase == "pre_return":
+                phase_entered.set()
+                await asyncio.to_thread(phase_release.wait, 3)
+            return acquired
+
+    registry = Registry()
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    public_task = asyncio.create_task(
+        services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    )
+    if phase == "promotion":
+        assert await asyncio.to_thread(insert_entered.wait, 1)
+        public_task.cancel()
+        insert_release.set()
+    assert await asyncio.to_thread(phase_entered.wait, 1)
+    if phase != "finalize":
+        public_task.cancel()
+    public_task.cancel()
+    await asyncio.sleep(0)
+    try:
+        if phase != "reserve":
+            assert not public_task.done()
+    finally:
+        phase_release.set()
+        insert_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await public_task
+    if phase == "reserve":
+        assert durable["state"] == "absent"
+    else:
+        assert durable["state"] == "refused"
+    assert services.pending_local_rejection_reservations == {}
+    assert services.pending_local_rejections == {}
+    assert registry._reservations == registry._turns == {}
+    if phase in {"finalize", "slot_release", "pre_return"}:
+        assert len(registry._sequences) == 1
+    else:
+        assert registry._sequences == {}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner,lease_delta", [("replica-b", 30), ("voice-coordinator-local-1", -1)])
 async def test_local_ready_requires_this_replica_and_live_control_lease(

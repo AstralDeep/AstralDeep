@@ -750,6 +750,187 @@ async def test_repeated_cancel_records_failed_local_activation_abort_before_retu
     assert runtime._local_activation_reservations == set()
 
 
+_LOCAL_OWNERSHIP_CANCELLATION_PHASES = (
+    ("create", "mutation"),
+    ("create", "claim"),
+    ("create", "apply"),
+    ("create", "activate"),
+    ("create", "release"),
+    ("create", "pre_return"),
+    ("takeover", "mutation"),
+    ("takeover", "predecessor"),
+    ("takeover", "claim"),
+    ("takeover", "apply"),
+    ("takeover", "activate"),
+    ("takeover", "release"),
+    ("takeover", "pre_return"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replayed", [False, True], ids=["new", "replay"])
+@pytest.mark.parametrize(
+    "cleanup_fails",
+    [False, True],
+    ids=["cleanup-ended", "cleanup-retained"],
+)
+@pytest.mark.parametrize(
+    ("mutation_kind", "phase"),
+    _LOCAL_OWNERSHIP_CANCELLATION_PHASES,
+    ids=[f"{kind}-{phase}" for kind, phase in _LOCAL_OWNERSHIP_CANCELLATION_PHASES],
+)
+async def test_local_ownership_cancellation_phase_table_preserves_exact_owner(
+    mutation_kind: str,
+    phase: str,
+    replayed: bool,
+    cleanup_fails: bool,
+) -> None:
+    """Every await boundary either rolls back new ownership or preserves replay."""
+
+    previous = _round2_session(ended=True)
+    session = _round2_session(generation=2 if mutation_kind == "takeover" else 1)
+    if replayed:
+        session.state = "active"
+    phase_entered = threading.Event()
+    phase_release = threading.Event()
+    cleanup_entered = threading.Event()
+    cleanup_release = threading.Event()
+    release_cleanup_entered = threading.Event()
+    release_cleanup_release = threading.Event()
+    durable = {"state": "active" if replayed else "starting"}
+    public_task: asyncio.Task[Any] | None = None
+
+    def block_phase(target: str) -> None:
+        if phase == target:
+            phase_entered.set()
+            assert phase_release.wait(timeout=3)
+
+    class Repository:
+        def get_session(self, **_kwargs: Any) -> Any:
+            return previous
+
+        def create_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            block_phase("mutation")
+            return SimpleNamespace(session=session, replayed=replayed)
+
+        def take_over_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            block_phase("mutation")
+            return SimpleNamespace(session=session, replayed=replayed)
+
+        async def claim_control_lease(self, **_kwargs: Any) -> Any:
+            if phase == "claim":
+                await asyncio.to_thread(block_phase, "claim")
+            return SimpleNamespace(owner_id="replica-a")
+
+        def apply_chat_context(self, **_kwargs: Any) -> Any:
+            block_phase("apply")
+            return SimpleNamespace(
+                session=SimpleNamespace(
+                    **{**session.__dict__, "chat_context_synced": True}
+                )
+            )
+
+        def mark_session_active(self, **_kwargs: Any) -> Any:
+            block_phase("activate")
+            if durable["state"] == "ended":
+                raise RuntimeError("activation already ended")
+            durable["state"] = "active"
+            return SimpleNamespace(**{**session.__dict__, "chat_context_synced": True})
+
+        def end_session(self, **kwargs: Any) -> Any:
+            assert kwargs["session_id"] == session.session_id
+            cleanup_entered.set()
+            assert cleanup_release.wait(timeout=3)
+            if cleanup_fails:
+                raise RuntimeError("database unavailable")
+            durable["state"] = "ended"
+            return SimpleNamespace(**{**session.__dict__, "ended_at": NOW})
+
+    class Media:
+        async def end(self, ended: Any, _reason: str) -> None:
+            if phase == "predecessor":
+                assert ended is previous
+                await asyncio.to_thread(block_phase, "predecessor")
+
+        async def abort(self, _session: Any) -> None:
+            return None
+
+    runtime = VoiceSessionRuntime(
+        repository=Repository(),  # type: ignore[arg-type]
+        capability=SimpleNamespace(),
+        media=Media(),  # type: ignore[arg-type]
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+    original_release = runtime._release_local_activation
+
+    async def gated_release(create: CreateSession) -> None:
+        if phase == "release":
+            await asyncio.to_thread(block_phase, "release")
+        await original_release(create)
+        if phase == "pre_return":
+            await asyncio.to_thread(block_phase, "pre_return")
+        elif public_task is not None and public_task.cancelling():
+            release_cleanup_entered.set()
+            await asyncio.to_thread(release_cleanup_release.wait, 3)
+
+    runtime._release_local_activation = gated_release  # type: ignore[method-assign]
+    if mutation_kind == "create":
+        coroutine = runtime.create_session(
+            user_id="user-a",
+            control=_round2_control(),
+            request=_round2_request(),
+        )
+    else:
+        coroutine = runtime.take_over_session(
+            user_id="user-a",
+            session_id=previous.session_id,
+            control=_round2_control(),
+            request=_round2_request(
+                activation_id="00000000-0000-4000-8000-000000000207",
+                expected_generation=1,
+                expected_media_grant_revision=1,
+            ),
+        )
+    public_task = asyncio.create_task(coroutine)
+    assert await asyncio.to_thread(phase_entered.wait, 1)
+    public_task.cancel()
+    if phase not in {"release", "pre_return"}:
+        phase_release.set()
+    for _ in range(100):
+        if (
+            public_task.done()
+            or cleanup_entered.is_set()
+            or release_cleanup_entered.is_set()
+        ):
+            break
+        await asyncio.sleep(0)
+    public_task.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert not public_task.done()
+    finally:
+        cleanup_release.set()
+        release_cleanup_release.set()
+        phase_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await public_task
+    if replayed:
+        assert durable["state"] == "active"
+        assert not cleanup_entered.is_set()
+        assert runtime._pending_local_activation_cleanup == {}
+    elif cleanup_fails:
+        assert durable["state"] in {"starting", "active"}
+        assert tuple(runtime._pending_local_activation_cleanup) == (
+            (session.session_id, session.generation),
+        )
+    else:
+        assert durable["state"] == "ended"
+        assert runtime._pending_local_activation_cleanup == {}
+    assert runtime._local_activation_reservations == set()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", ["create", "takeover"])
 async def test_local_repository_mutation_exception_releases_reserved_capacity(

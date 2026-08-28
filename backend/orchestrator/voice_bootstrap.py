@@ -1726,20 +1726,12 @@ class VoiceServices:
                     raise cleanup_cancellation
                 raise failure
             release_binding_reservation = False
-            _released, release_cancellation = (
-                await self._join_pending_local_rejection_state_change(
-                    self._release_pending_local_rejection_reservation(
-                        cleanup_reservation
-                    ),
-                    name=(
-                        "voice-local-rejection-release-"
-                        f"{frame.client_turn_id}"
-                    ),
-                )
+            await self._complete_local_recognition_before_return(
+                cleanup_reservation,
+                turn_id=mutation.turn.turn_id,
+                now=now,
             )
             cleanup_reservation = None
-            if release_cancellation is not None:
-                raise release_cancellation
         except BaseException as failure:
             release_cancellation = None
             if cleanup_reservation is not None:
@@ -1979,6 +1971,92 @@ class VoiceServices:
         async with self.pending_local_rejection_lock:
             if self.pending_local_rejection_reservations.get(key) == reserved:
                 self.pending_local_rejection_reservations.pop(key, None)
+
+    async def _acquire_pending_local_rejection_release(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+    ) -> bool:
+        """Acquire the exact slot lock for a no-await success/abort decision."""
+
+        await self.pending_local_rejection_lock.acquire()
+        key = (reserved.user_id, reserved.client_turn_id)
+        current = self.pending_local_rejection_reservations.get(key)
+        if current is None:
+            self.pending_local_rejection_lock.release()
+            return False
+        if current != reserved:
+            self.pending_local_rejection_lock.release()
+            raise VoiceBootstrapError("invalid_binding")
+        return True
+
+    def _promote_pending_local_rejection_locked(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+        *,
+        turn_id: str,
+        authority_finalized: bool,
+    ) -> _PendingLocalRejection:
+        key = (reserved.user_id, reserved.client_turn_id)
+        if self.pending_local_rejection_reservations.get(key) != reserved:
+            raise VoiceBootstrapError("invalid_binding")
+        pending = _PendingLocalRejection(
+            user_id=reserved.user_id,
+            client_turn_id=reserved.client_turn_id,
+            turn_id=turn_id,
+            session_id=reserved.session_id,
+            generation=reserved.generation,
+            reason=reserved.reason,
+            retry_policy=reserved.retry_policy,
+            reservation=None if authority_finalized else reserved.reservation,
+        )
+        if key in self.pending_local_rejections:
+            raise VoiceBootstrapError("invalid_binding")
+        self.pending_local_rejection_reservations.pop(key, None)
+        self.pending_local_rejections[key] = pending
+        return pending
+
+    async def _complete_local_recognition_before_return(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+        *,
+        turn_id: str,
+        now: datetime,
+    ) -> None:
+        acquire_task = asyncio.create_task(
+            self._acquire_pending_local_rejection_release(reserved),
+            name=f"voice-local-rejection-release-{reserved.client_turn_id}",
+        )
+        acquired, error, cancellation = (
+            await _join_task_outcome_through_cancellation(acquire_task)
+        )
+        if error is not None:
+            raise error
+        if not acquired:
+            if cancellation is not None:
+                raise cancellation
+            return
+        pending = None
+        try:
+            key = (reserved.user_id, reserved.client_turn_id)
+            if cancellation is None:
+                self.pending_local_rejection_reservations.pop(key, None)
+            else:
+                pending = self._promote_pending_local_rejection_locked(
+                    reserved,
+                    turn_id=turn_id,
+                    authority_finalized=True,
+                )
+        finally:
+            self.pending_local_rejection_lock.release()
+        if pending is not None:
+            cleanup_error, _cleanup_cancellation = (
+                await self._attempt_pending_local_rejection(pending, now=now)
+            )
+            if cleanup_error is not None:
+                logger.warning(
+                    "voice_local_finalized_cancel_reconciliation_unavailable"
+                )
+            raise cancellation
 
     async def _join_pending_local_rejection_state_change(
         self,
