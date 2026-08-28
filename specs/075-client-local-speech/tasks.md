@@ -42,11 +42,11 @@ conversation story. This phase blocks all user stories.
 
 ### Shared Projection contract — tests before manifest
 
-- [ ] T013 [P] Add failing strict schema-v2 resource, unchanged-remote-v1, extra-key, disposition, every-consumer, and native-CI-path-filter tests in Projection `tests/test_protocol.py`, `tests/test_resources.py`, `tests/webrender/test_voice_renderer_065.py`, and `tests/ci/test_workflows.py`
-- [ ] T014 Add canonical supported/unavailable/stale/denial/local-final/announcement/playout vectors in Projection `contracts/fixtures/voice_075/client_local_conformance.json`, separate from `contracts/fixtures/voice_065/client_conformance.json`
-- [ ] T015 Update Projection `contracts/ui_protocol.json` with REST-v2 requirements, `client_local/v1`, exact local frame fields, `speech_revision`, closed reasons/dispositions, and a remote-v1 byte invariant; add exact `contracts/fixtures/voice_075/client_local_conformance.json` push/PR filters to `.github/workflows/android-ci.yml` and `.github/workflows/apple-ci.yml`
-- [ ] T016 [P] Add failing half-duplex/local-unavailable/typed-fallback ROTE tests in Projection `tests/rote/test_voice_rote_capabilities_065.py`, `tests/rote/test_android_profile.py`, `tests/rote/test_apple_profiles.py`, and `tests/rote/test_windows_profile.py`
-- [ ] T017 Implement local capability/disposition adaptation and typed fallback in Projection `backend/rote/capabilities.py`, `backend/rote/adapter.py`, and `backend/rote/fallback.py`
+- [X] T013 [P] Add failing strict schema-v2 resource, unchanged-remote-v1, extra-key, disposition, every-consumer, and native-CI-path-filter tests in Projection `tests/test_protocol.py`, `tests/test_resources.py`, `tests/webrender/test_voice_renderer_065.py`, and `tests/ci/test_workflows.py`
+- [X] T014 Add canonical supported/unavailable/stale/denial/local-final/announcement/playout vectors in Projection `contracts/fixtures/voice_075/client_local_conformance.json`, separate from `contracts/fixtures/voice_065/client_conformance.json`
+- [X] T015 Update Projection `contracts/ui_protocol.json` with REST-v2 requirements, `client_local/v1`, exact local frame fields, `speech_revision`, closed reasons/dispositions, and a remote-v1 byte invariant; add exact `contracts/fixtures/voice_075/client_local_conformance.json` push/PR filters to `.github/workflows/android-ci.yml` and `.github/workflows/apple-ci.yml`
+- [X] T016 [P] Add failing half-duplex/local-unavailable/typed-fallback ROTE tests in Projection `tests/rote/test_voice_rote_capabilities_065.py`, `tests/rote/test_android_profile.py`, `tests/rote/test_apple_profiles.py`, and `tests/rote/test_windows_profile.py`
+- [X] T017 Implement local capability/disposition adaptation and typed fallback in Projection `backend/rote/capabilities.py`, `backend/rote/adapter.py`, and `backend/rote/fallback.py`
 
 ### Deep contract and exact component pins
 

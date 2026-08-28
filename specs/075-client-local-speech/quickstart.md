@@ -113,6 +113,23 @@ Qualified local Plane checkpoint (not pushed):
    gate.
 5. Fix existing Windows/Android remote grant recovery while retaining v1 bytes.
 
+Qualified local Projection shared-foundation checkpoint (not pushed):
+
+- Base: `0dcf1699951671f111d4c1a5689c435e3cf50496`
+- Candidate: `44a3d03e0294612ca95bd64f428316ff5816e9ef` (implementation `9452f3b` plus
+  review repair `44a3d03`)
+- Remote-v1 fixture SHA-256 retained:
+  `bc98077594fa8d51dd664fadefaa48cf596a94e7fb2a961a972dbabca4f02143`
+- Local-v2 fixture SHA-256:
+  `59b77d9acbfd4c40ec9c2eaa50c30e30090c8da7ff7026786d1f77d8c5984b04`
+- Evidence: the unfiltered owning contract/resource/workflow suite passed 107 tests with one
+  environment-dependent immutable-source replay skip; the full ROTE suite passed 497 tests; Ruff,
+  JSON, all 82 provenance digests, dependency guards, and diff checks passed.
+- Independent review: three Important gaps were found in the first round (REST reason/optional
+  vocabulary, dependency-authority coverage, and one pre-existing Apple provenance record), all
+  were repaired test-first, and a fresh final specification/code-quality review was clean.
+- Scope: T013–T017 and the Projection half of T003 only. No web/native runtime adapter was begun.
+
 ### 3.3 AstralDeep
 
 1. Parse `VOICE_SPEECH_BACKEND` once and expose strict authenticated v2 capability/status.
