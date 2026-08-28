@@ -1,0 +1,486 @@
+openapi: 3.1.0
+info:
+  title: AstralDeep Speech-Backend Capability and Client-Local Session API
+  version: 0.1.0
+  description: >-
+    Authenticated version-2 discovery and client-local session admission for
+    Feature 075. The deployment, never the client, selects llm_factory or
+    client_local. Existing Feature-065 remote REST, LiveKit/watch media,
+    transcript proof, and worker-control bytes remain the voice-rest/v1
+    contract. These v2 operations carry no audio, transcript, endpoint,
+    credential, model, voice inventory, or local engine identity.
+servers:
+  - url: /
+security:
+  - keycloakBearer: []
+tags:
+  - name: VoiceV2
+paths:
+  /api/voice/v2/capability:
+    get:
+      tags: [VoiceV2]
+      operationId: getVoiceCapabilityV2
+      summary: Read the immutable server-selected speech backend and contract
+      responses:
+        "200":
+          description: Selection is valid; readiness may still be false.
+          headers:
+            Cache-Control:
+              schema: { const: no-store }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceCapabilityV2"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: Selection is invalid or its selected backend is unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoiceError" }
+
+  /api/voice/v2/status:
+    get:
+      tags: [VoiceV2]
+      operationId: getVoiceStatusV2
+      summary: Read content-free operational status for the selected backend
+      responses:
+        "200":
+          description: Bounded status without endpoint, model inventory, or credential data.
+          headers:
+            Cache-Control:
+              schema: { const: no-store }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoiceStatusV2" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/voice/v2/sessions:
+    post:
+      tags: [VoiceV2]
+      operationId: createClientLocalVoiceSession
+      summary: Create a client-local voice session when that backend is selected
+      description: >-
+        Requires recent explicit activation and a current authenticated UI
+        registration. The body device_id must equal X-Astral-Device-Id and the
+        registered device. Capability observations are untrusted eligibility
+        input, not authority. Exact activation_id replay is idempotent; changed
+        reuse fails. In llm_factory mode the server returns backend_mismatch and
+        the client uses the unchanged voice-rest/v1 API.
+      parameters:
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateClientLocalSessionRequest" }
+      responses:
+        "201":
+          description: Durable client-local ownership created; no media grant exists.
+          headers:
+            Cache-Control:
+              schema: { const: no-store }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientLocalSession" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ControlBindingRejected" }
+        "409":
+          description: Existing ownership needs takeover or selected backend differs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoiceError" }
+        "422":
+          description: Client cannot prove all selected-backend eligibility fields.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoiceError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/voice/v2/sessions/{session_id}/takeover:
+    post:
+      tags: [VoiceV2]
+      operationId: takeOverClientLocalVoiceSession
+      summary: Atomically replace owner generation with this eligible local device
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/VoiceDeviceIdHeader"
+        - $ref: "#/components/parameters/VoiceConnectionGenerationHeader"
+        - $ref: "#/components/parameters/VoiceControlBindingHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TakeoverClientLocalSessionRequest" }
+      responses:
+        "200":
+          description: Prior generation fenced and replacement local ownership created.
+          headers:
+            Cache-Control:
+              schema: { const: no-store }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientLocalSession" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ControlBindingRejected" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/StaleOrBackendMismatch" }
+        "422":
+          description: Replacement client cannot prove local eligibility.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoiceError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+components:
+  securitySchemes:
+    keycloakBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/Uuid4" }
+    VoiceDeviceIdHeader:
+      name: X-Astral-Device-Id
+      in: header
+      required: true
+      schema: { $ref: "#/components/schemas/Uuid4" }
+    VoiceConnectionGenerationHeader:
+      name: X-Astral-Connection-Generation
+      in: header
+      required: true
+      schema: { $ref: "#/components/schemas/Uuid4" }
+    VoiceControlBindingHeader:
+      name: X-Astral-Voice-Control-Binding
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 32
+        maxLength: 512
+        pattern: "^[A-Za-z0-9._~-]+$"
+  schemas:
+    Uuid4:
+      type: string
+      format: uuid
+      pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    Timestamp:
+      type: string
+      format: date-time
+      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    SpeechBackend:
+      enum: [llm_factory, client_local]
+    VoiceReason:
+      enum:
+        - ready
+        - feature_disabled
+        - backend_selection_invalid
+        - unsupported_speech_backend
+        - backend_mismatch
+        - authentication_required
+        - client_contract_upgrade_required
+        - client_readiness_required
+        - microphone_permission_not_determined
+        - local_processing_not_guaranteed
+        - local_recognition_unavailable
+        - local_synthesis_unavailable
+        - local_recognition_locale_unavailable
+        - local_synthesis_locale_unavailable
+        - local_language_download_required
+        - local_language_installing
+        - local_language_install_failed
+        - speech_recognition_permission_not_determined
+        - speech_recognition_permission_denied
+        - microphone_permission_denied
+        - no_microphone
+        - no_audio_output
+        - local_capture_not_ready
+        - local_session_not_ready
+        - local_recognition_failed
+        - local_recognition_cancelled
+        - local_synthesis_failed
+        - local_audio_interrupted
+        - local_engine_lost
+        - local_announcement_expired
+        - worker_unavailable
+        - asr_unavailable
+        - tts_unavailable
+        - takeover_required
+        - stale_connection
+        - stale_session
+        - stale_speech_revision
+        - stale_chat_context
+        - stale_local_turn
+        - duplicate_local_final
+        - altered_local_final
+        - local_final_empty
+        - local_final_oversized
+        - local_language_mismatch
+        - announcement_stale_sequence
+        - announcement_suppressed_muted
+        - announcement_suppressed_background
+        - announcement_consent_invalid
+        - announcement_invalid
+        - invalid_binding
+        - capacity_exhausted
+        - internal_error
+    VoiceCapabilityV2:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - speech_backend
+        - status
+        - reason
+        - checked_at
+        - expires_at
+        - supported_transports
+        - requirements
+      properties:
+        schema_version: { const: "2" }
+        speech_backend: { $ref: "#/components/schemas/SpeechBackend" }
+        status: { enum: [ready, unavailable, requires_client_readiness] }
+        reason: { $ref: "#/components/schemas/VoiceReason" }
+        checked_at: { $ref: "#/components/schemas/Timestamp" }
+        expires_at: { $ref: "#/components/schemas/Timestamp" }
+        supported_transports:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items: { enum: [livekit, watch_pcm_websocket, client_local] }
+        requirements:
+          $ref: "#/components/schemas/VoiceRequirements"
+        retry_after_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+      allOf:
+        - if:
+            properties: { speech_backend: { const: llm_factory } }
+            required: [speech_backend]
+          then:
+            properties:
+              supported_transports:
+                type: array
+                minItems: 1
+                maxItems: 2
+                uniqueItems: true
+                items: { enum: [livekit, watch_pcm_websocket] }
+          else:
+            properties:
+              supported_transports:
+                const: [client_local]
+    VoiceRequirements:
+      type: object
+      additionalProperties: false
+      required:
+        - session_contract
+        - local_frame_contract
+        - configured_locale
+        - recognition_must_be_local
+        - synthesis_must_be_local
+        - installation_policy
+        - requirement_revision
+        - max_final_unicode_scalars
+        - max_announcement_utf8_bytes
+        - announcement_ttl_seconds
+        - echo_suppression_milliseconds
+      properties:
+        session_contract: { enum: [voice-rest/v1, voice-rest/v2-client-local] }
+        local_frame_contract:
+          oneOf:
+            - { const: client_local/v1 }
+            - { type: "null" }
+        configured_locale: { const: en-US }
+        recognition_must_be_local: { type: boolean }
+        synthesis_must_be_local: { type: boolean }
+        installation_policy: { const: explicit_user_action_only }
+        requirement_revision: { const: 1 }
+        max_final_unicode_scalars: { const: 8000 }
+        max_announcement_utf8_bytes: { const: 600 }
+        announcement_ttl_seconds: { const: 10 }
+        echo_suppression_milliseconds: { const: 500 }
+    VoiceStatusV2:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - speech_backend
+        - state
+        - reason
+        - checked_at
+      properties:
+        schema_version: { const: "2" }
+        speech_backend: { $ref: "#/components/schemas/SpeechBackend" }
+        state: { enum: [ready, degraded, unavailable, invalid_configuration] }
+        reason: { $ref: "#/components/schemas/VoiceReason" }
+        checked_at: { $ref: "#/components/schemas/Timestamp" }
+        phase_timings_ms:
+          type: object
+          additionalProperties: false
+          properties:
+            configuration: { type: integer, minimum: 0, maximum: 120000 }
+            inference_preflight: { type: integer, minimum: 0, maximum: 120000 }
+            fixed_phrase_warmup: { type: integer, minimum: 0, maximum: 120000 }
+            worker_registration: { type: integer, minimum: 0, maximum: 120000 }
+    PermissionState:
+      enum: [not_determined, authorized, denied, restricted, unavailable]
+    AssetState:
+      enum: [ready, downloadable, installing, failed, unavailable, not_applicable]
+    ClientLocalCapability:
+      type: object
+      additionalProperties: false
+      required:
+        - contract
+        - transport
+        - configured_locale
+        - full_duplex
+        - has_microphone
+        - has_audio_output
+        - microphone_permission
+        - recognition_permission
+        - recognition_processing
+        - recognition_locale
+        - recognition_installation
+        - synthesis_processing
+        - synthesis_locale
+      properties:
+        contract: { const: client_local/v1 }
+        transport: { const: client_local }
+        configured_locale: { const: en-US }
+        full_duplex: { const: false }
+        has_microphone: { type: boolean }
+        has_audio_output: { type: boolean }
+        microphone_permission: { $ref: "#/components/schemas/PermissionState" }
+        recognition_permission: { $ref: "#/components/schemas/PermissionState" }
+        recognition_processing: { enum: [guaranteed_local, unavailable, unsupported] }
+        recognition_locale: { enum: [ready, unavailable, unknown] }
+        recognition_installation: { $ref: "#/components/schemas/AssetState" }
+        synthesis_processing: { enum: [guaranteed_local, unavailable, unsupported] }
+        synthesis_locale: { enum: [ready, unavailable, unknown] }
+    DeviceKind:
+      enum: [web, windows, android, ios, macos, watch]
+    CreateClientLocalSessionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - activation_id
+        - device_id
+        - device_kind
+        - visible_chat_id
+        - foreground_active
+        - client_capability
+      properties:
+        schema_version: { const: "2" }
+        activation_id: { $ref: "#/components/schemas/Uuid4" }
+        device_id: { $ref: "#/components/schemas/Uuid4" }
+        device_kind: { $ref: "#/components/schemas/DeviceKind" }
+        device_label: { type: string, maxLength: 80 }
+        visible_chat_id: { $ref: "#/components/schemas/Uuid4" }
+        foreground_active: { const: true }
+        client_capability: { $ref: "#/components/schemas/ClientLocalCapability" }
+    TakeoverClientLocalSessionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - activation_id
+        - device_id
+        - device_kind
+        - expected_generation
+        - expected_speech_revision
+        - visible_chat_id
+        - foreground_active
+        - client_capability
+      properties:
+        schema_version: { const: "2" }
+        activation_id: { $ref: "#/components/schemas/Uuid4" }
+        device_id: { $ref: "#/components/schemas/Uuid4" }
+        device_kind: { $ref: "#/components/schemas/DeviceKind" }
+        device_label: { type: string, maxLength: 80 }
+        expected_generation: { type: integer, minimum: 1 }
+        expected_speech_revision: { type: integer, minimum: 1 }
+        visible_chat_id: { $ref: "#/components/schemas/Uuid4" }
+        foreground_active: { const: true }
+        client_capability: { $ref: "#/components/schemas/ClientLocalCapability" }
+    ClientLocalSession:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - session_id
+        - speech_backend
+        - transport
+        - generation
+        - speech_revision
+        - state
+        - visible_chat_id
+        - chat_context_revision
+        - applied_chat_context_revision
+        - chat_context_synced
+        - foreground_active
+        - microphone_enabled
+        - speech_muted
+        - configured_locale
+        - idle_expires_at
+      properties:
+        schema_version: { const: "2" }
+        session_id: { $ref: "#/components/schemas/Uuid4" }
+        speech_backend: { const: client_local }
+        transport: { const: client_local }
+        generation: { type: integer, minimum: 1 }
+        speech_revision: { type: integer, minimum: 1 }
+        state: { enum: [starting, active, suspended, reconnecting, ending, ended, error] }
+        visible_chat_id: { $ref: "#/components/schemas/Uuid4" }
+        chat_context_revision: { type: integer, minimum: 1 }
+        applied_chat_context_revision:
+          oneOf:
+            - { type: integer, minimum: 1 }
+            - { type: "null" }
+        chat_context_synced: { type: boolean }
+        foreground_active: { type: boolean }
+        microphone_enabled: { type: boolean }
+        speech_muted: { type: boolean }
+        configured_locale: { const: en-US }
+        idle_expires_at: { $ref: "#/components/schemas/Timestamp" }
+    VoiceError:
+      type: object
+      additionalProperties: false
+      required: [error, reason, retryable]
+      properties:
+        error: { type: string, minLength: 1, maxLength: 80 }
+        reason: { $ref: "#/components/schemas/VoiceReason" }
+        retryable: { type: boolean }
+        retry_after_seconds: { type: integer, minimum: 1, maximum: 300 }
+        current_session_id:
+          oneOf:
+            - { $ref: "#/components/schemas/Uuid4" }
+            - { type: "null" }
+  responses:
+    Unauthorized:
+      description: Missing, expired, or invalid Keycloak bearer authentication.
+    RateLimited:
+      description: Bounded voice control rate exceeded.
+    InvalidRequest:
+      description: Strict body/header validation failed without enumerating ownership.
+    ControlBindingRejected:
+      description: Device, connection, owner, or control binding is invalid or stale.
+    NotFound:
+      description: No owner-visible current session exists.
+    StaleOrBackendMismatch:
+      description: Session generation/revision is stale or the selected backend differs.
+    Unavailable:
+      description: Selected voice backend is unavailable; typed chat remains available.
