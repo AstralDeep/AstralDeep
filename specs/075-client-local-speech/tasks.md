@@ -17,10 +17,10 @@ and `wiki` = `/Users/sam/Desktop/Work/kos-wiki`.
 **Purpose**: Establish exact local branches/baselines without starting hosted CI or overwriting
 unrelated work.
 
-- [ ] T001 Re-fetch and revalidate clean `origin/main` ownership, remote feature-number uniqueness, submodule anchors, and current status in Deep `.git/HEAD`, Plane `.git/HEAD`, Projection `.git/HEAD`, Primitives `.git/HEAD`, LETS `.git/HEAD`, and wiki `.git/HEAD`; stop on newly ambiguous ownership
-- [ ] T002 [P] Create local unpushed `codex/075-client-local-speech` branches from refreshed `origin/main` in Plane `.git/HEAD` and Projection `.git/HEAD`, recording exact baselines in `specs/075-client-local-speech/quickstart.md`
+- [X] T001 Re-fetch and revalidate clean `origin/main` ownership, remote feature-number uniqueness, submodule anchors, and current status in Deep `.git/HEAD`, Plane `.git/HEAD`, Projection `.git/HEAD`, Primitives `.git/HEAD`, LETS `.git/HEAD`, and wiki `.git/HEAD`; stop on newly ambiguous ownership
+- [X] T002 [P] Create local unpushed `codex/075-client-local-speech` branches from refreshed `origin/main` in Plane `.git/HEAD` and Projection `.git/HEAD`, recording exact baselines in `specs/075-client-local-speech/quickstart.md`
 - [ ] T003 [P] Add a dependency-drift assertion for Feature 075 to Deep `backend/tests/test_voice_dependency_locks_065.py` and Projection `tests/test_protocol.py`, proving no new third-party runtime/model package is introduced
-- [ ] T004 Inventory the obsolete Deep root `android-client/`, `apple-clients/`, root `.gitignore`, and `.git/info/exclude` paths without moving/deleting anything; record the exact recoverable cleanup targets in `specs/075-client-local-speech/quickstart.md`
+- [X] T004 Inventory the obsolete Deep root `android-client/`, `apple-clients/`, root `.gitignore`, and `.git/info/exclude` paths without moving/deleting anything; record the exact recoverable cleanup targets in `specs/075-client-local-speech/quickstart.md`
 
 ---
 
@@ -31,14 +31,14 @@ conversation story. This phase blocks all user stories.
 
 ### AstralPlane 075.001 — tests before migration
 
-- [ ] T005 [P] Add failing backend/transport/immutability/idempotency record tests in Plane `tests/repositories/test_voice_records.py` and `tests/repositories/test_voice.py` for exact `llm_factory|client_local` combinations and exhaustive rejection of mixed local/remote fields
-- [ ] T006 [P] Add failing representative `074.004`→`075.001`, backfill, preserved-turn, idempotence, wrong-predecessor, injected-rollback, and structural-drift tests in Plane `tests/integration/test_pre_split_upgrade.py`
-- [ ] T007 [P] Add failing fresh-database, parallel-start, digest-verifier, repeat-run, and forward-recovery tests for `075.001` in Plane `tests/integration/test_empty_database_startup.py`, `tests/test_schema_migrations.py`, and `tests/test_revision.py`
-- [ ] T008 Implement guarded `PLANE_SCHEMA_075_STATEMENTS`/migration registry entry, exact predecessor verification, nullable-add/backfill/NOT-NULL sequence, verified constraint replacement, conditional remote-field nullability, exhaustive `voice_session_speech_backend_075_check`, and current structural digest in Plane `src/astralplane/database/migrations.py`
-- [ ] T009 Update Plane current predecessor/revision metadata and recognized baselines to `074.004`/`075.001` in `src/astralplane/database/revision.py`, `src/astralplane/database/baseline.py`, and `src/astralplane/__init__.py` without rewriting historic migration bytes/digests
-- [ ] T010 Implement immutable `speech_backend` and backend-discriminated insert/read validation with no transcript/audio/capability fields in Plane `src/astralplane/repositories/voice.py`
-- [ ] T011 Document quiesce/backup/upgrade/remote-smoke/local-profile/restore-or-forward-repair procedure in Plane `docs/migration-and-recovery.md`
-- [ ] T012 Run the narrow Plane repository/revision/migration suites, demonstrate their red→green sequence, and create one local qualified Plane candidate commit covering `src/astralplane/`, `tests/`, and `docs/migration-and-recovery.md` without pushing
+- [X] T005 [P] Add failing backend/transport/immutability/idempotency record tests in Plane `tests/repositories/test_voice_records.py` and `tests/repositories/test_voice.py` for exact `llm_factory|client_local` combinations and exhaustive rejection of mixed local/remote fields
+- [X] T006 [P] Add failing representative `074.004`→`075.001`, backfill, preserved-turn, idempotence, wrong-predecessor, injected-rollback, and structural-drift tests in Plane `tests/integration/test_pre_split_upgrade.py`
+- [X] T007 [P] Add failing fresh-database, parallel-start, digest-verifier, repeat-run, and forward-recovery tests for `075.001` in Plane `tests/integration/test_empty_database_startup.py`, `tests/test_schema_migrations.py`, and `tests/test_revision.py`
+- [X] T008 Implement guarded `PLANE_SCHEMA_075_STATEMENTS`/migration registry entry, exact predecessor verification, nullable-add/backfill/NOT-NULL sequence, verified constraint replacement, conditional remote-field nullability, exhaustive `voice_session_speech_backend_075_check`, and current structural digest in Plane `src/astralplane/database/migrations.py`
+- [X] T009 Update Plane current predecessor/revision metadata and recognized baselines to `074.004`/`075.001` in `src/astralplane/database/revision.py`, `src/astralplane/database/baseline.py`, and `src/astralplane/__init__.py` without rewriting historic migration bytes/digests
+- [X] T010 Implement immutable `speech_backend` and backend-discriminated insert/read validation with no transcript/audio/capability fields in Plane `src/astralplane/repositories/voice.py`
+- [X] T011 Document quiesce/backup/upgrade/remote-smoke/local-profile/restore-or-forward-repair procedure in Plane `docs/migration-and-recovery.md`
+- [X] T012 Run the narrow Plane repository/revision/migration suites, demonstrate their red→green sequence, and create one local qualified Plane candidate commit covering `src/astralplane/`, `tests/`, and `docs/migration-and-recovery.md` without pushing
 
 ### Shared Projection contract — tests before manifest
 

@@ -26,6 +26,35 @@ Feature 075 changes Plane, Projection, and Deep. It does not change Primitives o
 schema/repositories; Projection owns web/native clients and the UI protocol; Deep owns backend
 selection, session/dispatch policy, worker reliability, composition pins, and integration tests.
 
+The implementation preflight on 2026-08-28 re-fetched every origin and found no ownership or
+Feature-075 collision. The local, unpushed implementation branches are:
+
+| Repository | Branch | Exact refreshed `origin/main` baseline |
+| --- | --- | --- |
+| AstralDeep | `codex/075-client-local-speech` | `444b240219f9962866522df4e37dbc6f446ad81c` |
+| AstralPlane | `codex/075-client-local-speech` | `04ed5fb67977ab87c7c0e43252ae956338b1bc04` |
+| AstralProjection | `codex/075-client-local-speech` | `0dcf1699951671f111d4c1a5689c435e3cf50496` |
+
+Primitives remained clean at `4056df95acd992a9f84d883e572760f6da24c88e`; LETS remained
+clean at `252d0b2bdf7eccdb7d972fc2fcc6427c462e21fb`. The separately pushed vault feature
+branch was at `425941318e2f1c21c9d4462e901aafecaebb7e6b` after the analysis checkpoint.
+
+### Recoverable obsolete-client inventory
+
+Before cleanup, the ignored Deep-root sources are exactly `android-client/` (22 files, 220 KiB by
+`du -sk`) and `apple-clients/` (2,507 files, 191,688 KiB). A sorted manifest containing each
+directory/symlink path and each file's SHA-256 has aggregate digest
+`c88dd173dbe1106782b251aa8b2604f24e934824527a5593b64d5cbd86c076b5`. The Android SDK pointer is
+`android-client/local.properties`, SHA-256
+`c0aed71de8b4a2792ad6e0be875e9784657504d8d4ab9a522d3b0d2a35707390`; its contents are not
+recorded. The reserved recoverable destination is
+`/Users/sam/.Trash/AstralDeep-obsolete-clients-075-20260828-01/`, which did not exist at inventory
+time and will contain the two source directory names unchanged. Root `.gitignore` lines for
+`/android-client/local.properties`, `/android-client/keystore.properties`,
+`/android-client/.gradle/`, and `/android-client/core/bin/`, plus the exact
+`.git/info/exclude` entry `/apple-clients/`, are the only cleanup candidates. Recompute the same
+manifest and abort on any mismatch before moving either directory.
+
 ## 2. Configuration and safe comparison
 
 Add only the server-owned selector:
@@ -55,6 +84,18 @@ ordinary logs. A model-list success is insufficient: exercise real ASR and TTS i
    row, local lifecycle, and recovery tests.
 5. Bump `SCHEMA_REVISION` and the guarded migration digest. Do not repin Deep until this exact Plane
    candidate passes locally.
+
+Qualified local Plane checkpoint (not pushed):
+
+- Base: `04ed5fb67977ab87c7c0e43252ae956338b1bc04`
+- Candidate: `4a1d990387428436041dd70d9c417e9e86000b6c`
+- Revision: `075.001`
+- Migration digest: `755faecd45a7d8ca9956f25a239bed476802b885efdce29a36dc3b66981f94df`
+- Current structural digest: `0b623484495b64cb2557473f6e9d9c1d9f41a6798090641f2ffe65f8c7076b15`
+- Evidence: 252 focused tests passed on Python 3.11/PostgreSQL 17 with no skips; Ruff,
+  dependency direction, lock, and diff checks passed; changed executable-line coverage was 96%.
+- Independent review: exact-range specification and code-quality review clean, with historical
+  migration statement bytes unchanged and no dependency/lockfile changes.
 
 ### 3.2 AstralProjection shared contract and clients
 
