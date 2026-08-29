@@ -257,6 +257,42 @@ def test_local_announcement_terminal_playout_scrubs_and_fences_state() -> None:
     ) == (1, 1)
 
 
+def test_local_playout_failure_may_be_the_only_terminal_observation() -> None:
+    """A synthesizer may fail before it can emit an audible-start callback."""
+
+    registry = ClientLocalAnnouncementRegistry()
+    session = _session()
+    announcement = registry.issue(
+        session=session,
+        kind="failure",
+        turn_id=_id(),
+        requested_text="ignored",
+        output_policy="lifecycle",
+        mute_revision=1,
+        consent_revision=1,
+        now=NOW,
+    )
+    failed = VoiceLocalPlayoutEvent(
+        device_id=announcement.device_id,
+        connection_generation=announcement.connection_generation,
+        session_id=announcement.session_id,
+        generation=announcement.generation,
+        speech_revision=announcement.speech_revision,
+        announcement_id=announcement.announcement_id,
+        announcement_sequence=announcement.announcement_sequence,
+        turn_id=announcement.turn_id,
+        kind=announcement.kind,
+        phase="failed",
+        client_sequence=1,
+        observed_at="2026-08-28T19:00:01Z",
+        reason="local_synthesis_failed",
+    )
+
+    registry.observe_current(session=session, event=failed, now=NOW)
+
+    assert registry.retained_counts() == {"sessions": 1, "announcements": 0}
+
+
 def test_local_announcement_policy_revision_and_order_denials_are_stable() -> None:
     registry = ClientLocalAnnouncementRegistry()
     session = _session()

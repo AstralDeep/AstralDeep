@@ -441,7 +441,9 @@ class ClientLocalAnnouncementRegistry:
         if event.phase == "started":
             if record["phase"] is not None:
                 raise ClaimUnavailable("local_playout_out_of_order")
-        elif record["phase"] != "started":
+        elif event.phase != "failed" and record["phase"] != "started":
+            raise ClaimUnavailable("local_playout_out_of_order")
+        elif event.phase == "failed" and record["phase"] not in {None, "started"}:
             raise ClaimUnavailable("local_playout_out_of_order")
         state["client_sequence"] = event.client_sequence
         record["phase"] = event.phase
