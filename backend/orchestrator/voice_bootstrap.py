@@ -1686,6 +1686,11 @@ class VoiceServices:
                 user_id=user_id,
                 turn_id=reserved.turn_id,
             )
+            await self._complete_existing_local_recognition_before_return(
+                authority=reserved,
+                coordination=coordination,
+                now=now,
+            )
             return turn, reserved
         mutation = None
         release_binding_reservation = True
@@ -2061,6 +2066,28 @@ class VoiceServices:
             raise cancellation
         if error is not None:
             raise error
+
+    async def _complete_existing_local_recognition_before_return(
+        self,
+        *,
+        authority: ClientLocalTurnAuthority,
+        coordination: _LocalRecognitionRequest,
+        now: datetime,
+    ) -> None:
+        """Prove replay authority and settle its owner at the return boundary."""
+
+        async with self.pending_local_rejection_lock:
+            try:
+                current = self.local_bindings.get_turn(
+                    user_id=authority.user_id,
+                    client_turn_id=authority.client_turn_id,
+                    now=now,
+                )
+            except VoiceControlBindingError:
+                current = None
+            self._release_local_recognition_request_locked(coordination)
+            if current is not authority:
+                raise VoiceControlBindingError("invalid_binding")
 
     async def _acquire_local_recognition_request(
         self,

@@ -2179,6 +2179,402 @@ async def test_replaced_finalized_authority_fails_exact_return_identity(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cleanup_fails",
+    [False, True],
+    ids=["abandon-succeeds", "abandon-fails"],
+)
+@pytest.mark.parametrize("cancelled", [False, True], ids=["return", "cancel"])
+async def test_existing_authority_replay_cleanup_during_lookup_never_returns_stale_authority(
+    cleanup_fails: bool,
+    cancelled: bool,
+) -> None:
+    """Session cleanup that wins the replay lookup revokes its exact authority."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    lookup_entered = threading.Event()
+    lookup_release = threading.Event()
+    lookup_finished = threading.Event()
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def get_turn(self, **_kwargs: Any) -> Any:
+            lookup_entered.set()
+            assert lookup_release.wait(timeout=3)
+            lookup_finished.set()
+            return turn
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            if cleanup_fails:
+                raise RuntimeError("database unavailable")
+
+    registry = ClientLocalBindingRegistry()
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    initial_turn, initial_authority = await services.bind_local_recognition(
+        **kwargs
+    )
+    assert initial_turn is turn
+    assert registry.get_turn(
+        user_id="user-a",
+        client_turn_id=frame.client_turn_id,
+        now=now,
+    ) is initial_authority
+
+    replay = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    assert await asyncio.to_thread(lookup_entered.wait, 1)
+    if cancelled:
+        replay.cancel()
+        replay.cancel()
+    try:
+        if cleanup_fails:
+            with pytest.raises(RuntimeError, match="database unavailable"):
+                await services.cleanup_local_buffers(session)
+        else:
+            await services.cleanup_local_buffers(session)
+    finally:
+        lookup_release.set()
+
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await replay
+    else:
+        with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+            await replay
+    assert await asyncio.to_thread(lookup_finished.wait, 1)
+    assert registry._reservations == registry._turns == registry._sequences == {}
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancelled_existing_authority_lookup_preserves_replay_authority() -> None:
+    """Lookup cancellation releases only its coordinator, not replay-owned authority."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    lookup_entered = threading.Event()
+    lookup_release = threading.Event()
+    lookup_finished = threading.Event()
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def get_turn(self, **_kwargs: Any) -> Any:
+            lookup_entered.set()
+            assert lookup_release.wait(timeout=3)
+            lookup_finished.set()
+            return turn
+
+    registry = ClientLocalBindingRegistry()
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    _, authority = await services.bind_local_recognition(**kwargs)
+    replay = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    assert await asyncio.to_thread(lookup_entered.wait, 1)
+    await services.pending_local_rejection_lock.acquire()
+    try:
+        replay.cancel()
+        await asyncio.sleep(0)
+        replay.cancel()
+        await asyncio.sleep(0)
+        replay.cancel()
+        assert not replay.done()
+    finally:
+        lookup_release.set()
+        services.pending_local_rejection_lock.release()
+
+    with pytest.raises(asyncio.CancelledError):
+        await replay
+    assert await asyncio.to_thread(lookup_finished.wait, 1)
+    assert registry.get_turn(
+        user_id="user-a",
+        client_turn_id=frame.client_turn_id,
+        now=now,
+    ) is authority
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+async def test_existing_authority_replay_proves_exact_identity_before_no_await_return() -> None:
+    """An object-distinct replacement cannot satisfy the replay return fence."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    replace_authority = False
+    outer_release_calls = 0
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def get_turn(self, **_kwargs: Any) -> Any:
+            if replace_authority:
+                key = ("user-a", frame.client_turn_id)
+                registry._turns[key] = replace(
+                    registry._turns[key],
+                    turn_id="00000000-0000-4000-8000-000000000099",
+                )
+            return turn
+
+    class Services(VoiceServices):
+        async def _join_local_recognition_request_release(
+            self,
+            request: Any,
+        ) -> None:
+            nonlocal outer_release_calls
+            outer_release_calls += 1
+            await super()._join_local_recognition_request_release(request)
+
+    registry = ClientLocalBindingRegistry()
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    _, authority = await services.bind_local_recognition(**kwargs)
+    assert outer_release_calls == 0
+
+    returned_turn, returned_authority = await services.bind_local_recognition(
+        **kwargs
+    )
+    assert returned_turn is turn
+    assert returned_authority is authority
+    assert outer_release_calls == 0
+
+    replace_authority = True
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await services.bind_local_recognition(**kwargs)
+    replacement = registry.get_turn(
+        user_id="user-a",
+        client_turn_id=frame.client_turn_id,
+        now=now,
+    )
+    assert replacement is not authority
+    assert replacement.turn_id == "00000000-0000-4000-8000-000000000099"
+    assert outer_release_calls == 0
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "identity",
+    ["different_session", "different_turn", "different_user"],
+)
+async def test_existing_authority_replay_settlement_is_exact(
+    identity: str,
+) -> None:
+    """Unrelated session, turn, or user authority cannot disturb replay proof."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    lookup_entered = threading.Event()
+    lookup_release = threading.Event()
+    outer_release_calls = 0
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def get_turn(self, **_kwargs: Any) -> Any:
+            lookup_entered.set()
+            assert lookup_release.wait(timeout=3)
+            return turn
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            return None
+
+    class Services(VoiceServices):
+        async def _join_local_recognition_request_release(
+            self,
+            request: Any,
+        ) -> None:
+            nonlocal outer_release_calls
+            outer_release_calls += 1
+            await super()._join_local_recognition_request_release(request)
+
+    registry = ClientLocalBindingRegistry()
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    _, authority = await services.bind_local_recognition(**kwargs)
+    assert outer_release_calls == 0
+
+    other_user = "user-b" if identity == "different_user" else "user-a"
+    other_session_id = (
+        session.session_id
+        if identity == "different_turn"
+        else "00000000-0000-4000-8000-000000000099"
+    )
+    other_client_turn_id = (
+        frame.client_turn_id
+        if identity == "different_user"
+        else "00000000-0000-4000-8000-000000000043"
+    )
+    other_session = SimpleNamespace(
+        **{
+            **session.__dict__,
+            "user_id": other_user,
+            "session_id": other_session_id,
+        }
+    )
+    other_claims = VoiceControlClaims(
+        subject=other_user,
+        device_id=other_session.device_id,
+        connection_generation=other_session.owner_connection_generation,
+        binding_id=other_session.control_binding_id,
+        issued_at=now,
+        expires_at=now + timedelta(minutes=4),
+    )
+    other_frame = VoiceLocalRecognitionStarted(
+        device_id=other_session.device_id,
+        connection_generation=other_session.owner_connection_generation,
+        session_id=other_session.session_id,
+        generation=other_session.generation,
+        speech_revision=other_session.media_grant_revision,
+        client_turn_id=other_client_turn_id,
+        chat_id=other_session.visible_chat_id,
+        chat_context_revision=other_session.chat_context_revision,
+        recognition_sequence=2 if identity == "different_turn" else 1,
+    )
+    other_turn = replace(
+        _voice_turn(
+            turn_id="00000000-0000-4000-8000-000000000033",
+            client_turn_id=other_client_turn_id,
+            session_id=other_session_id,
+        ),
+        user_id=other_user,
+    )
+    registry.bind_turn(
+        socket_id=7,
+        current_socket_id=7,
+        user_id=other_user,
+        claims=other_claims,
+        session=other_session,
+        frame=other_frame,
+        turn=other_turn,
+        now=now,
+    )
+
+    replay = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    assert await asyncio.to_thread(lookup_entered.wait, 1)
+    if identity == "different_turn":
+        registry.release_turn(
+            user_id=other_user,
+            client_turn_id=other_client_turn_id,
+        )
+    else:
+        await services.cleanup_local_buffers(other_session)
+    lookup_release.set()
+
+    returned_turn, returned_authority = await replay
+    assert returned_turn is turn
+    assert returned_authority is authority
+    assert registry.get_turn(
+        user_id="user-a",
+        client_turn_id=frame.client_turn_id,
+        now=now,
+    ) is authority
+    assert outer_release_calls == 0
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("owner,lease_delta", [("replica-b", 30), ("voice-coordinator-local-1", -1)])
 async def test_local_ready_requires_this_replica_and_live_control_lease(
     owner: str,
