@@ -55,6 +55,21 @@ time and will contain the two source directory names unchanged. Root `.gitignore
 `.git/info/exclude` entry `/apple-clients/`, are the only cleanup candidates. Recompute the same
 manifest and abort on any mismatch before moving either directory.
 
+Cleanup executed recoverably on 2026-08-29 after both independent manifests reproduced exactly:
+the canonical T004 digest remained
+`c88dd173dbe1106782b251aa8b2604f24e934824527a5593b64d5cbd86c076b5`, and manifest-v1 remained
+`b1904d1f738ca890499e14107297fa80c7c5432cd62abbe94f004708ae8ebc48` for 2,529 regular files,
+190,499,553 logical bytes, 1,072 directories, and the one recorded symlink. The SDK pointer was
+copied byte-for-byte to the authoritative standalone Projection checkout at
+`/Users/sam/Desktop/Work/AstralProjection/android-client/local.properties`, set to mode `0600`, and
+remains ignored. The two obsolete roots were same-filesystem renamed into
+`/Users/sam/.Trash/AstralDeep-obsolete-clients-075-20260828-01/`; the directory is mode `0700`,
+contains exactly `android-client/` and `apple-clients/`, and reproduces manifest-v1 after the move.
+Only the obsolete Deep Android ignore block and local `/apple-clients/` exclude were removed.
+Nothing was permanently deleted. Restore requires both original paths to remain absent and both
+Trash children to match manifest-v1 before explicitly renaming them back without overwrite or
+merge.
+
 ## 2. Configuration and safe comparison
 
 Add only the server-owned selector:

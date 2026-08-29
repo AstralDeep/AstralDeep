@@ -240,8 +240,8 @@ candidate-bound evidence, wiki checkpoints, and only then intentional product pu
 
 ### Recoverable repository cleanup
 
-- [ ] T093 Revalidate T004's exact source/destination manifest and abort on any path/content drift, then move the root Android SDK pointer into ignored Deep `components/AstralProjection/android-client/local.properties`, relocate obsolete Deep root `android-client/` and `apple-clients/` residues to one explicit dated recoverable `/Users/sam/.Trash/AstralDeep-obsolete-clients-075-*` directory, and record its exact path and manifest digest in `specs/075-client-local-speech/quickstart.md`
-- [ ] T094 Remove only obsolete root-client patterns/comments from Deep `.gitignore` and the exact obsolete `/apple-clients/` entry from Deep `.git/info/exclude`, then prove against T004's manifest that `components/AstralProjection/android-client/`, `components/AstralProjection/apple-clients/`, and Windows residue are unchanged
+- [X] T093 Revalidate T004's exact source/destination manifest and abort on any path/content drift, then copy the root Android SDK pointer into the ignored authoritative `/Users/sam/Desktop/Work/AstralProjection/android-client/local.properties`, relocate obsolete Deep root `android-client/` and `apple-clients/` residues to one explicit dated recoverable `/Users/sam/.Trash/AstralDeep-obsolete-clients-075-*` directory, and record its exact path and manifest digest in `specs/075-client-local-speech/quickstart.md`
+- [X] T094 Remove only obsolete root-client patterns/comments from Deep `.gitignore` and the exact obsolete `/apple-clients/` entry from Deep `.git/info/exclude`, then prove against T004's manifest that authoritative Projection Android/Apple sources and Windows residue are unchanged
 
 ### Isolated small Apple follow-ups
 
