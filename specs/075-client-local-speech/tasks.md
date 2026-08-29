@@ -98,11 +98,11 @@ defined fence, sends zero audio bytes off-device, and preserves typed chat.
 
 ### Web MVP adapter
 
-- [ ] T039 [P] [US1] Add failing web journeys for ready/download/install/final/stale-announcement/TTS-error/mute/stop/hidden/echo/typed-fallback/blocked-egress in Projection `tooling/web-ci/tests/voice-conversation-065.spec.js`
-- [ ] T040 [P] [US1] Add failing static safety assertions for unprefixed API, `processLocally=true`, positive `available(en-US)`, matching `localService=true`, no `webkitSpeechRecognition`, no cloud fallback, and no local-mode LiveKit/media grant in Projection `tests/webrender/test_voice_renderer_065.py`
-- [ ] T041 [US1] Implement the isolated local Web Speech recognition/synthesis state machine, explicit install gesture, local interim display, bound-final submission, serialized playout, and immediate cleanup in Projection `backend/webrender/static/client.js`
-- [ ] T042 [US1] Add accessible probing/install/unavailable/typed-fallback copy only where needed in Projection `backend/webrender/templates/shell.html`, `backend/webrender/voice.py`, and `tests/chrome/test_voice_composer_model.py`
-- [ ] T043 [US1] Add and pass the blocked-speech-endpoints two-turn web/Deep integration journey in Deep `backend/tests/test_voice_client_conformance_065.py` and Projection `tooling/web-ci/tests/voice-conversation-065.spec.js`
+- [X] T039 [P] [US1] Add failing web journeys for ready/download/install/final/stale-announcement/TTS-error/mute/stop/hidden/echo/typed-fallback/blocked-egress in Projection `tooling/web-ci/tests/voice-conversation-065.spec.js`
+- [X] T040 [P] [US1] Add failing static safety assertions for unprefixed API, `processLocally=true`, positive `available(en-US)`, matching `localService=true`, no `webkitSpeechRecognition`, no cloud fallback, and no local-mode LiveKit/media grant in Projection `tests/webrender/test_voice_renderer_065.py`
+- [X] T041 [US1] Implement the isolated local Web Speech recognition/synthesis state machine, explicit install gesture, local interim display, bound-final submission, serialized playout, and immediate cleanup in Projection `backend/webrender/static/client.js`
+- [X] T042 [US1] Add accessible probing/install/unavailable/typed-fallback copy only where needed in Projection `backend/webrender/templates/shell.html`, `backend/webrender/voice.py`, and `tests/chrome/test_voice_composer_model.py`
+- [X] T043 [US1] Add and pass the blocked-speech-endpoints two-turn web/Deep integration journey in Deep `backend/tests/test_voice_client_conformance_065.py` and Projection `tooling/web-ci/tests/voice-conversation-065.spec.js`
 
 **Checkpoint**: The web MVP works independently in `client_local`, remote speech is blocked with
 zero calls, local final dispatch is ordinary/authenticated, and remote v1 remains unchanged.

@@ -173,6 +173,30 @@ Qualified local Deep contract/composition checkpoint (not pushed):
   test-first, and a fresh final specification/code-quality review was clean.
 - Scope: T018–T021 and the Deep half of T003. No selector/session/dispatcher runtime was added.
 
+### 3.4 Qualified local web/heartbeat/Stop checkpoint (not pushed)
+
+- Projection foundation: `44a3d03e0294612ca95bd64f428316ff5816e9ef` over exact
+  `0dcf1699951671f111d4c1a5689c435e3cf50496`.
+- Projection web commits: `f04a28c3fcf3b5be5b00527673fb352d9f1f238d` and
+  `928732587878508bf2026aa9ddb26ad9a525259c`.
+- Deep accepted runtime: `982e8741a54a2622a9c3d1f083dc347c53b5cbde`; heartbeat and
+  post-Stop readiness repairs: `0a339563b9e5f15d4b0b104dea008c9bf9d344c6` and
+  `ee729415f2825eaa966fbfefc999ced96a2767f4`.
+- Web behavior: strict unprefixed, `processLocally=true` recognition; exact-locale local-service
+  synthesis; explicit install gesture; typed fallback; no local-mode RTC/media grant; bounded and
+  bound local finals; serialized announcements; echo fence; and Stop-to-empty-PATCH-to-fresh-ready
+  recovery with announcement sequence reset only after ready delivery.
+- Projection evidence: 96/96 Chromium journeys; changed executable `client.js` statements
+  1,463/1,612 (90.76%); 18/18 renderer/composer tests; 25/25 coverage-tool tests; Ruff, ESLint,
+  package-manager pin, and diff checks passed.
+- Deep evidence: 342/342 focused lifecycle/admission/API tests passed against the sibling
+  AstralPlane source; Ruff and diff checks passed. Two independent race-review rounds found the
+  initial delivery/authority gaps; all reproduced interleavings were repaired and the final review
+  was clean.
+- Scope: T039-T043 plus narrow heartbeat/readiness repairs required by the web journey. Native
+  adapters, rollback qualification, full local CI, live-device/staging evidence, component repins,
+  product pushes, PRs, and hosted CI remain open.
+
 ## 4. Narrow local tests while implementing
 
 Start with a failing test for each behavior and run the smallest owning suite after each slice.
