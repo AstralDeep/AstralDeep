@@ -140,12 +140,12 @@ fallback journeys; physical-device evidence is collected later as a distinct rel
 
 ### Shared native protocol consumers
 
-- [ ] T049 [P] [US3] Add failing Apple v2 fixture/parser/builder/disposition and unchanged remote-`VoiceOrigin` tests in Projection `apple-clients/AstralCore/Tests/AstralCoreTests/VoiceContract065Tests.swift` and `apple-clients/AstralCore/Tests/AstralCoreTests/ManifestDriftTests.swift`
-- [ ] T050 [US3] Implement Apple local capability/session/frame parsing, local-final builder, and closed dispositions in Projection `apple-clients/AstralCore/Sources/AstralCore/Protocol/Voice.swift`, `Frames.swift`, and `Dispositions.swift`
-- [ ] T051 [P] [US3] Add failing Android v2 fixture/parser/builder/disposition and unchanged remote-v1 tests in Projection `android-client/core/src/test/kotlin/com/personalailabs/astraldeep/core/protocol/VoiceContract065Test.kt` and `ProtocolManifestTest.kt`
-- [ ] T052 [US3] Implement Android local protocol models/parsers/manifest mapping in Projection `android-client/core/src/main/kotlin/com/personalailabs/astraldeep/core/protocol/Wire.kt`, `Messages.kt`, and `ProtocolManifest.kt`
-- [ ] T053 [P] [US3] Add failing Windows v2 local-final/frame/disposition and unchanged remote-proof tests in Projection `windows-client/tests/test_voice_contract_065.py` and `windows-client/tests/test_protocol_manifest.py`
-- [ ] T054 [US3] Implement Windows strict local protocol/session/final/announcement models in Projection `windows-client/astral_client/protocol.py` and `protocol_manifest.py`
+- [X] T049 [P] [US3] Add failing Apple v2 fixture/parser/builder/disposition and unchanged remote-`VoiceOrigin` tests in Projection `apple-clients/AstralCore/Tests/AstralCoreTests/VoiceContract065Tests.swift` and `apple-clients/AstralCore/Tests/AstralCoreTests/ManifestDriftTests.swift`
+- [X] T050 [US3] Implement Apple local capability/session/frame parsing, local-final builder, and closed dispositions in Projection `apple-clients/AstralCore/Sources/AstralCore/Protocol/Voice.swift`, `Frames.swift`, and `Dispositions.swift`
+- [X] T051 [P] [US3] Add failing Android v2 fixture/parser/builder/disposition and unchanged remote-v1 tests in Projection `android-client/core/src/test/kotlin/com/personalailabs/astraldeep/core/protocol/VoiceContract065Test.kt` and `ProtocolManifestTest.kt`
+- [X] T052 [US3] Implement Android local protocol models/parsers/manifest mapping in Projection `android-client/core/src/main/kotlin/com/personalailabs/astraldeep/core/protocol/Wire.kt`, `Messages.kt`, and `ProtocolManifest.kt`
+- [X] T053 [P] [US3] Add failing Windows v2 local-final/frame/disposition and unchanged remote-proof tests in Projection `windows-client/tests/test_voice_contract_065.py` and `windows-client/tests/test_protocol_manifest.py`
+- [X] T054 [US3] Implement Windows strict local protocol/session/final/announcement models in Projection `windows-client/astral_client/protocol.py` and `protocol_manifest.py`
 
 ### Windows local adapter and package
 
