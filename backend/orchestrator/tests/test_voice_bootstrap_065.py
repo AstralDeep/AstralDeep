@@ -273,7 +273,14 @@ async def test_client_local_services_cover_the_content_free_lifecycle() -> None:
         issued_at=datetime.now(UTC),
         expires_at=datetime.now(UTC) + timedelta(minutes=4),
     )
-    ready = SimpleNamespace(session_id=session.session_id, generation=1, speech_revision=2)
+    ready = SimpleNamespace(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=1,
+        speech_revision=2,
+        client_sequence=1,
+    )
     assert await services.local_ready(
         socket_id=7,
         current_socket_id=7,
@@ -315,6 +322,24 @@ async def test_client_local_services_cover_the_content_free_lifecycle() -> None:
     await services.cleanup_local_buffers(session)
     assert bindings.clear_connection.called
     assert bindings.clear_session.call_count == 2
+    assert await services.local_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=ready,
+        now=datetime.now(UTC),
+    ) is session
+    await services.complete_local_ready_delivery(
+        session,
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=ready,
+        now=datetime.now(UTC),
+        authority_is_current=lambda: True,
+    )
 
     publisher = AsyncMock()
     services.bind_local_announcement_publisher(publisher)
@@ -3087,6 +3112,18 @@ async def test_failed_cleanup_retries_before_fresh_ready_and_old_work_stays_stal
         frame=ready,
         now=now,
     ) is session
+    assert len(services.local_cleanup_epochs) == 1
+    assert len(services.local_cleanup_operations) == 1
+    await services.complete_local_ready_delivery(
+        session,
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=ready,
+        now=now,
+        authority_is_current=lambda: True,
+    )
     assert services.local_cleanup_epochs == {}
     assert services.local_cleanup_operations == {}
 
@@ -3115,6 +3152,335 @@ async def test_failed_cleanup_retries_before_fresh_ready_and_old_work_stays_stal
     assert services.local_recognition_keys == {}
     assert services.local_cleanup_epochs == {}
     assert services.local_cleanup_operations == {}
+
+
+@pytest.mark.asyncio
+async def test_local_cleanup_blocks_announcements_until_ready_delivery() -> None:
+    """A stopped epoch cannot publish new speech before its ready barrier."""
+
+    now = datetime.now(UTC)
+    session, _claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(session_id=session.session_id)
+
+    class Repository:
+        def get_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            return None
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    services.local_announcements.issue(
+        session=session,
+        kind="acknowledgement",
+        turn_id=frame.client_turn_id,
+        requested_text="ignored",
+        output_policy="lifecycle",
+        mute_revision=1,
+        consent_revision=1,
+        now=now,
+    )
+    publisher = AsyncMock()
+    services.bind_local_announcement_publisher(publisher)
+    await services.cleanup_local_buffers(session)
+
+    with pytest.raises(VoiceBootstrapError, match="local_session_not_ready"):
+        await services._publish_local_announcement(turn, kind="failure")
+
+    publisher.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_cleanup_ready_delivery_starts_announcement_sequence_at_one() -> None:
+    """The delivered ready frame is the barrier for a fresh output epoch."""
+
+    now = datetime.now(UTC)
+    session, claims, recognition = _local_recognition_context(now)
+    turn = _voice_turn(session_id=session.session_id)
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def get_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            return None
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    for kind in ("acknowledgement", "failure"):
+        services.local_announcements.issue(
+            session=session,
+            kind=kind,
+            turn_id=recognition.client_turn_id,
+            requested_text="ignored",
+            output_policy="lifecycle",
+            mute_revision=1,
+            consent_revision=1,
+            now=now,
+        )
+    await services.cleanup_local_buffers(session)
+    ready = VoiceLocalReady(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=session.generation,
+        speech_revision=session.media_grant_revision,
+        client_sequence=1,
+    )
+
+    assert await services.local_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id=session.user_id,
+        claims=claims,
+        frame=ready,
+        now=now,
+    ) is session
+    assert services.local_announcements.retained_counts() == {
+        "sessions": 0,
+        "announcements": 0,
+    }
+    assert len(services.local_cleanup_epochs) == 1
+    assert len(services.local_cleanup_operations) == 1
+
+    await services.complete_local_ready_delivery(
+        session,
+        socket_id=7,
+        current_socket_id=7,
+        user_id=session.user_id,
+        claims=claims,
+        frame=ready,
+        now=now,
+        authority_is_current=lambda: True,
+    )
+
+    assert services.local_cleanup_epochs == {}
+    assert services.local_cleanup_operations == {}
+    publisher = AsyncMock()
+    services.bind_local_announcement_publisher(publisher)
+    await services._publish_local_announcement(turn, kind="failure")
+    delivered = publisher.await_args.args[0]
+    assert delivered.announcement_sequence == 1
+
+
+@pytest.mark.asyncio
+async def test_later_cleanup_supersedes_inflight_ready_delivery() -> None:
+    """A ready send that predates a later Stop cannot reopen local speech."""
+
+    now = datetime.now(UTC)
+    session, claims, recognition = _local_recognition_context(now)
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            return None
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    ready = VoiceLocalReady(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=session.generation,
+        speech_revision=session.media_grant_revision,
+        client_sequence=recognition.recognition_sequence + 1,
+    )
+    await services.cleanup_local_buffers(session)
+    assert await services.local_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id=session.user_id,
+        claims=claims,
+        frame=ready,
+        now=now,
+    ) is session
+
+    await services.cleanup_local_buffers(session)
+
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await services.complete_local_ready_delivery(
+            session,
+            socket_id=7,
+            current_socket_id=7,
+            user_id=session.user_id,
+            claims=claims,
+            frame=ready,
+            now=now,
+            authority_is_current=lambda: True,
+        )
+    assert len(services.local_cleanup_epochs) == 1
+    assert len(services.local_cleanup_operations) == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_supersedes_ready_blocked_in_repository_lookup() -> None:
+    """A Stop during readiness lookup invalidates that stale observation."""
+
+    now = datetime.now(UTC)
+    session, claims, recognition = _local_recognition_context(now)
+    lookup_started = threading.Event()
+    lookup_release = threading.Event()
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            lookup_started.set()
+            assert lookup_release.wait(timeout=3)
+            return session
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            return None
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    ready = VoiceLocalReady(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=session.generation,
+        speech_revision=session.media_grant_revision,
+        client_sequence=recognition.recognition_sequence + 1,
+    )
+    await services.cleanup_local_buffers(session)
+    pending_ready = asyncio.create_task(
+        services.local_ready(
+            socket_id=7,
+            current_socket_id=7,
+            user_id=session.user_id,
+            claims=claims,
+            frame=ready,
+            now=now,
+        )
+    )
+    assert await asyncio.to_thread(lookup_started.wait, 1)
+
+    await services.cleanup_local_buffers(session)
+    lookup_release.set()
+
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await pending_ready
+    assert len(services.local_cleanup_epochs) == 1
+    assert next(iter(services.local_cleanup_epochs.values())).ready_transition is None
+
+
+@pytest.mark.asyncio
+async def test_ready_completion_rechecks_live_authority_after_repository_lookup() -> None:
+    """Socket revocation during final lookup leaves the output epoch closed."""
+
+    now = datetime.now(UTC)
+    session, claims, recognition = _local_recognition_context(now)
+    completion_lookup_started = threading.Event()
+    completion_lookup_release = threading.Event()
+    lookup_count = 0
+    authority_current = True
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            nonlocal lookup_count
+            lookup_count += 1
+            if lookup_count == 2:
+                completion_lookup_started.set()
+                assert completion_lookup_release.wait(timeout=3)
+            return session
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            return None
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    ready = VoiceLocalReady(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=session.generation,
+        speech_revision=session.media_grant_revision,
+        client_sequence=recognition.recognition_sequence + 1,
+    )
+    await services.cleanup_local_buffers(session)
+    assert await services.local_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id=session.user_id,
+        claims=claims,
+        frame=ready,
+        now=now,
+    ) is session
+    completing = asyncio.create_task(
+        services.complete_local_ready_delivery(
+            session,
+            socket_id=7,
+            current_socket_id=7,
+            user_id=session.user_id,
+            claims=claims,
+            frame=ready,
+            now=now,
+            authority_is_current=lambda: authority_current,
+        )
+    )
+    assert await asyncio.to_thread(completion_lookup_started.wait, 1)
+
+    authority_current = False
+    completion_lookup_release.set()
+
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await completing
+    assert len(services.local_cleanup_epochs) == 1
+    assert len(services.local_cleanup_operations) == 1
 
 
 @pytest.mark.asyncio
@@ -3514,6 +3880,16 @@ async def test_failed_end_reconciles_end_fenced_nonreplay_insert(
         frame=ready,
         now=now,
     ) is session
+    await services.complete_local_ready_delivery(
+        session,
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=ready,
+        now=now,
+        authority_is_current=lambda: True,
+    )
     assert services.local_cleanup_epochs == {}
     assert services.local_end_fences == {}
 
@@ -3653,6 +4029,16 @@ async def test_failed_end_rejects_promotion_during_reconciliation() -> None:
         frame=ready,
         now=now,
     ) is session
+    await services.complete_local_ready_delivery(
+        session,
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=ready,
+        now=now,
+        authority_is_current=lambda: True,
+    )
     assert services.local_cleanup_epochs == {}
     assert services.local_end_fences == {}
 

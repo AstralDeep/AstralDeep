@@ -9859,7 +9859,32 @@ class Orchestrator:
             speech_muted=session.speech_muted,
             lease_expires_at=self._rfc3339(session.lease_expires_at),
         )
-        await self._safe_send(origin, response.to_json())
+
+        def ready_authority_is_current() -> bool:
+            try:
+                current = self._client_local_socket_authority(origin)
+            except VoiceControlBindingError:
+                return False
+            return (
+                current[0] is origin
+                and current[1] == user_id
+                and current[2] is binding
+                and current[3] == id(origin)
+            )
+
+        if await self._safe_send(origin, response.to_json()):
+            if not ready_authority_is_current():
+                raise VoiceControlBindingError("invalid_binding")
+            await services.complete_local_ready_delivery(
+                session,
+                socket_id=id(origin),
+                current_socket_id=id(origin),
+                user_id=user_id,
+                claims=binding,
+                frame=frame,
+                now=datetime.now(UTC),
+                authority_is_current=ready_authority_is_current,
+            )
 
     async def _handle_voice_local_recognition_started(
         self,

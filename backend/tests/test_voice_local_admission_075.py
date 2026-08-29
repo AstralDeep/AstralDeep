@@ -453,6 +453,93 @@ def _local_orchestrator(frame: VoiceLocalFinal, services: object) -> tuple[Orche
 
 
 @pytest.mark.asyncio
+async def test_failed_local_ready_delivery_keeps_cleanup_epoch_closed() -> None:
+    final = _final()
+    session = SimpleNamespace(
+        device_id=final.device_id,
+        owner_connection_generation=final.connection_generation,
+        session_id=final.session_id,
+        generation=final.generation,
+        media_grant_revision=final.speech_revision,
+        visible_chat_id=final.chat_id,
+        chat_context_revision=final.chat_context_revision,
+        applied_chat_context_revision=final.chat_context_revision,
+        foreground_active=True,
+        microphone_enabled=True,
+        speech_muted=False,
+        lease_expires_at=NOW + timedelta(minutes=1),
+    )
+    services = SimpleNamespace(
+        local_ready=AsyncMock(return_value=session),
+        complete_local_ready_delivery=AsyncMock(),
+    )
+    orchestrator, websocket = _local_orchestrator(final, services)
+    orchestrator._safe_send = AsyncMock(return_value=False)
+
+    await orchestrator._handle_voice_local_ready(
+        websocket,
+        VoiceLocalReady(
+            device_id=final.device_id,
+            connection_generation=final.connection_generation,
+            session_id=final.session_id,
+            generation=final.generation,
+            speech_revision=final.speech_revision,
+            client_sequence=1,
+        ),
+    )
+
+    services.complete_local_ready_delivery.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_displaced_socket_cannot_complete_inflight_local_ready() -> None:
+    final = _final()
+    session = SimpleNamespace(
+        device_id=final.device_id,
+        owner_connection_generation=final.connection_generation,
+        session_id=final.session_id,
+        generation=final.generation,
+        media_grant_revision=final.speech_revision,
+        visible_chat_id=final.chat_id,
+        chat_context_revision=final.chat_context_revision,
+        applied_chat_context_revision=final.chat_context_revision,
+        foreground_active=True,
+        microphone_enabled=True,
+        speech_muted=False,
+        lease_expires_at=NOW + timedelta(minutes=1),
+    )
+    services = SimpleNamespace(
+        local_ready=AsyncMock(return_value=session),
+        complete_local_ready_delivery=AsyncMock(),
+    )
+    orchestrator, websocket = _local_orchestrator(final, services)
+    replacement = object()
+
+    async def displace_after_delivery(*_args: object, **_kwargs: object) -> bool:
+        orchestrator._voice_device_bindings[("owner-a", final.device_id)] = id(
+            replacement
+        )
+        return True
+
+    orchestrator._safe_send = AsyncMock(side_effect=displace_after_delivery)
+
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await orchestrator._handle_voice_local_ready(
+            websocket,
+            VoiceLocalReady(
+                device_id=final.device_id,
+                connection_generation=final.connection_generation,
+                session_id=final.session_id,
+                generation=final.generation,
+                speech_revision=final.speech_revision,
+                client_sequence=1,
+            ),
+        )
+
+    services.complete_local_ready_delivery.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_local_socket_handlers_bind_admit_dispatch_and_publish_exactly() -> None:
     final = _final()
     session = SimpleNamespace(
@@ -479,6 +566,7 @@ async def test_local_socket_handlers_bind_admit_dispatch_and_publish_exactly() -
     authority = _authority(final)
     services = SimpleNamespace(
         local_ready=AsyncMock(return_value=session),
+        complete_local_ready_delivery=AsyncMock(),
         bind_local_recognition=AsyncMock(return_value=(turn, authority)),
         admit_local_final=AsyncMock(
             return_value=SimpleNamespace(canonical_text="Café\nstatus")
@@ -494,16 +582,30 @@ async def test_local_socket_handlers_bind_admit_dispatch_and_publish_exactly() -
         id(websocket),
     )
 
-    await orchestrator._handle_voice_local_ready(
-        websocket,
-        VoiceLocalReady(
-            device_id=final.device_id,
-            connection_generation=final.connection_generation,
-            session_id=final.session_id,
-            generation=1,
-            speech_revision=1,
-            client_sequence=1,
-        ),
+    ready = VoiceLocalReady(
+        device_id=final.device_id,
+        connection_generation=final.connection_generation,
+        session_id=final.session_id,
+        generation=1,
+        speech_revision=1,
+        client_sequence=1,
+    )
+    await orchestrator._handle_voice_local_ready(websocket, ready)
+    authority_is_current = (
+        services.complete_local_ready_delivery.await_args.kwargs[
+            "authority_is_current"
+        ]
+    )
+    assert authority_is_current() is True
+    services.complete_local_ready_delivery.assert_awaited_once_with(
+        session,
+        socket_id=id(websocket),
+        current_socket_id=id(websocket),
+        user_id="owner-a",
+        claims=orchestrator._voice_control_bindings[id(websocket)],
+        frame=ready,
+        now=services.complete_local_ready_delivery.await_args.kwargs["now"],
+        authority_is_current=authority_is_current,
     )
     started = VoiceLocalRecognitionStarted(
         device_id=final.device_id,

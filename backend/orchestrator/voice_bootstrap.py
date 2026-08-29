@@ -132,6 +132,11 @@ class _LocalCleanupEpoch:
     generation: int
     accepting: bool = True
     terminal: bool = False
+    revision: int = 0
+    ready_transition: _LocalReadyTransition | None = field(
+        default=None,
+        repr=False,
+    )
     holders: int = 0
     mutation_tasks: set[asyncio.Task[Any]] = field(
         default_factory=set,
@@ -160,6 +165,25 @@ class _LocalEndFence:
     status: str = "pending"
     pending_attempts: int = 0
     terminal_cleared: bool = False
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class _LocalReadyTransition:
+    """Exact post-cleanup readiness delivery allowed to reopen one epoch."""
+
+    revision: int
+    socket_id: int
+    user_id: str
+    device_id: str
+    connection_generation: str
+    binding_id: str
+    session_id: str
+    generation: int
+    speech_revision: int
+    client_sequence: int
+    claims: VoiceControlClaims = field(repr=False)
+    cleanup: _LocalCleanupOperation | None = field(repr=False)
+    end_fence: _LocalEndFence | None = field(repr=False)
 
 
 @dataclass(slots=True)
@@ -1247,21 +1271,32 @@ class VoiceServices:
             session_id=turn.session_id,
         )
         self._require_current_local_control(session, now=datetime.now(UTC))
-        mute_revision, consent_revision = self.local_announcements.next_revisions(
+        cleanup_key = self._local_cleanup_key(
+            user_id=turn.user_id,
             session_id=session.session_id,
             generation=session.generation,
         )
-        frame = self.local_announcements.issue(
-            session=session,
-            kind=kind,
-            turn_id=turn.turn_id,
-            requested_text=text,
-            output_policy=output_policy,
-            mute_revision=mute_revision,
-            consent_revision=consent_revision,
-            now=datetime.now(UTC),
-            server_authorized=server_authorized,
-        )
+        async with self.pending_local_rejection_lock:
+            cleanup_epoch = self.local_cleanup_epochs.get(cleanup_key)
+            if cleanup_epoch is not None and not cleanup_epoch.accepting:
+                raise VoiceBootstrapError("local_session_not_ready")
+            mute_revision, consent_revision = (
+                self.local_announcements.next_revisions(
+                    session_id=session.session_id,
+                    generation=session.generation,
+                )
+            )
+            frame = self.local_announcements.issue(
+                session=session,
+                kind=kind,
+                turn_id=turn.turn_id,
+                requested_text=text,
+                output_policy=output_policy,
+                mute_revision=mute_revision,
+                consent_revision=consent_revision,
+                now=datetime.now(UTC),
+                server_authorized=server_authorized,
+            )
         publisher = self.local_announcement_publisher
         if publisher is None:
             self.local_announcements.discard(frame.announcement_id)
@@ -1652,6 +1687,9 @@ class VoiceServices:
         )
         async with self.pending_local_rejection_lock:
             cleanup_epoch = self.local_cleanup_epochs.get(cleanup_key)
+            cleanup_revision_at_lookup = (
+                cleanup_epoch.revision if cleanup_epoch is not None else None
+            )
             cleanup_at_lookup = self.local_cleanup_operations.get(cleanup_key)
             end_fence_at_lookup = self.local_end_fences.get(cleanup_key)
             if cleanup_at_lookup is not None:
@@ -1701,6 +1739,10 @@ class VoiceServices:
         async with self.pending_local_rejection_lock:
             if (
                 self.local_cleanup_epochs.get(cleanup_key) is not cleanup_epoch
+                or (
+                    cleanup_epoch is not None
+                    and cleanup_epoch.revision != cleanup_revision_at_lookup
+                )
                 or self.local_cleanup_operations.get(cleanup_key)
                 is not cleanup_at_lookup
                 or self.local_end_fences.get(cleanup_key)
@@ -1717,10 +1759,138 @@ class VoiceServices:
                 now=now,
             )
             if cleanup_epoch is not None and not cleanup_epoch.accepting:
-                self.local_cleanup_operations.pop(cleanup_key, None)
-                self.local_end_fences.pop(cleanup_key, None)
-                self.local_cleanup_epochs.pop(cleanup_key, None)
+                # A successful readiness check starts a fresh announcement
+                # epoch, but output remains closed until the session-ready
+                # frame is actually delivered on the same ordered socket.
+                self.local_announcements.clear_session(
+                    session_id=session.session_id,
+                    generation=session.generation,
+                )
+                cleanup_epoch.ready_transition = _LocalReadyTransition(
+                    revision=cleanup_revision_at_lookup,
+                    socket_id=socket_id,
+                    user_id=user_id,
+                    device_id=frame.device_id,
+                    connection_generation=frame.connection_generation,
+                    binding_id=claims.binding_id,
+                    session_id=frame.session_id,
+                    generation=frame.generation,
+                    speech_revision=frame.speech_revision,
+                    client_sequence=frame.client_sequence,
+                    claims=claims,
+                    cleanup=cleanup_at_lookup,
+                    end_fence=end_fence_at_lookup,
+                )
         return session
+
+    async def complete_local_ready_delivery(
+        self,
+        session: VoiceSessionRecord,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        claims: VoiceControlClaims,
+        frame: Any,
+        now: datetime,
+        authority_is_current: Callable[[], bool],
+    ) -> None:
+        """Open a cleaned local epoch only after its ready frame was delivered."""
+
+        cleanup_key = self._local_cleanup_key(
+            user_id=session.user_id,
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+        async with self.pending_local_rejection_lock:
+            cleanup_epoch = self.local_cleanup_epochs.get(cleanup_key)
+            if cleanup_epoch is None:
+                return
+            transition = cleanup_epoch.ready_transition
+            if transition is None or not (
+                cleanup_epoch.revision == transition.revision
+                and transition.socket_id == socket_id == current_socket_id
+                and transition.user_id == user_id == session.user_id
+                and transition.claims is claims
+                and transition.device_id
+                == claims.device_id
+                == frame.device_id
+                == session.device_id
+                and transition.connection_generation
+                == claims.connection_generation
+                == frame.connection_generation
+                == session.owner_connection_generation
+                and transition.binding_id == claims.binding_id
+                and transition.session_id
+                == frame.session_id
+                == session.session_id
+                and transition.generation
+                == frame.generation
+                == session.generation
+                and transition.speech_revision
+                == frame.speech_revision
+                == session.media_grant_revision
+                and transition.client_sequence == frame.client_sequence
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+        current_session = await asyncio.to_thread(
+            self.repository.get_controlled_session,
+            user_id=user_id,
+            session_id=transition.session_id,
+            expected_generation=transition.generation,
+            expected_media_grant_revision=transition.speech_revision,
+            control=SessionControl(
+                device_id=claims.device_id,
+                connection_generation=claims.connection_generation,
+                binding_id=claims.binding_id,
+                binding_expires_at=claims.expires_at,
+            ),
+            now=now,
+        )
+        self._require_current_local_control(current_session, now=now)
+        async with self.pending_local_rejection_lock:
+            cleanup_epoch = self.local_cleanup_epochs.get(cleanup_key)
+            try:
+                live_authority = authority_is_current() is True
+            except Exception:
+                live_authority = False
+            if (
+                cleanup_epoch is None
+                or cleanup_epoch.ready_transition is not transition
+                or cleanup_epoch.revision != transition.revision
+                or not live_authority
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+            cleanup = self.local_cleanup_operations.get(cleanup_key)
+            end_fence = self.local_end_fences.get(cleanup_key)
+            if (
+                cleanup is not transition.cleanup
+                or end_fence is not transition.end_fence
+                or cleanup_epoch.accepting
+                or (
+                    cleanup is not None and cleanup.status != "succeeded"
+                )
+                or (
+                    cleanup is None
+                    and not (
+                        end_fence is not None
+                        and end_fence.status == "failed"
+                        and end_fence.pending_attempts == 0
+                    )
+                )
+                or (
+                    end_fence is not None
+                    and (
+                        end_fence.status != "failed"
+                        or end_fence.pending_attempts != 0
+                    )
+                )
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+            cleanup_epoch.ready_transition = None
+            self.local_cleanup_operations.pop(cleanup_key, None)
+            self.local_end_fences.pop(cleanup_key, None)
+            self.local_cleanup_epochs.pop(cleanup_key, None)
 
     async def bind_local_recognition(
         self,
@@ -2814,6 +2984,8 @@ class VoiceServices:
                 raise VoiceBootstrapError("invalid_binding")
             elif fence.status == "failed":
                 fence.status = "pending"
+            epoch.revision += 1
+            epoch.ready_transition = None
             fence.pending_attempts += 1
             mutation_tasks = tuple(epoch.mutation_tasks)
         remembered_cancellation: asyncio.CancelledError | None = None
@@ -2918,6 +3090,8 @@ class VoiceServices:
             if epoch is not None:
                 epoch.accepting = False
                 epoch.terminal = True
+                epoch.revision += 1
+                epoch.ready_transition = None
                 if cleanup is None and end_fence is None:
                     self.local_cleanup_epochs.pop(cleanup_key, None)
             if cleanup is not None:
@@ -3039,6 +3213,10 @@ class VoiceServices:
                         f"{session.session_id}-{session.generation}"
                     ),
                 )
+            epoch = cleanup.epoch
+            epoch.accepting = False
+            epoch.revision += 1
+            epoch.ready_transition = None
             task = cleanup.task
             if task is None:
                 raise RuntimeError("local cleanup task unavailable")
