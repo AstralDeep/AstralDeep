@@ -425,6 +425,47 @@ def test_same_device_reconnect_rebinds_but_cross_device_control_is_refused(
         )
 
 
+def test_fence_only_update_rebinds_control_without_resetting_true_idle(
+    repository: VoiceSessionRepository,
+) -> None:
+    create = _create()
+    active = _activate_and_sync(repository, create)
+    idle = repository.set_true_idle(
+        user_id=create.user_id,
+        session_id=active.session_id,
+        expected_generation=active.generation,
+        listening=True,
+        user_input_gate=False,
+        now=NOW + timedelta(seconds=1),
+    )
+    replacement = _control(
+        create,
+        connection_generation=str(uuid.uuid4()),
+        binding_id=str(uuid.uuid4()),
+        binding_expires_at=NOW + timedelta(minutes=8),
+    )
+
+    heartbeat = repository.update_session(
+        SessionUpdate(
+            user_id=create.user_id,
+            session_id=active.session_id,
+            expected_generation=active.generation,
+            expected_media_grant_revision=active.media_grant_revision,
+            control=replacement,
+        ),
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert heartbeat.owner_connection_generation == replacement.connection_generation
+    assert heartbeat.control_binding_id == replacement.binding_id
+    assert heartbeat.control_binding_expires_at == replacement.binding_expires_at
+    assert heartbeat.last_interaction_at == idle.last_interaction_at
+    assert heartbeat.idle_started_at == idle.idle_started_at
+    assert heartbeat.foreground_active == active.foreground_active
+    assert heartbeat.microphone_enabled == active.microphone_enabled
+    assert heartbeat.speech_muted == active.speech_muted
+
+
 def test_update_suspends_without_cancelling_turns_and_resumes_reconnecting(
     repository: VoiceSessionRepository,
 ) -> None:

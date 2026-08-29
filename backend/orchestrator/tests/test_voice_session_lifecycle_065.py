@@ -539,6 +539,44 @@ async def test_background_update_stops_capture_and_playout_without_end() -> None
 
 
 @pytest.mark.asyncio
+async def test_client_local_fence_only_update_renews_leases_without_cleanup() -> None:
+    runtime, repository, _capability, media = _runtime()
+    idle_started_at = NOW - timedelta(minutes=2)
+    last_interaction_at = NOW - timedelta(minutes=3)
+    repository.session = replace(
+        repository.session,
+        state="active",
+        speech_backend="client_local",
+        idle_started_at=idle_started_at,
+        last_interaction_at=last_interaction_at,
+    )
+    runtime.speech_backend = VoiceSpeechBackend.CLIENT_LOCAL
+    cleaned: list[str] = []
+
+    async def cleanup(session: VoiceSessionRecord) -> None:
+        cleaned.append(session.session_id)
+
+    runtime.bind_local_buffer_cleanup_handler(cleanup)
+
+    result = await runtime.update_session(
+        user_id="user-a",
+        session_id=SESSION,
+        control=_control(),
+        request={
+            "expected_generation": 1,
+            "expected_media_grant_revision": 1,
+        },
+    )
+
+    assert [name for name, _value in repository.calls] == ["update", "renew", "claim"]
+    assert result["lease_expires_at"] == "2026-07-31T18:00:45Z"
+    assert repository.session.last_interaction_at == last_interaction_at
+    assert repository.session.idle_started_at == idle_started_at
+    assert cleaned == []
+    assert media.calls == []
+
+
+@pytest.mark.asyncio
 async def test_context_change_waits_for_media_application_before_projection() -> None:
     runtime, repository, _capability, media = _runtime()
     repository.session = replace(

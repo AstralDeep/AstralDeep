@@ -593,17 +593,6 @@ class SessionUpdate:
             raise ValueError("invalid_foreground_state")
         if self.interaction is False:
             raise ValueError("invalid_interaction")
-        if all(
-            value is None
-            for value in (
-                self.visible_chat_id,
-                self.speech_muted,
-                self.microphone_enabled,
-                self.foreground_active,
-                self.interaction,
-            )
-        ):
-            raise ValueError("empty_session_update")
 
 
 @dataclass(frozen=True, slots=True)

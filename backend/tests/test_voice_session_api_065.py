@@ -369,6 +369,36 @@ def test_update_enforces_foreground_pairing_and_microphone_shutdown(api) -> None
     assert runtime.calls[-1][0] == "update_session"
 
 
+def test_fence_only_update_is_an_authenticated_lease_heartbeat(api) -> None:
+    client, runtime, orchestrator = api
+
+    response = client.patch(
+        f"/api/voice/sessions/{SESSION}",
+        headers=_headers(),
+        json={
+            "expected_generation": 1,
+            "expected_media_grant_revision": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    name, kwargs = runtime.calls[-1]
+    assert name == "update_session"
+    assert kwargs["request"] == {
+        "expected_generation": 1,
+        "expected_media_grant_revision": 2,
+    }
+    assert kwargs["control"] == {
+        "subject": "user-a",
+        "device_id": DEVICE,
+        "connection_generation": CONNECTION,
+        "binding_id": BINDING_ID,
+        "binding_expires_at": NOW + timedelta(minutes=5),
+    }
+    assert orchestrator.validations[-1]["bearer"] == BEARER
+
+
 def test_end_and_stop_are_generation_fenced_and_bodyless(api) -> None:
     client, runtime, _orchestrator = api
     ended = client.delete(

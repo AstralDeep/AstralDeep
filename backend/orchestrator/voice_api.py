@@ -172,16 +172,6 @@ class UpdateSessionRequest(GenerationRequest):
 
     @model_validator(mode="after")
     def validate_mutation(self) -> UpdateSessionRequest:
-        changed = (
-            self.visible_chat_id,
-            self.speech_muted,
-            self.microphone_enabled,
-            self.foreground_active,
-            self.foreground_reason,
-            self.interaction,
-        )
-        if all(item is None for item in changed):
-            raise ValueError("session update requires a mutation")
         if (self.foreground_active is None) != (self.foreground_reason is None):
             raise ValueError("foreground state and reason must be supplied together")
         if self.foreground_active is True and self.foreground_reason != "foreground":
