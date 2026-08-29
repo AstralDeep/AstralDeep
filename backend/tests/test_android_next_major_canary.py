@@ -18,10 +18,7 @@ PROJECTION_ROOT = REPO_ROOT / "components" / "AstralProjection"
 SCRIPT = REPO_ROOT / "scripts" / "run_android_next_major_canary.py"
 PINS = PROJECTION_ROOT / "android-client" / "gradle" / "next-major-canary.properties"
 
-if not (
-    (REPO_ROOT / "scripts").is_dir()
-    and (PROJECTION_ROOT / "android-client").is_dir()
-):  # repo root absent inside the product image
+if not (REPO_ROOT / "scripts").is_dir():  # repo root absent inside the product image
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -154,6 +151,10 @@ def test_driver_is_stdlib_only_and_documents_public_contracts() -> None:
     assert all(ast.get_docstring(public[name]) for name in expected)
 
 
+@pytest.mark.skipif(
+    not PINS.is_file(),
+    reason="Projection's Android pins are unavailable in the source-free checkout",
+)
 def test_repository_pins_truthfully_declare_both_major_ten_tools_unreleased() -> None:
     pins = driver.load_pins(PINS)
     assert (pins.agp_major, pins.gradle_major) == (10, 10)

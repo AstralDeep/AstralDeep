@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,8 @@ TOOLING_ROOT = REPO_ROOT / "tooling" / "python-ci"
 INPUT = TOOLING_ROOT / "requirements.in"
 LOCK = TOOLING_ROOT / "requirements.lock.txt"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+ANDROID_CANARY_TEST = REPO_ROOT / "backend" / "tests" / "test_android_next_major_canary.py"
+ANDROID_CANARY_SCRIPT = REPO_ROOT / "scripts" / "run_android_next_major_canary.py"
 GITLEAKS_IGNORE = REPO_ROOT / ".gitleaksignore"
 REVIEWED_074_FINGERPRINTS = {
     "7bc9d1f683c535863b5426ab3053db3bdefc6a1a:config/astral-composition.json:generic-api-key:56",
@@ -248,6 +253,28 @@ def test_release_tooling_job_excludes_real_component_checkout_tests() -> None:
         "scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts",
         "scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands",
     }
+
+
+def test_android_canary_suite_runs_without_projection_checkout(tmp_path: Path) -> None:
+    """The public source-free lane must still exercise its Deep-owned driver."""
+    source_root = tmp_path / "source-free"
+    test_path = source_root / "backend" / "tests" / ANDROID_CANARY_TEST.name
+    script_path = source_root / "scripts" / ANDROID_CANARY_SCRIPT.name
+    test_path.parent.mkdir(parents=True)
+    script_path.parent.mkdir()
+    shutil.copy2(ANDROID_CANARY_TEST, test_path)
+    shutil.copy2(ANDROID_CANARY_SCRIPT, script_path)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", str(test_path)],
+        cwd=source_root,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    assert completed.returncode == 0, completed.stdout
 
 
 def test_windows_candidate_installs_test_lock_only_after_candidate_build() -> None:
