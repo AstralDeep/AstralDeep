@@ -118,11 +118,11 @@ selection fails voice closed, sessions never switch in flight, and rollback need
 session behavior, drain/end a local session, restart as Factory, and complete remote smoke with the
 same conversations and no client override.
 
-- [ ] T044 [P] [US2] Add failing process-lifetime immutability, active-session backend mutation denial, selector-restart, legacy v1 local-unavailable, and no-data-rewrite tests in Deep `backend/orchestrator/tests/test_voice_backend_selection_075.py` and `backend/tests/test_voice_v2_api_075.py`
-- [ ] T045 [US2] Implement backend immutability/drain/end guards and v1-safe `client_contract_upgrade_required` projection in Deep `backend/orchestrator/voice_backend.py`, `backend/orchestrator/voice_api.py`, and `backend/orchestrator/voice_sessions.py`
-- [ ] T046 [P] [US2] Add selector/kill-switch/typed-fallback/environment-isolation configuration tests in Deep `backend/tests/test_voice_env_isolation_065.py` and `backend/tests/test_voice_deployment_topology_065.py`
-- [ ] T047 [US2] Document `VOICE_SPEECH_BACKEND`, default/malformed behavior, restart/drain procedure, no client override, and rollback smoke in Deep `.env.example`, `docker-compose.yml`, and tracked `docs/production-deployment.md` without exposing speech credentials/endpoints
-- [ ] T048 [US2] Add and pass a local→remote→local restart/rollback integration with preserved conversations and no schema rewrite in Deep `backend/tests/test_voice_backend_rollback_075.py`
+- [x] T044 [P] [US2] Add failing process-lifetime immutability, active-session backend mutation denial, selector-restart, legacy v1 local-unavailable, and no-data-rewrite tests in Deep `backend/orchestrator/tests/test_voice_backend_selection_075.py` and `backend/tests/test_voice_v2_api_075.py`
+- [x] T045 [US2] Implement backend immutability/drain/end guards and v1-safe `client_contract_upgrade_required` projection in Deep `backend/orchestrator/voice_backend.py`, `backend/orchestrator/voice_api.py`, and `backend/orchestrator/voice_sessions.py`
+- [x] T046 [P] [US2] Add selector/kill-switch/typed-fallback/environment-isolation configuration tests in Deep `backend/tests/test_voice_env_isolation_065.py` and `backend/tests/test_voice_deployment_topology_065.py`
+- [x] T047 [US2] Document `VOICE_SPEECH_BACKEND`, default/malformed behavior, restart/drain procedure, no client override, and rollback smoke in Deep `.env.example`, `docker-compose.yml`, and tracked `docs/production-deployment.md` without exposing speech credentials/endpoints
+- [x] T048 [US2] Add and pass a local→remote→local restart/rollback integration with preserved conversations and no schema rewrite in Deep `backend/tests/test_voice_backend_rollback_075.py`
 
 **Checkpoint**: Both profiles are independently selectable/restartable and rollback is operationally
 documented/tested without hidden fallback or conversation loss.

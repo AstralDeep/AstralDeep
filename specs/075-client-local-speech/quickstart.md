@@ -197,6 +197,37 @@ Qualified local Deep contract/composition checkpoint (not pushed):
   adapters, rollback qualification, full local CI, live-device/staging evidence, component repins,
   product pushes, PRs, and hosted CI remain open.
 
+### 3.5 Qualified selector/rollback checkpoint (not pushed)
+
+- Deep implementation: `5b6419feeb43b9647222a19aac4869d5756a218d` over the accepted web
+  checkpoint. The Plane pin remains `4a1d990387428436041dd70d9c417e9e86000b6c`, schema revision
+  `075.001`; this phase adds no migration or conversation rewrite.
+- Selection behavior: one strict process-lifetime authority chooses `llm_factory` or
+  `client_local`; malformed explicit values close voice only; service/runtime drift, partial
+  authority, durable-row/backend mismatch, and in-flight backend mutation fail closed. Terminal
+  end/cleanup remains available across a restart boundary without invoking the wrong media
+  strategy. Remote-only v1 routes return the typed local-client upgrade response in local mode.
+- Operations/security: both backends honor the independent voice kill switch. Local/staging
+  Compose explicitly blank worker-native speech endpoint/key values inherited from environment
+  files, and a rendered-Compose sentinel test proves they do not enter the orchestrator. The
+  tracked runbook covers drain, force-recreate, dirty-shutdown rows, rollback, typed fallback, and
+  a real post-rollback remote smoke without publishing endpoint or credential material.
+- Rollback evidence: one isolated PostgreSQL runtime completed local → remote → local
+  reconstruction with fresh selectors/repositories, real durable create/end paths, deterministic
+  credential-free fake media, byte-equivalent conversation/message snapshots, terminal rows bound
+  to their original backends, and unchanged Plane schema revision/migration digest. The real
+  Factory smoke and six-client live matrix remain T109/T110 gates.
+- Verification: 443/443 focused selector/API/session/bootstrap/lifecycle/topology/rollback tests
+  passed against sibling AstralPlane source; 24/24 documentation/quickstart tests passed; Ruff and
+  diff checks passed. Changed executable-line coverage was 345/365 (94%, required at least 90%).
+  Three independent reviews found credential inheritance, missing executable typed-fallback proof,
+  terminal cancellation fencing, partial/distinct selection authority, and missing kill-gate
+  fail-open defects; each was reproduced and repaired, and the final 94-test core re-review was
+  clean.
+- Scope: T044-T048. Native adapters, remote deadline/warm-up optimization, cleanup, full local CI,
+  live-device/staging evidence, final component repins, product pushes, PRs, and hosted CI remain
+  open.
+
 ## 4. Narrow local tests while implementing
 
 Start with a failing test for each behavior and run the smallest owning suite after each slice.
