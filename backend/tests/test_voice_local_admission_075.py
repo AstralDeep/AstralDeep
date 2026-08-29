@@ -98,6 +98,88 @@ def _authority(frame: VoiceLocalFinal):
     )()
 
 
+@pytest.mark.asyncio
+async def test_local_ready_promotes_reconnecting_session_before_authorizing() -> None:
+    """A foreground resume becomes active before local capture is authorized."""
+
+    frame = VoiceLocalReady(
+        device_id=_id(),
+        connection_generation=_id(),
+        session_id=_id(),
+        generation=2,
+        speech_revision=3,
+        client_sequence=7,
+    )
+    binding_id = _id()
+    common = {
+        "session_id": frame.session_id,
+        "user_id": "owner-a",
+        "device_id": frame.device_id,
+        "owner_connection_generation": frame.connection_generation,
+        "control_binding_id": binding_id,
+        "control_binding_expires_at": NOW + timedelta(minutes=4),
+        "control_owner_id": "voice-coordinator-local-1",
+        "control_lease_expires_at": NOW + timedelta(minutes=1),
+        "lease_expires_at": NOW + timedelta(minutes=2),
+        "generation": frame.generation,
+        "media_grant_revision": frame.speech_revision,
+        "speech_backend": "client_local",
+        "ended_at": None,
+        "foreground_active": True,
+        "microphone_enabled": True,
+        "speech_muted": False,
+        "visible_chat_id": _id(),
+        "chat_context_revision": 4,
+    }
+    reconnecting = SimpleNamespace(
+        **common,
+        state="reconnecting",
+        applied_visible_chat_id=common["visible_chat_id"],
+        applied_chat_context_revision=common["chat_context_revision"],
+    )
+    active = SimpleNamespace(**{**reconnecting.__dict__, "state": "active"})
+    repository = SimpleNamespace(
+        get_controlled_session=Mock(return_value=reconnecting),
+        mark_session_active=Mock(return_value=active),
+    )
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=repository,
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+    )
+    claims = SimpleNamespace(
+        subject="owner-a",
+        device_id=frame.device_id,
+        connection_generation=frame.connection_generation,
+        binding_id=binding_id,
+        expires_at=NOW + timedelta(minutes=4),
+    )
+
+    result = await services.local_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="owner-a",
+        claims=claims,
+        frame=frame,
+        now=NOW,
+    )
+
+    assert result is active
+    repository.mark_session_active.assert_called_once_with(
+        user_id="owner-a",
+        session_id=frame.session_id,
+        expected_generation=frame.generation,
+        expected_media_grant_revision=frame.speech_revision,
+        now=NOW,
+    )
+
+
 def test_local_text_is_nfc_line_canonical_and_digest_verified() -> None:
     text = "  Cafe\u0301\r\nstatus  "
     expected = "Café\nstatus"

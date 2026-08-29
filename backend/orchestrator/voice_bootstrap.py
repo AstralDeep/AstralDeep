@@ -1610,6 +1610,7 @@ class VoiceServices:
         session: VoiceSessionRecord,
         *,
         now: datetime,
+        allow_reconnecting: bool = False,
     ) -> None:
         """Require this replica's exact, live session/control lease."""
 
@@ -1617,7 +1618,10 @@ class VoiceServices:
         try:
             valid = (
                 session.speech_backend == "client_local"
-                and session.state == "active"
+                and (
+                    session.state == "active"
+                    or (allow_reconnecting and session.state == "reconnecting")
+                )
                 and session.ended_at is None
                 and session.control_owner_id == self.runtime._replica_id
                 and session.control_lease_expires_at > checked_now
@@ -1679,6 +1683,20 @@ class VoiceServices:
             ),
             now=now,
         )
+        if session.state == "reconnecting":
+            self._require_current_local_control(
+                session,
+                now=now,
+                allow_reconnecting=True,
+            )
+            session = await asyncio.to_thread(
+                self.repository.mark_session_active,
+                user_id=user_id,
+                session_id=frame.session_id,
+                expected_generation=frame.generation,
+                expected_media_grant_revision=frame.speech_revision,
+                now=now,
+            )
         self._require_current_local_control(session, now=now)
         async with self.pending_local_rejection_lock:
             if (
