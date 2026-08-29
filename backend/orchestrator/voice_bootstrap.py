@@ -1118,6 +1118,15 @@ class VoiceServices:
     runtime: VoiceSessionRuntime | None
     worker_control_settings: WorkerControlSettings | None = field(repr=False)
     speech_backend: VoiceSpeechBackend | None = None
+    backend_selection: SpeechBackendSelection | None = field(
+        default=None,
+        repr=False,
+    )
+    _backend_selection_locked: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+    )
     observability: RuntimeObservability | None = field(default=None, repr=False)
     worker_endpoint: WorkerControlEndpoint | None = field(
         default=None,
@@ -1234,6 +1243,38 @@ class VoiceServices:
         tuple[str, str, int], _LocalEndFence
     ] = field(default_factory=dict, init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        selection = self.backend_selection
+        if selection is None:
+            selection = SpeechBackendSelection(
+                value=self.speech_backend,
+                valid=self.speech_backend is not None,
+                source="explicit",
+            )
+        if (
+            selection.value is not self.speech_backend
+            or selection.valid != (self.speech_backend is not None)
+        ):
+            raise ValueError("invalid_service_speech_backend_selection")
+        runtime_selection = getattr(self.runtime, "backend_selection", None)
+        if (
+            isinstance(runtime_selection, SpeechBackendSelection)
+            and runtime_selection is not selection
+        ):
+            raise ValueError("mismatched_runtime_backend_selection")
+        object.__setattr__(self, "backend_selection", selection)
+        object.__setattr__(self, "_backend_selection_locked", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in {"speech_backend", "backend_selection"}:
+            try:
+                locked = object.__getattribute__(self, "_backend_selection_locked")
+            except AttributeError:
+                locked = False
+            if locked:
+                raise AttributeError("speech_backend_immutable")
+        object.__setattr__(self, name, value)
+
     def bind_terminal_turn_notifier(
         self,
         notifier: Callable[[VoiceTurnRecord], Awaitable[None]],
@@ -1265,6 +1306,7 @@ class VoiceServices:
         output_policy: str = "lifecycle",
         server_authorized: bool = False,
     ) -> None:
+        self._require_local_backend()
         session = await asyncio.to_thread(
             self.repository.get_session,
             user_id=turn.user_id,
@@ -1331,6 +1373,14 @@ class VoiceServices:
                 "checked_at": _iso_datetime(datetime.now(UTC)),
             }
         if speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            if not self._local_feature_enabled():
+                return {
+                    "schema_version": "2",
+                    "speech_backend": "client_local",
+                    "state": "unavailable",
+                    "reason": "feature_disabled",
+                    "checked_at": _iso_datetime(datetime.now(UTC)),
+                }
             return {
                 "schema_version": "2",
                 "speech_backend": "client_local",
@@ -1639,6 +1689,17 @@ class VoiceServices:
     def _require_local_backend(self) -> None:
         if self.speech_backend is not VoiceSpeechBackend.CLIENT_LOCAL:
             raise VoiceBootstrapError("client_local_not_available")
+        if not self._local_feature_enabled():
+            raise VoiceBootstrapError("feature_disabled")
+
+    def _local_feature_enabled(self) -> bool:
+        feature_enabled = getattr(self.capability, "feature_enabled", None)
+        if not callable(feature_enabled):
+            return False
+        try:
+            return feature_enabled() is True
+        except Exception:
+            return False
 
     def _require_current_local_control(
         self,
@@ -1713,6 +1774,7 @@ class VoiceServices:
             session_id=frame.session_id,
             expected_generation=frame.generation,
             expected_media_grant_revision=frame.speech_revision,
+            expected_speech_backend="client_local",
             control=SessionControl(
                 device_id=claims.device_id,
                 connection_generation=claims.connection_generation,
@@ -1797,6 +1859,7 @@ class VoiceServices:
     ) -> None:
         """Open a cleaned local epoch only after its ready frame was delivered."""
 
+        self._require_local_backend()
         cleanup_key = self._local_cleanup_key(
             user_id=session.user_id,
             session_id=session.session_id,
@@ -1839,6 +1902,7 @@ class VoiceServices:
             session_id=transition.session_id,
             expected_generation=transition.generation,
             expected_media_grant_revision=transition.speech_revision,
+            expected_speech_backend="client_local",
             control=SessionControl(
                 device_id=claims.device_id,
                 connection_generation=claims.connection_generation,
@@ -1948,6 +2012,7 @@ class VoiceServices:
             session_id=frame.session_id,
             expected_generation=frame.generation,
             expected_media_grant_revision=frame.speech_revision,
+            expected_speech_backend="client_local",
             control=SessionControl(
                 device_id=claims.device_id,
                 connection_generation=claims.connection_generation,
@@ -3571,10 +3636,21 @@ class VoiceServices:
                 "idle_expired" if session.end_reason == "idle" else "lease_expired"
             )
             try:
-                await self.media.end(
-                    session,
-                    "idle" if session.end_reason == "idle" else "lease_expired",
+                selected_backend = (
+                    self.speech_backend.value
+                    if self.speech_backend is not None
+                    else "llm_factory"
                 )
+                if (
+                    getattr(session, "speech_backend", "llm_factory")
+                    == selected_backend
+                ):
+                    await self.media.end(
+                        session,
+                        "idle"
+                        if session.end_reason == "idle"
+                        else "lease_expired",
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -3627,7 +3703,7 @@ class VoiceServices:
         if callable(release_fence):
             release_fence(session)
         key = (session.session_id, session.generation)
-        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+        if getattr(session, "speech_backend", "llm_factory") == "client_local":
             await self._fence_ended_local_session(session)
             self.local_announcements.clear_session(
                 session_id=session.session_id,
@@ -3675,8 +3751,8 @@ class VoiceServices:
     ) -> VoiceSessionRecord | None:
         """Retain one complete authenticated teardown through cancellation."""
 
-        local = self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
-        attempts = _MAX_LOCAL_IDENTITY_END_ATTEMPTS if local else 1
+        local_process = self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
+        attempts = _MAX_LOCAL_IDENTITY_END_ATTEMPTS if local_process else 1
         for attempt in range(attempts):
             end_fence: _LocalEndFence | None = None
             current: VoiceSessionRecord | None = None
@@ -3685,14 +3761,15 @@ class VoiceServices:
                 "reason": reason,
                 "now": datetime.now(UTC),
             }
-            if local:
+            if local_process:
                 current = await asyncio.to_thread(
                     self.repository.get_live_session,
                     user_id=user_id,
                 )
                 if current is None:
                     return None
-                end_fence = await self.prepare_local_session_end(current)
+                if current.speech_backend == "client_local":
+                    end_fence = await self.prepare_local_session_end(current)
                 end_kwargs.update(
                     expected_session_id=current.session_id,
                     expected_generation=current.generation,
@@ -3705,7 +3782,7 @@ class VoiceServices:
             except Exception as failure:
                 end_error: BaseException = failure
                 stale_replacement = bool(
-                    local
+                    local_process
                     and getattr(end_error, "code", None)
                     == "stale_generation"
                 )
@@ -3719,7 +3796,8 @@ class VoiceServices:
                         raise RuntimeError(
                             "local_identity_end_fence_missing"
                         )
-                    await self._fence_ended_local_session(current)
+                    if current.speech_backend == "client_local":
+                        await self._fence_ended_local_session(current)
                     if attempt + 1 < attempts:
                         continue
                 raise end_error
@@ -3814,16 +3892,25 @@ class VoiceServices:
         """Idempotently close timers, worker media, participant, and room."""
 
         await self.handle_runtime_session_end(session, reason)
-        try:
-            await self.media.end(session, reason)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # The durable end fence is authoritative. The bounded grant and
-            # room reconcilers remain the cleanup backstop.
-            logger.warning(
-                "voice_media_cleanup_unavailable reason=media_end_failed"
-            )
+        selected_backend = (
+            self.speech_backend.value
+            if self.speech_backend is not None
+            else "llm_factory"
+        )
+        if (
+            getattr(session, "speech_backend", "llm_factory")
+            == selected_backend
+        ):
+            try:
+                await self.media.end(session, reason)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The durable end fence is authoritative. The bounded grant and
+                # room reconcilers remain the cleanup backstop.
+                logger.warning(
+                    "voice_media_cleanup_unavailable reason=media_end_failed"
+                )
 
     async def set_session_speech_muted(
         self,
@@ -3976,6 +4063,7 @@ class VoiceServices:
             session_id=event.session_id,
             expected_generation=event.generation,
             expected_media_grant_revision=event.speech_revision,
+            expected_speech_backend="client_local",
             control=SessionControl(
                 device_id=claims.device_id,
                 connection_generation=claims.connection_generation,
@@ -4607,12 +4695,15 @@ class VoiceServices:
         """Consume one exact consent and speak only its bound sensitive recap."""
 
         now = datetime.now(UTC)
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            self._require_local_backend()
         session = await asyncio.to_thread(
             self.repository.get_controlled_session,
             user_id=user_id,
             session_id=session_id,
             expected_generation=request["expected_generation"],
             expected_media_grant_revision=request["expected_media_grant_revision"],
+            expected_speech_backend=self.speech_backend.value,
             control=SessionControl(
                 device_id=control["device_id"],
                 connection_generation=control["connection_generation"],
@@ -4852,7 +4943,23 @@ class _LocalCapabilitySnapshot:
 
 
 class _ClientLocalCapability:
+    def __init__(self, feature_enabled: Callable[[], bool]) -> None:
+        if not callable(feature_enabled):
+            raise TypeError("feature_enabled must be callable")
+        self._feature_enabled = feature_enabled
+
+    def feature_enabled(self) -> bool:
+        try:
+            return self._feature_enabled() is True
+        except Exception:
+            return False
+
     async def readiness(self) -> _LocalCapabilitySnapshot:
+        if not self.feature_enabled():
+            return _LocalCapabilitySnapshot(
+                status="unavailable",
+                reason="feature_disabled",
+            )
         return _LocalCapabilitySnapshot()
 
 
@@ -4909,6 +5016,7 @@ def build_voice_services(
             runtime=None,
             worker_control_settings=None,
             speech_backend=None,
+            backend_selection=selection,
             observability=observability,
         )
     if selection.value is VoiceSpeechBackend.CLIENT_LOCAL:
@@ -4919,7 +5027,9 @@ def build_voice_services(
             if not development:
                 raise VoiceBootstrapError("missing_voice_replica_id")
             replica_id = "voice-coordinator-local-1"
-        capability = _ClientLocalCapability()
+        capability = _ClientLocalCapability(
+            lambda: flags.is_enabled("conversational_voice")
+        )
         media = _ClientLocalMedia()
         runtime = VoiceSessionRuntime(
             repository=repository,
@@ -4928,6 +5038,7 @@ def build_voice_services(
             replica_id=replica_id,
             observability=observability,
             speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+            backend_selection=selection,
         )
         services = VoiceServices(
             livekit=None,
@@ -4939,6 +5050,7 @@ def build_voice_services(
             runtime=runtime,
             worker_control_settings=None,
             speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+            backend_selection=selection,
             observability=observability,
         )
         runtime.bind_speech_stop_handler(services.stop_session_speech)
@@ -5036,6 +5148,7 @@ def build_voice_services(
         media_grant_secret=worker_control_settings.secret,
         observability=voice_observability,
         speech_backend=VoiceSpeechBackend.LLM_FACTORY,
+        backend_selection=selection,
     )
     services = VoiceServices(
         livekit=livekit,
@@ -5047,6 +5160,7 @@ def build_voice_services(
         runtime=runtime,
         worker_control_settings=worker_control_settings,
         speech_backend=VoiceSpeechBackend.LLM_FACTORY,
+        backend_selection=selection,
         observability=voice_observability,
     )
     runtime.bind_speech_mute_handler(services.set_session_speech_muted)

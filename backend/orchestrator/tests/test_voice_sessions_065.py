@@ -466,6 +466,40 @@ def test_fence_only_update_rebinds_control_without_resetting_true_idle(
     assert heartbeat.speech_muted == active.speech_muted
 
 
+def test_backend_mismatch_is_rejected_under_row_lock_before_rebinding(
+    repository: VoiceSessionRepository,
+) -> None:
+    create = _create()
+    active = _activate_and_sync(repository, create)
+    replacement = _control(
+        create,
+        connection_generation=str(uuid.uuid4()),
+        binding_id=str(uuid.uuid4()),
+        binding_expires_at=NOW + timedelta(minutes=8),
+    )
+
+    with pytest.raises(VoiceSessionRepositoryError, match="backend_mismatch"):
+        repository.update_session(
+            SessionUpdate(
+                user_id=create.user_id,
+                session_id=active.session_id,
+                expected_generation=active.generation,
+                expected_media_grant_revision=active.media_grant_revision,
+                expected_speech_backend="client_local",
+                control=replacement,
+            ),
+            now=NOW + timedelta(seconds=2),
+        )
+
+    unchanged = repository.get_session(
+        user_id=create.user_id,
+        session_id=active.session_id,
+    )
+    assert unchanged.speech_backend == "llm_factory"
+    assert unchanged.owner_connection_generation == active.owner_connection_generation
+    assert unchanged.control_binding_id == active.control_binding_id
+
+
 def test_update_suspends_without_cancelling_turns_and_resumes_reconnecting(
     repository: VoiceSessionRepository,
 ) -> None:

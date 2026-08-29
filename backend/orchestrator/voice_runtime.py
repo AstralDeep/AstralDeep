@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from orchestrator.voice_api import VoiceApiError, VoiceHttpResult
-from orchestrator.voice_backend import VoiceSpeechBackend
+from orchestrator.voice_backend import SpeechBackendSelection, VoiceSpeechBackend
 from orchestrator.voice_sessions import (
     CreateSession,
     GRANT_REPLAY_WINDOW,
@@ -154,6 +154,7 @@ class VoiceSessionRuntime:
         media_grant_secret: bytes | None = None,
         observability: Any | None = None,
         speech_backend: VoiceSpeechBackend = VoiceSpeechBackend.LLM_FACTORY,
+        backend_selection: SpeechBackendSelection | None = None,
     ) -> None:
         if not 15 <= lease_seconds <= 300:
             raise ValueError("invalid_voice_lease")
@@ -175,7 +176,14 @@ class VoiceSessionRuntime:
             raise ValueError("invalid_media_grant_secret")
         self._media_grant_secret = media_grant_secret
         self._observability = observability
-        self.speech_backend = speech_backend
+        selection = backend_selection or SpeechBackendSelection(
+            value=speech_backend,
+            valid=True,
+            source="explicit",
+        )
+        if not selection.valid or selection.value is not speech_backend:
+            raise ValueError("invalid_runtime_speech_backend_selection")
+        self._backend_selection = selection
         self._speech_mute_handler: (
             Callable[[str, int, bool], Awaitable[None]] | None
         ) = None
@@ -211,6 +219,24 @@ class VoiceSessionRuntime:
             tuple[str, str], _LocalActivationKeyState
         ] = {}
         self._local_activation_capacity_lock = asyncio.Lock()
+
+    @property
+    def backend_selection(self) -> SpeechBackendSelection:
+        """Return the parse-once process selection shared by assembled services."""
+
+        return self._backend_selection
+
+    @property
+    def speech_backend(self) -> VoiceSpeechBackend:
+        """Expose the selected backend without a mutable runtime projection."""
+
+        value = self._backend_selection.value
+        assert value is not None
+        return value
+
+    @speech_backend.setter
+    def speech_backend(self, _value: object) -> None:
+        raise AttributeError("speech_backend_immutable")
 
     def bind_speech_mute_handler(
         self,
@@ -711,6 +737,7 @@ class VoiceSessionRuntime:
             session_id=session_id,
             expected_generation=request["expected_generation"],
             expected_media_grant_revision=request["expected_media_grant_revision"],
+            expected_speech_backend=self.speech_backend.value,
             control=_control(control),
             visible_chat_id=request.get("visible_chat_id"),
             speech_muted=request.get("speech_muted"),
@@ -724,6 +751,7 @@ class VoiceSessionRuntime:
             update,
             now=now,
         )
+        self._require_session_backend(session)
         # Every authenticated, generation-fenced owner PATCH is also the
         # reconnect/crash lease heartbeat.  The request may remain a semantic
         # no-op (and therefore must not reset true-idle time); only server
@@ -926,9 +954,11 @@ class VoiceSessionRuntime:
             session_id=session_id,
             expected_generation=request["expected_generation"],
             expected_media_grant_revision=request["expected_media_grant_revision"],
+            expected_speech_backend=self.speech_backend.value,
             control=_control(control),
             now=self._now(),
         )
+        self._require_session_backend(session)
         if (
             self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
             and self._local_buffer_cleanup_handler is not None
@@ -962,9 +992,11 @@ class VoiceSessionRuntime:
             session_id=session_id,
             expected_generation=current.generation,
             expected_media_grant_revision=current.media_grant_revision,
+            expected_speech_backend=self.speech_backend.value,
             control=_control(control),
             now=self._now(),
         )
+        self._require_session_backend(session)
         return _media_grant_state(session, now=self._now())
 
     async def refresh_media_grant(
@@ -1008,6 +1040,7 @@ class VoiceSessionRuntime:
                 session_id=session_id,
                 expected_generation=expected_generation,
                 expected_media_grant_revision=controlled_revision,
+                expected_speech_backend=self.speech_backend.value,
                 control=_control(control),
                 now=now,
             )
@@ -1158,14 +1191,25 @@ class VoiceSessionRuntime:
         )
 
     async def _require_ready(self) -> None:
-        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
-            await self._drain_pending_local_activation_cleanup()
-            return
         capability = await self._capability.readiness()
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            if (
+                capability.status == "requires_client_readiness"
+                and capability.reason == "client_readiness_required"
+            ):
+                await self._drain_pending_local_activation_cleanup()
+                return
+            raise VoiceApiError(capability.reason, status_code=503)
         if capability.status == "ready" and capability.reason == "ready":
             return
         status = 429 if capability.reason == "capacity_exhausted" else 503
         raise VoiceApiError(capability.reason, status_code=status)
+
+    def _require_session_backend(self, session: VoiceSessionRecord) -> None:
+        """Refuse non-terminal work when a durable row belongs to another profile."""
+
+        if getattr(session, "speech_backend", None) != self.speech_backend.value:
+            raise VoiceApiError("backend_mismatch", status_code=409)
 
     def _create_request(
         self,
@@ -1337,6 +1381,7 @@ class VoiceSessionRuntime:
     ) -> tuple[VoiceSessionRecord, Mapping[str, Any]]:
         if session.ended_at is not None:
             raise VoiceApiError("activation_replay_ended", status_code=409)
+        self._require_session_backend(session)
         await self._claim_control(session, self._now())
         try:
             receipt = await self._media.activate(session)
@@ -1874,11 +1919,13 @@ class VoiceSessionRuntime:
         media_error: Exception | None = None
         notification_error: Exception | None = None
         try:
-            await self._media.end(session, reason)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            media_error = exc
+            if session.speech_backend == self.speech_backend.value:
+                try:
+                    await self._media.end(session, reason)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    media_error = exc
         finally:
             try:
                 await self._notify_session_end(session, reason)
@@ -1948,7 +1995,7 @@ class VoiceSessionRuntime:
     ) -> Any | None:
         """Publish a reversible local epoch before a durable end starts."""
 
-        if self.speech_backend is not VoiceSpeechBackend.CLIENT_LOCAL:
+        if session.speech_backend != "client_local":
             return None
         handler = self._local_session_end_prepare_handler
         if handler is None:

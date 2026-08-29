@@ -140,7 +140,7 @@ reverse proxy (nginx, Caddy, Traefik) in front of it in production:
    register `https://your-host/auth/callback` as a valid redirect URI on the
    Keycloak client.
 
-## Conversational voice (features 065/066) — deployment topology contract
+## Conversational voice (features 065/066/075) — deployment topology contract
 
 This section is the FR-037 production topology contract: the reverse-proxy
 voice host rules, the environment contract (including worker closure digest
@@ -208,9 +208,66 @@ The voice vhost is only for LiveKit RTC.
 | `VOICE_COORDINATOR_REPLICA_ID` | orchestrator | **Coordinator replica identity**: stable, unique per orchestrator replica (e.g. `voice-coordinator-prod-1`). Owns durable session leases; boot-refused when unset in production (`missing_voice_replica_id`). Two replicas sharing one id would fence each other's sessions at startup/shutdown. |
 | `VOICE_WORKER_IDENTITY` / `VOICE_WORKER_MAX_SESSIONS` | worker | Stable worker identity (re-registration replaces the prior socket) and its capacity offer. |
 | `VOICE_SPEECH_BASE_URL` / `VOICE_SPEECH_API_KEY` | worker only | Speech endpoint (ASR + TTS routes). In compose these are wired from `OPENAI_BASE_URL`/`OPENAI_API_KEY`; the orchestrator's own copies are blanked (054). |
+| `VOICE_SPEECH_BACKEND` | orchestrator only | Server-owned process-lifetime selector. Exact values are `llm_factory` and `client_local`; the value is never projected into the worker or accepted from a client. |
 | `VOICE_WATCH_BRIDGE_PUBLIC_URL` / `VOICE_WATCH_BRIDGE_PORT` | orchestrator/worker | watchOS PCM bridge public URL + port. |
 | `VOICE_MAX_WORKERS` / `VOICE_MAX_SESSIONS_PER_WORKER` / `VOICE_MAX_TOTAL_SESSIONS` | orchestrator | Pool bounds (defaults 8 / 4 / 100). |
 | `FF_CONVERSATIONAL_VOICE` | orchestrator | Feature flag; read once at import — toggling requires a container recreate. |
+
+### Speech backend selection, drain, and rollback
+
+The deployment, not a user or device, owns speech selection. The only accepted
+settings are `VOICE_SPEECH_BACKEND=llm_factory` for the existing remote worker
+path and `VOICE_SPEECH_BACKEND=client_local` for supported on-device speech.
+Missing preserves `llm_factory` for legacy deployments. An explicit empty,
+unknown, or malformed value makes voice unavailable while typed conversation
+remains available. No client setting, request, query, header, or frame can
+override the selector, and clients never switch or fall back between backends.
+
+`FF_CONVERSATIONAL_VOICE=false` is the independent emergency kill switch for
+advertising and admitting either backend; it does not disable ordinary typed
+chat. Local mode adds no deployment speech endpoint, API key, model, or voice
+setting. The existing remote speech endpoint and key remain isolated to the
+worker, while the selector is projected only to the orchestrator.
+
+The selector and kill switch are read once. `docker restart` does not reload a
+changed Compose environment. Apply either change with:
+
+```bash
+docker compose up -d --force-recreate astraldeep
+```
+
+For a planned backend change:
+
+1. Announce the maintenance window and drain or end known voice sessions
+   through their normal authenticated controls. Keep the current selector, set
+   `FF_CONVERSATIONAL_VOICE=false`, and force-recreate `astraldeep`. Graceful
+   shutdown ends sessions owned by the outgoing replica; the replacement
+   process refuses new voice admission. Confirm authenticated
+   `/api/voice/v2/capability` and `/api/voice/v2/status` report
+   `feature_disabled`.
+2. If the outgoing process did not shut down cleanly, an old-backend row stays
+   bound to its original backend and the replacement refuses non-terminal work
+   through another strategy. End it through the shared authenticated control,
+   or use an explicit takeover that terminalizes the old generation before
+   creating a new selected-backend session. No active session changes backend
+   in flight.
+3. Set the exact target selector in the protected `.env`, keep the kill switch
+   false, and force-recreate `astraldeep` again. Recreating the worker is
+   unnecessary for a selector-only change because it never receives the
+   selector; recreate it separately only when its own configuration changed.
+4. Check the authenticated v2 views expose only the target categorical backend
+   and disabled posture, never endpoint or key material. Set the kill switch
+   true, force-recreate once more, then run the selected profile's bounded smoke
+   before reopening voice.
+
+To roll back local speech, repeat the drain, set
+`VOICE_SPEECH_BACKEND=llm_factory`, force-recreate the orchestrator, confirm a
+ready admitted worker, and run a real ASR and TTS remote smoke on a disposable
+voice session. Reopen an existing conversation and confirm its durable text is
+unchanged. Selector rollback requires no conversation data rewrite and is not
+a database down-migration. To return to local mode later, drain again, select
+`client_local`, recreate, and run a blocked-remote-speech local smoke; never
+fall back silently within a session.
 
 ### Restart ordering and self-heal guarantees
 

@@ -22,7 +22,11 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from orchestrator.auth import require_user_id
-from orchestrator.voice_backend import VoiceSpeechBackend, backend_value
+from orchestrator.voice_backend import (
+    SpeechBackendSelection,
+    VoiceSpeechBackend,
+    backend_value,
+)
 from orchestrator.voice_control_binding import VoiceControlBindingError
 
 
@@ -289,10 +293,7 @@ async def get_voice_capability_v2(
 ) -> Response:
     try:
         _capability_rate_limiter(request).check(user_id)
-        services = getattr(_orchestrator(request), "voice_services", None)
-        selected = backend_value(getattr(services, "speech_backend", None))
-        if services is None or selected is None:
-            raise VoiceApiError("backend_selection_invalid", status_code=503)
+        selected = _configured_speech_backend(request)
         value = await _invoke(_runtime(request), "get_capability", user_id=user_id)
         return _response(_capability_v2(value, selected))
     except Exception as exc:
@@ -328,9 +329,7 @@ async def get_voice_status_v2(
     try:
         _status_rate_limiter(request).check(user_id)
         services = _voice_services(request)
-        selected = backend_value(getattr(services, "speech_backend", None))
-        if selected is None:
-            raise VoiceApiError("backend_selection_invalid", status_code=503)
+        selected = _configured_speech_backend(request)
         value = await _invoke(services, "voice_status")
         return _response(_status_v2(value, selected))
     except Exception as exc:
@@ -577,6 +576,7 @@ async def get_voice_media_grant_state(
     """Return current owner/grant fences without any bearer material."""
 
     try:
+        _require_remote_v1(request)
         checked_session_id = _uuid4(session_id, "invalid_session_id")
         context = _control_context(request, user_id)
         value = await _invoke(
@@ -600,6 +600,7 @@ async def refresh_voice_media_grant(
     """Rotate one reconnect grant through the durable UUID4 CAS."""
 
     try:
+        _require_remote_v1(request)
         checked_session_id = _uuid4(session_id, "invalid_session_id")
         body = await _body(request, RefreshGrantRequest)
         context = _control_context(request, user_id, body.device_id)
@@ -701,18 +702,61 @@ def _runtime(request: Request) -> Any:
     return runtime
 
 
-def _require_remote_v1(request: Request) -> None:
-    """Keep the legacy surface exact and fail closed on local deployments."""
+def _configured_speech_backend(
+    request: Request,
+) -> VoiceSpeechBackend | None:
+    """Resolve one startup authority and fail closed on projection drift."""
 
     orchestrator = _orchestrator(request)
     runtime = getattr(orchestrator, "voice_runtime", None)
     services = getattr(orchestrator, "voice_services", None)
-    configured = getattr(runtime, "speech_backend", None)
-    if configured is None:
-        configured = getattr(services, "speech_backend", None)
-    if configured is None:
-        return
-    backend = backend_value(configured)
+    owners = tuple(owner for owner in (services, runtime) if owner is not None)
+    projections: list[VoiceSpeechBackend] = []
+    authorities: list[SpeechBackendSelection] = []
+    configured = False
+    for owner in (services, runtime):
+        if owner is None:
+            continue
+        if hasattr(owner, "speech_backend"):
+            configured = True
+            selected = backend_value(getattr(owner, "speech_backend", None))
+            if selected is None:
+                raise VoiceApiError(
+                    "backend_selection_invalid",
+                    status_code=503,
+                )
+            projections.append(selected)
+        selection = getattr(owner, "backend_selection", None)
+        if isinstance(selection, SpeechBackendSelection):
+            configured = True
+            if not selection.valid or selection.value is None:
+                raise VoiceApiError(
+                    "backend_selection_invalid",
+                    status_code=503,
+                )
+            authorities.append(selection)
+            projections.append(selection.value)
+    if not configured:
+        raise VoiceApiError("backend_selection_invalid", status_code=503)
+    if authorities and len(authorities) != len(owners):
+        raise VoiceApiError("backend_selection_invalid", status_code=503)
+    if len(authorities) == 2 and authorities[0] is not authorities[1]:
+        raise VoiceApiError("backend_selection_invalid", status_code=503)
+    if not projections or any(value is not projections[0] for value in projections[1:]):
+        raise VoiceApiError("backend_selection_invalid", status_code=503)
+    return projections[0]
+
+
+def _require_remote_v1(request: Request) -> None:
+    """Keep the legacy surface exact and fail closed on local deployments."""
+
+    orchestrator = _orchestrator(request)
+    if (
+        getattr(orchestrator, "voice_runtime", None) is None
+        and getattr(orchestrator, "voice_services", None) is None
+    ):
+        raise VoiceApiError("voice_unavailable", status_code=503)
+    backend = _configured_speech_backend(request)
     if backend is VoiceSpeechBackend.CLIENT_LOCAL:
         raise VoiceApiError(
             "client_contract_upgrade_required",
@@ -723,14 +767,7 @@ def _require_remote_v1(request: Request) -> None:
 
 
 def _require_local_v2(request: Request) -> None:
-    runtime = getattr(_orchestrator(request), "voice_runtime", None)
-    services = getattr(_orchestrator(request), "voice_services", None)
-    configured = getattr(runtime, "speech_backend", None)
-    if configured is None:
-        configured = getattr(services, "speech_backend", None)
-    selected = backend_value(configured)
-    if selected is None:
-        raise VoiceApiError("backend_selection_invalid", status_code=503)
+    selected = _configured_speech_backend(request)
     if selected is not VoiceSpeechBackend.CLIENT_LOCAL:
         raise VoiceApiError("backend_mismatch", status_code=409)
 

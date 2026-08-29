@@ -544,6 +544,7 @@ class SessionUpdate:
     expected_generation: int
     expected_media_grant_revision: int
     control: SessionControl
+    expected_speech_backend: str = "llm_factory"
     visible_chat_id: str | None = None
     speech_muted: bool | None = None
     microphone_enabled: bool | None = None
@@ -563,6 +564,8 @@ class SessionUpdate:
         )
         if not isinstance(self.control, SessionControl):
             raise TypeError("control must be SessionControl")
+        if self.expected_speech_backend not in {"llm_factory", "client_local"}:
+            raise ValueError("invalid_expected_speech_backend")
         if self.visible_chat_id is not None:
             object.__setattr__(
                 self,
@@ -1078,6 +1081,7 @@ class VoiceSessionRepository:
         session_id: str,
         expected_generation: int,
         expected_media_grant_revision: int,
+        expected_speech_backend: str | None = None,
         control: SessionControl,
         now: datetime,
     ) -> VoiceSessionRecord:
@@ -1090,6 +1094,7 @@ class VoiceSessionRepository:
             row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             self._assert_fences(row, expected_generation, expected_media_grant_revision)
+            self._assert_speech_backend(row, expected_speech_backend)
             row = self._apply_control_binding(transaction, row, control, now)
         return _session(row)
 
@@ -1116,6 +1121,7 @@ class VoiceSessionRepository:
                 request.expected_generation,
                 request.expected_media_grant_revision,
             )
+            self._assert_speech_backend(row, request.expected_speech_backend)
             row = self._apply_control_binding(
                 transaction,
                 row,
@@ -3617,6 +3623,18 @@ class VoiceSessionRepository:
             raise StaleSessionFence("stale_generation")
         if int(row["media_grant_revision"]) != expected_media_grant_revision:
             raise StaleSessionFence("stale_media_grant_revision")
+
+    @staticmethod
+    def _assert_speech_backend(
+        row: Mapping[str, Any],
+        expected_speech_backend: str | None,
+    ) -> None:
+        if expected_speech_backend is None:
+            return
+        if expected_speech_backend not in {"llm_factory", "client_local"}:
+            raise ValueError("invalid_expected_speech_backend")
+        if row.get("speech_backend", "llm_factory") != expected_speech_backend:
+            raise VoiceSessionRepositoryError("backend_mismatch")
 
     @staticmethod
     def _assert_transcript_binding(

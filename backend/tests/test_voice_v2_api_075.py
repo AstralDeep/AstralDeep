@@ -219,6 +219,21 @@ def test_v2_capability_and_status_are_authenticated_bounded_and_no_store(api) ->
     )
 
 
+def test_v2_routes_fail_closed_on_one_sided_backend_projection_drift(api) -> None:
+    client, orchestrator = api
+    orchestrator.voice_services.speech_backend = VoiceSpeechBackend.LLM_FACTORY
+
+    for path in ("/api/voice/v2/capability", "/api/voice/v2/status"):
+        response = client.get(path)
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "voice_unavailable",
+            "reason": "backend_selection_invalid",
+            "retryable": False,
+        }
+    assert orchestrator.voice_runtime.calls == []
+
+
 def test_remote_v2_projection_and_invalid_selection_use_closed_v2_shapes(api) -> None:
     capability = _capability_v2(
         {

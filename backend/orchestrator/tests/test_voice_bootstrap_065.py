@@ -64,6 +64,11 @@ class _PlaneRuntime:
         raise AssertionError("unexpected database access")
 
 
+class _EnabledLocalCapability:
+    def feature_enabled(self) -> bool:
+        return True
+
+
 def _voice_turn(
     *,
     turn_id: str = "00000000-0000-4000-8000-000000000032",
@@ -258,7 +263,7 @@ async def test_client_local_services_cover_the_content_free_lifecycle() -> None:
         worker_pool=None,
         repository=repository,
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -378,7 +383,7 @@ async def test_local_announcement_delivery_failure_discards_ephemeral_authority(
         worker_pool=None,
         repository=SimpleNamespace(get_session=Mock(return_value=session)),
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -420,7 +425,7 @@ async def test_local_rejection_cleans_preacceptance_but_preserves_accepted_repla
         worker_pool=None,
         repository=repository,
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -498,7 +503,7 @@ async def test_transient_local_rejection_retains_and_drains_content_free_authori
         worker_pool=None,
         repository=repository,
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -548,7 +553,7 @@ async def test_pending_local_rejection_capacity_fails_closed_without_release() -
             reject_transcript=Mock(side_effect=RuntimeError("database unavailable"))
         ),
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -607,7 +612,7 @@ async def test_repeatedly_cancelled_rejection_reconciles_before_propagating() ->
         worker_pool=None,
         repository=SimpleNamespace(reject_transcript=reject_transcript),
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -667,7 +672,7 @@ async def test_session_cleanup_retains_then_clears_pending_rejection_handle() ->
         worker_pool=None,
         repository=repository,
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -764,7 +769,7 @@ async def test_local_recognition_authority_precedes_every_durable_insert() -> No
         worker_pool=None,
         repository=repository,
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -883,7 +888,7 @@ async def test_local_reservation_releases_on_bind_and_finalize_failures() -> Non
         worker_pool=None,
         repository=repository,
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1005,7 +1010,7 @@ async def test_cancelled_local_recognition_reconciles_late_thread_commit(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1089,7 +1094,7 @@ async def test_repeated_cancel_during_late_bind_promotion_cannot_orphan_turn() -
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1174,7 +1179,7 @@ async def test_local_rejection_capacity_is_reserved_before_repository_insert() -
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1332,7 +1337,7 @@ async def test_local_recognition_cancellation_phase_table_terminalizes_commit(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1454,7 +1459,7 @@ async def test_local_recognition_replay_cancellation_preserves_durable_turn(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1555,7 +1560,7 @@ async def test_exact_recognition_replay_waits_for_originating_cleanup_settlement
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1684,7 +1689,7 @@ async def test_distinct_recognition_identities_insert_concurrently(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1762,7 +1767,7 @@ async def test_failed_recognition_rejection_retains_key_until_drain() -> None:
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1811,7 +1816,7 @@ async def test_recognition_coordinator_capacity_fails_before_repository_access()
         worker_pool=None,
         repository=repository,
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1907,7 +1912,7 @@ async def test_exact_recognition_replay_waits_at_every_return_phase(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1996,7 +2001,7 @@ async def test_session_cleanup_before_recognition_settlement_never_returns_stale
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2095,7 +2100,7 @@ async def test_different_session_cleanup_cannot_invalidate_recognition_return(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2165,7 +2170,7 @@ async def test_replaced_finalized_authority_fails_exact_return_identity(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2249,7 +2254,7 @@ async def test_existing_authority_replay_cleanup_during_lookup_never_returns_sta
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2331,7 +2336,7 @@ async def test_repeated_cancelled_existing_authority_lookup_preserves_replay_aut
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2415,7 +2420,7 @@ async def test_existing_authority_replay_proves_exact_identity_before_no_await_r
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2503,7 +2508,7 @@ async def test_existing_authority_replay_settlement_is_exact(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2676,7 +2681,7 @@ async def test_cleanup_fence_orders_every_recognition_return_before_abandonment(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2768,7 +2773,7 @@ async def test_cancelled_duplicate_cleanup_callers_join_one_retained_operation()
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2841,7 +2846,7 @@ async def test_cleanup_cancelled_before_fence_publishes_has_no_side_effect() -> 
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2913,7 +2918,7 @@ async def test_cleanup_cancellation_after_database_waits_for_reconciliation(
             abandon_preacceptance_turns=abandon_preacceptance_turns
         ),
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -2982,7 +2987,7 @@ async def test_durable_end_joins_and_prunes_exact_cleanup_state(
             abandon_preacceptance_turns=abandon_preacceptance_turns
         ),
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3064,7 +3069,7 @@ async def test_failed_cleanup_retries_before_fresh_ready_and_old_work_stays_stal
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3174,7 +3179,7 @@ async def test_local_cleanup_blocks_announcements_until_ready_delivery() -> None
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3224,7 +3229,7 @@ async def test_post_cleanup_ready_delivery_starts_announcement_sequence_at_one()
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3306,7 +3311,7 @@ async def test_later_cleanup_supersedes_inflight_ready_delivery() -> None:
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3371,7 +3376,7 @@ async def test_cleanup_supersedes_ready_blocked_in_repository_lookup() -> None:
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3436,7 +3441,7 @@ async def test_ready_completion_rechecks_live_authority_after_repository_lookup(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3517,7 +3522,7 @@ async def test_cleanup_joins_prefence_mutation_before_durable_abandonment(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3626,7 +3631,7 @@ async def test_blocked_cleanup_is_exact_and_does_not_serialize_other_identity(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3717,7 +3722,7 @@ async def test_pre_durable_session_end_fence_settles_before_every_bind_return(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3821,7 +3826,7 @@ async def test_failed_end_reconciles_end_fenced_nonreplay_insert(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -3958,7 +3963,7 @@ async def test_failed_end_rejects_promotion_during_reconciliation() -> None:
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -4084,7 +4089,7 @@ async def test_logout_end_fence_precedes_mutation_and_joins_repeated_cancellatio
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=media,  # type: ignore[arg-type]
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -4234,7 +4239,7 @@ async def test_logout_retries_exact_generation_after_takeover_race() -> None:
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=media,  # type: ignore[arg-type]
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -4342,7 +4347,7 @@ async def test_logout_repeated_cancellation_cannot_escape_between_retries(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=media,  # type: ignore[arg-type]
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -4441,7 +4446,7 @@ async def test_logout_identity_retry_bound_is_activation_capacity_plus_one(
         worker_pool=None,
         repository=Repository(),  # type: ignore[arg-type]
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=media,  # type: ignore[arg-type]
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -4491,7 +4496,7 @@ async def test_local_ready_requires_this_replica_and_live_control_lease(
         worker_pool=None,
         repository=SimpleNamespace(get_controlled_session=Mock(return_value=session)),
         coordinator=None,
-        capability=None,
+        capability=_EnabledLocalCapability(),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -5012,6 +5017,7 @@ async def test_voice_shutdown_fences_workers_before_livekit_close() -> None:
         worker_control_settings=WorkerControlSettings(
             secret=b"voice-control-test-secret-with-32-bytes-minimum"
         ),
+        speech_backend=VoiceSpeechBackend.LLM_FACTORY,
     )
 
     await services.close()
@@ -5150,6 +5156,114 @@ async def test_voice_maintenance_ends_only_expired_media_generations() -> None:
         ("lease-session", "lease_expired"),
         ("idle-session", "idle"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_voice_maintenance_skips_cross_backend_media_cleanup() -> None:
+    media_ends: list[str] = []
+    local = SimpleNamespace(
+        user_id="user-a",
+        session_id="local-ended",
+        generation=1,
+        end_reason="lease_expired",
+        speech_backend="client_local",
+    )
+    remote = SimpleNamespace(
+        user_id="user-a",
+        session_id="remote-ended",
+        generation=1,
+        end_reason="lease_expired",
+        speech_backend="llm_factory",
+    )
+
+    class Repository:
+        def renew_owned_control_leases(self, **_kwargs):
+            return ()
+
+        def expire_session_leases(self, **_kwargs):
+            return (local, remote)
+
+        def expire_true_idle(self, **_kwargs):
+            return ()
+
+        def reconcile_ended_unaccepted_turns(self, **_kwargs):
+            return ()
+
+        def reconcile_ended_terminal_operation_turns(self, **_kwargs):
+            return ()
+
+    class Media:
+        async def end(self, session, _reason: str) -> None:
+            media_ends.append(session.session_id)
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=SimpleNamespace(replica_id="voice-replica-test"),
+        capability=object(),  # type: ignore[arg-type]
+        media=Media(),  # type: ignore[arg-type]
+        runtime=object(),  # type: ignore[arg-type]
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+    )
+
+    await services._sweep_sessions()
+
+    assert media_ends == ["local-ended"]
+
+
+@pytest.mark.asyncio
+async def test_local_process_logout_drains_remote_row_without_local_fence() -> None:
+    remote = SimpleNamespace(
+        user_id="user-a",
+        session_id="remote-live",
+        generation=3,
+        end_reason=None,
+        speech_backend="llm_factory",
+    )
+    ended = SimpleNamespace(**{**remote.__dict__, "end_reason": "logout"})
+    end_calls: list[dict[str, object]] = []
+    media_ends: list[str] = []
+
+    class Repository:
+        def get_live_session(self, *, user_id):
+            assert user_id == "user-a"
+            return remote
+
+        def end_live_user_session(self, **kwargs):
+            end_calls.append(kwargs)
+            return ended
+
+    class Media:
+        async def end(self, session, _reason: str) -> None:
+            media_ends.append(session.session_id)
+
+    class Services(VoiceServices):
+        async def prepare_local_session_end(self, _session):
+            raise AssertionError("remote row received local end fence")
+
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=SimpleNamespace(replica_id="voice-replica-test"),
+        capability=object(),  # type: ignore[arg-type]
+        media=Media(),  # type: ignore[arg-type]
+        runtime=SimpleNamespace(release_worker_assignment_fence=lambda _session: None),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+    )
+
+    assert await services.end_user_voice_session(
+        user_id="user-a",
+        reason="logout",
+    ) is ended
+
+    assert len(end_calls) == 1
+    assert end_calls[0]["expected_session_id"] == remote.session_id
+    assert end_calls[0]["expected_generation"] == remote.generation
+    assert media_ends == []
 
 
 @pytest.mark.asyncio
@@ -6501,6 +6615,7 @@ async def test_sensitive_consent_is_terminal_result_bound_and_consumed_once() ->
         worker_control_settings=WorkerControlSettings(
             secret=b"voice-control-test-secret-with-32-bytes-minimum"
         ),
+        speech_backend=VoiceSpeechBackend.LLM_FACTORY,
     )
     await services.remember_sensitive_recap(
         turn,  # type: ignore[arg-type]

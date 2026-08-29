@@ -58,6 +58,14 @@ services:
       HOST_SYS: /host/sys
       OPENAI_BASE_URL: ""
       OPENAI_API_KEY: ""
+      # The shared env_file may contain worker-native speech credentials.
+      # Blank them explicitly so they cannot enter the orchestrator process.
+      VOICE_SPEECH_BASE_URL: ""
+      VOICE_SPEECH_API_KEY: ""
+      # Server-owned immutable selector. The single-hyphen expansion defaults
+      # only when absent; an explicit blank/malformed value reaches the strict
+      # parser and fails voice closed while typed chat remains available.
+      VOICE_SPEECH_BACKEND: ${VOICE_SPEECH_BACKEND-llm_factory}
       # Overridable for production: the coordinator derives the WORKER's RTC
       # URL from this (http→ws, https→wss) and refuses plaintext ws outside
       # development (fail-closed `invalid_livekit_url`). A production deploy

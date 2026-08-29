@@ -35,6 +35,7 @@ NOW = datetime(2026, 7, 31, 18, 0, tzinfo=UTC)
 
 class _Runtime:
     def __init__(self) -> None:
+        self.speech_backend = "llm_factory"
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.failure: Exception | None = None
 
@@ -183,6 +184,38 @@ def test_legacy_v1_capability_fails_voice_closed_on_local_deployment(api) -> Non
         "status": 503,
         "code": "client_contract_upgrade_required",
     }
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/voice/capability"),
+        ("get", "/api/voice/status"),
+        ("post", "/api/voice/sessions"),
+        ("post", f"/api/voice/sessions/{SESSION}/takeover"),
+        ("get", f"/api/voice/sessions/{SESSION}/media-grants"),
+        ("post", f"/api/voice/sessions/{SESSION}/media-grants"),
+    ],
+)
+def test_every_remote_only_v1_route_requires_client_contract_upgrade(
+    api,
+    method: str,
+    path: str,
+) -> None:
+    client, runtime, _orchestrator = api
+    runtime.speech_backend = "client_local"
+
+    response = client.request(method, path)
+
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "type": "urn:astraldeep:voice:client_contract_upgrade_required",
+        "title": "Voice request could not be completed",
+        "status": 503,
+        "code": "client_contract_upgrade_required",
+    }
+    assert runtime.calls == []
 
 
 def test_legacy_v1_create_never_accepts_client_backend_override(api) -> None:
@@ -418,6 +451,59 @@ def test_end_and_stop_are_generation_fenced_and_bodyless(api) -> None:
     assert stopped.status_code == 202
     assert stopped.content == b""
     assert runtime.calls[-1][0] == "stop_speech"
+
+
+def test_local_deployment_keeps_shared_lifecycle_routes(api) -> None:
+    client, runtime, _orchestrator = api
+    runtime.speech_backend = "client_local"
+
+    patched = client.patch(
+        f"/api/voice/sessions/{SESSION}",
+        headers=_headers(),
+        json={
+            "expected_generation": 1,
+            "expected_media_grant_revision": 1,
+        },
+    )
+    stopped = client.post(
+        f"/api/voice/sessions/{SESSION}/speech/stop",
+        headers=_headers(),
+        json={
+            "expected_generation": 1,
+            "expected_media_grant_revision": 1,
+        },
+    )
+    consented = client.post(
+        f"/api/voice/sessions/{SESSION}/results/{RESULT}/read-consent",
+        headers=_headers(),
+        json={
+            "expected_generation": 1,
+            "expected_media_grant_revision": 1,
+            "turn_id": TURN,
+            "consent_method": "tap",
+        },
+    )
+    ended = client.delete(
+        f"/api/voice/sessions/{SESSION}",
+        headers=_headers(),
+        params={
+            "expected_generation": 1,
+            "expected_media_grant_revision": 1,
+        },
+    )
+
+    assert [
+        patched.status_code,
+        stopped.status_code,
+        consented.status_code,
+        ended.status_code,
+    ] == [200, 202, 202, 204]
+    assert [name for name, _kwargs in runtime.calls] == [
+        "update_session",
+        "stop_speech",
+        "consent_sensitive_recap",
+        "end_session",
+    ]
 
 
 def test_media_grant_state_is_bearer_free_and_refresh_is_exactly_bound(api) -> None:

@@ -25,6 +25,14 @@ ACTIVATION = "00000000-0000-4000-8000-000000000204"
 BINDING = "00000000-0000-4000-8000-000000000205"
 
 
+class _LocalCapability:
+    async def readiness(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            status="requires_client_readiness",
+            reason="client_readiness_required",
+        )
+
+
 def test_local_create_model_accepts_only_null_remote_media_fields() -> None:
     request = CreateSession(
         user_id="user-a",
@@ -54,7 +62,7 @@ def test_local_create_model_accepts_only_null_remote_media_fields() -> None:
 def test_local_runtime_builds_no_remote_identity_or_grant() -> None:
     runtime = VoiceSessionRuntime(
         repository=SimpleNamespace(),
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -113,7 +121,7 @@ def test_local_runtime_builds_no_remote_identity_or_grant() -> None:
 def test_local_runtime_rejects_non_exact_capability(override: dict[str, Any]) -> None:
     runtime = VoiceSessionRuntime(
         repository=SimpleNamespace(),
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -173,7 +181,7 @@ async def test_local_activation_claims_and_applies_without_remote_media() -> Non
     )
     runtime = VoiceSessionRuntime(
         repository=repository,
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -281,7 +289,7 @@ async def test_local_activation_failure_or_cancellation_aborts_exact_session(
     media = SimpleNamespace(abort=AsyncMock())
     runtime = VoiceSessionRuntime(
         repository=repository,
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=media,
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -342,7 +350,7 @@ async def test_local_activation_failure_or_cancellation_aborts_exact_session(
 def test_local_cleanup_binding_and_capability_shape_fail_closed() -> None:
     runtime = VoiceSessionRuntime(
         repository=SimpleNamespace(),
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -448,7 +456,7 @@ async def test_cancelled_local_create_reconciles_late_repository_commit(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -515,7 +523,7 @@ async def test_cancelled_local_takeover_cleanup_aborts_replacement_only() -> Non
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=Media(),  # type: ignore[arg-type]
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -569,7 +577,7 @@ async def test_cancelled_local_takeover_reconciles_late_repository_commit() -> N
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -665,7 +673,7 @@ async def test_repeated_cancel_during_local_activation_joins_exact_abort(
     media = SimpleNamespace(end=AsyncMock(), abort=AsyncMock())
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=media,  # type: ignore[arg-type]
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -739,7 +747,7 @@ async def test_repeated_cancel_records_failed_local_activation_abort_before_retu
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -896,7 +904,7 @@ async def test_local_ownership_cancellation_phase_table_preserves_exact_owner(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=Media(),  # type: ignore[arg-type]
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1002,7 +1010,7 @@ async def test_local_repository_mutation_exception_releases_reserved_capacity(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1075,7 +1083,7 @@ async def test_pending_local_activation_cleanup_drains_before_next_create() -> N
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1105,7 +1113,7 @@ async def test_local_activation_cleanup_capacity_fails_closed_before_insert() ->
     repository = SimpleNamespace(create_session=Mock())
     runtime = VoiceSessionRuntime(
         repository=repository,  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1206,7 +1214,7 @@ async def test_local_early_activation_validation_never_exhausts_capacity(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1287,7 +1295,7 @@ async def test_local_early_validation_settlement_joins_repeated_cancellation(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1378,7 +1386,7 @@ async def test_same_activation_id_reservations_have_exact_request_ownership(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1507,7 +1515,7 @@ async def test_exact_activation_replay_waits_for_originating_abort_settlement(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(end=AsyncMock(), abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1603,7 +1611,7 @@ async def test_distinct_activation_identities_mutate_concurrently(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1690,7 +1698,7 @@ async def test_failed_activation_abort_retains_key_until_production_drain() -> N
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1835,7 +1843,7 @@ async def test_exact_activation_replay_waits_at_every_postmutation_phase(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=Media(),  # type: ignore[arg-type]
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -1944,7 +1952,7 @@ async def test_cancelled_active_local_session_handoffs_capacity_before_abort(
 
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -2020,7 +2028,7 @@ async def test_local_activation_handoff_identity_loss_fails_closed() -> None:
     repository = SimpleNamespace(end_session=Mock())
     runtime = VoiceSessionRuntime(
         repository=repository,  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=SimpleNamespace(abort=AsyncMock()),
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -2119,7 +2127,7 @@ async def test_local_explicit_end_fences_before_mutation_and_resolves_exact_outc
     media = SimpleNamespace(end=AsyncMock())
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=media,  # type: ignore[arg-type]
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
@@ -2209,7 +2217,7 @@ async def test_local_takeover_fences_before_mutation_and_resolves_exact_outcome(
     media = SimpleNamespace(end=AsyncMock())
     runtime = VoiceSessionRuntime(
         repository=Repository(),  # type: ignore[arg-type]
-        capability=SimpleNamespace(),
+        capability=_LocalCapability(),
         media=media,  # type: ignore[arg-type]
         replica_id="replica-a",
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,6 +19,7 @@ if not (REPO_ROOT / "docker-compose.yml").is_file():
 LOCAL_COMPOSE = REPO_ROOT / "docker-compose.yml"
 STAGING_COMPOSE = REPO_ROOT / "docker-compose.staging.yml"
 INTEGRATION_COMPOSE = REPO_ROOT / "docker-compose.voice-integration.yml"
+PRODUCTION_GUIDE = REPO_ROOT / "docs" / "production-deployment.md"
 LIVEKIT_ROOT = REPO_ROOT / "deploy" / "livekit"
 PINNED_LIVEKIT = (
     "livekit/livekit-server:v1.13.5@sha256:"
@@ -141,8 +146,8 @@ def test_compose_pins_livekit_and_keeps_speech_inputs_worker_local(
     # blank overrides are mandatory to keep deployment speech inputs inert there.
     assert 'OPENAI_BASE_URL: ""' in orchestrator
     assert 'OPENAI_API_KEY: ""' in orchestrator
-    assert "VOICE_SPEECH_BASE_URL" not in orchestrator
-    assert "VOICE_SPEECH_API_KEY" not in orchestrator
+    assert 'VOICE_SPEECH_BASE_URL: ""' in orchestrator
+    assert 'VOICE_SPEECH_API_KEY: ""' in orchestrator
     # Env-overridable with the local plaintext default: production must point
     # this at the LiveKit TLS vhost (https → derived wss) or every session
     # start fails closed with invalid_livekit_url.
@@ -154,6 +159,120 @@ def test_compose_pins_livekit_and_keeps_speech_inputs_worker_local(
     assert "LIVEKIT_API_SECRET:" in orchestrator
     assert "VOICE_UI_BINDING_SECRET:" in orchestrator
     assert "VOICE_WATCH_BRIDGE_PUBLIC_URL:" in orchestrator
+
+
+def test_local_compose_projects_strict_speech_selector_only_to_orchestrator() -> None:
+    document = LOCAL_COMPOSE.read_text(encoding="utf-8")
+    orchestrator = _service(document, "astraldeep")
+    worker = _service(document, "voice-worker")
+
+    # Compose's single-hyphen form defaults only an absent value. An explicit
+    # blank or malformed value reaches the strict server parser and fails
+    # voice closed instead of silently becoming the remote default.
+    assert "VOICE_SPEECH_BACKEND: ${VOICE_SPEECH_BACKEND-llm_factory}" in orchestrator
+    assert "${VOICE_SPEECH_BACKEND:-llm_factory}" not in orchestrator
+    assert document.count("VOICE_SPEECH_BACKEND:") == 1
+    assert "VOICE_SPEECH_BACKEND" not in worker
+    assert 'VOICE_SPEECH_BASE_URL: ""' in orchestrator
+    assert 'VOICE_SPEECH_API_KEY: ""' in orchestrator
+    assert "VOICE_SPEECH_BASE_URL" in worker
+    assert "VOICE_SPEECH_API_KEY" in worker
+
+
+def test_rendered_compose_blanks_env_file_speech_credentials_for_orchestrator(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("Docker Compose is unavailable")
+
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text(LOCAL_COMPOSE.read_text(encoding="utf-8"), encoding="utf-8")
+    sentinel_url = "https://worker-speech.invalid/v1"
+    sentinel_key = "worker-speech-key-sentinel"
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            (
+                "LIVEKIT_API_KEY=test-livekit-key",
+                "LIVEKIT_API_SECRET=test-livekit-secret",
+                "LIVEKIT_NODE_IP=127.0.0.1",
+                f"OPENAI_BASE_URL={sentinel_url}",
+                f"OPENAI_API_KEY={sentinel_key}",
+                "VOICE_CONTROL_SECRET=test-control-secret",
+                f"VOICE_SPEECH_BASE_URL={sentinel_url}",
+                f"VOICE_SPEECH_API_KEY={sentinel_key}",
+                "VOICE_SPEECH_BACKEND=client_local",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    render_env = {
+        name: value
+        for name, value in os.environ.items()
+        if name in {"DOCKER_CONFIG", "HOME", "PATH"}
+    }
+    completed = subprocess.run(
+        (
+            "docker",
+            "compose",
+            "--project-directory",
+            str(tmp_path),
+            "-f",
+            str(compose_path),
+            "config",
+            "--format",
+            "json",
+        ),
+        check=True,
+        capture_output=True,
+        env=render_env,
+        text=True,
+    )
+    services = json.loads(completed.stdout)["services"]
+    orchestrator_env = services["astraldeep"]["environment"]
+    worker_env = services["voice-worker"]["environment"]
+
+    assert orchestrator_env["VOICE_SPEECH_BASE_URL"] == ""
+    assert orchestrator_env["VOICE_SPEECH_API_KEY"] == ""
+    assert sentinel_url not in orchestrator_env.values()
+    assert sentinel_key not in orchestrator_env.values()
+    assert worker_env["VOICE_SPEECH_BASE_URL"] == sentinel_url
+    assert worker_env["VOICE_SPEECH_API_KEY"] == sentinel_key
+
+
+def test_operator_guide_documents_safe_speech_backend_drain_and_rollback() -> None:
+    guide = PRODUCTION_GUIDE.read_text(encoding="utf-8")
+    match = re.search(
+        r"(?ms)^### Speech backend selection, drain, and rollback\n"
+        r"(?P<body>.*?)(?=^### |^## |\Z)",
+        guide,
+    )
+    assert match, "production guide lacks the speech backend rollback runbook"
+    runbook = " ".join(match.group("body").split())
+
+    for marker in (
+        "`VOICE_SPEECH_BACKEND=llm_factory`",
+        "`VOICE_SPEECH_BACKEND=client_local`",
+        "Missing preserves `llm_factory`",
+        "explicit empty, unknown, or malformed",
+        "typed conversation remains available",
+        "No client setting, request, query, header, or frame can override",
+        "`FF_CONVERSATIONAL_VOICE=false`",
+        "drain or end",
+        "Graceful shutdown ends sessions",
+        "old-backend row stays bound",
+        "`feature_disabled`",
+        "No active session changes backend",
+        "docker compose up -d --force-recreate astraldeep",
+        "`docker restart` does not reload",
+        "real ASR and TTS",
+        "no conversation data rewrite",
+    ):
+        assert marker in runbook
+
+    assert "VOICE_SPEECH_BASE_URL=" not in runbook
+    assert "VOICE_SPEECH_API_KEY=" not in runbook
+    assert not re.search(r"https?://", runbook)
 
 
 def test_staging_requires_candidate_bound_worker_and_no_literal_credentials() -> None:
