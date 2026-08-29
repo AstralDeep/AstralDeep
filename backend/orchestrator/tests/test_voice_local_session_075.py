@@ -2083,3 +2083,183 @@ def test_session_projection_adds_backend_only_to_versioned_local_lane() -> None:
     )
     assert "speech_backend" not in remote
     assert local["speech_backend"] == "client_local"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "failure", "cancel_after_commit"],
+)
+async def test_local_explicit_end_fences_before_mutation_and_resolves_exact_outcome(
+    outcome: str,
+) -> None:
+    """The exact reversible fence precedes CAS and survives cancellation."""
+
+    session = _round2_session()
+    ended = SimpleNamespace(**{**session.__dict__, "ended_at": NOW})
+    prepare_entered = asyncio.Event()
+    prepare_release = asyncio.Event()
+    mutation_started = threading.Event()
+    mutation_release = threading.Event()
+    token = object()
+    resolutions: list[tuple[object, bool]] = []
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def end_session(self, **_kwargs: Any) -> Any:
+            mutation_started.set()
+            if outcome == "cancel_after_commit":
+                assert mutation_release.wait(timeout=3)
+            if outcome == "failure":
+                raise RuntimeError("cas conflict")
+            return ended
+
+    media = SimpleNamespace(end=AsyncMock())
+    runtime = VoiceSessionRuntime(
+        repository=Repository(),  # type: ignore[arg-type]
+        capability=SimpleNamespace(),
+        media=media,  # type: ignore[arg-type]
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+
+    async def prepare(current: Any) -> object:
+        assert current is session
+        prepare_entered.set()
+        await prepare_release.wait()
+        return token
+
+    async def resolve(current: object, committed: bool) -> None:
+        resolutions.append((current, committed))
+
+    runtime.bind_local_session_end_fence_handlers(prepare, resolve)
+    task = asyncio.create_task(
+        runtime.end_session(
+            user_id="user-a",
+            session_id=session.session_id,
+            control=_round2_control(),
+            request={
+                "expected_generation": session.generation,
+                "expected_media_grant_revision": (
+                    session.media_grant_revision
+                ),
+            },
+        )
+    )
+    await asyncio.wait_for(prepare_entered.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert not mutation_started.is_set()
+    prepare_release.set()
+
+    if outcome == "failure":
+        with pytest.raises(RuntimeError, match="cas conflict"):
+            await task
+        assert resolutions == [(token, False)]
+        media.end.assert_not_awaited()
+        return
+
+    if outcome == "cancel_after_commit":
+        assert await asyncio.to_thread(mutation_started.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        mutation_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await task
+
+    assert resolutions == [(token, True)]
+    media.end.assert_awaited_once_with(ended, "user")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["failure", "cancel_after_commit"])
+async def test_local_takeover_fences_before_mutation_and_resolves_exact_outcome(
+    outcome: str,
+) -> None:
+    """Takeover resolves its old-generation fence on conflict and late commit."""
+
+    previous = _round2_session()
+    replacement = _round2_session(generation=2)
+    prepare_entered = asyncio.Event()
+    prepare_release = asyncio.Event()
+    mutation_started = threading.Event()
+    mutation_release = threading.Event()
+    token = object()
+    resolutions: list[tuple[object, bool]] = []
+
+    class Repository:
+        def get_session(self, **_kwargs: Any) -> Any:
+            return previous
+
+        def take_over_session(self, *_args: Any, **_kwargs: Any) -> Any:
+            mutation_started.set()
+            if outcome == "cancel_after_commit":
+                assert mutation_release.wait(timeout=3)
+            if outcome == "failure":
+                raise RuntimeError("cas conflict")
+            return SimpleNamespace(session=replacement, replayed=True)
+
+    media = SimpleNamespace(end=AsyncMock())
+    runtime = VoiceSessionRuntime(
+        repository=Repository(),  # type: ignore[arg-type]
+        capability=SimpleNamespace(),
+        media=media,  # type: ignore[arg-type]
+        replica_id="replica-a",
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        clock=lambda: NOW,
+    )
+
+    async def prepare(current: Any) -> object:
+        assert current is previous
+        prepare_entered.set()
+        await prepare_release.wait()
+        return token
+
+    async def resolve(current: object, committed: bool) -> None:
+        resolutions.append((current, committed))
+
+    runtime.bind_local_session_end_fence_handlers(prepare, resolve)
+    task = asyncio.create_task(
+        runtime.take_over_session(
+            user_id="user-a",
+            session_id=previous.session_id,
+            control=_round2_control(),
+            request=_round2_request(
+                activation_id="00000000-0000-4000-8000-000000000207",
+                expected_generation=1,
+                expected_media_grant_revision=1,
+            ),
+        )
+    )
+    await asyncio.wait_for(prepare_entered.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert not mutation_started.is_set()
+    prepare_release.set()
+
+    if outcome == "failure":
+        with pytest.raises(RuntimeError, match="cas conflict"):
+            await task
+        assert resolutions == [(token, False)]
+        media.end.assert_not_awaited()
+        return
+
+    assert await asyncio.to_thread(mutation_started.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    mutation_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert resolutions == [(token, True)]
+    media.end.assert_awaited_once_with(previous, "takeover")
+    assert runtime._local_activation_reservations == set()
+    assert runtime._local_activation_keys == {}

@@ -1263,6 +1263,8 @@ class VoiceSessionRepository:
         user_id: str,
         reason: str,
         now: datetime,
+        expected_session_id: str | None = None,
+        expected_generation: int | None = None,
     ) -> VoiceSessionRecord | None:
         """End one user's current media session for an authenticated lifecycle.
 
@@ -1276,6 +1278,14 @@ class VoiceSessionRepository:
         user_id = _user_id(user_id)
         if reason not in {"logout", "auth_expired"}:
             raise ValueError("invalid_identity_end_reason")
+        if (expected_session_id is None) != (expected_generation is None):
+            raise ValueError("incomplete_identity_end_fence")
+        if expected_session_id is not None:
+            expected_session_id = _uuid4(
+                expected_session_id,
+                "invalid_session_id",
+            )
+            _positive(expected_generation, "invalid_generation")
         now = _aware(now, "invalid_current_time")
         with self._transaction() as transaction:
             self._lock_identity(transaction, "owner", user_id)
@@ -1284,7 +1294,23 @@ class VoiceSessionRepository:
                 owner_id=user_id,
                 for_update=True,
             )
+            if expected_session_id is not None and row is not None and (
+                str(row["session_id"]) != expected_session_id
+                or int(row["generation"]) != expected_generation
+            ):
+                raise StaleSessionFence("stale_generation")
             if row is None:
+                if expected_session_id is not None:
+                    exact = self._voice.get_session_record(
+                        transaction,
+                        owner_id=user_id,
+                        session_id=expected_session_id,
+                    )
+                    if exact is not None and (
+                        int(exact["generation"]) == expected_generation
+                        and exact.get("ended_at") is not None
+                    ):
+                        return _session(exact)
                 return None
             ended = self._end_session_row(
                 transaction,

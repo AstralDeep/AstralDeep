@@ -18,6 +18,7 @@ from fastapi import APIRouter, FastAPI
 from orchestrator.voice_bootstrap import (
     VoiceBootstrapError,
     VoiceServices,
+    _MAX_LOCAL_IDENTITY_END_ATTEMPTS,
     _sensitive_result_quanta,
     build_voice_services,
     install_voice_worker_control,
@@ -1274,6 +1275,7 @@ async def test_local_recognition_cancellation_phase_table_terminalizes_commit(
             reserved: Any,
             *,
             turn_id: str,
+            defer_for_end_fence: bool = False,
         ) -> Any:
             if phase == "promotion":
                 phase_entered.set()
@@ -1281,6 +1283,7 @@ async def test_local_recognition_cancellation_phase_table_terminalizes_commit(
             return await super()._promote_pending_local_rejection(
                 reserved,
                 turn_id=turn_id,
+                defer_for_end_fence=defer_for_end_fence,
             )
 
         async def _acquire_pending_local_rejection_release(
@@ -2572,6 +2575,1513 @@ async def test_existing_authority_replay_settlement_is_exact(
     assert outer_release_calls == 0
     assert services.local_recognition_requests == set()
     assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "shape",
+    ["existing_authority", "new_mutation", "repository_replay"],
+)
+@pytest.mark.parametrize(
+    "cleanup_first",
+    [True, False],
+    ids=["cleanup-proof-first", "return-proof-first"],
+)
+async def test_cleanup_fence_orders_every_recognition_return_before_abandonment(
+    shape: str,
+    cleanup_first: bool,
+) -> None:
+    """The settlement-lock winner is the sole permitted durable ordering."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    settlement_entered = asyncio.Event()
+    settlement_release = asyncio.Event()
+    abandonment_started = threading.Event()
+    abandonment_release = threading.Event()
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                turn=turn,
+                replayed=shape == "repository_replay",
+            )
+
+        def get_turn(self, **_kwargs: Any) -> Any:
+            return turn
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            abandonment_started.set()
+            assert abandonment_release.wait(timeout=3)
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            return None
+
+    class Services(VoiceServices):
+        gate_returns = False
+
+        async def _complete_existing_local_recognition_before_return(
+            self,
+            **kwargs: Any,
+        ) -> None:
+            if self.gate_returns:
+                settlement_entered.set()
+                await settlement_release.wait()
+            await super()._complete_existing_local_recognition_before_return(
+                **kwargs
+            )
+
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            if self.gate_returns:
+                settlement_entered.set()
+                await settlement_release.wait()
+            return await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    if shape == "existing_authority":
+        await services.bind_local_recognition(**kwargs)
+    services.gate_returns = True
+    bind_task = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    await asyncio.wait_for(settlement_entered.wait(), timeout=1)
+    await services.pending_local_rejection_lock.acquire()
+    cleanup_task: asyncio.Task[None] | None = None
+    try:
+        if cleanup_first:
+            cleanup_task = asyncio.create_task(
+                services.cleanup_local_buffers(session)
+            )
+            await asyncio.sleep(0)
+            settlement_release.set()
+        else:
+            settlement_release.set()
+            await asyncio.sleep(0)
+            cleanup_task = asyncio.create_task(
+                services.cleanup_local_buffers(session)
+            )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not abandonment_started.is_set()
+    finally:
+        services.pending_local_rejection_lock.release()
+
+    assert cleanup_task is not None
+    assert await asyncio.to_thread(abandonment_started.wait, 1)
+    abandonment_release.set()
+    await cleanup_task
+    if cleanup_first:
+        with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+            await bind_task
+    else:
+        returned_turn, authority = await bind_task
+        assert returned_turn is turn
+        assert authority.turn_id == turn.turn_id
+    assert services.pending_local_rejection_reservations == {}
+    assert services.pending_local_rejections == {}
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_duplicate_cleanup_callers_join_one_retained_operation() -> None:
+    """Repeated cancellation cannot orphan or duplicate exact abandonment."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    abandonment_started = threading.Event()
+    abandonment_release = threading.Event()
+    abandonment_calls = 0
+    bind_calls = 0
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            nonlocal bind_calls
+            bind_calls += 1
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            nonlocal abandonment_calls
+            abandonment_calls += 1
+            abandonment_started.set()
+            assert abandonment_release.wait(timeout=3)
+
+    registry = ClientLocalBindingRegistry()
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    await services.bind_local_recognition(**kwargs)
+    first = asyncio.create_task(services.cleanup_local_buffers(session))
+    assert await asyncio.to_thread(abandonment_started.wait, 1)
+    duplicate = asyncio.create_task(services.cleanup_local_buffers(session))
+    await asyncio.sleep(0)
+    first.cancel()
+    await asyncio.sleep(0)
+    first.cancel()
+    await asyncio.sleep(0)
+    assert not first.done()
+    assert not duplicate.done()
+    assert abandonment_calls == 1
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await services.bind_local_recognition(**kwargs)
+    assert bind_calls == 1
+
+    abandonment_release.set()
+    await duplicate
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await services.cleanup_local_buffers(session)
+    assert abandonment_calls == 1
+    assert registry._reservations == registry._turns == registry._sequences == {}
+    assert services.pending_local_rejection_reservations == {}
+    assert services.pending_local_rejections == {}
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+    assert len(services.local_cleanup_epochs) == 1
+    assert len(services.local_cleanup_operations) == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_cancelled_before_fence_publishes_has_no_side_effect() -> None:
+    """Cancellation while waiting for publication cannot launch abandonment."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    abandonment_calls = 0
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            nonlocal abandonment_calls
+            abandonment_calls += 1
+
+    registry = ClientLocalBindingRegistry()
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    _, authority = await services.bind_local_recognition(**kwargs)
+    await services.pending_local_rejection_lock.acquire()
+    cleanup = asyncio.create_task(services.cleanup_local_buffers(session))
+    try:
+        await asyncio.sleep(0)
+        cleanup.cancel()
+        cleanup.cancel()
+    finally:
+        services.pending_local_rejection_lock.release()
+    with pytest.raises(asyncio.CancelledError):
+        await cleanup
+    assert abandonment_calls == 0
+    assert registry.get_turn(
+        user_id="user-a",
+        client_turn_id=frame.client_turn_id,
+        now=now,
+    ) is authority
+    assert services.local_cleanup_epochs == {}
+    assert services.local_cleanup_operations == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cleanup_fails",
+    [False, True],
+    ids=["success", "failure"],
+)
+async def test_cleanup_cancellation_after_database_waits_for_reconciliation(
+    cleanup_fails: bool,
+) -> None:
+    """A completed DB call is reconciled under lock before cancellation escapes."""
+
+    session = SimpleNamespace(
+        user_id="user-a",
+        session_id="00000000-0000-4000-8000-000000000031",
+        generation=1,
+    )
+    abandonment_started = threading.Event()
+    abandonment_release = threading.Event()
+    abandonment_finished = threading.Event()
+
+    def abandon_preacceptance_turns(**_kwargs: Any) -> None:
+        abandonment_started.set()
+        assert abandonment_release.wait(timeout=3)
+        abandonment_finished.set()
+        if cleanup_fails:
+            raise RuntimeError("database unavailable")
+
+    bindings = SimpleNamespace(clear_session=Mock())
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=SimpleNamespace(
+            abandon_preacceptance_turns=abandon_preacceptance_turns
+        ),
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=bindings,
+    )
+    cleanup = asyncio.create_task(services.cleanup_local_buffers(session))
+    assert await asyncio.to_thread(abandonment_started.wait, 1)
+    await services.pending_local_rejection_lock.acquire()
+    try:
+        abandonment_release.set()
+        assert await asyncio.to_thread(abandonment_finished.wait, 1)
+        await asyncio.sleep(0)
+        cleanup.cancel()
+        await asyncio.sleep(0)
+        cleanup.cancel()
+        await asyncio.sleep(0)
+        assert not cleanup.done()
+        bindings.clear_session.assert_not_called()
+    finally:
+        services.pending_local_rejection_lock.release()
+    with pytest.raises(asyncio.CancelledError):
+        await cleanup
+    bindings.clear_session.assert_called_once_with(
+        user_id="user-a",
+        session_id=session.session_id,
+        generation=session.generation,
+    )
+    operation = next(iter(services.local_cleanup_operations.values()))
+    assert operation.status == ("failed" if cleanup_fails else "succeeded")
+    assert operation.task is not None and operation.task.done()
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_state", ["succeeded", "failed", "active"])
+async def test_durable_end_joins_and_prunes_exact_cleanup_state(
+    cleanup_state: str,
+) -> None:
+    """Ended generations retain neither completed nor in-flight cleanup slots."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, _claims, _frame = _local_recognition_context(now)
+    ended = SimpleNamespace(
+        **{
+            **session.__dict__,
+            "ended_at": now,
+            "end_reason": "user",
+        }
+    )
+    abandonment_started = threading.Event()
+    abandonment_release = threading.Event()
+
+    def abandon_preacceptance_turns(**_kwargs: Any) -> None:
+        abandonment_started.set()
+        if cleanup_state == "active":
+            assert abandonment_release.wait(timeout=3)
+        if cleanup_state == "failed":
+            raise RuntimeError("database unavailable")
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=SimpleNamespace(
+            abandon_preacceptance_turns=abandon_preacceptance_turns
+        ),
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    cleanup = asyncio.create_task(services.cleanup_local_buffers(session))
+    assert await asyncio.to_thread(abandonment_started.wait, 1)
+    if cleanup_state == "failed":
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await cleanup
+    elif cleanup_state == "succeeded":
+        await cleanup
+
+    terminal = asyncio.create_task(
+        services.handle_runtime_session_end(ended, "user")
+    )
+    if cleanup_state == "active":
+        await asyncio.sleep(0)
+        assert not terminal.done()
+        assert len(services.local_cleanup_operations) == 1
+        abandonment_release.set()
+        await cleanup
+    await terminal
+    assert services.local_cleanup_operations == {}
+    assert services.local_cleanup_epochs == {}
+    assert services.local_end_fences == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_cleanup_retries_before_fresh_ready_and_old_work_stays_stale() -> None:
+    """Only a successful retry plus fresh ready rotates a closed epoch."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, old_frame = _local_recognition_context(now)
+    old_turn = _voice_turn(client_turn_id=old_frame.client_turn_id)
+    new_client_turn_id = "00000000-0000-4000-8000-000000000043"
+    new_turn = _voice_turn(
+        turn_id="00000000-0000-4000-8000-000000000033",
+        client_turn_id=new_client_turn_id,
+    )
+    settlement_entered = asyncio.Event()
+    settlement_release = asyncio.Event()
+    abandon_calls = 0
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, binding: Any, **_kwargs: Any) -> Any:
+            selected = (
+                old_turn
+                if binding.client_turn_id == old_frame.client_turn_id
+                else new_turn
+            )
+            return SimpleNamespace(turn=selected, replayed=False)
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            nonlocal abandon_calls
+            abandon_calls += 1
+            if abandon_calls == 1:
+                raise RuntimeError("database unavailable")
+
+    class Services(VoiceServices):
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            if reserved.client_turn_id == old_frame.client_turn_id:
+                settlement_entered.set()
+                await settlement_release.wait()
+            return await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+
+    registry = ClientLocalBindingRegistry()
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    old_bind = asyncio.create_task(
+        services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=old_frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    )
+    await asyncio.wait_for(settlement_entered.wait(), timeout=1)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await services.cleanup_local_buffers(session)
+    ready = VoiceLocalReady(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=session.generation,
+        speech_revision=session.media_grant_revision,
+        client_sequence=2,
+    )
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await services.local_ready(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=ready,
+            now=now,
+        )
+    await services.cleanup_local_buffers(session)
+    assert abandon_calls == 2
+    assert await services.local_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=ready,
+        now=now,
+    ) is session
+    assert services.local_cleanup_epochs == {}
+    assert services.local_cleanup_operations == {}
+
+    settlement_release.set()
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await old_bind
+    new_frame = VoiceLocalRecognitionStarted(
+        **{
+            **old_frame.__dict__,
+            "client_turn_id": new_client_turn_id,
+            "recognition_sequence": 3,
+        }
+    )
+    returned_turn, authority = await services.bind_local_recognition(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=new_frame,
+        execution_base_render_revision=0,
+        now=now,
+    )
+    assert returned_turn is new_turn
+    assert authority.client_turn_id == new_client_turn_id
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+    assert services.local_cleanup_epochs == {}
+    assert services.local_cleanup_operations == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replayed", [False, True], ids=["new", "replay"])
+async def test_cleanup_joins_prefence_mutation_before_durable_abandonment(
+    replayed: bool,
+) -> None:
+    """A late commit/replay cannot escape the retained cleanup owner."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    mutation_started = threading.Event()
+    mutation_release = threading.Event()
+    abandonment_started = threading.Event()
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            mutation_started.set()
+            assert mutation_release.wait(timeout=3)
+            return SimpleNamespace(turn=turn, replayed=replayed)
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            abandonment_started.set()
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            return None
+
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    bind = asyncio.create_task(
+        services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    )
+    assert await asyncio.to_thread(mutation_started.wait, 1)
+    cleanup = asyncio.create_task(services.cleanup_local_buffers(session))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not abandonment_started.is_set()
+    mutation_release.set()
+    assert await asyncio.to_thread(abandonment_started.wait, 1)
+    await cleanup
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await bind
+    assert services.pending_local_rejection_reservations == {}
+    assert services.pending_local_rejections == {}
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "identity",
+    ["different_user", "different_session", "different_generation"],
+)
+async def test_blocked_cleanup_is_exact_and_does_not_serialize_other_identity(
+    identity: str,
+) -> None:
+    """Cleanup DB work holds no global lock and clears only its exact owner."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    cleanup_session, _claims, _frame = _local_recognition_context(now)
+    other_user = "user-b" if identity == "different_user" else "user-a"
+    other_session_id = (
+        "00000000-0000-4000-8000-000000000099"
+        if identity == "different_session"
+        else cleanup_session.session_id
+    )
+    other_generation = 2 if identity == "different_generation" else 1
+    other_session = SimpleNamespace(
+        **{
+            **cleanup_session.__dict__,
+            "user_id": other_user,
+            "session_id": other_session_id,
+            "generation": other_generation,
+        }
+    )
+    claims = VoiceControlClaims(
+        subject=other_user,
+        device_id=other_session.device_id,
+        connection_generation=other_session.owner_connection_generation,
+        binding_id=other_session.control_binding_id,
+        issued_at=now,
+        expires_at=now + timedelta(minutes=4),
+    )
+    frame = VoiceLocalRecognitionStarted(
+        device_id=other_session.device_id,
+        connection_generation=other_session.owner_connection_generation,
+        session_id=other_session.session_id,
+        generation=other_session.generation,
+        speech_revision=other_session.media_grant_revision,
+        client_turn_id="00000000-0000-4000-8000-000000000043",
+        chat_id=other_session.visible_chat_id,
+        chat_context_revision=other_session.chat_context_revision,
+        recognition_sequence=1,
+    )
+    turn = replace(
+        _voice_turn(
+            turn_id="00000000-0000-4000-8000-000000000033",
+            client_turn_id=frame.client_turn_id,
+            session_id=other_session.session_id,
+        ),
+        user_id=other_user,
+        session_generation=other_generation,
+    )
+    abandonment_started = threading.Event()
+    abandonment_release = threading.Event()
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return other_session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def abandon_preacceptance_turns(self, **_kwargs: Any) -> None:
+            abandonment_started.set()
+            assert abandonment_release.wait(timeout=3)
+
+    registry = ClientLocalBindingRegistry()
+    services = VoiceServices(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=registry,
+    )
+    cleanup = asyncio.create_task(
+        services.cleanup_local_buffers(cleanup_session)
+    )
+    assert await asyncio.to_thread(abandonment_started.wait, 1)
+    returned_turn, authority = await services.bind_local_recognition(
+        socket_id=7,
+        current_socket_id=7,
+        user_id=other_user,
+        claims=claims,
+        frame=frame,
+        execution_base_render_revision=0,
+        now=now,
+    )
+    assert returned_turn is turn
+    abandonment_release.set()
+    await cleanup
+    assert registry.get_turn(
+        user_id=other_user,
+        client_turn_id=frame.client_turn_id,
+        now=now,
+    ) is authority
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "shape",
+    ["existing_authority", "new_mutation", "repository_replay"],
+)
+async def test_pre_durable_session_end_fence_settles_before_every_bind_return(
+    shape: str,
+) -> None:
+    """The reversible pre-CAS fence wins before any later bind return proof."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    settlement_entered = asyncio.Event()
+    settlement_release = asyncio.Event()
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                turn=turn,
+                replayed=shape == "repository_replay",
+            )
+
+        def get_turn(self, **_kwargs: Any) -> Any:
+            return turn
+
+    class Services(VoiceServices):
+        gate_returns = False
+
+        async def _complete_existing_local_recognition_before_return(
+            self,
+            **kwargs: Any,
+        ) -> None:
+            if self.gate_returns:
+                settlement_entered.set()
+                await settlement_release.wait()
+            await super()._complete_existing_local_recognition_before_return(
+                **kwargs
+            )
+
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            if self.gate_returns:
+                settlement_entered.set()
+                await settlement_release.wait()
+            return await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    kwargs = {
+        "socket_id": 7,
+        "current_socket_id": 7,
+        "user_id": "user-a",
+        "claims": claims,
+        "frame": frame,
+        "execution_base_render_revision": 0,
+        "now": now,
+    }
+    if shape == "existing_authority":
+        await services.bind_local_recognition(**kwargs)
+    services.gate_returns = True
+    bind = asyncio.create_task(services.bind_local_recognition(**kwargs))
+    await asyncio.wait_for(settlement_entered.wait(), timeout=1)
+    await services.pending_local_rejection_lock.acquire()
+    prepared = asyncio.create_task(
+        services.prepare_local_session_end(session)
+    )
+    try:
+        await asyncio.sleep(0)
+        settlement_release.set()
+    finally:
+        services.pending_local_rejection_lock.release()
+    end_fence = await prepared
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await bind
+    await services.resolve_local_session_end(end_fence, True)
+    await services.handle_runtime_session_end(session, "user")
+    assert services.pending_local_rejection_reservations == {}
+    assert services.pending_local_rejections == {}
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+    assert services.local_cleanup_epochs == {}
+    assert services.local_cleanup_operations == {}
+    assert services.local_end_fences == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_phase",
+    ["cancellation", "finalize", "settlement"],
+)
+async def test_failed_end_reconciles_end_fenced_nonreplay_insert(
+    failure_phase: str,
+) -> None:
+    """A failed CAS terminalizes every non-replay row deferred to its fence."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, frame = _local_recognition_context(now)
+    turn = _voice_turn(client_turn_id=frame.client_turn_id)
+    phase_entered = asyncio.Event()
+    phase_release = asyncio.Event()
+    rejected_turn_ids: list[str] = []
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def reject_transcript(self, **kwargs: Any) -> None:
+            rejected_turn_ids.append(kwargs["turn_id"])
+
+    class Registry(ClientLocalBindingRegistry):
+        def finalize_turn(self, **kwargs: Any) -> Any:
+            if failure_phase == "finalize":
+                raise VoiceControlBindingError("invalid_binding")
+            return super().finalize_turn(**kwargs)
+
+    class Services(VoiceServices):
+        async def _finish_local_recognition_mutation(
+            self,
+            request: Any,
+            task: Any,
+        ) -> None:
+            if failure_phase == "finalize":
+                phase_entered.set()
+                await phase_release.wait()
+            await super()._finish_local_recognition_mutation(request, task)
+
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            if failure_phase != "finalize":
+                phase_entered.set()
+                await phase_release.wait()
+            return await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=Registry(),
+    )
+    bind = asyncio.create_task(
+        services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=claims,
+            frame=frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    )
+    await asyncio.wait_for(phase_entered.wait(), timeout=1)
+    end_fence = await services.prepare_local_session_end(session)
+    if failure_phase == "cancellation":
+        bind.cancel()
+        await asyncio.sleep(0)
+        bind.cancel()
+    phase_release.set()
+    if failure_phase == "cancellation":
+        with pytest.raises(asyncio.CancelledError):
+            await bind
+    else:
+        with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+            await bind
+
+    assert rejected_turn_ids == []
+    assert len(services.pending_local_rejections) == 1
+    pending = next(iter(services.pending_local_rejections.values()))
+    assert pending.end_fence is end_fence
+    await services.resolve_local_session_end(end_fence, False)
+    assert rejected_turn_ids == [turn.turn_id]
+    assert services.pending_local_rejections == {}
+    assert services.pending_local_rejection_reservations == {}
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+    ready = VoiceLocalReady(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=session.generation,
+        speech_revision=session.media_grant_revision,
+        client_sequence=2,
+    )
+    assert await services.local_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=ready,
+        now=now,
+    ) is session
+    assert services.local_cleanup_epochs == {}
+    assert services.local_end_fences == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_end_rejects_promotion_during_reconciliation() -> None:
+    """A bind promoted after the failed-end snapshot is not deferred to it."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, claims, first_frame = _local_recognition_context(now)
+    second_frame = replace(
+        first_frame,
+        client_turn_id="00000000-0000-4000-8000-000000000043",
+        recognition_sequence=2,
+    )
+    first_turn = _voice_turn(client_turn_id=first_frame.client_turn_id)
+    second_turn = _voice_turn(
+        turn_id="00000000-0000-4000-8000-000000000033",
+        client_turn_id=second_frame.client_turn_id,
+    )
+    settlement_entered = {
+        first_frame.client_turn_id: asyncio.Event(),
+        second_frame.client_turn_id: asyncio.Event(),
+    }
+    settlement_release = {
+        first_frame.client_turn_id: asyncio.Event(),
+        second_frame.client_turn_id: asyncio.Event(),
+    }
+    first_rejection_started = threading.Event()
+    first_rejection_release = threading.Event()
+    rejected_turn_ids: list[str] = []
+
+    class Repository:
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def bind_recognition_turn(self, binding: Any, **_kwargs: Any) -> Any:
+            turn = (
+                first_turn
+                if binding.client_turn_id == first_frame.client_turn_id
+                else second_turn
+            )
+            return SimpleNamespace(turn=turn, replayed=False)
+
+        def reject_transcript(self, **kwargs: Any) -> None:
+            turn_id = kwargs["turn_id"]
+            if turn_id == first_turn.turn_id:
+                first_rejection_started.set()
+                assert first_rejection_release.wait(timeout=3)
+            rejected_turn_ids.append(turn_id)
+
+    class Services(VoiceServices):
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            client_turn_id = reserved.client_turn_id
+            settlement_entered[client_turn_id].set()
+            await settlement_release[client_turn_id].wait()
+            return await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=None,
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+
+    def start_bind(frame: VoiceLocalRecognitionStarted) -> asyncio.Task[Any]:
+        return asyncio.create_task(
+            services.bind_local_recognition(
+                socket_id=7,
+                current_socket_id=7,
+                user_id="user-a",
+                claims=claims,
+                frame=frame,
+                execution_base_render_revision=0,
+                now=now,
+            )
+        )
+
+    first_bind = start_bind(first_frame)
+    second_bind = start_bind(second_frame)
+    await asyncio.wait_for(
+        settlement_entered[first_frame.client_turn_id].wait(),
+        timeout=1,
+    )
+    await asyncio.wait_for(
+        settlement_entered[second_frame.client_turn_id].wait(),
+        timeout=1,
+    )
+    end_fence = await services.prepare_local_session_end(session)
+
+    settlement_release[first_frame.client_turn_id].set()
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await first_bind
+    resolving = asyncio.create_task(
+        services.resolve_local_session_end(end_fence, False)
+    )
+    assert await asyncio.to_thread(first_rejection_started.wait, 1)
+
+    settlement_release[second_frame.client_turn_id].set()
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await second_bind
+    rejected_while_first_blocked = tuple(rejected_turn_ids)
+
+    first_rejection_release.set()
+    await resolving
+    assert rejected_while_first_blocked == (second_turn.turn_id,)
+    assert set(rejected_turn_ids) == {first_turn.turn_id, second_turn.turn_id}
+    assert services.pending_local_rejection_reservations == {}
+    assert services.pending_local_rejections == {}
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+    ready = VoiceLocalReady(
+        device_id=session.device_id,
+        connection_generation=session.owner_connection_generation,
+        session_id=session.session_id,
+        generation=session.generation,
+        speech_revision=session.media_grant_revision,
+        client_sequence=2,
+    )
+    assert await services.local_ready(
+        socket_id=7,
+        current_socket_id=7,
+        user_id="user-a",
+        claims=claims,
+        frame=ready,
+        now=now,
+    ) is session
+    assert services.local_cleanup_epochs == {}
+    assert services.local_end_fences == {}
+
+
+@pytest.mark.asyncio
+async def test_logout_end_fence_precedes_mutation_and_joins_repeated_cancellation(
+) -> None:
+    """Identity teardown cannot outlive its exact reversible local fence."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    session, _claims, _frame = _local_recognition_context(now)
+    ended = SimpleNamespace(
+        **{
+            **session.__dict__,
+            "ended_at": now,
+            "end_reason": "logout",
+        }
+    )
+    fence_published = asyncio.Event()
+    fence_release = asyncio.Event()
+    mutation_started = threading.Event()
+    mutation_release = threading.Event()
+
+    class Repository:
+        def get_live_session(self, **_kwargs: Any) -> Any:
+            return session
+
+        def end_live_user_session(self, **_kwargs: Any) -> Any:
+            mutation_started.set()
+            assert mutation_release.wait(timeout=3)
+            return ended
+
+    class Services(VoiceServices):
+        async def prepare_local_session_end(self, current: Any) -> Any:
+            fence = await super().prepare_local_session_end(current)
+            fence_published.set()
+            await fence_release.wait()
+            return fence
+
+    media = SimpleNamespace(end=AsyncMock())
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=media,  # type: ignore[arg-type]
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    task = asyncio.create_task(
+        services.end_user_voice_session(
+            user_id="user-a",
+            reason="logout",
+        )
+    )
+    await asyncio.wait_for(fence_published.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert not mutation_started.is_set()
+    fence_release.set()
+    assert await asyncio.to_thread(mutation_started.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    mutation_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    media.end.assert_awaited_once_with(ended, "logout")
+    assert services.local_cleanup_epochs == {}
+    assert services.local_end_fences == {}
+    assert services.local_recognition_requests == set()
+    assert services.local_recognition_keys == {}
+
+
+@pytest.mark.asyncio
+async def test_logout_retries_exact_generation_after_takeover_race() -> None:
+    """Logout fences B and revokes its blocked bind before ending B."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    first, _claims, _frame = _local_recognition_context(now)
+    replacement = SimpleNamespace(
+        **{
+            **first.__dict__,
+            "session_id": "00000000-0000-4000-8000-000000000039",
+            "generation": 2,
+            "media_grant_revision": 2,
+        }
+    )
+    ended_first = SimpleNamespace(
+        **{
+            **first.__dict__,
+            "ended_at": now,
+            "end_reason": "takeover",
+        }
+    )
+    ended_replacement = SimpleNamespace(
+        **{
+            **replacement.__dict__,
+            "ended_at": now,
+            "end_reason": "logout",
+        }
+    )
+    replacement_claims = VoiceControlClaims(
+        subject="user-a",
+        device_id=replacement.device_id,
+        connection_generation=replacement.owner_connection_generation,
+        binding_id=replacement.control_binding_id,
+        issued_at=now,
+        expires_at=now + timedelta(minutes=4),
+    )
+    replacement_frame = VoiceLocalRecognitionStarted(
+        device_id=replacement.device_id,
+        connection_generation=replacement.owner_connection_generation,
+        session_id=replacement.session_id,
+        generation=replacement.generation,
+        speech_revision=replacement.media_grant_revision,
+        client_turn_id="00000000-0000-4000-8000-000000000049",
+        chat_id=replacement.visible_chat_id,
+        chat_context_revision=replacement.chat_context_revision,
+        recognition_sequence=1,
+    )
+    replacement_turn = replace(
+        _voice_turn(
+            turn_id="00000000-0000-4000-8000-000000000039",
+            client_turn_id=replacement_frame.client_turn_id,
+            session_id=replacement.session_id,
+            media_grant_revision=replacement.media_grant_revision,
+        ),
+        session_generation=replacement.generation,
+    )
+    live_reads = 0
+    prepared: list[tuple[str, int]] = []
+    end_attempts: list[tuple[str, int]] = []
+    settlement_entered = asyncio.Event()
+    settlement_release = asyncio.Event()
+    replacement_fence_published = asyncio.Event()
+    replacement_end_started = threading.Event()
+    replacement_end_release = threading.Event()
+
+    class Repository:
+        def get_live_session(self, **_kwargs: Any) -> Any:
+            nonlocal live_reads
+            live_reads += 1
+            return first if live_reads == 1 else replacement
+
+        def get_controlled_session(self, **_kwargs: Any) -> Any:
+            return replacement
+
+        def bind_recognition_turn(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(turn=replacement_turn, replayed=False)
+
+        def reject_transcript(self, **_kwargs: Any) -> None:
+            raise AssertionError("durable end owns replacement abandonment")
+
+        def end_live_user_session(self, **kwargs: Any) -> Any:
+            key = (
+                kwargs["expected_session_id"],
+                kwargs["expected_generation"],
+            )
+            assert key in prepared
+            end_attempts.append(key)
+            if len(end_attempts) == 1:
+                raise VoiceSessionRepositoryError("stale_generation")
+            replacement_end_started.set()
+            assert replacement_end_release.wait(timeout=3)
+            return ended_replacement
+
+    class Services(VoiceServices):
+        async def prepare_local_session_end(self, current: Any) -> Any:
+            fence = await super().prepare_local_session_end(current)
+            prepared.append((current.session_id, current.generation))
+            if current.session_id == replacement.session_id:
+                replacement_fence_published.set()
+            return fence
+
+        async def _acquire_pending_local_rejection_release(
+            self,
+            reserved: Any,
+        ) -> bool:
+            settlement_entered.set()
+            await settlement_release.wait()
+            return await super()._acquire_pending_local_rejection_release(
+                reserved
+            )
+
+    media = SimpleNamespace(end=AsyncMock())
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=media,  # type: ignore[arg-type]
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    bind = asyncio.create_task(
+        services.bind_local_recognition(
+            socket_id=7,
+            current_socket_id=7,
+            user_id="user-a",
+            claims=replacement_claims,
+            frame=replacement_frame,
+            execution_base_render_revision=0,
+            now=now,
+        )
+    )
+    await asyncio.wait_for(settlement_entered.wait(), timeout=1)
+    logout = asyncio.create_task(
+        services.end_user_voice_session(
+            user_id="user-a",
+            reason="logout",
+        )
+    )
+    await asyncio.wait_for(replacement_fence_published.wait(), timeout=1)
+    assert await asyncio.to_thread(replacement_end_started.wait, 1)
+    settlement_release.set()
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        await bind
+    with pytest.raises(VoiceControlBindingError, match="invalid_binding"):
+        services.local_bindings.get_turn(
+            user_id="user-a",
+            client_turn_id=replacement_frame.client_turn_id,
+            now=now,
+        )
+    replacement_end_release.set()
+    assert await logout is ended_replacement
+    assert prepared == [
+        (first.session_id, 1),
+        (replacement.session_id, 2),
+    ]
+    assert end_attempts == prepared
+    media.end.assert_awaited_once_with(ended_replacement, "logout")
+
+    # Both the eager stale proof and a repeated durable callback are idempotent.
+    await services.handle_runtime_session_end(ended_first, "takeover")
+    assert services.local_cleanup_epochs == {}
+    assert services.local_end_fences == {}
+
+
+@pytest.mark.asyncio
+async def test_logout_repeated_cancellation_cannot_escape_between_retries(
+) -> None:
+    """Caller cancellation cannot strand the replacement after stale A."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    first, _claims, _frame = _local_recognition_context(now)
+    replacement = SimpleNamespace(
+        **{
+            **first.__dict__,
+            "session_id": "00000000-0000-4000-8000-000000000039",
+            "generation": 2,
+            "media_grant_revision": 2,
+        }
+    )
+    ended = SimpleNamespace(
+        **{
+            **replacement.__dict__,
+            "ended_at": now,
+            "end_reason": "logout",
+        }
+    )
+    live_reads = 0
+    end_attempts: list[tuple[str, int]] = []
+    between_attempts = asyncio.Event()
+    retry_release = asyncio.Event()
+
+    class Repository:
+        def get_live_session(self, **_kwargs: Any) -> Any:
+            nonlocal live_reads
+            live_reads += 1
+            return first if live_reads == 1 else replacement
+
+        def end_live_user_session(self, **kwargs: Any) -> Any:
+            end_attempts.append(
+                (
+                    kwargs["expected_session_id"],
+                    kwargs["expected_generation"],
+                )
+            )
+            if len(end_attempts) == 1:
+                raise VoiceSessionRepositoryError("stale_generation")
+            return ended
+
+    class Services(VoiceServices):
+        async def _fence_ended_local_session(self, current: Any) -> None:
+            await super()._fence_ended_local_session(current)
+            if current.session_id == first.session_id:
+                between_attempts.set()
+                await retry_release.wait()
+
+    media = SimpleNamespace(end=AsyncMock())
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=media,  # type: ignore[arg-type]
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    logout = asyncio.create_task(
+        services.end_user_voice_session(
+            user_id="user-a",
+            reason="logout",
+        )
+    )
+    await asyncio.wait_for(between_attempts.wait(), timeout=1)
+    logout.cancel()
+    await asyncio.sleep(0)
+    logout.cancel()
+    await asyncio.sleep(0)
+    assert not logout.done()
+    retry_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await logout
+    assert end_attempts == [
+        (first.session_id, first.generation),
+        (replacement.session_id, replacement.generation),
+    ]
+    media.end.assert_awaited_once_with(ended, "logout")
+    assert services.local_cleanup_epochs == {}
+    assert services.local_end_fences == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["last_admitted", "exhausted"])
+async def test_logout_identity_retry_bound_is_activation_capacity_plus_one(
+    outcome: str,
+) -> None:
+    """The admitted takeover bound is drained or fails closed without leaks."""
+
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    base, _claims, _frame = _local_recognition_context(now)
+    session_count = _MAX_LOCAL_IDENTITY_END_ATTEMPTS + (
+        1 if outcome == "exhausted" else 0
+    )
+    sessions = [
+        SimpleNamespace(
+            **{
+                **base.__dict__,
+                "session_id": (
+                    f"00000000-0000-4000-8001-{index:012x}"
+                ),
+                "generation": index,
+                "media_grant_revision": index,
+            }
+        )
+        for index in range(1, session_count + 1)
+    ]
+    ended = SimpleNamespace(
+        **{
+            **sessions[_MAX_LOCAL_IDENTITY_END_ATTEMPTS - 1].__dict__,
+            "ended_at": now,
+            "end_reason": "logout",
+        }
+    )
+    attempts = 0
+    maximum_retained_epochs = 0
+
+    class Repository:
+        def get_live_session(self, **_kwargs: Any) -> Any:
+            return sessions[attempts]
+
+        def end_live_user_session(self, **kwargs: Any) -> Any:
+            nonlocal attempts
+            current = sessions[attempts]
+            assert kwargs["expected_session_id"] == current.session_id
+            assert kwargs["expected_generation"] == current.generation
+            attempts += 1
+            if (
+                outcome == "last_admitted"
+                and attempts == _MAX_LOCAL_IDENTITY_END_ATTEMPTS
+            ):
+                return ended
+            raise VoiceSessionRepositoryError("stale_generation")
+
+    class Services(VoiceServices):
+        async def prepare_local_session_end(self, current: Any) -> Any:
+            nonlocal maximum_retained_epochs
+            fence = await super().prepare_local_session_end(current)
+            maximum_retained_epochs = max(
+                maximum_retained_epochs,
+                len(self.local_cleanup_epochs),
+            )
+            return fence
+
+    media = SimpleNamespace(end=AsyncMock())
+    services = Services(
+        livekit=None,
+        worker_pool=None,
+        repository=Repository(),  # type: ignore[arg-type]
+        coordinator=None,
+        capability=None,
+        media=media,  # type: ignore[arg-type]
+        runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
+        worker_control_settings=None,
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        local_bindings=ClientLocalBindingRegistry(),
+    )
+    if outcome == "last_admitted":
+        assert await services.end_user_voice_session(
+            user_id="user-a",
+            reason="logout",
+        ) is ended
+        media.end.assert_awaited_once_with(ended, "logout")
+    else:
+        with pytest.raises(
+            VoiceSessionRepositoryError,
+            match="stale_generation",
+        ):
+            await services.end_user_voice_session(
+                user_id="user-a",
+                reason="logout",
+            )
+        media.end.assert_not_awaited()
+    assert attempts == _MAX_LOCAL_IDENTITY_END_ATTEMPTS
+    assert maximum_retained_epochs == 1
+    assert services.local_cleanup_epochs == {}
+    assert services.local_end_fences == {}
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,7 @@ from shared.watch_ticket import derive_watch_nonce, watch_participant_identity
 
 
 logger = logging.getLogger(__name__)
+MAX_LOCAL_ACTIVATION_STATES = 256
 
 
 async def _join_task_outcome_through_cancellation(
@@ -193,6 +194,12 @@ class VoiceSessionRuntime:
         self._local_buffer_cleanup_handler: (
             Callable[[VoiceSessionRecord], Awaitable[None]] | None
         ) = None
+        self._local_session_end_prepare_handler: (
+            Callable[[VoiceSessionRecord], Awaitable[Any]] | None
+        ) = None
+        self._local_session_end_resolve_handler: (
+            Callable[[Any, bool], Awaitable[None]] | None
+        ) = None
         self._active_worker_assignments: dict[str, _ActiveWorkerAssignment] = {}
         self._pending_local_activation_cleanup: dict[
             _LocalActivationReservation, _PendingLocalActivationCleanup
@@ -262,6 +269,21 @@ class VoiceSessionRuntime:
         if self._local_buffer_cleanup_handler is not None:
             raise RuntimeError("local_buffer_cleanup_handler_already_bound")
         self._local_buffer_cleanup_handler = handler
+
+    def bind_local_session_end_fence_handlers(
+        self,
+        prepare: Callable[[VoiceSessionRecord], Awaitable[Any]],
+        resolve: Callable[[Any, bool], Awaitable[None]],
+    ) -> None:
+        if not callable(prepare) or not callable(resolve):
+            raise TypeError("local session end fence handlers must be callable")
+        if (
+            self._local_session_end_prepare_handler is not None
+            or self._local_session_end_resolve_handler is not None
+        ):
+            raise RuntimeError("local_session_end_fence_handlers_already_bound")
+        self._local_session_end_prepare_handler = prepare
+        self._local_session_end_resolve_handler = resolve
 
     def bind_session_state_publisher(
         self,
@@ -529,8 +551,17 @@ class VoiceSessionRuntime:
             session_id=session_id,
         )
         local_reservation = None
+        end_fence = None
         if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
-            local_reservation = await self._reserve_local_activation(create)
+            end_fence = await self._fence_local_before_durable_end(previous)
+            try:
+                local_reservation = await self._reserve_local_activation(create)
+            except BaseException:
+                await self._resolve_local_durable_end(
+                    end_fence,
+                    committed=False,
+                )
+                raise
         mutation_task = asyncio.create_task(
             asyncio.to_thread(
                 self._repository.take_over_session,
@@ -544,11 +575,20 @@ class VoiceSessionRuntime:
             mutation, _mutation_error, _extra_cancellation = (
                 await _join_task_outcome_through_cancellation(mutation_task)
             )
+            await self._resolve_local_durable_end(
+                end_fence,
+                committed=mutation is not None,
+            )
             if (
                 mutation is not None
                 and self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
             ):
-                await self._settle_cancelled_local_mutation(
+                await self._join_ended_session_cleanup(
+                    previous,
+                    "takeover",
+                    fail_open=True,
+                )
+                await self._join_cancelled_local_mutation(
                     mutation,
                     create,
                     local_reservation,
@@ -557,12 +597,45 @@ class VoiceSessionRuntime:
                 await self._join_local_activation_release(local_reservation)
             raise cancellation
         except Exception:
+            await self._resolve_local_durable_end(
+                end_fence,
+                committed=False,
+            )
             if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
                 await self._join_local_activation_release(local_reservation)
             raise
+        resolve_cancellation = await self._resolve_local_durable_end(
+            end_fence,
+            committed=True,
+        )
+        if resolve_cancellation is not None:
+            if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+                await self._join_ended_session_cleanup(
+                    previous,
+                    "takeover",
+                    fail_open=True,
+                )
+                await self._join_cancelled_local_mutation(
+                    mutation,
+                    create,
+                    local_reservation,
+                )
+            raise resolve_cancellation
+        cleanup_cancellation = await self._join_ended_session_cleanup(
+            previous,
+            "takeover",
+            fail_open=True,
+        )
+        if cleanup_cancellation is not None:
+            if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+                await self._join_cancelled_local_mutation(
+                    mutation,
+                    create,
+                    local_reservation,
+                )
+            raise cleanup_cancellation
         activation_started = False
         try:
-            await self._cleanup_ended_session(previous, "takeover", fail_open=True)
             if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
                 activation_started = True
                 session = await self._activate_local(
@@ -766,28 +839,78 @@ class VoiceSessionRuntime:
         control: Mapping[str, Any],
         request: Mapping[str, Any],
     ) -> None:
-        ended = await asyncio.to_thread(
-            self._repository.end_session,
-            user_id=user_id,
-            session_id=session_id,
-            expected_generation=request["expected_generation"],
-            expected_media_grant_revision=request["expected_media_grant_revision"],
-            control=_control(control),
-            reason="user",
-            now=self._now(),
+        now = self._now()
+        checked_control = _control(control)
+        end_fence = None
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            current = await asyncio.to_thread(
+                self._repository.get_controlled_session,
+                user_id=user_id,
+                session_id=session_id,
+                expected_generation=request["expected_generation"],
+                expected_media_grant_revision=request[
+                    "expected_media_grant_revision"
+                ],
+                control=checked_control,
+                now=now,
+            )
+            end_fence = await self._fence_local_before_durable_end(current)
+        end_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._repository.end_session,
+                user_id=user_id,
+                session_id=session_id,
+                expected_generation=request["expected_generation"],
+                expected_media_grant_revision=request[
+                    "expected_media_grant_revision"
+                ],
+                control=checked_control,
+                reason="user",
+                now=now,
+            ),
+            name=f"voice-session-end-{session_id}",
         )
-        # The durable end is authoritative. A worker may already have fenced
-        # the assignment, or LiveKit may have already removed the room; those
-        # stale cleanup outcomes must not turn a successful DELETE into 503.
-        await self._cleanup_ended_session(ended, "user", fail_open=True)
-        await self.publish_session_state(ended)
-        self._record_session_event(
-            ended,
-            "session",
-            "ended",
-            reason="user_request",
+        remembered_cancellation: asyncio.CancelledError | None = None
+        try:
+            ended = await asyncio.shield(end_task)
+        except asyncio.CancelledError as cancellation:
+            ended, _error, _extra_cancellation = (
+                await _join_task_outcome_through_cancellation(end_task)
+            )
+            remembered_cancellation = cancellation
+            if ended is None:
+                await self._resolve_local_durable_end(
+                    end_fence,
+                    committed=False,
+                )
+                raise cancellation
+        except Exception:
+            await self._resolve_local_durable_end(
+                end_fence,
+                committed=False,
+            )
+            raise
+        resolve_cancellation = await self._resolve_local_durable_end(
+            end_fence,
+            committed=True,
         )
-        self._record_session_state(ended, "ended", "user_request")
+        remembered_cancellation = (
+            remembered_cancellation or resolve_cancellation
+        )
+        completion = asyncio.create_task(
+            self._complete_user_session_end(ended),
+            name=f"voice-user-session-end-complete-{session_id}",
+        )
+        _result, completion_error, completion_cancellation = (
+            await _join_task_outcome_through_cancellation(completion)
+        )
+        if completion_error is not None:
+            raise completion_error
+        remembered_cancellation = (
+            remembered_cancellation or completion_cancellation
+        )
+        if remembered_cancellation is not None:
+            raise remembered_cancellation
 
     async def stop_speech(
         self,
@@ -1454,6 +1577,30 @@ class VoiceSessionRuntime:
             replayed=bool(mutation.replayed),
         )
 
+    async def _join_cancelled_local_mutation(
+        self,
+        mutation: Any,
+        create: CreateSession,
+        reservation: _LocalActivationReservation | None,
+    ) -> asyncio.CancelledError | None:
+        task = asyncio.create_task(
+            self._settle_cancelled_local_mutation(
+                mutation,
+                create,
+                reservation,
+            ),
+            name=(
+                "voice-local-cancelled-mutation-settle-"
+                f"{mutation.session.session_id}"
+            ),
+        )
+        _result, error, cancellation = (
+            await _join_task_outcome_through_cancellation(task)
+        )
+        if error is not None:
+            raise error
+        return cancellation
+
     async def _settle_failed_local_mutation(
         self,
         mutation: Any,
@@ -1553,7 +1700,7 @@ class VoiceSessionRuntime:
         async with self._local_activation_capacity_lock:
             retained = len(self._pending_local_activation_cleanup)
             reserved = len(self._local_activation_reservations)
-            if retained + reserved >= 256:
+            if retained + reserved >= MAX_LOCAL_ACTIVATION_STATES:
                 raise VoiceApiError(
                     "local_cleanup_capacity_exhausted",
                     status_code=503,
@@ -1755,6 +1902,80 @@ class VoiceSessionRuntime:
             raise media_error
         if notification_error is not None:
             raise notification_error
+
+    async def _join_ended_session_cleanup(
+        self,
+        session: VoiceSessionRecord,
+        reason: str,
+        *,
+        fail_open: bool = False,
+    ) -> asyncio.CancelledError | None:
+        task = asyncio.create_task(
+            self._cleanup_ended_session(
+                session,
+                reason,
+                fail_open=fail_open,
+            ),
+            name=f"voice-ended-session-cleanup-{session.session_id}",
+        )
+        _result, error, cancellation = (
+            await _join_task_outcome_through_cancellation(task)
+        )
+        if error is not None:
+            raise error
+        return cancellation
+
+    async def _complete_user_session_end(
+        self,
+        ended: VoiceSessionRecord,
+    ) -> None:
+        # The durable end is authoritative. A worker may already have fenced
+        # the assignment, or LiveKit may have already removed the room; those
+        # stale cleanup outcomes must not turn a successful DELETE into 503.
+        await self._cleanup_ended_session(ended, "user", fail_open=True)
+        await self.publish_session_state(ended)
+        self._record_session_event(
+            ended,
+            "session",
+            "ended",
+            reason="user_request",
+        )
+        self._record_session_state(ended, "ended", "user_request")
+
+    async def _fence_local_before_durable_end(
+        self,
+        session: VoiceSessionRecord,
+    ) -> Any | None:
+        """Publish a reversible local epoch before a durable end starts."""
+
+        if self.speech_backend is not VoiceSpeechBackend.CLIENT_LOCAL:
+            return None
+        handler = self._local_session_end_prepare_handler
+        if handler is None:
+            return None
+        return await handler(session)
+
+    async def _resolve_local_durable_end(
+        self,
+        fence: Any | None,
+        *,
+        committed: bool,
+    ) -> asyncio.CancelledError | None:
+        if fence is None:
+            return None
+        handler = self._local_session_end_resolve_handler
+        if handler is None:
+            raise RuntimeError("local_session_end_resolve_handler_unavailable")
+        task = asyncio.create_task(
+            handler(fence, committed),
+            name="voice-local-session-end-fence-resolve",
+        )
+        _result, error, cancellation = (
+            await _join_task_outcome_through_cancellation(task)
+        )
+        if error is not None:
+            raise error
+        return cancellation
 
     async def reconcile_worker_disconnect(
         self,

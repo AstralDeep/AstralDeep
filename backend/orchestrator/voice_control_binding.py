@@ -561,22 +561,29 @@ class ClientLocalBindingRegistry:
             )
         }
 
-    def clear_session(self, *, session_id: str, generation: int) -> None:
+    def clear_session(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        user_id: str | None = None,
+    ) -> None:
+        def matches(authority: Any) -> bool:
+            return (
+                authority.session_id == session_id
+                and authority.generation == generation
+                and (user_id is None or authority.user_id == user_id)
+            )
+
         self._turns = {
             key: authority
             for key, authority in self._turns.items()
-            if not (
-                authority.session_id == session_id
-                and authority.generation == generation
-            )
+            if not matches(authority)
         }
         self._reservations = {
             key: reservation
             for key, reservation in self._reservations.items()
-            if not (
-                reservation.session_id == session_id
-                and reservation.generation == generation
-            )
+            if not matches(reservation)
         }
         self._inflight_final_digests = {
             key: digest
@@ -589,6 +596,7 @@ class ClientLocalBindingRegistry:
             if not (
                 value.session_id == session_id
                 and value.generation == generation
+                and (user_id is None or value.user_id == user_id)
             )
         }
 
