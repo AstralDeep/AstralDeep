@@ -132,6 +132,17 @@ Qualified local Projection shared-foundation checkpoint (not pushed):
 
 ### 3.3 AstralDeep
 
+Task 4's server-side `client_local` runtime was independently accepted at
+`982e8741a54a2622a9c3d1f083dc347c53b5cbde` over exact base
+`2532e6a910b5c648242e4c05a784f940a6144d6a`. The final focused lifecycle lane passed 263/263;
+aggregate/backend passed 729 with 40 isolated-PostgreSQL environment skips; worker passed 359 with
+5 matching skips; tooling passed 87; and strict changed executable-line coverage was
+2,306/2,536 (90.93%). The independent full-range reviewer reported PASS with no actionable
+findings. The immutable 658,720-byte patch SHA-256 is
+`05a0a1b5314d1a5b06dc512d0118d30d281e0f69198d9078aacdf8bfcb8465c2`. Real PostgreSQL and live
+client evidence remain mandatory final gates; this checkpoint does not claim them. No product push,
+PR, or hosted CI occurred at acceptance.
+
 1. Parse `VOICE_SPEECH_BACKEND` once and expose strict authenticated v2 capability/status.
 2. Extend the Plane composition pin only after the Plane candidate is qualified.
 3. Create local sessions without worker/room/grant construction; preserve owner, takeover, lease,
