@@ -200,6 +200,12 @@ def _native_coverage_report(prepare: Any, root: Path, slot: str) -> Path:
         )
     if slot == "windows":
         return _cobertura(root / "windows.xml", "components/AstralProjection/windows-client/app.py", hits=1)
+    if slot == "windows_csharp":
+        return _cobertura(
+            root / "windows-csharp.xml",
+            "components/AstralProjection/windows-client/asr-helper/FrameProtocol.cs",
+            hits=1,
+        )
     if slot == "javascript":
         path = root / "javascript.json"
         source = "components/AstralProjection/backend/webrender/static/client.js"
@@ -716,6 +722,7 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
         "scripts/release.py",
         "components/AstralProjection/src/astralprojection/runtime.py",
         "components/AstralProjection/windows-client/app.py",
+        "components/AstralProjection/windows-client/asr-helper/FrameProtocol.cs",
         "components/AstralProjection/backend/webrender/static/client.js",
         "components/AstralProjection/android-client/app/src/main/kotlin/com/example/App.kt",
         "components/AstralProjection/android-client/core/src/main/kotlin/com/example/Core.kt",
@@ -1122,6 +1129,7 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
         "scripts/release.py",
         "components/AstralProjection/src/astralprojection/runtime.py",
         "components/AstralProjection/windows-client/app.py",
+        "components/AstralProjection/windows-client/asr-helper/FrameProtocol.cs",
         "components/AstralProjection/backend/webrender/static/client.js",
         "components/AstralProjection/android-client/app/src/main/kotlin/com/example/App.kt",
         "components/AstralProjection/android-client/core/src/main/kotlin/com/example/Core.kt",
