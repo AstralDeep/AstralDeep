@@ -77,6 +77,14 @@ def _git(cwd: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+def _gitlink_commit(root: Path, component_path: str) -> str:
+    entry = _git(root, "ls-tree", "HEAD", "--", component_path)
+    metadata, listed_path = entry.split("\t", maxsplit=1)
+    mode, object_type, commit = metadata.split()
+    assert (mode, object_type, listed_path) == ("160000", "commit", component_path)
+    return commit
+
+
 def _commit_component(path: Path, repository: str) -> str:
     _git(path, "init", "--quiet")
     _git(path, "config", "user.name", "Composition Test")
@@ -377,13 +385,11 @@ def test_feature_075_composition_pins_exact_plane_and_retains_projection() -> No
         EXPECTED_PROJECTION_PROTOCOL_SHA256_075_FOUNDATION
     )
 
-    assert _git(
-        REPOSITORY_ROOT / COMPONENT_PATHS["astral-plane"], "rev-parse", "HEAD"
+    assert _gitlink_commit(
+        REPOSITORY_ROOT, COMPONENT_PATHS["astral-plane"]
     ) == EXPECTED_PLANE_COMMIT_075
-    assert _git(
-        REPOSITORY_ROOT / COMPONENT_PATHS["astral-projection"],
-        "rev-parse",
-        "HEAD",
+    assert _gitlink_commit(
+        REPOSITORY_ROOT, COMPONENT_PATHS["astral-projection"]
     ) == EXPECTED_PROJECTION_COMMIT_075_FOUNDATION
 
 
