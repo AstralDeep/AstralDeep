@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from orchestrator.voice_api import VoiceApiError
+from orchestrator.voice_backend import VoiceSpeechBackend
 from orchestrator.voice_bootstrap import VoiceServices
 from orchestrator.voice_coordinator import (
     FIXED_VOICE_PROFILE,
@@ -368,9 +369,18 @@ def _request(**changes: Any) -> dict[str, Any]:
     return value
 
 
-def _runtime(observability=None):
+def _runtime(
+    observability=None,
+    *,
+    speech_backend: VoiceSpeechBackend = VoiceSpeechBackend.LLM_FACTORY,
+):
     repository = _Repository()
     capability = _Capability()
+    if speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+        capability.value = _CapabilityValue(
+            status="requires_client_readiness",
+            reason="client_readiness_required",
+        )
     media = _Media()
     runtime = VoiceSessionRuntime(
         repository=repository,
@@ -379,6 +389,7 @@ def _runtime(observability=None):
         replica_id="replica-a",
         clock=lambda: NOW,
         observability=observability,
+        speech_backend=speech_backend,
     )
     return runtime, repository, capability, media
 
@@ -535,6 +546,45 @@ async def test_background_update_stops_capture_and_playout_without_end() -> None
     assert ("capture", False) in media.calls
     assert ("stop", SESSION) in media.calls
     assert not any(name == "end" for name, _ in media.calls)
+
+
+@pytest.mark.asyncio
+async def test_client_local_fence_only_update_renews_leases_without_cleanup() -> None:
+    runtime, repository, _capability, media = _runtime(
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL
+    )
+    idle_started_at = NOW - timedelta(minutes=2)
+    last_interaction_at = NOW - timedelta(minutes=3)
+    repository.session = replace(
+        repository.session,
+        state="active",
+        speech_backend="client_local",
+        idle_started_at=idle_started_at,
+        last_interaction_at=last_interaction_at,
+    )
+    cleaned: list[str] = []
+
+    async def cleanup(session: VoiceSessionRecord) -> None:
+        cleaned.append(session.session_id)
+
+    runtime.bind_local_buffer_cleanup_handler(cleanup)
+
+    result = await runtime.update_session(
+        user_id="user-a",
+        session_id=SESSION,
+        control=_control(),
+        request={
+            "expected_generation": 1,
+            "expected_media_grant_revision": 1,
+        },
+    )
+
+    assert [name for name, _value in repository.calls] == ["update", "renew", "claim"]
+    assert result["lease_expires_at"] == "2026-07-31T18:00:45Z"
+    assert repository.session.last_interaction_at == last_interaction_at
+    assert repository.session.idle_started_at == idle_started_at
+    assert cleaned == []
+    assert media.calls == []
 
 
 @pytest.mark.asyncio
@@ -842,6 +892,38 @@ async def test_stop_and_end_are_fenced_media_controls_not_task_cancellation() ->
 
 
 @pytest.mark.asyncio
+async def test_client_local_stop_cleans_preacceptance_before_output_stop() -> None:
+    runtime, repository, _capability, media = _runtime(
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL
+    )
+    repository.session = replace(
+        repository.session,
+        state="active",
+        speech_backend="client_local",
+    )
+    order: list[str] = []
+
+    async def cleanup(session) -> None:
+        assert session is repository.session
+        order.append("cleanup")
+
+    async def stop(session_id: str, generation: int) -> None:
+        assert (session_id, generation) == (SESSION, 1)
+        order.append("stop")
+
+    runtime.bind_local_buffer_cleanup_handler(cleanup)
+    runtime.bind_speech_stop_handler(stop)
+    await runtime.stop_speech(
+        user_id="user-a",
+        session_id=SESSION,
+        control=_control(),
+        request={"expected_generation": 1, "expected_media_grant_revision": 1},
+    )
+    assert order == ["cleanup", "stop"]
+    assert not any(name == "barge_in" for name, _ in media.calls)
+
+
+@pytest.mark.asyncio
 async def test_durable_user_end_is_not_rolled_back_by_stale_media_cleanup(
     caplog,
 ) -> None:
@@ -869,6 +951,39 @@ async def test_durable_user_end_is_not_rolled_back_by_stale_media_cleanup(
         "voice_session_cleanup_unavailable reason=end_handler_failed"
         in caplog.text
     )
+
+
+@pytest.mark.asyncio
+async def test_media_end_cancellation_still_notifies_and_forgets_terminal_fences() -> None:
+    runtime, repository, _capability, media = _runtime()
+    ended: list[tuple[str, int, str]] = []
+
+    async def handle_end(session, reason) -> None:
+        ended.append((session.session_id, session.generation, reason))
+
+    runtime.bind_session_end_handler(handle_end)
+    await runtime.create_session(
+        user_id="user-a",
+        control=_control(),
+        request=_request(),
+    )
+    assert SESSION in runtime._active_worker_assignments
+    media.end_failure = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.end_session(
+            user_id="user-a",
+            session_id=SESSION,
+            control=_control(),
+            request={
+                "expected_generation": 1,
+                "expected_media_grant_revision": 1,
+            },
+        )
+
+    assert repository.session.ended_at == NOW
+    assert ended == [(SESSION, 1, "user")]
+    assert SESSION not in runtime._active_worker_assignments
 
 
 @pytest.mark.asyncio
@@ -1101,6 +1216,8 @@ async def test_endpoint_lease_expiry_durably_reconciles_only_unreassigned_media(
             secret=b"voice-control-test-secret-with-32-bytes-minimum",
             lease_sweep_seconds=0.1,
         ),
+        speech_backend=VoiceSpeechBackend.LLM_FACTORY,
+        backend_selection=runtime.backend_selection,
     )
     runtime.bind_session_end_handler(services.handle_runtime_session_end)
 

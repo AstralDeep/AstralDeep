@@ -51,6 +51,10 @@ EXPECTED_DIRECT_DEPENDENCIES = {
     "jsonschema": "4.25.1",
     "openapi-spec-validator": "0.7.2",
 }
+EXPECTED_INSTALLED_DEPENDENCIES = {
+    **EXPECTED_DIRECT_DEPENDENCIES,
+    "pyyaml": "6.0.3",
+}
 EXPECTED_REST_MAPPING = {
     "voice_session_start": "createVoiceSession",
     "voice_session_takeover": "takeOverVoiceSession",
@@ -1326,13 +1330,13 @@ def validate_dependency_lock(repo_root: Path) -> None:
     finish_block()
     if not blocks:
         raise ContractValidationError("validator lock contains no package pins")
-    for name, version in EXPECTED_DIRECT_DEPENDENCIES.items():
+    for name, version in EXPECTED_INSTALLED_DEPENDENCIES.items():
         if name not in blocks or blocks[name][0] != version:
             raise ContractValidationError(f"validator lock is missing exact {name} pin")
 
 
 def _validate_installed_versions() -> None:
-    for package, expected in EXPECTED_DIRECT_DEPENDENCIES.items():
+    for package, expected in EXPECTED_INSTALLED_DEPENDENCIES.items():
         try:
             actual = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError as exc:

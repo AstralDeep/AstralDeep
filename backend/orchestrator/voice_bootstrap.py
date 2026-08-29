@@ -10,7 +10,7 @@ import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Mapping
 
 from orchestrator.livekit_service import (
@@ -18,7 +18,13 @@ from orchestrator.livekit_service import (
     LiveKitSettings,
     VoiceCapabilityService,
 )
-from orchestrator.voice_control_binding import VoiceControlClaims
+from orchestrator.voice_control_binding import (
+    ClientLocalBindingRegistry,
+    ClientLocalTurnAuthority,
+    ClientLocalTurnReservation,
+    VoiceControlBindingError,
+    VoiceControlClaims,
+)
 from orchestrator.voice_coordinator import (
     APPROVED_PHRASE_TEXT,
     PREACCEPTANCE_REJECTION_PHRASES,
@@ -26,6 +32,7 @@ from orchestrator.voice_coordinator import (
     AnnouncementMutation,
     CADENCE_HARD_GAP_SECONDS,
     CadenceDecision,
+    ClientLocalAnnouncementRegistry,
     CoordinatorClock,
     HANDOFF_BUDGET_SECONDS,
     PlayoutCompletion,
@@ -39,16 +46,23 @@ from orchestrator.voice_coordinator import (
 )
 from orchestrator.voice_media import DirectRtcVoiceMedia
 from orchestrator.voice_api import VoiceApiError
+from orchestrator.voice_backend import SpeechBackendSelection, VoiceSpeechBackend
 from orchestrator.voice_recap import SensitiveRecapRegistry, VoiceRecapError
 from orchestrator.runtime_observability import RuntimeObservability
-from orchestrator.voice_runtime import VoiceSessionRuntime
+from orchestrator.voice_runtime import (
+    MAX_LOCAL_ACTIVATION_STATES,
+    VoiceSessionRuntime,
+)
 from orchestrator.voice_sessions import (
     ChatUnavailableMutation,
+    LocalTranscriptSubmission,
+    RecognitionBinding,
     SessionControl,
     TranscriptAdmission,
     TranscriptSubmissionRejected,
     TranscriptSubmission,
     VoiceSessionRepository,
+    VoiceSessionRepositoryError,
     VoiceSessionRecord,
     VoiceTurnRecord,
 )
@@ -66,10 +80,157 @@ _SAFE_REASON = re.compile(r"^[a-z0-9_]{1,64}$")
 logger = logging.getLogger(__name__)
 _MAX_ANNOUNCEMENT_FENCES = 256
 _MAX_PREACCEPTANCE_GUIDANCE_TASKS = 32
+_MAX_PENDING_LOCAL_REJECTIONS = 256
+_MAX_LOCAL_CLEANUP_STATES = 256
+_MAX_LOCAL_IDENTITY_END_ATTEMPTS = MAX_LOCAL_ACTIVATION_STATES + 1
+
+
+async def _join_task_outcome_through_cancellation(
+    task: asyncio.Task[Any],
+) -> tuple[Any, BaseException | None, asyncio.CancelledError | None]:
+    """Join retained repository work despite repeated caller cancellation."""
+
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                cancellation = cancellation or exc
+            if task.done():
+                break
+        except BaseException:
+            break
+    try:
+        return task.result(), None, cancellation
+    except BaseException as error:
+        return None, error, cancellation
 
 
 class VoiceBootstrapError(RuntimeError):
     """Content-free deployment refusal that leaves ordinary chat untouched."""
+
+
+@dataclass(eq=False, slots=True)
+class _LocalRecognitionRequest:
+    """Exact request-owned reference for one content-free recognition key."""
+
+    user_id: str
+    client_turn_id: str
+    cleanup_epoch: _LocalCleanupEpoch | None = field(default=None, repr=False)
+    cleanup_epoch_released: bool = field(default=False, repr=False)
+    settled: bool = field(default=False, repr=False)
+
+
+@dataclass(eq=False, slots=True)
+class _LocalCleanupEpoch:
+    """Identity token invalidated before exact durable session cleanup."""
+
+    user_id: str
+    session_id: str
+    generation: int
+    accepting: bool = True
+    terminal: bool = False
+    revision: int = 0
+    ready_transition: _LocalReadyTransition | None = field(
+        default=None,
+        repr=False,
+    )
+    holders: int = 0
+    mutation_tasks: set[asyncio.Task[Any]] = field(
+        default_factory=set,
+        repr=False,
+    )
+
+
+@dataclass(eq=False, slots=True)
+class _LocalCleanupOperation:
+    """One retained, cancellation-safe exact cleanup attempt."""
+
+    epoch: _LocalCleanupEpoch
+    mutation_tasks: tuple[asyncio.Task[Any], ...] = field(
+        default=(),
+        repr=False,
+    )
+    status: str = "active"
+    task: asyncio.Task[None] | None = field(default=None, repr=False)
+
+
+@dataclass(eq=False, slots=True)
+class _LocalEndFence:
+    """Reversible in-memory barrier around one exact durable end CAS."""
+
+    epoch: _LocalCleanupEpoch
+    status: str = "pending"
+    pending_attempts: int = 0
+    terminal_cleared: bool = False
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class _LocalReadyTransition:
+    """Exact post-cleanup readiness delivery allowed to reopen one epoch."""
+
+    revision: int
+    socket_id: int
+    user_id: str
+    device_id: str
+    connection_generation: str
+    binding_id: str
+    session_id: str
+    generation: int
+    speech_revision: int
+    client_sequence: int
+    claims: VoiceControlClaims = field(repr=False)
+    cleanup: _LocalCleanupOperation | None = field(repr=False)
+    end_fence: _LocalEndFence | None = field(repr=False)
+
+
+@dataclass(slots=True)
+class _LocalRecognitionKeyState:
+    """Bounded FIFO ownership for one content-free recognition identity."""
+
+    owner: _LocalRecognitionRequest
+    waiters: deque[tuple[_LocalRecognitionRequest, asyncio.Future[None]]]
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingLocalRejection:
+    """Content-free durable-terminalization handle for one local turn."""
+
+    user_id: str
+    client_turn_id: str
+    turn_id: str
+    session_id: str
+    generation: int
+    reason: str
+    retry_policy: str
+    reservation: ClientLocalTurnReservation | None = field(
+        default=None,
+        repr=False,
+    )
+    coordination: _LocalRecognitionRequest | None = field(
+        default=None,
+        repr=False,
+    )
+    end_fence: _LocalEndFence | None = field(
+        default=None,
+        repr=False,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingLocalRejectionReservation:
+    """Content-free capacity held before one recognition insert can commit."""
+
+    user_id: str
+    client_turn_id: str
+    session_id: str
+    generation: int
+    reason: str
+    retry_policy: str
+    reservation: ClientLocalTurnReservation = field(repr=False)
+    coordination: _LocalRecognitionRequest = field(repr=False)
 
 
 @dataclass(slots=True)
@@ -948,14 +1109,24 @@ class _SessionAnnouncementRunner:
 
 @dataclass(slots=True)
 class VoiceServices:
-    livekit: LiveKitService
-    worker_pool: WorkerPool
+    livekit: LiveKitService | None
+    worker_pool: WorkerPool | None
     repository: VoiceSessionRepository
-    coordinator: VoiceCoordinator
-    capability: VoiceCapabilityService
-    media: DirectRtcVoiceMedia
-    runtime: VoiceSessionRuntime
-    worker_control_settings: WorkerControlSettings = field(repr=False)
+    coordinator: VoiceCoordinator | None
+    capability: Any | None
+    media: Any | None
+    runtime: VoiceSessionRuntime | None
+    worker_control_settings: WorkerControlSettings | None = field(repr=False)
+    speech_backend: VoiceSpeechBackend | None = None
+    backend_selection: SpeechBackendSelection | None = field(
+        default=None,
+        repr=False,
+    )
+    _backend_selection_locked: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+    )
     observability: RuntimeObservability | None = field(default=None, repr=False)
     worker_endpoint: WorkerControlEndpoint | None = field(
         default=None,
@@ -1018,6 +1189,9 @@ class VoiceServices:
         init=False,
         repr=False,
     )
+    local_announcement_publisher: (
+        Callable[[Any], Awaitable[None]] | None
+    ) = field(default=None, init=False, repr=False)
     listening_sessions: set[tuple[str, int]] = field(
         default_factory=set,
         init=False,
@@ -1032,6 +1206,74 @@ class VoiceServices:
         default_factory=SensitiveRecapRegistry,
         repr=False,
     )
+    local_bindings: ClientLocalBindingRegistry = field(
+        default_factory=ClientLocalBindingRegistry,
+        repr=False,
+    )
+    local_announcements: ClientLocalAnnouncementRegistry = field(
+        default_factory=ClientLocalAnnouncementRegistry,
+        repr=False,
+    )
+    pending_local_rejections: dict[
+        tuple[str, str], _PendingLocalRejection
+    ] = field(default_factory=dict, init=False, repr=False)
+    pending_local_rejection_reservations: dict[
+        tuple[str, str], _PendingLocalRejectionReservation
+    ] = field(default_factory=dict, init=False, repr=False)
+    pending_local_rejection_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        init=False,
+        repr=False,
+    )
+    local_recognition_requests: set[_LocalRecognitionRequest] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
+    local_recognition_keys: dict[
+        tuple[str, str], _LocalRecognitionKeyState
+    ] = field(default_factory=dict, init=False, repr=False)
+    local_cleanup_epochs: dict[
+        tuple[str, str, int], _LocalCleanupEpoch
+    ] = field(default_factory=dict, init=False, repr=False)
+    local_cleanup_operations: dict[
+        tuple[str, str, int], _LocalCleanupOperation
+    ] = field(default_factory=dict, init=False, repr=False)
+    local_end_fences: dict[
+        tuple[str, str, int], _LocalEndFence
+    ] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        selection = self.backend_selection
+        if selection is None:
+            selection = SpeechBackendSelection(
+                value=self.speech_backend,
+                valid=self.speech_backend is not None,
+                source="explicit",
+            )
+        if (
+            selection.value is not self.speech_backend
+            or selection.valid != (self.speech_backend is not None)
+        ):
+            raise ValueError("invalid_service_speech_backend_selection")
+        runtime_selection = getattr(self.runtime, "backend_selection", None)
+        if (
+            isinstance(runtime_selection, SpeechBackendSelection)
+            and runtime_selection is not selection
+        ):
+            raise ValueError("mismatched_runtime_backend_selection")
+        object.__setattr__(self, "backend_selection", selection)
+        object.__setattr__(self, "_backend_selection_locked", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in {"speech_backend", "backend_selection"}:
+            try:
+                locked = object.__getattribute__(self, "_backend_selection_locked")
+            except AttributeError:
+                locked = False
+            if locked:
+                raise AttributeError("speech_backend_immutable")
+        object.__setattr__(self, name, value)
 
     def bind_terminal_turn_notifier(
         self,
@@ -1045,6 +1287,68 @@ class VoiceServices:
             raise RuntimeError("terminal_turn_notifier_already_bound")
         self.terminal_turn_notifier = notifier
 
+    def bind_local_announcement_publisher(
+        self,
+        publisher: Callable[[Any], Awaitable[None]],
+    ) -> None:
+        if not callable(publisher):
+            raise TypeError("local announcement publisher must be callable")
+        if self.local_announcement_publisher is not None:
+            raise RuntimeError("local_announcement_publisher_already_bound")
+        self.local_announcement_publisher = publisher
+
+    async def _publish_local_announcement(
+        self,
+        turn: VoiceTurnRecord,
+        *,
+        kind: str,
+        text: str = "",
+        output_policy: str = "lifecycle",
+        server_authorized: bool = False,
+    ) -> None:
+        self._require_local_backend()
+        session = await asyncio.to_thread(
+            self.repository.get_session,
+            user_id=turn.user_id,
+            session_id=turn.session_id,
+        )
+        self._require_current_local_control(session, now=datetime.now(UTC))
+        cleanup_key = self._local_cleanup_key(
+            user_id=turn.user_id,
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+        async with self.pending_local_rejection_lock:
+            cleanup_epoch = self.local_cleanup_epochs.get(cleanup_key)
+            if cleanup_epoch is not None and not cleanup_epoch.accepting:
+                raise VoiceBootstrapError("local_session_not_ready")
+            mute_revision, consent_revision = (
+                self.local_announcements.next_revisions(
+                    session_id=session.session_id,
+                    generation=session.generation,
+                )
+            )
+            frame = self.local_announcements.issue(
+                session=session,
+                kind=kind,
+                turn_id=turn.turn_id,
+                requested_text=text,
+                output_policy=output_policy,
+                mute_revision=mute_revision,
+                consent_revision=consent_revision,
+                now=datetime.now(UTC),
+                server_authorized=server_authorized,
+            )
+        publisher = self.local_announcement_publisher
+        if publisher is None:
+            self.local_announcements.discard(frame.announcement_id)
+            raise VoiceBootstrapError("local_announcement_publisher_unavailable")
+        try:
+            await publisher(frame)
+        except BaseException:
+            self.local_announcements.discard(frame.announcement_id)
+            raise
+
     def voice_status(self) -> dict[str, Any]:
         """Project the FR-034 operator surface: readiness, workers, refusals.
 
@@ -1055,6 +1359,36 @@ class VoiceServices:
         def _stamp(value: datetime) -> str:
             return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
+        # Preserve the pre-075 projection contract for focused harnesses (and
+        # embedders) that provide only the established remote worker fields.
+        speech_backend = getattr(
+            self, "speech_backend", VoiceSpeechBackend.LLM_FACTORY
+        )
+        if speech_backend is None:
+            return {
+                "schema_version": "2",
+                "speech_backend": None,
+                "state": "invalid_configuration",
+                "reason": "backend_selection_invalid",
+                "checked_at": _iso_datetime(datetime.now(UTC)),
+            }
+        if speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            if not self._local_feature_enabled():
+                return {
+                    "schema_version": "2",
+                    "speech_backend": "client_local",
+                    "state": "unavailable",
+                    "reason": "feature_disabled",
+                    "checked_at": _iso_datetime(datetime.now(UTC)),
+                }
+            return {
+                "schema_version": "2",
+                "speech_backend": "client_local",
+                "state": "ready",
+                "reason": "ready",
+                "checked_at": _iso_datetime(datetime.now(UTC)),
+            }
+        assert self.worker_pool is not None
         readiness = self.worker_pool.readiness()
         endpoint = self.worker_endpoint
         refusals = endpoint.admission_refusals() if endpoint is not None else ()
@@ -1093,6 +1427,10 @@ class VoiceServices:
         """Mount the authenticated pool socket exactly once on the root app."""
 
         del environ
+        if self.speech_backend is not VoiceSpeechBackend.LLM_FACTORY:
+            raise VoiceBootstrapError("worker_control_not_available")
+        assert self.worker_pool is not None
+        assert self.worker_control_settings is not None
         endpoint = install_router(
             app,
             self.worker_pool,
@@ -1348,6 +1686,1678 @@ class VoiceServices:
             )
         return admission
 
+    def _require_local_backend(self) -> None:
+        if self.speech_backend is not VoiceSpeechBackend.CLIENT_LOCAL:
+            raise VoiceBootstrapError("client_local_not_available")
+        if not self._local_feature_enabled():
+            raise VoiceBootstrapError("feature_disabled")
+
+    def _local_feature_enabled(self) -> bool:
+        feature_enabled = getattr(self.capability, "feature_enabled", None)
+        if not callable(feature_enabled):
+            return False
+        try:
+            return feature_enabled() is True
+        except Exception:
+            return False
+
+    def _require_current_local_control(
+        self,
+        session: VoiceSessionRecord,
+        *,
+        now: datetime,
+        allow_reconnecting: bool = False,
+    ) -> None:
+        """Require this replica's exact, live session/control lease."""
+
+        checked_now = now.astimezone(UTC)
+        try:
+            valid = (
+                session.speech_backend == "client_local"
+                and (
+                    session.state == "active"
+                    or (allow_reconnecting and session.state == "reconnecting")
+                )
+                and session.ended_at is None
+                and session.control_owner_id == self.runtime._replica_id
+                and session.control_lease_expires_at > checked_now
+                and session.lease_expires_at > checked_now
+            )
+        except (AttributeError, TypeError):
+            valid = False
+        if not valid:
+            raise VoiceBootstrapError("local_control_unavailable")
+
+    async def local_ready(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        claims: VoiceControlClaims,
+        frame: Any,
+        now: datetime,
+    ) -> VoiceSessionRecord:
+        """Authorize one readiness observation against server-held state."""
+
+        self._require_local_backend()
+        cleanup_key = self._local_cleanup_key(
+            user_id=user_id,
+            session_id=frame.session_id,
+            generation=frame.generation,
+        )
+        async with self.pending_local_rejection_lock:
+            cleanup_epoch = self.local_cleanup_epochs.get(cleanup_key)
+            cleanup_revision_at_lookup = (
+                cleanup_epoch.revision if cleanup_epoch is not None else None
+            )
+            cleanup_at_lookup = self.local_cleanup_operations.get(cleanup_key)
+            end_fence_at_lookup = self.local_end_fences.get(cleanup_key)
+            if cleanup_at_lookup is not None:
+                if cleanup_at_lookup.status != "succeeded":
+                    raise VoiceControlBindingError("invalid_binding")
+            elif cleanup_epoch is not None and not cleanup_epoch.accepting:
+                if (
+                    end_fence_at_lookup is None
+                    or end_fence_at_lookup.status != "failed"
+                    or end_fence_at_lookup.pending_attempts != 0
+                ):
+                    raise VoiceControlBindingError("invalid_binding")
+            if end_fence_at_lookup is not None and (
+                end_fence_at_lookup.status != "failed"
+                or end_fence_at_lookup.pending_attempts != 0
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+        session = await asyncio.to_thread(
+            self.repository.get_controlled_session,
+            user_id=user_id,
+            session_id=frame.session_id,
+            expected_generation=frame.generation,
+            expected_media_grant_revision=frame.speech_revision,
+            expected_speech_backend="client_local",
+            control=SessionControl(
+                device_id=claims.device_id,
+                connection_generation=claims.connection_generation,
+                binding_id=claims.binding_id,
+                binding_expires_at=claims.expires_at,
+            ),
+            now=now,
+        )
+        if session.state == "reconnecting":
+            self._require_current_local_control(
+                session,
+                now=now,
+                allow_reconnecting=True,
+            )
+            session = await asyncio.to_thread(
+                self.repository.mark_session_active,
+                user_id=user_id,
+                session_id=frame.session_id,
+                expected_generation=frame.generation,
+                expected_media_grant_revision=frame.speech_revision,
+                now=now,
+            )
+        self._require_current_local_control(session, now=now)
+        async with self.pending_local_rejection_lock:
+            if (
+                self.local_cleanup_epochs.get(cleanup_key) is not cleanup_epoch
+                or (
+                    cleanup_epoch is not None
+                    and cleanup_epoch.revision != cleanup_revision_at_lookup
+                )
+                or self.local_cleanup_operations.get(cleanup_key)
+                is not cleanup_at_lookup
+                or self.local_end_fences.get(cleanup_key)
+                is not end_fence_at_lookup
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+            self.local_bindings.authorize_ready(
+                socket_id=socket_id,
+                current_socket_id=current_socket_id,
+                user_id=user_id,
+                claims=claims,
+                session=session,
+                frame=frame,
+                now=now,
+            )
+            if cleanup_epoch is not None and not cleanup_epoch.accepting:
+                # A successful readiness check starts a fresh announcement
+                # epoch, but output remains closed until the session-ready
+                # frame is actually delivered on the same ordered socket.
+                self.local_announcements.clear_session(
+                    session_id=session.session_id,
+                    generation=session.generation,
+                )
+                cleanup_epoch.ready_transition = _LocalReadyTransition(
+                    revision=cleanup_revision_at_lookup,
+                    socket_id=socket_id,
+                    user_id=user_id,
+                    device_id=frame.device_id,
+                    connection_generation=frame.connection_generation,
+                    binding_id=claims.binding_id,
+                    session_id=frame.session_id,
+                    generation=frame.generation,
+                    speech_revision=frame.speech_revision,
+                    client_sequence=frame.client_sequence,
+                    claims=claims,
+                    cleanup=cleanup_at_lookup,
+                    end_fence=end_fence_at_lookup,
+                )
+        return session
+
+    async def complete_local_ready_delivery(
+        self,
+        session: VoiceSessionRecord,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        claims: VoiceControlClaims,
+        frame: Any,
+        now: datetime,
+        authority_is_current: Callable[[], bool],
+    ) -> None:
+        """Open a cleaned local epoch only after its ready frame was delivered."""
+
+        self._require_local_backend()
+        cleanup_key = self._local_cleanup_key(
+            user_id=session.user_id,
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+        async with self.pending_local_rejection_lock:
+            cleanup_epoch = self.local_cleanup_epochs.get(cleanup_key)
+            if cleanup_epoch is None:
+                return
+            transition = cleanup_epoch.ready_transition
+            if transition is None or not (
+                cleanup_epoch.revision == transition.revision
+                and transition.socket_id == socket_id == current_socket_id
+                and transition.user_id == user_id == session.user_id
+                and transition.claims is claims
+                and transition.device_id
+                == claims.device_id
+                == frame.device_id
+                == session.device_id
+                and transition.connection_generation
+                == claims.connection_generation
+                == frame.connection_generation
+                == session.owner_connection_generation
+                and transition.binding_id == claims.binding_id
+                and transition.session_id
+                == frame.session_id
+                == session.session_id
+                and transition.generation
+                == frame.generation
+                == session.generation
+                and transition.speech_revision
+                == frame.speech_revision
+                == session.media_grant_revision
+                and transition.client_sequence == frame.client_sequence
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+        current_session = await asyncio.to_thread(
+            self.repository.get_controlled_session,
+            user_id=user_id,
+            session_id=transition.session_id,
+            expected_generation=transition.generation,
+            expected_media_grant_revision=transition.speech_revision,
+            expected_speech_backend="client_local",
+            control=SessionControl(
+                device_id=claims.device_id,
+                connection_generation=claims.connection_generation,
+                binding_id=claims.binding_id,
+                binding_expires_at=claims.expires_at,
+            ),
+            now=now,
+        )
+        self._require_current_local_control(current_session, now=now)
+        async with self.pending_local_rejection_lock:
+            cleanup_epoch = self.local_cleanup_epochs.get(cleanup_key)
+            try:
+                live_authority = authority_is_current() is True
+            except Exception:
+                live_authority = False
+            if (
+                cleanup_epoch is None
+                or cleanup_epoch.ready_transition is not transition
+                or cleanup_epoch.revision != transition.revision
+                or not live_authority
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+            cleanup = self.local_cleanup_operations.get(cleanup_key)
+            end_fence = self.local_end_fences.get(cleanup_key)
+            if (
+                cleanup is not transition.cleanup
+                or end_fence is not transition.end_fence
+                or cleanup_epoch.accepting
+                or (
+                    cleanup is not None and cleanup.status != "succeeded"
+                )
+                or (
+                    cleanup is None
+                    and not (
+                        end_fence is not None
+                        and end_fence.status == "failed"
+                        and end_fence.pending_attempts == 0
+                    )
+                )
+                or (
+                    end_fence is not None
+                    and (
+                        end_fence.status != "failed"
+                        or end_fence.pending_attempts != 0
+                    )
+                )
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+            cleanup_epoch.ready_transition = None
+            self.local_cleanup_operations.pop(cleanup_key, None)
+            self.local_end_fences.pop(cleanup_key, None)
+            self.local_cleanup_epochs.pop(cleanup_key, None)
+
+    async def bind_local_recognition(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        claims: VoiceControlClaims,
+        frame: Any,
+        execution_base_render_revision: int,
+        now: datetime,
+    ) -> tuple[VoiceTurnRecord, Any]:
+        """Bind a local recognition start to one durable content-free turn."""
+
+        self._require_local_backend()
+        coordination = await self._acquire_local_recognition_request(
+            user_id=user_id,
+            client_turn_id=frame.client_turn_id,
+            session_id=frame.session_id,
+            generation=frame.generation,
+        )
+        try:
+            return await self._bind_local_recognition_owned(
+                socket_id=socket_id,
+                current_socket_id=current_socket_id,
+                user_id=user_id,
+                claims=claims,
+                frame=frame,
+                execution_base_render_revision=execution_base_render_revision,
+                now=now,
+                coordination=coordination,
+            )
+        finally:
+            if not coordination.settled:
+                await self._join_local_recognition_request_release(coordination)
+
+    async def _bind_local_recognition_owned(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        claims: VoiceControlClaims,
+        frame: Any,
+        execution_base_render_revision: int,
+        now: datetime,
+        coordination: _LocalRecognitionRequest,
+    ) -> tuple[VoiceTurnRecord, Any]:
+        """Run one recognition bind while its exact identity is exclusively owned."""
+
+        await self._drain_pending_local_rejections(now=now)
+        session = await asyncio.to_thread(
+            self.repository.get_controlled_session,
+            user_id=user_id,
+            session_id=frame.session_id,
+            expected_generation=frame.generation,
+            expected_media_grant_revision=frame.speech_revision,
+            expected_speech_backend="client_local",
+            control=SessionControl(
+                device_id=claims.device_id,
+                connection_generation=claims.connection_generation,
+                binding_id=claims.binding_id,
+                binding_expires_at=claims.expires_at,
+            ),
+            now=now,
+        )
+        self._require_current_local_control(session, now=now)
+        reserved = self.local_bindings.reserve_turn(
+            socket_id=socket_id,
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            claims=claims,
+            session=session,
+            frame=frame,
+            now=now,
+        )
+        if isinstance(reserved, ClientLocalTurnAuthority):
+            turn = await asyncio.to_thread(
+                self.repository.get_turn,
+                user_id=user_id,
+                turn_id=reserved.turn_id,
+            )
+            await self._complete_existing_local_recognition_before_return(
+                authority=reserved,
+                coordination=coordination,
+                now=now,
+            )
+            return turn, reserved
+        mutation = None
+        release_binding_reservation = True
+        cleanup_reservation: _PendingLocalRejectionReservation | None = None
+        try:
+            cleanup_reservation = await self._reserve_pending_local_rejection(
+                reserved,
+                coordination=coordination,
+            )
+            bind_task = await self._start_local_recognition_mutation(
+                cleanup_reservation,
+                binding=RecognitionBinding(
+                    user_id=user_id,
+                    session_id=frame.session_id,
+                    session_generation=frame.generation,
+                    media_grant_revision=frame.speech_revision,
+                    client_turn_id=frame.client_turn_id,
+                    chat_id=frame.chat_id,
+                    chat_context_revision=frame.chat_context_revision,
+                    execution_base_render_revision=(
+                        execution_base_render_revision
+                    ),
+                    control_owner_id=session.control_owner_id,
+                ),
+                now=now,
+            )
+            mutation_error: BaseException | None = None
+            mutation_cancellation: asyncio.CancelledError | None = None
+            try:
+                mutation = await asyncio.shield(bind_task)
+            except asyncio.CancelledError as cancellation:
+                mutation, mutation_error, _extra_cancellation = (
+                    await _join_task_outcome_through_cancellation(bind_task)
+                )
+                mutation_cancellation = cancellation
+            _finished, finish_cancellation = (
+                await self._join_pending_local_rejection_state_change(
+                    self._finish_local_recognition_mutation(
+                        coordination,
+                        bind_task,
+                    ),
+                    name=(
+                        "voice-local-recognition-mutation-finish-"
+                        f"{frame.client_turn_id}"
+                    ),
+                )
+            )
+            mutation_cancellation = (
+                mutation_cancellation or finish_cancellation
+            )
+            if mutation_cancellation is not None:
+                if mutation is not None:
+                    end_fenced = await self._request_has_end_fence(
+                        coordination
+                    )
+                    if bool(getattr(mutation, "replayed", False)):
+                        await self._join_pending_local_rejection_state_change(
+                            self._release_pending_local_rejection_reservation(
+                                cleanup_reservation
+                            ),
+                            name=(
+                                "voice-local-replay-release-"
+                                f"{frame.client_turn_id}"
+                            ),
+                        )
+                        cleanup_reservation = None
+                    else:
+                        release_binding_reservation = False
+                        pending, _promotion_cancellation = (
+                            await self._join_pending_local_rejection_state_change(
+                                self._promote_pending_local_rejection(
+                                    cleanup_reservation,
+                                    turn_id=mutation.turn.turn_id,
+                                    defer_for_end_fence=end_fenced,
+                                ),
+                                name=(
+                                    "voice-local-rejection-promote-"
+                                    f"{frame.client_turn_id}"
+                                ),
+                            )
+                        )
+                        cleanup_reservation = None
+                        if pending is not None and pending.end_fence is None:
+                            cleanup_error, _cleanup_cancellation = (
+                                await self._attempt_pending_local_rejection(
+                                    pending,
+                                    now=now,
+                                )
+                            )
+                            if cleanup_error is not None:
+                                logger.warning(
+                                    "voice_local_cancel_reconciliation_unavailable"
+                                )
+                elif mutation_error is not None:
+                    logger.debug(
+                        "voice_local_cancelled_recognition_insert_failed"
+                    )
+                raise mutation_cancellation
+            try:
+                authority = self.local_bindings.finalize_turn(
+                    reservation=reserved,
+                    turn=mutation.turn,
+                    now=now,
+                )
+            except BaseException as failure:
+                end_fenced = await self._request_has_end_fence(coordination)
+                if bool(getattr(mutation, "replayed", False)):
+                    await self._join_pending_local_rejection_state_change(
+                        self._release_pending_local_rejection_reservation(
+                            cleanup_reservation
+                        ),
+                        name=(
+                            "voice-local-replay-release-"
+                            f"{frame.client_turn_id}"
+                        ),
+                    )
+                    cleanup_reservation = None
+                    raise failure
+                release_binding_reservation = False
+                pending, promotion_cancellation = (
+                    await self._join_pending_local_rejection_state_change(
+                        self._promote_pending_local_rejection(
+                            cleanup_reservation,
+                            turn_id=mutation.turn.turn_id,
+                            defer_for_end_fence=end_fenced,
+                        ),
+                        name=(
+                            "voice-local-rejection-promote-"
+                            f"{frame.client_turn_id}"
+                        ),
+                    )
+                )
+                cleanup_reservation = None
+                cleanup_cancellation = None
+                if pending is not None and pending.end_fence is None:
+                    cleanup_error, cleanup_cancellation = (
+                        await self._attempt_pending_local_rejection(
+                            pending,
+                            now=now,
+                        )
+                    )
+                    if cleanup_error is not None:
+                        logger.warning(
+                            "voice_local_reservation_abandon_unavailable"
+                        )
+                if promotion_cancellation is not None:
+                    raise promotion_cancellation
+                if cleanup_cancellation is not None:
+                    raise cleanup_cancellation
+                raise failure
+            release_binding_reservation = False
+            await self._complete_local_recognition_before_return(
+                cleanup_reservation,
+                turn_id=mutation.turn.turn_id,
+                now=now,
+                replayed=bool(getattr(mutation, "replayed", False)),
+                authority=authority,
+            )
+            cleanup_reservation = None
+        except BaseException as failure:
+            release_cancellation = None
+            if cleanup_reservation is not None:
+                _released, release_cancellation = (
+                    await self._join_pending_local_rejection_state_change(
+                        self._release_pending_local_rejection_reservation(
+                            cleanup_reservation
+                        ),
+                        name=(
+                            "voice-local-rejection-release-"
+                            f"{frame.client_turn_id}"
+                        ),
+                    )
+                )
+            if release_binding_reservation:
+                self.local_bindings.release_reservation(reserved)
+            if release_cancellation is not None:
+                raise release_cancellation
+            raise failure
+        return mutation.turn, authority
+
+    async def admit_local_final(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        frame: Any,
+        now: datetime,
+    ) -> TranscriptAdmission:
+        """Verify and admit one local final without worker proof authority."""
+
+        canonical = await self.verify_local_final_authority(
+            socket_id=socket_id,
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            frame=frame,
+            now=now,
+        )
+        authority = self.local_bindings.get_turn(
+            user_id=user_id,
+            client_turn_id=frame.client_turn_id,
+            now=now,
+        )
+        return await asyncio.to_thread(
+            self.repository.admit_local_transcript,
+            LocalTranscriptSubmission.from_authority(
+                user_id=user_id,
+                authority=authority,
+                expected_control_owner_id=self.runtime._replica_id,
+                detected_language="en",
+                canonical_text=canonical,
+            ),
+            now=now,
+        )
+
+    async def verify_local_final_authority(
+        self,
+        *,
+        socket_id: int,
+        current_socket_id: int | None,
+        user_id: str,
+        frame: Any,
+        now: datetime,
+    ) -> str:
+        """Verify ephemeral and current durable authority before replay lookup."""
+
+        self._require_local_backend()
+        if (user_id, frame.client_turn_id) in self.pending_local_rejections:
+            raise VoiceControlBindingError("invalid_binding")
+        canonical, _registry_replay = self.local_bindings.verify_final(
+            socket_id=socket_id,
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            frame=frame,
+            now=now,
+        )
+        authority = self.local_bindings.get_turn(
+            user_id=user_id,
+            client_turn_id=frame.client_turn_id,
+            now=now,
+        )
+        session = await asyncio.to_thread(
+            self.repository.get_session,
+            user_id=user_id,
+            session_id=authority.session_id,
+        )
+        self._require_current_local_control(session, now=now)
+        if not (
+            session.generation == authority.generation
+            and session.media_grant_revision == authority.speech_revision
+            and session.device_id == authority.device_id
+            and session.owner_connection_generation
+            == authority.connection_generation
+            and session.control_binding_id == authority.binding_id
+            and session.control_binding_expires_at > now
+        ):
+            raise VoiceBootstrapError("local_control_unavailable")
+        return canonical
+
+    async def reject_local_turn(
+        self,
+        *,
+        user_id: str,
+        client_turn_id: str,
+        reason: str,
+        now: datetime,
+    ) -> None:
+        """Content-free terminal cleanup for a refused preacceptance final."""
+
+        await self._drain_pending_local_rejections(now=now)
+        key = (user_id, client_turn_id)
+        if key in self.pending_local_rejections:
+            return
+        try:
+            authority = self.local_bindings.get_turn(
+                user_id=user_id,
+                client_turn_id=client_turn_id,
+                now=now,
+            )
+        except Exception:
+            return
+        safe_reason = reason if reason in {
+            "capacity_exhausted",
+            "chat_unavailable",
+            "invalid_binding",
+            "permission_denied",
+            "stale_session",
+            "malformed_final",
+        } else "invalid_binding"
+        pending = _PendingLocalRejection(
+            user_id=user_id,
+            client_turn_id=client_turn_id,
+            turn_id=authority.turn_id,
+            session_id=authority.session_id,
+            generation=authority.generation,
+            reason=safe_reason,
+            retry_policy="explicit_user_retry",
+        )
+        await self._retain_pending_local_rejection(pending)
+        _error, cancellation = await self._attempt_pending_local_rejection(
+            pending,
+            now=now,
+        )
+        if cancellation is not None:
+            raise cancellation
+
+    async def _retain_pending_local_rejection(
+        self,
+        pending: _PendingLocalRejection,
+    ) -> None:
+        key = (pending.user_id, pending.client_turn_id)
+        async with self.pending_local_rejection_lock:
+            if key in self.pending_local_rejection_reservations:
+                raise VoiceBootstrapError("invalid_binding")
+            current = self.pending_local_rejections.get(key)
+            if current is not None:
+                if current != pending:
+                    raise VoiceBootstrapError("invalid_binding")
+                return
+            if (
+                len(self.pending_local_rejections)
+                + len(self.pending_local_rejection_reservations)
+                >= _MAX_PENDING_LOCAL_REJECTIONS
+            ):
+                raise VoiceBootstrapError("local_cleanup_capacity_exhausted")
+            self.pending_local_rejections[key] = pending
+
+    @staticmethod
+    def _local_recognition_key(
+        request: _LocalRecognitionRequest,
+    ) -> tuple[str, str]:
+        return request.user_id, request.client_turn_id
+
+    @staticmethod
+    def _local_cleanup_key(
+        *,
+        user_id: str,
+        session_id: str,
+        generation: int,
+    ) -> tuple[str, str, int]:
+        return user_id, session_id, generation
+
+    @staticmethod
+    def _request_cleanup_key(
+        request: _LocalRecognitionRequest,
+    ) -> tuple[str, str, int] | None:
+        epoch = request.cleanup_epoch
+        if epoch is None:
+            return None
+        return epoch.user_id, epoch.session_id, epoch.generation
+
+    def _cleanup_epoch_is_current_locked(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> bool:
+        epoch = request.cleanup_epoch
+        key = self._request_cleanup_key(request)
+        return bool(
+            epoch is not None
+            and key is not None
+            and epoch.accepting
+            and self.local_cleanup_epochs.get(key) is epoch
+            and key not in self.local_cleanup_operations
+            and key not in self.local_end_fences
+        )
+
+    def _request_has_end_fence_locked(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> bool:
+        key = self._request_cleanup_key(request)
+        return key is not None and key in self.local_end_fences
+
+    async def _request_has_end_fence(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> bool:
+        async with self.pending_local_rejection_lock:
+            return self._request_has_end_fence_locked(request)
+
+    def _release_cleanup_epoch_locked(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> None:
+        if request.cleanup_epoch_released:
+            return
+        request.cleanup_epoch_released = True
+        epoch = request.cleanup_epoch
+        key = self._request_cleanup_key(request)
+        if epoch is None or key is None:
+            return
+        if epoch.holders <= 0:
+            raise RuntimeError("local cleanup epoch holder underflow")
+        epoch.holders -= 1
+        if (
+            epoch.holders == 0
+            and epoch.accepting
+            and self.local_cleanup_epochs.get(key) is epoch
+            and key not in self.local_cleanup_operations
+            and key not in self.local_end_fences
+        ):
+            self.local_cleanup_epochs.pop(key, None)
+
+    def _local_recognition_is_retained_locked(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> bool:
+        return any(
+            getattr(pending, "coordination", None) is request
+            for pending in self.pending_local_rejections.values()
+        )
+
+    def _release_local_recognition_request_locked(
+        self,
+        request: _LocalRecognitionRequest,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Release one exact owner/waiter and advance only its FIFO key."""
+
+        if not force and self._local_recognition_is_retained_locked(request):
+            return
+        self.local_recognition_requests.discard(request)
+        self._release_cleanup_epoch_locked(request)
+        request.settled = True
+        key = self._local_recognition_key(request)
+        state = self.local_recognition_keys.get(key)
+        if state is None:
+            return
+        if state.owner is not request:
+            state.waiters = deque(
+                (candidate, waiter)
+                for candidate, waiter in state.waiters
+                if candidate is not request
+            )
+            return
+        while state.waiters:
+            candidate, waiter = state.waiters.popleft()
+            if candidate in self.local_recognition_requests and not waiter.done():
+                state.owner = candidate
+                waiter.set_result(None)
+                return
+        self.local_recognition_keys.pop(key, None)
+
+    async def _release_local_recognition_request(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> None:
+        async with self.pending_local_rejection_lock:
+            self._release_local_recognition_request_locked(request)
+
+    async def _start_local_recognition_mutation(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+        *,
+        binding: RecognitionBinding,
+        now: datetime,
+    ) -> asyncio.Task[Any]:
+        """Publish exact durable work before it can run outside the lock."""
+
+        async with self.pending_local_rejection_lock:
+            key = (reserved.user_id, reserved.client_turn_id)
+            if (
+                self.pending_local_rejection_reservations.get(key) != reserved
+                or not self._cleanup_epoch_is_current_locked(
+                    reserved.coordination
+                )
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+            epoch = reserved.coordination.cleanup_epoch
+            if epoch is None:
+                raise VoiceControlBindingError("invalid_binding")
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.repository.bind_recognition_turn,
+                    binding,
+                    now=now,
+                ),
+                name=(
+                    "voice-local-recognition-mutation-"
+                    f"{reserved.client_turn_id}"
+                ),
+            )
+            epoch.mutation_tasks.add(task)
+            return task
+
+    async def _finish_local_recognition_mutation(
+        self,
+        request: _LocalRecognitionRequest,
+        task: asyncio.Task[Any],
+    ) -> None:
+        """Release a completed task after any cleanup snapshot has observed it."""
+
+        async with self.pending_local_rejection_lock:
+            epoch = request.cleanup_epoch
+            if epoch is not None:
+                epoch.mutation_tasks.discard(task)
+
+    async def _join_local_recognition_request_release(
+        self,
+        request: _LocalRecognitionRequest,
+    ) -> None:
+        task = asyncio.create_task(
+            self._release_local_recognition_request(request),
+            name=(
+                "voice-local-recognition-owner-release-"
+                f"{request.client_turn_id}"
+            ),
+        )
+        _result, error, cancellation = (
+            await _join_task_outcome_through_cancellation(task)
+        )
+        if cancellation is not None:
+            raise cancellation
+        if error is not None:
+            raise error
+
+    async def _complete_existing_local_recognition_before_return(
+        self,
+        *,
+        authority: ClientLocalTurnAuthority,
+        coordination: _LocalRecognitionRequest,
+        now: datetime,
+    ) -> None:
+        """Prove replay authority and settle its owner at the return boundary."""
+
+        async with self.pending_local_rejection_lock:
+            try:
+                current = self.local_bindings.get_turn(
+                    user_id=authority.user_id,
+                    client_turn_id=authority.client_turn_id,
+                    now=now,
+                )
+            except VoiceControlBindingError:
+                current = None
+            epoch_is_current = self._cleanup_epoch_is_current_locked(
+                coordination
+            )
+            self._release_local_recognition_request_locked(coordination)
+            if current is not authority or not epoch_is_current:
+                raise VoiceControlBindingError("invalid_binding")
+
+    async def _acquire_local_recognition_request(
+        self,
+        *,
+        user_id: str,
+        client_turn_id: str,
+        session_id: str | None = None,
+        generation: int | None = None,
+    ) -> _LocalRecognitionRequest:
+        request = _LocalRecognitionRequest(user_id, client_turn_id)
+        waiter: asyncio.Future[None] | None = None
+        async with self.pending_local_rejection_lock:
+            if len(self.local_recognition_requests) >= _MAX_PENDING_LOCAL_REJECTIONS:
+                raise VoiceControlBindingError("capacity_exhausted")
+            if session_id is not None and generation is not None:
+                cleanup_key = self._local_cleanup_key(
+                    user_id=user_id,
+                    session_id=session_id,
+                    generation=generation,
+                )
+                epoch = self.local_cleanup_epochs.get(cleanup_key)
+                if epoch is None:
+                    if (
+                        len(self.local_cleanup_epochs)
+                        >= _MAX_LOCAL_CLEANUP_STATES
+                    ):
+                        raise VoiceControlBindingError("capacity_exhausted")
+                    epoch = _LocalCleanupEpoch(
+                        user_id=user_id,
+                        session_id=session_id,
+                        generation=generation,
+                    )
+                    self.local_cleanup_epochs[cleanup_key] = epoch
+                if (
+                    not epoch.accepting
+                    or cleanup_key in self.local_cleanup_operations
+                ):
+                    raise VoiceControlBindingError("invalid_binding")
+                epoch.holders += 1
+                request.cleanup_epoch = epoch
+            self.local_recognition_requests.add(request)
+            key = self._local_recognition_key(request)
+            state = self.local_recognition_keys.get(key)
+            if state is None:
+                self.local_recognition_keys[key] = _LocalRecognitionKeyState(
+                    owner=request,
+                    waiters=deque(),
+                )
+            else:
+                waiter = asyncio.get_running_loop().create_future()
+                state.waiters.append((request, waiter))
+        if waiter is not None:
+            try:
+                await waiter
+            except BaseException as failure:
+                task = asyncio.create_task(
+                    self._release_local_recognition_request(request),
+                    name=(
+                        "voice-local-recognition-waiter-release-"
+                        f"{client_turn_id}"
+                    ),
+                )
+                _result, error, _cancellation = (
+                    await _join_task_outcome_through_cancellation(task)
+                )
+                if error is not None:
+                    raise error
+                raise failure
+        return request
+
+    async def _reserve_pending_local_rejection(
+        self,
+        reservation: ClientLocalTurnReservation,
+        *,
+        coordination: _LocalRecognitionRequest,
+    ) -> _PendingLocalRejectionReservation:
+        pending = _PendingLocalRejectionReservation(
+            user_id=reservation.user_id,
+            client_turn_id=reservation.client_turn_id,
+            session_id=reservation.session_id,
+            generation=reservation.generation,
+            reason="invalid_binding",
+            retry_policy="none",
+            reservation=reservation,
+            coordination=coordination,
+        )
+        key = (pending.user_id, pending.client_turn_id)
+        async with self.pending_local_rejection_lock:
+            if not self._cleanup_epoch_is_current_locked(coordination):
+                raise VoiceControlBindingError("invalid_binding")
+            if (
+                key in self.pending_local_rejections
+                or key in self.pending_local_rejection_reservations
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+            if (
+                len(self.pending_local_rejections)
+                + len(self.pending_local_rejection_reservations)
+                >= _MAX_PENDING_LOCAL_REJECTIONS
+            ):
+                raise VoiceControlBindingError("capacity_exhausted")
+            self.pending_local_rejection_reservations[key] = pending
+        return pending
+
+    @staticmethod
+    def _deferrable_local_end_fence_locked(
+        end_fence: _LocalEndFence | None,
+    ) -> _LocalEndFence | None:
+        """Never attach work after failed-end reconciliation took its snapshot."""
+
+        if end_fence is not None and (
+            end_fence.status == "reconciling"
+            or (
+                end_fence.status == "failed"
+                and end_fence.pending_attempts == 0
+            )
+        ):
+            return None
+        return end_fence
+
+    async def _promote_pending_local_rejection(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+        *,
+        turn_id: str,
+        defer_for_end_fence: bool = False,
+    ) -> _PendingLocalRejection | None:
+        key = (reserved.user_id, reserved.client_turn_id)
+        async with self.pending_local_rejection_lock:
+            cleanup_key = self._request_cleanup_key(reserved.coordination)
+            end_fence = (
+                self.local_end_fences.get(cleanup_key)
+                if defer_for_end_fence and cleanup_key is not None
+                else None
+            )
+            end_fence = self._deferrable_local_end_fence_locked(end_fence)
+            pending = _PendingLocalRejection(
+                user_id=reserved.user_id,
+                client_turn_id=reserved.client_turn_id,
+                turn_id=turn_id,
+                session_id=reserved.session_id,
+                generation=reserved.generation,
+                reason=reserved.reason,
+                retry_policy=reserved.retry_policy,
+                reservation=reserved.reservation,
+                coordination=reserved.coordination,
+                end_fence=end_fence,
+            )
+            current = self.pending_local_rejection_reservations.get(key)
+            if current is None:
+                existing = self.pending_local_rejections.get(key)
+                if existing is not None:
+                    if existing != pending:
+                        raise VoiceBootstrapError("invalid_binding")
+                    return existing
+                # A successful session-wide abandon is the only other owner
+                # permitted to remove a reserved slot.
+                return None
+            if current != reserved or key in self.pending_local_rejections:
+                raise VoiceBootstrapError("invalid_binding")
+            self.pending_local_rejection_reservations.pop(key, None)
+            self.pending_local_rejections[key] = pending
+            self._release_cleanup_epoch_locked(reserved.coordination)
+        return pending
+
+    async def _release_pending_local_rejection_reservation(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+    ) -> None:
+        key = (reserved.user_id, reserved.client_turn_id)
+        async with self.pending_local_rejection_lock:
+            if self.pending_local_rejection_reservations.get(key) == reserved:
+                self.pending_local_rejection_reservations.pop(key, None)
+
+    async def _acquire_pending_local_rejection_release(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+    ) -> bool:
+        """Acquire the exact slot lock for a no-await success/abort decision."""
+
+        await self.pending_local_rejection_lock.acquire()
+        key = (reserved.user_id, reserved.client_turn_id)
+        current = self.pending_local_rejection_reservations.get(key)
+        if current is None:
+            self.pending_local_rejection_lock.release()
+            return False
+        if current != reserved:
+            self.pending_local_rejection_lock.release()
+            raise VoiceBootstrapError("invalid_binding")
+        return True
+
+    def _promote_pending_local_rejection_locked(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+        *,
+        turn_id: str,
+        authority_finalized: bool,
+        defer_for_end_fence: bool = False,
+    ) -> _PendingLocalRejection:
+        key = (reserved.user_id, reserved.client_turn_id)
+        if self.pending_local_rejection_reservations.get(key) != reserved:
+            raise VoiceBootstrapError("invalid_binding")
+        cleanup_key = self._request_cleanup_key(reserved.coordination)
+        end_fence = (
+            self.local_end_fences.get(cleanup_key)
+            if defer_for_end_fence and cleanup_key is not None
+            else None
+        )
+        end_fence = self._deferrable_local_end_fence_locked(end_fence)
+        pending = _PendingLocalRejection(
+            user_id=reserved.user_id,
+            client_turn_id=reserved.client_turn_id,
+            turn_id=turn_id,
+            session_id=reserved.session_id,
+            generation=reserved.generation,
+            reason=reserved.reason,
+            retry_policy=reserved.retry_policy,
+            reservation=None if authority_finalized else reserved.reservation,
+            coordination=reserved.coordination,
+            end_fence=end_fence,
+        )
+        if key in self.pending_local_rejections:
+            raise VoiceBootstrapError("invalid_binding")
+        self.pending_local_rejection_reservations.pop(key, None)
+        self.pending_local_rejections[key] = pending
+        self._release_cleanup_epoch_locked(reserved.coordination)
+        return pending
+
+    async def _complete_local_recognition_before_return(
+        self,
+        reserved: _PendingLocalRejectionReservation,
+        *,
+        turn_id: str,
+        now: datetime,
+        replayed: bool = False,
+        authority: ClientLocalTurnAuthority | None = None,
+    ) -> None:
+        acquire_task = asyncio.create_task(
+            self._acquire_pending_local_rejection_release(reserved),
+            name=f"voice-local-rejection-release-{reserved.client_turn_id}",
+        )
+        acquired, error, cancellation = (
+            await _join_task_outcome_through_cancellation(acquire_task)
+        )
+        if error is not None:
+            raise error
+        if not acquired:
+            if authority is not None:
+                self.local_bindings.release_request_authority(authority)
+            if cancellation is not None:
+                raise cancellation
+            raise VoiceControlBindingError("invalid_binding")
+        pending = None
+        settlement_error: BaseException | None = None
+        end_fenced = False
+        try:
+            key = (reserved.user_id, reserved.client_turn_id)
+            end_fenced = self._request_has_end_fence_locked(
+                reserved.coordination
+            )
+            if cancellation is None:
+                try:
+                    current_authority = self.local_bindings.get_turn(
+                        user_id=reserved.user_id,
+                        client_turn_id=reserved.client_turn_id,
+                        now=now,
+                    )
+                except BaseException:
+                    current_authority = None
+                epoch_is_current = self._cleanup_epoch_is_current_locked(
+                    reserved.coordination
+                )
+                if (
+                    authority is None
+                    or current_authority is not authority
+                    or not epoch_is_current
+                ):
+                    settlement_error = VoiceControlBindingError(
+                        "invalid_binding"
+                    )
+                    if replayed:
+                        self.pending_local_rejection_reservations.pop(
+                            key,
+                            None,
+                        )
+                        if authority is not None:
+                            self.local_bindings.release_request_authority(
+                                authority
+                            )
+                        self._release_local_recognition_request_locked(
+                            reserved.coordination
+                        )
+                    else:
+                        pending = self._promote_pending_local_rejection_locked(
+                            reserved,
+                            turn_id=turn_id,
+                            authority_finalized=True,
+                            defer_for_end_fence=end_fenced,
+                        )
+                        if end_fenced and authority is not None:
+                            self.local_bindings.release_request_authority(
+                                authority
+                            )
+                else:
+                    self.pending_local_rejection_reservations.pop(key, None)
+                    self._release_local_recognition_request_locked(
+                        reserved.coordination
+                    )
+            elif replayed:
+                self.pending_local_rejection_reservations.pop(key, None)
+                if authority is not None:
+                    self.local_bindings.release_request_authority(authority)
+                self._release_local_recognition_request_locked(
+                    reserved.coordination
+                )
+            else:
+                pending = self._promote_pending_local_rejection_locked(
+                    reserved,
+                    turn_id=turn_id,
+                    authority_finalized=True,
+                    defer_for_end_fence=end_fenced,
+                )
+                if end_fenced and authority is not None:
+                    self.local_bindings.release_request_authority(authority)
+        finally:
+            self.pending_local_rejection_lock.release()
+        if replayed and cancellation is not None:
+            raise cancellation
+        if pending is not None:
+            if pending.end_fence is None:
+                cleanup_error, _cleanup_cancellation = (
+                    await self._attempt_pending_local_rejection(
+                        pending,
+                        now=now,
+                    )
+                )
+                if cleanup_error is not None:
+                    logger.warning(
+                        "voice_local_finalized_cancel_reconciliation_unavailable"
+                    )
+            if settlement_error is not None:
+                raise settlement_error
+            raise cancellation
+        if settlement_error is not None:
+            raise settlement_error
+
+    async def _join_pending_local_rejection_state_change(
+        self,
+        operation: Awaitable[Any],
+        *,
+        name: str,
+    ) -> tuple[Any, asyncio.CancelledError | None]:
+        task = asyncio.create_task(operation, name=name)
+        result, error, cancellation = await _join_task_outcome_through_cancellation(task)
+        if error is not None:
+            raise error
+        return result, cancellation
+
+    async def _attempt_pending_local_rejection(
+        self,
+        pending: _PendingLocalRejection,
+        *,
+        now: datetime,
+    ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                self.repository.reject_transcript,
+                user_id=pending.user_id,
+                turn_id=pending.turn_id,
+                reason=pending.reason,
+                retry_policy=pending.retry_policy,
+                now=now,
+            )
+        )
+        _result, error, cancellation = (
+            await _join_task_outcome_through_cancellation(task)
+        )
+        terminal = error is None or (
+            isinstance(error, VoiceSessionRepositoryError)
+            and error.code == "voice_turn_already_accepted"
+        )
+        if terminal:
+            key = (pending.user_id, pending.client_turn_id)
+            async with self.pending_local_rejection_lock:
+                if self.pending_local_rejections.get(key) == pending:
+                    self.pending_local_rejections.pop(key, None)
+                    if pending.coordination is not None:
+                        self._release_local_recognition_request_locked(
+                            pending.coordination,
+                            force=True,
+                        )
+            if pending.reservation is not None:
+                self.local_bindings.release_reservation(pending.reservation)
+            else:
+                self.local_bindings.release_turn(
+                    user_id=pending.user_id,
+                    client_turn_id=pending.client_turn_id,
+                )
+        return error, cancellation
+
+    async def _drain_pending_local_rejections(self, *, now: datetime) -> None:
+        remembered_cancellation: asyncio.CancelledError | None = None
+        for pending in tuple(self.pending_local_rejections.values()):
+            _error, cancellation = await self._attempt_pending_local_rejection(
+                pending,
+                now=now,
+            )
+            remembered_cancellation = remembered_cancellation or cancellation
+        if remembered_cancellation is not None:
+            raise remembered_cancellation
+
+    def clear_local_connection(
+        self,
+        claims: VoiceControlClaims,
+        *,
+        socket_id: int | None = None,
+    ) -> None:
+        self.local_bindings.clear_connection(
+            user_id=claims.subject,
+            device_id=claims.device_id,
+            connection_generation=claims.connection_generation,
+            socket_id=socket_id,
+        )
+
+    def clear_local_session(self, session: VoiceSessionRecord) -> None:
+        self.local_bindings.clear_session(
+            user_id=session.user_id,
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+
+    async def prepare_local_session_end(
+        self,
+        session: VoiceSessionRecord,
+    ) -> _LocalEndFence:
+        """Close one reversible epoch and join its published mutations."""
+
+        cleanup_key = self._local_cleanup_key(
+            user_id=session.user_id,
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+        async with self.pending_local_rejection_lock:
+            epoch = self.local_cleanup_epochs.get(cleanup_key)
+            if epoch is None:
+                if len(self.local_cleanup_epochs) >= _MAX_LOCAL_CLEANUP_STATES:
+                    raise VoiceBootstrapError(
+                        "local_cleanup_capacity_exhausted"
+                    )
+                epoch = _LocalCleanupEpoch(
+                    user_id=session.user_id,
+                    session_id=session.session_id,
+                    generation=session.generation,
+                )
+                self.local_cleanup_epochs[cleanup_key] = epoch
+            epoch.accepting = False
+            fence = self.local_end_fences.get(cleanup_key)
+            if fence is None:
+                fence = _LocalEndFence(epoch=epoch)
+                self.local_end_fences[cleanup_key] = fence
+            elif fence.epoch is not epoch:
+                raise VoiceBootstrapError("invalid_binding")
+            elif fence.status == "reconciling":
+                raise VoiceBootstrapError("invalid_binding")
+            elif fence.status == "failed":
+                fence.status = "pending"
+            epoch.revision += 1
+            epoch.ready_transition = None
+            fence.pending_attempts += 1
+            mutation_tasks = tuple(epoch.mutation_tasks)
+        remembered_cancellation: asyncio.CancelledError | None = None
+        for mutation_task in mutation_tasks:
+            _result, _error, cancellation = (
+                await _join_task_outcome_through_cancellation(mutation_task)
+            )
+            remembered_cancellation = (
+                remembered_cancellation or cancellation
+            )
+        if remembered_cancellation is not None:
+            await self._join_pending_local_rejection_state_change(
+                self.resolve_local_session_end(fence, False),
+                name=(
+                    "voice-local-session-end-prepare-cancel-"
+                    f"{session.session_id}"
+                ),
+            )
+            raise remembered_cancellation
+        return fence
+
+    async def resolve_local_session_end(
+        self,
+        fence: _LocalEndFence,
+        committed: bool,
+    ) -> None:
+        """Settle one exact durable-end attempt without reopening its epoch."""
+
+        epoch = fence.epoch
+        cleanup_key = self._local_cleanup_key(
+            user_id=epoch.user_id,
+            session_id=epoch.session_id,
+            generation=epoch.generation,
+        )
+        deferred_rejections: tuple[_PendingLocalRejection, ...] = ()
+        async with self.pending_local_rejection_lock:
+            if (
+                self.local_end_fences.get(cleanup_key) is not fence
+                or fence.pending_attempts <= 0
+            ):
+                raise VoiceBootstrapError("invalid_binding")
+            fence.pending_attempts -= 1
+            if committed:
+                fence.status = "committed"
+            elif fence.status != "committed" and fence.pending_attempts == 0:
+                fence.status = "reconciling"
+                deferred_rejections = tuple(
+                    pending
+                    for pending in self.pending_local_rejections.values()
+                    if pending.end_fence is fence
+                )
+            if (
+                fence.status == "committed"
+                and fence.terminal_cleared
+                and fence.pending_attempts == 0
+            ):
+                self.local_end_fences.pop(cleanup_key, None)
+                if cleanup_key not in self.local_cleanup_operations:
+                    self.local_cleanup_epochs.pop(cleanup_key, None)
+        remembered_cancellation: asyncio.CancelledError | None = None
+        for pending in deferred_rejections:
+            cleanup_error, cleanup_cancellation = (
+                await self._attempt_pending_local_rejection(
+                    pending,
+                    now=datetime.now(UTC),
+                )
+            )
+            remembered_cancellation = (
+                remembered_cancellation or cleanup_cancellation
+            )
+            if cleanup_error is not None:
+                logger.warning(
+                    "voice_local_failed_end_reconciliation_unavailable"
+                )
+        if not committed:
+            async with self.pending_local_rejection_lock:
+                if (
+                    self.local_end_fences.get(cleanup_key) is fence
+                    and fence.status == "reconciling"
+                    and fence.pending_attempts == 0
+                ):
+                    fence.status = "failed"
+        if remembered_cancellation is not None:
+            raise remembered_cancellation
+
+    async def _fence_ended_local_session(
+        self,
+        session: VoiceSessionRecord,
+    ) -> None:
+        """Publish an already-durable end before clearing exact authority."""
+
+        cleanup_key = self._local_cleanup_key(
+            user_id=session.user_id,
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+        cleanup_to_join: _LocalCleanupOperation | None = None
+        async with self.pending_local_rejection_lock:
+            epoch = self.local_cleanup_epochs.get(cleanup_key)
+            cleanup = self.local_cleanup_operations.get(cleanup_key)
+            end_fence = self.local_end_fences.get(cleanup_key)
+            if epoch is not None:
+                epoch.accepting = False
+                epoch.terminal = True
+                epoch.revision += 1
+                epoch.ready_transition = None
+                if cleanup is None and end_fence is None:
+                    self.local_cleanup_epochs.pop(cleanup_key, None)
+            if cleanup is not None:
+                cleanup_to_join = cleanup
+            if end_fence is not None:
+                end_fence.status = "committed"
+                end_fence.terminal_cleared = True
+            for key, pending in tuple(self.pending_local_rejections.items()):
+                if (
+                    pending.user_id == session.user_id
+                    and pending.session_id == session.session_id
+                    and pending.generation == session.generation
+                ):
+                    self.pending_local_rejections.pop(key, None)
+                    if pending.coordination is not None:
+                        self._release_local_recognition_request_locked(
+                            pending.coordination,
+                            force=True,
+                        )
+            for key, reserved in tuple(
+                self.pending_local_rejection_reservations.items()
+            ):
+                if (
+                    reserved.user_id == session.user_id
+                    and reserved.session_id == session.session_id
+                    and reserved.generation == session.generation
+                ):
+                    self.pending_local_rejection_reservations.pop(key, None)
+                    self._release_local_recognition_request_locked(
+                        reserved.coordination,
+                        force=True,
+                    )
+            self.clear_local_session(session)
+            if end_fence is not None and end_fence.pending_attempts == 0:
+                self.local_end_fences.pop(cleanup_key, None)
+                if cleanup is None:
+                    self.local_cleanup_epochs.pop(cleanup_key, None)
+        remembered_cancellation: asyncio.CancelledError | None = None
+        if cleanup_to_join is not None and cleanup_to_join.task is not None:
+            _result, cleanup_error, remembered_cancellation = (
+                await _join_task_outcome_through_cancellation(
+                    cleanup_to_join.task
+                )
+            )
+            if cleanup_error is not None:
+                logger.debug(
+                    "voice_local_terminal_cleanup_superseded"
+                )
+        if cleanup_to_join is not None:
+            async with self.pending_local_rejection_lock:
+                if (
+                    self.local_cleanup_operations.get(cleanup_key)
+                    is cleanup_to_join
+                ):
+                    self.local_cleanup_operations.pop(cleanup_key, None)
+                if (
+                    cleanup_key not in self.local_cleanup_operations
+                    and cleanup_key not in self.local_end_fences
+                ):
+                    self.local_cleanup_epochs.pop(cleanup_key, None)
+        if remembered_cancellation is not None:
+            raise remembered_cancellation
+
+    async def cleanup_local_buffers(self, session: VoiceSessionRecord) -> None:
+        """Fence and retain one exact durable session abandonment."""
+
+        cleanup_key = self._local_cleanup_key(
+            user_id=session.user_id,
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+        async with self.pending_local_rejection_lock:
+            cleanup = self.local_cleanup_operations.get(cleanup_key)
+            if cleanup is None:
+                epoch = self.local_cleanup_epochs.get(cleanup_key)
+                if epoch is None:
+                    if (
+                        len(self.local_cleanup_epochs)
+                        >= _MAX_LOCAL_CLEANUP_STATES
+                    ):
+                        raise VoiceBootstrapError(
+                            "local_cleanup_capacity_exhausted"
+                        )
+                    epoch = _LocalCleanupEpoch(
+                        user_id=session.user_id,
+                        session_id=session.session_id,
+                        generation=session.generation,
+                    )
+                    self.local_cleanup_epochs[cleanup_key] = epoch
+                epoch.accepting = False
+                cleanup = _LocalCleanupOperation(
+                    epoch=epoch,
+                    mutation_tasks=tuple(epoch.mutation_tasks),
+                )
+                self.local_cleanup_operations[cleanup_key] = cleanup
+                cleanup.task = asyncio.create_task(
+                    self._run_local_buffer_cleanup(
+                        session=session,
+                        cleanup=cleanup,
+                    ),
+                    name=(
+                        "voice-local-session-cleanup-"
+                        f"{session.session_id}-{session.generation}"
+                    ),
+                )
+            elif cleanup.status == "failed" and not cleanup.epoch.terminal:
+                cleanup = _LocalCleanupOperation(
+                    epoch=cleanup.epoch,
+                    mutation_tasks=tuple(cleanup.epoch.mutation_tasks),
+                )
+                self.local_cleanup_operations[cleanup_key] = cleanup
+                cleanup.task = asyncio.create_task(
+                    self._run_local_buffer_cleanup(
+                        session=session,
+                        cleanup=cleanup,
+                    ),
+                    name=(
+                        "voice-local-session-cleanup-retry-"
+                        f"{session.session_id}-{session.generation}"
+                    ),
+                )
+            epoch = cleanup.epoch
+            epoch.accepting = False
+            epoch.revision += 1
+            epoch.ready_transition = None
+            task = cleanup.task
+            if task is None:
+                raise RuntimeError("local cleanup task unavailable")
+        _result, error, cancellation = (
+            await _join_task_outcome_through_cancellation(task)
+        )
+        if cancellation is not None:
+            raise cancellation
+        if error is not None:
+            raise error
+
+    async def _run_local_buffer_cleanup(
+        self,
+        *,
+        session: VoiceSessionRecord,
+        cleanup: _LocalCleanupOperation,
+    ) -> None:
+        cleanup_key = self._local_cleanup_key(
+            user_id=session.user_id,
+            session_id=session.session_id,
+            generation=session.generation,
+        )
+        error: BaseException | None = None
+        try:
+            for mutation_task in cleanup.mutation_tasks:
+                await _join_task_outcome_through_cancellation(mutation_task)
+            await asyncio.to_thread(
+                self.repository.abandon_preacceptance_turns,
+                user_id=session.user_id,
+                session_id=session.session_id,
+                generation=session.generation,
+                now=datetime.now(UTC),
+            )
+        except BaseException as failure:
+            error = failure
+        async with self.pending_local_rejection_lock:
+            current = self.local_cleanup_operations.get(cleanup_key)
+            if current is not cleanup:
+                raise RuntimeError("local cleanup ownership changed")
+            cleanup.status = "succeeded" if error is None else "failed"
+            if error is None:
+                for key, pending in tuple(
+                    self.pending_local_rejections.items()
+                ):
+                    if (
+                        pending.user_id == session.user_id
+                        and pending.session_id == session.session_id
+                        and pending.generation == session.generation
+                    ):
+                        self.pending_local_rejections.pop(key, None)
+                        if pending.coordination is not None:
+                            self._release_local_recognition_request_locked(
+                                pending.coordination,
+                                force=True,
+                            )
+                for key, reserved in tuple(
+                    self.pending_local_rejection_reservations.items()
+                ):
+                    if (
+                        reserved.user_id == session.user_id
+                        and reserved.session_id == session.session_id
+                        and reserved.generation == session.generation
+                    ):
+                        self.pending_local_rejection_reservations.pop(key, None)
+                        self._release_local_recognition_request_locked(
+                            reserved.coordination,
+                            force=True,
+                        )
+            self.clear_local_session(session)
+            self.local_announcements.fence_session(
+                session_id=session.session_id,
+                generation=session.generation,
+            )
+        if error is not None:
+            raise error
+
     async def _record_submission_event(
         self,
         request: TranscriptSubmission,
@@ -1571,7 +3581,11 @@ class VoiceServices:
         now = datetime.now(UTC)
         await asyncio.to_thread(
             self.repository.renew_owned_control_leases,
-            owner_id=self.coordinator.replica_id,
+            owner_id=(
+                self.coordinator.replica_id
+                if self.coordinator is not None
+                else self.runtime._replica_id
+            ),
             now=now,
         )
         lease_expired, idle_expired = await asyncio.gather(
@@ -1622,10 +3636,21 @@ class VoiceServices:
                 "idle_expired" if session.end_reason == "idle" else "lease_expired"
             )
             try:
-                await self.media.end(
-                    session,
-                    "idle" if session.end_reason == "idle" else "lease_expired",
+                selected_backend = (
+                    self.speech_backend.value
+                    if self.speech_backend is not None
+                    else "llm_factory"
                 )
+                if (
+                    getattr(session, "speech_backend", "llm_factory")
+                    == selected_backend
+                ):
+                    await self.media.end(
+                        session,
+                        "idle"
+                        if session.end_reason == "idle"
+                        else "lease_expired",
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1678,6 +3703,12 @@ class VoiceServices:
         if callable(release_fence):
             release_fence(session)
         key = (session.session_id, session.generation)
+        if getattr(session, "speech_backend", "llm_factory") == "client_local":
+            await self._fence_ended_local_session(session)
+            self.local_announcements.clear_session(
+                session_id=session.session_id,
+                generation=session.generation,
+            )
         self.listening_sessions.discard(key)
         self.reconnecting_sessions.discard(key)
         async with self.announcement_runner_lock:
@@ -1699,15 +3730,86 @@ class VoiceServices:
     ) -> VoiceSessionRecord | None:
         """Apply logout/auth-expiry teardown without cancelling accepted work."""
 
-        ended = await asyncio.to_thread(
-            self.repository.end_live_user_session,
-            user_id=user_id,
-            reason=reason,
-            now=datetime.now(UTC),
+        operation = asyncio.create_task(
+            self._end_user_voice_session_operation(
+                user_id=user_id,
+                reason=reason,
+            ),
+            name=f"voice-user-session-end-{user_id}",
         )
-        if ended is not None:
-            await self._cleanup_ended_session(ended, reason)
-        return ended
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError as cancellation:
+            await _join_task_outcome_through_cancellation(operation)
+            raise cancellation
+
+    async def _end_user_voice_session_operation(
+        self,
+        *,
+        user_id: str,
+        reason: str,
+    ) -> VoiceSessionRecord | None:
+        """Retain one complete authenticated teardown through cancellation."""
+
+        local_process = self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
+        attempts = _MAX_LOCAL_IDENTITY_END_ATTEMPTS if local_process else 1
+        for attempt in range(attempts):
+            end_fence: _LocalEndFence | None = None
+            current: VoiceSessionRecord | None = None
+            end_kwargs: dict[str, Any] = {
+                "user_id": user_id,
+                "reason": reason,
+                "now": datetime.now(UTC),
+            }
+            if local_process:
+                current = await asyncio.to_thread(
+                    self.repository.get_live_session,
+                    user_id=user_id,
+                )
+                if current is None:
+                    return None
+                if current.speech_backend == "client_local":
+                    end_fence = await self.prepare_local_session_end(current)
+                end_kwargs.update(
+                    expected_session_id=current.session_id,
+                    expected_generation=current.generation,
+                )
+            try:
+                ended = await asyncio.to_thread(
+                    self.repository.end_live_user_session,
+                    **end_kwargs,
+                )
+            except Exception as failure:
+                end_error: BaseException = failure
+                stale_replacement = bool(
+                    local_process
+                    and getattr(end_error, "code", None)
+                    == "stale_generation"
+                )
+                if end_fence is not None:
+                    await self.resolve_local_session_end(
+                        end_fence,
+                        stale_replacement,
+                    )
+                if stale_replacement:
+                    if current is None:
+                        raise RuntimeError(
+                            "local_identity_end_fence_missing"
+                        )
+                    if current.speech_backend == "client_local":
+                        await self._fence_ended_local_session(current)
+                    if attempt + 1 < attempts:
+                        continue
+                raise end_error
+            if end_fence is not None:
+                await self.resolve_local_session_end(
+                    end_fence,
+                    ended is not None,
+                )
+            if ended is not None:
+                await self._cleanup_ended_session(ended, reason)
+            return ended
+        raise RuntimeError("voice_user_session_end_retry_exhausted")
 
     async def handle_chat_unavailable(
         self,
@@ -1790,16 +3892,25 @@ class VoiceServices:
         """Idempotently close timers, worker media, participant, and room."""
 
         await self.handle_runtime_session_end(session, reason)
-        try:
-            await self.media.end(session, reason)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # The durable end fence is authoritative. The bounded grant and
-            # room reconcilers remain the cleanup backstop.
-            logger.warning(
-                "voice_media_cleanup_unavailable reason=media_end_failed"
-            )
+        selected_backend = (
+            self.speech_backend.value
+            if self.speech_backend is not None
+            else "llm_factory"
+        )
+        if (
+            getattr(session, "speech_backend", "llm_factory")
+            == selected_backend
+        ):
+            try:
+                await self.media.end(session, reason)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The durable end fence is authoritative. The bounded grant and
+                # room reconcilers remain the cleanup backstop.
+                logger.warning(
+                    "voice_media_cleanup_unavailable reason=media_end_failed"
+                )
 
     async def set_session_speech_muted(
         self,
@@ -1935,11 +4046,57 @@ class VoiceServices:
                 fence.announcement_id,
             )
 
+    async def handle_local_playout(
+        self,
+        *,
+        user_id: str,
+        claims: VoiceControlClaims,
+        event: Any,
+        now: datetime,
+    ) -> None:
+        """Apply one content-free local playout observation under all fences."""
+
+        self._require_local_backend()
+        session = await asyncio.to_thread(
+            self.repository.get_controlled_session,
+            user_id=user_id,
+            session_id=event.session_id,
+            expected_generation=event.generation,
+            expected_media_grant_revision=event.speech_revision,
+            expected_speech_backend="client_local",
+            control=SessionControl(
+                device_id=claims.device_id,
+                connection_generation=claims.connection_generation,
+                binding_id=claims.binding_id,
+                binding_expires_at=claims.expires_at,
+            ),
+            now=now,
+        )
+        self._require_current_local_control(session, now=now)
+        self.local_announcements.observe_current(
+            session=session,
+            event=event,
+            now=now,
+        )
+
     async def start_turn_announcements(self, turn: VoiceTurnRecord) -> None:
         """Queue one exactly-once acknowledgement on the session stream."""
 
         if not isinstance(turn, VoiceTurnRecord):
             raise TypeError("turn must be VoiceTurnRecord")
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            try:
+                await self._publish_local_announcement(
+                    turn,
+                    kind="acknowledgement",
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Local synthesis/delivery degradation never rolls back the
+                # already accepted ordinary chat turn.
+                logger.warning("voice_local_acknowledgement_unavailable")
+            return
         await self._set_turn_idle(
             turn,
             listening=False,
@@ -2109,6 +4266,47 @@ class VoiceServices:
 
         if terminal_kind not in {"succeeded", "failed", "refused", "cancelled"}:
             raise ValueError("invalid_terminal_kind")
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            terminal = await asyncio.to_thread(
+                self.repository.terminalize_turn,
+                user_id=turn.user_id,
+                turn_id=turn.turn_id,
+                terminal_kind=terminal_kind,
+                result_commit_id=result_commit_id,
+                recap_source=recap_source,
+                sensitivity=sensitivity,
+                now=datetime.now(UTC),
+            )
+            terminal_turn = terminal.turn
+            kind = {
+                "succeeded": "result",
+                "failed": "failure",
+                "refused": "refusal",
+                "cancelled": "cancellation",
+            }[terminal_kind]
+            try:
+                if kind == "result" and sensitivity == "non_sensitive" and recap_text:
+                    await self._publish_local_announcement(
+                        terminal_turn,
+                        kind=kind,
+                        text=recap_text,
+                        output_policy="full_recap",
+                        server_authorized=True,
+                    )
+                elif kind != "result":
+                    await self._publish_local_announcement(
+                        terminal_turn,
+                        kind=kind,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("voice_local_terminal_announcement_unavailable")
+            delivery = VoiceTerminalAnnouncementResult(
+                turn=terminal_turn,
+                speech_outcome="source_finished",
+            )
+            return delivery if with_delivery_status else terminal_turn
         future = asyncio.get_running_loop().create_future()
         try:
             runner = await self._announcement_runner(turn)
@@ -2497,12 +4695,15 @@ class VoiceServices:
         """Consume one exact consent and speak only its bound sensitive recap."""
 
         now = datetime.now(UTC)
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            self._require_local_backend()
         session = await asyncio.to_thread(
             self.repository.get_controlled_session,
             user_id=user_id,
             session_id=session_id,
             expected_generation=request["expected_generation"],
             expected_media_grant_revision=request["expected_media_grant_revision"],
+            expected_speech_backend=self.speech_backend.value,
             control=SessionControl(
                 device_id=control["device_id"],
                 connection_generation=control["connection_generation"],
@@ -2538,6 +4739,27 @@ class VoiceServices:
             )
         except VoiceRecapError as exc:
             raise VoiceApiError(exc.code, status_code=409) from None
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            self._require_current_local_control(session, now=datetime.now(UTC))
+            self.local_announcements.fence_session(
+                session_id=session.session_id,
+                generation=session.generation,
+                bump_mute=False,
+                bump_consent=True,
+            )
+            try:
+                await self._publish_local_announcement(
+                    turn,
+                    kind="result",
+                    text=text,
+                    output_policy="full_recap",
+                    server_authorized=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("voice_local_sensitive_recap_unavailable")
+            return
         future = asyncio.get_running_loop().create_future()
         runner = await self._announcement_runner(turn)
         runner.submit(
@@ -2647,7 +4869,11 @@ class VoiceServices:
         try:
             ended = await asyncio.to_thread(
                 self.repository.end_owned_sessions,
-                owner_id=self.coordinator.replica_id,
+                owner_id=(
+                    self.coordinator.replica_id
+                    if self.coordinator is not None
+                    else self.runtime._replica_id
+                ),
                 reason="shutdown",
                 now=datetime.now(UTC),
             )
@@ -2679,10 +4905,91 @@ class VoiceServices:
                 return_exceptions=True,
             )
         await self.sensitive_recaps.clear()
-        try:
+        if self.worker_pool is not None:
             await self.worker_pool.shutdown()
-        finally:
+        if self.livekit is not None:
             await self.livekit.close()
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalCapabilitySnapshot:
+    status: str = "requires_client_readiness"
+    reason: str = "client_readiness_required"
+
+    def to_dict(self) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        return {
+            "schema_version": "2",
+            "speech_backend": "client_local",
+            "status": self.status,
+            "reason": self.reason,
+            "checked_at": _iso_datetime(now),
+            "expires_at": _iso_datetime(now + timedelta(seconds=30)),
+            "supported_transports": ["client_local"],
+            "requirements": {
+                "session_contract": "voice-rest/v2-client-local",
+                "local_frame_contract": "client_local/v1",
+                "configured_locale": "en-US",
+                "recognition_must_be_local": True,
+                "synthesis_must_be_local": True,
+                "installation_policy": "explicit_user_action_only",
+                "requirement_revision": 1,
+                "max_final_unicode_scalars": 8000,
+                "max_announcement_utf8_bytes": 600,
+                "announcement_ttl_seconds": 10,
+                "echo_suppression_milliseconds": 500,
+            },
+        }
+
+
+class _ClientLocalCapability:
+    def __init__(self, feature_enabled: Callable[[], bool]) -> None:
+        if not callable(feature_enabled):
+            raise TypeError("feature_enabled must be callable")
+        self._feature_enabled = feature_enabled
+
+    def feature_enabled(self) -> bool:
+        try:
+            return self._feature_enabled() is True
+        except Exception:
+            return False
+
+    async def readiness(self) -> _LocalCapabilitySnapshot:
+        if not self.feature_enabled():
+            return _LocalCapabilitySnapshot(
+                status="unavailable",
+                reason="feature_disabled",
+            )
+        return _LocalCapabilitySnapshot()
+
+
+class _ClientLocalMedia:
+    """No-op lifecycle adapter that has no network or media dependencies."""
+
+    async def apply_context(self, _session: VoiceSessionRecord) -> None:
+        return None
+
+    async def set_capture(self, _session: VoiceSessionRecord, _enabled: bool) -> None:
+        return None
+
+    async def barge_in(self, _session: VoiceSessionRecord) -> None:
+        return None
+
+    async def stop_speech(self, _session: VoiceSessionRecord) -> None:
+        return None
+
+    async def end(self, _session: VoiceSessionRecord, _reason: str) -> None:
+        return None
+
+    async def abort(self, _session: VoiceSessionRecord) -> None:
+        return None
+
+    async def current_session(
+        self,
+        _session_id: str,
+        _generation: int,
+    ) -> None:
+        return None
 
 
 def build_voice_services(
@@ -2693,6 +5000,67 @@ def build_voice_services(
     observability: RuntimeObservability | None = None,
 ) -> VoiceServices:
     values = environ if environ is not None else os.environ
+    selection = SpeechBackendSelection.from_environ(values)
+    repository = VoiceSessionRepository(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_repositories,
+    )
+    if not selection.valid:
+        return VoiceServices(
+            livekit=None,
+            worker_pool=None,
+            repository=repository,
+            coordinator=None,
+            capability=None,
+            media=None,
+            runtime=None,
+            worker_control_settings=None,
+            speech_backend=None,
+            backend_selection=selection,
+            observability=observability,
+        )
+    if selection.value is VoiceSpeechBackend.CLIENT_LOCAL:
+        environment = values.get("ASTRAL_ENV", "").strip().lower() or "production"
+        development = environment in {"development", "dev", "test"}
+        replica_id = values.get("VOICE_COORDINATOR_REPLICA_ID", "").strip()
+        if not replica_id:
+            if not development:
+                raise VoiceBootstrapError("missing_voice_replica_id")
+            replica_id = "voice-coordinator-local-1"
+        capability = _ClientLocalCapability(
+            lambda: flags.is_enabled("conversational_voice")
+        )
+        media = _ClientLocalMedia()
+        runtime = VoiceSessionRuntime(
+            repository=repository,
+            capability=capability,
+            media=media,
+            replica_id=replica_id,
+            observability=observability,
+            speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+            backend_selection=selection,
+        )
+        services = VoiceServices(
+            livekit=None,
+            worker_pool=None,
+            repository=repository,
+            coordinator=None,
+            capability=capability,
+            media=media,
+            runtime=runtime,
+            worker_control_settings=None,
+            speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+            backend_selection=selection,
+            observability=observability,
+        )
+        runtime.bind_speech_stop_handler(services.stop_session_speech)
+        runtime.bind_session_end_handler(services.handle_runtime_session_end)
+        runtime.bind_local_buffer_cleanup_handler(services.cleanup_local_buffers)
+        runtime.bind_local_session_end_fence_handlers(
+            services.prepare_local_session_end,
+            services.resolve_local_session_end,
+        )
+        return services
     environment = values.get("ASTRAL_ENV", "").strip().lower() or "production"
     development = environment in {"development", "dev", "test"}
     closure = values.get("VOICE_WORKER_CLOSURE_SHA256", "").strip()
@@ -2753,10 +5121,6 @@ def build_voice_services(
         )
     )
     livekit = LiveKitService(livekit_settings)
-    repository = VoiceSessionRepository(
-        plane_runtime=plane_runtime,
-        plane_repositories=plane_repositories,
-    )
     coordinator = VoiceCoordinator(
         worker_pool,
         repository,
@@ -2783,6 +5147,8 @@ def build_voice_services(
         replica_id=replica_id,
         media_grant_secret=worker_control_settings.secret,
         observability=voice_observability,
+        speech_backend=VoiceSpeechBackend.LLM_FACTORY,
+        backend_selection=selection,
     )
     services = VoiceServices(
         livekit=livekit,
@@ -2793,6 +5159,8 @@ def build_voice_services(
         media=media,
         runtime=runtime,
         worker_control_settings=worker_control_settings,
+        speech_backend=VoiceSpeechBackend.LLM_FACTORY,
+        backend_selection=selection,
         observability=voice_observability,
     )
     runtime.bind_speech_mute_handler(services.set_session_speech_muted)
@@ -2810,7 +5178,10 @@ def install_voice_worker_control(
 ) -> WorkerControlEndpoint | None:
     """Keep the route absent when fail-closed voice construction did not pass."""
 
-    if services is None:
+    if (
+        services is None
+        or services.speech_backend is not VoiceSpeechBackend.LLM_FACTORY
+    ):
         return None
     return services.install_worker_control(app, environ=environ)
 
@@ -2861,6 +5232,10 @@ def _safe_failure_reason(exc: BaseException) -> str:
     if isinstance(exc, ValueError | TypeError):
         return "invalid_state"
     return "internal_error"
+
+
+def _iso_datetime(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _result_quanta(text: str, *, attribution: str | None = None) -> list[str]:

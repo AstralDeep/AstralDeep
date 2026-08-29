@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from orchestrator.voice_backend import SpeechBackendSelection, VoiceSpeechBackend
 from voice_agent.config import ConfigError, WorkerConfig
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ENV_EXAMPLE = REPO_ROOT / ".env.example"
+
+
+def _example_environment() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", maxsplit=1)
+        values[name] = value
+    return values
 
 
 def _worker_environment() -> dict[str, str]:
@@ -24,6 +42,24 @@ def _worker_environment() -> dict[str, str]:
         "HTTPS_PROXY": "",
         "ALL_PROXY": "",
     }
+
+
+def test_example_selects_exact_remote_default_without_adding_local_authority() -> None:
+    values = _example_environment()
+
+    selection = SpeechBackendSelection.from_environ(
+        {"VOICE_SPEECH_BACKEND": values["VOICE_SPEECH_BACKEND"]}
+    )
+
+    assert selection.value is VoiceSpeechBackend.LLM_FACTORY
+    assert selection.valid is True
+    assert selection.source == "explicit"
+    assert values["FF_CONVERSATIONAL_VOICE"] == "true"
+    assert not any(
+        name.startswith("CLIENT_LOCAL_")
+        and (name.endswith("_URL") or name.endswith("_KEY"))
+        for name in values
+    )
 
 
 def test_worker_accepts_only_explicit_worker_local_speech_authority() -> None:

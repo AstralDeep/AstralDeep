@@ -57,6 +57,13 @@ DB_METHODS = frozenset(
     }
 )
 DB_RECEIVERS = frozenset({"_database", "_db", "database", "db"})
+FEATURE_074_QUALIFICATION_PLANE_COMMIT = (
+    "799486468e13202fc87f73baf880bf8079b1e280"
+)
+FEATURE_074_SCHEMA_REVISION = "074.004"
+FEATURE_074_MIGRATION_DIGEST = (
+    "31495e9b916301e5d9d5011f256224e62e0a0822e25fdf3b9c339beb695eff50"
+)
 
 
 def _gaps() -> dict[str, object]:
@@ -257,11 +264,14 @@ def test_gap_inventory_is_exact_for_the_observed_deep_tree() -> None:
     assert declared_commit == embedded_commit
     source_commit = observed["sourceCommit"]
     evidence_commit = observed["evidenceCommit"]
-    assert _embedded_plane_is_ancestor(evidence_commit, embedded_commit)
+    qualification_commit = FEATURE_074_QUALIFICATION_PLANE_COMMIT
+    assert _embedded_plane_is_ancestor(evidence_commit, qualification_commit)
+    assert _embedded_plane_is_ancestor(qualification_commit, embedded_commit)
     # The retained migration receipt predates the final owner-CI qualification
-    # commits.  Bind that descendant delta exactly so ancestry cannot hide a
-    # later Plane runtime or schema change behind older migration evidence.
-    assert _embedded_plane_changed_paths(evidence_commit, embedded_commit) == (
+    # commits. Bind the historic evidence-to-074-boundary delta exactly, then
+    # separately require that immutable boundary to be an ancestor of today's
+    # composed Plane. Feature-075 descendants cannot rewrite the 074 inventory.
+    assert _embedded_plane_changed_paths(evidence_commit, qualification_commit) == (
         ".github/workflows/ci.yml",
         "README.md",
         "pyproject.toml",
@@ -295,11 +305,14 @@ def test_gap_inventory_is_exact_for_the_observed_deep_tree() -> None:
         and check["timedOut"] is False
         for check in checks
     )
-    assert evidence["migrationRegistryDigest"] == MIGRATION_DIGEST
+    assert (
+        evidence["migrationRegistryDigest"]
+        == observed["migrationRegistryDigest"]
+        == FEATURE_074_MIGRATION_DIGEST
+    )
     assert observed["evidenceCheckCount"] == 8
     assert observed["evidenceStatus"] == "passed"
-    assert observed["schemaRevision"] == SCHEMA_REVISION
-    assert observed["migrationRegistryDigest"] == MIGRATION_DIGEST
+    assert observed["schemaRevision"] == FEATURE_074_SCHEMA_REVISION
 
     remaining = gaps["planeOwnedImplementationsRemainingInDeep"]
     assert isinstance(remaining, list)

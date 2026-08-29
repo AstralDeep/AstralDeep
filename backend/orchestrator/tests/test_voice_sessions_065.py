@@ -6,11 +6,15 @@ import asyncio
 import os
 import uuid
 from collections.abc import Iterator
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+import orchestrator.voice_sessions as voice_sessions_module
 from shared.voice_transcript import TranscriptProofBinding, issue_transcript_proof
 from tests.helpers.voice_plane_runtime import (
     VoicePlaneTestRuntime,
@@ -228,6 +232,142 @@ def test_takeover_is_generation_cas_and_exact_retry_does_not_take_over_twice(
         repository.take_over_session(stale_request, now=NOW + timedelta(seconds=3))
 
 
+def test_identity_end_exact_cas_replays_and_rejects_replacement(
+    repository: VoiceSessionRepository,
+) -> None:
+    exact_create = _create()
+    exact = repository.create_session(exact_create, now=NOW).session
+
+    ended = repository.end_live_user_session(
+        user_id=exact_create.user_id,
+        reason="logout",
+        now=NOW + timedelta(seconds=1),
+        expected_session_id=exact.session_id,
+        expected_generation=exact.generation,
+    )
+    replay = repository.end_live_user_session(
+        user_id=exact_create.user_id,
+        reason="logout",
+        now=NOW + timedelta(seconds=2),
+        expected_session_id=exact.session_id,
+        expected_generation=exact.generation,
+    )
+
+    assert ended is not None
+    assert replay == ended
+
+    takeover_create = _create()
+    original = repository.create_session(takeover_create, now=NOW).session
+    replacement_request = SessionTakeover(
+        previous_session_id=original.session_id,
+        expected_generation=original.generation,
+        expected_media_grant_revision=original.media_grant_revision,
+        create=_create(user_id=takeover_create.user_id),
+    )
+    replacement = repository.take_over_session(
+        replacement_request,
+        now=NOW + timedelta(seconds=1),
+    ).session
+
+    with pytest.raises(StaleSessionFence, match="stale_generation"):
+        repository.end_live_user_session(
+            user_id=takeover_create.user_id,
+            reason="auth_expired",
+            now=NOW + timedelta(seconds=2),
+            expected_session_id=original.session_id,
+            expected_generation=original.generation,
+        )
+    assert (
+        repository.get_live_session(user_id=takeover_create.user_id)
+        == replacement
+    )
+
+
+def test_identity_end_unit_cas_is_checked_under_owner_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact identity fence is evaluated only after owner serialization."""
+
+    expected_session_id = str(uuid.uuid4())
+    replacement_session_id = str(uuid.uuid4())
+    transaction = object()
+    calls: list[str] = []
+    live_row = {
+        "session_id": expected_session_id,
+        "generation": 1,
+    }
+    voice = SimpleNamespace(
+        lock_identity=Mock(side_effect=lambda *_args, **_kwargs: calls.append("lock")),
+        get_live_session_record=Mock(
+            side_effect=lambda *_args, **_kwargs: (
+                calls.append("live") or live_row
+            )
+        ),
+        get_session_record=Mock(),
+    )
+    repository = object.__new__(VoiceSessionRepository)
+    repository._plane = SimpleNamespace(  # type: ignore[attr-defined]
+        transaction=lambda: nullcontext(transaction)
+    )
+    repository._voice = voice  # type: ignore[attr-defined]
+    ended = object()
+    repository._end_session_row = Mock(  # type: ignore[method-assign]
+        return_value=ended
+    )
+    monkeypatch.setattr(
+        voice_sessions_module,
+        "_session",
+        lambda row: row,
+    )
+
+    assert repository.end_live_user_session(
+        user_id="user-a",
+        reason="logout",
+        now=NOW,
+        expected_session_id=expected_session_id,
+        expected_generation=1,
+    ) is ended
+    assert calls == ["lock", "live"]
+
+    live_row = {
+        "session_id": replacement_session_id,
+        "generation": 2,
+    }
+    calls.clear()
+    with pytest.raises(StaleSessionFence, match="stale_generation"):
+        repository.end_live_user_session(
+            user_id="user-a",
+            reason="auth_expired",
+            now=NOW,
+            expected_session_id=expected_session_id,
+            expected_generation=1,
+        )
+    assert calls == ["lock", "live"]
+    repository._end_session_row.assert_called_once()
+
+    ended_row = {
+        "session_id": expected_session_id,
+        "generation": 1,
+        "ended_at": NOW,
+    }
+    live_row = None
+    voice.get_session_record.return_value = ended_row
+    assert repository.end_live_user_session(
+        user_id="user-a",
+        reason="logout",
+        now=NOW,
+        expected_session_id=expected_session_id,
+        expected_generation=1,
+    ) is ended_row
+    with pytest.raises(ValueError, match="incomplete_identity_end_fence"):
+        repository.end_live_user_session(
+            user_id="user-a",
+            reason="logout",
+            now=NOW,
+            expected_session_id=expected_session_id,
+        )
+
+
 def test_owner_scope_hides_sessions_and_stale_fences_fail_closed(
     repository: VoiceSessionRepository,
 ) -> None:
@@ -283,6 +423,81 @@ def test_same_device_reconnect_rebinds_but_cross_device_control_is_refused(
             control=replace(replacement, device_id=str(uuid.uuid4())),
             now=NOW + timedelta(seconds=2),
         )
+
+
+def test_fence_only_update_rebinds_control_without_resetting_true_idle(
+    repository: VoiceSessionRepository,
+) -> None:
+    create = _create()
+    active = _activate_and_sync(repository, create)
+    idle = repository.set_true_idle(
+        user_id=create.user_id,
+        session_id=active.session_id,
+        expected_generation=active.generation,
+        listening=True,
+        user_input_gate=False,
+        now=NOW + timedelta(seconds=1),
+    )
+    replacement = _control(
+        create,
+        connection_generation=str(uuid.uuid4()),
+        binding_id=str(uuid.uuid4()),
+        binding_expires_at=NOW + timedelta(minutes=8),
+    )
+
+    heartbeat = repository.update_session(
+        SessionUpdate(
+            user_id=create.user_id,
+            session_id=active.session_id,
+            expected_generation=active.generation,
+            expected_media_grant_revision=active.media_grant_revision,
+            control=replacement,
+        ),
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert heartbeat.owner_connection_generation == replacement.connection_generation
+    assert heartbeat.control_binding_id == replacement.binding_id
+    assert heartbeat.control_binding_expires_at == replacement.binding_expires_at
+    assert heartbeat.last_interaction_at == idle.last_interaction_at
+    assert heartbeat.idle_started_at == idle.idle_started_at
+    assert heartbeat.foreground_active == active.foreground_active
+    assert heartbeat.microphone_enabled == active.microphone_enabled
+    assert heartbeat.speech_muted == active.speech_muted
+
+
+def test_backend_mismatch_is_rejected_under_row_lock_before_rebinding(
+    repository: VoiceSessionRepository,
+) -> None:
+    create = _create()
+    active = _activate_and_sync(repository, create)
+    replacement = _control(
+        create,
+        connection_generation=str(uuid.uuid4()),
+        binding_id=str(uuid.uuid4()),
+        binding_expires_at=NOW + timedelta(minutes=8),
+    )
+
+    with pytest.raises(VoiceSessionRepositoryError, match="backend_mismatch"):
+        repository.update_session(
+            SessionUpdate(
+                user_id=create.user_id,
+                session_id=active.session_id,
+                expected_generation=active.generation,
+                expected_media_grant_revision=active.media_grant_revision,
+                expected_speech_backend="client_local",
+                control=replacement,
+            ),
+            now=NOW + timedelta(seconds=2),
+        )
+
+    unchanged = repository.get_session(
+        user_id=create.user_id,
+        session_id=active.session_id,
+    )
+    assert unchanged.speech_backend == "llm_factory"
+    assert unchanged.owner_connection_generation == active.owner_connection_generation
+    assert unchanged.control_binding_id == active.control_binding_id
 
 
 def test_update_suspends_without_cancelling_turns_and_resumes_reconnecting(

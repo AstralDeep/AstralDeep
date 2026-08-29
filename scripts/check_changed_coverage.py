@@ -207,6 +207,12 @@ TARGETS = (
         "cobertura",
     ),
     CoverageTarget(
+        "windows_csharp",
+        "csharp",
+        ("components/AstralProjection/windows-client/asr-helper",),
+        "cobertura",
+    ),
+    CoverageTarget(
         "javascript",
         "javascript",
         (
@@ -276,6 +282,12 @@ COVERAGE_PRODUCERS = (
         ("components/AstralProjection/windows-client",),
     ),
     CoverageProducer(
+        "windows_csharp",
+        "windows_csharp",
+        "windows-csharp",
+        ("components/AstralProjection/windows-client/asr-helper",),
+    ),
+    CoverageProducer(
         "javascript",
         "javascript",
         "javascript",
@@ -326,6 +338,7 @@ REPOSITORY_PROFILES = {
         (
             "projection_python",
             "windows",
+            "windows_csharp",
             "javascript",
             "android_app",
             "android_core",
@@ -341,6 +354,7 @@ REPORT_FLAGS = {
     "tooling_python": "tooling-python",
     "projection_python": "projection-python",
     "windows_python": "windows-python",
+    "windows_csharp": "windows-csharp",
     "javascript": "javascript",
     "android_app": "android-app",
     "android_core": "android-core",
@@ -380,6 +394,8 @@ def _is_test_or_generated(path: str) -> bool:
         "node_modules",
         "build",
         "dist",
+        "bin",
+        "obj",
         "deriveddata",
         ".build",
     }:
@@ -407,6 +423,10 @@ def classify_path(path: str) -> CoverageTarget | None:
             return TARGET_BY_KEY["tooling_python"]
         if path.startswith("components/AstralProjection/windows-client/"):
             return TARGET_BY_KEY["windows_python"]
+    if path.endswith(".cs") and path.startswith(
+        "components/AstralProjection/windows-client/asr-helper/"
+    ):
+        return TARGET_BY_KEY["windows_csharp"]
     if path.endswith((".js", ".mjs")):
         if (
             path.startswith("components/AstralProjection/backend/webrender/")
@@ -972,6 +992,7 @@ def _normalized_report_path(raw: str, target: CoverageTarget) -> str | None:
     projection_targets = {
         "projection_python",
         "windows_python",
+        "windows_csharp",
         "javascript",
         "android_app",
         "android_core",

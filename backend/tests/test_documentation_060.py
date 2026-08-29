@@ -60,7 +60,7 @@ def _make_repo(tmp_path: Path, files: dict[str, str]) -> Path:
     return repo
 
 
-def test_byo_guide_is_explicitly_unignored_and_reachable_from_existing_docs() -> None:
+def test_byo_guide_is_explicitly_unignored_and_reachable_from_deep_docs() -> None:
     ignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     guide = GUIDE.read_text(encoding="utf-8")
 
@@ -69,7 +69,6 @@ def test_byo_guide_is_explicitly_unignored_and_reachable_from_existing_docs() ->
     assert _git(REPO_ROOT, "check-ignore", "-q", "--no-index", str(GUIDE), check=False).returncode == 1
     for relative in (
         "CLAUDE.md",
-        "components/AstralProjection/apple-clients/README.md",
         "docs/production-deployment.md",
     ):
         assert "byo-client-agents.md" in (REPO_ROOT / relative).read_text(
@@ -84,6 +83,14 @@ def test_byo_guide_is_explicitly_unignored_and_reachable_from_existing_docs() ->
         "## Rollback and disablement",
     ):
         assert heading in guide
+
+
+def test_byo_guide_is_reachable_from_projection_apple_client_docs() -> None:
+    projection_readme = (
+        REPO_ROOT / "components/AstralProjection/apple-clients/README.md"
+    )
+
+    assert "byo-client-agents.md" in projection_readme.read_text(encoding="utf-8")
 
 
 def test_apply_target_recreates_and_prints_only_the_normalized_flag() -> None:

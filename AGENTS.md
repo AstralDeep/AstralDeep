@@ -201,9 +201,12 @@ Finish with an evidence-backed summary: files changed, behavior changed, exact t
 <!-- SPECKIT START -->
 ## Active Feature Plan
 
-- `074-multirepo-lets-integration`: `specs/074-multirepo-lets-integration/plan.md`
+- `075-client-local-speech`: `specs/075-client-local-speech/plan.md`
 
 ## Active Technologies
+
+- Python 3.11; vanilla JavaScript; Python/PySide6; Kotlin/JVM 17 with Android API 33 local-speech eligibility; Swift 5.9-compatible sources; JSON Schema 2020-12; OpenAPI 3.1; first-party C#/.NET Framework helper source + existing FastAPI/ASGI, PostgreSQL/AstralPlane, Keycloak/RFC 8693, LiveKit/ONNX/Silero/LLM Factory, ROTE/webrender, QtTextToSpeech, Android SpeechRecognizer/TextToSpeech, Apple Speech/AVFAudio, and browser Web Speech APIs; no new third-party runtime/model dependency (075-client-local-speech)
+- PostgreSQL adds an immutable voice speech-backend discriminator and conditional remote-media fields through guarded AstralPlane `075.001`; local audio, interim/final working text, digests/proofs, engine details, endpoints, and credentials remain ephemeral/non-durable (075-client-local-speech)
 
 - Python 3.11; vanilla JavaScript; Python/PySide6; Kotlin/JVM 17; Swift 5.9-compatible sources; JSON Schema 2020-12; Git/PowerShell + FastAPI/ASGI, PostgreSQL, Keycloak/RFC 8693, Docker/Compose, AstralPrimitives, AstralProjection, AstralPlane, and pinned LETS v1.0.11 public client/executor contracts (074-multirepo-lets-integration)
 - Existing PostgreSQL and configured blob roots remain in place; LETS warden storage remains external; executor replay/authority and local manuscript/evidence state remain outside repositories (074-multirepo-lets-integration)
@@ -213,6 +216,7 @@ Finish with an evidence-backed summary: files changed, behavior changed, exact t
 
 ## Recent Changes
 
+- 075-client-local-speech: Planned a server-selected client-local ASR/TTS resilience profile across all clients, retained byte-compatible LLM Factory voice by default, bounded remote retries/warm admission, and kept every accepted turn on the ordinary authenticated dispatcher.
 - 074-multirepo-lets-integration: Planned independent Projection/Plane/Primitives/LETS submodules, a history-preserving content replacement, and fail-closed LETS enforcement without changing production during migration.
 - 065-conversational-voice: Planned an included exact-model conversational voice path across web, Windows, Android, macOS, iOS, and watchOS while preserving the normal authenticated agentic dispatcher.
 <!-- SPECKIT END -->

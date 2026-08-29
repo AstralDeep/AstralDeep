@@ -91,6 +91,14 @@ from shared.protocol import (
     ConversationCommitReady,
     CorrelatedNewChat,
     VoiceControlBinding,
+    VoiceLocalFinal,
+    VoiceLocalFinalRejected,
+    VoiceLocalReady,
+    VoiceLocalRecognitionFailed,
+    VoiceLocalRecognitionStarted,
+    VoiceLocalSessionReady,
+    VoiceLocalTurnBound,
+    VoiceLocalPlayoutEvent,
     VoicePlayoutEvent,
     ToolStreamData, ToolStreamEnd, ToolStreamCancel,
     AgentHopRequest, AgentHopResponse,
@@ -290,6 +298,7 @@ class _ConnectionIngressFrame:
     operation_kind: str
     deadline_at_monotonic: float | None
     deadline_at_utc: datetime | None
+    local_final_verified: bool = False
 
 
 @dataclass
@@ -320,6 +329,25 @@ class _VoiceDispatchContext:
     admission: Any
     connection_generation: str
     origin: Any = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _LocalVoiceOrigin:
+    """Compatibility view used only by the ordinary voice acceptance path."""
+
+    session_id: str
+    generation: int
+    media_grant_revision: int
+    turn_id: str
+    client_turn_id: str
+    chat_context_revision: int
+    speech_revision: int
+    device_id: str
+    connection_generation: str
+    submission_id: str
+    request_generation: str
+    chat_id: str
+    recognition_sequence: int
 
 
 @dataclass(frozen=True)
@@ -1696,6 +1724,9 @@ class Orchestrator:
             self.voice_worker_pool = self.voice_services.worker_pool
             self.voice_services.bind_terminal_turn_notifier(
                 self._notify_reconciled_voice_terminal_turn
+            )
+            self.voice_services.bind_local_announcement_publisher(
+                self.publish_voice_local_announcement
             )
             self.voice_runtime.bind_session_state_publisher(
                 self.publish_voice_session_state
@@ -6311,6 +6342,10 @@ class Orchestrator:
             "ping",
             "pong",
             "voice_playout_event",
+            "voice_local_ready",
+            "voice_local_recognition_started",
+            "voice_local_recognition_failed",
+            "voice_local_playout_event",
         }:
             return frame_type
         if frame_type == "ui_event" and frame.get("action") == "cancel_task":
@@ -6548,6 +6583,43 @@ class Orchestrator:
         if frame.operation_kind == "voice_chat_message":
             try:
                 message = Message.from_json(frame.raw)
+                if isinstance(message, VoiceLocalFinal):
+                    services = getattr(self, "voice_services", None)
+                    claims = (
+                        getattr(self, "ui_sessions", {}).get(
+                            context.websocket
+                        )
+                        or {}
+                    )
+                    user_id = claims.get("sub")
+                    if services is not None and isinstance(user_id, str):
+                        await asyncio.shield(
+                            services.reject_local_turn(
+                                user_id=user_id,
+                                client_turn_id=message.client_turn_id,
+                                reason=(
+                                    "capacity_exhausted"
+                                    if code == "capacity_exceeded"
+                                    else "invalid_binding"
+                                ),
+                                now=datetime.now(UTC),
+                            )
+                        )
+                    await self._send_voice_local_rejection(
+                        context.websocket,
+                        message,
+                        reason=(
+                            "capacity_exhausted"
+                            if code == "capacity_exceeded"
+                            else "invalid_binding"
+                        ),
+                        retry_policy=(
+                            "explicit_user_retry"
+                            if code == "capacity_exceeded"
+                            else "none"
+                        ),
+                    )
+                    return True
                 if not isinstance(message, UIEvent):
                     raise ProtocolValidationError(
                         "voice admission frame must be a UI event"
@@ -6966,6 +7038,20 @@ class Orchestrator:
 
         if frame.operation_kind != "voice_chat_message":
             return False
+        if frame.parsed.get("type") == "voice_local_final":
+            origin = frame.parsed
+            return not (
+                str(frame.submission_id) != turn.submission_id
+                or str(frame.request_generation) != turn.request_generation
+                or frame.chat_id != turn.chat_id
+                or origin.get("session_id") != turn.session_id
+                or origin.get("generation") != turn.session_generation
+                or origin.get("speech_revision") != turn.media_grant_revision
+                or origin.get("turn_id") != turn.turn_id
+                or origin.get("client_turn_id") != turn.client_turn_id
+                or origin.get("chat_context_revision")
+                != turn.chat_context_revision
+            )
         payload = frame.parsed.get("payload")
         origin = payload.get("voice_origin") if isinstance(payload, dict) else None
         if not isinstance(origin, dict):
@@ -7426,21 +7512,30 @@ class Orchestrator:
         if payload_chat is not None and self._canonical_uuid4(payload_chat) is None:
             return None
         session_chat = frame.get("session_id")
+        is_local_voice_final = frame.get("type") == "voice_local_final"
         # Historical no-chat transport sentinels (for example ``win-client``)
         # are not conversation identities.  Ignore them rather than admitting
         # an invalid scope that would make the canonical accepted frame
         # impossible to serialize.
-        chat_value = payload_chat or (
-            session_chat
-            if self._canonical_uuid4(session_chat) is not None
-            else None
-        )
-        if (
-            payload_chat is not None
-            and self._canonical_uuid4(session_chat) is not None
-            and payload_chat != session_chat
-        ):
-            return None
+        if is_local_voice_final:
+            if (
+                payload_chat is None
+                or self._canonical_uuid4(session_chat) is None
+            ):
+                return None
+            chat_value = payload_chat
+        else:
+            chat_value = payload_chat or (
+                session_chat
+                if self._canonical_uuid4(session_chat) is not None
+                else None
+            )
+            if (
+                payload_chat is not None
+                and self._canonical_uuid4(session_chat) is not None
+                and payload_chat != session_chat
+            ):
+                return None
         if not chat_value and action in _CONVERSATION_MUTATION_ACTIONS:
             # Older component-action clients omitted chat_id because the
             # active canvas made it appear redundant.  Resolve it before
@@ -7474,15 +7569,18 @@ class Orchestrator:
             # versioned operation identity both avoids secret-derived storage
             # and remains stable when a reconnect has a new wire generation.
             normalized = b"llm_credential_save:v1"
-        elif is_voice_chat:
-            origin = payload["voice_origin"]
+        elif is_voice_chat or is_local_voice_final:
+            if is_local_voice_final:
+                origin = frame
+            else:
+                origin = payload["voice_origin"]
             normalized = json.dumps(
                 {
                     "operation_kind": "voice_chat_message",
                     "session_id": origin.get("session_id"),
                     "generation": origin.get("generation"),
                     "media_grant_revision": origin.get(
-                        "media_grant_revision"
+                        "media_grant_revision", origin.get("speech_revision")
                     ),
                     "turn_id": origin.get("turn_id"),
                     "client_turn_id": origin.get("client_turn_id"),
@@ -7526,7 +7624,7 @@ class Orchestrator:
                 if is_credential_save
                 else (
                     "voice_chat_message"
-                    if is_voice_chat
+                    if is_voice_chat or is_local_voice_final
                     else "connection_frame"
                 )
             ),
@@ -7566,8 +7664,13 @@ class Orchestrator:
                 retryable=False,
             )
             return
+        is_local_final = frame.parsed.get("type") == "voice_local_final"
+        if is_local_final:
+            if not await self._verify_connection_local_final(context, frame):
+                return
+            frame.local_final_verified = True
         prior_digest = context.submission_digests.get(frame.submission_id)
-        if prior_digest is not None:
+        if prior_digest is not None and not is_local_final:
             observability = getattr(self, "runtime_observability", None)
             if observability is not None:
                 observability.record_operation(
@@ -7610,6 +7713,62 @@ class Orchestrator:
                 ),
             )
             context.admission_task = task
+
+    async def _verify_connection_local_final(
+        self,
+        context: ConnectionContext,
+        ingress_frame: _ConnectionIngressFrame,
+    ) -> bool:
+        local_frame = None
+        try:
+            local_frame = VoiceLocalFinal.from_dict(ingress_frame.parsed)
+            origin, user_id, _binding, current_socket_id = (
+                self._client_local_socket_authority(context.websocket)
+            )
+            services = getattr(self, "voice_services", None)
+            if services is None:
+                raise VoiceControlBindingError("invalid_binding")
+            await services.verify_local_final_authority(
+                socket_id=id(origin),
+                current_socket_id=current_socket_id,
+                user_id=user_id,
+                frame=local_frame,
+                now=datetime.now(UTC),
+            )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if local_frame is None:
+                await self._send_frame_refusal(
+                    context.websocket,
+                    ingress_frame.parsed,
+                    code="invalid_input",
+                    retryable=False,
+                )
+                return False
+            services = getattr(self, "voice_services", None)
+            if services is not None:
+                claims = (
+                    getattr(self, "ui_sessions", {}).get(
+                        context.websocket, {}
+                    )
+                )
+                await asyncio.shield(
+                    services.reject_local_turn(
+                        user_id=claims.get("sub", ""),
+                        client_turn_id=local_frame.client_turn_id,
+                        reason=getattr(exc, "code", "invalid_binding"),
+                        now=datetime.now(UTC),
+                    )
+                )
+            await self._send_voice_local_rejection(
+                context.websocket,
+                local_frame,
+                reason=getattr(exc, "code", "invalid_binding"),
+                retry_policy="explicit_user_retry",
+            )
+            return False
 
     def _submit_connection_batch(
         self,
@@ -7754,6 +7913,24 @@ class Orchestrator:
         while context.ingress:
             batch = list(context.ingress)
             context.ingress.clear()
+            verified_batch: list[_ConnectionIngressFrame] = []
+            for ingress_frame in batch:
+                if (
+                    ingress_frame.parsed.get("type") != "voice_local_final"
+                    or ingress_frame.local_final_verified
+                ):
+                    verified_batch.append(ingress_frame)
+                    continue
+                if not await self._verify_connection_local_final(
+                    context,
+                    ingress_frame,
+                ):
+                    continue
+                ingress_frame.local_final_verified = True
+                verified_batch.append(ingress_frame)
+            batch = verified_batch
+            if not batch:
+                continue
             results = await self._call_work_admission(
                 self._submit_connection_batch,
                 context,
@@ -7849,16 +8026,19 @@ class Orchestrator:
                         OperationState.RETRYABLE,
                     }
                 ):
-                    await self._send_operation_projection(
-                        context, frame, work, projection
-                    )
-                    await self._replay_voice_ack_if_accepted(
-                        context,
-                        frame,
-                    )
-                    if registry.get(result.operation_id) is work:
-                        registry.pop(result.operation_id, None)
-                    work.auth_claims.clear()
+                    try:
+                        await self._send_operation_projection(
+                            context, frame, work, projection
+                        )
+                        await self._replay_voice_ack_if_accepted(
+                            context,
+                            frame,
+                        )
+                    finally:
+                        if registry.get(result.operation_id) is work:
+                            registry.pop(result.operation_id, None)
+                        work.auth_claims.clear()
+                        self._scrub_terminal_voice_operation(context, work)
                     continue
                 try:
                     await self._send_operation_accepted(context, frame, result)
@@ -8861,10 +9041,37 @@ class Orchestrator:
                 runtime_websocket.scrub()
                 work.runtime_websocket = None
             work.auth_claims.clear()
+            if work.frame.parsed.get("type") == "voice_local_final":
+                self._scrub_terminal_voice_operation(context, work)
             if work.lane_complete is not None:
                 context.pending_reads.discard(work.lane_complete)
                 if not work.lane_complete.done():
                     work.lane_complete.set_result(None)
+
+    @staticmethod
+    def _scrub_terminal_voice_operation(
+        context: ConnectionContext,
+        work: _ConnectionOperation,
+    ) -> None:
+        """Evict a terminal local final and erase its transient text material."""
+
+        if work.frame.parsed.get("type") != "voice_local_final":
+            return
+        context.operations.pop(work.operation_id, None)
+        work.subscribers.clear()
+        work.frame.raw = ""
+        retained_fields = {
+            "type", "schema_version", "speech_backend", "device_id",
+            "connection_generation", "session_id", "generation",
+            "speech_revision", "client_turn_id", "turn_id", "submission_id",
+            "request_generation", "chat_id", "chat_context_revision",
+            "recognition_sequence", "locale",
+        }
+        work.frame.parsed = {
+            key: value
+            for key, value in work.frame.parsed.items()
+            if key in retained_fields
+        }
 
     async def _run_ui_control(
         self,
@@ -9005,7 +9212,13 @@ class Orchestrator:
                 return False
             context.preregistration.append(raw)
             return True
-        if control == "voice_playout_event":
+        if control in {
+            "voice_playout_event",
+            "voice_local_ready",
+            "voice_local_recognition_started",
+            "voice_local_recognition_failed",
+            "voice_local_playout_event",
+        }:
             # Playout is authenticated, content-free control evidence.  It
             # bypasses UI-action dispatch and durable operation admission.
             # Keep it inline so per-connection sequence/rate checks cannot be
@@ -9329,6 +9542,14 @@ class Orchestrator:
                     "Voice transcript rejection persistence was unavailable",
                     exc_info=True,
                 )
+            if isinstance(origin, _LocalVoiceOrigin):
+                await self._send_voice_local_rejection(
+                    websocket,
+                    origin,
+                    reason=reason,
+                    retry_policy=retry_policy,
+                )
+                return
             if turn is not None:
                 try:
                     await services.coordinator.emit_transcript_rejected(
@@ -9572,6 +9793,387 @@ class Orchestrator:
             origin=origin,
         )
 
+    def _client_local_socket_authority(
+        self,
+        websocket: Any,
+    ) -> tuple[Any, str, Any, int]:
+        """Resolve only the current authenticated origin socket authority."""
+
+        origin_socket = getattr(websocket, "_origin", websocket)
+        claims = getattr(self, "ui_sessions", {}).get(origin_socket)
+        if claims is None:
+            # During a durable operation the verified claims live on the
+            # execution socket, while currentness still comes from the origin.
+            claims = getattr(self, "ui_sessions", {}).get(websocket)
+        user_id = claims.get("sub") if isinstance(claims, dict) else None
+        binding = getattr(self, "_voice_control_bindings", {}).get(
+            id(origin_socket)
+        )
+        current_socket_id = None
+        if binding is not None:
+            current_socket_id = getattr(self, "_voice_device_bindings", {}).get(
+                (binding.subject, binding.device_id)
+            )
+        if (
+            not isinstance(user_id, str)
+            or not user_id
+            or binding is None
+            or binding.subject != user_id
+            or current_socket_id != id(origin_socket)
+        ):
+            raise VoiceControlBindingError("invalid_binding")
+        return origin_socket, user_id, binding, current_socket_id
+
+    async def _handle_voice_local_ready(
+        self,
+        websocket: Any,
+        frame: VoiceLocalReady,
+    ) -> None:
+        origin, user_id, binding, current_socket_id = (
+            self._client_local_socket_authority(websocket)
+        )
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            raise VoiceControlBindingError("invalid_binding")
+        session = await services.local_ready(
+            socket_id=id(origin),
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            claims=binding,
+            frame=frame,
+            now=datetime.now(UTC),
+        )
+        response = VoiceLocalSessionReady(
+            device_id=session.device_id,
+            connection_generation=session.owner_connection_generation,
+            session_id=session.session_id,
+            generation=session.generation,
+            speech_revision=session.media_grant_revision,
+            chat_id=session.visible_chat_id,
+            chat_context_revision=session.chat_context_revision,
+            applied_chat_context_revision=(
+                session.applied_chat_context_revision
+            ),
+            foreground_active=session.foreground_active,
+            microphone_enabled=session.microphone_enabled,
+            speech_muted=session.speech_muted,
+            lease_expires_at=self._rfc3339(session.lease_expires_at),
+        )
+
+        def ready_authority_is_current() -> bool:
+            try:
+                current = self._client_local_socket_authority(origin)
+            except VoiceControlBindingError:
+                return False
+            return (
+                current[0] is origin
+                and current[1] == user_id
+                and current[2] is binding
+                and current[3] == id(origin)
+            )
+
+        if await self._safe_send(origin, response.to_json()):
+            if not ready_authority_is_current():
+                raise VoiceControlBindingError("invalid_binding")
+            await services.complete_local_ready_delivery(
+                session,
+                socket_id=id(origin),
+                current_socket_id=id(origin),
+                user_id=user_id,
+                claims=binding,
+                frame=frame,
+                now=datetime.now(UTC),
+                authority_is_current=ready_authority_is_current,
+            )
+
+    async def _handle_voice_local_recognition_started(
+        self,
+        websocket: Any,
+        frame: VoiceLocalRecognitionStarted,
+    ) -> None:
+        origin, user_id, binding, current_socket_id = (
+            self._client_local_socket_authority(websocket)
+        )
+        chat = await asyncio.to_thread(
+            self.history.get_chat,
+            frame.chat_id,
+            user_id=user_id,
+        )
+        if chat is None:
+            raise VoiceControlBindingError("invalid_binding")
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            raise VoiceControlBindingError("invalid_binding")
+        turn, authority = await services.bind_local_recognition(
+            socket_id=id(origin),
+            current_socket_id=current_socket_id,
+            user_id=user_id,
+            claims=binding,
+            frame=frame,
+            execution_base_render_revision=int(chat.get("render_revision") or 0),
+            now=datetime.now(UTC),
+        )
+        response = VoiceLocalTurnBound(
+            device_id=authority.device_id,
+            connection_generation=authority.connection_generation,
+            session_id=authority.session_id,
+            generation=authority.generation,
+            speech_revision=authority.speech_revision,
+            client_turn_id=authority.client_turn_id,
+            turn_id=turn.turn_id,
+            submission_id=turn.submission_id,
+            request_generation=turn.request_generation,
+            chat_id=turn.chat_id,
+            chat_context_revision=turn.chat_context_revision,
+            recognition_sequence=authority.recognition_sequence,
+            binding_expires_at=self._rfc3339(authority.expires_at),
+        )
+        await self._safe_send(origin, response.to_json())
+
+    async def _send_voice_local_rejection(
+        self,
+        websocket: Any,
+        frame: Any,
+        *,
+        reason: str,
+        retry_policy: str = "none",
+    ) -> None:
+        allowed = VoiceLocalFinalRejected._REASONS
+        operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+        if (
+            operation_context is not None
+            and operation_context.get("operation_kind") == "voice_chat_message"
+        ):
+            operation_context["voice_rejection"] = _VoiceOperationRejection(
+                reason=reason if reason in allowed else "invalid_binding",
+                safe_summary="Voice request did not start. Please try again.",
+            )
+        response = VoiceLocalFinalRejected(
+            device_id=frame.device_id,
+            connection_generation=frame.connection_generation,
+            session_id=frame.session_id,
+            generation=frame.generation,
+            speech_revision=frame.speech_revision,
+            client_turn_id=frame.client_turn_id,
+            turn_id=frame.turn_id,
+            submission_id=frame.submission_id,
+            request_generation=frame.request_generation,
+            chat_id=frame.chat_id,
+            chat_context_revision=frame.chat_context_revision,
+            recognition_sequence=frame.recognition_sequence,
+            reason=reason if reason in allowed else "invalid_binding",
+            retry_policy=retry_policy,
+            occurred_at=self._rfc3339(),
+        )
+        await self._safe_send(
+            getattr(websocket, "_origin", websocket),
+            response.to_json(),
+        )
+
+    async def _handle_voice_local_final(
+        self,
+        websocket: Any,
+        frame: VoiceLocalFinal,
+    ) -> None:
+        """Admit a local final and enter the exact ordinary chat handler."""
+
+        origin, user_id, _binding, current_socket_id = (
+            self._client_local_socket_authority(websocket)
+        )
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            await self._send_voice_local_rejection(
+                origin,
+                frame,
+                reason="stale_session",
+            )
+            return
+        chat = await asyncio.to_thread(
+            self.history.get_chat,
+            frame.chat_id,
+            user_id=user_id,
+        )
+        if chat is None:
+            await services.reject_local_turn(
+                user_id=user_id,
+                client_turn_id=frame.client_turn_id,
+                reason="chat_unavailable",
+                now=datetime.now(UTC),
+            )
+            await self._send_voice_local_rejection(
+                origin,
+                frame,
+                reason="stale_chat_context",
+            )
+            return
+        try:
+            admission = await services.admit_local_final(
+                socket_id=id(origin),
+                current_socket_id=current_socket_id,
+                user_id=user_id,
+                frame=frame,
+                now=datetime.now(UTC),
+            )
+        except Exception as exc:
+            await services.reject_local_turn(
+                user_id=user_id,
+                client_turn_id=frame.client_turn_id,
+                reason=getattr(exc, "code", getattr(exc, "reason", "invalid_binding")),
+                now=datetime.now(UTC),
+            )
+            await self._send_voice_local_rejection(
+                origin,
+                frame,
+                reason=getattr(exc, "code", getattr(exc, "reason", "invalid_binding")),
+                retry_policy="explicit_user_retry",
+            )
+            return
+        voice_dispatch = _VoiceDispatchContext(
+            admission=admission,
+            connection_generation=frame.connection_generation,
+            origin=_LocalVoiceOrigin(
+                session_id=frame.session_id,
+                generation=frame.generation,
+                media_grant_revision=frame.speech_revision,
+                turn_id=frame.turn_id,
+                client_turn_id=frame.client_turn_id,
+                chat_context_revision=frame.chat_context_revision,
+                speech_revision=frame.speech_revision,
+                device_id=frame.device_id,
+                connection_generation=frame.connection_generation,
+                submission_id=frame.submission_id,
+                request_generation=frame.request_generation,
+                chat_id=frame.chat_id,
+                recognition_sequence=frame.recognition_sequence,
+            ),
+        )
+        try:
+            await self.handle_chat_message(
+                websocket,
+                admission.canonical_text,
+                frame.chat_id,
+                user_id=user_id,
+                operation_context=_CONNECTION_OPERATION_CONTEXT.get(),
+                voice_dispatch=voice_dispatch,
+            )
+        except BaseException:
+            await asyncio.shield(
+                services.reject_local_turn(
+                    user_id=user_id,
+                    client_turn_id=frame.client_turn_id,
+                    reason="invalid_binding",
+                    now=datetime.now(UTC),
+                )
+            )
+            raise
+
+    async def publish_voice_local_announcement(self, frame: Any) -> None:
+        """Deliver one server-authorized local announcement to its exact socket."""
+
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            raise VoiceControlBindingError("invalid_binding")
+        try:
+            websocket, user_id, binding = (
+                self._resolve_voice_local_announcement_socket(frame)
+            )
+            session = await asyncio.to_thread(
+                services.repository.get_session,
+                user_id=user_id,
+                session_id=frame.session_id,
+            )
+            checked_now = datetime.now(UTC)
+            services._require_current_local_control(session, now=checked_now)
+            current_websocket, current_user_id, current_binding = (
+                self._resolve_voice_local_announcement_socket(frame)
+            )
+            if not (
+                current_websocket is websocket
+                and current_user_id == user_id
+                and current_binding.binding_id == binding.binding_id
+                and session.device_id == frame.device_id
+                and session.owner_connection_generation
+                == frame.connection_generation
+                and session.generation == frame.generation
+                and session.media_grant_revision == frame.speech_revision
+                and session.control_binding_id == binding.binding_id
+                and binding.expires_at > checked_now
+            ):
+                raise VoiceControlBindingError("invalid_binding")
+            try:
+                services.local_announcements.authorize_delivery(
+                    session=session,
+                    frame=frame,
+                    now=checked_now,
+                )
+            except Exception as exc:
+                raise VoiceControlBindingError("invalid_binding") from exc
+            if not await self._safe_send(websocket, frame.to_json()):
+                raise VoiceControlBindingError(
+                    "local_announcement_delivery_failed"
+                )
+        except BaseException:
+            announcement_id = getattr(frame, "announcement_id", None)
+            if isinstance(announcement_id, str):
+                services.local_announcements.discard(announcement_id)
+            raise
+
+    def _resolve_voice_local_announcement_socket(
+        self,
+        frame: Any,
+    ) -> tuple[Any, str, Any]:
+        matches = []
+        for (candidate_user, device_id), candidate_socket in getattr(
+            self, "_voice_device_bindings", {}
+        ).items():
+            binding = getattr(self, "_voice_control_bindings", {}).get(
+                candidate_socket
+            )
+            websocket = next(
+                (
+                    candidate
+                    for candidate, claims in getattr(
+                        self, "ui_sessions", {}
+                    ).items()
+                    if id(candidate) == candidate_socket
+                    and isinstance(claims, dict)
+                    and claims.get("sub") == candidate_user
+                ),
+                None,
+            )
+            if (
+                websocket is not None
+                and device_id == frame.device_id
+                and binding is not None
+                and binding.subject == candidate_user
+                and binding.device_id == frame.device_id
+                and binding.connection_generation
+                == frame.connection_generation
+            ):
+                matches.append((websocket, candidate_user, binding))
+        if len(matches) != 1:
+            raise VoiceControlBindingError("invalid_binding")
+        return matches[0]
+
+    async def _handle_voice_local_playout_event(
+        self,
+        websocket: Any,
+        frame: VoiceLocalPlayoutEvent,
+    ) -> None:
+        origin, user_id, binding, _current = (
+            self._client_local_socket_authority(websocket)
+        )
+        services = getattr(self, "voice_services", None)
+        if services is None:
+            return
+        await services.handle_local_playout(
+            user_id=user_id,
+            claims=binding,
+            event=frame,
+            now=datetime.now(UTC),
+        )
+        del origin
+
     async def handle_ui_message(self, websocket, message: str):
         """Handle message from a UI client."""
         raw_frame: dict[str, Any] | None = None
@@ -9610,6 +10212,48 @@ class Orchestrator:
                 sanitized["agent_host"] = False
                 sanitized.pop("host_session_id", None)
                 msg = Message.from_json(json.dumps(sanitized))
+
+            if isinstance(msg, VoiceLocalReady):
+                await self._handle_voice_local_ready(websocket, msg)
+                return
+            if isinstance(msg, VoiceLocalRecognitionStarted):
+                await self._handle_voice_local_recognition_started(websocket, msg)
+                return
+            if isinstance(msg, VoiceLocalRecognitionFailed):
+                # The durable turn remains content-free. A failure abandons
+                # only its exact pre-acceptance binding and never dispatches.
+                origin, user_id, _binding, _current = (
+                    self._client_local_socket_authority(websocket)
+                )
+                services = getattr(self, "voice_services", None)
+                if services is not None:
+                    authority = services.local_bindings.verify_turn_frame(
+                        socket_id=id(origin),
+                        current_socket_id=_current,
+                        user_id=user_id,
+                        frame=msg,
+                        now=datetime.now(UTC),
+                    )
+                    await asyncio.to_thread(
+                        services.repository.reject_transcript,
+                        user_id=user_id,
+                        turn_id=authority.turn_id,
+                        reason="malformed_final",
+                        retry_policy="explicit_user_retry",
+                        now=datetime.now(UTC),
+                    )
+                    services.local_bindings.release_turn(
+                        user_id=user_id,
+                        client_turn_id=msg.client_turn_id,
+                    )
+                del origin
+                return
+            if isinstance(msg, VoiceLocalFinal):
+                await self._handle_voice_local_final(websocket, msg)
+                return
+            if isinstance(msg, VoiceLocalPlayoutEvent):
+                await self._handle_voice_local_playout_event(websocket, msg)
+                return
 
             if isinstance(msg, RegisterUI):
                 token = msg.token
@@ -21347,6 +21991,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._voice_device_kinds = device_kinds
         displaced_socket_id = device_bindings.get(device_key)
         prior_device_kind = device_kinds.get(device_key)
+        if displaced_socket_id is not None and displaced_socket_id != socket_id:
+            displaced_claims = self._voice_control_bindings.get(
+                displaced_socket_id
+            )
+            services = getattr(self, "voice_services", None)
+            cleanup = getattr(services, "clear_local_connection", None)
+            if displaced_claims is None or not callable(cleanup):
+                raise VoiceControlBindingError(
+                    "displacement_cleanup_unavailable"
+                )
+            try:
+                cleanup(
+                    displaced_claims,
+                    socket_id=displaced_socket_id,
+                )
+            except Exception as exc:
+                raise VoiceControlBindingError(
+                    "displacement_cleanup_unavailable"
+                ) from exc
 
         # Install the binding before delivering it. WebSocket delivery and the
         # client's first REST mutation run on independent connections, so a
@@ -21407,6 +22070,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         getattr(self, "_voice_composer_revisions", {}).pop(socket_id, None)
         if claims is None:
             return
+        services = getattr(self, "voice_services", None)
+        if services is not None:
+            try:
+                services.clear_local_connection(claims, socket_id=socket_id)
+            except Exception:
+                logger.debug("voice_local_connection_cleanup_unavailable")
         device_bindings = getattr(self, "_voice_device_bindings", {})
         device_key = (claims.subject, claims.device_id)
         if device_bindings.get(device_key) == socket_id:
@@ -24339,7 +25008,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             retry_seconds=retention_retry,
             on_sweep=self.task_manager.prune_missing,
         )
-        if self.voice_services is not None:
+        if (
+            self.voice_services is not None
+            and getattr(self.voice_services, "runtime", None) is not None
+        ):
             self.voice_services.start()
         await server.serve()
 

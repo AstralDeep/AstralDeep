@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astraldeep.example/contracts/075/voice-local.schema.json",
+  "title": "AstralDeep Client-Local Speech WebSocket Contract",
+  "description": "Strict schema-v2 UI-WebSocket frames for the client_local/v1 speech profile. The authenticated socket is validated against the server's current unexpired control binding; the bearer is never retransmitted in these frames. Frames carry no audio, endpoint, credential, engine identity, model inventory, or remote-worker proof.",
+  "oneOf": [
+    { "$ref": "#/$defs/localReady" },
+    { "$ref": "#/$defs/sessionReady" },
+    { "$ref": "#/$defs/recognitionStarted" },
+    { "$ref": "#/$defs/turnBound" },
+    { "$ref": "#/$defs/localFinal" },
+    { "$ref": "#/$defs/recognitionFailed" },
+    { "$ref": "#/$defs/finalRejected" },
+    { "$ref": "#/$defs/announcement" },
+    { "$ref": "#/$defs/playoutEvent" }
+  ],
+  "$defs": {
+    "uuid4": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "positiveRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "commonBinding": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "speech_backend",
+        "device_id",
+        "connection_generation",
+        "session_id",
+        "generation",
+        "speech_revision"
+      ],
+      "properties": {
+        "schema_version": { "const": "2" },
+        "speech_backend": { "const": "client_local" },
+        "device_id": { "$ref": "#/$defs/uuid4" },
+        "connection_generation": { "$ref": "#/$defs/uuid4" },
+        "session_id": { "$ref": "#/$defs/uuid4" },
+        "generation": { "$ref": "#/$defs/positiveRevision" },
+        "speech_revision": { "$ref": "#/$defs/positiveRevision" }
+      }
+    },
+    "turnBinding": {
+      "type": "object",
+      "required": [
+        "client_turn_id",
+        "turn_id",
+        "submission_id",
+        "request_generation",
+        "chat_id",
+        "chat_context_revision",
+        "recognition_sequence"
+      ],
+      "properties": {
+        "client_turn_id": { "$ref": "#/$defs/uuid4" },
+        "turn_id": { "$ref": "#/$defs/uuid4" },
+        "submission_id": { "$ref": "#/$defs/uuid4" },
+        "request_generation": { "$ref": "#/$defs/uuid4" },
+        "chat_id": { "$ref": "#/$defs/uuid4" },
+        "chat_context_revision": { "$ref": "#/$defs/positiveRevision" },
+        "recognition_sequence": { "$ref": "#/$defs/positiveRevision" }
+      }
+    },
+    "localReady": {
+      "allOf": [
+        { "$ref": "#/$defs/commonBinding" },
+        {
+          "type": "object",
+          "required": [
+            "type", "contract", "transport", "configured_locale", "full_duplex",
+            "has_microphone", "has_audio_output", "microphone_permission",
+            "recognition_permission", "recognition_processing", "recognition_locale",
+            "recognition_installation", "synthesis_processing", "synthesis_locale",
+            "client_sequence"
+          ],
+          "properties": {
+            "type": { "const": "voice_local_ready" },
+            "contract": { "const": "client_local/v1" },
+            "transport": { "const": "client_local" },
+            "configured_locale": { "const": "en-US" },
+            "full_duplex": { "const": false },
+            "has_microphone": { "const": true },
+            "has_audio_output": { "const": true },
+            "microphone_permission": { "const": "authorized" },
+            "recognition_permission": { "const": "authorized" },
+            "recognition_processing": { "const": "guaranteed_local" },
+            "recognition_locale": { "const": "ready" },
+            "recognition_installation": { "const": "ready" },
+            "synthesis_processing": { "const": "guaranteed_local" },
+            "synthesis_locale": { "const": "ready" },
+            "client_sequence": { "$ref": "#/$defs/positiveRevision" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "sessionReady": {
+      "allOf": [
+        { "$ref": "#/$defs/commonBinding" },
+        {
+          "type": "object",
+          "required": [
+            "type", "contract", "transport", "configured_locale", "chat_id",
+            "chat_context_revision", "applied_chat_context_revision", "foreground_active",
+            "microphone_enabled", "speech_muted", "lease_expires_at"
+          ],
+          "properties": {
+            "type": { "const": "voice_local_session_ready" },
+            "contract": { "const": "client_local/v1" },
+            "transport": { "const": "client_local" },
+            "configured_locale": { "const": "en-US" },
+            "chat_id": { "$ref": "#/$defs/uuid4" },
+            "chat_context_revision": { "$ref": "#/$defs/positiveRevision" },
+            "applied_chat_context_revision": { "$ref": "#/$defs/positiveRevision" },
+            "foreground_active": { "const": true },
+            "microphone_enabled": { "type": "boolean" },
+            "speech_muted": { "type": "boolean" },
+            "lease_expires_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "recognitionStarted": {
+      "allOf": [
+        { "$ref": "#/$defs/commonBinding" },
+        {
+          "type": "object",
+          "required": ["type", "client_turn_id", "chat_id", "chat_context_revision", "recognition_sequence"],
+          "properties": {
+            "type": { "const": "voice_local_recognition_started" },
+            "client_turn_id": { "$ref": "#/$defs/uuid4" },
+            "chat_id": { "$ref": "#/$defs/uuid4" },
+            "chat_context_revision": { "$ref": "#/$defs/positiveRevision" },
+            "recognition_sequence": { "$ref": "#/$defs/positiveRevision" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "turnBound": {
+      "allOf": [
+        { "$ref": "#/$defs/commonBinding" },
+        { "$ref": "#/$defs/turnBinding" },
+        {
+          "type": "object",
+          "required": ["type", "binding_expires_at"],
+          "properties": {
+            "type": { "const": "voice_local_turn_bound" },
+            "binding_expires_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "localFinal": {
+      "allOf": [
+        { "$ref": "#/$defs/commonBinding" },
+        { "$ref": "#/$defs/turnBinding" },
+        {
+          "type": "object",
+          "required": ["type", "final", "recognized_locale", "text", "text_digest_sha256"],
+          "properties": {
+            "type": { "const": "voice_local_final" },
+            "final": { "const": true },
+            "recognized_locale": { "const": "en-US" },
+            "text": { "type": "string", "minLength": 1, "maxLength": 8000 },
+            "text_digest_sha256": { "$ref": "#/$defs/digest" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "recognitionFailed": {
+      "allOf": [
+        { "$ref": "#/$defs/commonBinding" },
+        { "$ref": "#/$defs/turnBinding" },
+        {
+          "type": "object",
+          "required": ["type", "reason"],
+          "properties": {
+            "type": { "const": "voice_local_recognition_failed" },
+            "reason": {
+              "enum": [
+                "local_recognition_failed", "local_recognition_cancelled",
+                "local_audio_interrupted", "local_final_empty", "local_final_malformed",
+                "stopped_by_user"
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "finalRejected": {
+      "allOf": [
+        { "$ref": "#/$defs/commonBinding" },
+        { "$ref": "#/$defs/turnBinding" },
+        {
+          "type": "object",
+          "required": ["type", "reason", "retry_policy", "occurred_at"],
+          "properties": {
+            "type": { "const": "voice_local_final_rejected" },
+            "reason": {
+              "enum": [
+                "invalid_binding", "stale_connection", "stale_session", "stale_speech_revision",
+                "stale_chat_context", "stale_local_turn", "altered_local_final",
+                "local_final_empty", "local_final_oversized", "local_final_malformed",
+                "local_language_mismatch", "capacity_exhausted"
+              ]
+            },
+            "retry_policy": { "enum": ["none", "explicit_user_retry"] },
+            "occurred_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "announcementKind": {
+      "enum": [
+        "greeting", "acknowledgement", "progress", "waiting", "result",
+        "sensitive_notice", "failure", "refusal", "cancellation"
+      ]
+    },
+    "announcement": {
+      "allOf": [
+        { "$ref": "#/$defs/commonBinding" },
+        {
+          "type": "object",
+          "required": [
+            "type", "announcement_id", "announcement_sequence", "turn_id", "kind",
+            "output_policy", "locale", "text", "text_digest_sha256", "expires_at",
+            "foreground_required", "mute_revision", "consent_revision"
+          ],
+          "properties": {
+            "type": { "const": "voice_local_announcement" },
+            "announcement_id": { "$ref": "#/$defs/uuid4" },
+            "announcement_sequence": { "$ref": "#/$defs/positiveRevision" },
+            "turn_id": { "oneOf": [{ "$ref": "#/$defs/uuid4" }, { "type": "null" }] },
+            "kind": { "$ref": "#/$defs/announcementKind" },
+            "output_policy": { "enum": ["lifecycle", "full_recap"] },
+            "locale": { "const": "en-US" },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 600,
+              "description": "Canonical text; runtime validation additionally enforces at most 600 UTF-8 bytes."
+            },
+            "text_digest_sha256": { "$ref": "#/$defs/digest" },
+            "expires_at": { "$ref": "#/$defs/timestamp" },
+            "foreground_required": { "const": true },
+            "mute_revision": { "$ref": "#/$defs/positiveRevision" },
+            "consent_revision": { "$ref": "#/$defs/positiveRevision" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "if": { "properties": { "kind": { "const": "greeting" } }, "required": ["kind"] },
+      "then": { "properties": { "turn_id": { "type": "null" } } },
+      "else": { "properties": { "turn_id": { "$ref": "#/$defs/uuid4" } } }
+    },
+    "playoutEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/commonBinding" },
+        {
+          "type": "object",
+          "required": [
+            "type", "announcement_id", "announcement_sequence", "turn_id", "kind",
+            "phase", "client_sequence", "observed_at"
+          ],
+          "properties": {
+            "type": { "const": "voice_local_playout_event" },
+            "announcement_id": { "$ref": "#/$defs/uuid4" },
+            "announcement_sequence": { "$ref": "#/$defs/positiveRevision" },
+            "turn_id": { "oneOf": [{ "$ref": "#/$defs/uuid4" }, { "type": "null" }] },
+            "kind": { "$ref": "#/$defs/announcementKind" },
+            "phase": { "enum": ["started", "finished", "interrupted", "failed"] },
+            "client_sequence": { "$ref": "#/$defs/positiveRevision" },
+            "reason": {
+              "enum": [
+                "local_synthesis_failed", "local_audio_interrupted",
+                "local_announcement_expired", "stopped_by_user"
+              ]
+            },
+            "observed_at": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

@@ -353,6 +353,24 @@ class Message:
                 label="voice_playout_event",
             )
             return VoicePlayoutEvent.from_dict(data)
+        elif msg_type == 'voice_local_ready':
+            return VoiceLocalReady.from_dict(data)
+        elif msg_type == 'voice_local_session_ready':
+            return VoiceLocalSessionReady.from_dict(data)
+        elif msg_type == 'voice_local_recognition_started':
+            return VoiceLocalRecognitionStarted.from_dict(data)
+        elif msg_type == 'voice_local_turn_bound':
+            return VoiceLocalTurnBound.from_dict(data)
+        elif msg_type == 'voice_local_final':
+            return VoiceLocalFinal.from_dict(data)
+        elif msg_type == 'voice_local_recognition_failed':
+            return VoiceLocalRecognitionFailed.from_dict(data)
+        elif msg_type == 'voice_local_final_rejected':
+            return VoiceLocalFinalRejected.from_dict(data)
+        elif msg_type == 'voice_local_announcement':
+            return VoiceLocalAnnouncement.from_dict(data)
+        elif msg_type == 'voice_local_playout_event':
+            return VoiceLocalPlayoutEvent.from_dict(data)
         return Message(**data)
 
 # --- MCP Protocol Wrappers ---
@@ -1008,6 +1026,441 @@ class VoiceControlBindingMemory:
         """Drop the bearer synchronously on socket/auth teardown."""
 
         self._current = None
+
+
+_VOICE_LOCAL_COMMON_FIELDS = {
+    "type", "schema_version", "speech_backend", "device_id",
+    "connection_generation", "session_id", "generation", "speech_revision",
+}
+_VOICE_LOCAL_TURN_FIELDS = {
+    "client_turn_id", "turn_id", "submission_id", "request_generation",
+    "chat_id", "chat_context_revision", "recognition_sequence",
+}
+_VOICE_LOCAL_KINDS = {
+    "greeting", "acknowledgement", "progress", "waiting", "result",
+    "sensitive_notice", "failure", "refusal", "cancellation",
+}
+
+
+@dataclass
+class _VoiceLocalCommon(Message):
+    """Shared strict identity fence for client-local schema-v2 frames."""
+
+    type: str = ""
+    schema_version: str = "2"
+    speech_backend: str = "client_local"
+    device_id: str = ""
+    connection_generation: str = ""
+    session_id: str = ""
+    generation: int = 0
+    speech_revision: int = 0
+
+    def _validate_common(self, expected_type: str) -> None:
+        if self.type != expected_type:
+            raise ProtocolValidationError(f"type must be {expected_type}")
+        if self.schema_version != "2":
+            raise ProtocolValidationError("schema_version must be exactly \"2\"")
+        if self.speech_backend != "client_local":
+            raise ProtocolValidationError("speech_backend must be client_local")
+        for name in ("device_id", "connection_generation", "session_id"):
+            _require_uuid4(getattr(self, name), name)
+        for name in ("generation", "speech_revision"):
+            _require_positive_integer(
+                getattr(self, name),
+                name,
+                maximum=9_223_372_036_854_775_807,
+            )
+
+    def _to_local_json(self) -> str:
+        return _voice_json(asdict(self))
+
+
+def _validate_local_turn(frame: Any) -> None:
+    for name in (
+        "client_turn_id", "turn_id", "submission_id", "request_generation", "chat_id",
+    ):
+        _require_uuid4(getattr(frame, name), name)
+    for name in ("chat_context_revision", "recognition_sequence"):
+        _require_positive_integer(
+            getattr(frame, name),
+            name,
+            maximum=9_223_372_036_854_775_807,
+        )
+
+
+def _validate_local_digest(value: object) -> None:
+    if not isinstance(value, str) or _LOWER_SHA256.fullmatch(value) is None:
+        raise ProtocolValidationError("text_digest_sha256 must be lowercase SHA-256")
+
+
+@dataclass
+class VoiceLocalReady(_VoiceLocalCommon):
+    type: str = "voice_local_ready"
+    contract: str = "client_local/v1"
+    transport: str = "client_local"
+    configured_locale: str = "en-US"
+    full_duplex: bool = False
+    has_microphone: bool = True
+    has_audio_output: bool = True
+    microphone_permission: str = "authorized"
+    recognition_permission: str = "authorized"
+    recognition_processing: str = "guaranteed_local"
+    recognition_locale: str = "ready"
+    recognition_installation: str = "ready"
+    synthesis_processing: str = "guaranteed_local"
+    synthesis_locale: str = "ready"
+    client_sequence: int = 0
+
+    _FIELDS: ClassVar[set[str]] = _VOICE_LOCAL_COMMON_FIELDS | {
+        "contract", "transport", "configured_locale", "full_duplex",
+        "has_microphone", "has_audio_output", "microphone_permission",
+        "recognition_permission", "recognition_processing", "recognition_locale",
+        "recognition_installation", "synthesis_processing", "synthesis_locale",
+        "client_sequence",
+    }
+
+    def validate(self) -> None:
+        self._validate_common("voice_local_ready")
+        exact = {
+            "contract": "client_local/v1", "transport": "client_local",
+            "configured_locale": "en-US", "full_duplex": False,
+            "has_microphone": True, "has_audio_output": True,
+            "microphone_permission": "authorized",
+            "recognition_permission": "authorized",
+            "recognition_processing": "guaranteed_local",
+            "recognition_locale": "ready", "recognition_installation": "ready",
+            "synthesis_processing": "guaranteed_local", "synthesis_locale": "ready",
+        }
+        if any(getattr(self, name) != value for name, value in exact.items()):
+            raise ProtocolValidationError("voice_local_ready capability is not eligible")
+        _require_positive_integer(self.client_sequence, "client_sequence")
+
+    def to_json(self) -> str:
+        self.validate()
+        return self._to_local_json()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceLocalReady":
+        _require_exact_fields(data, cls._FIELDS, label="voice_local_ready")
+        value = cls(**dict(data))
+        value.validate()
+        return value
+
+
+@dataclass
+class VoiceLocalSessionReady(_VoiceLocalCommon):
+    type: str = "voice_local_session_ready"
+    contract: str = "client_local/v1"
+    transport: str = "client_local"
+    configured_locale: str = "en-US"
+    chat_id: str = ""
+    chat_context_revision: int = 0
+    applied_chat_context_revision: int = 0
+    foreground_active: bool = True
+    microphone_enabled: bool = False
+    speech_muted: bool = False
+    lease_expires_at: str = ""
+
+    _FIELDS: ClassVar[set[str]] = _VOICE_LOCAL_COMMON_FIELDS | {
+        "contract", "transport", "configured_locale", "chat_id",
+        "chat_context_revision", "applied_chat_context_revision",
+        "foreground_active", "microphone_enabled", "speech_muted",
+        "lease_expires_at",
+    }
+
+    def validate(self) -> None:
+        self._validate_common("voice_local_session_ready")
+        if (self.contract, self.transport, self.configured_locale) != (
+            "client_local/v1", "client_local", "en-US"
+        ) or self.foreground_active is not True:
+            raise ProtocolValidationError("voice_local_session_ready is malformed")
+        if not isinstance(self.microphone_enabled, bool) or not isinstance(self.speech_muted, bool):
+            raise ProtocolValidationError("local session booleans are malformed")
+        _require_uuid4(self.chat_id, "chat_id")
+        _require_positive_integer(self.chat_context_revision, "chat_context_revision")
+        _require_positive_integer(self.applied_chat_context_revision, "applied_chat_context_revision")
+        _require_voice_timestamp(self.lease_expires_at, "lease_expires_at")
+
+    def to_json(self) -> str:
+        self.validate()
+        return self._to_local_json()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceLocalSessionReady":
+        _require_exact_fields(data, cls._FIELDS, label="voice_local_session_ready")
+        value = cls(**dict(data))
+        value.validate()
+        return value
+
+
+@dataclass
+class VoiceLocalRecognitionStarted(_VoiceLocalCommon):
+    type: str = "voice_local_recognition_started"
+    client_turn_id: str = ""
+    chat_id: str = ""
+    chat_context_revision: int = 0
+    recognition_sequence: int = 0
+
+    _FIELDS: ClassVar[set[str]] = _VOICE_LOCAL_COMMON_FIELDS | {
+        "client_turn_id", "chat_id", "chat_context_revision", "recognition_sequence"
+    }
+
+    def validate(self) -> None:
+        self._validate_common("voice_local_recognition_started")
+        _require_uuid4(self.client_turn_id, "client_turn_id")
+        _require_uuid4(self.chat_id, "chat_id")
+        _require_positive_integer(self.chat_context_revision, "chat_context_revision")
+        _require_positive_integer(self.recognition_sequence, "recognition_sequence")
+
+    def to_json(self) -> str:
+        self.validate()
+        return self._to_local_json()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceLocalRecognitionStarted":
+        _require_exact_fields(data, cls._FIELDS, label="voice_local_recognition_started")
+        value = cls(**dict(data))
+        value.validate()
+        return value
+
+
+@dataclass
+class _VoiceLocalTurn(_VoiceLocalCommon):
+    client_turn_id: str = ""
+    turn_id: str = ""
+    submission_id: str = ""
+    request_generation: str = ""
+    chat_id: str = ""
+    chat_context_revision: int = 0
+    recognition_sequence: int = 0
+
+
+@dataclass
+class VoiceLocalTurnBound(_VoiceLocalTurn):
+    type: str = "voice_local_turn_bound"
+    binding_expires_at: str = ""
+    _FIELDS: ClassVar[set[str]] = _VOICE_LOCAL_COMMON_FIELDS | _VOICE_LOCAL_TURN_FIELDS | {"binding_expires_at"}
+
+    def validate(self) -> None:
+        self._validate_common("voice_local_turn_bound")
+        _validate_local_turn(self)
+        _require_voice_timestamp(self.binding_expires_at, "binding_expires_at")
+
+    def to_json(self) -> str:
+        self.validate()
+        return self._to_local_json()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceLocalTurnBound":
+        _require_exact_fields(data, cls._FIELDS, label="voice_local_turn_bound")
+        value = cls(**dict(data))
+        value.validate()
+        return value
+
+
+@dataclass
+class VoiceLocalFinal(_VoiceLocalTurn):
+    type: str = "voice_local_final"
+    final: bool = True
+    recognized_locale: str = "en-US"
+    text: str = ""
+    text_digest_sha256: str = ""
+    _FIELDS: ClassVar[set[str]] = _VOICE_LOCAL_COMMON_FIELDS | _VOICE_LOCAL_TURN_FIELDS | {
+        "final", "recognized_locale", "text", "text_digest_sha256"
+    }
+
+    def validate(self) -> None:
+        self._validate_common("voice_local_final")
+        _validate_local_turn(self)
+        if self.final is not True or self.recognized_locale != "en-US":
+            raise ProtocolValidationError("voice_local_final is malformed")
+        _require_bounded_string(self.text, "text", minimum=1, maximum=8000)
+        _require_raw_utf8_size(self.text, maximum=32_000, label="voice_local_final.text")
+        _validate_local_digest(self.text_digest_sha256)
+
+    def to_json(self) -> str:
+        self.validate()
+        return self._to_local_json()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceLocalFinal":
+        _require_exact_fields(data, cls._FIELDS, label="voice_local_final")
+        value = cls(**dict(data))
+        value.validate()
+        return value
+
+
+@dataclass
+class VoiceLocalRecognitionFailed(_VoiceLocalTurn):
+    type: str = "voice_local_recognition_failed"
+    reason: str = ""
+    _FIELDS: ClassVar[set[str]] = _VOICE_LOCAL_COMMON_FIELDS | _VOICE_LOCAL_TURN_FIELDS | {"reason"}
+    _REASONS: ClassVar[set[str]] = {
+        "local_recognition_failed", "local_recognition_cancelled",
+        "local_audio_interrupted", "local_final_empty", "local_final_malformed",
+        "stopped_by_user",
+    }
+
+    def validate(self) -> None:
+        self._validate_common("voice_local_recognition_failed")
+        _validate_local_turn(self)
+        if self.reason not in self._REASONS:
+            raise ProtocolValidationError("reason is not canonical")
+
+    def to_json(self) -> str:
+        self.validate()
+        return self._to_local_json()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceLocalRecognitionFailed":
+        _require_exact_fields(data, cls._FIELDS, label="voice_local_recognition_failed")
+        value = cls(**dict(data))
+        value.validate()
+        return value
+
+
+@dataclass
+class VoiceLocalFinalRejected(_VoiceLocalTurn):
+    type: str = "voice_local_final_rejected"
+    reason: str = ""
+    retry_policy: str = "none"
+    occurred_at: str = ""
+    _FIELDS: ClassVar[set[str]] = _VOICE_LOCAL_COMMON_FIELDS | _VOICE_LOCAL_TURN_FIELDS | {"reason", "retry_policy", "occurred_at"}
+    _REASONS: ClassVar[set[str]] = {
+        "invalid_binding", "stale_connection", "stale_session", "stale_speech_revision",
+        "stale_chat_context", "stale_local_turn", "altered_local_final",
+        "local_final_empty", "local_final_oversized", "local_final_malformed",
+        "local_language_mismatch", "capacity_exhausted",
+    }
+
+    def validate(self) -> None:
+        self._validate_common("voice_local_final_rejected")
+        _validate_local_turn(self)
+        if self.reason not in self._REASONS or self.retry_policy not in {"none", "explicit_user_retry"}:
+            raise ProtocolValidationError("voice_local_final_rejected is malformed")
+        _require_voice_timestamp(self.occurred_at, "occurred_at")
+
+    def to_json(self) -> str:
+        self.validate()
+        return self._to_local_json()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceLocalFinalRejected":
+        _require_exact_fields(data, cls._FIELDS, label="voice_local_final_rejected")
+        value = cls(**dict(data))
+        value.validate()
+        return value
+
+
+@dataclass
+class VoiceLocalAnnouncement(_VoiceLocalCommon):
+    type: str = "voice_local_announcement"
+    announcement_id: str = ""
+    announcement_sequence: int = 0
+    turn_id: Optional[str] = None
+    kind: str = ""
+    output_policy: str = ""
+    locale: str = "en-US"
+    text: str = ""
+    text_digest_sha256: str = ""
+    expires_at: str = ""
+    foreground_required: bool = True
+    mute_revision: int = 0
+    consent_revision: int = 0
+    _FIELDS: ClassVar[set[str]] = _VOICE_LOCAL_COMMON_FIELDS | {
+        "announcement_id", "announcement_sequence", "turn_id", "kind",
+        "output_policy", "locale", "text", "text_digest_sha256", "expires_at",
+        "foreground_required", "mute_revision", "consent_revision",
+    }
+
+    def validate(self) -> None:
+        self._validate_common("voice_local_announcement")
+        _require_uuid4(self.announcement_id, "announcement_id")
+        _require_positive_integer(self.announcement_sequence, "announcement_sequence")
+        if self.kind not in _VOICE_LOCAL_KINDS or self.output_policy not in {"lifecycle", "full_recap"}:
+            raise ProtocolValidationError("voice_local_announcement policy is malformed")
+        if self.kind == "greeting":
+            if self.turn_id is not None:
+                raise ProtocolValidationError("greeting turn_id must be null")
+        else:
+            _require_uuid4(self.turn_id, "turn_id")
+        if self.locale != "en-US" or self.foreground_required is not True:
+            raise ProtocolValidationError("voice_local_announcement is malformed")
+        _require_bounded_string(self.text, "text", minimum=1, maximum=600)
+        _require_raw_utf8_size(self.text, maximum=600, label="voice_local_announcement.text")
+        _validate_local_digest(self.text_digest_sha256)
+        _require_voice_timestamp(self.expires_at, "expires_at")
+        _require_positive_integer(self.mute_revision, "mute_revision")
+        _require_positive_integer(self.consent_revision, "consent_revision")
+
+    def to_json(self) -> str:
+        self.validate()
+        return self._to_local_json()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceLocalAnnouncement":
+        _require_exact_fields(data, cls._FIELDS, label="voice_local_announcement")
+        value = cls(**dict(data))
+        value.validate()
+        return value
+
+
+@dataclass
+class VoiceLocalPlayoutEvent(_VoiceLocalCommon):
+    type: str = "voice_local_playout_event"
+    announcement_id: str = ""
+    announcement_sequence: int = 0
+    turn_id: Optional[str] = None
+    kind: str = ""
+    phase: str = ""
+    client_sequence: int = 0
+    observed_at: str = ""
+    reason: Optional[str] = None
+    _REQUIRED: ClassVar[set[str]] = _VOICE_LOCAL_COMMON_FIELDS | {
+        "announcement_id", "announcement_sequence", "turn_id", "kind", "phase",
+        "client_sequence", "observed_at",
+    }
+
+    def validate(self) -> None:
+        self._validate_common("voice_local_playout_event")
+        _require_uuid4(self.announcement_id, "announcement_id")
+        _require_positive_integer(self.announcement_sequence, "announcement_sequence")
+        if self.kind not in _VOICE_LOCAL_KINDS or self.phase not in {"started", "finished", "interrupted", "failed"}:
+            raise ProtocolValidationError("voice_local_playout_event is malformed")
+        if self.kind == "greeting":
+            if self.turn_id is not None:
+                raise ProtocolValidationError("greeting turn_id must be null")
+        else:
+            _require_uuid4(self.turn_id, "turn_id")
+        _require_positive_integer(self.client_sequence, "client_sequence")
+        _require_voice_timestamp(self.observed_at, "observed_at")
+        if self.reason not in {
+            None, "local_synthesis_failed", "local_audio_interrupted",
+            "local_announcement_expired", "stopped_by_user",
+        }:
+            raise ProtocolValidationError("playout reason is not canonical")
+
+    def _wire(self) -> Dict[str, Any]:
+        value = asdict(self)
+        if value["reason"] is None:
+            value.pop("reason")
+        return value
+
+    def to_json(self) -> str:
+        self.validate()
+        return _voice_json(self._wire())
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VoiceLocalPlayoutEvent":
+        _require_exact_fields(
+            data,
+            cls._REQUIRED,
+            optional={"reason"},
+            label="voice_local_playout_event",
+        )
+        value = cls(**dict(data))
+        value.validate()
+        return value
 
 
 @dataclass

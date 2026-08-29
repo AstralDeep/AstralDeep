@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,8 @@ TOOLING_ROOT = REPO_ROOT / "tooling" / "python-ci"
 INPUT = TOOLING_ROOT / "requirements.in"
 LOCK = TOOLING_ROOT / "requirements.lock.txt"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+ANDROID_CANARY_TEST = REPO_ROOT / "backend" / "tests" / "test_android_next_major_canary.py"
+ANDROID_CANARY_SCRIPT = REPO_ROOT / "scripts" / "run_android_next_major_canary.py"
 GITLEAKS_IGNORE = REPO_ROOT / ".gitleaksignore"
 REVIEWED_074_FINGERPRINTS = {
     "7bc9d1f683c535863b5426ab3053db3bdefc6a1a:config/astral-composition.json:generic-api-key:56",
@@ -236,6 +241,42 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
     assert set(re.findall(r"(?m)^\s+([^\s]+\.py)\s*$", array)) == expected_test_paths
 
 
+def test_release_tooling_job_excludes_real_component_checkout_tests() -> None:
+    """Public release-tooling CI remains source-free while local gates use pins."""
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    job = _workflow_job(workflow, "release-tooling-tests")
+
+    assert "submodules: false" in job
+    assert set(re.findall(r"--deselect=([^\s\\]+)", job)) == {
+        "backend/tests/test_documentation_060.py::test_byo_guide_is_reachable_from_projection_apple_client_docs",
+        "backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts",
+        "scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts",
+        "scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands",
+    }
+
+
+def test_android_canary_suite_runs_without_projection_checkout(tmp_path: Path) -> None:
+    """The public source-free lane must still exercise its Deep-owned driver."""
+    source_root = tmp_path / "source-free"
+    test_path = source_root / "backend" / "tests" / ANDROID_CANARY_TEST.name
+    script_path = source_root / "scripts" / ANDROID_CANARY_SCRIPT.name
+    test_path.parent.mkdir(parents=True)
+    script_path.parent.mkdir()
+    shutil.copy2(ANDROID_CANARY_TEST, test_path)
+    shutil.copy2(ANDROID_CANARY_SCRIPT, script_path)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", str(test_path)],
+        cwd=source_root,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    assert completed.returncode == 0, completed.stdout
+
+
 def test_windows_candidate_installs_test_lock_only_after_candidate_build() -> None:
     workflow = WINDOWS_CANDIDATE.read_text(encoding="utf-8")
     build = workflow.index("- name: Build the unsigned executable exactly once")
@@ -285,20 +326,27 @@ def test_windows_release_bridge_signs_archived_bytes_without_rebuild() -> None:
     }
 
 
-def test_ci_only_python_manifest_cannot_enter_product_artifacts() -> None:
+def test_ci_only_python_manifest_cannot_enter_deep_product_artifacts() -> None:
     product_inputs = (
         REPO_ROOT / "Dockerfile",
         REPO_ROOT / "backend" / "requirements.txt",
-        REPO_ROOT / "components/AstralProjection/windows-client/AstralDeep.spec",
-        REPO_ROOT / "components/AstralProjection/windows-client/requirements.in",
-        REPO_ROOT / "components/AstralProjection/apple-clients/AstralCore/Package.swift",
-        REPO_ROOT / "components/AstralProjection/android-client/settings.gradle.kts",
     )
     for path in product_inputs:
         assert "tooling/python-ci" not in path.read_text(encoding="utf-8"), path
 
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert re.search(r"(?mi)^\s*COPY\s+\.\s", dockerfile) is None
+
+
+def test_ci_only_python_manifest_cannot_enter_projection_product_artifacts() -> None:
+    projection_inputs = (
+        REPO_ROOT / "components/AstralProjection/windows-client/AstralDeep.spec",
+        REPO_ROOT / "components/AstralProjection/windows-client/requirements.in",
+        REPO_ROOT / "components/AstralProjection/apple-clients/AstralCore/Package.swift",
+        REPO_ROOT / "components/AstralProjection/android-client/settings.gradle.kts",
+    )
+    for path in projection_inputs:
+        assert "tooling/python-ci" not in path.read_text(encoding="utf-8"), path
 
 
 def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> None:

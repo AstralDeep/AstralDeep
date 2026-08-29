@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import inspect
 import re
+from pathlib import Path
 
+import astralplane
+import pytest
 from astralplane import create_repository_catalog
 from astralplane.database.baseline import BASELINE_REQUIRED_TABLES
 from astralplane.database.legacy_baseline_066 import LEGACY_BASELINE_SOURCE_BLOB
@@ -14,10 +17,13 @@ from astralplane.database.migrations import (
     MIGRATION_REGISTRY,
     PLANE_SCHEMA_074_004_MIGRATION,
 )
+from astralplane.database import migrations as plane_migrations
 from astralplane.repositories.voice import VoiceRepository
 
 from orchestrator.voice_sessions import VoiceSessionRepository
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+EMBEDDED_PLANE_SOURCE = (REPO_ROOT / "components/AstralPlane/src").resolve()
 _EXPECTED_VOICE_RECORD_OPERATIONS = {
     "abandon_chat_turns",
     "abandon_unaccepted_session_turns",
@@ -54,20 +60,41 @@ _EXPECTED_VOICE_RECORD_OPERATIONS = {
 }
 
 
+def _require_embedded_plane_source(module_file: str | None) -> Path:
+    if module_file is None:
+        raise AssertionError("astralplane has no import source")
+    resolved = Path(module_file).resolve(strict=True)
+    try:
+        resolved.relative_to(EMBEDDED_PLANE_SOURCE)
+    except ValueError as exc:
+        raise AssertionError(
+            f"astralplane resolved outside embedded source: {resolved}"
+        ) from exc
+    return resolved
+
+
 def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
     """Deep consumes, but does not recreate, Plane's guarded schema lineage."""
 
-    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "074.004"
+    _require_embedded_plane_source(astralplane.__file__)
+    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "075.001"
     assert CURRENT_DATA_PLANE_REVISION.migration_digest == MIGRATION_REGISTRY.digest
+    migration_075 = getattr(plane_migrations, "PLANE_SCHEMA_075_MIGRATION", None)
+    assert migration_075 is not None
+    assert migration_075.source_revisions == ("074.004",)
+    assert migration_075.target_revision == "075.001"
     assert PLANE_SCHEMA_074_004_MIGRATION.target_revision == "074.004"
     assert PLANE_SCHEMA_074_004_MIGRATION.checksum == (
         "c46e2f8ca8060f7ed5ca48da8ac33d2f7078a1b141185d9c843ace66821f01df"
     )
-    assert MIGRATION_REGISTRY.digest == (
+    assert getattr(plane_migrations, "PLANE_SCHEMA_074_004_REGISTRY_DIGEST", None) == (
         "31495e9b916301e5d9d5011f256224e62e0a0822e25fdf3b9c339beb695eff50"
     )
+    assert MIGRATION_REGISTRY.digest == (
+        "755faecd45a7d8ca9956f25a239bed476802b885efdce29a36dc3b66981f94df"
+    )
     assert CURRENT_SCHEMA_VERIFIER_CHECKSUM == (
-        "bd5ff43f781e08fe127a6e28ae9bd9b57a796190360215ee485941bc56870e69"
+        "bc32928ec26f75eec92c632a536cb9853d3e6db6e3fc45c271ea69abde5510fe"
     )
     assert LEGACY_BASELINE_SOURCE_BLOB == "39cdc1d328f17840305b88158a892f5fd09c96dd"
     assert {"voice_session", "voice_turn"} <= BASELINE_REQUIRED_TABLES
@@ -96,3 +123,10 @@ def test_deep_voice_coordinator_matches_the_plane_catalog_exactly() -> None:
     assert not (operations - set(dir(catalog_voice)))
     assert "shared.database" not in source
     assert ".cursor(" not in source
+
+
+def test_imported_astralplane_is_bound_to_embedded_source() -> None:
+    source = _require_embedded_plane_source(astralplane.__file__)
+    assert source == EMBEDDED_PLANE_SOURCE / "astralplane/__init__.py"
+    with pytest.raises(AssertionError, match="outside embedded source"):
+        _require_embedded_plane_source(re.__file__)

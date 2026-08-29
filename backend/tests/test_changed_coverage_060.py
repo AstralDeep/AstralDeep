@@ -276,6 +276,7 @@ def _projection_strict_case(
             "    value: int,\n) -> int:\n    return value\n"
         ),
         "windows-client/runtime.py": "value = 0\n",
+        "windows-client/asr-helper/FrameProtocol.cs": "int value = 0;\n",
         "backend/webrender/static/client.js": "const value = 0;\n",
         "android-client/app/src/main/kotlin/com/example/App.kt": "val value = 0\n",
         "android-client/core/src/main/kotlin/com/example/Core.kt": "val value = 0\n",
@@ -307,6 +308,11 @@ def _projection_strict_case(
         },
     )
     windows = _cobertura(tmp_path / "windows.xml", "windows-client/runtime.py", {1: 1})
+    windows_csharp = _cobertura(
+        tmp_path / "windows-csharp.xml",
+        "windows-client/asr-helper/FrameProtocol.cs",
+        {1: 1},
+    )
     javascript = tmp_path / "javascript.json"
     javascript.write_text(
         json.dumps(
@@ -347,6 +353,7 @@ def _projection_strict_case(
     slots = {
         "projection_python": projection,
         "windows": windows,
+        "windows_csharp": windows_csharp,
         "javascript": javascript,
         "android_app": android_app,
         "android_core": android_core,
@@ -357,6 +364,7 @@ def _projection_strict_case(
     reports = {
         "projection_python": [projection],
         "windows_python": [windows],
+        "windows_csharp": [windows_csharp],
         "javascript": [javascript],
         "android_app": [android_app],
         "android_core": [android_core],
@@ -393,6 +401,7 @@ def test_repository_profiles_partition_owned_producers() -> None:
     assert collector.REPOSITORY_PROFILES["projection"].producer_keys == (
         "projection_python",
         "windows",
+        "windows_csharp",
         "javascript",
         "android_app",
         "android_core",

@@ -9,7 +9,10 @@ generation/revision compare-and-swap fences before changing state.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import re
+import unicodedata
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -55,7 +58,7 @@ _ACTIVE_TURN_STATES = frozenset(
     {"recognizing", "submitting", "accepted", "processing", "waiting_on_user"}
 )
 _DEVICE_KINDS = frozenset({"web", "windows", "android", "ios", "macos", "watchos"})
-_TRANSPORTS = frozenset({"livekit", "watch_pcm_websocket"})
+_TRANSPORTS = frozenset({"livekit", "watch_pcm_websocket", "client_local"})
 _PLAYOUT_KINDS = frozenset(
     {
         "greeting",
@@ -146,16 +149,17 @@ class CreateSession:
     device_id: str
     device_kind: str
     transport: str
-    room_name: str
-    participant_identity: str
+    room_name: str | None
+    participant_identity: str | None
     visible_chat_id: str
     owner_connection_generation: str
     control_binding_id: str
     control_binding_expires_at: datetime
     lease_expires_at: datetime
-    media_grant_nonce_hash: bytes = field(repr=False)
-    media_grant_issued_at: datetime = field(repr=False)
-    media_grant_expires_at: datetime = field(repr=False)
+    media_grant_nonce_hash: bytes | None = field(repr=False)
+    media_grant_issued_at: datetime | None = field(repr=False)
+    media_grant_expires_at: datetime | None = field(repr=False)
+    speech_backend: str = "llm_factory"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "user_id", _user_id(self.user_id))
@@ -171,29 +175,49 @@ class CreateSession:
             )
         if self.device_kind not in _DEVICE_KINDS:
             raise ValueError("invalid_device_kind")
+        if self.speech_backend not in {"llm_factory", "client_local"}:
+            raise ValueError("invalid_speech_backend")
         if self.transport not in _TRANSPORTS:
             raise ValueError("invalid_transport")
-        object.__setattr__(
-            self, "room_name", _opaque(self.room_name, "invalid_room_name")
-        )
-        object.__setattr__(
-            self,
-            "participant_identity",
-            _opaque(self.participant_identity, "invalid_participant_identity"),
-        )
-        for name in (
-            "control_binding_expires_at",
-            "lease_expires_at",
-            "media_grant_issued_at",
-            "media_grant_expires_at",
-        ):
+        if self.speech_backend == "llm_factory" and self.transport == "client_local":
+            raise ValueError("invalid_transport")
+        if self.speech_backend == "client_local" and self.transport != "client_local":
+            raise ValueError("invalid_transport")
+        for name in ("control_binding_expires_at", "lease_expires_at"):
             object.__setattr__(
                 self, name, _aware(getattr(self, name), f"invalid_{name}")
             )
-        nonce_hash = _nonce_hash(self.media_grant_nonce_hash)
-        object.__setattr__(self, "media_grant_nonce_hash", nonce_hash)
-        if self.media_grant_expires_at <= self.media_grant_issued_at:
-            raise ValueError("invalid_media_grant_expiry")
+        if self.speech_backend == "llm_factory":
+            object.__setattr__(
+                self, "room_name", _opaque(self.room_name, "invalid_room_name")
+            )
+            object.__setattr__(
+                self,
+                "participant_identity",
+                _opaque(
+                    self.participant_identity,
+                    "invalid_participant_identity",
+                ),
+            )
+            for name in ("media_grant_issued_at", "media_grant_expires_at"):
+                object.__setattr__(
+                    self, name, _aware(getattr(self, name), f"invalid_{name}")
+                )
+            nonce_hash = _nonce_hash(self.media_grant_nonce_hash)
+            object.__setattr__(self, "media_grant_nonce_hash", nonce_hash)
+            if self.media_grant_expires_at <= self.media_grant_issued_at:
+                raise ValueError("invalid_media_grant_expiry")
+        elif any(
+            value is not None
+            for value in (
+                self.room_name,
+                self.participant_identity,
+                self.media_grant_nonce_hash,
+                self.media_grant_issued_at,
+                self.media_grant_expires_at,
+            )
+        ):
+            raise ValueError("client_local_remote_media_fields")
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +402,104 @@ class TranscriptSubmission:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class LocalTranscriptSubmission:
+    """One call-stack-only local transcript attestation.
+
+    The server constructs this only after the authenticated socket registry
+    validates the client final. It contains no client-minted worker proof and
+    is never persisted.
+    """
+
+    user_id: str
+    session_id: str
+    generation: int
+    speech_revision: int
+    turn_id: str
+    client_turn_id: str
+    submission_id: str
+    request_generation: str
+    chat_id: str
+    chat_context_revision: int
+    device_id: str
+    connection_generation: str
+    binding_id: str
+    expected_control_owner_id: str
+    detected_language: str
+    canonical_text: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "user_id", _user_id(self.user_id))
+        for name in (
+            "session_id",
+            "turn_id",
+            "client_turn_id",
+            "submission_id",
+            "request_generation",
+            "chat_id",
+            "device_id",
+            "connection_generation",
+            "binding_id",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _uuid4(getattr(self, name), f"invalid_{name}"),
+            )
+        for name in ("generation", "speech_revision", "chat_context_revision"):
+            _positive(getattr(self, name), f"invalid_{name}")
+        object.__setattr__(
+            self,
+            "expected_control_owner_id",
+            _opaque(
+                self.expected_control_owner_id,
+                "invalid_control_owner_id",
+                max_length=128,
+            ),
+        )
+        if self.detected_language != "en":
+            raise ValueError("invalid_detected_language")
+        if not isinstance(self.canonical_text, str):
+            raise TypeError("invalid_transcript_text")
+
+    @classmethod
+    def from_authority(
+        cls,
+        *,
+        user_id: str,
+        authority: Any,
+        expected_control_owner_id: str,
+        detected_language: str,
+        canonical_text: str,
+    ) -> "LocalTranscriptSubmission":
+        return cls(
+            user_id=user_id,
+            session_id=authority.session_id,
+            generation=authority.generation,
+            speech_revision=authority.speech_revision,
+            turn_id=authority.turn_id,
+            client_turn_id=authority.client_turn_id,
+            submission_id=authority.submission_id,
+            request_generation=authority.request_generation,
+            chat_id=authority.chat_id,
+            chat_context_revision=authority.chat_context_revision,
+            device_id=authority.device_id,
+            connection_generation=authority.connection_generation,
+            binding_id=authority.binding_id,
+            expected_control_owner_id=expected_control_owner_id,
+            detected_language=detected_language,
+            canonical_text=canonical_text,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            "LocalTranscriptSubmission("
+            f"user_id={self.user_id!r}, session_id={self.session_id!r}, "
+            f"turn_id={self.turn_id!r}, client_turn_id={self.client_turn_id!r}, "
+            "canonical_text=<redacted>)"
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class TranscriptAdmission:
     """Verified canonical content plus its content-free durable turn."""
 
@@ -422,6 +544,7 @@ class SessionUpdate:
     expected_generation: int
     expected_media_grant_revision: int
     control: SessionControl
+    expected_speech_backend: str = "llm_factory"
     visible_chat_id: str | None = None
     speech_muted: bool | None = None
     microphone_enabled: bool | None = None
@@ -441,6 +564,8 @@ class SessionUpdate:
         )
         if not isinstance(self.control, SessionControl):
             raise TypeError("control must be SessionControl")
+        if self.expected_speech_backend not in {"llm_factory", "client_local"}:
+            raise ValueError("invalid_expected_speech_backend")
         if self.visible_chat_id is not None:
             object.__setattr__(
                 self,
@@ -471,17 +596,6 @@ class SessionUpdate:
             raise ValueError("invalid_foreground_state")
         if self.interaction is False:
             raise ValueError("invalid_interaction")
-        if all(
-            value is None
-            for value in (
-                self.visible_chat_id,
-                self.speech_muted,
-                self.microphone_enabled,
-                self.foreground_active,
-                self.interaction,
-            )
-        ):
-            raise ValueError("empty_session_update")
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,8 +608,8 @@ class VoiceSessionRecord:
     device_id: str
     device_kind: str
     transport: str
-    room_name: str
-    participant_identity: str
+    room_name: str | None
+    participant_identity: str | None
     worker_identity: str | None
     visible_chat_id: str
     chat_context_revision: int
@@ -522,15 +636,16 @@ class VoiceSessionRecord:
     end_reason: str | None
     chat_unavailable_at: datetime | None
     takeover_of_session_id: str | None
-    media_grant_nonce_hash: bytes = field(repr=False)
-    media_grant_expires_at: datetime = field(repr=False)
+    media_grant_nonce_hash: bytes | None = field(repr=False)
+    media_grant_expires_at: datetime | None = field(repr=False)
     media_grant_consumed_at: datetime | None = field(repr=False)
     last_media_refresh_id: str | None
-    media_grant_issued_at: datetime = field(repr=False)
+    media_grant_issued_at: datetime | None = field(repr=False)
     worker_assignment_id: str | None
-    worker_rtc_grant_revision: int
+    worker_rtc_grant_revision: int | None
     worker_rtc_grant_issued_at: datetime | None = field(repr=False)
     worker_rtc_grant_expires_at: datetime | None = field(repr=False)
+    speech_backend: str = "llm_factory"
 
     @property
     def chat_context_synced(self) -> bool:
@@ -966,6 +1081,7 @@ class VoiceSessionRepository:
         session_id: str,
         expected_generation: int,
         expected_media_grant_revision: int,
+        expected_speech_backend: str | None = None,
         control: SessionControl,
         now: datetime,
     ) -> VoiceSessionRecord:
@@ -978,6 +1094,7 @@ class VoiceSessionRepository:
             row = self._session_for_update(transaction, user_id, session_id)
             self._assert_live(row)
             self._assert_fences(row, expected_generation, expected_media_grant_revision)
+            self._assert_speech_backend(row, expected_speech_backend)
             row = self._apply_control_binding(transaction, row, control, now)
         return _session(row)
 
@@ -1004,6 +1121,7 @@ class VoiceSessionRepository:
                 request.expected_generation,
                 request.expected_media_grant_revision,
             )
+            self._assert_speech_backend(row, request.expected_speech_backend)
             row = self._apply_control_binding(
                 transaction,
                 row,
@@ -1140,6 +1258,8 @@ class VoiceSessionRepository:
         user_id: str,
         reason: str,
         now: datetime,
+        expected_session_id: str | None = None,
+        expected_generation: int | None = None,
     ) -> VoiceSessionRecord | None:
         """End one user's current media session for an authenticated lifecycle.
 
@@ -1153,6 +1273,14 @@ class VoiceSessionRepository:
         user_id = _user_id(user_id)
         if reason not in {"logout", "auth_expired"}:
             raise ValueError("invalid_identity_end_reason")
+        if (expected_session_id is None) != (expected_generation is None):
+            raise ValueError("incomplete_identity_end_fence")
+        if expected_session_id is not None:
+            expected_session_id = _uuid4(
+                expected_session_id,
+                "invalid_session_id",
+            )
+            _positive(expected_generation, "invalid_generation")
         now = _aware(now, "invalid_current_time")
         with self._transaction() as transaction:
             self._lock_identity(transaction, "owner", user_id)
@@ -1161,7 +1289,23 @@ class VoiceSessionRepository:
                 owner_id=user_id,
                 for_update=True,
             )
+            if expected_session_id is not None and row is not None and (
+                str(row["session_id"]) != expected_session_id
+                or int(row["generation"]) != expected_generation
+            ):
+                raise StaleSessionFence("stale_generation")
             if row is None:
+                if expected_session_id is not None:
+                    exact = self._voice.get_session_record(
+                        transaction,
+                        owner_id=user_id,
+                        session_id=expected_session_id,
+                    )
+                    if exact is not None and (
+                        int(exact["generation"]) == expected_generation
+                        and exact.get("ended_at") is not None
+                    ):
+                        return _session(exact)
                 return None
             ended = self._end_session_row(
                 transaction,
@@ -2409,6 +2553,127 @@ class VoiceSessionRepository:
             replayed=replayed,
         )
 
+    def admit_local_transcript(
+        self,
+        request: LocalTranscriptSubmission,
+        *,
+        now: datetime,
+    ) -> TranscriptAdmission:
+        """Admit a server-attested local final through the sibling lane.
+
+        This deliberately shares the durable turn transition and return type
+        with the remote lane while retaining separate authority: there is no
+        worker assignment, HMAC secret, proof, endpoint, or credential.
+        """
+
+        if not isinstance(request, LocalTranscriptSubmission):
+            raise TypeError("request must be LocalTranscriptSubmission")
+        now = _aware(now, "invalid_current_time")
+        with self._transaction() as transaction:
+            row = self._voice.get_turn_record(
+                transaction,
+                owner_id=request.user_id,
+                turn_id=request.turn_id,
+                for_update=True,
+            )
+            if row is None:
+                raise TranscriptSubmissionRejected("invalid_binding", "none")
+            session = self._voice.get_session_record(
+                transaction,
+                owner_id=request.user_id,
+                session_id=request.session_id,
+                for_update=True,
+            )
+            if session is None or session.get("ended_at") is not None:
+                raise TranscriptSubmissionRejected("stale_session", "none")
+            expected = {
+                "session_id": request.session_id,
+                "session_generation": request.generation,
+                "media_grant_revision": request.speech_revision,
+                "turn_id": request.turn_id,
+                "client_turn_id": request.client_turn_id,
+                "submission_id": request.submission_id,
+                "request_generation": request.request_generation,
+                "chat_id": request.chat_id,
+                "chat_context_revision": request.chat_context_revision,
+            }
+            binding_matches = all(
+                (
+                    int(row[name]) == value
+                    if name
+                    in {
+                        "session_generation",
+                        "media_grant_revision",
+                        "chat_context_revision",
+                    }
+                    else str(row[name]) == value
+                )
+                for name, value in expected.items()
+            )
+            session_matches = (
+                session.get("speech_backend") == "client_local"
+                and session.get("worker_assignment_id") is None
+                and str(session["user_id"]) == request.user_id
+                and str(session["device_id"]) == request.device_id
+                and str(session["owner_connection_generation"])
+                == request.connection_generation
+                and str(session["control_binding_id"]) == request.binding_id
+                and session["control_binding_expires_at"] > now
+                and session.get("control_owner_id")
+                == request.expected_control_owner_id
+                and session.get("control_lease_expires_at") is not None
+                and session["control_lease_expires_at"] > now
+                and session["lease_expires_at"] > now
+                and int(session["generation"]) == request.generation
+                and int(session["media_grant_revision"])
+                == request.speech_revision
+                and session["state"] == "active"
+                and bool(session["foreground_active"])
+                and bool(session["microphone_enabled"])
+                and not bool(session["speech_muted"])
+                and str(session["visible_chat_id"]) == request.chat_id
+                and int(session["chat_context_revision"])
+                == request.chat_context_revision
+                and session.get("applied_visible_chat_id")
+                == session.get("visible_chat_id")
+                and session.get("applied_chat_context_revision")
+                == session.get("chat_context_revision")
+            )
+            if not binding_matches or not session_matches:
+                raise TranscriptSubmissionRejected("invalid_binding", "none")
+            replayed = row["state"] == "submitting"
+            if row["state"] == "recognizing":
+                policy, output_reason = _language_policy(request.detected_language)
+                result_request_generation = (
+                    _uuid_text(row.get("result_request_generation"))
+                    or self._new_uuid4("result_request_generation")
+                )
+                row = self._voice.patch_turn_record(
+                    transaction,
+                    owner_id=request.user_id,
+                    turn_id=request.turn_id,
+                    updates={
+                        "state": "submitting",
+                        "detected_language": request.detected_language,
+                        "spoken_output_policy": policy,
+                        "output_reason": output_reason,
+                        "result_request_generation": result_request_generation,
+                        "updated_at": now,
+                    },
+                    expected_states=("recognizing",),
+                )
+                if row is None:
+                    raise TranscriptSubmissionRejected("invalid_binding", "none")
+            elif row["state"] != "submitting":
+                raise TranscriptSubmissionRejected("invalid_binding", "none")
+            elif row.get("detected_language") != request.detected_language:
+                raise TranscriptSubmissionRejected("invalid_binding", "none")
+        return TranscriptAdmission(
+            canonical_text=request.canonical_text,
+            turn=_turn(row),
+            replayed=replayed,
+        )
+
     def reject_transcript(
         self,
         *,
@@ -3078,6 +3343,7 @@ class VoiceSessionRepository:
                 "activation_id": request.activation_id,
                 "device_id": request.device_id,
                 "device_kind": request.device_kind,
+                "speech_backend": request.speech_backend,
                 "transport": request.transport,
                 "room_name": request.room_name,
                 "participant_identity": request.participant_identity,
@@ -3095,6 +3361,9 @@ class VoiceSessionRepository:
                 "media_grant_nonce_hash": request.media_grant_nonce_hash,
                 "media_grant_expires_at": request.media_grant_expires_at,
                 "media_grant_issued_at": request.media_grant_issued_at,
+                "worker_rtc_grant_revision": (
+                    1 if request.speech_backend == "llm_factory" else None
+                ),
             },
         )
         return row
@@ -3105,7 +3374,10 @@ class VoiceSessionRepository:
             raise ValueError("invalid_control_binding_expiry")
         if request.lease_expires_at <= now:
             raise ValueError("invalid_lease_expiry")
-        if request.media_grant_expires_at <= now:
+        if (
+            request.speech_backend == "llm_factory"
+            and request.media_grant_expires_at <= now
+        ):
             raise ValueError("invalid_media_grant_expiry")
 
     def _activation_row(
@@ -3131,6 +3403,7 @@ class VoiceSessionRepository:
         immutable = (
             (str(row["device_id"]), request.device_id),
             (row["device_kind"], request.device_kind),
+            (row.get("speech_backend", "llm_factory"), request.speech_backend),
             (row["transport"], request.transport),
             (row["room_name"], request.room_name),
             (row["participant_identity"], request.participant_identity),
@@ -3202,6 +3475,29 @@ class VoiceSessionRepository:
             generation=generation,
             now=now,
         )
+
+    def abandon_preacceptance_turns(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        generation: int,
+        now: datetime,
+    ) -> None:
+        """Abandon only recognizing/submitting rows for one exact generation."""
+
+        checked_now = _aware(now, "invalid_current_time")
+        with self._transaction() as transaction:
+            row = self._session_for_update(transaction, user_id, session_id)
+            if int(row["generation"]) != generation:
+                raise StaleSessionFence("stale_generation")
+            self._abandon_unaccepted_session_turns(
+                transaction,
+                owner_id=str(row["user_id"]),
+                session_id=str(row["session_id"]),
+                generation=generation,
+                now=checked_now,
+            )
 
     def _end_session_row(
         self,
@@ -3329,6 +3625,18 @@ class VoiceSessionRepository:
             raise StaleSessionFence("stale_media_grant_revision")
 
     @staticmethod
+    def _assert_speech_backend(
+        row: Mapping[str, Any],
+        expected_speech_backend: str | None,
+    ) -> None:
+        if expected_speech_backend is None:
+            return
+        if expected_speech_backend not in {"llm_factory", "client_local"}:
+            raise ValueError("invalid_expected_speech_backend")
+        if row.get("speech_backend", "llm_factory") != expected_speech_backend:
+            raise VoiceSessionRepositoryError("backend_mismatch")
+
+    @staticmethod
     def _assert_transcript_binding(
         turn: Mapping[str, Any],
         session: Mapping[str, Any],
@@ -3403,9 +3711,14 @@ def _session(row: Mapping[str, Any]) -> VoiceSessionRecord:
         activation_id=str(row["activation_id"]),
         device_id=str(row["device_id"]),
         device_kind=str(row["device_kind"]),
+        speech_backend=str(row.get("speech_backend", "llm_factory")),
         transport=str(row["transport"]),
-        room_name=str(row["room_name"]),
-        participant_identity=str(row["participant_identity"]),
+        room_name=(None if row.get("room_name") is None else str(row["room_name"])),
+        participant_identity=(
+            None
+            if row.get("participant_identity") is None
+            else str(row["participant_identity"])
+        ),
         worker_identity=row.get("worker_identity"),
         visible_chat_id=str(row["visible_chat_id"]),
         chat_context_revision=int(row["chat_context_revision"]),
@@ -3440,17 +3753,21 @@ def _session(row: Mapping[str, Any]) -> VoiceSessionRecord:
         end_reason=row.get("end_reason"),
         chat_unavailable_at=_optional_aware(row.get("chat_unavailable_at")),
         takeover_of_session_id=_uuid_text(row.get("takeover_of_session_id")),
-        media_grant_nonce_hash=bytes(row["media_grant_nonce_hash"]),
-        media_grant_expires_at=_aware(
-            row["media_grant_expires_at"], "invalid_media_grant_expiry"
+        media_grant_nonce_hash=(
+            None
+            if row.get("media_grant_nonce_hash") is None
+            else bytes(row["media_grant_nonce_hash"])
         ),
+        media_grant_expires_at=_optional_aware(row.get("media_grant_expires_at")),
         media_grant_consumed_at=_optional_aware(row.get("media_grant_consumed_at")),
         last_media_refresh_id=_uuid_text(row.get("last_media_refresh_id")),
-        media_grant_issued_at=_aware(
-            row["media_grant_issued_at"], "invalid_media_grant_issued_at"
-        ),
+        media_grant_issued_at=_optional_aware(row.get("media_grant_issued_at")),
         worker_assignment_id=_uuid_text(row.get("worker_assignment_id")),
-        worker_rtc_grant_revision=int(row["worker_rtc_grant_revision"]),
+        worker_rtc_grant_revision=(
+            None
+            if row.get("worker_rtc_grant_revision") is None
+            else int(row["worker_rtc_grant_revision"])
+        ),
         worker_rtc_grant_issued_at=_optional_aware(
             row.get("worker_rtc_grant_issued_at")
         ),
@@ -3536,6 +3853,44 @@ def _language_policy(detected_language: str) -> tuple[str, str]:
     if detected_language == "en" or detected_language.startswith("en-"):
         return "full_recap", "ready"
     return "english_lifecycle_only", "output_language_unsupported"
+
+
+def canonicalize_local_transcript(text: str, text_digest_sha256: str) -> str:
+    """Canonicalize one untrusted client-local final and verify its digest."""
+
+    if not isinstance(text, str) or not isinstance(text_digest_sha256, str):
+        raise TranscriptSubmissionRejected(
+            "malformed_final",
+            "explicit_user_retry",
+        )
+    canonical = unicodedata.normalize(
+        "NFC",
+        text.replace("\r\n", "\n").replace("\r", "\n"),
+    ).strip()
+    invalid_control = any(
+        character not in {"\n", "\t"}
+        and unicodedata.category(character).startswith("C")
+        for character in canonical
+    )
+    encoded = canonical.encode("utf-8")
+    if (
+        not canonical
+        or len(canonical) > 8_000
+        or len(encoded) > 32_000
+        or invalid_control
+        or re.fullmatch(r"[0-9a-f]{64}", text_digest_sha256) is None
+    ):
+        raise TranscriptSubmissionRejected(
+            "malformed_final",
+            "explicit_user_retry",
+        )
+    expected = hashlib.sha256(encoded).hexdigest()
+    if not hmac.compare_digest(expected, text_digest_sha256):
+        raise TranscriptSubmissionRejected(
+            "malformed_final",
+            "explicit_user_retry",
+        )
+    return canonical
 
 
 def _user_id(value: Any) -> str:

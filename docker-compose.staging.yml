@@ -116,6 +116,10 @@ services:
       FF_SCHEDULER_EXECUTION: "true"
       OPENAI_BASE_URL: ""
       OPENAI_API_KEY: ""
+      # The protected runtime env file may contain worker speech credentials.
+      # Keep those values out of the orchestrator process.
+      VOICE_SPEECH_BASE_URL: ""
+      VOICE_SPEECH_API_KEY: ""
       # Overridable: production/staging posture refuses the plaintext-derived
       # worker RTC URL (invalid_livekit_url) — point at the LiveKit TLS vhost.
       LIVEKIT_INTERNAL_URL: ${LIVEKIT_INTERNAL_URL:-http://livekit:7880}
