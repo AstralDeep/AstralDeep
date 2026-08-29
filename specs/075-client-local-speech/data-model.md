@@ -1,6 +1,6 @@
 # Data Model: Client-Local Conversational Speech
 
-**Feature**: `075-client-local-speech`  
+**Feature**: `075-client-local-speech`
 **Date**: 2026-08-28
 
 ## Design boundary

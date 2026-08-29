@@ -1,6 +1,6 @@
 # Speech and Media Plane Contract
 
-**Feature**: `075-client-local-speech`  
+**Feature**: `075-client-local-speech`
 **Authority**: AstralDeep selects one speech backend for the process. Neither media nor local
 recognition authorizes an Astral action; only the ordinary authenticated conversation dispatcher
 may accept a user turn.

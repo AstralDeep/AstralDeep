@@ -1,7 +1,7 @@
 # Research: Client-Local Conversational Speech
 
-**Feature**: `075-client-local-speech`  
-**Date**: 2026-08-28  
+**Feature**: `075-client-local-speech`
+**Date**: 2026-08-28
 **Scope**: AstralDeep orchestration/persistence, AstralProjection web/native clients, the retained LLM Factory worker path, and candidate-bound qualification.
 
 ## R-001 — Keep one server-owned deployment selector

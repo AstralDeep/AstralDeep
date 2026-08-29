@@ -33,4 +33,3 @@
 
 - The specification supersedes the remote-only product assumption only when the explicit client-local pipeline is selected; remote behavior remains the compatibility default.
 - Platform-specific implementation choices and dependency decisions belong in the implementation plan, not this user-facing specification.
-

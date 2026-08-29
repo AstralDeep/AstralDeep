@@ -1,6 +1,6 @@
 # Implementation and Verification Quickstart
 
-**Feature**: `075-client-local-speech`  
+**Feature**: `075-client-local-speech`
 **Purpose**: Dependency-ordered implementation, local verification, candidate qualification, and
 rollback runbook. Run commands from the named repository and do not push product branches until all
 locally executable gates are complete.
