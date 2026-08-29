@@ -147,7 +147,7 @@ async def test_local_ready_promotes_reconnecting_session_before_authorizing() ->
         worker_pool=None,
         repository=repository,
         coordinator=None,
-        capability=None,
+        capability=SimpleNamespace(feature_enabled=lambda: True),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
@@ -1238,7 +1238,7 @@ async def test_real_admission_refusal_retains_transient_rejection_handle() -> No
             reject_transcript=Mock(side_effect=RuntimeError("database unavailable"))
         ),
         coordinator=None,
-        capability=None,
+        capability=SimpleNamespace(feature_enabled=lambda: True),
         media=None,
         runtime=SimpleNamespace(_replica_id="voice-coordinator-local-1"),
         worker_control_settings=None,
