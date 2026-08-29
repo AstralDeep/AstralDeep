@@ -236,6 +236,20 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
     assert set(re.findall(r"(?m)^\s+([^\s]+\.py)\s*$", array)) == expected_test_paths
 
 
+def test_release_tooling_job_excludes_real_component_checkout_tests() -> None:
+    """Public release-tooling CI remains source-free while local gates use pins."""
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    job = _workflow_job(workflow, "release-tooling-tests")
+
+    assert "submodules: false" in job
+    assert set(re.findall(r"--deselect=([^\s\\]+)", job)) == {
+        "backend/tests/test_documentation_060.py::test_byo_guide_is_reachable_from_projection_apple_client_docs",
+        "backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts",
+        "scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts",
+        "scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands",
+    }
+
+
 def test_windows_candidate_installs_test_lock_only_after_candidate_build() -> None:
     workflow = WINDOWS_CANDIDATE.read_text(encoding="utf-8")
     build = workflow.index("- name: Build the unsigned executable exactly once")
@@ -285,20 +299,27 @@ def test_windows_release_bridge_signs_archived_bytes_without_rebuild() -> None:
     }
 
 
-def test_ci_only_python_manifest_cannot_enter_product_artifacts() -> None:
+def test_ci_only_python_manifest_cannot_enter_deep_product_artifacts() -> None:
     product_inputs = (
         REPO_ROOT / "Dockerfile",
         REPO_ROOT / "backend" / "requirements.txt",
-        REPO_ROOT / "components/AstralProjection/windows-client/AstralDeep.spec",
-        REPO_ROOT / "components/AstralProjection/windows-client/requirements.in",
-        REPO_ROOT / "components/AstralProjection/apple-clients/AstralCore/Package.swift",
-        REPO_ROOT / "components/AstralProjection/android-client/settings.gradle.kts",
     )
     for path in product_inputs:
         assert "tooling/python-ci" not in path.read_text(encoding="utf-8"), path
 
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert re.search(r"(?mi)^\s*COPY\s+\.\s", dockerfile) is None
+
+
+def test_ci_only_python_manifest_cannot_enter_projection_product_artifacts() -> None:
+    projection_inputs = (
+        REPO_ROOT / "components/AstralProjection/windows-client/AstralDeep.spec",
+        REPO_ROOT / "components/AstralProjection/windows-client/requirements.in",
+        REPO_ROOT / "components/AstralProjection/apple-clients/AstralCore/Package.swift",
+        REPO_ROOT / "components/AstralProjection/android-client/settings.gradle.kts",
+    )
+    for path in projection_inputs:
+        assert "tooling/python-ci" not in path.read_text(encoding="utf-8"), path
 
 
 def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> None:
