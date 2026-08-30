@@ -56,6 +56,20 @@ VOICE_REQUIRED_SERVER_CONTRACTS = {
     "voice_announcement_media.watch",
 }
 
+VOICE_075_CLIENT_FRAMES = {
+    "voice_local_ready",
+    "voice_local_recognition_started",
+    "voice_local_final",
+    "voice_local_recognition_failed",
+    "voice_local_playout_event",
+}
+VOICE_075_SERVER_PUSHES = {
+    "voice_local_session_ready",
+    "voice_local_turn_bound",
+    "voice_local_final_rejected",
+    "voice_local_announcement",
+}
+
 # Modules that send frames on the UI websocket (or define their dataclasses).
 UI_SEND_MODULES = [
     "orchestrator/orchestrator.py",
@@ -80,6 +94,7 @@ SWEEP_ALLOWLIST = {
     "llm_config_set", "llm_config_clear",
     "tool_stream_data", "tool_stream_end", "tool_stream_cancel",
     "voice_playout_event",
+    *VOICE_075_CLIENT_FRAMES,
     # Bidirectional transport controls are handled before UI dispatch and do
     # not enter the semantic server-push vocabulary.
     "ping", "pong", "close", "cancel", "cancel_task",
@@ -154,6 +169,19 @@ def test_manifest_is_well_formed():
     assert len(m["component_types"]) == len(set(m["component_types"]))
     assert m["component_types"] == sorted(m["component_types"])
     assert "error" in _push_names(m) and "notification" in _push_names(m)
+
+
+def test_voice_075_frames_have_exact_directions_and_sweep_classification():
+    manifest = _manifest()
+    exact_frames = set(
+        manifest["frame_contracts"]["voice_075"]["exact_frame_fields"]
+    )
+    manifested_pushes = _push_names(manifest)
+
+    assert exact_frames == VOICE_075_CLIENT_FRAMES | VOICE_075_SERVER_PUSHES
+    assert VOICE_075_SERVER_PUSHES <= manifested_pushes
+    assert VOICE_075_CLIENT_FRAMES.isdisjoint(manifested_pushes)
+    assert VOICE_075_CLIENT_FRAMES <= SWEEP_ALLOWLIST
 
 
 def test_admission_refusal_contract_is_exact_and_correlatable():

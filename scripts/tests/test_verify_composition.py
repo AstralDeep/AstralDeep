@@ -52,11 +52,11 @@ EXPECTED_PLANE_SCHEMA_REVISION_075 = "075.001"
 EXPECTED_PLANE_MIGRATION_SHA256_075 = (
     "755faecd45a7d8ca9956f25a239bed476802b885efdce29a36dc3b66981f94df"
 )
-EXPECTED_PROJECTION_COMMIT_075_FOUNDATION = (
-    "0dcf1699951671f111d4c1a5689c435e3cf50496"
+EXPECTED_PROJECTION_COMMIT_075_RELEASE = (
+    "95f81af088e73b383d243d27f13e03ab86254408"
 )
-EXPECTED_PROJECTION_PROTOCOL_SHA256_075_FOUNDATION = (
-    "cf30e7a25087cef4dc9bcff4d272d501eef6b128fa48582d2bdb753a68caf904"
+EXPECTED_PROJECTION_PROTOCOL_SHA256_075_RELEASE = (
+    "114313f83d0c0f7cf76346bddc8c769a02b03d1cc9997c3b23c560303e254b02"
 )
 
 
@@ -379,10 +379,10 @@ def test_feature_075_composition_pins_exact_plane_and_retains_projection() -> No
         EXPECTED_PLANE_MIGRATION_SHA256_075
     )
     assert manifest["components"]["astral-projection"]["commit"] == (
-        EXPECTED_PROJECTION_COMMIT_075_FOUNDATION
+        EXPECTED_PROJECTION_COMMIT_075_RELEASE
     )
     assert manifest["compatibility"]["ui_protocol"]["sha256"] == (
-        EXPECTED_PROJECTION_PROTOCOL_SHA256_075_FOUNDATION
+        EXPECTED_PROJECTION_PROTOCOL_SHA256_075_RELEASE
     )
 
     assert _gitlink_commit(
@@ -390,7 +390,7 @@ def test_feature_075_composition_pins_exact_plane_and_retains_projection() -> No
     ) == EXPECTED_PLANE_COMMIT_075
     assert _gitlink_commit(
         REPOSITORY_ROOT, COMPONENT_PATHS["astral-projection"]
-    ) == EXPECTED_PROJECTION_COMMIT_075_FOUNDATION
+    ) == EXPECTED_PROJECTION_COMMIT_075_RELEASE
 
 
 def test_synthetic_exact_pins_and_no_floating_branch_pass(checkout: Path) -> None:
