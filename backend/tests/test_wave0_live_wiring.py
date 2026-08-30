@@ -265,8 +265,10 @@ async def test_context_editing_tombstones_old_tool_output(orchestrator, wave0_fl
     assert contents[0] == TOMBSTONE, "the oldest round must be tombstoned"
     assert "<<UNTRUSTED" in contents[-1], "the most recent round stays in full"
     # Tombstoning preserves the tool/assistant pairing the API requires.
+    # Tool-result messages must stay within the provider's supported schema.
     for m in tool_msgs:
-        assert m.get("tool_call_id") and m.get("name") == "search_tool"
+        assert m.get("tool_call_id")
+        assert "name" not in m
 
     await asyncio.to_thread(
         orchestrator.history.delete_chat, chat_id, user_id="wave0-user")

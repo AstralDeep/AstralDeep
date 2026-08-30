@@ -12,6 +12,7 @@ from voice_agent.speech_adapters import (
     KOKORO_SAMPLE_RATE,
     MAX_QUANTUM_SAMPLES,
     SERVER_OWNED_PHRASE_TEXTS,
+    SHORT_TERMINAL_PHRASE_TEXTS,
     TTS_CACHE_MAX_ENTRIES,
     TTS_CACHE_MAX_TEXT_CHARS,
     FixedPhraseTTSCache,
@@ -253,6 +254,19 @@ def test_phrase_vocabulary_matches_coordinator_source_of_truth() -> None:
         assert (
             coordinator.APPROVED_PHRASE_TEXT[phrase_key] in SERVER_OWNED_PHRASE_TEXTS
         )
+    short_keys = {
+        phrase_key
+        for kind in coordinator._SHORT_TERMINAL_KINDS
+        for phrase_key in coordinator.APPROVED_PHRASE_KEYS[kind]
+    }
+    short_keys.update(
+        phrase_key
+        for kind, phrase_key in coordinator.PREACCEPTANCE_REJECTION_PHRASES.values()
+        if kind in coordinator._SHORT_TERMINAL_KINDS
+    )
+    assert frozenset(SHORT_TERMINAL_PHRASE_TEXTS) == frozenset(
+        coordinator.APPROVED_PHRASE_TEXT[key] for key in short_keys
+    )
 
 
 def test_cache_bound_is_documented_and_under_seven_mib() -> None:

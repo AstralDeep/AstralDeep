@@ -16019,7 +16019,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "name": tc.function.name,
                             "content": tool_content,
                         })
 
