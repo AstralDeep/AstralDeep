@@ -30,6 +30,7 @@ MAX_TRANSCRIPT_CHARS = 8_000
 _WAV_CONTAINER_ALLOWANCE = 65_536
 _TTS_TIMEOUT_SECONDS = 8.0
 _TTS_ATTEMPTS = 2
+_SHORT_TERMINAL_PREFLIGHT_TIMEOUT_SECONDS = 20.0
 _ASR_TIMEOUT_SECONDS = 15.0
 _ASR_ATTEMPTS = 2
 _ASR_RESPONSE_BYTES = 65_536
@@ -149,9 +150,25 @@ class SpeechPreflight:
                 _component_failure(exc.reason, "tts_unavailable")
             ) from None
         else:
-            # Keep neither the validation phrase nor synthesized PCM beyond
-            # this bounded startup call.
             del audio
+        try:
+            async with asyncio.timeout(_SHORT_TERMINAL_PREFLIGHT_TIMEOUT_SECONDS):
+                for text in SHORT_TERMINAL_PHRASE_TEXTS:
+                    try:
+                        audio = await self._tts.synthesize(
+                            text,
+                            max_duration_samples=SHORT_TERMINAL_SAMPLES,
+                        )
+                    except SpeechAdapterError as exc:
+                        raise SpeechPreflightError(
+                            _component_failure(exc.reason, "tts_unavailable")
+                        ) from None
+                    else:
+                        # Keep neither the fixed phrase nor synthesized PCM
+                        # beyond its bounded startup call.
+                        del audio
+        except TimeoutError:
+            raise SpeechPreflightError("tts_unavailable") from None
         return SpeechPreflightResult()
 
     async def _model_inventory(self) -> Any:
@@ -304,15 +321,26 @@ SERVER_OWNED_PHRASE_TEXTS = frozenset(
         "Please grant the requested permission so I can continue.",
         "Please review the approval request so I can continue.",
         "Please set up your AI provider in Settings so I can continue.",
-        "Your sensitive result is ready.",
-        "I couldn't complete that request.",
-        "I can't help with that request.",
-        "I can't accept that request right now. Please try again.",
-        "That conversation is no longer available. Please choose one and try again.",
-        "I couldn't accept that request. Please try again.",
-        "I didn't understand that. Please try again.",
-        "That request was cancelled.",
+        "Private result ready.",
+        "Request failed.",
+        "I can't help with that.",
+        "Please try again later.",
+        "Choose another chat.",
+        "Please try that again.",
+        "Please say that again.",
+        "Request cancelled.",
     }
+)
+SHORT_TERMINAL_SAMPLES = 36_000
+SHORT_TERMINAL_PHRASE_TEXTS = (
+    "Private result ready.",
+    "Request failed.",
+    "I can't help with that.",
+    "Please try again later.",
+    "Choose another chat.",
+    "Please try that again.",
+    "Please say that again.",
+    "Request cancelled.",
 )
 # Bound: every cached entry is a validated SynthesizedAudio of at most
 # MAX_QUANTUM_SAMPLES (96,000) samples at 2 bytes/sample, so the cache holds

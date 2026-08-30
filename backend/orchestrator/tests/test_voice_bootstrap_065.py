@@ -5912,7 +5912,7 @@ async def test_preacceptance_malformed_final_is_an_honest_retry_refusal() -> Non
     )
     await _eventually(lambda: len(media.calls) == 1)
     assert media.calls[0]["kind"] == "refusal"
-    assert media.calls[0]["text"] == "I didn't understand that. Please try again."
+    assert media.calls[0]["text"] == "Please say that again."
     assert "complete" not in str(media.calls[0]["text"]).lower()
     media.finish()
     await prompt

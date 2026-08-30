@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from orchestrator.voice_coordinator import APPROVED_PHRASE_TEXT
 from orchestrator.tests.test_voice_bootstrap_065 import (
     _eventually,
     _runner_services,
@@ -17,9 +18,9 @@ from orchestrator.tests.test_voice_bootstrap_065 import (
 @pytest.mark.parametrize(
     ("terminal_kind", "announcement_kind", "expected_text"),
     (
-        ("failed", "failure", "I couldn't complete that request."),
-        ("refused", "refusal", "I can't help with that request."),
-        ("cancelled", "cancellation", "That request was cancelled."),
+        ("failed", "failure", "Request failed."),
+        ("refused", "refusal", "I can't help with that."),
+        ("cancelled", "cancellation", "Request cancelled."),
     ),
 )
 async def test_terminal_status_announcements_are_truthful_and_ephemeral(
@@ -61,6 +62,23 @@ async def test_terminal_status_announcements_are_truthful_and_ephemeral(
     finally:
         if runner is not None:
             await services._close_announcement_runner(turn.session_id, 1)
+
+
+@pytest.mark.parametrize(
+    ("phrase_key", "expected_text"),
+    (
+        ("sensitive_result_ready", "Private result ready."),
+        ("request_busy", "Please try again later."),
+        ("conversation_unavailable", "Choose another chat."),
+        ("request_retry_needed", "Please try that again."),
+        ("request_not_understood", "Please say that again."),
+    ),
+)
+def test_bounded_terminal_and_rejection_phrases_remain_concise(
+    phrase_key: str,
+    expected_text: str,
+) -> None:
+    assert APPROVED_PHRASE_TEXT[phrase_key] == expected_text
 
 
 @pytest.mark.asyncio

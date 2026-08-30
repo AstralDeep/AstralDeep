@@ -264,7 +264,6 @@ Rules:
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
-                                "name": tc.function.name,
                                 "content": content_str,
                             })
                             subtask.result = res.result if res else None

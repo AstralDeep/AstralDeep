@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import wave
@@ -9,6 +10,7 @@ from copy import deepcopy
 
 import pytest
 
+import voice_agent.speech_adapters as speech_adapters
 from voice_agent.speech_adapters import (
     ASR_MODEL,
     KOKORO_MODEL,
@@ -97,6 +99,19 @@ class FakeTransport:
         return self.asr if request.path == "/audio/transcriptions" else self.tts
 
 
+class BlockingTerminalTransport(FakeTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tts_requests = 0
+
+    async def post(self, request: HttpRequest) -> HttpResponse:
+        if request.path == "/audio/speech":
+            self.tts_requests += 1
+            if self.tts_requests > 1:
+                await asyncio.Event().wait()
+        return await super().post(request)
+
+
 @pytest.mark.asyncio
 async def test_preflight_proves_inventory_real_asr_and_af_heart_24khz_wav() -> None:
     transport = FakeTransport()
@@ -110,11 +125,9 @@ async def test_preflight_proves_inventory_real_asr_and_af_heart_24khz_wav() -> N
     assert result.tts_model == KOKORO_MODEL
     assert result.voice == "af_heart"
     assert result.sample_rate_hz == 24_000
-    assert [method for method, _request in transport.requests] == [
-        "GET",
-        "POST",
-        "POST",
-    ]
+    assert [method for method, _request in transport.requests] == ["GET"] + [
+        "POST"
+    ] * 10
     inventory_request = transport.requests[0][1]
     assert inventory_request.path == "/models"
     assert inventory_request.body == b""
@@ -128,15 +141,71 @@ async def test_preflight_proves_inventory_real_asr_and_af_heart_24khz_wav() -> N
     assert asr_request.path == "/audio/transcriptions"
     assert ASR_MODEL.encode() in asr_request.body
     assert b"RIFF" in asr_request.body
-    tts_request = transport.requests[2][1]
-    assert tts_request.path == "/audio/speech"
-    assert json.loads(tts_request.body) == {
+    tts_requests = [
+        request for _method, request in transport.requests if request.path == "/audio/speech"
+    ]
+    assert json.loads(tts_requests[0].body) == {
         "input": "On it!",
         "model": KOKORO_MODEL,
         "response_format": "wav",
         "voice": "af_heart",
     }
-    assert tts_request.max_response_bytes == 48_000 * 2 + 65_536
+    assert tts_requests[0].max_response_bytes == 48_000 * 2 + 65_536
+    assert {
+        json.loads(request.body)["input"] for request in tts_requests[1:]
+    } == {
+        "Private result ready.",
+        "Request failed.",
+        "I can't help with that.",
+        "Please try again later.",
+        "Choose another chat.",
+        "Please try that again.",
+        "Please say that again.",
+        "Request cancelled.",
+    }
+    assert all(
+        request.max_response_bytes == 36_000 * 2 + 65_536
+        for request in tts_requests[1:]
+    )
+
+
+@pytest.mark.asyncio
+async def test_preflight_rejects_a_terminal_phrase_over_the_1_5_second_ceiling() -> None:
+    transport = FakeTransport(
+        tts=HttpResponse(
+            status=200,
+            headers={"content-type": "audio/wav"},
+            body=_wav(36_001),
+        )
+    )
+
+    with pytest.raises(SpeechPreflightError, match="tts_unavailable"):
+        await SpeechPreflight(transport=transport, api_key="secret").run()
+
+    tts_requests = [
+        request for _method, request in transport.requests if request.path == "/audio/speech"
+    ]
+    assert len(tts_requests) == 2
+    assert tts_requests[-1].max_response_bytes == 36_000 * 2 + 65_536
+
+
+@pytest.mark.asyncio
+async def test_terminal_phrase_preflight_has_one_aggregate_deadline(monkeypatch) -> None:
+    monkeypatch.setattr(
+        speech_adapters,
+        "_SHORT_TERMINAL_PREFLIGHT_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+    transport = BlockingTerminalTransport()
+
+    with pytest.raises(SpeechPreflightError, match="tts_unavailable"):
+        await asyncio.wait_for(
+            SpeechPreflight(transport=transport, api_key="secret").run(),
+            timeout=0.25,
+        )
+
+    assert transport.tts_requests == 2
 
 
 def _inventory_response(value: object) -> HttpResponse:

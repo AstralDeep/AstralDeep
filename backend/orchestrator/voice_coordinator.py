@@ -68,16 +68,17 @@ APPROVED_PHRASE_TEXT = MappingProxyType(
         "llm_setup_needed": (
             "Please set up your AI provider in Settings so I can continue."
         ),
-        "sensitive_result_ready": "Your sensitive result is ready.",
-        "request_failed": "I couldn't complete that request.",
-        "request_refused": "I can't help with that request.",
-        "request_busy": "I can't accept that request right now. Please try again.",
-        "conversation_unavailable": (
-            "That conversation is no longer available. Please choose one and try again."
-        ),
-        "request_retry_needed": "I couldn't accept that request. Please try again.",
-        "request_not_understood": "I didn't understand that. Please try again.",
-        "request_cancelled": "That request was cancelled.",
+        # Short terminal and pre-acceptance phrases must fit the immutable
+        # 36,000-sample (1.5-second) command ceiling under the exact launch
+        # voice. Keep them concise; the full explanation remains on screen.
+        "sensitive_result_ready": "Private result ready.",
+        "request_failed": "Request failed.",
+        "request_refused": "I can't help with that.",
+        "request_busy": "Please try again later.",
+        "conversation_unavailable": "Choose another chat.",
+        "request_retry_needed": "Please try that again.",
+        "request_not_understood": "Please say that again.",
+        "request_cancelled": "Request cancelled.",
     }
 )
 
