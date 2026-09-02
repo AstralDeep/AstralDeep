@@ -20,6 +20,7 @@ def projection_chrome_availability() -> dict[str, bool]:
     byo = False
     remote = False
     computer = False
+    skills = False
     try:
         from dreaming.pulse import pulse_enabled
 
@@ -32,6 +33,7 @@ def projection_chrome_availability() -> dict[str, bool]:
         byo = bool(flags.is_enabled("byo_agents"))
         remote = bool(flags.is_enabled("remote_compute"))
         computer = bool(flags.is_enabled("computer_use"))
+        skills = bool(flags.is_enabled("user_skills"))
     except Exception:
         logger.warning("Unable to resolve agent chrome availability; hiding it", exc_info=True)
     return {
@@ -39,4 +41,5 @@ def projection_chrome_availability() -> dict[str, bool]:
         "byo_enabled": byo,
         "remote_enabled": remote,
         "computer_enabled": computer,
+        "skills_enabled": skills,
     }

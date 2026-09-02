@@ -100,6 +100,12 @@ class FeatureFlags:
             # defined flow), always through the permission/audit/PHI rails. A
             # "/"-prefixed message is ordinary chat when OFF (fail-open). Default ON.
             "slash_commands": self._read("FF_SLASH_COMMANDS", True),
+            # 077: user-authored skills (markdown files under the runtime
+            # knowledge dir) — always-skills join every turn's guidance,
+            # agent-scoped ones join that agent's pack, and a skill with a
+            # /command alias is a slash command. OFF ⇒ no digest lines, no
+            # expansion, no surface section (byte-identical). Default ON.
+            "user_skills": self._read("FF_USER_SKILLS", True),
             # 048-recursive-delegation-chains: gates minting/enforcing NESTED,
             # further-attenuated RFC 8693 `act` delegation tokens for sub-agent
             # fan-out and auto-created agents, bound to the persistent WebSocket

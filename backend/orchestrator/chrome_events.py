@@ -198,9 +198,31 @@ def is_native_sdui(orch, websocket) -> bool:
     return _device_type(orch, websocket) in _NATIVE_SDUI_DEVICE_TYPES
 
 
+def open_surface_for(orch, websocket) -> str:
+    """The surface key this socket last rendered and has not closed ("" when
+    none). Feature 077: background work (the quick-create pipeline) re-renders
+    a surface only while the person is still looking at it — never reopening
+    a modal they closed or replacing one they navigated to."""
+    return (getattr(orch, "_open_chrome_surface", None) or {}).get(id(websocket), "")
+
+
+def _note_open_surface(orch, websocket, surface_key: str) -> None:
+    table = getattr(orch, "_open_chrome_surface", None)
+    if table is None:
+        try:
+            table = orch._open_chrome_surface = {}
+        except Exception:  # noqa: BLE001 — a frozen test double
+            return
+    if surface_key:
+        table[id(websocket)] = surface_key
+    else:
+        table.pop(id(websocket), None)
+
+
 async def push_close(orch, websocket):
     """Device-aware modal close: web clears the HTML modal region; native SDUI
     clients receive the documented empty-components ``chrome_surface`` form."""
+    _note_open_surface(orch, websocket, "")
     if is_native_sdui(orch, websocket):
         await _push_surface(orch, websocket, "", "", False, [])
     else:
@@ -220,6 +242,7 @@ async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
     # desktop that can host). Exposed as a context variable for the duration of
     # the render — never through ``params``, which surfaces may serialize.
     token = current_surface_socket.set(websocket)
+    _note_open_surface(orch, websocket, surface_key)
     try:
         with perf_span("surface.render." + surface_key, surface=surface_key):
             if _device_type(orch, websocket) in _NATIVE_SDUI_DEVICE_TYPES:

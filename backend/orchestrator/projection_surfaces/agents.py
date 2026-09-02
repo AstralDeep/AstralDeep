@@ -191,7 +191,9 @@ def _enable_button(agent_id: str, enabled: bool, extra: dict) -> str:
 
 def _render_tabs(tab: str) -> str:
     parts = ['<div class="flex items-center gap-1.5" role="tablist">']
-    for key, label in (("mine", "My agents"), ("public", "Public")):
+    # 077: "Owned by me" — "My agents" is the name of the personal-agent
+    # surface in the settings menu, and this tab was the second thing so named.
+    for key, label in (("mine", "Owned by me"), ("public", "Public")):
         active = key == tab
         cls = _BTN_PRIMARY if active else _BTN_GHOST
         pl = _payload({"surface": "agents", "params": {"tab": key}})
@@ -259,7 +261,9 @@ async def _render_list(orch, user_id, tab: str) -> str:
     else:
         tab = "mine"
         visible = [a for a in rows if user_email and a.get("owner_email") == user_email]
-        empty_msg = "You don't own any agents yet. Create one from the Drafts tab or from chat."
+        empty_msg = ("You don't own any server-side agents yet. To build a personal agent that "
+                     "runs on your PC, use Settings → My agents & skills; a shared server-side "
+                     "agent starts from the Drafts tab (or from chat) and needs admin approval.")
     if visible:
         body = "".join(_render_agent_row(a, tab, user_email) for a in visible)
     else:

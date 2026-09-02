@@ -15116,7 +15116,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if flags.is_enabled("slash_commands"):
             try:
                 from orchestrator import slash_commands
-                _expanded = slash_commands.expand_message(message)
+                _user_commands = None
+                try:  # 077: the user's own /command skills (fail-open)
+                    from orchestrator import user_skills as _user_skills
+                    _skill_store = _user_skills.store_for(self)
+                    if _skill_store is not None and user_id:
+                        _user_commands = _skill_store.command_map(user_id) or None
+                except Exception:
+                    logger.debug("user_skills: command lookup skipped", exc_info=True)
+                _expanded = slash_commands.expand_message(message, _user_commands)
                 if _expanded != message:
                     if display_message is None:
                         display_message = message  # preserve what the user typed
@@ -15626,7 +15634,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _meta = {"__orchestrator__", "__scheduler__", "__memory__",
                              "__desktop_codegen__", "__subtasks__"}
                     _agents_in_play = {a for a in tool_to_agent.values() if a and a not in _meta}
-                    _digest = skill_packs.build_skill_digest(self.knowledge_index, _agents_in_play)
+                    _digest = skill_packs.build_skill_digest(
+                        self.knowledge_index, _agents_in_play, orch=self, owner=user_id)
                     if _digest:
                         system_prompt += f"\n{_digest}\n"
                 except Exception:

@@ -425,11 +425,23 @@ def _flag_off(monkeypatch):
 
 
 async def test_surface_refuses_when_flag_off(db, monkeypatch):
+    """FF_BYO_AGENTS off: no personal-agent affordance at all. Feature 077: the
+    skills section (its own flag, no desktop needed) is still there; with BOTH
+    flags off the surface is exactly the old single notice."""
     _flag_off(monkeypatch)
     orch = make_orch(db)
     html = await authoring.render(orch, OWNER, ["user"], {})
     assert "not enabled" in html
     assert "chrome_author_start" not in html          # no affordance at all
+    assert "chrome_author_quick_create" not in html
+    assert "chrome_skill_save" in html                 # skills need no host
+    comps = await authoring.components(orch, OWNER, ["user"], {})
+    assert comps[0]["type"] == "alert" and "not enabled" in comps[0]["message"]
+    assert not any(str(c.get("submit_action") or "").startswith("chrome_author") for c in comps)
+    from orchestrator import user_skills
+    monkeypatch.setattr(user_skills, "enabled", lambda: False)
+    html = await authoring.render(orch, OWNER, ["user"], {})
+    assert "not enabled" in html and "chrome_skill_save" not in html
     comps = await authoring.components(orch, OWNER, ["user"], {})
     assert len(comps) == 1 and comps[0]["type"] == "alert"
 
@@ -438,10 +450,18 @@ async def test_every_handler_refuses_when_flag_off(db, monkeypatch):
     _flag_off(monkeypatch)
     orch = make_orch(db)
     for action, fn in authoring.HANDLERS.items():
+        if action.startswith("chrome_skill_") or action == "chrome_author_list":
+            continue  # skills are not gated by FF_BYO_AGENTS; list is the shared home
         result = await fn(orch, None, OWNER, ["user"], {"draft_id": "x", "agent_id": "y"})
         assert result is not None, action
         _surface, _params, notice = result
         assert "not enabled" in notice, action
+    from orchestrator import user_skills
+    monkeypatch.setattr(user_skills, "enabled", lambda: False)
+    for action in ("chrome_author_list", "chrome_skill_save", "chrome_skill_edit",
+                   "chrome_skill_toggle", "chrome_skill_delete"):
+        result = await authoring.HANDLERS[action](orch, None, OWNER, ["user"], {"slug": "x"})
+        assert result is not None and "not enabled" in result[2], action
     # nothing was generated, delivered, or deleted on ANY of those paths
     orch.lifecycle_manager.generate_code.assert_not_awaited()
     orch.deliver_agent_bundle.assert_not_awaited()
@@ -481,7 +501,7 @@ def test_menu_item_absent_when_flag_off_present_when_on():
     assert all(i.surface != "agent_authoring" for g in off.menu for i in g.items)
     on = build_menu_model(["user"], pulse_enabled=False, byo_enabled=True)
     items = [i for g in on.menu for i in g.items if i.surface == "agent_authoring"]
-    assert len(items) == 1 and items[0].label == "My agents"
+    assert len(items) == 1 and items[0].label == "My agents & skills"
 
 
 # ── 5b. every rendered action can actually address its session ───────────────

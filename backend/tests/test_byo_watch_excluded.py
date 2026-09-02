@@ -53,7 +53,7 @@ def test_my_agents_item_present_only_when_flag_on():
     on = _authoring_items(mm.build_menu_model([], byo_enabled=True))
     off = _authoring_items(mm.build_menu_model([], byo_enabled=False))
     assert len(on) == 1, "exactly one BYO authoring entry point"
-    assert on[0].key == "my-agents" and on[0].label == "My agents"
+    assert on[0].key == "my-agents" and on[0].label == "My agents & skills"
     assert off == [], "flag off ⇒ no authoring affordance on any client"
 
 
