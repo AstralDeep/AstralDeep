@@ -56,6 +56,8 @@ _MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
 
 # Fallback if model is unknown
 _DEFAULT_CONTEXT_WINDOW = 32_768
+#: Feature 076: character-equivalent charged per image content part (≈1.5k tokens).
+_IMAGE_PART_CHARS = 1_500 * CHARS_PER_TOKEN
 
 
 def estimate_tokens(messages: List[Dict]) -> int:
@@ -67,7 +69,15 @@ def estimate_tokens(messages: List[Dict]) -> int:
             if isinstance(content, str):
                 total_chars += len(content)
             elif isinstance(content, list):
-                total_chars += len(json.dumps(content))
+                # Feature 076: an image content part is a base64 data URI —
+                # hundreds of KB of characters that a vision model bills as a
+                # roughly fixed ~1.5k tokens, not as text. Count it that way so
+                # a screenshot round does not trip compaction on its own.
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        total_chars += _IMAGE_PART_CHARS
+                    else:
+                        total_chars += len(json.dumps(part))
         else:
             # ChatCompletionMessage object — serialize it
             total_chars += len(str(msg))

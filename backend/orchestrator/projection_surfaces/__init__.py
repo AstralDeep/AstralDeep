@@ -29,6 +29,7 @@ SURFACE_MODULES = {
     "pulse": "orchestrator.projection_surfaces.pulse",
     "agent_authoring": "orchestrator.projection_surfaces.authoring",
     "remote_machines": "orchestrator.projection_surfaces.remote_machines",
+    "my_computers": "orchestrator.projection_surfaces.my_computers",
 }
 
 

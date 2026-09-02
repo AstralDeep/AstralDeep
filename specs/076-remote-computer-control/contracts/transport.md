@@ -13,7 +13,7 @@ Sent by a client whose "Allow remote control" setting is on. Absent = not a host
 ```json
 {"type": "register_ui", "...": "...",
  "computer_host": {
-   "host_id": "b9c7…",                  // uuid4 hex, stable per install (%LOCALAPPDATA%)
+   "host_id": "b9c7…",                  // canonical UUID4 string, stable per install (%LOCALAPPDATA%)
    "name": "RYZENROLL",                 // human label (hostname by default, user-editable)
    "platform": "windows",               // windows | macos | linux (v1 executes on windows only)
    "client_version": "0.5.0",

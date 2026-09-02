@@ -57,6 +57,89 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
 _MARKER = "_remote_op_proposal_id"
 
 
+# ── per-agent policy (feature 076 generalization) ─────────────────────────────
+#
+# The mechanism (durable single-use proposal → approval card → re-entry through
+# the full gate stack) is shared by every machine-control agent; only the verb
+# classification, the unattended rule, the card copy and the machine label
+# differ. Feature 063's behaviour is byte-identical under its own policy entry.
+
+class AgentConfirmationPolicy:
+    """What the shared gate needs to know about one machine-control agent."""
+
+    def __init__(self, *, agent_id: str, classification: Dict[str, Any], machine_key: str,
+                 gate_unclassified_unattended: bool, unattended_allowed: frozenset,
+                 card_title: str, card_caption: str, summary, machine_label):
+        self.agent_id = agent_id
+        self.classification = classification
+        self.machine_key = machine_key
+        # False (063): read verbs — classification None — pass straight through,
+        # even unattended (status polls). True (076): an unattended turn may run
+        # ONLY ``unattended_allowed``; everything else is refused before any
+        # frame reaches the machine.
+        self.gate_unclassified_unattended = gate_unclassified_unattended
+        self.unattended_allowed = unattended_allowed
+        self.card_title = card_title      # may contain {host}
+        self.card_caption = card_caption
+        self.summary = summary            # (orch, user_id, tool_name, args) -> str
+        self.machine_label = machine_label  # (orch, user_id, machine_ref) -> str
+
+
+def _computer_use_label(orch, user_id: str, ref) -> str:
+    try:
+        registry = getattr(orch, "computer_hosts", None)
+        if registry is not None:
+            return registry.resolve(user_id, ref).name
+    except Exception:  # noqa: BLE001 — a label only
+        pass
+    return "your computer"
+
+
+def _computer_use_summary(orch, user_id: str, tool_name: str, args: Dict[str, Any]) -> str:
+    from orchestrator import computer_use_policy
+    return computer_use_policy.summary_for(
+        tool_name, args, _computer_use_label(orch, user_id, args.get("computer")))
+
+
+def _policies() -> Dict[str, AgentConfirmationPolicy]:
+    from orchestrator import computer_use_policy
+    return {
+        MUTATING_AGENT_ID: AgentConfirmationPolicy(
+            agent_id=MUTATING_AGENT_ID,
+            classification=DESTRUCTIVE_CLASSIFICATION,
+            machine_key="machine_id",
+            gate_unclassified_unattended=False,
+            unattended_allowed=frozenset(),
+            card_title="Confirm a destructive operation",
+            card_caption=("This changes the remote machine and cannot be undone by me. "
+                          "Approve to run it exactly as shown, or decline."),
+            summary=_summary,
+            machine_label=_machine_label,
+        ),
+        computer_use_policy.AGENT_ID: AgentConfirmationPolicy(
+            agent_id=computer_use_policy.AGENT_ID,
+            classification=computer_use_policy.DESTRUCTIVE_CLASSIFICATION,
+            machine_key="computer",
+            gate_unclassified_unattended=True,
+            unattended_allowed=computer_use_policy.UNATTENDED_ALLOWED,
+            card_title=computer_use_policy.CARD_TITLE,
+            card_caption=computer_use_policy.CARD_CAPTION,
+            summary=_computer_use_summary,
+            machine_label=_computer_use_label,
+        ),
+    }
+
+
+#: Agents whose tool calls the dispatch gate routes through this module.
+GATED_AGENT_IDS = frozenset({MUTATING_AGENT_ID, "computer-use-1"})
+
+
+def policy_for(agent_id: Optional[str]) -> Optional[AgentConfirmationPolicy]:
+    if not agent_id:
+        return None
+    return _policies().get(agent_id)
+
+
 # ── hash-chained audit (FR-047/FR-048) ─────────────────────────────────────────
 #
 # Every proposal transition (proposed / approved / declined / expired / consumed)
@@ -169,19 +252,28 @@ def _summary(orch, user_id: str, tool_name: str, args: Dict[str, Any]) -> str:
 
 # ── classification ────────────────────────────────────────────────────────────
 
-def classification_for(tool_name: str) -> Any:
-    return DESTRUCTIVE_CLASSIFICATION.get(tool_name)
+def classification_for(tool_name: str, agent_id: Optional[str] = None) -> Any:
+    policy = policy_for(agent_id) if agent_id else None
+    table = policy.classification if policy is not None else DESTRUCTIVE_CLASSIFICATION
+    return table.get(tool_name)
 
 
-def is_destructive_unattended(tool_name: str, args: Dict[str, Any]) -> bool:
+def is_destructive_unattended(tool_name: str, args: Dict[str, Any],
+                              agent_id: Optional[str] = None) -> bool:
     """Conservatively classify an unattended/MCP call without remote I/O.
 
     ``if_exists`` cannot be proven safe without contacting the remote machine,
     so the unattended boundary refuses it. Conditional action classifiers can
-    be decided entirely from the submitted arguments.
+    be decided entirely from the submitted arguments. For an agent whose policy
+    gates unclassified verbs unattended (076), everything outside its
+    ``unattended_allowed`` set counts as refused here too.
     """
 
-    classification = classification_for(tool_name)
+    policy = policy_for(agent_id) if agent_id else None
+    if policy is not None and policy.gate_unclassified_unattended \
+            and tool_name not in policy.unattended_allowed:
+        return True
+    classification = classification_for(tool_name, agent_id)
     if classification in (None, "never"):
         return False
     if classification == "always" or classification == "if_exists":
@@ -276,9 +368,11 @@ def _consume_if_valid(
 def _create_proposal(orch, user_id: str, chat_id: Optional[str], agent_id: str,
                      tool_name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     from astralprims import Button, Card, Text
+    policy = policy_for(agent_id) or policy_for(MUTATING_AGENT_ID)
     proposal_id = uuid.uuid4().hex
     now = int(time.time())
-    summary = _summary(orch, user_id, tool_name, args)
+    summary = policy.summary(orch, user_id, tool_name, args)
+    machine_ref = args.get(policy.machine_key)
     context = _proposal_context(orch)
     with context.transaction() as transaction:
         context.repository.create(
@@ -287,7 +381,7 @@ def _create_proposal(orch, user_id: str, chat_id: Optional[str], agent_id: str,
                 proposal_id=proposal_id,
                 owner_id=user_id,
                 conversation_id=chat_id,
-                machine_id=str(args.get("machine_id") or ""),
+                machine_id=str(machine_ref or ""),
                 agent_id=agent_id,
                 tool_name=tool_name,
                 args_fingerprint=_fingerprint(args),
@@ -304,12 +398,14 @@ def _create_proposal(orch, user_id: str, chat_id: Optional[str], agent_id: str,
         )
     logger.info("remote_op proposal created: %s verb=%s owner=%s", proposal_id, tool_name, user_id)
     _audit_sync(user_id, "remote_op.proposed", f"proposed {tool_name}: {summary}",
-                proposal_id=proposal_id, machine_id=args.get("machine_id"), verb=tool_name,
+                proposal_id=proposal_id, machine_id=machine_ref, verb=tool_name,
                 outcome="in_progress", chat_id=chat_id)
-    card = Card(title="Confirm a destructive operation", content=[
+    title = policy.card_title
+    if "{host}" in title:
+        title = title.replace("{host}", policy.machine_label(orch, user_id, machine_ref))
+    card = Card(title=title, content=[
         Text(content=summary, variant="body"),
-        Text(content="This changes the remote machine and cannot be undone by me. "
-                     "Approve to run it exactly as shown, or decline.", variant="caption"),
+        Text(content=policy.card_caption, variant="caption"),
         Button(label="Approve", action="remote_op_decision",
                payload={"proposal_id": proposal_id, "decision": "approve"}),
         Button(label="Decline", action="remote_op_decision", variant="secondary",
@@ -327,25 +423,30 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     Mutates ``args`` to strip a consumed proposal marker so it never reaches the agent.
     """
     from astralprims import Alert
-    if agent_id != MUTATING_AGENT_ID:
+    policy = policy_for(agent_id)
+    if policy is None:
         return None
-    classification = classification_for(tool_name)
-    if classification is None:
+    machine_ref = args.get(policy.machine_key)
+    classification = classification_for(tool_name, agent_id)
+    if classification is None and not policy.gate_unclassified_unattended:
         return None  # read verb — permitted unattended (FR-044's status-poll allowance)
 
     # FR-033: EVERY mutating verb needs a live human — checked BEFORE destructiveness
     # (so before any transport contact, including the if_exists stat), before any
     # proposal row, and before marker consumption (an approval can never be spent by
     # a machine turn). Applies regardless of granted scope.
-    if _no_live_human(orch, websocket):
+    if _no_live_human(orch, websocket) and tool_name not in policy.unattended_allowed:
         logger.info("remote_op refused (unattended): verb=%s owner=%s", tool_name, user_id)
         _audit_sync(user_id, "remote_op.refused_unattended",
-                    f"refused unattended {tool_name}", machine_id=args.get("machine_id"),
+                    f"refused unattended {tool_name}", machine_id=machine_ref,
                     verb=tool_name, outcome="failure", chat_id=chat_id)
         return ("unattended_refused: remote-control operations need a live person; "
                 "re-issue it interactively.",
                 [Alert(message="Remote-control operations can't run unattended — "
                                "re-issue this interactively.", variant="error").to_dict()])
+
+    if classification is None:
+        return None  # 076 observe/input verb on an attended turn — session-gated by the agent
 
     if not _is_destructive(orch, user_id, tool_name, args, classification):
         return None  # non-destructive mutating verb — the explicit grant already gated it
@@ -357,11 +458,11 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         if ok:
             _audit_sync(user_id, "remote_op.consumed",
                         f"approved & consumed {tool_name}", proposal_id=str(marker),
-                        machine_id=args.get("machine_id"), verb=tool_name, chat_id=chat_id)
+                        machine_id=machine_ref, verb=tool_name, chat_id=chat_id)
             return None  # approved, fresh, matching, single-use consumed -> proceed
         _audit_sync(user_id, "remote_op.approval_invalid",
                     f"invalid approval for {tool_name}", proposal_id=str(marker),
-                    machine_id=args.get("machine_id"), verb=tool_name, outcome="failure", chat_id=chat_id)
+                    machine_id=machine_ref, verb=tool_name, outcome="failure", chat_id=chat_id)
         return ("This approval is no longer valid (already used, expired, or the "
                 "arguments changed). Re-request the operation.",
                 [Alert(message="Approval no longer valid — re-request the operation.",

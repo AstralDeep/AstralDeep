@@ -63,7 +63,11 @@ _UNTRUSTED_TOOLS = {
 _UNTRUSTED_AGENTS = {"web-research-1", "summarizer-1",
                      # Feature 063 (FR-039): remote machines return untrusted text
                      # (banners, filenames, job names, process command columns).
-                     "remote-compute-1"}
+                     "remote-compute-1",
+                     # Feature 076 (FR-021): whatever is on the user's screen —
+                     # window titles, clipboard, file contents, command output —
+                     # is untrusted content that can carry injections.
+                     "computer-use-1"}
 
 #: Write / egress sinks — untrusted data must not flow into their arguments.
 #: Read-only fetchers (``fetch_page``/``web_search``/``summarize_url``) are

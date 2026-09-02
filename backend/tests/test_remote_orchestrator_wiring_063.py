@@ -265,7 +265,11 @@ async def test_boot_launches_the_poller_and_seeds_remote_compute_when_enabled(mo
 
     assert len(seeded) == 1
     assert "remote-compute-1" in seeded[0][1]
-    assert seeded[0][1] == tuple(oo.FIRST_PARTY_PUBLIC_AGENT_IDS)
+    # Feature 076 applies the same rule to computer-use-1 (its flag is off here).
+    assert seeded[0][1] == tuple(
+        agent_id for agent_id in oo.FIRST_PARTY_PUBLIC_AGENT_IDS
+        if agent_id != "computer-use-1"
+    )
     task = fake._remote_job_poll_task
     assert task is not None and task.get_name() == "remote-cluster-job-poller"
 
@@ -298,7 +302,7 @@ async def test_flag_off_boot_creates_no_poller_and_drops_remote_compute_from_the
     assert seeded[0][1] == tuple(
         agent_id
         for agent_id in oo.FIRST_PARTY_PUBLIC_AGENT_IDS
-        if agent_id != "remote-compute-1"
+        if agent_id not in ("remote-compute-1", "computer-use-1")
     )
     # ...and no background task at all.
     assert fake._remote_job_poll_task is None
