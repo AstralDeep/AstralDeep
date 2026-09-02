@@ -2875,7 +2875,7 @@ COMPUTER_HOST_VERBS: frozenset = frozenset({
     "screenshot", "list_windows", "get_clipboard", "read_file", "list_dir", "wait",
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
     "press_keys", "focus_window", "open_app", "set_clipboard",
-    "run_command", "write_file", "delete_path",
+    "write_file", "delete_path",
 })
 COMPUTER_HOST_PLATFORMS: frozenset = frozenset({"windows", "macos", "linux"})
 COMPUTER_HOST_PROTOCOL = 1

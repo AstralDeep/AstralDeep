@@ -29,8 +29,6 @@ from orchestrator.computer_use_policy import (
     DEFAULT_SCREENSHOT_WIDTH,
     DESTRUCTIVE_CLASSIFICATION,
     MAX_CLIPBOARD_CHARS,
-    MAX_COMMAND_CHARS,
-    MAX_COMMAND_TIMEOUT_S,
     MAX_READ_BYTES,
     MAX_SCREENSHOT_WIDTH,
     MAX_SCROLL_NOTCHES,
@@ -506,7 +504,7 @@ def type_text(**kwargs) -> Dict[str, Any]:
         return _fail("out_of_range", "text must be a non-empty string")
     if len(text) > MAX_TEXT_CHARS:
         return _fail("out_of_range", f"text is limited to {MAX_TEXT_CHARS} characters per call")
-    result, err = _run(host, ctx, "type_text", {"text": text}, _loop(kwargs))
+    result, err = _run(host, ctx, "type_text", {"text": text, "terminal_ok": ctx.terminal_ok}, _loop(kwargs))
     if err:
         return err
     return _data({"computer": host.name, "chars": len(text)})
@@ -519,7 +517,7 @@ def press_keys(**kwargs) -> Dict[str, Any]:
     keys = str(kwargs.get("keys") or "").strip().lower()
     if not keys or _KEY_CHORD.fullmatch(keys) is None:
         return _fail("out_of_range", "keys must be a chord like 'ctrl+s', 'enter' or 'alt+f4'")
-    result, err = _run(host, ctx, "press_keys", {"keys": keys}, _loop(kwargs))
+    result, err = _run(host, ctx, "press_keys", {"keys": keys, "terminal_ok": ctx.terminal_ok}, _loop(kwargs))
     if err:
         return err
     return _data({"computer": host.name, "keys": keys})
@@ -581,35 +579,6 @@ def set_clipboard(**kwargs) -> Dict[str, Any]:
 
 
 # ── consequential verbs (gated on every reach by the confirmation mechanism) ─
-
-def run_command(**kwargs) -> Dict[str, Any]:
-    _u, _c, host, ctx = _ctx(kwargs)
-    if not hasattr(ctx, "session_id"):
-        return ctx
-    command = kwargs.get("command")
-    if not isinstance(command, str) or not command.strip():
-        return _fail("out_of_range", "command must be a non-empty string")
-    if len(command) > MAX_COMMAND_CHARS:
-        return _fail("out_of_range", f"command is limited to {MAX_COMMAND_CHARS} characters")
-    cwd = kwargs.get("cwd")
-    if cwd is not None and (not isinstance(cwd, str) or len(cwd) > 1024 or "\x00" in cwd):
-        return _fail("out_of_range", "cwd must be a path")
-    try:
-        timeout_s = _int(kwargs.get("timeout_s", 60), "timeout_s", 1, MAX_COMMAND_TIMEOUT_S)
-    except ValueError as exc:
-        return _fail("out_of_range", str(exc))
-    result, err = _run(host, ctx, "run_command", {"command": command, "cwd": cwd, "timeout_s": timeout_s}, _loop(kwargs))
-    if err:
-        return err
-    data = {"computer": host.name, "exit_code": result.get("exit_code"),
-            "stdout": _sanitize(result.get("stdout"), 65536), "stderr": _sanitize(result.get("stderr"), 16384),
-            "truncated": bool(result.get("truncated")), "duration_ms": int(result.get("duration_ms") or 0)}
-    card = Card(title=f"Command on {host.name}", content=[
-        Text(content=f"`{_sanitize(command, 200)}` → exit {data['exit_code']}", variant="markdown"),
-        Text(content=(data["stdout"] or data["stderr"] or "(no output)")[:2000], variant="code"),
-    ])
-    return _data(data, [card])
-
 
 def write_file(**kwargs) -> Dict[str, Any]:
     _u, _c, host, ctx = _ctx(kwargs)
@@ -686,8 +655,9 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "confirm_action": _entry(
         confirm_action,
         "Ask the user to approve a consequential step you are about to take in the UI — buying, paying, "
-        "sending a message or email, signing in, deleting, or anything hard to undo. Call it BEFORE the "
-        "step; it returns approved only after the user taps Approve on their device.",
+        "sending a message or email, signing in, deleting, running a command in a terminal, or anything "
+        "hard to undo. Call it BEFORE the step (the task resumes automatically after they tap Approve); "
+        "an approval also unlocks typing into a terminal for a few minutes.",
         {"summary": {"type": "string", "description": "One sentence: what you are about to do and why."}},
         ["summary"]),
     "screenshot": _entry(
@@ -720,7 +690,9 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "scroll": _entry(scroll, "Scroll at a point. dy < 0 scrolls down (default -3 notches), dy > 0 up.",
                      {**_XY, "dx": {"type": "integer"}, "dy": {"type": "integer"}}, ["x", "y"]),
     "type_text": _entry(type_text, "Type text into the focused control (Unicode; up to 4000 characters). "
-                                   "Typing into a terminal/console is refused — commands go through run_command.",
+                                   "Typing into a terminal/console needs the user's approval: if it is "
+                                   "refused with confirmation_required, call confirm_action describing the "
+                                   "command, wait for approval, then type again.",
                         {"text": {"type": "string"}}, ["text"]),
     "press_keys": _entry(press_keys, "Press a key or chord: 'enter', 'tab', 'escape', 'ctrl+s', "
                                      "'ctrl+shift+t', 'alt+f4', 'win+r'.",
@@ -729,19 +701,13 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                                          "title substring.",
                            {"hwnd": {"type": "integer"}, "title": {"type": "string"}}),
     "open_app": _entry(open_app, "Open an application by name (notepad, calc, excel, chrome…) or by the "
-                                 "path of an executable/shortcut. Do NOT open a terminal (powershell, cmd, "
-                                 "wt…) to run commands — use run_command; opening one asks the user to approve.",
+                                 "path of an executable/shortcut. Opening a terminal (powershell, cmd, wt…) "
+                                 "asks the user to approve; once approved, typing into it is allowed for a "
+                                 "few minutes.",
                        {"app": {"type": "string"},
                         "args": {"type": "array", "items": {"type": "string"}}}, ["app"]),
     "set_clipboard": _entry(set_clipboard, "Put text on the computer's clipboard.",
                             {"text": {"type": "string"}}, ["text"]),
-    "run_command": _entry(
-        run_command,
-        "Run a PowerShell command on the computer and get its output. This is THE way to run any "
-        "command — never type into a terminal instead. The user is asked to approve first (a card on "
-        "their device); wait for that, then call again with the same arguments. Bounded output and time.",
-        {"command": {"type": "string"}, "cwd": {"type": "string"},
-         "timeout_s": {"type": "integer", "description": "1-300, default 60."}}, ["command"]),
     "write_file": _entry(
         write_file, "Write a text file on the computer. ALWAYS asks the user to approve first.",
         {"path": {"type": "string"}, "content": {"type": "string"},

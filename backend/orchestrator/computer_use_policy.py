@@ -25,8 +25,13 @@ INPUT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
     "press_keys", "focus_window", "open_app", "set_clipboard",
 })
+#: No arbitrary-shell verb exists on purpose (Constitution VII: a tool wrapping
+#: a shell is hard-security-flagged and never enabled by the safe baseline, so
+#: it would only ever be dead weight that misleads the model). Commands run the
+#: way a person runs them — in a terminal window — and typing into a terminal
+#: is the approval-gated step (``TERMINAL_GRANT_S`` below).
 CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
-    "run_command", "write_file", "delete_path",
+    "write_file", "delete_path",
 })
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
@@ -49,7 +54,6 @@ TIERS: Dict[str, str] = {
 SCOPES: Dict[str, str] = {
     **{v: "tools:read" for v in OBSERVE_VERBS},
     **{v: "tools:write" for v in INPUT_VERBS},
-    "run_command": "tools:execute",
     "write_file": "tools:files",
     "delete_path": "tools:files",
     "list_computers": "tools:read",
@@ -63,11 +67,10 @@ SCOPES: Dict[str, str] = {
 #: ``confirm_action`` is "always" on purpose: the model's own request for a
 #: consequential UI step rides the same durable, single-use proposal card.
 #: ``open_app`` is consequential ONLY for a shell/terminal (see
-#: :func:`is_shell_app`): opening a terminal and typing into it is a command
-#: by another route, so it takes the same card ``run_command`` does — and the
-#: host refuses ``type_text``/``press_keys`` while a terminal is in front.
+#: :func:`is_shell_app`): opening a terminal is the start of a command, so it
+#: takes the card; the approval also unlocks keystrokes into terminals on the
+#: session for ``TERMINAL_GRANT_S`` (the host refuses them otherwise).
 DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
-    "run_command": "always",
     "write_file": "always",
     "delete_path": "always",
     "confirm_action": "always",
@@ -118,7 +121,7 @@ TIMEOUTS: Dict[str, float] = {
     "click": 10.0, "double_click": 10.0, "right_click": 10.0, "move": 5.0, "drag": 10.0,
     "scroll": 5.0, "type_text": 30.0, "press_keys": 5.0, "focus_window": 5.0,
     "open_app": 15.0, "set_clipboard": 5.0,
-    "run_command": 310.0, "write_file": 10.0, "delete_path": 10.0,
+    "write_file": 10.0, "delete_path": 10.0,
     "list_computers": 5.0, "start_session": 10.0, "end_session": 5.0,
     "resume_session": 5.0, "confirm_action": 5.0,
 }
@@ -126,7 +129,6 @@ TIMEOUTS: Dict[str, float] = {
 #: Bounds enforced orchestrator-side before a request is built (defence in
 #: depth — the host re-validates).
 MAX_TEXT_CHARS = 4000
-MAX_COMMAND_CHARS = 2000
 MAX_CLIPBOARD_CHARS = 16 * 1024
 MAX_WRITE_BYTES = 256 * 1024
 MAX_READ_BYTES = 262_144
@@ -137,7 +139,9 @@ MIN_SCREENSHOT_WIDTH = 320
 MAX_SCREENSHOT_WIDTH = 1920
 DEFAULT_SCREENSHOT_WIDTH = 1280
 MAX_SCROLL_NOTCHES = 20
-MAX_COMMAND_TIMEOUT_S = 300
+#: After the owner approves a terminal step (confirm_action, or opening a
+#: shell), keystrokes into terminals are allowed on that session for this long.
+TERMINAL_GRANT_S = 180
 
 #: What the model reads when a verb is parked behind the card. Explicit about
 #: ending the turn: a model that keeps calling tools instead of waiting burns
@@ -158,9 +162,6 @@ def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str
     """Plain-language description shown on the approval card (never raw args
     beyond what the user must see to decide)."""
     h = host_label or "your computer"
-    if tool_name == "run_command":
-        cmd = str(args.get("command") or "")[:200]
-        return f"Run on {h}: {cmd}"
     if tool_name == "write_file":
         mode = "overwrite" if args.get("if_exists") == "overwrite" else "create"
         return f"Write file on {h} ({mode}): {str(args.get('path') or '')[:200]}"

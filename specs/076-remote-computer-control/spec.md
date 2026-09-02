@@ -35,6 +35,7 @@ A code audit of `main` at `AstralDeep@e04a353` / `AstralProjection@95f81af` (202
 | D3 | Live test rig | **Android emulator on the owner's Windows box** (debug build targets `10.0.2.2:8001`) driving the Windows client on the same machine; the iPhone client follows on a Mac. |
 | D4 | Delivery | Branches + PRs per repo; CI gates are not a merge precondition for this pass; the composition pin in AstralDeep is still repinned honestly. |
 | D5 | New dependencies | **None.** Capture and input injection use Qt (`QScreen`) and stdlib `ctypes` (`user32.SendInput`, `SetCursorPos`, `GetLastInputInfo`); JPEG encoding uses Qt's bundled image plugin. Backend uses stdlib only. |
+| D8 | Shell commands (live rig, 2026-09-02) | **No arbitrary-shell verb.** The tool-security analyzer hard-blocks any `run_command`-shaped tool (Constitution VII), so the model was never offered it and reached for a terminal window instead. Commands run the way a person runs them — in a terminal — and *typing into a terminal* is the approval-gated step: the host refuses keystrokes into a command interpreter unless the session carries the owner's approval (`confirm_action`, or approving `open_app` of a shell, unlocks it for 3 minutes). |
 | D6 | Feature flag | `FF_COMPUTER_USE`, **default off**, read once at import like every 0xx flag; the owner's development `.env` enables it. Flag-off is byte-identical (pinned by test). |
 | D7 | Durable inventory | **Deferred.** v1 lists a computer while its client is connected (plus an in-process last-seen cache). A durable `computer_host` Plane record is a follow-up; approvals reuse the 063 `remote_operation_proposals` store. |
 
@@ -82,7 +83,7 @@ The assistant reaches a step that would run a shell command, write or delete a f
 
 1. **Given** a machine-class (scheduled/unattended) turn, **When** any mutating verb is reached, **Then** it is refused `unattended_refused` before any frame reaches the PC.
 2. **Given** an approval card, **When** a *different* signed-in user replays the decision action with the proposal id, **Then** it is refused and audited.
-3. **Given** the model calls `confirm_action(summary)` for a UI-level consequential step, **Then** the same card appears, and only after approval does the model continue.
+3. **Given** the model calls `confirm_action(summary)` for a UI-level consequential step, **Then** the same card appears, the model ends its turn, and after approval the task resumes automatically with the outcome in hand.
 
 ### User Story 4 - Whoever is at the PC always wins (Priority: P2)
 
@@ -130,9 +131,9 @@ With a text-only model, the user can still ask the PC to open an application, fo
 - **FR-009** Every session transition MUST be audited (`agent_lifecycle`, action types `computer_session.*`, correlation id = session id) and pushed to the owner's sockets as a `computer_session` frame.
 
 **Verbs (see contracts/verbs.md)**
-- **FR-010** The agent `computer-use-1` MUST expose a fixed, closed verb set: observe (`list_computers`, `screenshot`, `list_windows`, `get_clipboard`, `read_file`, `list_dir`, `wait`), input (`click`, `double_click`, `right_click`, `move`, `drag`, `scroll`, `type_text`, `press_keys`, `focus_window`, `open_app`, `set_clipboard`), consequential (`run_command`, `write_file`, `delete_path`), session (`start_session`, `end_session`, `resume_session`, `confirm_action`).
-- **FR-011** Observe verbs MUST be `tools:read` and MUST work in a session without confirmation; input verbs `tools:write` require an active (not paused) session; consequential verbs `tools:execute`/`tools:files` MUST go through the 063 proposal gate on every reach.
-- **FR-012** No verb MAY accept a shell fragment except `run_command`, which is itself always gated; `run_command` executes via `subprocess` with a bounded timeout, bounded output, and the session's working directory.
+- **FR-010** The agent `computer-use-1` MUST expose a fixed, closed verb set: observe (`list_computers`, `screenshot`, `list_windows`, `get_clipboard`, `read_file`, `list_dir`, `wait`), input (`click`, `double_click`, `right_click`, `move`, `drag`, `scroll`, `type_text`, `press_keys`, `focus_window`, `open_app`, `set_clipboard`), consequential (`write_file`, `delete_path`; `open_app` of a shell), session (`start_session`, `end_session`, `resume_session`, `confirm_action`). There is no arbitrary-shell verb (D8).
+- **FR-011** Observe verbs MUST be `tools:read` and MUST work in a session without confirmation; input verbs `tools:write` require an active (not paused) session; consequential verbs (`tools:files`, and `open_app` of a shell) MUST go through the 063 proposal gate on every reach; the approval card is the call's result (canvas + transcript, replaced in place on decision) and the model is told to end its turn; after approval the verb runs and a continuation turn resumes the task.
+- **FR-012** No verb accepts a shell fragment. Keystrokes into a command interpreter (the foreground window's process is a terminal) MUST be refused by the host unless the request carries the owner's approval, which the orchestrator grants for a bounded time after an approved `confirm_action` or an approved shell `open_app` (D8).
 - **FR-013** Coordinates are in the coordinate space of the most recent screenshot the host produced for that session; the host MUST map them to physical pixels itself and refuse out-of-range values.
 - **FR-014** The host MUST enforce the verb list it announced; an unknown verb yields a typed `unsupported` result.
 

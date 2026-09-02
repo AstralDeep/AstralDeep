@@ -153,8 +153,9 @@ def test_opening_a_terminal_is_a_command_by_another_route():
     assert policy.is_destructive("open_app", {"app": "Windows Terminal"}) is True
     assert policy.is_destructive("open_app", {"app": "notepad"}) is False
     assert policy.is_destructive("open_app", {"app": r"C:\Program Files\Foo\foo.exe"}) is False
-    assert policy.is_destructive("run_command", {"command": "dir"}) is True
+    assert policy.is_destructive("write_file", {"path": "C:/x"}) is True
     assert policy.is_destructive("click", {"x": 1, "y": 1}) is False
+    assert "run_command" not in policy.ALL_VERBS  # Constitution VII: no arbitrary-shell verb
     assert rc.is_destructive_unattended("open_app", {"app": "notepad"}, "computer-use-1") is True  # unattended: all refused
 
 
@@ -162,7 +163,6 @@ def test_consequential_verbs_are_always_gated_and_unattended_set_is_minimal():
     assert policy.CONSEQUENTIAL_VERBS <= set(policy.DESTRUCTIVE_CLASSIFICATION)
     assert "confirm_action" in policy.DESTRUCTIVE_CLASSIFICATION
     assert policy.UNATTENDED_ALLOWED == frozenset({"list_computers"})
-    assert policy.SCOPES["run_command"] == "tools:execute"
     assert policy.SCOPES["write_file"] == policy.SCOPES["delete_path"] == "tools:files"
 
 
@@ -176,7 +176,7 @@ def test_gate_policy_table_covers_both_agents_and_063_is_unchanged():
     assert p076.gate_unclassified_unattended is True
     assert rc.policy_for("weather-1") is None
     assert rc.classification_for("remove_path") == "always"           # 063 default table
-    assert rc.classification_for("run_command", "computer-use-1") == "always"
+    assert rc.classification_for("write_file", "computer-use-1") == "always"
     assert rc.classification_for("click", "computer-use-1") is None
     assert rc.is_destructive_unattended("screenshot", {}, "computer-use-1") is True
     assert rc.is_destructive_unattended("list_computers", {}, "computer-use-1") is False
@@ -421,7 +421,7 @@ def _gate_orch(db):
 
 def test_unattended_turn_may_only_list_computers():
     orch = _gate_orch(_FakeDB())
-    for verb in ("screenshot", "click", "type_text", "run_command", "start_session"):
+    for verb in ("screenshot", "click", "type_text", "write_file", "start_session"):
         out = rc.evaluate(orch, None, "computer-use-1", verb, {"computer": "x"}, "chat", OWNER)
         assert out is not None and out[0].startswith("unattended_refused")
     assert rc.evaluate(orch, None, "computer-use-1", "list_computers", {}, "chat", OWNER) is None
@@ -436,7 +436,7 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     orch.ui_sessions[ws] = {"sub": OWNER}
     assert rc.evaluate(orch, ws, "computer-use-1", "click", {"x": 1, "y": 2}, "chat", OWNER) is None
     assert rc.evaluate(orch, ws, "computer-use-1", "screenshot", {}, "chat", OWNER) is None
-    out = rc.evaluate(orch, ws, "computer-use-1", "run_command", {"command": "dir", "computer": "RYZENROLL"}, "chat", OWNER)
+    out = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "RYZENROLL"}, "chat", OWNER)
     assert out is not None and out[0].startswith("confirmation_required")
     # the proposal row carries a non-empty machine id even when the model omitted
     # `computer` (single online host) — the store refuses an empty one
@@ -452,7 +452,7 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     assert rc.policy_for("remote-compute-1").card_as_result is False
     buttons = [c for c in card["content"] if c["type"] == "button"]
     assert {b["payload"]["decision"] for b in buttons} == {"approve", "decline"}
-    assert any("Run on" in c.get("content", "") for c in card["content"] if c["type"] == "text")
+    assert any("Delete on" in c.get("content", "") for c in card["content"] if c["type"] == "text")
     assert len(db.rows) == 2 and all(r["status"] == "pending" for r in db.rows.values())
     # confirm_action rides the same card
     out = rc.evaluate(orch, ws, "computer-use-1", "confirm_action", {"summary": "Buy the ticket"}, "chat", OWNER)
@@ -496,18 +496,26 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
     orch.execute_single_tool = _execute_single_tool
     orch.handle_chat_message = _handle_chat_message
     orch.send_ui_render = _send_ui_render
-    assert rc.evaluate(orch, ws, "computer-use-1", "run_command", {"command": "Get-Date", "computer": "RyzenRoll"},
+    fake = _FakeOrch()
+    orch.computer_sessions = fake.computer_sessions
+    host_ws, host = await _online_host(fake)
+    orch.computer_hosts = fake.computer_hosts
+    grant_session = await _session(fake, host, fake.add(_WS(chat="chat-1")))
+    assert grant_session.terminal_ok is False
+    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
                        "chat-1", OWNER) is not None
     proposal_id = next(iter(db.rows))
     await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
     await asyncio.sleep(0.05)
-    assert calls and calls[0][0] == "run_command" and calls[0][1]["command"] == "Get-Date"
+    assert calls and calls[0][0] == "open_app" and calls[0][1]["app"] == "powershell"
     assert calls[0][1][rc._MARKER] == proposal_id
     assert renders and renders[0][1] == "chat-1" and renders[0][2].startswith("✓ Approved")
-    assert "Wednesday" in renders[0][0] and "run_command" in renders[0][0]
+    # the approval unlocked terminal typing on the owner's live session
+    assert grant_session.terminal_ok is True
+    assert "Wednesday" in renders[0][0] and "open_app" in renders[0][0]
     # the pending-card memory is cleared by the decision, so a new reach gets a new card
     assert len(db.rows) == 1
-    out2 = rc.evaluate(orch, ws, "computer-use-1", "run_command", {"command": "Get-Date", "computer": "RyzenRoll"},
+    out2 = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
                        "chat-1", OWNER)
     assert out2[1][0]["type"] == "card" and len(db.rows) == 2
 
@@ -673,8 +681,6 @@ def _answers(verb, args):
     if verb == "list_windows":
         return {"ok": True, "result": {"windows": [{"hwnd": 7, "title": "Untitled - Notepad", "process": "notepad.exe",
                                                    "rect": [0, 0, 800, 600], "focused": True, "minimized": False}]}}
-    if verb == "run_command":
-        return {"ok": True, "result": {"exit_code": 0, "stdout": "hello", "stderr": "", "truncated": False, "duration_ms": 12}}
     return {"ok": True, "result": {}}
 
 
@@ -727,8 +733,12 @@ async def test_agent_verbs_against_a_fake_host():
     assert (await asyncio.to_thread(mcp_tools.open_app, app="cmd /c del *", **ctx))["_data"]["code"] == "out_of_range"
     wins = await asyncio.to_thread(mcp_tools.list_windows, **ctx)
     assert wins["_data"]["windows"][0]["title"] == "Untitled - Notepad"
-    ran = await asyncio.to_thread(mcp_tools.run_command, command="echo hello", **ctx)
-    assert ran["_data"]["exit_code"] == 0 and ran["_data"]["stdout"] == "hello"
+    # keyboard verbs carry the session's terminal grant to the host
+    assert (await asyncio.to_thread(mcp_tools.type_text, text="hello", **ctx))["_data"]["chars"] == 5
+    assert host_ws.frames("computer_request")[-1]["args"] == {"text": "hello", "terminal_ok": False}
+    session.grant_terminal(60)
+    await asyncio.to_thread(mcp_tools.press_keys, keys="enter", **ctx)
+    assert host_ws.frames("computer_request")[-1]["args"] == {"keys": "enter", "terminal_ok": True}
 
     # the model asked for an unsupported verb name on this host → typed
     host.descriptor["verbs"] = ["screenshot"]

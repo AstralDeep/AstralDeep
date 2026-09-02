@@ -83,7 +83,7 @@ class AgentConfirmationPolicy:
                  card_title: str, card_caption: str, summary, machine_label,
                  is_destructive=None, refusal_text: Optional[str] = None,
                  auto_continue: bool = False, dedupe_pending: bool = False,
-                 machine_id=None, card_as_result: bool = False):
+                 machine_id=None, card_as_result: bool = False, on_approved=None):
         self.agent_id = agent_id
         self.classification = classification
         self.machine_key = machine_key
@@ -121,6 +121,9 @@ class AgentConfirmationPolicy:
         # every device, replaceable in place by its explicit id) instead of a
         # transient chat alert that the 060 atomic commit discards.
         self.card_as_result = card_as_result
+        # Optional (orch, row) hook run after an approval, before the verb is
+        # re-dispatched (076: unlock terminal typing on the live session).
+        self.on_approved = on_approved
 
 
 def _computer_use_label(orch, user_id: str, ref) -> str:
@@ -141,6 +144,18 @@ def _computer_use_machine_id(orch, user_id: str, args: Dict[str, Any]) -> str:
     except Exception:  # noqa: BLE001 — an unresolvable host still gets a card
         pass
     return str(args.get("computer") or "unresolved")
+
+
+def _computer_use_on_approved(orch, row) -> None:
+    """An approved terminal step (confirm_action, or opening a shell) unlocks
+    keystrokes into terminals on the owner's live session for a few minutes."""
+    from orchestrator import computer_use_policy
+    sessions = getattr(orch, "computer_sessions", None)
+    if sessions is None:
+        return
+    for session in sessions.live_for_owner(row.owner_id):
+        if not row.machine_id or session.host_id == row.machine_id:
+            session.grant_terminal(computer_use_policy.TERMINAL_GRANT_S)
 
 
 def _computer_use_summary(orch, user_id: str, tool_name: str, args: Dict[str, Any]) -> str:
@@ -180,6 +195,7 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             dedupe_pending=True,
             machine_id=_computer_use_machine_id,
             card_as_result=True,
+            on_approved=_computer_use_on_approved,
         ),
     }
 
@@ -668,6 +684,12 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     await _audit_async(user_id, "remote_op.approved", f"approved {_verb}",
                        proposal_id=proposal_id, machine_id=_mid, verb=_verb, chat_id=_cid)
     await _replace_card(orch, row, "Approved ✓", f"{row.summary} — running now.")
+    _pol = policy_for(row.agent_id)
+    if _pol is not None and _pol.on_approved is not None:
+        try:
+            _pol.on_approved(orch, row)
+        except Exception:  # noqa: BLE001 — the approval itself is recorded
+            logger.debug("remote_op on_approved hook failed", exc_info=True)
 
     # Re-enter the tool with the STORED args + the consume marker. The gate re-checks
     # the full stack, matches the approved proposal by (owner, verb, args), consumes it

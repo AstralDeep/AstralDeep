@@ -57,6 +57,9 @@ class ComputerSession:
     last_heartbeat_at: float = field(default_factory=time.time)
     images_supported: bool = True
     last_screenshot: Optional[Dict[str, Any]] = None
+    #: Keystrokes into a terminal are allowed until this time (set by an
+    #: approved confirm_action / shell open_app; 0 = not granted).
+    terminal_ok_until: float = 0.0
     acked: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     verbs_run: int = 0
@@ -64,6 +67,13 @@ class ComputerSession:
     @property
     def active(self) -> bool:
         return self.state == ACTIVE
+
+    @property
+    def terminal_ok(self) -> bool:
+        return self.terminal_ok_until > time.time()
+
+    def grant_terminal(self, seconds: float) -> None:
+        self.terminal_ok_until = time.time() + float(seconds)
 
     def public(self) -> Dict[str, Any]:
         return {

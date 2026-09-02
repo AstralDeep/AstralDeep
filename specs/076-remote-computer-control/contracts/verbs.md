@@ -55,8 +55,8 @@ cannot pass unnoticed.
 | `move` | `computer?`, `x`, `y` | — | 5 s |
 | `drag` | `computer?`, `x1`, `y1`, `x2`, `y2` | — | 10 s |
 | `scroll` | `computer?`, `x`, `y`, `dx=0`, `dy=-3` (±20 notches) | — | 5 s |
-| `type_text` | `computer?`, `text` (≤ 4000 chars, Unicode) | {chars} | 30 s |
-| `press_keys` | `computer?`, `keys` e.g. `"ctrl+shift+s"`, `"enter"`, `"alt+f4"` (fixed key table) | {keys} | 5 s |
+| `type_text` | `computer?`, `text` (≤ 4000 chars, Unicode); host refuses into a terminal without `terminal_ok` | {chars} | 30 s |
+| `press_keys` | `computer?`, `keys` e.g. `"ctrl+shift+s"`, `"enter"`, `"alt+f4"` (fixed key table); same terminal rule | {keys} | 5 s |
 | `focus_window` | `computer?`, `hwnd?` or `title?` (substring, case-insensitive) | {hwnd, title} | 5 s |
 | `open_app` | `computer?`, `app` (bare name like `notepad`, `excel`, or an existing `.exe`/`.lnk` path), `args?` (argv list) | {pid?, launched} | 15 s |
 | `set_clipboard` | `computer?`, `text` (≤ 16 KiB) | — | 5 s |
@@ -68,21 +68,30 @@ assembled (`os.startfile` for names, `subprocess.Popen([path, *args])` for paths
 
 | Verb | Scope | Args | Returns | Timeout | Classification |
 |---|---|---|---|---|---|
-| `run_command` | `tools:execute` | `computer?`, `command` (≤ 2000 chars), `cwd?`, `timeout_s=60` (≤ 300) | {exit_code, stdout (≤ 64 KiB), stderr, truncated, duration_ms} | 310 s | **always** |
 | `write_file` | `tools:files` | `computer?`, `path`, `content` (≤ 256 KiB), `if_exists=refuse\|overwrite` | {path, bytes} | 10 s | **always** |
 | `delete_path` | `tools:files` | `computer?`, `path` | {path, deleted} | 10 s | **always** |
+| `open_app` (shell only) | `tools:write` | see input verbs | | | `{"by_shell_app": true}` — `SHELL_APPS` |
 
-`run_command` runs `powershell.exe -NoProfile -NonInteractive -Command <command>` via
-`subprocess.run` with `cwd` (default the user's home), bounded time and output (FR-012).
+**There is no arbitrary-shell verb (D8).** The tool-security analyzer hard-blocks any
+`run_command`-shaped tool (Constitution VII), so commands run the way a person runs them:
+open a terminal (approval card), then type. The host refuses `type_text`/`press_keys` while a
+command interpreter owns the foreground window unless the request carries `terminal_ok`,
+which the orchestrator sets for `TERMINAL_GRANT_S` (180 s) after an approved `confirm_action`
+or an approved shell `open_app` on that session.
 
 ## Destructive classification (single source: `backend/orchestrator/computer_use_policy.py`)
 
 ```python
 DESTRUCTIVE_CLASSIFICATION = {
-    "run_command": "always", "write_file": "always", "delete_path": "always",
-    "confirm_action": "always",
+    "write_file": "always", "delete_path": "always", "confirm_action": "always",
+    "open_app": {"by_shell_app": True},
 }
 UNATTENDED_ALLOWED = frozenset({"list_computers"})
 ```
+
+The card is delivered as the call's **result** (canvas + transcript, stable id
+`au_approval_<proposal>`, replaced in place on decision), the model reads a stop
+instruction, a repeat reach re-uses the pending card, and an approval re-dispatches the verb
+then resumes the task with a continuation turn.
 
 The agent registry imports these; a contract test asserts the registry equals the policy.
