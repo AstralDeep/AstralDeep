@@ -839,6 +839,11 @@ def test_first_starting_frame_reads_revision_metadata_before_the_process_binds(
     revision = _agent_revision(repository, clean_database)
     host = _host(repository)
     host = repository.mark_inventory_reconciled(host.fence)
+    selection = repository.select_host_for_agent(
+        owner_user_id=_OWNER,
+        agent_id=_AGENT,
+    )
+    assert selection.session is not None
     delivery_operation = _running_operation(
         clean_database,
         operation_kind="agent_runtime_delivery",
