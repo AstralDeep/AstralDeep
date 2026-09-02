@@ -36,6 +36,7 @@ from orchestrator.computer_use_policy import (
     MAX_TEXT_CHARS,
     MAX_WAIT_SECONDS,
     MAX_WRITE_BYTES,
+    RESUME_SETTLE_SECONDS,
     MIN_SCREENSHOT_WIDTH,
     SCOPES,
     TIERS,
@@ -302,8 +303,22 @@ def resume_session(**kwargs) -> Dict[str, Any]:
     session = _sessions().live_for_host(user_id, host.host_id)
     if session is None:
         return _fail("no_session", f"no session on {host.name}", next_action="call start_session")
-    _bridge(_sessions().resume(session), TIMEOUTS["resume_session"], _loop(kwargs))
-    return _data({"state": session.state, "computer": host.name})
+
+    async def _resume_and_verify():
+        await _sessions().resume(session)
+        # The desktop re-pauses within a presence poll or two when the person
+        # at the PC is still active; report what actually held rather than
+        # the optimistic state, so the model waits instead of looping.
+        await asyncio.sleep(RESUME_SETTLE_SECONDS)
+        return session.state
+
+    state = _bridge(_resume_and_verify(), TIMEOUTS["resume_session"], _loop(kwargs))
+    if state == "paused":
+        return _fail("paused", f"someone is still using {host.name}; the session paused again "
+                               f"({session.pause_reason or 'local input'})",
+                     next_action=f"call wait with seconds={MAX_WAIT_SECONDS:g} before trying "
+                                 "resume_session once more — do not retry immediately")
+    return _data({"state": state, "computer": host.name})
 
 
 def confirm_action(**kwargs) -> Dict[str, Any]:
@@ -416,19 +431,32 @@ def list_dir(**kwargs) -> Dict[str, Any]:
 
 
 def wait(**kwargs) -> Dict[str, Any]:
-    _u, _c, host, ctx = _ctx(kwargs)
-    if not hasattr(ctx, "session_id"):
-        return ctx
+    """Sleep server-side and report the live session state. Deliberately NOT
+    a host round-trip and NOT gated on an *active* session: waiting is the one
+    thing the model is told to do while the person at the PC is active."""
+    user_id = kwargs.get("user_id")
+    if not user_id:
+        return _fail("unattended_refused", "sign in to control your computer")
+    try:
+        host = _resolve_host(user_id, kwargs.get("session_id"), kwargs.get("computer"))
+    except ComputerHostError as exc:
+        return _host_error(exc)
+    session = _sessions().live_for_host(user_id, host.host_id)
+    if session is None:
+        return _fail("no_session", f"no remote-control session on {host.name}",
+                     next_action="call start_session first")
     try:
         seconds = float(kwargs.get("seconds", 1.0))
     except (TypeError, ValueError):
         return _fail("out_of_range", "seconds must be a number")
     if not (0.1 <= seconds <= MAX_WAIT_SECONDS):
         return _fail("out_of_range", f"seconds must be between 0.1 and {MAX_WAIT_SECONDS}")
-    result, err = _run(host, ctx, "wait", {"seconds": seconds}, _loop(kwargs))
-    if err:
-        return err
-    return _data({"computer": host.name, "waited": seconds})
+    _bridge(asyncio.sleep(seconds), TIMEOUTS["wait"], _loop(kwargs))
+    out = {"computer": host.name, "waited": seconds, "state": session.state}
+    if session.state == "paused":
+        out["pause_reason"] = session.pause_reason
+        out["next_action"] = "call resume_session when the person at the computer has stopped"
+    return _data(out)
 
 
 # ── input verbs ───────────────────────────────────────────────────────────────
@@ -651,7 +679,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "any screenshot or action. The computer shows a banner while the session is active.", {}),
     "end_session": _entry(end_session, "End the remote-control session on a computer.", {}),
     "resume_session": _entry(resume_session, "Resume a session that was paused because someone used the "
-                                             "computer locally.", {}),
+                                             "computer locally. If it reports paused again, call wait "
+                                             "(seconds=10) before trying once more.", {}),
     "confirm_action": _entry(
         confirm_action,
         "Ask the user to approve a consequential step you are about to take in the UI — buying, paying, "
@@ -676,7 +705,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                         ["path"]),
     "list_dir": _entry(list_dir, "List a directory on the computer.",
                        {"path": {"type": "string", "description": "Absolute directory path."}}, ["path"]),
-    "wait": _entry(wait, "Wait for the screen to settle (0.1-10 s) before the next screenshot.",
+    "wait": _entry(wait, "Wait 0.1-10 s for the screen to settle, or for the person at the computer to "
+                         "finish when the session is paused (works while paused; reports the state).",
                    {"seconds": {"type": "number"}}),
     "click": _entry(click, "Click at a point of the last screenshot.",
                     {**_XY, "button": {"type": "string", "enum": ["left", "right", "middle"]},

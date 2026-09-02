@@ -135,6 +135,10 @@ MAX_READ_BYTES = 262_144
 DEFAULT_READ_BYTES = 65_536
 MAX_SUMMARY_CHARS = 400
 MAX_WAIT_SECONDS = 10.0
+#: resume_session sleeps this long after resuming and reports the state that
+#: actually held (the desktop re-pauses within a presence poll or two when the
+#: person at the PC is still active) — ≥ two 500 ms polls plus slack.
+RESUME_SETTLE_SECONDS = 1.5
 MIN_SCREENSHOT_WIDTH = 320
 MAX_SCREENSHOT_WIDTH = 1920
 DEFAULT_SCREENSHOT_WIDTH = 1280

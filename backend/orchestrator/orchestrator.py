@@ -15790,11 +15790,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             MAX_TURNS = 10
             # 076: a look-then-act loop (screenshot → act → screenshot …) needs
             # more tool rounds than an ordinary request; widen the budget only
-            # when the computer-use verbs are in play this turn.
+            # when the computer-use verbs are in play this turn. The 033 flow
+            # tool budget (12 tools for a "then … then" request) would cut the
+            # same loop short, so the turn cap is the only budget here.
             if flags.is_enabled("computer_use") and any(
                     isinstance(t, dict) and (t.get("function") or {}).get("name") in ("screenshot", "start_session")
                     for t in (tools_desc or [])):
                 MAX_TURNS = max(MAX_TURNS, int(os.getenv("COMPUTER_USE_MAX_TURNS", "24")))
+                _flow = None
             turn_count = 0
             heartbeat_task = await self._start_heartbeat(websocket)
             # 055 US3: every rich component this turn lands on the canvas —

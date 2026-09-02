@@ -685,7 +685,7 @@ def _answers(verb, args):
     return {"ok": True, "result": {}}
 
 
-async def test_agent_verbs_against_a_fake_host():
+async def test_agent_verbs_against_a_fake_host(monkeypatch):
     from agents.computer_use import mcp_tools
     orch = _AgentOrch()
     mcp_tools.register_deps(orch)  # inside the running loop → _LOOP is this loop
@@ -745,10 +745,27 @@ async def test_agent_verbs_against_a_fake_host():
     host.descriptor["verbs"] = ["screenshot"]
     assert (await asyncio.to_thread(mcp_tools.click, x=1, y=1, **ctx))["_data"]["code"] == "unsupported"
 
-    # pause → input verbs refuse; resume → work again
+    # pause → input verbs refuse; `wait` still works (server-side, reports the
+    # state — it is the one thing the model is told to do while paused)
     await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, "local_input")
     paused = await asyncio.to_thread(mcp_tools.screenshot, **ctx)
     assert paused["_data"]["code"] == "paused"
+    before = len(host_ws.frames("computer_request"))
+    waited = await asyncio.to_thread(mcp_tools.wait, seconds=0.1, **ctx)
+    assert waited["_data"]["state"] == "paused" and waited["_data"]["pause_reason"] == "local_input"
+    assert len(host_ws.frames("computer_request")) == before  # no host round-trip
+    # a resume that does not hold (the desktop re-pauses because the person is
+    # still active) is reported as paused with the wait hint, never as active
+    monkeypatch.setattr(mcp_tools, "RESUME_SETTLE_SECONDS", 0.05)
+    orig_resume = orch.computer_sessions.resume
+
+    async def _resume_then_repause(sess):
+        await orig_resume(sess)
+        await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", sess.session_id, "local_input")
+    monkeypatch.setattr(orch.computer_sessions, "resume", _resume_then_repause)
+    again = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
+    assert again["_data"]["code"] == "paused" and "wait" in again["_data"]["next_action"]
+    monkeypatch.setattr(orch.computer_sessions, "resume", orig_resume)
     resumed = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
     assert resumed["_data"]["state"] == "active"
     ended = await asyncio.to_thread(mcp_tools.end_session, **ctx)
