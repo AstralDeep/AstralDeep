@@ -83,7 +83,7 @@ class AgentConfirmationPolicy:
                  card_title: str, card_caption: str, summary, machine_label,
                  is_destructive=None, refusal_text: Optional[str] = None,
                  auto_continue: bool = False, dedupe_pending: bool = False,
-                 machine_id=None):
+                 machine_id=None, card_as_result: bool = False):
         self.agent_id = agent_id
         self.classification = classification
         self.machine_key = machine_key
@@ -117,6 +117,10 @@ class AgentConfirmationPolicy:
         # verbs may omit ``computer`` when one host is online, so the id is
         # resolved from the registry rather than read off the arguments.
         self.machine_id = machine_id
+        # 076: deliver the card as the tool call's RESULT (canvas + transcript +
+        # every device, replaceable in place by its explicit id) instead of a
+        # transient chat alert that the 060 atomic commit discards.
+        self.card_as_result = card_as_result
 
 
 def _computer_use_label(orch, user_id: str, ref) -> str:
@@ -175,6 +179,7 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             auto_continue=True,
             dedupe_pending=True,
             machine_id=_computer_use_machine_id,
+            card_as_result=True,
         ),
     }
 
@@ -463,8 +468,38 @@ def _create_proposal(orch, user_id: str, chat_id: Optional[str], agent_id: str,
                payload={"proposal_id": proposal_id, "decision": "approve"}),
         Button(label="Decline", action="remote_op_decision", variant="secondary",
                payload={"proposal_id": proposal_id, "decision": "decline"}),
-    ]).to_dict()
+    ], id=card_component_id(proposal_id) if policy.card_as_result else None).to_dict()
     return proposal_id, card
+
+
+def card_component_id(proposal_id: str) -> str:
+    """Workspace identity of a 076 approval card (explicit author id → the
+    workspace keeps it verbatim, so a decision can replace it in place)."""
+    return f"au_approval_{proposal_id}"
+
+
+async def _replace_card(orch, row, title: str, body: str, variant: str = "default") -> None:
+    """Swap the pending card for its outcome, in place, on every device."""
+    if not row.conversation_id:
+        return
+    try:
+        from astralprims import Card, Text
+        policy = policy_for(row.agent_id)
+        if policy is None or not policy.card_as_result:
+            return
+        comp = Card(title=title, content=[Text(content=body, variant="body")],
+                    id=card_component_id(str(row.proposal_id))).to_dict()
+        cid = card_component_id(str(row.proposal_id))
+
+        async def _mutation():
+            return await orch.workspace.aupsert(row.conversation_id, row.owner_id, [comp],
+                                                force_component_id=cid)
+        ops = await orch.run_detached_conversation_mutation(
+            chat_id=row.conversation_id, user_id=row.owner_id, mutation=_mutation)
+        if ops:
+            await orch.send_ui_upsert(None, row.conversation_id, row.owner_id, ops)
+    except Exception:  # noqa: BLE001 — the decision itself is already recorded
+        logger.debug("remote_op card replacement failed", exc_info=True)
 
 
 # ── the gate hook (called from _run_gate_stack via asyncio.to_thread) ──────────
@@ -612,6 +647,7 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
                            proposal_id=proposal_id, machine_id=_mid, verb=_verb,
                            outcome="failure", chat_id=_cid)
         await _say("Declined — nothing was changed.", variant="info")
+        await _replace_card(orch, row, "Declined", f"{row.summary} — not done.")
         return
 
     # Approve atomically (single-use guard against a double-click / concurrent tab).
@@ -631,6 +667,7 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         return
     await _audit_async(user_id, "remote_op.approved", f"approved {_verb}",
                        proposal_id=proposal_id, machine_id=_mid, verb=_verb, chat_id=_cid)
+    await _replace_card(orch, row, "Approved ✓", f"{row.summary} — running now.")
 
     # Re-enter the tool with the STORED args + the consume marker. The gate re-checks
     # the full stack, matches the approved proposal by (owner, verb, args), consumes it

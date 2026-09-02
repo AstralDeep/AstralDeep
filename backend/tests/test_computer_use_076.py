@@ -447,6 +447,9 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     assert any(len(r["machine_id"]) == 36 for r in db.rows.values())
     card = out[1][0]
     assert card["type"] == "card" and "Confirm an action on" in card["title"]
+    # 076 cards carry an explicit workspace id so a decision can replace them in place
+    assert card["id"].startswith("au_approval_") and rc.policy_for("computer-use-1").card_as_result is True
+    assert rc.policy_for("remote-compute-1").card_as_result is False
     buttons = [c for c in card["content"] if c["type"] == "button"]
     assert {b["payload"]["decision"] for b in buttons} == {"approve", "decline"}
     assert any("Run on" in c.get("content", "") for c in card["content"] if c["type"] == "text")
