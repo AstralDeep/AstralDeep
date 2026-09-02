@@ -371,11 +371,11 @@ def _skill_row(skill: us.Skill) -> str:
         f'<div class="text-xs text-astral-muted mt-1 whitespace-pre-line">'
         f'{esc(skill.instructions[:280])}{"…" if len(skill.instructions) > 280 else ""}</div>'
         f'<div class="flex gap-2 mt-2">'
-        f'<button type="button" class="{_BTN}" data-ui-action="chrome_skill_edit" '
+        f'<button type="button" class="{_BTN}" data-ui-action="chrome_user_skill_edit" '
         f"data-ui-payload='{pid}'>Edit</button>"
-        f'<button type="button" class="{_BTN}" data-ui-action="chrome_skill_toggle" '
+        f'<button type="button" class="{_BTN}" data-ui-action="chrome_user_skill_toggle" '
         f"data-ui-payload='{toggle}'>{toggle_label}</button>"
-        f'<button type="button" class="{_BTN_DANGER}" data-ui-action="chrome_skill_delete" '
+        f'<button type="button" class="{_BTN_DANGER}" data-ui-action="chrome_user_skill_delete" '
         f"data-ui-payload='{pid}'>Delete</button>"
         f"</div></div>"
     )
@@ -404,7 +404,7 @@ def _skill_form(skill: us.Skill | None) -> str:
         f'should follow" class="{_INPUT_CLS}">{esc(skill.instructions) if editing else ""}'
         f"</textarea>"
         f'<div class="flex gap-2 mt-2">'
-        f'<button type="button" class="{_BTN_PRIMARY}" data-ui-action="chrome_skill_save" '
+        f'<button type="button" class="{_BTN_PRIMARY}" data-ui-action="chrome_user_skill_save" '
         f'data-ui-collect="true">{"Save" if editing else "Add skill"}</button>'
         + (f'<button type="button" class="{_BTN}" data-ui-action="chrome_author_list">'
            f"Cancel</button>" if editing else "")
@@ -804,10 +804,10 @@ def _skill_components(skill: us.Skill, _sdui) -> Dict[str, Any]:
         content.append(_sdui.badge("off", "default"))
     content.append(_sdui.text(f"applies to {where}", "caption"))
     content.append(_sdui.text(skill.instructions[:280] + ("…" if len(skill.instructions) > 280 else "")))
-    content.append(_sdui.button("Edit", "chrome_skill_edit", {"slug": skill.slug}))
-    content.append(_sdui.button("Disable" if skill.enabled else "Enable", "chrome_skill_toggle",
+    content.append(_sdui.button("Edit", "chrome_user_skill_edit", {"slug": skill.slug}))
+    content.append(_sdui.button("Disable" if skill.enabled else "Enable", "chrome_user_skill_toggle",
                                 {"slug": skill.slug, "enabled": not skill.enabled}))
-    content.append(_sdui.button("Delete", "chrome_skill_delete", {"slug": skill.slug}))
+    content.append(_sdui.button("Delete", "chrome_user_skill_delete", {"slug": skill.slug}))
     return _sdui.card(skill.name, content)
 
 
@@ -828,7 +828,7 @@ def _skill_form_components(skill: us.Skill | None, _sdui) -> List[Dict[str, Any]
            _sdui.text("Standing guidance in your own words — how you like things done, a "
                       "checklist, a format. Followed in every chat (or only for the agents you "
                       "name); a /command makes it a shortcut you can type.", "caption"),
-           _sdui.form(fields, submit_action="chrome_skill_save",
+           _sdui.form(fields, submit_action="chrome_user_skill_save",
                       submit_label="Save" if editing else "Add skill",
                       submit_payload={"skill_slug": skill.slug} if editing else None)]
     if editing:
@@ -1208,7 +1208,7 @@ def _skills_refused() -> Tuple[str, Dict[str, Any], str]:
 
 
 async def _h_skill_save(orch, websocket, user_id, roles, payload):
-    """``chrome_skill_save {skill_slug?, fields: {skill_name, skill_command,
+    """``chrome_user_skill_save {skill_slug?, fields: {skill_name, skill_command,
     skill_applies, skill_instructions}}`` — create or replace one skill."""
     _ = websocket, roles
     store = us.store_for(orch)
@@ -1235,7 +1235,7 @@ async def _h_skill_save(orch, websocket, user_id, roles, payload):
 
 
 async def _h_skill_edit(orch, websocket, user_id, roles, payload):
-    """``chrome_skill_edit {slug}`` — open the form prefilled."""
+    """``chrome_user_skill_edit {slug}`` — open the form prefilled."""
     _ = orch, websocket, user_id, roles
     if not us.enabled():
         return _skills_refused()
@@ -1243,7 +1243,7 @@ async def _h_skill_edit(orch, websocket, user_id, roles, payload):
 
 
 async def _h_skill_toggle(orch, websocket, user_id, roles, payload):
-    """``chrome_skill_toggle {slug, enabled}``."""
+    """``chrome_user_skill_toggle {slug, enabled}``."""
     _ = websocket, roles
     store = us.store_for(orch)
     if store is None:
@@ -1261,7 +1261,7 @@ async def _h_skill_toggle(orch, websocket, user_id, roles, payload):
 
 
 async def _h_skill_delete(orch, websocket, user_id, roles, payload):
-    """``chrome_skill_delete {slug}``."""
+    """``chrome_user_skill_delete {slug}``."""
     _ = websocket, roles
     store = us.store_for(orch)
     if store is None:
@@ -1328,8 +1328,8 @@ HANDLERS = {
     "chrome_author_quick_resend": _h_quick_resend,
     "chrome_author_quick_dismiss": _h_quick_dismiss,
     # 077 — skills
-    "chrome_skill_save": _h_skill_save,
-    "chrome_skill_edit": _h_skill_edit,
-    "chrome_skill_toggle": _h_skill_toggle,
-    "chrome_skill_delete": _h_skill_delete,
+    "chrome_user_skill_save": _h_skill_save,
+    "chrome_user_skill_edit": _h_skill_edit,
+    "chrome_user_skill_toggle": _h_skill_toggle,
+    "chrome_user_skill_delete": _h_skill_delete,
 }

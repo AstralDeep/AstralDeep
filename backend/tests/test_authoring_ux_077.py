@@ -325,39 +325,39 @@ async def test_home_view_web_and_native(db, tmp_path):
     assert "Desktop client connected" in html
     assert "chrome_author_quick_create" in html and "Create</button>" in html
     assert "Advanced: build it step by step" in html and "chrome_author_start" in html
-    assert "Your skills" in html and "chrome_skill_save" in html
+    assert "Your skills" in html and "chrome_user_skill_save" in html
     assert 'data-astral-commands="[]"' in html
     assert "share" not in html.lower().replace("shared", "")   # no share/publish affordance
     comps = await authoring.components(orch, OWNER, ["user"], {})
     kinds = [(c["type"], c.get("submit_action")) for c in comps]
     assert ("alert", None) == kinds[0]
     submits = [k[1] for k in kinds if k[1]]
-    assert submits == ["chrome_author_quick_create", "chrome_author_start", "chrome_skill_save"]
+    assert submits == ["chrome_author_quick_create", "chrome_author_start", "chrome_user_skill_save"]
     # skills through the handlers
-    result = await authoring.HANDLERS["chrome_skill_save"](orch, object(), OWNER, ["user"], {
+    result = await authoring.HANDLERS["chrome_user_skill_save"](orch, object(), OWNER, ["user"], {
         "fields": {"skill_name": "Standup", "skill_command": "standup", "skill_applies": "",
                    "skill_instructions": "Yesterday / today / blockers."}})
     assert "Saved" in result[2] and "/standup" in result[2]
     html = await authoring.render(orch, OWNER, ["user"], {})
     assert "/standup" in html and 'data-astral-commands="[{' in html
-    result = await authoring.HANDLERS["chrome_skill_save"](orch, object(), OWNER, ["user"], {
+    result = await authoring.HANDLERS["chrome_user_skill_save"](orch, object(), OWNER, ["user"], {
         "fields": {"skill_name": "Standup", "skill_command": "help", "skill_applies": "",
                    "skill_instructions": "Yesterday / today / blockers."}})
     assert "built-in" in result[2]
-    result = await authoring.HANDLERS["chrome_skill_edit"](orch, object(), OWNER, ["user"],
+    result = await authoring.HANDLERS["chrome_user_skill_edit"](orch, object(), OWNER, ["user"],
                                                           {"slug": "standup"})
     assert result[1] == {"skill_slug": "standup"}
     html = await authoring.render(orch, OWNER, ["user"], result[1])
     assert "Edit skill" in html and 'name="skill_slug" value="standup"' in html
     comps = await authoring.components(orch, OWNER, ["user"], result[1])
-    form = [c for c in comps if c.get("submit_action") == "chrome_skill_save"][0]
+    form = [c for c in comps if c.get("submit_action") == "chrome_user_skill_save"][0]
     assert form["submit_payload"] == {"skill_slug": "standup"}
-    result = await authoring.HANDLERS["chrome_skill_toggle"](orch, object(), OWNER, ["user"],
+    result = await authoring.HANDLERS["chrome_user_skill_toggle"](orch, object(), OWNER, ["user"],
                                                             {"slug": "standup", "enabled": False})
     assert "now off" in result[2]
     html = await authoring.render(orch, OWNER, ["user"], {})
     assert 'data-astral-commands="[]"' in html                     # disabled ⇒ not advertised
-    result = await authoring.HANDLERS["chrome_skill_delete"](orch, object(), OWNER, ["user"],
+    result = await authoring.HANDLERS["chrome_user_skill_delete"](orch, object(), OWNER, ["user"],
                                                             {"slug": "standup"})
     assert "deleted" in result[2] and us.store_for(orch).list(OWNER) == []
 

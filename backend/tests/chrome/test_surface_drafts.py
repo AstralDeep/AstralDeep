@@ -68,7 +68,7 @@ def test_list_shows_origin_badges_and_self_test():
 def test_empty_list_hints_at_both_entry_points():
     html = run(drafts.render(orch_with([]), "u1", [], {}))
     assert "No drafts yet" in html
-    assert "Create a new agent" in html  # form always present
+    assert "Create a server-side agent" in html  # form always present (077: says what it makes)
 
 
 def test_detail_decisions_for_normal_draft():
