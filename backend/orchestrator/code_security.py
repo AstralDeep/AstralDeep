@@ -341,9 +341,22 @@ class CodeSecurityAnalyzer:
         return findings
 
     def _get_call_name(self, node: ast.Call) -> str:
-        """Extract function name from a Call node."""
+        """The name a Call is checked against :data:`DANGEROUS_CALLS` under.
+
+        Those are the dangerous BUILTINS. A bare name (``eval(...)``) is one;
+        so is a reach through the builtins module (``builtins.eval``,
+        ``__builtins__.exec``, and the ``getattr(builtins, ...)`` family the
+        obfuscation patterns cover). A method of some other object is NOT:
+        ``re.compile(...)``, ``pattern.compile``, ``parser.eval`` and
+        ``file.open`` are ordinary library calls, and flagging them refused
+        every generated agent that parsed text with a regular expression
+        (feature 077 live finding). Blocked module functions (``os.system``
+        …) are matched separately against :data:`PARTIAL_MODULES`."""
         if isinstance(node.func, ast.Name):
             return node.func.id
-        elif isinstance(node.func, ast.Attribute):
-            return node.func.attr
+        if isinstance(node.func, ast.Attribute):
+            base = node.func.value
+            if isinstance(base, ast.Name) and base.id in ("builtins", "__builtins__"):
+                return node.func.attr
+            return ""
         return ""

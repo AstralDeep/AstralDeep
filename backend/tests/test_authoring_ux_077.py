@@ -417,3 +417,27 @@ def test_step_editor_copy_and_stale_pass_warning(db):
     passed = {"phase": "generate", "analyze_result": json.dumps({"passed": True, "constitution_version": "v"}),
               "plan_json": "{}", "agent_name": "x", "description": "d"}
     assert "Re-run Analyze before generating" in authoring._phase_body(passed, "generate", orch)
+
+
+# ── 5. the static code gate names builtins, not every method called compile ──
+
+def test_code_gate_flags_builtins_but_not_library_methods_of_the_same_name():
+    from orchestrator.code_security import CodeSecurityAnalyzer, Severity, blocks_execution
+    analyzer = CodeSecurityAnalyzer()
+    ok = analyzer.analyze(
+        "import re\n"
+        "PATTERN = re.compile(r'(\\\\d+)d(\\\\d+)')\n"
+        "def roll(expr):\n"
+        "    m = PATTERN.match(expr)\n"
+        "    return m.groups() if m else None\n",
+        filename="ok/mcp_tools.py")
+    assert not blocks_execution(ok), [f.message for f in ok.findings]
+    bad = analyzer.analyze("def run(src):\n    return compile(src, 'x', 'exec')\n", filename="bad.py")
+    assert blocks_execution(bad) and bad.max_severity == Severity.CRITICAL
+    sneaky = analyzer.analyze("import builtins\n"
+                              "def run(src):\n    return builtins.eval(src)\n", filename="sneaky.py")
+    assert blocks_execution(sneaky)
+    dunder = analyzer.analyze("def run(src):\n    return __builtins__.exec(src)\n", filename="dunder.py")
+    assert blocks_execution(dunder)
+    system = analyzer.analyze("import os\ndef run(c):\n    return os.system(c)\n", filename="os.py")
+    assert blocks_execution(system)
