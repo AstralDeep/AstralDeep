@@ -560,10 +560,13 @@ async def draft_phase(orch, websocket, user_id: str, draft_id: str) -> Tuple[boo
         out = await _draft_json(orch, websocket, [
             {"role": "system", "content": _DRAFT_SYSTEM},
             {"role": "user", "content":
-                f"{ctx}\n\nPropose up to {_MAX_TOOLS} tools this agent needs. For each: a "
-                f"snake_case name, the single least-privileged scope it needs (one of "
-                f"tools:read, tools:write, tools:search, tools:system, tools:files, "
-                f"tools:execute), and one line saying what it does. Keys: tools, notes."},
+                f"{ctx}\n\nList the TOOLS this agent will expose — the functions the owner "
+                f"calls from chat (for example convert_temperature, roll_dice). Every "
+                f"capability the owner asked for must be one tool; propose at least one and at "
+                f"most {_MAX_TOOLS}. For each: a snake_case name, the single least-privileged "
+                f"scope it needs (one of tools:read, tools:write, tools:search, tools:system, "
+                f"tools:files, tools:execute — pure computation on the owner's own input is "
+                f"tools:read), and one line saying what it does. Keys: tools, notes."},
         ], _PLAN_SCHEMA)
         tools = [t for t in ((out or {}).get("tools") or []) if isinstance(t, dict)][:_MAX_TOOLS]
         if not tools:

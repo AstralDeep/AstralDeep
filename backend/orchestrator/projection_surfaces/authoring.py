@@ -1180,7 +1180,9 @@ async def _h_quick_resend(orch, websocket, user_id, roles, payload):
             run.outcome = dict(result, step="generate")
         else:
             run.state, run.steps["deliver"] = qc.FAILED, "failed"
-            run.message = f"Could not send it ({result.get('error') or result.get('reason') or status})."
+            run.message = ("Your desktop refused this build of the agent. Press Revise on it in "
+                           "the list to build a new one." if status == "delivery_failed" else
+                           f"Could not send it ({result.get('error') or result.get('reason') or status}).")
             run.outcome = dict(result, step="deliver")
         run.note(run.message)
     kind = "success" if status == "delivered" else "info" if status in ("no_host", "delivery_pending") else "error"

@@ -229,6 +229,12 @@ async def _pipeline(orch, websocket, user_id, roles, run: QuickRun, refresh, res
                     await fail(step, "This agent is being edited step by step — continue there.")
                     return
                 drafted, message = await aa.draft_phase(orch, websocket, user_id, run.draft_id)
+                if not drafted and step != "clarify":
+                    # The owner's model is not deterministic: one more attempt
+                    # before handing the step to the person (Clarify is not
+                    # retried — a missing answer there must stay a gate).
+                    run.note(f"{STEP_LABELS[step]}: first draft came back empty — retrying once.")
+                    drafted, message = await aa.draft_phase(orch, websocket, user_id, run.draft_id)
                 if not drafted:
                     await fail(step, message + " Open the step editor to write it yourself.")
                     return
@@ -297,8 +303,8 @@ async def _pipeline(orch, websocket, user_id, roles, run: QuickRun, refresh, res
                     "gate_blocked": result.get("reason") or "Analyze has not passed for this agent.",
                     "analyze_failed": "The agent rules refused this design — nothing was generated.",
                     "generation_failed": f"Code generation failed: {result.get('error') or 'unknown error'}",
-                    "delivery_failed": ("The verified bundle could not be activated on your desktop. "
-                                        "Start a new revision from the agent list."),
+                    "delivery_failed": ("Your desktop refused this build of the agent. Press Revise "
+                                        "on it in the list to build a new one."),
                     "conflict": "This agent changed elsewhere — open it in the step editor.",
                     "disabled": "Personal agents are not enabled on this deployment.",
                 }
