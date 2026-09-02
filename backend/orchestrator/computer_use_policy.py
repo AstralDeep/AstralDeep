@@ -62,12 +62,48 @@ SCOPES: Dict[str, str] = {
 #: 063-shaped classification consumed by ``remote_confirmation`` (FR-011).
 #: ``confirm_action`` is "always" on purpose: the model's own request for a
 #: consequential UI step rides the same durable, single-use proposal card.
+#: ``open_app`` is consequential ONLY for a shell/terminal (see
+#: :func:`is_shell_app`): opening a terminal and typing into it is a command
+#: by another route, so it takes the same card ``run_command`` does — and the
+#: host refuses ``type_text``/``press_keys`` while a terminal is in front.
 DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "run_command": "always",
     "write_file": "always",
     "delete_path": "always",
     "confirm_action": "always",
+    "open_app": {"by_shell_app": True},
 }
+
+#: Applications that are command interpreters — opening one is a command by
+#: another route (matched on the bare app name or the executable's stem).
+SHELL_APPS: FrozenSet[str] = frozenset({
+    "powershell", "pwsh", "cmd", "command prompt", "wt", "windows terminal", "windowsterminal",
+    "terminal", "conhost", "bash", "sh", "zsh", "wsl", "ubuntu", "git-bash", "git bash", "mintty",
+    "cygwin", "cygwin64 terminal", "python", "python3", "ipython", "node", "irb", "psql",
+})
+
+
+def is_shell_app(app: Any) -> bool:
+    text = str(app or "").strip().lower()
+    if not text:
+        return False
+    stem = text.replace("\\", "/").rsplit("/", 1)[-1]
+    for suffix in (".exe", ".lnk", ".bat", ".cmd"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+    return stem in SHELL_APPS or text in SHELL_APPS
+
+
+def is_destructive(tool_name: str, args: Mapping[str, Any]) -> bool:
+    """The 076 destructiveness predicate the shared gate calls (spec FR-011)."""
+    classification = DESTRUCTIVE_CLASSIFICATION.get(tool_name)
+    if classification is None or classification == "never":
+        return False
+    if classification == "always":
+        return True
+    if isinstance(classification, dict) and classification.get("by_shell_app"):
+        return is_shell_app(args.get("app"))
+    return True  # unknown classification → fail-closed
 
 #: The only verbs a machine-class (scheduled / background / MCP) turn may run.
 UNATTENDED_ALLOWED: FrozenSet[str] = frozenset({"list_computers"})
@@ -122,6 +158,8 @@ def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str
         return f"Delete on {h}: {str(args.get('path') or '')[:200]}"
     if tool_name == "confirm_action":
         return f"On {h}: {str(args.get('summary') or 'the next step')[:MAX_SUMMARY_CHARS]}"
+    if tool_name == "open_app":
+        return f"Open a terminal on {h}: {str(args.get('app') or '')[:120]}"
     return f"{tool_name} on {h}"
 
 

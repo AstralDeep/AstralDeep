@@ -69,7 +69,8 @@ class AgentConfirmationPolicy:
 
     def __init__(self, *, agent_id: str, classification: Dict[str, Any], machine_key: str,
                  gate_unclassified_unattended: bool, unattended_allowed: frozenset,
-                 card_title: str, card_caption: str, summary, machine_label):
+                 card_title: str, card_caption: str, summary, machine_label,
+                 is_destructive=None):
         self.agent_id = agent_id
         self.classification = classification
         self.machine_key = machine_key
@@ -83,6 +84,10 @@ class AgentConfirmationPolicy:
         self.card_caption = card_caption
         self.summary = summary            # (orch, user_id, tool_name, args) -> str
         self.machine_label = machine_label  # (orch, user_id, machine_ref) -> str
+        # Optional (tool_name, args) -> bool predicate for classifications the
+        # 063 vocabulary cannot express (076's shell-app rule); None ⇒ the
+        # shared ``_is_destructive`` vocabulary decides.
+        self.is_destructive = is_destructive
 
 
 def _computer_use_label(orch, user_id: str, ref) -> str:
@@ -126,6 +131,7 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             card_caption=computer_use_policy.CARD_CAPTION,
             summary=_computer_use_summary,
             machine_label=_computer_use_label,
+            is_destructive=computer_use_policy.is_destructive,
         ),
     }
 
@@ -280,6 +286,8 @@ def is_destructive_unattended(tool_name: str, args: Dict[str, Any],
         return True
     if isinstance(classification, dict) and "by_action" in classification:
         return args.get("action") in set(classification["by_action"])
+    if policy is not None and policy.is_destructive is not None:
+        return bool(policy.is_destructive(tool_name, args))
     return True
 
 
@@ -448,7 +456,11 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     if classification is None:
         return None  # 076 observe/input verb on an attended turn — session-gated by the agent
 
-    if not _is_destructive(orch, user_id, tool_name, args, classification):
+    if policy.is_destructive is not None:
+        destructive = bool(policy.is_destructive(tool_name, args))
+    else:
+        destructive = _is_destructive(orch, user_id, tool_name, args, classification)
+    if not destructive:
         return None  # non-destructive mutating verb — the explicit grant already gated it
 
     marker = args.get(_MARKER)

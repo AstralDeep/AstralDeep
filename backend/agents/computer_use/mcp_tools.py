@@ -719,7 +719,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     "x2": {"type": "integer"}, "y2": {"type": "integer"}}, ["x1", "y1", "x2", "y2"]),
     "scroll": _entry(scroll, "Scroll at a point. dy < 0 scrolls down (default -3 notches), dy > 0 up.",
                      {**_XY, "dx": {"type": "integer"}, "dy": {"type": "integer"}}, ["x", "y"]),
-    "type_text": _entry(type_text, "Type text into the focused control (Unicode; up to 4000 characters).",
+    "type_text": _entry(type_text, "Type text into the focused control (Unicode; up to 4000 characters). "
+                                   "Typing into a terminal/console is refused — commands go through run_command.",
                         {"text": {"type": "string"}}, ["text"]),
     "press_keys": _entry(press_keys, "Press a key or chord: 'enter', 'tab', 'escape', 'ctrl+s', "
                                      "'ctrl+shift+t', 'alt+f4', 'win+r'.",
@@ -728,15 +729,17 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                                          "title substring.",
                            {"hwnd": {"type": "integer"}, "title": {"type": "string"}}),
     "open_app": _entry(open_app, "Open an application by name (notepad, calc, excel, chrome…) or by the "
-                                 "path of an executable/shortcut.",
+                                 "path of an executable/shortcut. Do NOT open a terminal (powershell, cmd, "
+                                 "wt…) to run commands — use run_command; opening one asks the user to approve.",
                        {"app": {"type": "string"},
                         "args": {"type": "array", "items": {"type": "string"}}}, ["app"]),
     "set_clipboard": _entry(set_clipboard, "Put text on the computer's clipboard.",
                             {"text": {"type": "string"}}, ["text"]),
     "run_command": _entry(
         run_command,
-        "Run a PowerShell command on the computer. ALWAYS asks the user to approve first. Bounded "
-        "output and time.",
+        "Run a PowerShell command on the computer and get its output. This is THE way to run any "
+        "command — never type into a terminal instead. The user is asked to approve first (a card on "
+        "their device); wait for that, then call again with the same arguments. Bounded output and time.",
         {"command": {"type": "string"}, "cwd": {"type": "string"},
          "timeout_s": {"type": "integer", "description": "1-300, default 60."}}, ["command"]),
     "write_file": _entry(

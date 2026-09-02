@@ -138,13 +138,24 @@ def test_registry_equals_policy():
         assert entry["retryable"] is False
         if name in policy.DESTRUCTIVE_CLASSIFICATION:
             assert entry["destructive"] is policy.DESTRUCTIVE_CLASSIFICATION[name]
-            assert entry["destructive"] == "always"
+            assert entry["destructive"] == ("always" if name != "open_app" else {"by_shell_app": True})
         else:
             assert "destructive" not in entry
         schema = entry["input_schema"]
         assert schema["type"] == "object"
         if name != "list_computers":
             assert "computer" in schema["properties"]
+
+
+def test_opening_a_terminal_is_a_command_by_another_route():
+    assert policy.is_destructive("open_app", {"app": "powershell"}) is True
+    assert policy.is_destructive("open_app", {"app": r"C:\Windows\System32\cmd.exe"}) is True
+    assert policy.is_destructive("open_app", {"app": "Windows Terminal"}) is True
+    assert policy.is_destructive("open_app", {"app": "notepad"}) is False
+    assert policy.is_destructive("open_app", {"app": r"C:\Program Files\Foo\foo.exe"}) is False
+    assert policy.is_destructive("run_command", {"command": "dir"}) is True
+    assert policy.is_destructive("click", {"x": 1, "y": 1}) is False
+    assert rc.is_destructive_unattended("open_app", {"app": "notepad"}, "computer-use-1") is True  # unattended: all refused
 
 
 def test_consequential_verbs_are_always_gated_and_unattended_set_is_minimal():
@@ -436,6 +447,10 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     # confirm_action rides the same card
     out = rc.evaluate(orch, ws, "computer-use-1", "confirm_action", {"summary": "Buy the ticket"}, "chat", OWNER)
     assert out is not None and "Buy the ticket" in json.dumps(out[1])
+    # opening a terminal is a command by another route → card; opening Notepad is not
+    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "notepad"}, "chat", OWNER) is None
+    out = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell"}, "chat", OWNER)
+    assert out is not None and "Open a terminal" in json.dumps(out[1])
 
 
 # ── multimodal assembly ───────────────────────────────────────────────────────
