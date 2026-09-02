@@ -70,6 +70,7 @@ from orchestrator.work_admission import (
 )
 from orchestrator.agent_validator import AgentSpecValidator
 from orchestrator.code_security import (
+    EXECUTION_BLOCKING_SEVERITIES,
     CodeSecurityAnalyzer,
     Severity,
     blocks_execution,
@@ -5233,10 +5234,18 @@ class AgentLifecycleManager:
                 await append_generation_log(
                     f"Security analysis FAILED: {report.recommendation}"
                 )
+                # 077: name the findings — "blocking issues" alone left the
+                # person with nothing to change in their description.
+                blocking = [f for f in report.findings
+                            if f.severity in EXECUTION_BLOCKING_SEVERITIES][:3]
+                named = "; ".join(
+                    f"{f.message}" + (f" (line {f.line})" if f.line else "")
+                    for f in blocking)
                 state = await finish_generation(
                     ERROR,
                     security_report=json.dumps(report.to_dict()),
-                    error_message="Security analysis found blocking issues in generated code.",
+                    error_message=("Security analysis found blocking issues in generated code"
+                                   + (f": {named}" if named else "") + "."),
                 )
                 await self._send_progress(websocket, draft_id, "security_failed",
                                            "Security analysis found blocking issues. Code was not written.",

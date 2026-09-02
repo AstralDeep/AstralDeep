@@ -309,8 +309,16 @@ def _run_card(run: qc.QuickRun, host_label: str) -> str:
     elif run.state == qc.FAILED:
         violations = _violations_block({"violations": run.outcome.get("violations") or []})
         body = (f'<div class="text-xs text-red-400 mt-1">{esc(run.message)}</div>{violations}')
+        retry = ""
+        if run.outcome.get("step") in ("generate", "deliver") and run.steps.get("analyze") == "done":
+            # Analyze passed; the model's code (or the delivery) failed — a
+            # second generation is a fresh draft of the code, not a new design.
+            retry = (f'<button type="button" class="{_BTN_PRIMARY}" '
+                     f'data-ui-action="chrome_author_quick_resend" data-ui-payload=\'{pid}\'>'
+                     f"Try again</button>")
         actions = (
-            f'<button type="button" class="{_BTN}" data-ui-action="chrome_open" '
+            retry
+            + f'<button type="button" class="{_BTN}" data-ui-action="chrome_open" '
             f"data-ui-payload='{_payload({'surface': SURFACE_KEY, 'params': {'draft_id': run.draft_id}})}'>"
             f"Fix in the editor</button>"
             f'<button type="button" class="{_BTN}" data-ui-action="chrome_author_quick_dismiss" '
@@ -768,6 +776,9 @@ def _run_components(run: qc.QuickRun, host_label: str, _sdui) -> Dict[str, Any]:
             content.append(_sdui.alert(
                 f"{v.get('plain_language') or ''} (rule {v.get('principle')}, "
                 f"field: {v.get('offending_field')})", "error"))
+        if run.outcome.get("step") in ("generate", "deliver") and run.steps.get("analyze") == "done":
+            content.append(_sdui.button("Try again", "chrome_author_quick_resend", pid,
+                                        variant="primary"))
         content.append(_sdui.button("Fix in the editor", "chrome_open",
                                     {"surface": SURFACE_KEY, "params": {"draft_id": run.draft_id}}))
         content.append(_sdui.button("Dismiss", "chrome_author_quick_dismiss", pid))
@@ -1151,15 +1162,26 @@ async def _h_quick_resend(orch, websocket, user_id, roles, payload):
     result = await aa.generate_from_session(orch, user_id, draft_id, websocket=websocket)
     status = str(result.get("status") or "")
     if run is not None:
+        run.agent_id = str(result.get("agent_id") or run.agent_id)
         if status == "delivered":
-            run.state, run.steps["deliver"] = qc.DONE, "done"
+            run.state = qc.DONE
+            run.steps["generate"], run.steps["deliver"] = "done", "done"
             run.message = "Delivered — your desktop client is starting it."
+            run.outcome = dict(result)
         elif status in ("no_host", "delivery_pending"):
+            run.state = qc.WAITING_FOR_DESKTOP
+            run.steps["generate"], run.steps["deliver"] = "done", "waiting"
             run.message = ("Still no desktop client connected — it will be sent as soon as one "
                            "connects.")
+            run.outcome = dict(result)
+        elif status == "generation_failed":
+            run.state, run.steps["generate"] = qc.FAILED, "failed"
+            run.message = f"Code generation failed: {result.get('error') or 'unknown error'}"
+            run.outcome = dict(result, step="generate")
         else:
             run.state, run.steps["deliver"] = qc.FAILED, "failed"
-            run.message = f"Could not send it ({status})."
+            run.message = f"Could not send it ({result.get('error') or result.get('reason') or status})."
+            run.outcome = dict(result, step="deliver")
         run.note(run.message)
     kind = "success" if status == "delivered" else "info" if status in ("no_host", "delivery_pending") else "error"
     return (SURFACE_KEY, {}, notice_block(kind, (run.message if run else status) or status))
