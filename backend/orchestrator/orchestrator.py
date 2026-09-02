@@ -3450,7 +3450,14 @@ class Orchestrator:
                     record.fence,
                     agent_id=agent_id,
                 )
-            except Exception:
+            except Exception as exc:
+                # Not a fault: the reconciler answers this entry itself
+                # (delete / keep_stopped). Say why, so a bundle that never
+                # starts after a reconnect is diagnosable (077 live finding).
+                logger.info(
+                    "Host inventory entry needs no delivery: agent=%s revision=%s (%s: %s)",
+                    agent_id, revision_id, type(exc).__name__, exc,
+                )
                 continue
             revision = selected.revision
             if not (
@@ -3462,6 +3469,11 @@ class Orchestrator:
                 == entry["required_runtime_lock_sha256"]
                 and revision.state == "active"
             ):
+                logger.info(
+                    "Host inventory entry is not the active revision: agent=%s revision=%s "
+                    "(active=%s state=%s)",
+                    agent_id, revision_id, revision.revision_id, revision.state,
+                )
                 continue
             operation = await self._claim_personal_agent_operation(
                 owner_user_id=record.owner_user_id,
