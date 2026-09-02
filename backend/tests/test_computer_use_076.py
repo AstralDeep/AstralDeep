@@ -312,6 +312,7 @@ async def test_session_needs_host_ack_and_pushes_to_every_owner_socket():
     stranger = orch.add(_WS(user=OTHER))
     session = await _session(orch, host, phone)
     assert session.state == "active" and session.controller_label == "Android phone"
+    assert str(uuid.UUID(session.session_id)) == session.session_id  # audit correlation_id is a UUID column
     assert ws.frames("computer_session")[-1]["state"] == "active"
     assert phone.frames("computer_session")[-1]["session_id"] == session.session_id
     assert stranger.frames("computer_session") == []

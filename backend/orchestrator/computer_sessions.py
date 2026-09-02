@@ -169,7 +169,9 @@ class ComputerSessionManager:
             return existing
 
         session = ComputerSession(
-            session_id=f"cs_{uuid.uuid4().hex}",
+            # A bare UUID4: the audit table's correlation_id is a UUID column,
+            # so the session id doubles as the audit correlation id verbatim.
+            session_id=str(uuid.uuid4()),
             owner_sub=owner_sub,
             host_id=host.host_id,
             host_name=host.name,
