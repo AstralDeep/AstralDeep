@@ -16155,6 +16155,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # recent few stay as images; older ones become a placeholder.
                     self._append_tool_images(messages, llm_msg.tool_calls, tool_results)
 
+                    # 076: approval cards raised by the dispatch gate this round
+                    # go into the staged transcript so they outlive the turn's
+                    # atomic commit and reach every device that opens the chat.
+                    _gate_cards = [c for _r in tool_results
+                                   for c in (getattr(_r, "_gate_components", None) or [])]
+                    if _gate_cards and chat_id:
+                        try:
+                            await self._append_conversation_message(
+                                conversation_stage, chat_id=chat_id, user_id=user_id,
+                                role="assistant", content=_gate_cards)
+                        except Exception:
+                            logger.debug("gate card persistence failed (non-fatal)", exc_info=True)
+
                     # Denial loop detection: track permission-denied tool results
                     if flags.is_enabled("denial_loop_detection"):
                         for i, tc in enumerate(llm_msg.tool_calls):
@@ -19104,6 +19117,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         websocket, auth.render_components, target=auth.render_target)
                 else:
                     await self.send_ui_render(websocket, auth.render_components)
+                # 076: an approval card rendered here is transient — the 060
+                # atomic commit replaces the rail at turn end. Carry the cards
+                # on the response so the chat loop can persist them into the
+                # staged transcript (they must survive on every device).
+                try:
+                    auth.response._gate_components = [
+                        c for c in auth.render_components
+                        if isinstance(c, dict) and c.get("type") == "card"]
+                except Exception:  # noqa: BLE001 — a frozen/foreign response type
+                    pass
             # T035/FR-012: a permission-denied dispatch returns BEFORE
             # ToolDispatchAudit, so for a USER agent (untrusted-at-the-boundary)
             # the denial would otherwise leave no audit row. Scope to user agents
