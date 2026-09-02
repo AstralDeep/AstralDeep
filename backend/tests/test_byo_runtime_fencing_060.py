@@ -828,6 +828,49 @@ def test_prelaunch_process_binding_is_nullable_once_only_and_replay_safe(
     assert persisted.fence.process_id == instance.fence.process_id
 
 
+def test_first_starting_frame_reads_revision_metadata_before_the_process_binds(
+    repository: PersonalAgentRuntimeRepository,
+    clean_database: PlaneTestRuntime,
+) -> None:
+    """Feature 077 live finding: the host's first ``starting`` frame carries the
+    process it spawned while the durable instance is still pre-launch, and the
+    server reads revision metadata under that fence BEFORE binding the process
+    — an exact-fence read refused every real first start as stale."""
+    revision = _agent_revision(repository, clean_database)
+    host = _host(repository)
+    host = repository.mark_inventory_reconciled(host.fence)
+    delivery_operation = _running_operation(
+        clean_database,
+        operation_kind="agent_runtime_delivery",
+    )
+    instance = repository.create_prelaunch_instance(
+        owner_user_id=_OWNER,
+        agent_id=_AGENT,
+        host_session_id=host.host_session_id,
+        revision_id=revision.revision_id,
+        operation_fence=delivery_operation,
+    )
+    assert instance.fence.process_id is None
+    spawned = dataclasses.replace(instance.fence, process_id=str(uuid.uuid4()))
+    # the metadata read admits the spawned process on a pre-launch instance …
+    assert repository.get_runtime_revision(spawned).revision_id == revision.revision_id
+    # … but any other dimension is still stale
+    with pytest.raises(StaleRuntimeGenerationError):
+        repository.get_runtime_revision(
+            dataclasses.replace(spawned, lifecycle_generation=spawned.lifecycle_generation + 1)
+        )
+    # and once bound, a different process is stale as before
+    bound = repository.bind_runtime_process(
+        instance.fence, process_id=spawned.process_id,
+        expected_state_revision=instance.state_revision,
+    )
+    assert bound.fence == spawned
+    with pytest.raises(StaleRuntimeGenerationError):
+        repository.get_runtime_revision(
+            dataclasses.replace(spawned, process_id=str(uuid.uuid4()))
+        )
+
+
 def test_delivering_recovery_timeout_is_db_fenced_and_settles_delivery_operation(
     repository: PersonalAgentRuntimeRepository,
     clean_database: PlaneTestRuntime,

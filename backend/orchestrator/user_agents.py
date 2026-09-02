@@ -2150,13 +2150,21 @@ class PersonalAgentRuntimeRepository:
         require_current_host: bool,
         allow_bound_process_replay: bool = False,
         allow_deleted_agent: bool = False,
+        allow_unbound_process_read: bool = False,
     ) -> tuple[
         PlaneRuntimeInstanceRecord,
         PlaneUserAgentRecord,
         PlaneHostSessionRecord,
         PlaneAgentRevisionRecord,
     ]:
-        """Lock and validate the typed rows behind one immutable runtime fence."""
+        """Lock and validate the typed rows behind one immutable runtime fence.
+
+        ``allow_unbound_process_read`` admits a fence that carries the process
+        the host just spawned while the durable instance is still pre-launch
+        (``process_id`` unbound): that is exactly the host's first ``starting``
+        frame, whose metadata read precedes the process binding. Read-only
+        callers only — a mutation still needs the exact fence.
+        """
 
         fence.validate(allow_prelaunch=allow_prelaunch)
         repository = self._agents.repository
@@ -2184,6 +2192,13 @@ class PersonalAgentRuntimeRepository:
             and observed_fence.process_id is not None
         ):
             fence_matches = replace(observed_fence, process_id=None) == fence
+        if (
+            not fence_matches
+            and allow_unbound_process_read
+            and observed_fence.process_id is None
+            and fence.process_id is not None
+        ):
+            fence_matches = replace(fence, process_id=None) == observed_fence
         if not fence_matches:
             raise StaleRuntimeGenerationError("runtime fence is stale")
         agent = repository.get_agent(
@@ -2890,11 +2905,17 @@ class PersonalAgentRuntimeRepository:
 
         fence.validate(allow_prelaunch=fence.process_id is None)
         with self._agents.transaction() as transaction:
+            # The host's first ``starting`` frame already names the process it
+            # spawned while the instance is still pre-launch on this side; the
+            # binding itself happens right after this read (and re-checks the
+            # exact pre-launch fence). Feature 077 live finding: without this
+            # every real first start was refused as 'runtime fence is stale'.
             _runtime, _agent, _host, revision = self._locked_plane_runtime(
                 transaction,
                 fence,
                 allow_prelaunch=fence.process_id is None,
                 require_current_host=False,
+                allow_unbound_process_read=True,
             )
             return self._revision_from_plane(revision)
 
