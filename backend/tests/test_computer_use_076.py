@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import time
 import uuid
 from types import SimpleNamespace
@@ -489,11 +490,23 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
         return SimpleNamespace(result={"_data": {"exit_code": 0, "stdout": "Wednesday"}}, error=None)
 
     from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+    # In production the orchestrator module runs as __main__, so the ContextVar
+    # the running instance's module holds is NOT the importable one; the
+    # continuation must clear the var of the module the instance came from.
+    # Model that with a distinct var on this test module (the fake's module).
+    global _CONNECTION_OPERATION_CONTEXT_MAIN
+    import contextvars
+    _CONNECTION_OPERATION_CONTEXT_MAIN = contextvars.ContextVar("test_main_operation", default=None)
+    sys.modules[__name__]._CONNECTION_OPERATION_CONTEXT = _CONNECTION_OPERATION_CONTEXT_MAIN
+    main_orch = type("MainOrch", (), {"__module__": __name__})()
+    main_orch.__dict__.update(vars(orch))
+    orch = main_orch
 
     async def _serialized_chat(websocket, message, chat_id, display_message=None, *, user_id=None, **kw):
         # the continuation must NOT inherit the approval click's connection
-        # operation (its fence goes stale when the click finishes)
-        renders.append((message, chat_id, display_message, user_id, _CONNECTION_OPERATION_CONTEXT.get()))
+        # operation (its fence goes stale when the click finishes) — on either var
+        renders.append((message, chat_id, display_message, user_id,
+                        (_CONNECTION_OPERATION_CONTEXT.get(), _CONNECTION_OPERATION_CONTEXT_MAIN.get())))
 
     async def _send_ui_render(websocket, comps, target=None):
         pass
@@ -512,15 +525,18 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
     proposal_id = next(iter(db.rows))
     click_operation = {"operation": "the approval click's connection operation"}
     token = _CONNECTION_OPERATION_CONTEXT.set(click_operation)
+    token_main = _CONNECTION_OPERATION_CONTEXT_MAIN.set(click_operation)
     try:
         await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
         await asyncio.sleep(0.05)
     finally:
         _CONNECTION_OPERATION_CONTEXT.reset(token)
+        _CONNECTION_OPERATION_CONTEXT_MAIN.reset(token_main)
+        del sys.modules[__name__]._CONNECTION_OPERATION_CONTEXT
     assert calls and calls[0][0] == "open_app" and calls[0][1]["app"] == "powershell"
     assert calls[0][1][rc._MARKER] == proposal_id
     assert renders and renders[0][1] == "chat-1" and renders[0][2].startswith("✓ Approved")
-    assert renders[0][4] is None  # detached turn: no inherited (soon-stale) fence
+    assert renders[0][4] == (None, None)  # detached turn: no inherited (soon-stale) fence, on either module's var
     # the approval unlocked terminal typing on the owner's live session
     assert grant_session.terminal_ok is True
     assert "Wednesday" in renders[0][0] and "open_app" in renders[0][0]
@@ -529,6 +545,54 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
     out2 = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
                        "chat-1", OWNER)
     assert out2[1][0]["type"] == "card" and len(db.rows) == 2
+
+
+async def test_approved_verb_that_could_not_run_keeps_its_approval_for_one_retry():
+    """The owner approves; the re-dispatch cannot even be attempted because the
+    computer is paused (someone at the PC). The approval is kept for one retry
+    with identical arguments — no second card — and the continuation says so."""
+    rc._PENDING_CARDS.clear()  # module memory left by the previous test
+    db = _FakeDB()
+    orch = _gate_orch(db)
+    ws = _Hashable()
+    orch.ui_sessions[ws] = {"sub": OWNER}
+    renders = []
+
+    async def _execute_single_tool(websocket, tc, mapping, chat_id, user_id=None):
+        return SimpleNamespace(result={"_data": {"ok": False, "code": "paused",
+                                                 "message": "RyzenRoll is paused (local_input)"}}, error=None)
+
+    async def _serialized_chat(websocket, message, chat_id, display_message=None, *, user_id=None, **kw):
+        renders.append(message)
+
+    async def _send_ui_render(websocket, comps, target=None):
+        pass
+
+    orch.execute_single_tool = _execute_single_tool
+    orch._serialized_chat = _serialized_chat
+    orch.send_ui_render = _send_ui_render
+    fake = _FakeOrch()
+    orch.computer_sessions = fake.computer_sessions
+    host_ws, host = await _online_host(fake)
+    orch.computer_hosts = fake.computer_hosts
+    await _session(fake, host, fake.add(_WS(chat="chat-1")))
+    args = {"app": "powershell", "computer": "RyzenRoll"}
+    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is not None
+    proposal_id = next(iter(db.rows))
+    await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
+    await asyncio.sleep(0.05)
+    assert renders and "could NOT run yet" in renders[0] and "EXACTLY the same arguments" in renders[0]
+    # the retry with identical arguments passes the gate once, without a card …
+    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is None
+    assert len(db.rows) == 1
+    # … and only once
+    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is not None
+    assert len(db.rows) == 2
+    # different arguments never ride an old approval
+    rc._RETRY_GRACE[(OWNER, "computer-use-1", "open_app", rc._fingerprint(args))] = ("x", time.time() + 60)
+    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "cmd", "computer": "RyzenRoll"},
+                       "chat-1", OWNER) is not None
+    rc._RETRY_GRACE.clear()
 
 
 # ── multimodal assembly ───────────────────────────────────────────────────────

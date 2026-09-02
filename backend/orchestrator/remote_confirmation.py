@@ -22,6 +22,7 @@ import contextvars
 import hashlib
 import json
 import logging
+import sys
 import time
 import uuid
 from types import SimpleNamespace
@@ -63,6 +64,12 @@ _MARKER = "_remote_op_proposal_id"
 _PENDING_CARDS: Dict[tuple, tuple] = {}
 
 
+#: (owner, agent, tool, args_fingerprint) → (proposal_id, expires_at) for
+#: approvals whose verb could not be attempted (computer paused) — one retry
+#: with identical arguments is admitted without a new card (076).
+_RETRY_GRACE: Dict[Tuple[Any, ...], Tuple[str, float]] = {}
+
+
 def _forget_pending(proposal_id: str) -> None:
     for key, (pid, _exp) in list(_PENDING_CARDS.items()):
         if pid == proposal_id:
@@ -84,7 +91,8 @@ class AgentConfirmationPolicy:
                  card_title: str, card_caption: str, summary, machine_label,
                  is_destructive=None, refusal_text: Optional[str] = None,
                  auto_continue: bool = False, dedupe_pending: bool = False,
-                 machine_id=None, card_as_result: bool = False, on_approved=None):
+                 machine_id=None, card_as_result: bool = False, on_approved=None,
+                 retry_grace_s: float = 0.0):
         self.agent_id = agent_id
         self.classification = classification
         self.machine_key = machine_key
@@ -125,6 +133,12 @@ class AgentConfirmationPolicy:
         # Optional (orch, row) hook run after an approval, before the verb is
         # re-dispatched (076: unlock terminal typing on the live session).
         self.on_approved = on_approved
+        # 076: when the approved verb could not even be ATTEMPTED because the
+        # computer was paused (someone at the PC), the approval is kept for
+        # this long so one retry with identical arguments passes the gate
+        # without a second card (single use). 0 ⇒ off (063 keeps one card per
+        # reach).
+        self.retry_grace_s = float(retry_grace_s or 0.0)
 
 
 def _computer_use_label(orch, user_id: str, ref) -> str:
@@ -197,6 +211,7 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             machine_id=_computer_use_machine_id,
             card_as_result=True,
             on_approved=_computer_use_on_approved,
+            retry_grace_s=computer_use_policy.APPROVAL_RETRY_GRACE_S,
         ),
     }
 
@@ -577,11 +592,20 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                 [Alert(message="Approval no longer valid — re-request the operation.",
                        variant="error").to_dict()])
 
+    pending_key = (user_id, agent_id, tool_name, _fingerprint(args))
+    # A retry of an operation the owner approved moments ago whose verb could not
+    # be attempted (the computer was paused): admitted once, without a new card.
+    if policy.retry_grace_s > 0:
+        grace = _RETRY_GRACE.pop(pending_key, None)
+        if grace is not None and grace[1] > time.time():
+            _audit_sync(user_id, "remote_op.retry_under_grace",
+                        f"retry of approved {tool_name} admitted", proposal_id=grace[0],
+                        machine_id=machine_ref, verb=tool_name, chat_id=chat_id)
+            return None
     # First reach of a destructive verb on an attended turn: refuse with a proposal.
     # A repeat reach of the SAME operation while its card is still pending gets the
     # same answer without a second card (076 live finding: a model that does not
     # stop can otherwise paper the chat with identical cards).
-    pending_key = (user_id, agent_id, tool_name, _fingerprint(args))
     if policy.dedupe_pending:
         pending = _PENDING_CARDS.get(pending_key)
         if pending is not None and pending[1] > time.time():
@@ -712,8 +736,14 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     # finishes without the user having to say "go on". A visible one-liner
     # stands in for the machine-authored text in the transcript.
     policy = policy_for(row.agent_id)
+    not_attempted = _not_attempted_code(result)
+    if policy is not None and policy.retry_grace_s > 0 and not_attempted:
+        _RETRY_GRACE[(user_id, row.agent_id, row.tool_name, _fingerprint(dict(row.arguments)))] = (
+            str(proposal_id), time.time() + policy.retry_grace_s)
+        logger.info("remote_op approved but not attempted (%s): retry grace %.0fs id=%s",
+                    not_attempted, policy.retry_grace_s, proposal_id)
     if policy is not None and policy.auto_continue and row.conversation_id and websocket is not None:
-        outcome = _continuation_text(row, result)
+        outcome = _continuation_text(row, result, retry_grace_s=policy.retry_grace_s if not_attempted else 0)
         try:
             # The continuation is a server-initiated turn, NOT part of the
             # approval click's connection operation: a task created here would
@@ -726,37 +756,75 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
             asyncio.create_task(
                 orch._serialized_chat(websocket, outcome, row.conversation_id,
                                       "✓ Approved — continuing", user_id=user_id),
-                context=_detached_turn_context(),
+                context=_detached_turn_context(orch),
                 name=f"remote-op-continue-{row.proposal_id}")
         except Exception:  # noqa: BLE001 — the approved verb already ran; continuation is best-effort
             logger.debug("remote_op auto-continue failed", exc_info=True)
 
 
-def _detached_turn_context() -> contextvars.Context:
-    """A copy of the current context with the live connection operation cleared."""
+def _detached_turn_context(orch) -> contextvars.Context:
+    """A copy of the current context with the live connection operation cleared.
+
+    The contextvar is looked up on the module the RUNNING orchestrator class
+    came from: in production that module is ``__main__`` (``python
+    orchestrator/orchestrator.py``), and importing ``orchestrator.orchestrator``
+    there would yield a second module instance with a different ContextVar —
+    clearing that one leaves the real fence in place (seen live).
+    """
     ctx = contextvars.copy_context()
+    candidates = []
+    module = sys.modules.get(type(orch).__module__)
+    var = getattr(module, "_CONNECTION_OPERATION_CONTEXT", None)
+    if isinstance(var, contextvars.ContextVar):
+        candidates.append(var)
     try:
-        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
-        ctx.run(_CONNECTION_OPERATION_CONTEXT.set, None)
+        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT as imported
     except Exception:  # noqa: BLE001 — a test double without the contextvar
-        pass
+        imported = None
+    if isinstance(imported, contextvars.ContextVar) and imported not in candidates:
+        candidates.append(imported)
+    for var in candidates:
+        ctx.run(var.set, None)
     return ctx
 
 
-def _continuation_text(row, result) -> str:
-    """The machine-authored user turn that resumes the task after an approval."""
+def _result_data(result) -> Tuple[Any, Any]:
     data: Any = None
     error: Any = None
     if result is not None:
         raw = getattr(result, "result", None)
         error = getattr(result, "error", None)
         data = raw.get("_data") if isinstance(raw, dict) and "_data" in raw else raw
+    return data, error
+
+
+def _not_attempted_code(result) -> Optional[str]:
+    """``paused`` when the approved verb never reached the computer because
+    someone was using it; None when it ran (or failed for any other reason)."""
+    data, error = _result_data(result)
+    code = data.get("code") if isinstance(data, dict) else None
+    if code is None and isinstance(error, dict):
+        message = str(error.get("message") or "")
+        code = "paused" if message.startswith("paused") else None
+    return "paused" if code == "paused" else None
+
+
+def _continuation_text(row, result, retry_grace_s: float = 0) -> str:
+    """The machine-authored user turn that resumes the task after an approval."""
+    data, error = _result_data(result)
     try:
         rendered = json.dumps(data, default=str)[:4000] if data is not None else "(no data)"
     except Exception:  # noqa: BLE001
         rendered = str(data)[:4000]
     if error:
         rendered = f"ERROR: {str((error or {}).get('message') if isinstance(error, dict) else error)[:1000]}"
+    if retry_grace_s > 0:
+        return (f"[The user tapped Approve.] `{row.tool_name}` was approved but could NOT run yet: "
+                f"the computer is paused because someone is using it. Result: {rendered}\n\n"
+                f"Call wait (seconds=10), then resume_session; once it is active, call `{row.tool_name}` "
+                f"again with EXACTLY the same arguments {json.dumps(dict(row.arguments), default=str)[:1500]} — "
+                f"the approval is kept for {int(retry_grace_s)} seconds, so that one retry needs no new "
+                "confirmation. Then continue the task and report the outcome in plain language.")
     return (f"[The user tapped Approve.] `{row.tool_name}` has now been carried out on the computer "
             f"(do not call it again for this step). Result: {rendered}\n\n"
             "Continue the task from here — take any further actions on the computer that are "

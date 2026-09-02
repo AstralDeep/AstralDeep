@@ -139,6 +139,9 @@ MAX_WAIT_SECONDS = 10.0
 #: actually held (the desktop re-pauses within a presence poll or two when the
 #: person at the PC is still active) — ≥ two 500 ms polls plus slack.
 RESUME_SETTLE_SECONDS = 1.5
+#: An approved verb that could not be attempted because the computer was paused
+#: stays approved for one retry with identical arguments this long.
+APPROVAL_RETRY_GRACE_S = 180.0
 MIN_SCREENSHOT_WIDTH = 320
 MAX_SCREENSHOT_WIDTH = 1920
 DEFAULT_SCREENSHOT_WIDTH = 1280
