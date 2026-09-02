@@ -438,12 +438,19 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     assert rc.evaluate(orch, ws, "computer-use-1", "screenshot", {}, "chat", OWNER) is None
     out = rc.evaluate(orch, ws, "computer-use-1", "run_command", {"command": "dir", "computer": "RYZENROLL"}, "chat", OWNER)
     assert out is not None and out[0].startswith("confirmation_required")
+    # the proposal row carries a non-empty machine id even when the model omitted
+    # `computer` (single online host) — the store refuses an empty one
+    orch.computer_hosts.register(OWNER, _WS(), ComputerHostDescriptor.from_dict(_descriptor(name="RYZEN")))
+    out_nohost = rc.evaluate(orch, ws, "computer-use-1", "write_file", {"path": "C:/x.txt", "content": "y"}, "chat", OWNER)
+    assert out_nohost is not None
+    assert all(r["machine_id"] for r in db.rows.values())
+    assert any(len(r["machine_id"]) == 36 for r in db.rows.values())
     card = out[1][0]
     assert card["type"] == "card" and "Confirm an action on" in card["title"]
     buttons = [c for c in card["content"] if c["type"] == "button"]
     assert {b["payload"]["decision"] for b in buttons} == {"approve", "decline"}
     assert any("Run on" in c.get("content", "") for c in card["content"] if c["type"] == "text")
-    assert len(db.rows) == 1 and next(iter(db.rows.values()))["status"] == "pending"
+    assert len(db.rows) == 2 and all(r["status"] == "pending" for r in db.rows.values())
     # confirm_action rides the same card
     out = rc.evaluate(orch, ws, "computer-use-1", "confirm_action", {"summary": "Buy the ticket"}, "chat", OWNER)
     assert out is not None and "Buy the ticket" in json.dumps(out[1])

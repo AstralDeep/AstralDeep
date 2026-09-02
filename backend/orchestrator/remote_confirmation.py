@@ -82,7 +82,8 @@ class AgentConfirmationPolicy:
                  gate_unclassified_unattended: bool, unattended_allowed: frozenset,
                  card_title: str, card_caption: str, summary, machine_label,
                  is_destructive=None, refusal_text: Optional[str] = None,
-                 auto_continue: bool = False, dedupe_pending: bool = False):
+                 auto_continue: bool = False, dedupe_pending: bool = False,
+                 machine_id=None):
         self.agent_id = agent_id
         self.classification = classification
         self.machine_key = machine_key
@@ -111,6 +112,11 @@ class AgentConfirmationPolicy:
         # the same answer without a second card. 063 keeps one card per reach
         # (its tests pin that), so this is opt-in per policy.
         self.dedupe_pending = dedupe_pending
+        # Optional (orch, user_id, args) -> str resolver for the machine id
+        # stored on the proposal row (the store requires a non-empty id). 076
+        # verbs may omit ``computer`` when one host is online, so the id is
+        # resolved from the registry rather than read off the arguments.
+        self.machine_id = machine_id
 
 
 def _computer_use_label(orch, user_id: str, ref) -> str:
@@ -121,6 +127,16 @@ def _computer_use_label(orch, user_id: str, ref) -> str:
     except Exception:  # noqa: BLE001 — a label only
         pass
     return "your computer"
+
+
+def _computer_use_machine_id(orch, user_id: str, args: Dict[str, Any]) -> str:
+    try:
+        registry = getattr(orch, "computer_hosts", None)
+        if registry is not None:
+            return registry.resolve(user_id, args.get("computer")).host_id
+    except Exception:  # noqa: BLE001 — an unresolvable host still gets a card
+        pass
+    return str(args.get("computer") or "unresolved")
 
 
 def _computer_use_summary(orch, user_id: str, tool_name: str, args: Dict[str, Any]) -> str:
@@ -158,6 +174,7 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             refusal_text=computer_use_policy.REFUSAL_TEXT,
             auto_continue=True,
             dedupe_pending=True,
+            machine_id=_computer_use_machine_id,
         ),
     }
 
@@ -407,6 +424,8 @@ def _create_proposal(orch, user_id: str, chat_id: Optional[str], agent_id: str,
     now = int(time.time())
     summary = policy.summary(orch, user_id, tool_name, args)
     machine_ref = args.get(policy.machine_key)
+    if policy.machine_id is not None:
+        machine_ref = policy.machine_id(orch, user_id, args)
     context = _proposal_context(orch)
     with context.transaction() as transaction:
         context.repository.create(
