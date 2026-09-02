@@ -31,7 +31,7 @@ cannot pass unnoticed.
 | `list_computers` | — | `computers[]` {host_id, name, platform, online, screens, session{state, controller}} | 5 s | none (allowed unattended) |
 | `start_session` | `computer` | session {session_id, host_id, name, screens, images_supported} | 10 s | live human only |
 | `end_session` | `computer?` | {ended: true, reason: user_stop} | 5 s | live human only |
-| `resume_session` | `computer?` | {state} | 5 s | live human only |
+| `resume_session` | `computer?` | {state} after a 1.5 s settle; `paused` again ⇒ typed `paused` with a wait hint | 5 s | live human only |
 | `confirm_action` | `computer?`, `summary` (≤ 400 chars) | {approved: true} | — | **always** → approval card (063 proposal); the verb body only returns after approval |
 
 ## Observe verbs — `tools:read`, no confirmation
@@ -43,7 +43,7 @@ cannot pass unnoticed.
 | `get_clipboard` | `computer?` | {text (≤ 16 KiB), truncated} | 5 s |
 | `read_file` | `computer?`, `path` (absolute), `max_bytes=65536` (≤ 262144) | {path, text, truncated, size} | 10 s |
 | `list_dir` | `computer?`, `path` | entries[] {name, is_dir, size, modified} (≤ 500) | 10 s |
-| `wait` | `computer?`, `seconds` (0.1–10) | {waited} | 12 s |
+| `wait` | `computer?`, `seconds` (0.1–10) | {waited, state, pause_reason?} — server-side sleep, allowed while **paused** | 12 s |
 
 ## Input verbs — `tools:write`, session-gated, no per-action confirmation
 
@@ -92,6 +92,9 @@ UNATTENDED_ALLOWED = frozenset({"list_computers"})
 The card is delivered as the call's **result** (canvas + transcript, stable id
 `au_approval_<proposal>`, replaced in place on decision), the model reads a stop
 instruction, a repeat reach re-uses the pending card, and an approval re-dispatches the verb
-then resumes the task with a continuation turn.
+then resumes the task with a continuation turn (a server-initiated, detached turn on the
+same chat). If the approved verb could not even be attempted because the computer was
+paused, the approval is kept for `APPROVAL_RETRY_GRACE_S` (180 s) so ONE retry with
+identical arguments passes the gate without a second card.
 
 The agent registry imports these; a contract test asserts the registry equals the policy.
