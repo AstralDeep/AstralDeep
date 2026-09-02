@@ -1675,7 +1675,11 @@ class PersonalAgentRuntimeRepository:
                     for_update=True,
                 )
                 if agent is not None:
-                    agents[agent_id] = agent
+                    # A retained bundle of a live agent whose host went away
+                    # follows the same sticky selection delivery used, so the
+                    # restarted desktop gets a start action instead of
+                    # keep_stopped/host_not_selected forever.
+                    agents[agent_id] = self._ensure_host_selection(transaction, agent)
 
             revisions: dict[str, PlaneAgentRevisionRecord] = {}
             for entry in validated_entries:
@@ -1934,6 +1938,44 @@ class PersonalAgentRuntimeRepository:
             lifecycle_generation=lifecycle_generation,
         )
 
+    def _ensure_host_selection(
+        self, transaction: Any, agent: PlaneUserAgentRecord
+    ) -> PlaneUserAgentRecord:
+        """Re-select a host for a live agent whose selected session is gone.
+
+        The selection is made at delivery and cleared when that host session
+        is lost; nothing re-made it, so a personal agent never came back after
+        its desktop client restarted — inventory reconciliation answered
+        ``host_not_selected`` for every retained bundle, forever (feature 077
+        live finding). This applies the same sticky rule delivery uses
+        (:meth:`_select_host_plane`: the same ``host_id``'s new session first,
+        else the longest-connected host) whenever the agent is live with an
+        active revision and its selected session is absent or not connected.
+        Returns the re-read agent record.
+        """
+        if agent.deleted_at is not None or agent.active_revision_id is None:
+            return agent
+        repository = self._agents.repository
+        selected_id = agent.selected_host_session_id
+        if selected_id is not None:
+            current = repository.get_host_session(
+                transaction,
+                owner_id=agent.owner_id,
+                host_session_id=selected_id,
+            )
+            if current is not None and current.state == "connected":
+                return agent
+        selection = self._select_host_plane(transaction, agent)
+        if not selection.changed:
+            return agent
+        refreshed = repository.get_agent(
+            transaction,
+            owner_id=agent.owner_id,
+            agent_id=agent.agent_id,
+            for_update=True,
+        )
+        return agent if refreshed is None else refreshed
+
     def select_host_for_agent(
         self, *, owner_user_id: str, agent_id: str
     ) -> HostSelection:
@@ -2000,6 +2042,7 @@ class PersonalAgentRuntimeRepository:
                 raise PersonalAgentNotFoundError("personal agent not found")
             if agent.deleted_at is not None:
                 raise AgentDeletedError("agent_deleted")
+            agent = self._ensure_host_selection(transaction, agent)
             if agent.selected_host_session_id != fence.host_session_id:
                 raise AgentOfflineError("host session is not selected for this agent")
             active_revision_id = agent.active_revision_id

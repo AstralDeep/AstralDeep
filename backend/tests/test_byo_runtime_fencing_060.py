@@ -499,6 +499,67 @@ def test_sticky_selection_same_host_rollover_then_deterministic_failover(
     assert str(pointer["selected_host_session_id"]) == host_b.host_session_id
 
 
+def test_restarted_desktop_gets_its_agent_back_through_sticky_reselection(
+    repository: PersonalAgentRuntimeRepository,
+    clean_database: PlaneTestRuntime,
+) -> None:
+    """Feature 077 live finding: with ONE desktop, losing its session cleared
+    the agent's host selection and nothing re-made it — the restarted client
+    reconciled its retained bundle as keep_stopped/host_not_selected forever.
+    A live agent whose selected session is gone is re-selected (same host id
+    first) both when the host frame adapter asks which entries need a delivery
+    fence and inside reconciliation, so the retained bundle starts."""
+    revision = _agent_revision(repository, clean_database)
+    host_id = "33333333-3333-4333-8333-333333333333"
+    host_a1 = _host(repository, host_id=host_id)
+    selection = repository.select_host_for_agent(owner_user_id=_OWNER, agent_id=_AGENT)
+    assert selection.session is not None
+    assert selection.session.host_session_id == host_a1.host_session_id
+    clean_database.execute(
+        "UPDATE user_agent_revision SET state = 'active', promoted_at = now() "
+        "WHERE revision_id = ?",
+        (revision.revision_id,),
+    )
+    clean_database.execute(
+        "UPDATE user_agent SET active_revision_id = ?, "
+        "last_known_good_revision_id = ? WHERE agent_id = ?",
+        (revision.revision_id, revision.revision_id, _AGENT),
+    )
+    disconnected = repository.disconnect_host_session(host_a1.fence, failure_code="host_lost")
+    assert disconnected.selected_sessions.get(_AGENT) is None       # nobody else to fail over to
+    pointer = clean_database.fetch_one(
+        "SELECT selected_host_session_id FROM user_agent WHERE agent_id = ?", (_AGENT,))
+    assert pointer["selected_host_session_id"] is None
+
+    # the same desktop comes back as a new session of the same host id
+    host_a2 = _host(repository, host_id=host_id)
+    assert host_a2.host_session_id != host_a1.host_session_id
+    selected = repository.get_selected_session_revision(host_a2.fence, agent_id=_AGENT)
+    assert selected.revision.revision_id == revision.revision_id
+    pointer = clean_database.fetch_one(
+        "SELECT selected_host_session_id FROM user_agent WHERE agent_id = ?", (_AGENT,))
+    assert str(pointer["selected_host_session_id"]) == host_a2.host_session_id
+
+    entry = {
+        "agent_id": _AGENT,
+        "revision_id": revision.revision_id,
+        "bundle_sha256": revision.artifact_digest,
+        "runtime_contract_version": _POLICY.runtime_contract_version,
+        "required_runtime_lock_sha256": _LOCK_DIGEST,
+    }
+    operation = _running_operation(clean_database, operation_kind="agent_runtime_delivery")
+    result = repository.reconcile_host_inventory(
+        host_a2.fence,
+        inventory_id=str(uuid.uuid4()),
+        entries=(entry,),
+        delivery_operation_fences={(_AGENT, revision.revision_id): operation},
+    )
+    assert [a.action for a in result.actions] == ["start"]
+    assert result.actions[0].selected_delivery is not None
+    instance = repository.get_runtime_instance(result.actions[0].selected_delivery.runtime_instance_id)
+    assert instance.state == "delivering" and instance.fence.host_session_id == host_a2.host_session_id
+
+
 def test_inventory_reconciliation_is_all_or_nothing_and_allocates_exact_start(
     repository: PersonalAgentRuntimeRepository,
     clean_database: PlaneTestRuntime,
