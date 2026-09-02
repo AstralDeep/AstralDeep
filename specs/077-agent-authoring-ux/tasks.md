@@ -15,6 +15,6 @@
 - [x] T013 Windows client: `ByoAgentHost.inventory()`, `local_agents.LocalAgentsDialog`, THIS PC menu entry — FR-013.
 - [x] T014 Tests: `tests/test_authoring_ux_077.py`; `windows-client/tests/test_local_agents_077.py`; updated 058/063 pins.
 - [x] T015 Docs: `docs/your-own-agents-and-skills.md`; CLAUDE.md entry; kos-wiki page.
-- [ ] T016 Live verification on the rig (web → express lane → RyzenRoll; Agents on this PC; a skill + `/command`).
+- [x] T016 Live verification on the rig (web → express lane → RyzenRoll → chat call answered; agent survives a client restart; a skill + `/standup` through the typeahead). Eight v3 personal-agent defects found and fixed on the way (see CLAUDE.md). *Agents on this PC* dialog: offscreen tests only.
 - [ ] T017 PRs (Projection first, then Deep with the composition repin).
 - [ ] Follow-ups: skills as an AstralPlane repository (multi-instance); Android/Apple render check of the new home view (SDUI, no per-client code expected); learned-recipe visibility (`skill_memory`) once that flag graduates.

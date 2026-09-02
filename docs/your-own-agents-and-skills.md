@@ -82,3 +82,15 @@ Skills live under the runtime knowledge directory (`./backend/knowledge`, bind-m
 in Compose); back it up with the rest of that directory. Multi-instance
 deployments need a shared mount — moving skills into an AstralPlane repository is
 the documented follow-up.
+
+Personal-agent bundles are published through the AstralPlane immutable bundle store,
+which needs an atomic no-replace directory rename (`renameat2(RENAME_NOREPLACE)`).
+A Windows drive bind-mounted into Docker Desktop (a `9p`/drvfs mount) cannot do
+that: set `PERSONAL_AGENT_ARTIFACT_ROOT` to a path inside the container's own
+filesystem (or a Linux volume) on such a development rig, e.g.
+`PERSONAL_AGENT_ARTIFACT_ROOT=/app/personal-agent-artifacts`.
+
+Diagnosing a personal agent that "times out": start the desktop client with
+`ASTRAL_CLIENT_LOG_LEVEL=INFO` — every request the host forwards, every result it
+relays and every frame it drops (with the reason) is logged to stderr; on the
+server, every retained inventory entry that needs no delivery says why.
