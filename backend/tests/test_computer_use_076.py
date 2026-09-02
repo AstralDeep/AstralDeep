@@ -488,14 +488,18 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
         calls.append((tc.function.name, json.loads(tc.function.arguments), mapping, chat_id, user_id))
         return SimpleNamespace(result={"_data": {"exit_code": 0, "stdout": "Wednesday"}}, error=None)
 
-    async def _handle_chat_message(websocket, message, chat_id, display_message=None, user_id=None, **kw):
-        renders.append((message, chat_id, display_message, user_id))
+    from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+
+    async def _serialized_chat(websocket, message, chat_id, display_message=None, *, user_id=None, **kw):
+        # the continuation must NOT inherit the approval click's connection
+        # operation (its fence goes stale when the click finishes)
+        renders.append((message, chat_id, display_message, user_id, _CONNECTION_OPERATION_CONTEXT.get()))
 
     async def _send_ui_render(websocket, comps, target=None):
         pass
 
     orch.execute_single_tool = _execute_single_tool
-    orch.handle_chat_message = _handle_chat_message
+    orch._serialized_chat = _serialized_chat
     orch.send_ui_render = _send_ui_render
     fake = _FakeOrch()
     orch.computer_sessions = fake.computer_sessions
@@ -506,11 +510,17 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
                        "chat-1", OWNER) is not None
     proposal_id = next(iter(db.rows))
-    await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
-    await asyncio.sleep(0.05)
+    click_operation = {"operation": "the approval click's connection operation"}
+    token = _CONNECTION_OPERATION_CONTEXT.set(click_operation)
+    try:
+        await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
+        await asyncio.sleep(0.05)
+    finally:
+        _CONNECTION_OPERATION_CONTEXT.reset(token)
     assert calls and calls[0][0] == "open_app" and calls[0][1]["app"] == "powershell"
     assert calls[0][1][rc._MARKER] == proposal_id
     assert renders and renders[0][1] == "chat-1" and renders[0][2].startswith("✓ Approved")
+    assert renders[0][4] is None  # detached turn: no inherited (soon-stale) fence
     # the approval unlocked terminal typing on the owner's live session
     assert grant_session.terminal_ok is True
     assert "Wednesday" in renders[0][0] and "open_app" in renders[0][0]

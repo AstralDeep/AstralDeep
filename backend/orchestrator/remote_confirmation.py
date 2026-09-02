@@ -18,6 +18,7 @@ Two entry points:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -714,11 +715,32 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     if policy is not None and policy.auto_continue and row.conversation_id and websocket is not None:
         outcome = _continuation_text(row, result)
         try:
-            asyncio.create_task(orch.handle_chat_message(
-                websocket, outcome, row.conversation_id,
-                display_message="✓ Approved — continuing", user_id=user_id))
+            # The continuation is a server-initiated turn, NOT part of the
+            # approval click's connection operation: a task created here would
+            # inherit that operation's execution fence through the contextvar,
+            # and the fence goes stale the moment the click finishes — the
+            # turn then aborts mid-way as "ownership changed" (seen live).
+            # Run it in a copy of the context with the operation cleared, so
+            # the turn takes the detached publication path (fanned out to every
+            # socket on the chat) under the per-socket/per-chat locks.
+            asyncio.create_task(
+                orch._serialized_chat(websocket, outcome, row.conversation_id,
+                                      "✓ Approved — continuing", user_id=user_id),
+                context=_detached_turn_context(),
+                name=f"remote-op-continue-{row.proposal_id}")
         except Exception:  # noqa: BLE001 — the approved verb already ran; continuation is best-effort
             logger.debug("remote_op auto-continue failed", exc_info=True)
+
+
+def _detached_turn_context() -> contextvars.Context:
+    """A copy of the current context with the live connection operation cleared."""
+    ctx = contextvars.copy_context()
+    try:
+        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+        ctx.run(_CONNECTION_OPERATION_CONTEXT.set, None)
+    except Exception:  # noqa: BLE001 — a test double without the contextvar
+        pass
+    return ctx
 
 
 def _continuation_text(row, result) -> str:
