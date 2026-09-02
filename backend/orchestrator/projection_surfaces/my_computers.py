@@ -11,7 +11,7 @@ point re-checks ``FF_COMPUTER_USE`` (flag-off byte-identity, FR-004).
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from webrender.chrome import esc, notice_block
 
@@ -47,6 +47,21 @@ def _ago(ts: int) -> str:
     if delta < 86400:
         return f"{delta // 3600} h ago"
     return f"{delta // 86400} d ago"
+
+
+def _this_computer(orch, user_id: str, params: Any) -> Optional[Dict[str, Any]]:
+    """For the desktop that is asking: whether it can host and whether its
+    consent switch is on (it is a registered host). Phones/web get None."""
+    from orchestrator.chrome_events import current_surface_socket
+    ws = current_surface_socket.get()
+    if ws is None:
+        return None
+    claims = orch.ui_sessions.get(ws) or {}
+    if "computer_host_capable" not in (claims.get("_client_capabilities") or []):
+        return None
+    host = orch.computer_hosts.host_for_socket(ws)
+    return {"enabled": host is not None, "name": host.name if host else None,
+            "host_id": host.host_id if host else None}
 
 
 def _rows(orch, user_id: str) -> List[Dict[str, Any]]:
@@ -105,6 +120,25 @@ def _host_html(h: Dict[str, Any]) -> str:
         f'<div class="flex gap-2 shrink-0">{"".join(buttons)}</div></div></div>')
 
 
+def _this_computer_html(tc: Optional[Dict[str, Any]]) -> str:
+    if tc is None:
+        return ""
+    if tc["enabled"]:
+        state = f'Remote control is <b>on</b> — this computer ({esc(tc["name"] or "")}) can be driven from your other devices.'
+        btn = (f'<button type="button" class="{_BTN}" data-ui-action="computer_host_consent" '
+               f"data-ui-payload='{{\"enabled\":false}}'>Stop allowing</button>")
+    else:
+        state = 'Remote control is <b>off</b> for this computer.'
+        btn = (f'<button type="button" class="{_BTN_PRIMARY}" data-ui-action="computer_host_consent" '
+               f"data-ui-payload='{{\"enabled\":true}}'>Allow remote control</button>")
+    return ('<div class="bg-white/5 border border-astral-primary/30 rounded-lg px-3 py-2">'
+            '<div class="flex items-center justify-between gap-3">'
+            f'<div class="text-sm"><div class="text-astral-text font-medium">This computer</div>'
+            f'<div class="text-astral-muted">{state} While a session runs, a banner with Pause and Stop '
+            'stays on screen, and using the mouse or keyboard here pauses it.</div></div>'
+            f'<div class="flex gap-2 shrink-0">{btn}</div></div></div>')
+
+
 async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     if not _enabled():
         return f'<p class="text-sm text-astral-muted">{esc(_DISABLED_MSG)}</p>'
@@ -112,7 +146,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     body = ('<div class="space-y-2">' + "".join(_host_html(h) for h in rows) + '</div>'
             if rows else f'<p class="text-sm text-astral-muted">{esc(_EMPTY)}</p>')
     return (f'<div class="space-y-4"><div class="text-sm text-astral-muted">{esc(_INTRO)}</div>'
-            f'{body}</div>')
+            f'{_this_computer_html(_this_computer(orch, user_id, params))}{body}</div>')
 
 
 # ── native SDUI ───────────────────────────────────────────────────────────────
@@ -124,6 +158,26 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         return [_sdui.text(_DISABLED_MSG, "caption")]
     rows = _rows(orch, user_id)
     out = [_sdui.text(_INTRO, "caption")]
+    tc = _this_computer(orch, user_id, params)
+    if tc is not None:
+        if tc["enabled"]:
+            out.append(_sdui.card("This computer", [
+                _sdui.badge("remote control on", "success"),
+                _sdui.text(f"{tc['name']} can be driven from your other signed-in devices. While a "
+                           "session runs, a banner with Pause and Stop stays on screen, and using the "
+                           "mouse or keyboard here pauses it.", "caption"),
+                _sdui.button("Stop allowing", "computer_host_consent", payload={"enabled": False},
+                             variant="secondary"),
+            ]))
+        else:
+            out.append(_sdui.card("This computer", [
+                _sdui.badge("remote control off", "default"),
+                _sdui.text("Switch this on to drive this computer from your phone or another "
+                           "signed-in device. You stay in control: a banner with Pause and Stop is "
+                           "always visible during a session, commands and file changes ask you to "
+                           "approve, and touching the mouse or keyboard here pauses the session.", "caption"),
+                _sdui.button("Allow remote control", "computer_host_consent", payload={"enabled": True}),
+            ]))
     if not rows:
         out.append(_sdui.text(_EMPTY, "caption"))
         return out

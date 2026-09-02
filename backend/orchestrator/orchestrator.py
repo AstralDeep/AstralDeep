@@ -10366,6 +10366,10 @@ class Orchestrator:
                 if user_data:
                     logger.info(f"UI registered: {user_data.get('preferred_username', 'unknown')}")
                     user_data["_raw_token"] = token  # Store raw token for RFC 8693 delegation
+                    # 076: the client's declared capability strings, so a
+                    # surface can tell a host-capable desktop from a phone.
+                    user_data["_client_capabilities"] = [
+                        str(c) for c in (getattr(msg, "capabilities", None) or []) if isinstance(c, str)]
                     self.ui_sessions[websocket] = user_data
                     # A structured v3 advertisement is validated against the
                     # packaged runtime contract and receives a server-owned host

@@ -610,7 +610,7 @@ async def test_agent_verbs_against_a_fake_host():
     mcp_tools.register_deps(orch)  # inside the running loop → _LOOP is this loop
     host_ws = orch.add(_FakeHostSocket(orch, _answers))
     host, _ = orch.computer_hosts.register(OWNER, host_ws, ComputerHostDescriptor.from_dict(_descriptor()))
-    phone = orch.add(_WS(chat="chat-1"))
+    orch.add(_WS(chat="chat-1"))  # the controlling phone, bound to chat-1
     ctx = {"user_id": OWNER, "session_id": "chat-1"}
 
     empty = await asyncio.to_thread(mcp_tools.list_computers, user_id=OTHER)
@@ -687,3 +687,46 @@ async def test_mcp_server_carries_images_and_turns_refusals_into_errors():
     res = await asyncio.to_thread(server.process_request, MCPRequest(
         request_id="r2", method="tools/call", params={"name": "nope", "arguments": {}}))
     assert res.error["code"] == -32601
+
+
+async def test_consent_switch_is_offered_only_to_a_host_capable_desktop(monkeypatch):
+    from orchestrator.chrome_events import current_surface_socket
+    from orchestrator.projection_surfaces import my_computers
+    from shared.feature_flags import flags
+    monkeypatch.setattr(flags, "is_enabled", lambda name: name == "computer_use")
+    orch = _FakeOrch()
+    phone = orch.add(_WS())                      # no computer_host_capable capability
+    desktop = orch.add(_WS())
+    orch.ui_sessions[desktop]["_client_capabilities"] = ["render", "stream", "computer_host_capable"]
+
+    token = current_surface_socket.set(phone)
+    try:
+        comps = await my_computers.components(orch, OWNER, [], {})
+        html = await my_computers.render(orch, OWNER, [], {})
+    finally:
+        current_surface_socket.reset(token)
+    assert not any(c.get("title") == "This computer" for c in comps)
+    assert "computer_host_consent" not in html
+
+    token = current_surface_socket.set(desktop)
+    try:
+        comps = await my_computers.components(orch, OWNER, [], {})
+        html = await my_computers.render(orch, OWNER, [], {})
+    finally:
+        current_surface_socket.reset(token)
+    card = next(c for c in comps if c.get("title") == "This computer")
+    assert '"enabled": true' in json.dumps(card) and "Allow remote control" in json.dumps(card)
+    assert "computer_host_consent" in html and "Allow remote control" in html
+
+    # once the desktop announced itself the card offers the OFF switch
+    orch.computer_hosts.register(OWNER, desktop, ComputerHostDescriptor.from_dict(_descriptor()))
+    token = current_surface_socket.set(desktop)
+    try:
+        comps = await my_computers.components(orch, OWNER, [], {})
+    finally:
+        current_surface_socket.reset(token)
+    card = next(c for c in comps if c.get("title") == "This computer")
+    assert "Stop allowing" in json.dumps(card) and '"enabled": false' in json.dumps(card)
+    # a surface rendered outside any render call (no socket) never shows the card
+    assert not any(c.get("title") == "This computer"
+                   for c in await my_computers.components(orch, OWNER, [], {}))

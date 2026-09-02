@@ -13,6 +13,7 @@ drop. Admin-only surfaces/actions re-check the role server-side here
 regardless of what the menu rendered (FR-014).
 """
 import json
+import contextvars
 import logging
 import re
 from datetime import UTC, datetime
@@ -22,6 +23,11 @@ from shared.perf import perf_span
 from shared.protocol import OperationStatus
 
 logger = logging.getLogger("Orchestrator.Chrome")
+
+#: Feature 076: the UI socket a settings surface is being rendered FOR, set by
+#: ``_render_surface`` around the builder call (``None`` outside a render).
+current_surface_socket: contextvars.ContextVar = contextvars.ContextVar(
+    "chrome_surface_socket", default=None)
 
 # Lazily aggregated {action: (surface_key, handler)} — surfaces register via
 # their module-level HANDLERS dicts; agentic_creation contributes the
@@ -209,13 +215,21 @@ async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
     ChromeSurface (ROTE-adapted astralprims components). Admin-gated and
     gracefully-degrading on either path (Constitution X/XII, FR-014).
     """
-    with perf_span("surface.render." + surface_key, surface=surface_key):
-        if _device_type(orch, websocket) in _NATIVE_SDUI_DEVICE_TYPES:
-            await _render_surface_sdui(orch, websocket, user_id, roles,
-                                       surface_key, params, notice_html)
-        else:
-            await _render_surface_html(orch, websocket, user_id, roles,
-                                       surface_key, params, notice_html)
+    # Feature 076: a surface may need to know WHICH of the owner's sockets is
+    # asking (the My computers surface offers the consent switch only to the
+    # desktop that can host). Exposed as a context variable for the duration of
+    # the render — never through ``params``, which surfaces may serialize.
+    token = current_surface_socket.set(websocket)
+    try:
+        with perf_span("surface.render." + surface_key, surface=surface_key):
+            if _device_type(orch, websocket) in _NATIVE_SDUI_DEVICE_TYPES:
+                await _render_surface_sdui(orch, websocket, user_id, roles,
+                                           surface_key, params, notice_html)
+            else:
+                await _render_surface_html(orch, websocket, user_id, roles,
+                                           surface_key, params, notice_html)
+    finally:
+        current_surface_socket.reset(token)
 
 
 async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str,
