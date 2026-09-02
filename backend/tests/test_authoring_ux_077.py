@@ -322,7 +322,7 @@ def test_skills_reach_the_digest_and_the_slash_expansion(tmp_path, monkeypatch):
 async def test_home_view_web_and_native(db, tmp_path):
     orch = _orch(db, _LLM(), tmp_path)
     html = await authoring.render(orch, OWNER, ["user"], {})
-    assert "Desktop client connected" in html
+    assert "Desktop host connected" in html
     assert "chrome_author_quick_create" in html and "Create</button>" in html
     assert "Advanced: build it step by step" in html and "chrome_author_start" in html
     assert "Your skills" in html and "chrome_user_skill_save" in html

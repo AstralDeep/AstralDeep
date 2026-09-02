@@ -270,9 +270,10 @@ def _desktop_status(ctx: Dict[str, Any]) -> str:
     if ctx["host_online"]:
         return (f'<div class="flex items-center gap-2 text-xs">'
                 f'<span class="w-2 h-2 rounded-full bg-green-400"></span>'
-                f'<span class="text-astral-text">Desktop client connected — '
+                f'<span class="text-astral-text">Desktop host connected — '
                 f'{esc(ctx["host_label"])}</span>'
-                f'<span class="text-astral-muted">· agents run there, not on the server</span>'
+                f'<span class="text-astral-muted">· your agents run on that desktop host, '
+                f"not on the server</span>"
                 f"</div>")
     return (f'<div class="border border-yellow-500/20 bg-yellow-500/10 rounded-lg p-3 text-xs">'
             f'<div class="text-yellow-400 font-medium">No desktop client connected</div>'
@@ -841,8 +842,8 @@ async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) ->
     out: List[Dict[str, Any]] = []
     if aa.byo_enabled():
         if ctx["host_online"]:
-            out.append(_sdui.alert(f"Desktop client connected — {ctx['host_label']}. Agents run "
-                                   "there, not on the server.", "success"))
+            out.append(_sdui.alert(f"Desktop host connected — {ctx['host_label']}. Your agents run "
+                                   "on that desktop host, not on the server.", "success"))
         else:
             out.append(_sdui.alert(f"No desktop client connected. {HOST_HOWTO}", "warning"))
         out.append(_sdui.text("Create an agent", "h3"))
