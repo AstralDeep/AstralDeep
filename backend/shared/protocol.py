@@ -2868,6 +2868,123 @@ class CandidateCapabilityMap:
         )
 
 
+#: Feature 076 — the closed verb vocabulary a computer host may announce. The
+#: server never sends a verb outside this set; the host never executes one
+#: outside the subset it announced (FR-014).
+COMPUTER_HOST_VERBS: frozenset = frozenset({
+    "screenshot", "list_windows", "get_clipboard", "read_file", "list_dir", "wait",
+    "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
+    "press_keys", "focus_window", "open_app", "set_clipboard",
+    "write_file", "delete_path",
+})
+COMPUTER_HOST_PLATFORMS: frozenset = frozenset({"windows", "macos", "linux"})
+COMPUTER_HOST_PROTOCOL = 1
+_COMPUTER_HOST_NAME_MAX = 64
+_COMPUTER_HOST_MAX_SCREENS = 8
+
+
+@dataclass(frozen=True)
+class ComputerHostDescriptor:
+    """Feature 076: what a desktop client announces when its owner has switched
+    on "Allow remote control". Additive on ``register_ui`` (``computer_host``);
+    absent means the socket is not a controllable host. Validation is strict and
+    fail-closed — a malformed descriptor is dropped (the UI still registers) and
+    the socket is simply not a host."""
+
+    host_id: str
+    name: str
+    platform: str
+    client_version: str
+    screens: tuple  # of dicts {index, width, height, scale, primary}
+    verbs: tuple    # of str, subset of COMPUTER_HOST_VERBS
+    protocol: int = COMPUTER_HOST_PROTOCOL
+
+    def validate(self) -> None:
+        _require_uuid4(self.host_id, "computer_host.host_id")
+        if (not isinstance(self.name, str) or not self.name.strip()
+                or len(self.name) > _COMPUTER_HOST_NAME_MAX
+                or any(ord(ch) < 32 for ch in self.name)):
+            raise ProtocolValidationError(
+                f"computer_host.name must be 1-{_COMPUTER_HOST_NAME_MAX} printable characters")
+        if self.platform not in COMPUTER_HOST_PLATFORMS:
+            raise ProtocolValidationError("computer_host.platform must be windows, macos or linux")
+        if not isinstance(self.client_version, str) or _STRICT_SEMVER.fullmatch(self.client_version) is None:
+            raise ProtocolValidationError("computer_host.client_version must be strict SemVer")
+        if isinstance(self.protocol, bool) or not isinstance(self.protocol, int) or self.protocol != COMPUTER_HOST_PROTOCOL:
+            raise ProtocolValidationError("computer_host.protocol must be 1")
+        screens = self.screens
+        if (not isinstance(screens, tuple) or not screens
+                or len(screens) > _COMPUTER_HOST_MAX_SCREENS):
+            raise ProtocolValidationError(
+                f"computer_host.screens must list 1-{_COMPUTER_HOST_MAX_SCREENS} screens")
+        primaries = 0
+        for index, screen in enumerate(screens):
+            if not isinstance(screen, Mapping):
+                raise ProtocolValidationError("computer_host.screens entries must be objects")
+            if set(screen) != {"index", "width", "height", "scale", "primary"}:
+                raise ProtocolValidationError(
+                    "computer_host.screens entries must contain exactly index, width, height, scale, primary")
+            if screen["index"] != index:
+                raise ProtocolValidationError("computer_host.screens must be indexed 0..n-1 in order")
+            for dim in ("width", "height"):
+                value = screen[dim]
+                if isinstance(value, bool) or not isinstance(value, int) or not (1 <= value <= 16384):
+                    raise ProtocolValidationError(f"computer_host.screens[{index}].{dim} out of range")
+            scale = screen["scale"]
+            if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not (0.5 <= float(scale) <= 8.0):
+                raise ProtocolValidationError(f"computer_host.screens[{index}].scale out of range")
+            if not isinstance(screen["primary"], bool):
+                raise ProtocolValidationError(f"computer_host.screens[{index}].primary must be boolean")
+            primaries += int(screen["primary"])
+        if primaries != 1:
+            raise ProtocolValidationError("computer_host.screens must mark exactly one primary screen")
+        verbs = self.verbs
+        if (not isinstance(verbs, tuple) or not verbs
+                or any(not isinstance(v, str) for v in verbs)
+                or len(set(verbs)) != len(verbs)):
+            raise ProtocolValidationError("computer_host.verbs must be a non-empty list of unique strings")
+        unknown = sorted(set(verbs) - COMPUTER_HOST_VERBS)
+        if unknown:
+            raise ProtocolValidationError(f"computer_host.verbs contains unknown verbs: {unknown}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        self.validate()
+        return {
+            "host_id": self.host_id,
+            "name": self.name,
+            "platform": self.platform,
+            "client_version": self.client_version,
+            "screens": [dict(s) for s in self.screens],
+            "verbs": list(self.verbs),
+            "protocol": self.protocol,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ComputerHostDescriptor":
+        if not isinstance(data, Mapping):
+            raise ProtocolValidationError("computer_host must be an object")
+        expected = {item.name for item in fields(cls)}
+        if set(data) != expected:
+            raise ProtocolValidationError(
+                "computer_host must contain exactly host_id, name, platform, client_version, "
+                "screens, verbs, protocol")
+        screens = data.get("screens")
+        verbs = data.get("verbs")
+        if not isinstance(screens, (list, tuple)) or not isinstance(verbs, (list, tuple)):
+            raise ProtocolValidationError("computer_host.screens and computer_host.verbs must be arrays")
+        descriptor = cls(
+            host_id=data["host_id"],
+            name=data["name"],
+            platform=data["platform"],
+            client_version=data["client_version"],
+            screens=tuple(dict(s) if isinstance(s, Mapping) else s for s in screens),
+            verbs=tuple(verbs),
+            protocol=data["protocol"],
+        )
+        descriptor.validate()
+        return descriptor
+
+
 @dataclass
 class RegisterUI(Message):
     type: str = "register_ui"
@@ -2902,6 +3019,12 @@ class RegisterUI(Message):
     # reconnects; it is echoed on the agent_tunnel frames the host relays.
     agent_host: AgentHostRegistration | bool | None = False
     host_session_id: Optional[str] = None
+    # Feature 076 (remote computer control): this socket belongs to a desktop
+    # whose owner switched on "Allow remote control". Additive + default None,
+    # so every pre-076 client (and every browser tab) is a non-host by
+    # omission. A malformed descriptor never blocks registration: from_json
+    # drops it and the socket simply is not a host (fail-closed).
+    computer_host: Optional[ComputerHostDescriptor] = None
 
     def to_json(self) -> str:
         self.validate()
@@ -2915,6 +3038,10 @@ class RegisterUI(Message):
         if isinstance(self.agent_host, AgentHostRegistration):
             data["agent_host"] = self.agent_host.to_dict()
             data.pop("host_session_id", None)
+        if self.computer_host is None:
+            data.pop("computer_host", None)
+        else:
+            data["computer_host"] = self.computer_host.to_dict()
         return json.dumps(data)
 
     def validate(self) -> None:
@@ -2964,6 +3091,10 @@ class RegisterUI(Message):
                 )
         elif self.agent_host not in (False, True, None):
             raise ProtocolValidationError("agent_host must be structured or boolean")
+        if self.computer_host is not None:
+            if not isinstance(self.computer_host, ComputerHostDescriptor):
+                raise ProtocolValidationError("computer_host must be a structured descriptor")
+            self.computer_host.validate()
 
     @staticmethod
     def from_json(json_str: str) -> 'RegisterUI':
@@ -2974,6 +3105,14 @@ class RegisterUI(Message):
         data = {k: v for k, v in data.items() if k in valid_fields}
         if isinstance(data.get("agent_host"), dict):
             data["agent_host"] = AgentHostRegistration.from_dict(data["agent_host"])
+        raw_computer_host = data.pop("computer_host", None)
+        if raw_computer_host is not None:
+            # Feature 076: a malformed descriptor must not cost the client its
+            # session — it only costs it host eligibility (FR-002, fail-closed).
+            try:
+                data["computer_host"] = ComputerHostDescriptor.from_dict(raw_computer_host)
+            except ProtocolValidationError:
+                data["computer_host"] = None
         registration = RegisterUI(**data)
         registration.validate()
         return registration

@@ -37,12 +37,13 @@ def test_deep_resolves_every_projection_chrome_input(monkeypatch):
     monkeypatch.setattr(
         flags,
         "is_enabled",
-        lambda name: name in {"byo_agents", "remote_compute"},
+        lambda name: name in {"byo_agents", "remote_compute", "computer_use"},
     )
     assert projection_chrome_availability() == {
         "pulse_enabled": True,
         "byo_enabled": True,
         "remote_enabled": True,
+        "computer_enabled": True,
     }
 
 
@@ -59,6 +60,7 @@ def test_deep_chrome_availability_fails_closed(monkeypatch):
         "pulse_enabled": False,
         "byo_enabled": False,
         "remote_enabled": False,
+        "computer_enabled": False,
     }
 
 

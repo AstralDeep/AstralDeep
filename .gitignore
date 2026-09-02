@@ -24,6 +24,7 @@ docs/*
 !docs/component-composition.md
 !docs/migration-rollback-074.md
 !docs/lets-external-warden.md
+!docs/remote-computer-control.md
 /.ruff_cache/
 Qualifying_Exam/
 .docker-cache/

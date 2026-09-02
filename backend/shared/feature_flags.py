@@ -160,6 +160,18 @@ class FeatureFlags:
             # is byte-identical to today. Read once at import (container recreate
             # to enable). See specs/063-remote-compute-agents/.
             "remote_compute": self._read("FF_REMOTE_COMPUTE", False),
+            # 076-remote-computer-control: the bundled computer-use agent
+            # (computer-use-1) that drives the user's OWN desktop — running the
+            # AstralDeep desktop client with "Allow remote control" switched on —
+            # from any of their other signed-in clients: screenshots, input
+            # injection, windows, clipboard, files and gated commands, all over
+            # the host's existing authenticated UI socket. FAIL CLOSED — default
+            # OFF; with the flag off the agent does not register, a client's
+            # computer_host announcement is ignored, the "My computers" surface
+            # is absent, and no frame of the feature is observable. Read once at
+            # import (container recreate to enable). See
+            # specs/076-remote-computer-control/.
+            "computer_use": self._read("FF_COMPUTER_USE", False),
             # 064-mcp-2026-07-28-decision: exposes the audience-bound,
             # stateless MCP Streamable HTTP server. FAIL CLOSED — default OFF;
             # with the flag off there is no MCP route, protected-resource

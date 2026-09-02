@@ -44,6 +44,13 @@ _REMOTE_COMPUTE_AGENT_DIRS = (
     "remote_compute",
 )
 
+#: Feature 076 computer-use agent dir — registered ONLY when FF_COMPUTER_USE is
+#: on (register_built_ins). In-process only: it needs the orchestrator's host
+#: registry, which is injected by constructor keyword (``orchestrator=``).
+_COMPUTER_USE_AGENT_DIRS = (
+    "computer_use",
+)
+
 # Product catalog policy belongs to AstralDeep, not to a database facade.  The
 # identifiers are deliberately explicit: directory discovery is an operational
 # concern, while public visibility is a stable product decision that also
@@ -59,6 +66,7 @@ FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "weather-1",
     "web-research-1",
     "remote-compute-1",
+    "computer-use-1",
 )
 
 
@@ -154,6 +162,19 @@ async def register_built_ins(orch) -> List[str]:
                     dirs.append(name)
     except Exception:  # noqa: BLE001
         logger.debug("Feature 063 flag check failed (non-fatal)", exc_info=True)
+    # Feature 076: computer-use-1 registers ONLY when FF_COMPUTER_USE is on
+    # (fail-closed, FR-004): flag off ⇒ no agent, no verb listed or invocable.
+    try:
+        from shared.feature_flags import flags
+        if flags.is_enabled("computer_use"):
+            root = _agents_root()
+            for name in _COMPUTER_USE_AGENT_DIRS:
+                d = os.path.join(root, name)
+                if (name not in dirs and os.path.isdir(d)
+                        and os.path.exists(os.path.join(d, f"{name}_agent.py"))):
+                    dirs.append(name)
+    except Exception:  # noqa: BLE001
+        logger.debug("Feature 076 flag check failed (non-fatal)", exc_info=True)
     for dir_name in dirs:
         try:
             cls = _load_agent_class(dir_name)
@@ -172,6 +193,10 @@ async def register_built_ins(orch) -> List[str]:
                 plane_kwargs["attachment_materialization_service"] = (
                     attachment_materializations
                 )
+            if "orchestrator" in parameters:
+                # Feature 076: in-process-only agents that drive orchestrator
+                # state (the computer-host registry) receive the orchestrator.
+                plane_kwargs["orchestrator"] = orch
             agent = cls(
                 **plane_kwargs
             )  # builds the MCP server + ECIES keys; does NOT start uvicorn
