@@ -56,6 +56,17 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
 
 _MARKER = "_remote_op_proposal_id"
 
+#: (owner, agent, tool, args_fingerprint) → (proposal_id, expires_at) for cards
+#: still awaiting an answer; a repeat reach re-uses the card. Cleared on any
+#: decision. In-process only — a restart simply allows a fresh card.
+_PENDING_CARDS: Dict[tuple, tuple] = {}
+
+
+def _forget_pending(proposal_id: str) -> None:
+    for key, (pid, _exp) in list(_PENDING_CARDS.items()):
+        if pid == proposal_id:
+            _PENDING_CARDS.pop(key, None)
+
 
 # ── per-agent policy (feature 076 generalization) ─────────────────────────────
 #
@@ -70,7 +81,8 @@ class AgentConfirmationPolicy:
     def __init__(self, *, agent_id: str, classification: Dict[str, Any], machine_key: str,
                  gate_unclassified_unattended: bool, unattended_allowed: frozenset,
                  card_title: str, card_caption: str, summary, machine_label,
-                 is_destructive=None):
+                 is_destructive=None, refusal_text: Optional[str] = None,
+                 auto_continue: bool = False, dedupe_pending: bool = False):
         self.agent_id = agent_id
         self.classification = classification
         self.machine_key = machine_key
@@ -88,6 +100,17 @@ class AgentConfirmationPolicy:
         # 063 vocabulary cannot express (076's shell-app rule); None ⇒ the
         # shared ``_is_destructive`` vocabulary decides.
         self.is_destructive = is_destructive
+        # Model-facing text of the refusal that accompanies the card. 076 tells
+        # the model in so many words to END ITS TURN (live finding: without it
+        # the model re-requested approval and burned the whole turn budget).
+        self.refusal_text = refusal_text or "confirmation_required: approve the operation to proceed."
+        # 076: after the owner approves and the verb ran, replay a continuation
+        # turn so the model finishes the task with the result in hand.
+        self.auto_continue = auto_continue
+        # 076: a repeat reach of an operation whose card is still pending gets
+        # the same answer without a second card. 063 keeps one card per reach
+        # (its tests pin that), so this is opt-in per policy.
+        self.dedupe_pending = dedupe_pending
 
 
 def _computer_use_label(orch, user_id: str, ref) -> str:
@@ -132,6 +155,9 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             summary=_computer_use_summary,
             machine_label=_computer_use_label,
             is_destructive=computer_use_policy.is_destructive,
+            refusal_text=computer_use_policy.REFUSAL_TEXT,
+            auto_continue=True,
+            dedupe_pending=True,
         ),
     }
 
@@ -481,8 +507,19 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                        variant="error").to_dict()])
 
     # First reach of a destructive verb on an attended turn: refuse with a proposal.
-    _pid, card = _create_proposal(orch, user_id, chat_id, agent_id, tool_name, args)
-    return ("confirmation_required: approve the operation to proceed.", [card])
+    # A repeat reach of the SAME operation while its card is still pending gets the
+    # same answer without a second card (076 live finding: a model that does not
+    # stop can otherwise paper the chat with identical cards).
+    pending_key = (user_id, agent_id, tool_name, _fingerprint(args))
+    if policy.dedupe_pending:
+        pending = _PENDING_CARDS.get(pending_key)
+        if pending is not None and pending[1] > time.time():
+            return (policy.refusal_text, [Alert(message="Still waiting for your approval of the "
+                                                "action above.", variant="warning").to_dict()])
+    pid, card = _create_proposal(orch, user_id, chat_id, agent_id, tool_name, args)
+    if policy.dedupe_pending:
+        _PENDING_CARDS[pending_key] = (pid, time.time() + PROPOSAL_TTL_S)
+    return (policy.refusal_text, [card])
 
 
 # ── the remote_op_decision ui_event handler (async) ────────────────────────────
@@ -514,6 +551,7 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         return
     now = int(time.time())
     _mid, _verb, _cid = row.machine_id, row.tool_name, row.conversation_id
+    _forget_pending(str(proposal_id))
     if row.status != "pending":
         await _say("This request was already handled.")
         return
@@ -583,10 +621,43 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     tc = SimpleNamespace(id="remote-op", function=SimpleNamespace(
         name=row.tool_name, arguments=json.dumps(stored_args)))
     logger.info("remote_op approved -> re-dispatch: id=%s verb=%s", proposal_id, row.tool_name)
-    await orch.execute_single_tool(
+    result = await orch.execute_single_tool(
         websocket,
         tc,
         {row.tool_name: row.agent_id},
         row.conversation_id,
         user_id=user_id,
     )
+    # 076: the approved verb ran, but the model's turn ended when it asked. Hand
+    # the outcome back as a continuation turn on the SAME chat so the task
+    # finishes without the user having to say "go on". A visible one-liner
+    # stands in for the machine-authored text in the transcript.
+    policy = policy_for(row.agent_id)
+    if policy is not None and policy.auto_continue and row.conversation_id and websocket is not None:
+        outcome = _continuation_text(row, result)
+        try:
+            asyncio.create_task(orch.handle_chat_message(
+                websocket, outcome, row.conversation_id,
+                display_message="✓ Approved — continuing", user_id=user_id))
+        except Exception:  # noqa: BLE001 — the approved verb already ran; continuation is best-effort
+            logger.debug("remote_op auto-continue failed", exc_info=True)
+
+
+def _continuation_text(row, result) -> str:
+    """The machine-authored user turn that resumes the task after an approval."""
+    data: Any = None
+    error: Any = None
+    if result is not None:
+        raw = getattr(result, "result", None)
+        error = getattr(result, "error", None)
+        data = raw.get("_data") if isinstance(raw, dict) and "_data" in raw else raw
+    try:
+        rendered = json.dumps(data, default=str)[:4000] if data is not None else "(no data)"
+    except Exception:  # noqa: BLE001
+        rendered = str(data)[:4000]
+    if error:
+        rendered = f"ERROR: {str((error or {}).get('message') if isinstance(error, dict) else error)[:1000]}"
+    return (f"[The user tapped Approve.] `{row.tool_name}` has now been carried out on the computer "
+            f"(do not call it again for this step). Result: {rendered}\n\n"
+            "Continue the task from here — take any further actions on the computer that are "
+            "needed, then report the outcome to the user in plain language.")

@@ -451,6 +451,55 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "notepad"}, "chat", OWNER) is None
     out = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell"}, "chat", OWNER)
     assert out is not None and "Open a terminal" in json.dumps(out[1])
+    # the model is told to END ITS TURN, and a repeat reach re-uses the pending card
+    assert "STOP NOW" in out[0] and "end your turn" in out[0]
+    rows_before = len(db.rows)
+    again = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell"}, "chat", OWNER)
+    assert again[0] == out[0] and len(db.rows) == rows_before
+    assert again[1][0]["type"] == "alert" and "Still waiting" in again[1][0]["message"]
+    # 063 keeps one card per reach (its own tests pin that) — unaffected
+    r1 = rc.evaluate(orch, ws, "remote-compute-1", "remove_path", {"machine_id": "m", "path": "/x"}, "chat", OWNER)
+    r2 = rc.evaluate(orch, ws, "remote-compute-1", "remove_path", {"machine_id": "m", "path": "/x"}, "chat", OWNER)
+    assert r1[1][0]["type"] == "card" and r2[1][0]["type"] == "card"
+
+
+async def test_approval_runs_the_verb_then_resumes_the_task():
+    """Approve → the stored verb is re-dispatched through the gate stack, then a
+    continuation turn carrying the result lands on the same chat."""
+    db = _FakeDB()
+    orch = _gate_orch(db)
+    ws = _Hashable()
+    orch.ui_sessions[ws] = {"sub": OWNER}
+    calls = []
+    renders = []
+
+    async def _execute_single_tool(websocket, tc, mapping, chat_id, user_id=None):
+        calls.append((tc.function.name, json.loads(tc.function.arguments), mapping, chat_id, user_id))
+        return SimpleNamespace(result={"_data": {"exit_code": 0, "stdout": "Wednesday"}}, error=None)
+
+    async def _handle_chat_message(websocket, message, chat_id, display_message=None, user_id=None, **kw):
+        renders.append((message, chat_id, display_message, user_id))
+
+    async def _send_ui_render(websocket, comps, target=None):
+        pass
+
+    orch.execute_single_tool = _execute_single_tool
+    orch.handle_chat_message = _handle_chat_message
+    orch.send_ui_render = _send_ui_render
+    assert rc.evaluate(orch, ws, "computer-use-1", "run_command", {"command": "Get-Date", "computer": "RyzenRoll"},
+                       "chat-1", OWNER) is not None
+    proposal_id = next(iter(db.rows))
+    await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
+    await asyncio.sleep(0.05)
+    assert calls and calls[0][0] == "run_command" and calls[0][1]["command"] == "Get-Date"
+    assert calls[0][1][rc._MARKER] == proposal_id
+    assert renders and renders[0][1] == "chat-1" and renders[0][2].startswith("✓ Approved")
+    assert "Wednesday" in renders[0][0] and "run_command" in renders[0][0]
+    # the pending-card memory is cleared by the decision, so a new reach gets a new card
+    assert len(db.rows) == 1
+    out2 = rc.evaluate(orch, ws, "computer-use-1", "run_command", {"command": "Get-Date", "computer": "RyzenRoll"},
+                       "chat-1", OWNER)
+    assert out2[1][0]["type"] == "card" and len(db.rows) == 2
 
 
 # ── multimodal assembly ───────────────────────────────────────────────────────

@@ -15788,6 +15788,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             _plan_tools = None                       # turn-1 tool set = the plan
 
             MAX_TURNS = 10
+            # 076: a look-then-act loop (screenshot → act → screenshot …) needs
+            # more tool rounds than an ordinary request; widen the budget only
+            # when the computer-use verbs are in play this turn.
+            if flags.is_enabled("computer_use") and any(
+                    isinstance(t, dict) and (t.get("function") or {}).get("name") in ("screenshot", "start_session")
+                    for t in (tools_desc or [])):
+                MAX_TURNS = max(MAX_TURNS, int(os.getenv("COMPUTER_USE_MAX_TURNS", "24")))
             turn_count = 0
             heartbeat_task = await self._start_heartbeat(websocket)
             # 055 US3: every rich component this turn lands on the canvas —

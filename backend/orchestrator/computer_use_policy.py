@@ -139,6 +139,16 @@ DEFAULT_SCREENSHOT_WIDTH = 1280
 MAX_SCROLL_NOTCHES = 20
 MAX_COMMAND_TIMEOUT_S = 300
 
+#: What the model reads when a verb is parked behind the card. Explicit about
+#: ending the turn: a model that keeps calling tools instead of waiting burns
+#: its whole turn budget and papers the chat with cards (live finding).
+REFUSAL_TEXT = (
+    "confirmation_required: the user has been asked to approve this action on their device. "
+    "STOP NOW: end your turn with one short sentence telling the user what needs their approval. "
+    "Do not call this or any other tool, do not retry, and do not ask again — the task resumes "
+    "automatically after they tap Approve."
+)
+
 CARD_TITLE = "Confirm an action on {host}"
 CARD_CAPTION = ("This runs on your computer exactly as shown and I can't undo it. "
                 "Approve to continue, or decline.")
