@@ -1,0 +1,216 @@
+# Feature 078 — signed Android release bundle and optional Play upload.
+#
+# Manual, default-branch-only, composition-owned: like release-windows.yml and
+# apple-release.yml this builds the client from the exact AstralProjection
+# submodule pin (Projection's own release workflows stay inert by policy).
+# Builds `:app:bundleRelease` signed with the registered Play UPLOAD key held in
+# repository secrets (Play App Signing keeps the app-signing key at Google),
+# proves the signer certificate is the exact fingerprint Play Console registers
+# (components/AstralProjection/docs/android-release-continuity.md), archives the
+# bundle with a SHA256SUMS, and — only when a Play track is selected and a
+# service-account credential exists — uploads it to that track. Nothing here
+# bumps versionCode: every Play upload must be strictly monotonic, so the
+# operator re-checks the Play Console inventory before dispatching.
+#
+# Secrets (names only; values never logged):
+#   ANDROID_UPLOAD_KEYSTORE_BASE64  base64 of the PKCS12 upload keystore
+#   ANDROID_UPLOAD_KEYSTORE_PASSWORD
+#   ANDROID_UPLOAD_KEY_ALIAS
+#   ANDROID_UPLOAD_KEY_PASSWORD
+#   PLAY_SERVICE_ACCOUNT_JSON       optional; required only for play_track != none
+name: android-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      play_track:
+        description: Play track to upload to (none = build, verify, and archive only)
+        required: true
+        type: choice
+        options:
+          - none
+          - internal
+          - production
+        default: none
+      play_status:
+        description: Release status on that track (draft leaves rollout to the operator)
+        required: true
+        type: choice
+        options:
+          - draft
+          - completed
+        default: draft
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Public verification metadata — the upload-key certificate Play Console registers.
+  EXPECTED_UPLOAD_CERT_SHA256: "56:B9:C6:4F:88:49:1E:88:76:DA:F2:E7:AB:84:99:F6:E2:28:10:AE:87:0E:0F:43:BF:AE:E9:F7:D0:D4:96:7B"
+  PLAY_PACKAGE_NAME: com.personalailabs.astraldeep
+
+defaults:
+  run:
+    working-directory: components/AstralProjection/android-client
+
+jobs:
+  release-bundle:
+    name: Signed release bundle
+    # Protected entry point: the workflow definition and the secrets it can
+    # read belong to the default branch only.
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          submodules: recursive
+
+      - name: Prove the checkout is the exact pinned composition
+        working-directory: .
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git submodule status -- components/AstralProjection | grep -Eq '^ [0-9a-f]{40} components/AstralProjection'
+
+      - name: Require signing material
+        env:
+          KS_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          missing=()
+          [ -n "$KS_B64" ] || missing+=(ANDROID_UPLOAD_KEYSTORE_BASE64)
+          [ -n "$KS_PASS" ] || missing+=(ANDROID_UPLOAD_KEYSTORE_PASSWORD)
+          [ -n "$KEY_ALIAS" ] || missing+=(ANDROID_UPLOAD_KEY_ALIAS)
+          [ -n "$KEY_PASS" ] || missing+=(ANDROID_UPLOAD_KEY_PASSWORD)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::unset signing secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Require a Play credential when a track is selected
+        if: ${{ inputs.play_track != 'none' }}
+        env:
+          PLAY_SA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$PLAY_SA" ]; then
+            echo "::error::play_track=${{ inputs.play_track }} requires the PLAY_SERVICE_ACCOUNT_JSON secret"
+            exit 1
+          fi
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Resolve Gradle version from the committed wrapper
+        id: wrapper
+        run: |
+          v=$(sed -n 's/^distributionUrl=.*gradle-\([0-9][0-9.]*\)-\(bin\|all\)\.zip$/\1/p' gradle/wrapper/gradle-wrapper.properties)
+          test -n "$v" || { echo "could not parse Gradle version from wrapper properties" >&2; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+        with:
+          gradle-version: ${{ steps.wrapper.outputs.version }}
+
+      - name: Materialize the upload keystore outside the workspace
+        env:
+          KS_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KS="$RUNNER_TEMP/upload-keystore.jks"
+          printf '%s' "$KS_B64" | base64 -d > "$KS"
+          test -s "$KS"
+          # keystore.properties is gitignored; the build reads it only if present.
+          {
+            echo "storeFile=$KS"
+            echo "storePassword=$KS_PASS"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASS"
+          } > keystore.properties
+          git check-ignore -q keystore.properties
+
+      - name: Prove the keystore is the registered Play upload key
+        env:
+          KS_PASS: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          listing=$(keytool -list -v -keystore "$RUNNER_TEMP/upload-keystore.jks" -storepass:env KS_PASS -alias "$KEY_ALIAS")
+          actual=$(printf '%s\n' "$listing" | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1)
+          echo "upload-key certificate SHA-256: $actual"
+          test "$actual" = "$EXPECTED_UPLOAD_CERT_SHA256"
+
+      - name: Unit and coverage gates
+        run: ./gradlew :core:test :app:testDebugUnitTest :core:koverVerify --no-daemon --stacktrace
+
+      - name: Build the signed release bundle
+        run: ./gradlew :app:bundleRelease --no-daemon --stacktrace
+
+      - name: Prove the bundle is signed by the registered upload key
+        id: verify
+        run: |
+          set -euo pipefail
+          AAB=app/build/outputs/bundle/release/app-release.aab
+          test -s "$AAB"
+          jarsigner -verify -strict "$AAB" > /dev/null
+          actual=$(keytool -printcert -jarfile "$AAB" | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1)
+          echo "bundle signer certificate SHA-256: $actual"
+          test "$actual" = "$EXPECTED_UPLOAD_CERT_SHA256"
+          code=$(sed -n 's/^val currentVersionCode = \([0-9]\+\).*/\1/p' app/build.gradle.kts)
+          name=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
+          test -n "$code" && test -n "$name"
+          echo "versionCode=$code versionName=$name"
+          echo "version_code=$code" >> "$GITHUB_OUTPUT"
+          echo "version_name=$name" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/release"
+          cp "$AAB" "$RUNNER_TEMP/release/AstralDeep-android-${name}-${code}.aab"
+          (cd "$RUNNER_TEMP/release" && sha256sum "AstralDeep-android-${name}-${code}.aab" > SHA256SUMS)
+          echo "$actual" > "$RUNNER_TEMP/release/UPLOAD-CERT-SHA256"
+          echo "release_dir=$RUNNER_TEMP/release" >> "$GITHUB_OUTPUT"
+
+      - name: Remove the signing material
+        if: always()
+        run: |
+          rm -f keystore.properties "$RUNNER_TEMP/upload-keystore.jks"
+          test ! -e keystore.properties
+
+      - name: Archive the signed bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-release-${{ steps.verify.outputs.version_name }}-${{ steps.verify.outputs.version_code }}
+          path: ${{ steps.verify.outputs.release_dir }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload to the selected Play track
+        if: ${{ inputs.play_track != 'none' }}
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ env.PLAY_PACKAGE_NAME }}
+          releaseFiles: ${{ steps.verify.outputs.release_dir }}/AstralDeep-android-${{ steps.verify.outputs.version_name }}-${{ steps.verify.outputs.version_code }}.aab
+          track: ${{ inputs.play_track }}
+          status: ${{ inputs.play_status }}
+          releaseName: ${{ steps.verify.outputs.version_name }} (${{ steps.verify.outputs.version_code }})
+
+      - name: Summary
+        run: |
+          {
+            echo "## Android release bundle"
+            echo
+            echo "- versionName ${{ steps.verify.outputs.version_name }} / versionCode ${{ steps.verify.outputs.version_code }}"
+            echo "- signer certificate SHA-256 matches the registered Play upload key"
+            echo "- Play upload: track=${{ inputs.play_track }} status=${{ inputs.play_status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

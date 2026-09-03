@@ -1,0 +1,107 @@
+# Publish the composed AstralDeep backend image to GitHub Container Registry.
+#
+# Fires only after the owner CI aggregate (`ci.yml`) has completed successfully
+# for a push to `main`; PR runs, failed runs, and other branches never publish.
+# `workflow_run` workflows are loaded from the default branch, so a candidate
+# cannot replace this publisher. The image is built from the exact commit the
+# green CI run tested, with all four component submodules initialized and the
+# same fail-closed composition preflight `make up`/`make build` require locally.
+#
+# Tags:
+#   ghcr.io/<owner>/<repo>:sha-<commit>   immutable — the only deployable ref
+#   ghcr.io/<owner>/<repo>:latest         convenience pointer only
+#
+# Deployment guidance: docs/production-deployment.md ("Deploying to
+# sandbox.ai.uky.edu"). This workflow publishes only the backend image; the
+# voice-worker image stays behind the VOICE_WORKER_CLOSURE_APPROVED gate.
+name: Publish image
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-image-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  publish:
+    name: Build and push ghcr image
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tooling/python-ci/requirements.lock.txt
+      - name: Install hash-locked CI-only Python tooling
+        run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
+      - name: Composition preflight (exact pins, contracts, gitlinks)
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.workflow_run.head_sha }}"
+          python scripts/verify_composition.py --root .
+          python scripts/install_local_components.py validate --root . --require-gitlinks
+      - name: Resolve image references
+        id: refs
+        run: |
+          set -euo pipefail
+          REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          echo "image=ghcr.io/${REPO_LC}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=ghcr.io/${REPO_LC}:sha-${SHA}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=ghcr.io/${REPO_LC}:latest" >> "$GITHUB_OUTPUT"
+      - name: Build the composed backend image
+        run: |
+          set -euo pipefail
+          docker build \
+            --file Dockerfile \
+            --tag "${{ steps.refs.outputs.sha_tag }}" \
+            --tag "${{ steps.refs.outputs.latest_tag }}" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}" \
+            --label "org.opencontainers.image.licenses=Apache-2.0" \
+            .
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Push the immutable sha tag and the latest pointer
+        run: |
+          set -euo pipefail
+          docker push "${{ steps.refs.outputs.sha_tag }}"
+          docker push "${{ steps.refs.outputs.latest_tag }}"
+          DIGEST=$(docker buildx imagetools inspect "${{ steps.refs.outputs.sha_tag }}" --format '{{.Manifest.Digest}}')
+          echo "::notice::published ${{ steps.refs.outputs.sha_tag }} (${DIGEST}) and ${{ steps.refs.outputs.latest_tag }}"
+          {
+            echo "## Published image"
+            echo
+            echo "- \`${{ steps.refs.outputs.sha_tag }}\`"
+            echo "- \`${{ steps.refs.outputs.image }}@${DIGEST}\`"
+            echo "- \`${{ steps.refs.outputs.latest_tag }}\` (convenience pointer)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Log out of the registry
+        if: always()
+        run: docker logout ghcr.io
