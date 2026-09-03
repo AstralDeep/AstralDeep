@@ -47,7 +47,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
+      # The Windows client lives in the AstralProjection submodule since
+      # Feature 074; the release is built from the exact composition pin.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:

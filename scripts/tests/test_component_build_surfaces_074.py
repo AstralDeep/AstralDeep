@@ -192,6 +192,11 @@ def test_store_and_signing_workflows_require_explicit_release_events() -> None:
     assert "workflow_dispatch:" in windows_triggers
     assert "branches:" not in windows_triggers
     assert "pull_request:" not in windows_triggers
+    # Feature 074 moved the client into the submodule; the release must build
+    # from the exact composition pin, never an empty component directory.
+    windows_release = _workflow_job(windows, "build-sign-release")
+    assert "submodules: recursive" in windows_release
+    assert "working-directory: components/AstralProjection/windows-client" in windows_release
 
 
 def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:
