@@ -277,7 +277,8 @@ def test_android_release_workflow_is_manual_pinned_and_composition_owned() -> No
     assert "submodules: recursive" in job
     assert "keytool -list -v" in job
     assert 'test "$actual" = "$EXPECTED_UPLOAD_CERT_SHA256"' in job
-    assert "jarsigner -verify -strict" in job
+    assert 'jarsigner -verify "$AAB" | tee' in job
+    assert "grep -q '^jar verified'" in job
     assert "keytool -printcert -jarfile" in job
     assert ":app:bundleRelease" in job
     assert "git check-ignore -q keystore.properties" in job
