@@ -192,3 +192,56 @@ def test_store_and_signing_workflows_require_explicit_release_events() -> None:
     assert "workflow_dispatch:" in windows_triggers
     assert "branches:" not in windows_triggers
     assert "pull_request:" not in windows_triggers
+
+
+def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:
+    """The composed image reaches GHCR only from a green push run on main."""
+    workflow = (REPOSITORY_ROOT / ".github/workflows/publish-image.yml").read_text(
+        encoding="utf-8"
+    )
+    job_ids = set(
+        re.findall(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", workflow.partition("\njobs:\n")[2])
+    )
+    assert job_ids == {"publish"}
+
+    trigger = workflow.partition("\non:\n")[2].partition("\npermissions:")[0]
+    assert "workflow_run:" in trigger
+    assert "workflows: [CI]" in trigger
+    assert "types: [completed]" in trigger
+    assert "branches: [main]" in trigger
+    assert "push:" not in trigger
+    assert "pull_request" not in trigger
+    assert "workflow_dispatch" not in trigger
+
+    publish = _workflow_job(workflow, "publish")
+    assert "github.event.workflow_run.conclusion == 'success'" in publish
+    assert "github.event.workflow_run.event == 'push'" in publish
+    assert "github.event.workflow_run.head_branch == 'main'" in publish
+    assert (
+        "github.event.workflow_run.head_repository.full_name == github.repository"
+        in publish
+    )
+    assert "ref: ${{ github.event.workflow_run.head_sha }}" in publish
+    assert "submodules: recursive" in publish
+    assert "packages: write" in publish
+    assert "python scripts/verify_composition.py --root ." in publish
+    assert (
+        "python scripts/install_local_components.py validate --root . --require-gitlinks"
+        in publish
+    )
+    assert "sha-${SHA}" in publish
+    assert ":latest" in publish
+    assert "docker push" in publish
+    assert "secrets.GITHUB_TOKEN" in publish
+    assert "secrets." not in publish.replace("secrets.GITHUB_TOKEN", "")
+    assert "app-token" not in workflow
+
+    external_actions = {
+        value
+        for value in re.findall(r"(?m)^\s*(?:-\s+)?uses:\s*(\S+)", workflow)
+        if not value.startswith("./")
+    }
+    assert external_actions == {
+        "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
+        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+    }

@@ -555,17 +555,22 @@ provisioning profiles / ASC API key, and the on-device verification evidence.
   `GET /api/audit` (per-user) and verifiable server-side:
   `python -m audit.cli verify-chain --user-id <id>`.
 
-## Deploying to sandbox.ai.uky.edu (parked GHCR path)
+## Deploying to sandbox.ai.uky.edu (GHCR path)
 
-During Feature 074, AstralDeep hosted CI validates only Deep-owned source and
-the four exact composition declarations. It does not initialize the private
-composition, build or upload a composed product image, publish to GitHub
-Container Registry, or authorize release. Full private composition remains a
-mandatory local qualification, and release activation remains parked.
+The composed backend image is published by `.github/workflows/publish-image.yml`.
+It fires only after the owner CI aggregate (`ci.yml`) completes successfully for
+a push to `main`, checks out that exact commit with all four component
+submodules, re-runs the fail-closed composition preflight (`verify_composition`
+plus `install_local_components.py validate --require-gitlinks`), builds
+`Dockerfile`, and pushes `ghcr.io/<owner>/<repo>:sha-<commit>` (immutable) and
+`:latest` (convenience pointer). PR runs, failed runs, and other branches never
+publish. Hosted CI still validates only Deep-owned source and the four exact
+composition declarations; full private composition and release activation
+remain local/owner decisions, and the voice-worker image stays behind the
+`VOICE_WORKER_CLOSURE_APPROVED` gate.
 
-The GHCR procedure below applies only after a separately approved release task
-has produced and published an immutable, fully qualified composed image. A
-green Deep owner-CI run alone is not such an artifact.
+Deploy only from a `sha-<commit>` tag whose commit you have qualified. A green
+Deep owner-CI run proves the source-free gates, not a release decision.
 
 ### 1. Pull the image
 
@@ -574,9 +579,9 @@ docker login ghcr.io -u <github-username>        # PAT with read:packages
 docker pull ghcr.io/<owner>/<repo>:sha-<commit>  # always pin the immutable tag
 ```
 
-Deploy by `sha-<commit>` (the tag the protected publisher stamped on the exact
-verified build);
-treat `:latest` as a convenience pointer only — never as the deployed ref.
+Deploy by `sha-<commit>` (the tag `publish-image.yml` stamped on the exact
+commit its green CI run tested); treat `:latest` as a convenience pointer only —
+never as the deployed ref.
 
 ### 2. Compose override — `image:` instead of `build:`
 
