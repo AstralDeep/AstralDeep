@@ -22,7 +22,6 @@ import contextvars
 import hashlib
 import json
 import logging
-import sys
 import time
 import uuid
 from types import SimpleNamespace
@@ -763,29 +762,9 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
 
 
 def _detached_turn_context(orch) -> contextvars.Context:
-    """A copy of the current context with the live connection operation cleared.
-
-    The contextvar is looked up on the module the RUNNING orchestrator class
-    came from: in production that module is ``__main__`` (``python
-    orchestrator/orchestrator.py``), and importing ``orchestrator.orchestrator``
-    there would yield a second module instance with a different ContextVar —
-    clearing that one leaves the real fence in place (seen live).
-    """
-    ctx = contextvars.copy_context()
-    candidates = []
-    module = sys.modules.get(type(orch).__module__)
-    var = getattr(module, "_CONNECTION_OPERATION_CONTEXT", None)
-    if isinstance(var, contextvars.ContextVar):
-        candidates.append(var)
-    try:
-        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT as imported
-    except Exception:  # noqa: BLE001 — a test double without the contextvar
-        imported = None
-    if isinstance(imported, contextvars.ContextVar) and imported not in candidates:
-        candidates.append(imported)
-    for var in candidates:
-        ctx.run(var.set, None)
-    return ctx
+    """See :func:`orchestrator.detached_context.detached_context`."""
+    from orchestrator.detached_context import detached_context
+    return detached_context(orch)
 
 
 def _result_data(result) -> Tuple[Any, Any]:

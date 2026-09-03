@@ -127,7 +127,11 @@ def _detail(orch, user_id, draft, show_refine=False):
 def _create_form():
     return (
         '<div class="bg-white/5 border border-white/10 rounded-lg p-4" data-ui-form>'
-        '<div class="text-sm font-medium text-astral-text mb-2">Create a new agent</div>'
+        '<div class="text-sm font-medium text-astral-text mb-2">Create a server-side agent '
+        "(admin approval)</div>"
+        '<div class="text-xs text-astral-muted mb-2">Runs in the orchestrator for everyone an '
+        "admin approves it for. For an agent that runs on your own PC, use Settings → "
+        "My agents &amp; skills.</div>"
         '<input name="agent_name" type="text" placeholder="Agent name" '
         'class="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-astral-text mb-2">'
         '<textarea name="description" rows="2" placeholder="What should it do? (≥10 characters)" '

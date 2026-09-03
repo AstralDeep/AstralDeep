@@ -560,10 +560,13 @@ async def draft_phase(orch, websocket, user_id: str, draft_id: str) -> Tuple[boo
         out = await _draft_json(orch, websocket, [
             {"role": "system", "content": _DRAFT_SYSTEM},
             {"role": "user", "content":
-                f"{ctx}\n\nPropose up to {_MAX_TOOLS} tools this agent needs. For each: a "
-                f"snake_case name, the single least-privileged scope it needs (one of "
-                f"tools:read, tools:write, tools:search, tools:system, tools:files, "
-                f"tools:execute), and one line saying what it does. Keys: tools, notes."},
+                f"{ctx}\n\nList the TOOLS this agent will expose — the functions the owner "
+                f"calls from chat (for example convert_temperature, roll_dice). Every "
+                f"capability the owner asked for must be one tool; propose at least one and at "
+                f"most {_MAX_TOOLS}. For each: a snake_case name, the single least-privileged "
+                f"scope it needs (one of tools:read, tools:write, tools:search, tools:system, "
+                f"tools:files, tools:execute — pure computation on the owner's own input is "
+                f"tools:read), and one line saying what it does. Keys: tools, notes."},
         ], _PLAN_SCHEMA)
         tools = [t for t in ((out or {}).get("tools") or []) if isinstance(t, dict)][:_MAX_TOOLS]
         if not tools:
@@ -1499,12 +1502,50 @@ def agent_status(orch, owner_sub: str, agent_id: str) -> str:
     return "running"
 
 
+def host_presence(orch, owner_sub: str) -> Dict[str, Any]:
+    """The owner's desktop-host presence as the surface should state it.
+
+    ``online`` is true when the owner has a signed-in desktop client that
+    declared itself an agent host (``owner_host_sockets``) OR any of the
+    owner's agents has a live tunnel. Feature 077: the tunnel-only answer told
+    every first-time user — whose healthy client had simply not hosted an
+    agent yet — that no host was online. ``label`` names the machine when the
+    same owner announced a 076 computer host, else the platform + version the
+    host registered with, else "your desktop client".
+    """
+    tunnels = any(k[0] == owner_sub
+                  for k in (getattr(orch, "_tunnel_sockets", None) or {}))
+    sockets = []
+    try:
+        sockets = list(orch.owner_host_sockets(owner_sub))
+    except Exception:  # noqa: BLE001 — a test double without the registry
+        sockets = []
+    label = "your desktop client"
+    try:
+        hosts = getattr(orch, "computer_hosts", None)
+        if hosts is not None:
+            named = [h for h in hosts.online_for_owner(owner_sub) if getattr(h, "name", "")]
+            if named:
+                label = named[0].name
+    except Exception:  # noqa: BLE001
+        pass
+    if label == "your desktop client" and sockets:
+        sessions = getattr(orch, "_personal_agent_host_sessions", None) or {}
+        for sock in sockets:
+            record = sessions.get(id(sock))
+            if record is not None:
+                platform = str(getattr(record, "platform", "") or "").strip()
+                version = str(getattr(record, "client_version", "") or "").strip()
+                if platform:
+                    label = f"{platform} desktop client" + (f" v{version}" if version else "")
+                    break
+    return {"online": bool(sockets) or tunnels, "label": label,
+            "hosts": len(sockets), "tunnels": tunnels}
+
+
 def host_online(orch, owner_sub: str) -> bool:
-    """Whether ANY of this owner's agents currently has a live tunnel — the only
-    honest host-presence signal the protocol carries today (a dedicated
-    ``host_status`` frame is deferred; contracts/host-bundle.md §6)."""
-    return any(k[0] == owner_sub
-               for k in (getattr(orch, "_tunnel_sockets", None) or {}))
+    """Whether the owner has a desktop host online (see :func:`host_presence`)."""
+    return bool(host_presence(orch, owner_sub)["online"])
 
 
 # ---------------------------------------------------------------------------

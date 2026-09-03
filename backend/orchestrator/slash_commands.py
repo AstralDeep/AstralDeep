@@ -15,16 +15,21 @@ A leading ``/`` that is not a clean command token (e.g. a file path
 from __future__ import annotations
 
 import re
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 #: Command name → spec. ``template(args) -> prompt`` shapes the LLM-facing text.
 _COMMAND_NAME = re.compile(r"[a-z][a-z0-9_-]*")
 
 
-def _t_help(_args: str) -> str:
+def _t_help(_args: str, user_skills: Optional[Dict[str, Any]] = None) -> str:
     listing = "; ".join(f"{c['usage']} — {c['description']}" for c in _ordered())
-    return ("The user asked for help with slash commands. Briefly tell them the "
+    text = ("The user asked for help with slash commands. Briefly tell them the "
             f"available commands are: {listing}.")
+    if user_skills:
+        mine = "; ".join(f"/{name} — {skill.name}" for name, skill in sorted(user_skills.items()))
+        text += (f" They also have their own skill commands: {mine}. Mention that they can "
+                 "add or edit these under Settings → My agents & skills.")
+    return text
 
 
 def _t_agents(_args: str) -> str:
@@ -96,21 +101,50 @@ def parse(message: str):
     return name, args
 
 
-def expand_message(message: str) -> str:
+def expand_skill(skill: Any, args: str) -> str:
+    """The prompt a user skill command expands to (feature 077): the skill's own
+    instructions, quoted as the user's standing guidance, plus what they typed."""
+    body = str(getattr(skill, "instructions", "") or "").strip()
+    name = str(getattr(skill, "name", "") or "your skill")
+    request = args.strip() if args else ""
+    text = (f'The user invoked their own skill "{name}". Follow these instructions of '
+            f"theirs for this request:\n\n{body}\n\n")
+    if request:
+        text += f"Their request: {request}"
+    else:
+        text += ("They gave no further text — carry the skill out as written, asking for "
+                 "any input it needs.")
+    return text
+
+
+def expand_message(message: str, user_skills: Optional[Dict[str, Any]] = None) -> str:
     """Expand a ``/command`` into an LLM-facing prompt.
 
     Returns the original message unchanged when it is not a command token.
-    Recognized commands return their expanded prompt; an unrecognized clean
-    command token returns a friendly relay listing the available commands. The
-    result is always a prompt string — never a direct tool invocation.
+    Recognized commands return their expanded prompt; ``user_skills`` (feature
+    077: ``{command: skill}`` for the signed-in user) are checked first for
+    names the curated set does not own — a curated name can never be shadowed
+    (the store refuses such a save). An unrecognized clean command token
+    returns a friendly relay listing the available commands. The result is
+    always a prompt string — never a direct tool invocation.
     """
     parsed = parse(message)
     if parsed is None:
         return message
     name, args = parsed
     cmd = COMMANDS.get(name)
+    if cmd is None and user_skills and name in user_skills:
+        return expand_skill(user_skills[name], args)
     if cmd is None:
         listing = ", ".join(f"/{n}" for n in COMMANDS)
+        if user_skills:
+            listing += ", " + ", ".join(f"/{n}" for n in sorted(user_skills))
         return (f'The user typed an unrecognized command "/{name}". Briefly tell '
                 f"them it isn't a known command and list the available ones: {listing}.")
+    if name == "help":
+        return _t_help(args, user_skills)
     return cmd["template"](args)
+
+
+def reserved_names() -> List[str]:
+    return list(COMMANDS)

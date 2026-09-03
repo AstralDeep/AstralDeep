@@ -25,6 +25,7 @@ docs/*
 !docs/migration-rollback-074.md
 !docs/lets-external-warden.md
 !docs/remote-computer-control.md
+!docs/your-own-agents-and-skills.md
 /.ruff_cache/
 Qualifying_Exam/
 .docker-cache/

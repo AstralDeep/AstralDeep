@@ -2446,6 +2446,31 @@ async def get_chrome_menu(payload: dict = Depends(get_current_user_payload)):
     )
 
 
+@chrome_router.get(
+    "/commands",
+    summary="Get the caller's slash commands",
+    description=(
+        "Feature 077 — the curated slash commands plus the caller's own skill "
+        "commands (Settings → My agents & skills), for typeahead discovery. "
+        "Pure metadata: name + description; nothing here invokes anything."
+    ),
+)
+async def get_chrome_commands(request: Request, payload: dict = Depends(get_current_user_payload)):
+    from orchestrator import slash_commands
+    items = [{"name": "/" + c["name"], "desc": c["description"], "mine": False}
+             for c in slash_commands.command_list()]
+    try:
+        from orchestrator import user_skills
+        store = user_skills.store_for(_get_orchestrator(request))
+        user_id = str((payload or {}).get("sub") or "")
+        if store is not None and user_id:
+            for command, skill in sorted(store.command_map(user_id).items()):
+                items.append({"name": "/" + command, "desc": skill.name, "mine": True})
+    except Exception:
+        logger.debug("user_skills: command listing skipped", exc_info=True)
+    return {"commands": items}
+
+
 # =============================================================================
 # Task Router — Re-Act task state inspection
 # =============================================================================

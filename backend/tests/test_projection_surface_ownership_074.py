@@ -23,6 +23,7 @@ HOST_SURFACES = frozenset(
         "drafts",
         "llm",
         "llm_system",
+        "my_computers",
         "personalization",
         "pulse",
         "remote_machines",
