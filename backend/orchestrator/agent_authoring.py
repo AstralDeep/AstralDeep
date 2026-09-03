@@ -1491,15 +1491,30 @@ async def revise(orch, user_id: str, agent_id: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def agent_status(orch, owner_sub: str, agent_id: str) -> str:
-    """``running`` iff the owner has a LIVE tunnel registration for this agent —
+    """``running`` iff the owner has a LIVE registration for this agent —
     i.e. the desktop host's child process is connected inward AND the
-    orchestrator routes to it. Anything else is honestly ``offline``."""
+    orchestrator routes to it. Anything else is honestly ``offline``.
+
+    Two registrations exist. The 058 tunnel is recorded per ``(owner,
+    agent_id)`` in ``_tunnel_sockets``; the 074 fenced runtime is recorded per
+    runtime instance in ``_personal_agent_runtime_sockets`` and never touches
+    ``_tunnel_sockets`` — reading only the first told the owner of a registered,
+    answering v3 agent that it was offline (rig finding, 2026-09-03)."""
+    route = (getattr(orch, "agents", None) or {}).get(agent_id)
+    if route is None:
+        return "offline"
     sock = (getattr(orch, "_tunnel_sockets", None) or {}).get((owner_sub, agent_id))
-    if sock is None:
-        return "offline"
-    if (getattr(orch, "agents", None) or {}).get(agent_id) is not sock:
-        return "offline"
-    return "running"
+    if sock is not None:
+        return "running" if route is sock else "offline"
+    if (getattr(route, "is_fenced_user_agent_tunnel", False)
+            and getattr(route, "owner_sub", None) == owner_sub
+            and getattr(route, "agent_id", None) == agent_id):
+        fence = getattr(route, "runtime_fence", None)
+        runtimes = getattr(orch, "_personal_agent_runtime_sockets", None) or {}
+        if (fence is not None
+                and runtimes.get(getattr(fence, "runtime_instance_id", None)) is route):
+            return "running"
+    return "offline"
 
 
 def host_presence(orch, owner_sub: str) -> Dict[str, Any]:
