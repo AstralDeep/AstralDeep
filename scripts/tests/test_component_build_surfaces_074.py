@@ -245,3 +245,54 @@ def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:
         "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
         "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
     }
+
+
+def test_android_release_workflow_is_manual_pinned_and_composition_owned() -> None:
+    """The Android store lane is dispatch-only and builds the exact submodule pin."""
+    workflow = (REPOSITORY_ROOT / ".github/workflows/android-release.yml").read_text(
+        encoding="utf-8"
+    )
+    triggers = workflow.partition("\npermissions:\n")[0]
+    assert "workflow_dispatch:" in triggers
+    assert "push:" not in triggers
+    assert "branches:" not in triggers
+    assert "pull_request" not in triggers
+    assert "schedule:" not in triggers
+    assert "- none" in triggers
+    assert "default: none" in triggers
+    assert "default: draft" in triggers
+
+    assert (
+        'EXPECTED_UPLOAD_CERT_SHA256: "56:B9:C6:4F:88:49:1E:88:76:DA:F2:E7:AB:84:99:'
+        'F6:E2:28:10:AE:87:0E:0F:43:BF:AE:E9:F7:D0:D4:96:7B"'
+    ) in workflow
+    assert "PLAY_PACKAGE_NAME: com.personalailabs.astraldeep" in workflow
+    assert "working-directory: components/AstralProjection/android-client" in workflow
+
+    job = _workflow_job(workflow, "release-bundle")
+    assert (
+        "if: ${{ (github.event_name != 'workflow_dispatch' || "
+        "github.ref == 'refs/heads/main') }}"
+    ) in job
+    assert "submodules: recursive" in job
+    assert "keytool -list -v" in job
+    assert 'test "$actual" = "$EXPECTED_UPLOAD_CERT_SHA256"' in job
+    assert "jarsigner -verify -strict" in job
+    assert "keytool -printcert -jarfile" in job
+    assert ":app:bundleRelease" in job
+    assert "git check-ignore -q keystore.properties" in job
+    assert 'rm -f keystore.properties "$RUNNER_TEMP/upload-keystore.jks"' in job
+    assert "if: ${{ inputs.play_track != 'none' }}" in job
+    assert set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)) == {
+        "ANDROID_UPLOAD_KEYSTORE_BASE64",
+        "ANDROID_UPLOAD_KEYSTORE_PASSWORD",
+        "ANDROID_UPLOAD_KEY_ALIAS",
+        "ANDROID_UPLOAD_KEY_PASSWORD",
+        "PLAY_SERVICE_ACCOUNT_JSON",
+    }
+    assert "app-token" not in workflow
+    for value in re.findall(r"(?m)^\s*(?:-\s+)?uses:\s*(.+?)\s*$", workflow):
+        assert re.fullmatch(
+            r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[0-9a-f]{40}\s+# v\d+(?:\.\d+)*",
+            value,
+        ), value
