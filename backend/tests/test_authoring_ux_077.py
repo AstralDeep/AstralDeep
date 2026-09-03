@@ -441,3 +441,34 @@ def test_code_gate_flags_builtins_but_not_library_methods_of_the_same_name():
     assert blocks_execution(dunder)
     system = analyzer.analyze("import os\ndef run(c):\n    return os.system(c)\n", filename="os.py")
     assert blocks_execution(system)
+
+
+def test_agent_status_sees_a_fenced_v3_runtime_as_running():
+    """Rig finding (2026-09-03): a 074 fenced personal-agent runtime registers
+    per runtime instance (``_personal_agent_runtime_sockets`` + ``orch.agents``)
+    and never enters the 058 ``_tunnel_sockets`` map, so the *My agents & skills*
+    row pill said "offline" for a registered, answering agent. Liveness must
+    read both registrations and stay honest on teardown and across owners."""
+    from shared.local_transport import FencedTunnelSocket
+    fence = SimpleNamespace(agent_id="ua-1", host_session_id="hs-1",
+                            runtime_instance_id="ri-1")
+    route = FencedTunnelSocket(object(), OWNER, fence, AsyncMock())
+    orch = SimpleNamespace(agents={"ua-1": route},
+                           _tunnel_sockets={},
+                           _personal_agent_runtime_sockets={"ri-1": route})
+    assert aa.agent_status(orch, OWNER, "ua-1") == "running"
+    assert aa.agent_status(orch, "someone-else", "ua-1") == "offline"     # owner-keyed
+    assert aa.agent_status(orch, OWNER, "ua-2") == "offline"
+    # A superseded runtime (a newer instance took the route) is offline …
+    orch._personal_agent_runtime_sockets["ri-1"] = object()
+    assert aa.agent_status(orch, OWNER, "ua-1") == "offline"
+    # … and so is one whose runtime entry was torn down.
+    orch._personal_agent_runtime_sockets.clear()
+    assert aa.agent_status(orch, OWNER, "ua-1") == "offline"
+    # The 058 tunnel path is unchanged: the route must be that very socket.
+    v2 = object()
+    orch = SimpleNamespace(agents={"ua-1": v2}, _tunnel_sockets={(OWNER, "ua-1"): v2},
+                           _personal_agent_runtime_sockets={})
+    assert aa.agent_status(orch, OWNER, "ua-1") == "running"
+    orch.agents["ua-1"] = object()
+    assert aa.agent_status(orch, OWNER, "ua-1") == "offline"
