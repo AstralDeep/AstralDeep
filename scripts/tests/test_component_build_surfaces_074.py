@@ -197,6 +197,20 @@ def test_store_and_signing_workflows_require_explicit_release_events() -> None:
     windows_release = _workflow_job(windows, "build-sign-release")
     assert "submodules: recursive" in windows_release
     assert "working-directory: components/AstralProjection/windows-client" in windows_release
+    # Feature 075: the frozen exe embeds the deterministic native speech helper.
+    assert 'dotnet-version: "10.0.400"' in windows_release
+    assert "AstralSpeechHelper.Tests.csproj --locked-mode" in windows_release
+    assert "helper publish is not byte reproducible" in windows_release
+    assert windows_release.index("Publish deterministic helper") < windows_release.index(
+        "pyinstaller --noconfirm --clean AstralDeep.spec"
+    )
+    # A main-ref rehearsal dispatch self-verifies with its own ref identity and
+    # never publishes; the tag identity contract stays byte-identical.
+    assert "release-windows.yml@refs/tags/${{ github.ref_name }}" in windows_release
+    assert "release-windows.yml@${{ github.ref }}" in windows_release
+    assert "if: github.event_name == 'workflow_dispatch'" in windows_release
+    release_step = windows_release.partition("- name: Create / update the GitHub Release")[2]
+    assert release_step.lstrip().startswith("if: startsWith(github.ref, 'refs/tags/')")
 
 
 def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:

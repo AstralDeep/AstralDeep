@@ -90,6 +90,89 @@ jobs:
       - name: Install locked build + signing deps
         run: python -m pip install --require-hashes -r components/AstralProjection/windows-client/requirements-release.lock.txt
 
+      # Feature 075: AstralDeep.spec embeds the first-party native speech helper
+      # and refuses to freeze without its deterministic publish and provenance
+      # record. These steps mirror the AstralProjection CI windows lane exactly.
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: "10.0.400"
+
+      - name: Verify the exact native SDK
+        working-directory: components/AstralProjection
+        shell: pwsh
+        run: |
+          if ((dotnet --version).Trim() -ne "10.0.400") {
+            throw "unexpected .NET SDK"
+          }
+
+      - name: Restore the native helper from its exact lock
+        working-directory: components/AstralProjection
+        run: dotnet restore windows-client\asr-helper\tests\AstralSpeechHelper.Tests.csproj --locked-mode
+
+      - name: Publish deterministic helper and verify provenance
+        working-directory: components/AstralProjection
+        shell: pwsh
+        run: |
+          $publish = 'windows-client\asr-helper\publish'
+          $allowed = @(
+            'AstralSpeechHelper.exe',
+            'AstralSpeechHelper.exe.config',
+            'AstralSpeechHelper.pdb',
+            'helper-build-provenance.json'
+          ) | Sort-Object
+
+          function Get-VerifiedHelperHash([string] $directory) {
+            $actual = @(Get-ChildItem $directory -File | ForEach-Object Name | Sort-Object)
+            if (($actual -join "`n") -ne ($allowed -join "`n")) {
+              throw "helper publish allowlist mismatch: $($actual -join ', ')"
+            }
+            $provenance = Get-Content "$directory\helper-build-provenance.json" -Raw |
+              ConvertFrom-Json
+            $keys = @($provenance.PSObject.Properties.Name | Sort-Object)
+            if (($keys -join ',') -ne 'executable_sha256,schema_version,source_manifest_sha256' -or
+                $provenance.schema_version -ne 1) {
+              throw "helper provenance shape is invalid"
+            }
+            foreach ($value in @(
+              $provenance.source_manifest_sha256,
+              $provenance.executable_sha256
+            )) {
+              if ($value -cnotmatch '^[0-9A-Fa-f]{64}$') {
+                throw "helper provenance digest is invalid"
+              }
+            }
+            $sourceHash = (Get-FileHash `
+              windows-client\asr-helper\helper-source-hashes.json -Algorithm SHA256).Hash
+            $executableHash = (Get-FileHash `
+              "$directory\AstralSpeechHelper.exe" -Algorithm SHA256).Hash
+            if ($provenance.source_manifest_sha256.ToLowerInvariant() -ne
+                $sourceHash.ToLowerInvariant() -or
+                $provenance.executable_sha256.ToLowerInvariant() -ne
+                $executableHash.ToLowerInvariant()) {
+              throw "helper provenance does not match its inputs"
+            }
+            return $executableHash
+          }
+
+          if (Test-Path -LiteralPath $publish) {
+            Remove-Item -LiteralPath $publish -Recurse -Force
+          }
+          dotnet clean windows-client\asr-helper\AstralSpeechHelper.csproj `
+            --configuration Release
+          dotnet publish windows-client\asr-helper\AstralSpeechHelper.csproj `
+            --configuration Release --no-restore --output $publish
+          $firstHash = Get-VerifiedHelperHash $publish
+
+          Remove-Item -LiteralPath $publish -Recurse -Force
+          dotnet clean windows-client\asr-helper\AstralSpeechHelper.csproj `
+            --configuration Release
+          dotnet publish windows-client\asr-helper\AstralSpeechHelper.csproj `
+            --configuration Release --no-restore --output $publish
+          $secondHash = Get-VerifiedHelperHash $publish
+          if ($firstHash -ne $secondHash) {
+            throw "helper publish is not byte reproducible"
+          }
+
       - name: Build the exe (PyInstaller)
         working-directory: components/AstralProjection/windows-client
         run: pyinstaller --noconfirm --clean AstralDeep.spec
@@ -114,6 +197,7 @@ jobs:
           sigstore sign AstralDeep.exe --bundle cosign.bundle
 
       - name: Verify the signature (self-check)
+        if: startsWith(github.ref, 'refs/tags/')
         working-directory: components/AstralProjection/windows-client/dist
         shell: bash
         env:
@@ -123,7 +207,24 @@ jobs:
             --cert-identity "$SIGSTORE_IDENTITY" \
             --cert-oidc-issuer https://token.actions.githubusercontent.com
 
+      # A main-ref rehearsal dispatch proves the build and signing path end to
+      # end; its Fulcio SAN names refs/heads/main, and nothing is published.
+      - name: Verify the signature (rehearsal self-check)
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: components/AstralProjection/windows-client/dist
+        shell: bash
+        env:
+          SIGSTORE_IDENTITY: "https://github.com/AstralDeep/AstralDeep/.github/workflows/release-windows.yml@${{ github.ref }}"
+        run: |
+          sigstore verify identity AstralDeep.exe --bundle cosign.bundle \
+            --cert-identity "$SIGSTORE_IDENTITY" \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com
+          echo "::notice::rehearsal only — no release is published from ${{ github.ref }}"
+
+      # Tag pushes only: a main-ref rehearsal dispatch builds, signs, and
+      # self-verifies the exe but never publishes.
       - name: Create / update the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
