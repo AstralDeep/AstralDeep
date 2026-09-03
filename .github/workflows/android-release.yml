@@ -164,7 +164,11 @@ jobs:
           set -euo pipefail
           AAB=app/build/outputs/bundle/release/app-release.aab
           test -s "$AAB"
-          jarsigner -verify -strict "$AAB" > /dev/null
+          # A self-signed upload certificate cannot chain to a trust anchor, so
+          # -strict would exit 4 on every genuine bundle; identity is proven by
+          # the exact fingerprint comparison below, not by chain validation.
+          jarsigner -verify "$AAB" | tee "$RUNNER_TEMP/jarsigner.txt"
+          grep -q '^jar verified' "$RUNNER_TEMP/jarsigner.txt"
           actual=$(keytool -printcert -jarfile "$AAB" | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1)
           echo "bundle signer certificate SHA-256: $actual"
           test "$actual" = "$EXPECTED_UPLOAD_CERT_SHA256"
