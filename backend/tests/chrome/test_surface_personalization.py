@@ -750,6 +750,9 @@ def test_module_contract_title_and_handlers():
         "chrome_skill_toggle", "chrome_job_pause", "chrome_job_resume",
         "chrome_job_delete", "chrome_job_run_now", "chrome_dreaming_toggle",
         "chrome_dreaming_trigger",
+        "chrome_assignment_create", "chrome_assignment_revise", "chrome_assignment_pause",
+        "chrome_assignment_resume", "chrome_assignment_stop", "chrome_assignment_revoke",
+        "chrome_assignment_run_now", "chrome_assignment_approval_decide",
     }
     assert set(surf.HANDLERS) == expected
     assert not getattr(surf, "ADMIN_ONLY", False)

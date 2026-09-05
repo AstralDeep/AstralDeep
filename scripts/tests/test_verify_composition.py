@@ -47,16 +47,16 @@ MODULE_NAMES = {
     "astral-primitives": "AstralPrimitives",
     "lets": "LETS",
 }
-EXPECTED_PLANE_COMMIT_075 = "4a1d990387428436041dd70d9c417e9e86000b6c"
-EXPECTED_PLANE_SCHEMA_REVISION_075 = "075.001"
-EXPECTED_PLANE_MIGRATION_SHA256_075 = (
-    "755faecd45a7d8ca9956f25a239bed476802b885efdce29a36dc3b66981f94df"
+EXPECTED_PLANE_COMMIT_079 = "4e959739578a7eb2aef0d52e59745230d17a1810"
+EXPECTED_PLANE_SCHEMA_REVISION_079 = "079.001"
+EXPECTED_PLANE_MIGRATION_SHA256_079 = (
+    "2353261227ed72d030ab2426b1a7229c8a1302c669a241dc6b84e3e77e003cad"
 )
-EXPECTED_PROJECTION_COMMIT_077 = (
-    "b69597a05fa9c98272a66d69500553160712c94f"
+EXPECTED_PROJECTION_COMMIT_079 = (
+    "d2ce8be6359bac22f63423091d72ac3c0b155a44"
 )
-EXPECTED_PROJECTION_PROTOCOL_SHA256_077 = (
-    "b16234ebe788cc26f1f1218da7b03f9a48b84d8852942e4ea2d2efdc1df28a03"
+EXPECTED_PROJECTION_PROTOCOL_SHA256_079 = (
+    "550a61f01c2f2edbfbe1a2bf0e54ee6d2a964f59c37fa7dbfc9f5e23c9c80d4c"
 )
 
 
@@ -78,10 +78,11 @@ def _git(cwd: Path, *arguments: str) -> str:
 
 
 def _gitlink_commit(root: Path, component_path: str) -> str:
-    entry = _git(root, "ls-tree", "HEAD", "--", component_path)
+    # Match the verifier's candidate index, including deliberate precommit repins.
+    entry = _git(root, "ls-files", "--stage", "--", component_path)
     metadata, listed_path = entry.split("\t", maxsplit=1)
-    mode, object_type, commit = metadata.split()
-    assert (mode, object_type, listed_path) == ("160000", "commit", component_path)
+    mode, commit, stage = metadata.split()
+    assert (mode, stage, listed_path) == ("160000", "0", component_path)
     return commit
 
 
@@ -362,7 +363,7 @@ def test_current_composition_has_exact_pins_canonical_urls_and_contracts() -> No
     assert report.diagnostics == ()
 
 
-def test_composition_pins_exact_plane_075_and_projection_077() -> None:
+def test_composition_pins_exact_plane_and_projection_079() -> None:
     manifest = json.loads(
         (REPOSITORY_ROOT / "config/astral-composition.json").read_text(
             encoding="utf-8"
@@ -370,27 +371,27 @@ def test_composition_pins_exact_plane_075_and_projection_077() -> None:
     )
 
     assert manifest["components"]["astral-plane"]["commit"] == (
-        EXPECTED_PLANE_COMMIT_075
+        EXPECTED_PLANE_COMMIT_079
     )
     assert manifest["compatibility"]["data_plane"]["schema_revision"] == (
-        EXPECTED_PLANE_SCHEMA_REVISION_075
+        EXPECTED_PLANE_SCHEMA_REVISION_079
     )
     assert manifest["compatibility"]["data_plane"]["migration_sha256"] == (
-        EXPECTED_PLANE_MIGRATION_SHA256_075
+        EXPECTED_PLANE_MIGRATION_SHA256_079
     )
     assert manifest["components"]["astral-projection"]["commit"] == (
-        EXPECTED_PROJECTION_COMMIT_077
+        EXPECTED_PROJECTION_COMMIT_079
     )
     assert manifest["compatibility"]["ui_protocol"]["sha256"] == (
-        EXPECTED_PROJECTION_PROTOCOL_SHA256_077
+        EXPECTED_PROJECTION_PROTOCOL_SHA256_079
     )
 
     assert _gitlink_commit(
         REPOSITORY_ROOT, COMPONENT_PATHS["astral-plane"]
-    ) == EXPECTED_PLANE_COMMIT_075
+    ) == EXPECTED_PLANE_COMMIT_079
     assert _gitlink_commit(
         REPOSITORY_ROOT, COMPONENT_PATHS["astral-projection"]
-    ) == EXPECTED_PROJECTION_COMMIT_077
+    ) == EXPECTED_PROJECTION_COMMIT_079
 
 
 def test_synthetic_exact_pins_and_no_floating_branch_pass(checkout: Path) -> None:
@@ -1118,6 +1119,144 @@ def test_plane_migration_digest_includes_static_verifiers_and_starred_statements
     ).hexdigest()
 
     assert composition._plane_migration_digest(root) == expected
+
+
+_ASSIGNMENT_IMPORT = (
+    "from astralplane.database.assignment_schema import ASSIGNMENT_SCHEMA_STATEMENTS\n"
+)
+_ASSIGNMENT_MIGRATION = (
+    "ALIAS = ASSIGNMENT_SCHEMA_STATEMENTS\n"
+    'M = Migration(name="plane-079", source_revisions=("075.001",), '
+    'target_revision="079.001", checksum=_statements_checksum(ALIAS), operation=_apply)\n'
+    "MIGRATION_REGISTRY = MigrationRegistry((M,))\n"
+)
+
+
+def test_reviewed_assignment_schema_import_matches_canonical_digest_without_execution(
+    tmp_path: Path,
+) -> None:
+    root = _write_migration(
+        tmp_path / "AstralPlane",
+        _ASSIGNMENT_IMPORT + _ASSIGNMENT_MIGRATION + "raise AssertionError('must never execute')\n",
+    )
+    _write(root / "src/astralplane/database/assignment_schema.py",
+           '"""Data-only reviewed module."""\n'
+           'ASSIGNMENT_SCHEMA_STATEMENTS = ("CREATE TABLE x (id UUID)", "CREATE INDEX y ON x(id)")\n')
+    checksum = hashlib.sha256(
+        b'["CREATE TABLE x (id UUID)","CREATE INDEX y ON x(id)"]'
+    ).hexdigest()
+    manifest = [{"name": "plane-079", "source_revisions": ["075.001"],
+                 "target_revision": "079.001", "checksum": checksum}]
+    expected = hashlib.sha256(json.dumps(manifest, sort_keys=True, ensure_ascii=True,
+                                        separators=(",", ":")).encode("ascii")).hexdigest()
+    assert composition._plane_migration_digest(root) == expected
+
+
+@pytest.mark.parametrize("import_source", [
+    "from unreviewed.assignment_schema import ASSIGNMENT_SCHEMA_STATEMENTS\n",
+    "from .assignment_schema import ASSIGNMENT_SCHEMA_STATEMENTS\n",
+    "from astralplane.database.assignment_schema import ASSIGNMENT_SCHEMA_STATEMENTS as ALIAS\n",
+    "from astralplane.database.assignment_schema import OTHER as ASSIGNMENT_SCHEMA_STATEMENTS\n",
+    "from astralplane.database.assignment_schema import ASSIGNMENT_SCHEMA_STATEMENTS, OTHER\n",
+    "from astralplane.database.assignment_schema import *\n",
+    _ASSIGNMENT_IMPORT + _ASSIGNMENT_IMPORT,
+    "if True:\n    " + _ASSIGNMENT_IMPORT,
+])
+def test_assignment_schema_import_refuses_unreviewed_or_ambiguous_bindings(
+    tmp_path: Path, import_source: str,
+) -> None:
+    root = _write_migration(tmp_path / "AstralPlane", import_source + _ASSIGNMENT_MIGRATION)
+    with pytest.raises(composition.CompositionError, match="reviewed exact import"):
+        composition._plane_migration_digest(root)
+
+
+@pytest.mark.parametrize("shadow", [
+    "ASSIGNMENT_SCHEMA_STATEMENTS = ('OTHER SQL',)\n",
+    "ASSIGNMENT_SCHEMA_STATEMENTS += ('OTHER SQL',)\n",
+    "del ASSIGNMENT_SCHEMA_STATEMENTS\n",
+    "def ASSIGNMENT_SCHEMA_STATEMENTS(): pass\n",
+    "class ASSIGNMENT_SCHEMA_STATEMENTS: pass\n",
+    "import other as ASSIGNMENT_SCHEMA_STATEMENTS\n",
+    "from other import *\n",
+])
+def test_reviewed_assignment_schema_import_cannot_be_rebound(
+    tmp_path: Path, shadow: str,
+) -> None:
+    root = _write_migration(tmp_path / "AstralPlane", _ASSIGNMENT_IMPORT + shadow + _ASSIGNMENT_MIGRATION)
+    with pytest.raises(composition.CompositionError, match="rebound or ambiguous"):
+        composition._plane_migration_digest(root)
+
+
+@pytest.mark.parametrize(("schema", "message"), [
+    ("", "only the reviewed literal tuple"),
+    ('"""Only a docstring."""\n', "only the reviewed literal tuple"),
+    ('OTHER = ("SQL",)\n', "only the reviewed literal tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS: tuple = ("SQL",)\n', "only the reviewed literal tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = OTHER = ("SQL",)\n', "only the reviewed literal tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = ["SQL"]\n', "only the reviewed literal tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = ("SQL",)\nimport os\n', "only the reviewed literal tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = ("SQL",)\nASSIGNMENT_SCHEMA_STATEMENTS = ()\n', "only the reviewed literal tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = ("SQL".strip(),)\n', "bounded nonempty string tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = (*OTHER,)\n', "bounded nonempty string tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = (123,)\n', "bounded nonempty string tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = ("",)\n', "bounded nonempty string tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = ()\n', "bounded nonempty string tuple"),
+    ('ASSIGNMENT_SCHEMA_STATEMENTS = (\n', "could not parse Python"),
+])
+def test_assignment_schema_requires_one_data_only_string_tuple(
+    tmp_path: Path, schema: str, message: str,
+) -> None:
+    root = _write_migration(tmp_path / "AstralPlane", _ASSIGNMENT_IMPORT + _ASSIGNMENT_MIGRATION)
+    _write(root / "src/astralplane/database/assignment_schema.py", schema)
+    with pytest.raises(composition.CompositionError, match=message):
+        composition._plane_migration_digest(root)
+
+
+def test_assignment_schema_missing_oversized_or_executable_sources_fail_closed(tmp_path: Path) -> None:
+    root = _write_migration(tmp_path / "AstralPlane", _ASSIGNMENT_IMPORT + _ASSIGNMENT_MIGRATION)
+    path = root / "src/astralplane/database/assignment_schema.py"
+    with pytest.raises(composition.CompositionError, match="missing or exceeds"):
+        composition._plane_migration_digest(root)
+    _write(path, "#" * 1_048_577)
+    with pytest.raises(composition.CompositionError, match="exceeds the byte bound"):
+        composition._plane_migration_digest(root)
+    _write(path, "ASSIGNMENT_SCHEMA_STATEMENTS = (" + '"SQL",' * 4097 + ")\n")
+    with pytest.raises(composition.CompositionError, match="bounded nonempty"):
+        composition._plane_migration_digest(root)
+    marker = tmp_path / "must-not-exist.txt"
+    _write(path, 'ASSIGNMENT_SCHEMA_STATEMENTS = ("SQL",)\n'
+           f"__import__('pathlib').Path({str(marker)!r}).write_text('EXECUTED')\n")
+    with pytest.raises(composition.CompositionError, match="only the reviewed literal tuple"):
+        composition._plane_migration_digest(root)
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("outside", [False, True])
+def test_assignment_schema_refuses_symlinked_source(tmp_path: Path, outside: bool) -> None:
+    root = _write_migration(tmp_path / "AstralPlane", _ASSIGNMENT_IMPORT + _ASSIGNMENT_MIGRATION)
+    target = (tmp_path if outside else root) / "redirect.py"
+    _write(target, 'ASSIGNMENT_SCHEMA_STATEMENTS = ("SQL",)\n')
+    path = root / "src/astralplane/database/assignment_schema.py"
+    path.symlink_to(target)
+    with pytest.raises(composition.CompositionError, match="regular local source"):
+        composition._plane_migration_digest(root)
+
+
+@pytest.mark.parametrize("operation", ["resolve", "is_file"])
+def test_assignment_schema_filesystem_errors_are_safe_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str,
+) -> None:
+    root = _write_migration(tmp_path / "AstralPlane", _ASSIGNMENT_IMPORT + _ASSIGNMENT_MIGRATION)
+    original = getattr(Path, operation)
+
+    def unavailable(path: Path, *args: Any, **kwargs: Any) -> Any:
+        if path.name == "assignment_schema.py":
+            raise OSError("source unavailable")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, unavailable)
+    with pytest.raises(composition.CompositionError, match="schema source is unavailable"):
+        composition._plane_migration_digest(root)
 
 
 @pytest.mark.parametrize(

@@ -54,7 +54,8 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 - Do not add a third-party runtime dependency without explicit lead-developer approval. Reuse existing libraries and stdlib seams first.
 - Keep changes production-ready: no silent stubs, debug-only paths, fake success, untracked TODOs, or happy-path-only handling.
 - Write or update tests for golden paths, edge cases, denials, and failures. Changed Python lines must retain at least 90% coverage.
-- Preserve the user's working tree. Never discard unrelated changes. Do not create commits, push, merge, release, submit to a store, or mutate external issue trackers unless the request or invoked workflow explicitly calls for it.
+- Preserve the user's working tree. Never discard unrelated changes. Local commits for work within the task's scope are allowed without additional user authorization, including Spec Kit commit hooks. Review the diff and stage only task-related files; keep unrelated changes and sensitive/generated user data out of commits.
+- Do not push, merge, release, submit to a store, or mutate external issue trackers unless the request or invoked workflow explicitly calls for it. Permission to create local commits does not authorize those actions.
 - Use targeted parallel research/review when it improves coverage, then personally verify critical seams and integrate the findings. Agent reports are evidence leads, not proof by themselves.
 - Distinguish clearly among specified, implemented, test-passing, live-verified, merged, deployed, and released. Do not collapse them into "done."
 
@@ -123,7 +124,7 @@ Normal feature flow after that preflight:
 After implementation, `$speckit-converge` is optional: use it only when the user requests artifact-to-code reconciliation and branch/feature ownership has been re-verified, because it appends tasks. Additional workflows are `$speckit-constitution`, `$speckit-checklist`, and `$speckit-taskstoissues`. Git-extension helpers are `$speckit-git-initialize`, `$speckit-git-feature`, `$speckit-git-validate`, `$speckit-git-remote`, and `$speckit-git-commit`.
 
 - Read the selected skill completely and follow its gates. Clarify and Analyze are real quality gates, not ceremonial steps.
-- `speckit-specify` has a mandatory branch-creation hook. Later hooks may offer commits. Report these mutations before executing them and preserve unrelated working-tree changes.
+- `speckit-specify` has a mandatory branch-creation hook. Later hooks may create task-scoped local commits under the standing permission above. Report these mutations before executing them and preserve unrelated working-tree changes; do not ask for separate commit authorization.
 - `speckit-taskstoissues` mutates GitHub; run it only when the user explicitly requests issue creation/synchronization.
 - Never point a workflow at a feature merely because it is the newest directory. Resolve the intended feature from the branch, `feature.json`, artifacts, remotes, and user context first.
 - This Codex integration is pinned in project metadata at Spec Kit 0.12.16. The executable on `PATH` may be older on some machines; for integration management, use a version-matched one-shot CLI or deliberately upgrade the user tool. Do not run the older executable against managed integration state, blindly reinitialize Claude, or overwrite modified Claude-managed files.
@@ -148,7 +149,7 @@ Direct backend suite:
 docker exec astraldeep bash -c "cd /app/backend && python -m pytest -q"
 ```
 
-Important: `backend/pytest.ini` has `testpaths = tests`. The command above is not every nested module suite. For merge-level confidence, mirror the explicit invocations in `.github/workflows/ci.yml`, including the module suites and relevant feature-flag posture, and run any touched package's local tests explicitly.
+Important: `backend/pytest.ini` discovers `tests` and `persistent_agents/tests`. The command above is not every nested module suite. For merge-level confidence, mirror the explicit invocations in `.github/workflows/ci.yml`, including the module suites and relevant feature-flag posture, and run any touched package's local tests explicitly.
 
 Client gates:
 
@@ -201,7 +202,7 @@ Finish with an evidence-backed summary: files changed, behavior changed, exact t
 <!-- SPECKIT START -->
 ## Active Feature Plan
 
-- `075-client-local-speech`: `specs/075-client-local-speech/plan.md`
+- `079-persistent-agents`: `specs/079-persistent-agents/plan.md`
 
 ## Active Technologies
 

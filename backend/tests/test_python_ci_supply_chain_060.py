@@ -212,6 +212,7 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
         "verify_composition.py",
         "verify_migration_provenance.py",
         "verify_primitive_coverage.py",
+        "verify_persistent_agents_079.py",
         "verify_release_evidence_bootstrap.py",
         "windows_release_candidate.py",
     }
@@ -236,6 +237,7 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
         "scripts/tests/test_verify_composition.py",
         "scripts/tests/test_verify_migration_provenance.py",
         "scripts/tests/test_verify_primitive_coverage.py",
+        "scripts/tests/test_verify_persistent_agents_079.py",
     }
     array = job.partition("RELEASE_TOOL_TESTS=(")[2].partition(")")[0]
     assert set(re.findall(r"(?m)^\s+([^\s]+\.py)\s*$", array)) == expected_test_paths

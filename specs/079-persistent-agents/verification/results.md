@@ -1,0 +1,190 @@
+# Feature 079 verification record
+
+## Current integration checkpoint — 2026-09-05
+
+The owner authorized local feature commits and directed `AGENTS.md` to permit
+task-scoped local commits without additional approval. Push/merge/release/store
+and external-issue mutations retain their separate authorization boundaries.
+
+Reviewed component implementation is now committed locally:
+
+- Plane: `4e959739578a7eb2aef0d52e59745230d17a1810` (23 intentional files).
+- Projection: `d2ce8be6359bac22f63423091d72ac3c0b155a44` (13 intentional files).
+
+Both component worktrees are clean. Thirty-five Plane stat-only paths were
+verified byte-for-byte against HEAD before refreshing their index; no additional
+content changes were committed. Deep's declaration and staged gitlinks now point
+to these exact commits, schema `079.001` and the qualified migration/UI digests.
+Both local composition checks pass, with composition digest
+`5f58f51be3ce6ae31c710437683ef73c6b1195a22f0bd9a5accfdea5a01a8013`.
+The static verifier now reads only the exact reviewed data-only assignment SQL
+tuple; it never executes component imports or accepts arbitrary new expressions.
+Its native Windows suite passed **121 tests in 35.50s**; all **38 changed
+executable statements** were covered. Command: `uv tool run --python
+.venv/Scripts/python.exe --from pytest==8.4.2 --with pytest-cov==7.0.0 pytest
+scripts/tests/test_verify_composition.py --cov=scripts.verify_composition
+--cov-report=json --cov-report=term -q` (report retained under
+`build/079/verification/079-composition-host-coverage.json`).
+The broader security rerun passed **348 tests in 94.38s**, with zero failures,
+errors or skips, resolving the previous constructor errors. Exact commands,
+JUnit, coverage and hashes are in `build/079/verification/security/`.
+
+The credential-free public source and existing real Keycloak discovery are
+reachable. The selected local Docker verification override preserves all existing
+authentication/environment settings except enabling `FF_PERSISTENT_AGENTS` and
+uses image-baked agent code instead of the broad mutable agent-source mount.
+Owner sign-in/consent and in-product model availability still need live evidence.
+No product push, merge or release has occurred.
+
+## Historical local implementation checkpoint — 2026-09-05
+
+**Implemented and tested locally; exact component integration and authenticated live
+qualification remain pending.** Deep, embedded Plane, and embedded Projection are
+on `codex/079-persistent-agents`. Product changes are uncommitted and unpushed.
+Sibling repositories remain on refreshed `main`. The existing running app is the
+baseline image described below, not the feature candidate.
+
+### Implemented behavior and ownership
+
+- Plane owns guarded `079.001` migration, frozen records, durable assignment/event/action/activity storage, revision/control fencing, bounded claims and recovery, atomic task joins, budgets, approvals, reconciliation and retention. Representative `075.001` upgrade and repeat startup pass on isolated PostgreSQL.
+- Deep owns standing-instruction policy, explicit offline grant capture, scheduled source checks, quiet waiting, bounded model plans and child execution, retained observations/findings, fresh per-effect authorization, exact attended sensitive execution, activity, REST/chat commands, and account-retirement coordination.
+- Projection owns shared forms/cards/activity and cross-client action dispositions. The actual web form preserves every selected tool and unchecked consent. Deep removes only validated browser transport metadata before strict request parsing. Schedule inspection and pause/stop/revoke remain available without personal LLM setup, while new work and approval stay gated.
+- The no-extra-connector example is a public release-page monitor through `web-research-1:fetch_page`. A general registered reader requires trusted host resource/precondition bounds and existing permission checks. No bundled inbox or bug-tracker reader was invented or presumed connected.
+- `FF_PERSISTENT_AGENTS` defaults off. Tick/concurrency/lease configuration is bounded and fails closed. Mandatory daily/lifetime model/tool/token/time caps apply across children and retries; optional currency caps require trusted finite quotes. Unknown monetary usage is never represented as free.
+- `backend/pytest.ini` now includes the new agent suite in normal discovery. The stdlib evidence driver is included in the existing measured tooling CI lane. No runtime dependency or new primitive was added.
+
+### Automated results
+
+All real PostgreSQL tests use disposable schemas in `astraldeep-079-postgres` via
+the private DSN in `astraldeep-079-tests`. They do not mutate the application's
+database. IAM, model responses and external responses in engine integration tests
+are controlled fixtures; those tests are not authenticated live-source evidence.
+
+| Check | Result and scope |
+| --- | --- |
+| Final Deep feature/UI/retirement/remote-confirmation run | **432 passed in 203.34s**, no skips; includes final memory, child authority, supervision, action-result and owner API changes |
+| Full Plane suite | **2,176 passed, 9 explicit platform skips in 522.69s**; skips require Windows-native filesystem semantics unavailable in the Linux test container |
+| Final Plane assignment slice | **96 passed in 14.17s**, enforced combined branch coverage **90.77%**; covers final currency and observation-cleanup edits made after the full suite began |
+| Plane catalog/rollback/boot/provenance | **241 passed, 1 deselected**; the slow deselected startup case passed in the full suite |
+| Deep central host/dispatch hooks | **23 passed in 9.95s**; existing failure and denial behavior retained |
+| Final focused Deep UI | **173 passed**; browser request envelope, owner isolation, no-LLM controls and foreign-owner denial included |
+| Existing first-run LLM gate | **14 passed** using the compatible installed baseline Plane; separate disabled-feature regression posture |
+| Evidence driver | **34 passed**, **97.67% statement coverage**; missing source/session/deployment evidence fails closed |
+| Tooling CI ownership and driver checks | **57 passed, 1 platform skip in 4.45s** after adding the new driver/test to exact CI ownership lists |
+| Projection shared views | **45 passed** |
+| Protocol/chrome/extraction boundaries | **34 passed** |
+| Actual web client fixtures | **120 passed** across continuity, voice, and 079 suites; ESLint and product-isolation checks passed |
+| Android | `ktlintCheck :app:lintDebug :core:test :app:testDebugUnitTest :core:koverVerify :app:assembleDebug` passed, **65 tasks in 1m26s** |
+| Windows offscreen suite | **1,064 passed, 12 skipped, 3 failed**; all three BYO process-cleanup timing failures reproduced on unchanged Projection `b69597a` |
+| Source hygiene | Root/component `git diff --check` passed. No Ruff diagnostics on changed Python lines; same tracked files show 731 current diagnostics versus 740 on their HEAD bytes. Full-repository lint is not claimed green. |
+
+The real-PostgreSQL engine cases exercise source → plan → two children → atomic
+join, fresh-runner memory after meaningful and initial `UNCHANGED` observations,
+two crash boundaries with actual retry backoff, no repeated completed reads or
+children, pause/resume/revision, late results after stop, completion, and trusted
+currency accounting. Twenty-five idle assignments made zero model/tool calls;
+the earlier retained fixture measurement observed maximum pause latency 49.61ms.
+That latency is a local controlled workload measurement, not a live-client SLO.
+
+### Coverage and retained reports
+
+Current working-tree diagnostics report every new Deep production module above
+90% statement coverage (90.80–100%); central dispatcher changes **72/76 = 94.74%**,
+Deep UI **282/283 = 99.65%**, LLM control gate **18/18**, remote confirmation
+**10/10**, retirement purge **18/18**, and retirement route **6/6**. Plane changed
+production statements are **1,329/1,419 = 93.66%**. Multiline constant members have
+no separate executable line in coverage; their containing statements and behavior
+are tested. The final Deep coverage omits test files from the denominator.
+
+Reports and exact owner-lane commands are retained under ignored
+`build/079/verification/`, including `079-deep-final-{coverage.json,coverage.xml,results.xml}`,
+`079-host-final-coverage.{json,xml}`, `079-driver-final-coverage.json`,
+`chrome-llm-079-coverage.json`, `working-tree-diagnostics.json`, and
+`plane/{handoff.md,full-junit.xml,full-coverage.xml,assignment-coverage.xml}`.
+Use the final assignment report for Plane assignment files; the earlier full
+report remains valid for unchanged API/schema/migration modules. Current central
+coverage unions only reports from the same unchanged source bytes.
+
+These are working-tree diagnostics. The canonical immutable-candidate
+`scripts/check_changed_coverage.py` gate, final clean component identities and
+qualified-image evidence have not run and are not replaced by this calculation.
+The Projection bundle in `build/079/verification/projection/README.md` records
+exact client commands and which results have native reports versus only explicit
+tool-output transcriptions. `report-sha256.json` inventories the retained local
+diagnostic files. `scripts/check_doc_links.py` passed for its 25 maintained inputs.
+
+The curated knowledge checkpoint was separately committed and pushed as
+`dd7a96edb9f54a61fdea35850e583c601aa171a8` in `Kentucky-Open-Science/kos-wiki`;
+the vault is clean and matches origin/main. This preserves the decision/evidence
+summary remotely, not the uncommitted product implementation.
+
+### Exact Deep commands
+
+From the repository root in PowerShell, with the isolated test container already
+configured and without echoing its private DSN:
+
+```text
+docker exec -w /workspace/backend -e COVERAGE_FILE=/tmp/.coverage-079-final -e PYTHONPATH=/workspace/components/AstralPlane/src:/workspace/components/AstralProjection/src:/workspace/backend astraldeep-079-tests python -m pytest -q persistent_agents/tests tests/chrome/test_surface_assignments.py tests/chrome/test_surface_personalization.py tests/attachments/test_account_assignments_079.py tests/test_remote_confirmation_063.py --cov-config=/workspace/build/079/verification/coverage-079.ini --cov=persistent_agents --cov=orchestrator.orchestrator --cov=orchestrator.chain_authority --cov=orchestrator.remote_confirmation --cov=orchestrator.attachments.purge --cov=orchestrator.attachments.router --cov=orchestrator.attachments.account_lifecycle --cov=orchestrator.projection_surfaces.personalization --cov=orchestrator.projection_controllers --cov-report=xml:/tmp/079-deep-final-coverage.xml --cov-report=json:/tmp/079-deep-final-coverage.json --cov-report=term:skip-covered --junitxml=/tmp/079-deep-final-results.xml -o junit_family=xunit1 --tb=short
+
+docker exec -w /workspace/backend -e PYTHONPATH=/workspace/components/AstralPlane/src:/workspace/components/AstralProjection/src:/workspace/backend astraldeep-079-tests python -m pytest -q persistent_agents/tests/test_host_wiring.py persistent_agents/tests/test_dispatch_integration.py tests/test_call_llm_wave0.py::test_reasoning_effort_passed_when_set
+
+docker exec -w /workspace -e PYTHONPATH=/workspace/backend astraldeep-079-tests python -m pytest -q backend/tests/test_python_ci_supply_chain_060.py backend/tests/test_release_tooling_coverage_060.py scripts/tests/test_component_build_surfaces_074.py scripts/tests/test_verify_persistent_agents_079.py --tb=short
+```
+
+The coverage config contains `[run]` and `omit = */tests/*`. For the full Plane
+and final assignment commands, see the copied Plane handoff; they use the same
+isolated real PostgreSQL runtime. Client commands are also in `quickstart.md`.
+
+### Known failures and pending inputs
+
+1. **Exact component integration:** clean component commits are required before
+   Deep can pin and build these Plane/Projection bytes. The existing composition
+   remains unchanged. Target Plane schema is `079.001`, migration digest
+   `2353261227ed72d030ab2426b1a7229c8a1302c669a241dc6b84e3e77e003cad`, catalog digest
+   `ea985cd52e622f9febaed5783b312ca7177cc088ad9804d71891647087d99eeb`.
+   Repository policy requires authorization before product commits; none has
+   been created. No bypass, temporary fake pin or candidate-as-baseline claim is used.
+   The concrete next step is local feature commits for the reviewed Plane and
+   Projection changes, Deep's exact repin, then a local Deep feature commit for
+   immutable candidate checks. After authorization, qualify that composition,
+   rebuild the candidate image and rerun the blocked constructor/live checks.
+   No product push is included in this proposed local integration step.
+2. **Broader security regression:** explicit scheduler/machine-authority/offline-
+   grant/chain-budget/delegation/permissions/remote-confirmation/admission suites
+   returned **337 passed, 11 constructor setup errors** because the local 079
+   Plane correctly rejects the still-pinned 075 composition. Rerun those cases
+   after exact integration. These errors are pending integration, not baseline failures.
+3. **Demonstrated baseline failures:** the unsupported-reasoning-effort retry test
+   raises `KeyError` for its cache key in both unchanged baseline and candidate;
+   a delegated dispatch-parity fixture lacks a raw token in both. Windows has
+   the three reproduced BYO cleanup timing failures above. Assertions were not weakened.
+4. **Live feature checks:** driver `--help` and deterministic tests pass. Read-only
+   comparison with the actual app refuses `deployed_runtime_differs_from_candidate`.
+   No public-page monitor, owner consent, sensitive approval or post-restart
+   assignment has been exercised against the live candidate. The driver cannot
+   create consent, sign in, approve, or restart the server. Its reports explicitly
+   separate controlled revisions/fault tests from live upstream observations.
+5. **Client availability:** authenticated live web/Windows/Android flows remain
+   pending the candidate. Android connected device tests were not run. Apple
+   builds/tests and macOS/iOS/watchOS live flows need a qualified Mac/Xcode host.
+   No platform waiver, deployment, merge or release is claimed.
+
+## Initial baseline — 2026-09-05
+
+Historical state at the initial checkpoint: specification/design preparation only.
+The local implementation checkpoint above supersedes this implementation status.
+
+- Root main and origin/main: `34609998a008c5f49fbaa8b24363f794b23c2ba2`; feature branch `codex/079-persistent-agents` starts there.
+- Sibling main checkouts: Projection `b69597a05fa9c98272a66d69500553160712c94f`; Plane `9c1990c4d02d80a310f6d1c35f1e8b1d814a854d`; Primitives `4056df95acd992a9f84d883e572760f6da24c88e`; LETS `583f2d3e6dca85acbee24b046a703319d72a66a4`. All matched refreshed origin/main.
+- The product retains its exact composed pins, which differ from sibling main where deliberately pinned. No incidental component update was introduced.
+- 25 ancestral historical local refs fast-forwarded using old-SHA compare-and-swap. Divergent `codex/external-agent-identity-claims` retained at `1a63ea5fb4ff457433b5d708db17e478295638be`. No branch/worktree deletion. Untracked root `android-client/` preserved.
+- `python scripts/verify_composition.py --root .`: initially failed due to Primitives `base.py` CRLF checkout; exact HEAD blob restoration and component-local autocrlf=false plus unchanged-index refresh restored a clean component. Final PASS, composition digest `9e9c9dc1af2c3aa88dcf82cf182a2a70bd0f876a7b8ed8bfab6b2492e9718105`. No tracked Primitives change or modified contract pin.
+- Host `.venv/Scripts/python.exe --version`: Python 3.11.15. Initial host environment lacks pytest/runtime dependencies; container test runtime supplies pytest and psycopg2.
+- `docker compose up -d --build`: PASS. Baseline app image `sha256:a33e6c5b7a1c1b74b1b2095b95e5f5c9a2e85fcb4d1e09ef10d0665dd44cf810`; app and PostgreSQL healthy, LiveKit and voice worker running. This is baseline infrastructure, not Feature 079 live verification.
+- `docker exec astraldeep bash -c 'cd /app/backend && python -m pytest -q tests/test_machine_turn_authority.py tests/test_chain_budget.py scheduler/tests/test_handler_eligibility_060.py'`: **32 passed in 2.51s**.
+- Existing `.gitignore` and `.dockerignore` exclude virtualenvs, compiled output, credentials and runtime state; no new ignore rule required for the proposed package.
+- Spec ownership prerequisite paths for clarify/plan/tasks matched `specs/079-persistent-agents` with explicit `SPECIFY_FEATURE_DIRECTORY`.
+- Curated vault checkpoint committed/pushed as `f060e56e2bcd4bd1f2fa982eefef5a6c3a909894`; product work remains local and uncommitted.
+
+The original baseline observations remain historical evidence. The current
+integration checkpoint supersedes their commit, pin and constructor-error status.

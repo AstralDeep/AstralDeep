@@ -40,7 +40,9 @@ DEFAULT_MAX_CHAIN_HOPS = int(os.getenv("CHAIN_MAX_HOPS", "12"))
 DEFAULT_CHAIN_WALL_CLOCK_S = float(os.getenv("CHAIN_WALL_CLOCK_SECONDS", "120"))
 
 #: The defined machine-turn classes (FR-014). Any future class joins here.
-MACHINE_TURN_CLASSES = ("scheduled_job", "parser_replay", "draft_self_test")
+MACHINE_TURN_CLASSES = (
+    "scheduled_job", "parser_replay", "draft_self_test", "persistent_assignment",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +191,8 @@ class MachineTurnAuthority:
                                  f"unknown machine-turn class: {turn_class}")
 
         resolved_grant = grant_id
+        if turn_class == "persistent_assignment" and not resolved_grant:
+            return AuthoritySkip("missing_consent", "assignment grant binding is required")
         if not resolved_grant:
             resolved_grant = await asyncio.to_thread(
                 self.grants.latest_valid_for, user_id, agent_id)

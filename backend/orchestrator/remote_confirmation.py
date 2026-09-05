@@ -452,8 +452,8 @@ def _consume_if_valid(
     return consumed is not None
 
 
-def _create_proposal(orch, user_id: str, chat_id: Optional[str], agent_id: str,
-                     tool_name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
+                     tool_name: str, args: dict[str, Any], *, on_created=None) -> tuple[str, dict[str, Any]]:
     from astralprims import Button, Card, Text
     policy = policy_for(agent_id) or policy_for(MUTATING_AGENT_ID)
     proposal_id = uuid.uuid4().hex
@@ -485,6 +485,10 @@ def _create_proposal(orch, user_id: str, chat_id: Optional[str], agent_id: str,
                 expires_at=now + PROPOSAL_TTL_S,
             ),
         )
+        # A persistent-action link is part of this same transaction. An orphan
+        # confirmation must never escape and fall back to ordinary chat dispatch.
+        if on_created is not None:
+            on_created(transaction, proposal_id)
     logger.info("remote_op proposal created: %s verb=%s owner=%s", proposal_id, tool_name, user_id)
     _audit_sync(user_id, "remote_op.proposed", f"proposed {tool_name}: {summary}",
                 proposal_id=proposal_id, machine_id=machine_ref, verb=tool_name,
@@ -567,7 +571,12 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     if classification is None:
         return None  # 076 observe/input verb on an attended turn — session-gated by the agent
 
-    if policy.is_destructive is not None:
+    from persistent_agents.dispatch_context import current_dispatch
+    if current_dispatch() is not None and classification == "if_exists":
+        # Persistent work cannot perform an unreserved stat merely to decide
+        # whether to ask for approval. Conservative review needs no network I/O.
+        destructive = True
+    elif policy.is_destructive is not None:
         destructive = bool(policy.is_destructive(tool_name, args))
     else:
         destructive = _is_destructive(orch, user_id, tool_name, args, classification)
@@ -642,6 +651,9 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
                            "decision refused (not owner or not found)",
                            proposal_id=proposal_id, outcome="failure")
         await _say("That confirmation is not available.")
+        return
+    from persistent_agents.approvals import handle_linked_remote_decision
+    if await handle_linked_remote_decision(orch, websocket, user_id, row, decision):
         return
     now = int(time.time())
     _mid, _verb, _cid = row.machine_id, row.tool_name, row.conversation_id
