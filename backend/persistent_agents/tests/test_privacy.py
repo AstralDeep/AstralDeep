@@ -166,10 +166,11 @@ async def test_tool_observation_checks_full_data_before_retention(executor, monk
         assert result["redacted"] and result["truncated"]
         assert "2026-09-05" not in str(executor.test_outcomes)
     else:
-        with pytest.raises(DispatchDenied, match="result_refused"):
+        expected = "assignment_result_quarantined" if reason == "injection_tail" else "assignment_phi_refused"
+        with pytest.raises(DispatchDenied, match=expected):
             await executor.execute(action_record(executor.record))
         assert executor.test_outcomes[0].outcome == "failed"
-        assert executor.test_outcomes[0].result == {"code": "assignment_result_refused"}
+        assert executor.test_outcomes[0].result == {"code": expected}
     assert any(len(call.args[0]) > 4096 for call in injection.call_args_list)
 
 

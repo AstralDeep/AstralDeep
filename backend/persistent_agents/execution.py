@@ -31,6 +31,27 @@ from persistent_agents.runtime_values import digest, extract_result, thaw
 from persistent_agents.privacy import content_text, privacy_text, redact_observation, reviewed_urls
 
 
+_RESULT_FAILURE_CODES = frozenset({
+    "assignment_model_failed", "assignment_model_output_truncated", "assignment_result_limit",
+    "assignment_source_failed", "assignment_source_empty", "assignment_source_limit",
+    "assignment_source_encoding_refused", "assignment_redaction_key_collision",
+    "assignment_phi_refused", "assignment_phi_redaction_unavailable", "assignment_phi_redaction_invalid",
+    "assignment_result_quarantined",
+})
+_RESULT_FAILURE_ALIASES = {
+    "phi_redaction_refused": "assignment_phi_refused",
+    "phi_redaction_unavailable": "assignment_phi_redaction_unavailable",
+    "phi_redaction_invalid": "assignment_phi_redaction_invalid",
+}
+
+
+def _result_failure_code(value: Any) -> str:
+    """Only fixed diagnostic identities may cross the rejected-content boundary."""
+    if type(value) is str:
+        value = _RESULT_FAILURE_ALIASES.get(value, value)
+    return value if type(value) is str and value in _RESULT_FAILURE_CODES else "assignment_result_refused"
+
+
 class ApprovalPending(RuntimeError):
     """The immutable action is persisted and requires attended owner review."""
 
@@ -219,6 +240,9 @@ class ActionExecutor:
                 try:
                     if request["kind"] == "model":
                         choices = getattr(response, "choices", None)
+                        finish_reason = getattr(choices[0], "finish_reason", None) if choices else None
+                        if type(finish_reason) is str and finish_reason == "length":
+                            raise ValueError("assignment_model_output_truncated")
                         text = getattr(choices[0].message, "content", None) if choices else None
                         if not isinstance(text, str) or not text.strip():
                             raise ValueError("assignment_model_failed")
@@ -255,8 +279,9 @@ class ActionExecutor:
                             spend_micro_units=maximum.spend_micro_units,
                             currency=maximum.currency,
                         )
-                except (ValueError, PermissionError):
-                    outcome, result = "failed", {"code": "assignment_result_refused"}
+                except (ValueError, PermissionError) as exc:
+                    code = _result_failure_code(exc.args[0] if len(exc.args) == 1 else None)
+                    outcome, result = "failed", {"code": code}
             receipt = AssignmentActionOutcome(
                 outcome=outcome, result_digest=digest(result), result=result, actual=actual,
             )
@@ -305,7 +330,7 @@ class ActionExecutor:
             if observed is None:
                 raise DispatchDenied("assignment_action_not_executed")
             if observed_state != "succeeded":
-                raise DispatchDenied("assignment_result_refused")
+                raise DispatchDenied(_result_failure_code(observed.get("code")))
             return observed
         except Exception:
             if observed_state == "uncertain":

@@ -166,13 +166,79 @@ async def test_model_usage_and_invalid_output_are_durably_accounted(executor, co
         return SimpleNamespace(content=content), None
     executor.orch._call_llm = AsyncMock(side_effect=model)
     if not content or len(content) > 8192:
-        with pytest.raises(DispatchDenied, match="result_refused"):
+        expected = "assignment_model_failed" if not content else "assignment_result_limit"
+        with pytest.raises(DispatchDenied, match=expected):
             await executor.execute(action)
         assert executor.test_outcomes[0].outcome == "failed"
+        assert executor.test_outcomes[0].result == {"code": expected}
     else:
         assert (await executor.execute(action))["text"] == content
         amount = executor.test_outcomes[0].actual
         assert amount.tokens == usage if usage is not None else amount is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["assignment_model_failed", "assignment_model_output_truncated",
+    "assignment_result_limit", "assignment_source_failed", "assignment_source_empty",
+    "assignment_source_limit", "assignment_source_encoding_refused", "assignment_redaction_key_collision",
+    "assignment_phi_refused", "assignment_result_quarantined"])
+async def test_result_rejection_preserves_only_allowlisted_reason_and_failed_receipt(executor, monkeypatch, code):
+    monkeypatch.setattr("persistent_agents.execution.safe_text", AsyncMock(side_effect=PermissionError(code)))
+    with pytest.raises(DispatchDenied, match=f"^{code}$"):
+        await executor.execute(action_record(executor.record))
+    assert executor.test_outcomes[0].outcome == "failed"
+    assert executor.test_outcomes[0].result == {"code": code}
+    assert executor.test_outcomes[0].actual is None
+    assert not any(method == "release_unstarted_action" for method, _ in executor.test_calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [ValueError("PRIVATE provider text"),
+    PermissionError("assignment_phi_refused PRIVATE"), ValueError("assignment_phi_refused", "PRIVATE"),
+    ValueError({"code": "assignment_phi_refused", "text": "PRIVATE"})])
+async def test_result_rejection_never_discloses_unknown_exception_details(executor, monkeypatch, error):
+    monkeypatch.setattr("persistent_agents.execution.safe_text", AsyncMock(side_effect=error))
+    with pytest.raises(DispatchDenied, match="^assignment_result_refused$"):
+        await executor.execute(action_record(executor.record))
+    assert executor.test_outcomes[0].result == {"code": "assignment_result_refused"}
+    assert "PRIVATE" not in str(executor.test_outcomes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source,expected", [
+    ("phi_redaction_refused", "assignment_phi_refused"),
+    ("phi_redaction_unavailable", "assignment_phi_redaction_unavailable"),
+    ("phi_redaction_invalid", "assignment_phi_redaction_invalid"),
+])
+async def test_exact_existing_phi_gate_codes_have_fixed_assignment_diagnostics(executor, monkeypatch, source, expected):
+    monkeypatch.setattr("persistent_agents.execution.safe_text", AsyncMock(side_effect=ValueError(source)))
+    with pytest.raises(DispatchDenied, match=f"^{expected}$"):
+        await executor.execute(action_record(executor.record))
+    assert executor.test_outcomes[0].result == {"code": expected}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["length", "stop", None, "PRIVATE provider finish label"])
+async def test_model_finish_length_is_a_bounded_durable_failure_without_content(executor, finish_reason):
+    request = {"kind": "model", "messages": [{"role": "user", "content": "Analyze"}], "max_output_tokens": 1024}
+    action = action_record(executor.record, request)
+    async def model(*args, **kwargs):
+        response = SimpleNamespace(choices=[SimpleNamespace(finish_reason=finish_reason,
+            message=SimpleNamespace(content='{"kind":"result","text":"verified"}'))],
+            usage=SimpleNamespace(total_tokens=100))
+        await current_dispatch().invoke_model(AsyncMock(return_value=response), {"messages": request["messages"]})
+        return response.choices[0].message, None
+    executor.orch._call_llm = AsyncMock(side_effect=model)
+    if finish_reason == "length":
+        with pytest.raises(DispatchDenied, match="^assignment_model_output_truncated$"):
+            await executor.execute(action)
+        assert executor.test_outcomes[0].outcome == "failed"
+        assert executor.test_outcomes[0].result == {"code": "assignment_model_output_truncated"}
+        assert executor.test_outcomes[0].actual is None
+    else:
+        assert "verified" in (await executor.execute(action))["text"]
+        assert executor.test_outcomes[0].outcome == "succeeded"
+    assert "PRIVATE" not in str(executor.test_outcomes)
 
 
 @pytest.mark.asyncio
