@@ -1401,6 +1401,16 @@ async def test_same_activation_id_reservations_have_exact_request_ownership(
         clock=lambda: NOW,
     )
 
+    second_reserved = asyncio.Event()
+
+    class ObservedReservationLock(asyncio.Lock):
+        def release(self) -> None:
+            super().release()
+            if len(runtime._local_activation_reservations) == 2:
+                second_reserved.set()
+
+    runtime._local_activation_capacity_lock = ObservedReservationLock()
+
     def request_coroutine() -> Any:
         if mutation_kind == "create":
             return runtime.create_session(
@@ -1421,10 +1431,9 @@ async def test_same_activation_id_reservations_have_exact_request_ownership(
     first = asyncio.create_task(request_coroutine())
     assert await asyncio.to_thread(entered[0].wait, 1)
     second = asyncio.create_task(request_coroutine())
-    for _ in range(100):
-        if len(runtime._local_activation_reservations) == 2:
-            break
-        await asyncio.sleep(0)
+    # Takeover first awaits a repository thread; event-loop turns do not prove
+    # that work finished. Observe the actual reservation lock release instead.
+    await asyncio.wait_for(second_reserved.wait(), timeout=2)
     assert not entered[1].is_set()
     assert len(runtime._local_activation_reservations) == 2
     assert len({id(item) for item in runtime._local_activation_reservations}) == 2

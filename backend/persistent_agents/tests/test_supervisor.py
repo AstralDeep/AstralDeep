@@ -401,8 +401,9 @@ async def test_activity_only_notifies_after_checkpoint_commit(supervisor):
 
 @pytest.mark.asyncio
 async def test_model_request_stays_on_metered_action_seam(supervisor):
+    supervisor.service.store.call.return_value = None
     await supervisor.runner._model(supervisor.executor, "plan", "Authority stays with owner", {"source": "untrusted"})
     request = supervisor.executor.action.call_args.args[1]
-    assert request["kind"] == "model" and request["max_output_tokens"] == 1024
+    assert request["kind"] == "model" and request["max_output_tokens"] == 4096
     assert request["messages"][0]["role"] == "system"
     assert request["messages"][1]["role"] == "user"

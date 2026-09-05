@@ -200,6 +200,11 @@ def test_source_plan_children_join_and_unchanged_check(engine):
         assert host.physical_models == ["plan", "child", "child", "join"]
         assert record.usage["spent"]["tool_calls"] == 1
         assert record.usage["spent"]["model_calls"] == 4
+        actions = await store.call("list_actions", owner_id="owner", assignment_id=identity)
+        models = [action for action in actions if action.intent.request["kind"] == "model"]
+        assert len(models) == 4
+        assert all(action.intent.request["max_output_tokens"] == 4096 for action in models)
+        assert all(action.intent.maximum.tokens > 4096 for action in models)
         before_activity = await store.call("list_activity", owner_id="owner", assignment_id=identity)
         await control(store, identity, "pause")
         await control(store, identity, "resume")
@@ -223,6 +228,26 @@ def test_stop_committed_between_gate_and_physical_send_denies_effect(engine):
         assert host.physical_tools == 0
         assert host.physical_models == []
         assert all(amount == 0 for amount in record.usage["outstanding"].values())
+    asyncio.run(scenario())
+
+
+def test_completion_allowance_cannot_exceed_existing_owner_token_budget(engine):
+    host, runner, store, identity = engine
+    async def scenario():
+        initial = await current(store, identity)
+        limits = {**initial.definition.limits, "tokens": 4096, "daily_tokens": 4096}
+        await store.call("apply_control", owner_id="owner", assignment_id=identity,
+            expected_instruction_revision=initial.instruction_revision, expected_control_epoch=initial.control_epoch,
+            submission_id=str(uuid4()), submission_digest=digest("limited-owner-token-budget"),
+            control=AssignmentControl.REVISE, replacement=replace(initial.definition, limits=limits))
+        await claim_and_run(runner, store)
+        stopped = await current(store, identity)
+        assert stopped.phase == "budget_exhausted", stopped.safe_error_code
+        assert host.physical_tools == 1 and host.physical_models == []
+        assert stopped.definition.limits == limits
+        assert stopped.definition.offline_grant_id == initial.definition.offline_grant_id
+        assert stopped.usage["spent"]["tokens"] == stopped.usage["spent"]["model_calls"] == 0
+        assert all(amount == 0 for amount in stopped.usage["outstanding"].values())
     asyncio.run(scenario())
 
 
