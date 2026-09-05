@@ -21,14 +21,17 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import sys
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -41,6 +44,7 @@ from audit.hooks import record_auth_event, record_workspace_event  # noqa: E402
 from audit.recorder import Recorder, get_recorder, set_recorder  # noqa: E402
 from audit.repository import AuditRepository  # noqa: E402
 from orchestrator import web_auth  # noqa: E402
+from tests.helpers.session_plane_runtime import web_session_store  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
@@ -265,8 +269,10 @@ class _FakeTokenResponse:
                 "400 Bad Request", request=None, response=None,
             )
 
-    def json(self):
-        return self._payload
+    async def aiter_bytes(self, chunk_size):
+        body = json.dumps(self._payload).encode()
+        for offset in range(0, len(body), chunk_size):
+            yield body[offset:offset + chunk_size]
 
 
 def _fake_async_client(payload=None, fail=False):
@@ -280,24 +286,30 @@ def _fake_async_client(payload=None, fail=False):
         async def __aexit__(self, *exc):
             return False
 
-        async def post(self, url, data=None):
-            return _FakeTokenResponse(payload, fail=fail)
+        @asynccontextmanager
+        async def stream(self, method, url, *, data, follow_redirects):
+            assert method == "POST" and follow_redirects is False
+            assert data["grant_type"] == "refresh_token"
+            yield _FakeTokenResponse(payload, fail=fail)
 
     return _FakeAsyncClient
 
 
-def _refresh_env(monkeypatch):
+def _refresh_env(monkeypatch, db):
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "http://keycloak.test/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)
-    monkeypatch.setattr(web_auth, "_get_store", lambda: None)
+    monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
+    store = web_session_store(db)
+    monkeypatch.setattr(web_auth, "_get_store", lambda: store)
+    return store
 
 
-def test_refresh_session_success_path_is_audit_silent(monkeypatch):
+def test_refresh_session_success_path_is_audit_silent(db, monkeypatch):
     """028 FR-011: a SUCCESSFUL silent refresh updates tokens and emits
     ZERO audit events (token_refresh success is noise, never recorded)."""
-    _refresh_env(monkeypatch)
+    store = _refresh_env(monkeypatch, db)
     monkeypatch.setattr(
         web_auth.httpx, "AsyncClient",
         _fake_async_client({"access_token": "new-at", "refresh_token": "new-rt"}),
@@ -324,13 +336,19 @@ def test_refresh_session_success_path_is_audit_silent(monkeypatch):
         "access_token": "old-at", "refresh_token": "rt-old",
         "sub": user_id, "created_at": time.time(),
     }
-    out = asyncio.run(web_auth._refresh_session(f"sid-{uuid.uuid4().hex[:8]}", sess))
-
-    assert out is sess  # session survives, refreshed in place
-    assert out["access_token"] == "new-at"
-    assert out["refresh_token"] == "new-rt"
-    assert audit_calls == []  # the noise rule: success is silent
-    assert kill_calls == []
+    sid = f"sid-{uuid.uuid4().hex[:8]}"
+    store.create(sid, user_id=user_id, access_token="old-at", refresh_token="rt-old",
+                 hard_max_seconds=3600)
+    try:
+        out = asyncio.run(web_auth._refresh_session(sid, sess))
+        assert out is sess  # session survives, refreshed in place
+        assert out["access_token"] == "new-at"
+        assert out["refresh_token"] == "new-rt"
+        assert web_session_store(db).get(sid)["refresh_token"] == "new-rt"
+        assert audit_calls == []  # the noise rule: success is silent
+        assert kill_calls == []
+    finally:
+        store.delete(sid)
 
 
 def test_refresh_session_source_confines_audit_to_failure_branch():
@@ -351,7 +369,7 @@ def test_refresh_session_refusal_audits_token_refresh_failed_end_to_end(db, reco
     """028 FR-011: a refresh REFUSED by the IdP kills the session and writes
     a real 'auth.token_refresh_failed' failure row through the unpatched
     _audit -> record_auth_event -> Recorder -> Postgres pipeline."""
-    _refresh_env(monkeypatch)
+    store = _refresh_env(monkeypatch, db)
     monkeypatch.setattr(web_auth.httpx, "AsyncClient", _fake_async_client(fail=True))
 
     user_id = _uid()
@@ -361,10 +379,13 @@ def test_refresh_session_refusal_audits_token_refresh_failed_end_to_end(db, reco
         "sub": user_id, "created_at": time.time(),
     }
     web_auth._SESSIONS[sid] = sess
+    store.create(sid, user_id=user_id, access_token="old-at", refresh_token="rt-dead",
+                 hard_max_seconds=3600)
     try:
         out = asyncio.run(web_auth._refresh_session(sid, sess))
         assert out is None  # dead session: interactive login required
         assert sid not in web_auth._SESSIONS
+        assert web_session_store(db).get(sid) is None
 
         rows = _audit_rows(db, user_id)
         assert len(rows) == 1
@@ -376,4 +397,5 @@ def test_refresh_session_refusal_audits_token_refresh_failed_end_to_end(db, reco
         assert "refresh" in row["description"].lower()
     finally:
         web_auth._SESSIONS.pop(sid, None)
+        store.delete(sid)
         _purge_audit(db, user_id)

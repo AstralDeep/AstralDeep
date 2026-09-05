@@ -39,7 +39,7 @@ CONTRACT_FORMAT = "astraldeep.local-components/v1"
 LOCK_FORMAT = "astraldeep.component-wheel-lock/v1"
 INSTALLER_FORMAT = "pip-wheel/v1"
 BUILD_TOOL_REQUIREMENTS = (
-    "setuptools==80.9.0",
+    "setuptools==83.0.0",
     "wheel==0.45.1",
     "hatchling==1.27.0",
     "uv_build==0.12.3",

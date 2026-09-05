@@ -60,7 +60,8 @@ def assert_production_posture() -> None:
     serve a production-mode process with a configuration that would silently
     run open or unprotected. Collects EVERY problem before exiting so the
     operator gets one actionable checklist. Raises ``SystemExit(78)``
-    (EX_CONFIG) — called from ``Orchestrator.start``.
+    (EX_CONFIG) — called before command-line runtime construction and again
+    from ``Orchestrator.start`` for embedded callers.
 
     Development mode (``ASTRAL_ENV=development``) skips everything except the
     advisory warnings — local dev stays friction-free (spec A13)."""

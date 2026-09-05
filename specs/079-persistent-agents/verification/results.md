@@ -5,9 +5,12 @@
 The owner authorized PRs and merges where gates permit. Plane
 [#7](https://github.com/AstralDeep/AstralPlane/pull/7) and Projection
 [#14](https://github.com/AstralDeep/AstralProjection/pull/14) are pushed draft PRs.
-Plane is `94caad85422287188842b33fa60c8af382595026`; Projection is now
-`a61dce71147c9904605356575259e618b7e4d8e3`, after correcting the Apple drift-test
-line wrapping identified by owner CI. Their independent CI/review and affected
+Plane is `b20c8f3e06fc5302262fe3c8f049fa18a562e30f`; Projection is now
+`6c7a9e2d294d7f3733b891e1fe42f22ebe958f5c`. Their fixes preserve exact source
+provenance after the reviewed changes. Both build backends pin patched
+setuptools 83.0.0; Plane's isolated CI group now pins pytest 9.1.1. Deep's
+component-builder declaration, Dockerfile, Makefile and installer agree on
+setuptools 83.0.0. No product runtime dependency was added. Independent CI/review and affected
 live-client requirements remain open. No merge or production deployment occurred.
 
 Deep runtime hardening is committed at
@@ -37,6 +40,14 @@ Fresh local evidence, with exact commands and native reports in ignored
 | Projection native Windows | 1,080 passed, nine skips in 1471.89s |
 | Projection C# / Node / shipped-client browser fixture | 37 / 28 / 5 passed; earlier Android gates remain passed |
 | Worker producer | 372 passed, two skips; 90.41% branch-inclusive coverage from the exact worker test image |
+| Deep strict owner coverage at `ffabed38` | 2,763/2,849 changed statements (96.98%); backend/tooling/voice-worker reports present; later source is requalified separately |
+| Projection final build-tool repair | 1,190 Python owner tests passed; Ruff, exact hash-locked install, sdist/wheel build and installed import passed |
+| Plane final owner repair | Full PostgreSQL run: 2,188 passed, nine platform skips and one old build-pin assertion collected before its fix; the corrected owner/provenance slice then passed 21/21. Full coverage 88.94% (floor 88.75%); changed-line coverage 93.72%; Python 3.11/3.14 package smoke passed |
+| Deep component build-tool pin | Three existing contract/build suites passed 27 tests; exact version assertions retained |
+| Early production configuration gate | 23 tests passed, including refusal before runtime construction and configured/development startup |
+| Current central dispatch/authority/entrypoint rerun | 186 passed in 18.35s; fresh source-bound coverage retained |
+| Resume repair and surrounding execution/engine/dispatch suites | 73 passed in 190.91s; real PostgreSQL regression preserves original receipts, grant and bounds while succeeding after model setup and pause/resume |
+| Workspace refresh audit fixture correction | Eight passed against the real isolated session/audit repositories; canonical rotation/deletion and original audit assertions retained |
 
 The complete clean pre-hardening snapshot at Deep `3c5696f2` passed 773 root CI
 tooling tests (92% coverage) and 413 supplemental script tests, but its broader
@@ -47,24 +58,54 @@ passes; a complete rerun of the final clean source is still required. The WS
 handshake test requires a qualified isolated running app. Worker tests belong
 in the worker image with its declared ONNX dependency, not the orchestrator image.
 
+The subsequent clean `ffabed38` rerun completed 8,034 backend passes, four failures
+and 14 skips, plus 2,375 passes, one failure and seven skips across sixteen nested
+module suites. Two stale supply-chain assertions are now corrected and pass;
+two workspace-refresh fixtures and one repeated-cancellation voice fixture are
+under final triage. The real isolated app passed health/readiness and the required
+WebSocket handshake (one pass, zero skips). Whole-backend aggregate coverage is
+79.14%; the changed-code gate is a separate measurement above. Raw results remain
+bound to `ffabed38`, with later touched source qualified separately.
+
 The owner signed in and approved a bounded public Python release-page test.
-Its first creation was refused before an assignment/grant existed. The installed
-Presidio detector accepted a later complete public-page diagnostic after
-source-only redaction, and the real page reader succeeded after the redirect
-fix. These diagnostics do not claim an authenticated assignment/restart result.
+The clean `42b7ce56` image accepted creation through the real browser and retained
+the reviewed grant. At 22:02 UTC it completed one public read, charging one tool
+call and 1,582 ms, then reported `assignment_model_unconfigured`, with zero model
+calls/tokens charged. The personal model was configured, but the separate System
+LLM was absent; Feature 054 forbids borrowing personal credentials for background
+work. Pause was acknowledged at control version 2. The owner configured System
+LLM in-product and replied ready. Resume advanced to control version 3, but the
+proven-unstarted planner retained its old permission digest and failed with
+`assignment_precondition_changed`; another pause was submitted. The narrow repair
+now creates a freshly authorized successor only for proven-unstarted ordinary
+model/read intents from an older control epoch, preserving all original receipts.
+Begun, uncertain, result-bearing and sensitive failed actions keep their existing
+identity. The full 73-test execution/engine/dispatch suite and independent review
+pass. No successful live model continuation, quiet poll,
+restart recovery or final stop is claimed at this checkpoint.
 
 A clean LF runtime image from `42b7ce56` built successfully as
 `astraldeep:079-runtime-42b7ce56`, image
 `sha256:5222c2b266d77936c0e4c52880070598f1eec7e6a69ed657fb21e8dfb2c38e59`.
-It is not yet the final deployed candidate. Its clean composition digest is
+It is deployed locally, with 591 runtime files matched, healthy/readiness probes,
+real Keycloak and absent/invalid bearer denials (401/no-store). It is not the final
+candidate after the later repairs. Its clean composition digest is
 `d6b0095fa7e0ed7fbbeda1dbbfd719f11fe88d209462fe4c4b9005dc41ce189b`.
-The current declaration additionally repins Projection's tested formatting repair;
+The current declaration additionally repins both components' tested build repairs;
 build and live evidence must bind that final declaration separately.
+
+An isolated, network-disabled production-posture container of the `42b7ce56`
+image exited 1 because database construction preceded the existing missing-secret
+gate. The entrypoint now invokes the unchanged posture check before constructing
+the runtime, retaining the embedded startup check. The final rebuilt image must
+demonstrate exit 78 before this smoke check is counted as passed.
 
 See [production-readiness.md](production-readiness.md) for the bounded test,
 clean-source rebuild, backup/restore, protected staging and publication gates.
 The curated vault checkpoint for runtime hardening and component draft PRs is
-`3676fd1`, pushed separately. Deep itself remains local at this checkpoint.
+`173ad38`, pushed separately, records the first live read and Projection build
+repair. A subsequent final checkpoint must include the Plane repair and live
+recovery outcome. Deep itself remains local at this checkpoint.
 
 ## Historical local integration checkpoint — 2026-09-05
 

@@ -26105,6 +26105,14 @@ async def _join_orchestrator_close_through_cancellation(
         raise cancellation
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Reject unsafe production configuration before opening durable services."""
+    from orchestrator.session_store import assert_production_posture
+
+    assert_production_posture()
     orch = Orchestrator()
     asyncio.run(orch.start())
+
+
+if __name__ == "__main__":
+    main()

@@ -89,6 +89,7 @@ qualification; the earlier local checkpoint is not a production-ready claim.
 - [ ] T035 Complete native coverage producers and strict parser checks; correct stale 079 schema/dispatch fixtures, classify broader baseline failures, and record exact final source evidence.
 - [ ] T036 Build from clean committed LF source, verify installed runtime identity, run the bounded owner-approved assignment and controls/restart checks, and stop it after testing.
 - [ ] T037 Open owner-qualified PRs, satisfy independent review and CI before any merge, and retain concrete protected-staging/Apple/publication blockers in `verification/production-readiness.md`.
+- [ ] T038 Qualify the live-discovered proven-unstarted pause/resume recovery repair, early production exit-78 gate, patched build/CI dependency locks and isolated paired-backup restore rehearsal; bind final source/image evidence without resetting the approved live-test budget.
 
 - T001 precedes product edits; T003 precedes T004/T005. T006 can proceed alongside Plane after its public contract is fixed. Foundation must pass before story execution is enabled.
 - US1 uses the foundation. US2 extends its execution ledger. US3 controls/budgets must be complete before enabling unattended work for any live owner. US4 uses US1–US3 authority/recovery controls.

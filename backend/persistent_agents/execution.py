@@ -105,11 +105,19 @@ class ActionExecutor:
                 break
             if existing.intent.request_digest != digest(request):
                 raise DispatchDenied("assignment_action_binding_changed")
-            if (existing.state == "invalidated" and not existing.ever_started
-                    and existing.control_epoch != self.record.control_epoch):
-                # A control invalidated a proven unstarted intent. Retain that
-                # evidence and create a new epoch-bound review. Completed or
-                # possibly begun actions must never acquire a replacement key.
+            unstarted_failure = (
+                existing.state == "failed_not_started"
+                and existing.intent.sensitivity == "ordinary"
+                and not existing.intent.interactive_only
+                and (request["kind"] == "model" or existing.intent.boundary == "read_only")
+            )
+            if ((existing.state == "invalidated" or unstarted_failure)
+                    and not existing.ever_started and existing.result is None
+                    and existing.control_epoch < self.record.control_epoch):
+                # Controls can leave pre-permit failures intact. Preserve their
+                # evidence while authorizing a fresh intent in the current epoch.
+                # Begun actions, results and failed sensitive effects retain
+                # their original identity and disposition.
                 key = digest([key, "successor", existing.control_epoch])
                 continue
             return await self.execute(existing)

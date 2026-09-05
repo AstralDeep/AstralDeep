@@ -82,6 +82,10 @@ Apple coverage and authenticated client/device flows are independent gaps.
    revisions, pause/resume/stop/revoke, resource exhaustion and foreground
    approval denials through the real dispatcher. Complete all affected client
    and form-factor flows before claiming T030/T031 complete.
+8. Verify the separately configured System LLM before unattended activation.
+   Feature 054 keeps background billing/credentials separate from personal chat;
+   never copy or fall back to a user's provider key. Missing model configuration
+   must produce an honest hold without charging a model call.
 
 ## Approved local live test
 
@@ -92,10 +96,28 @@ are allowed. The test assignment must be stopped afterward. A delegation depth
 of zero respects the existing disabled recursive-delegation flag and narrows
 the approved limit. Login alone was not treated as offline consent.
 
-The first create attempt was refused by the privacy gate before an assignment
-or grant was created. The installed detector subsequently accepted the complete
-public-page diagnostic after source-only redaction. This read-only diagnostic
-does not stand in for the pending signed-in assignment/recovery evidence.
+The first create attempt on the earlier image was refused by the privacy gate.
+The hardened clean image subsequently accepted the reviewed grant and completed
+one real public read. Missing System LLM configuration produced an honest failure
+with zero model usage; the owner then configured that model in-product. A resume
+attempt exposed an old permission digest on a proven-unstarted planner intent.
+The paused assignment, original tool receipt and budgets remain durable. The
+recovery repair passes its real PostgreSQL regression and surrounding execution
+suite; it never replaces a begun action, retained result or failed sensitive
+effect. The detailed UTC observations and remaining
+model/restart/stop checks are recorded in `results.md`.
+
+## Dependency and build qualification
+
+Plane's active CI pytest pin is updated from 8.4.2 to 9.1.1, and Plane/Projection
+build-only setuptools pins and their exact hash constraints are updated to
+83.0.0. Deep's isolated component build uses the same patched setuptools version.
+Owner tests and package builds qualify those changes; no runtime dependency is
+introduced. Projection's open legacy JavaScript alerts name a removed root lock;
+the active tools omit nanoid/postcss-selector-parser and already contain the
+patched humanfs 0.16.8. The read-only advisory assessment retains exact graphs and
+primary links in `build/079/release-preflight/dependency-advisories.md`. No alert
+was dismissed, and this bounded assessment is not a full final-image scan.
 
 ## Publication and protected production gates
 

@@ -1,4 +1,4 @@
-"""Feature 068 â€” kiosk sign-in surface (/kiosk + /auth/kiosk/*).
+"""Feature 068 — kiosk sign-in surface (/kiosk + /auth/kiosk/*).
 
 Two properties carry the security of this surface and are pinned here:
 
@@ -29,7 +29,7 @@ from shared.feature_flags import FeatureFlags
 
 
 def _jwt(payload: dict) -> str:
-    """An unsigned JWT â€” these paths decode without verifying (JWKS runs later)."""
+    """An unsigned JWT — these paths decode without verifying (JWKS runs later)."""
     def seg(obj):
         raw = json.dumps(obj).encode()
         return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
@@ -125,7 +125,7 @@ def test_kiosk_flag_defaults_off(monkeypatch):
 
 
 def test_flag_off_leaves_no_kiosk_route(monkeypatch):
-    """With the flag off the router is never included â€” the path 404s because
+    """With the flag off the router is never included — the path 404s because
     it does not exist, not because a handler refused it."""
     monkeypatch.delenv("FF_KIOSK_LOGIN", raising=False)
     app = FastAPI()

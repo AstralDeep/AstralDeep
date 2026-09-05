@@ -252,6 +252,59 @@ async def test_paused_unstarted_action_gets_new_epoch_identity_without_losing_ol
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["model", "read_only"])
+async def test_failed_unstarted_action_gets_one_current_epoch_successor(executor, kind):
+    request = ({"kind": "model", "messages": [{"role": "user", "content": "Analyze"}],
+                "max_output_tokens": 1024} if kind == "model" else None)
+    original = action_record(executor.record, request)
+    original = replace(original, state="failed_not_started", control_epoch=0,
+        intent=replace(original.intent, boundary="unreplayable" if kind == "model" else "read_only"))
+    previous = executor.store.call.side_effect
+    receipts = {"original": original}
+    async def call(method, **kwargs):
+        if method == "get_action_by_key":
+            return receipts.get(kwargs["action_key"])
+        result = await previous(method, **kwargs)
+        if method == "put_action":
+            receipts[kwargs["intent"].action_key] = result
+        return result
+    executor.store.call.side_effect = call
+    executor.execute = AsyncMock(return_value="new attempt")
+    for _ in range(2):
+        assert await executor.action("original", thaw(original.intent.request)) == "new attempt"
+    replacement = executor.execute.call_args.args[0]
+    assert replacement.intent.action_key == digest(["original", "successor", 0])
+    assert sum(method == "put_action" for method, _ in executor.test_calls) == 1
+    assert original.state == "failed_not_started" and original.result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial", ["same_epoch", "future_epoch", "started", "result", "sensitive",
+                                    "interactive", "unreplayable_tool", "uncertain", "succeeded", "failed"])
+async def test_failed_action_successor_never_replaces_bound_or_possibly_completed_work(executor, denial):
+    original = action_record(executor.record)
+    original = replace(original, state="failed_not_started", control_epoch=0,
+                       intent=replace(original.intent, boundary="read_only"))
+    if denial in {"same_epoch", "future_epoch"}:
+        original = replace(original, control_epoch=executor.record.control_epoch + (denial == "future_epoch"))
+    elif denial == "started":
+        original = replace(original, ever_started=True, attempts=({"outcome": "uncertain"},))
+    elif denial == "result":
+        original = replace(original, result={"result": {"text": "retained"}})
+    elif denial in {"sensitive", "interactive", "unreplayable_tool"}:
+        fields = {"sensitivity": "sensitive"} if denial == "sensitive" else (
+            {"interactive_only": True} if denial == "interactive" else {"boundary": "unreplayable"})
+        original = replace(original, intent=replace(original.intent, **fields))
+    else:
+        original = replace(original, state=denial)
+    executor.store.call = AsyncMock(return_value=original)
+    executor.execute = AsyncMock(return_value="original disposition")
+    assert await executor.action("original", thaw(original.intent.request)) == "original disposition"
+    executor.execute.assert_awaited_once_with(original)
+    executor.store.call.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("attempt", [{"dispatch_token": "begun"}, {"outcome": "uncertain"}, {"outcome": "succeeded"}])
 async def test_started_history_never_gets_replacement_identity_after_pause(executor, attempt):
     action = replace(action_record(executor.record), state="invalidated", control_epoch=0,

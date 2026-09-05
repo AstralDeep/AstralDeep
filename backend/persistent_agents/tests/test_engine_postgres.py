@@ -226,6 +226,53 @@ def test_stop_committed_between_gate_and_physical_send_denies_effect(engine):
     asyncio.run(scenario())
 
 
+def test_configured_model_after_pause_resume_reuses_source_and_replaces_only_unstarted_intent(engine):
+    host, runner, store, identity = engine
+    configured_model = host._call_llm
+    async def current_authorization(owner, claims, record, action):
+        return {"permission_digest": digest(["permission", record.control_epoch]),
+                "precondition_digest": digest("precondition")}
+    runner.service.validate_execution = AsyncMock(side_effect=current_authorization)
+    host._call_llm = AsyncMock(return_value=(None, None))
+    async def actions():
+        return await store.call("list_actions", owner_id="owner", assignment_id=identity)
+    async def scenario():
+        initial = await current(store, identity)
+        await claim_and_run(runner, store)
+        failed = await current(store, identity)
+        assert failed.phase == "failed", failed.safe_error_code
+        assert failed.safe_error_code == "assignment_model_unconfigured"
+        before = await actions()
+        source = next(action for action in before if action.intent.request["kind"] == "tool")
+        planner = next(action for action in before if action.intent.request["kind"] == "model")
+        assert source.state == "succeeded" and source.ever_started
+        assert planner.state == "failed_not_started" and not planner.ever_started and planner.result is None
+        assert host.physical_tools == 1 and host.physical_models == []
+        await control(store, identity, "pause")
+        await control(store, identity, "resume")
+        host._call_llm = configured_model
+        restarted = AssignmentRunner(host, runner.service, config=RunnerConfig(lease_seconds=5))
+        await claim_and_run(restarted, store)
+        resumed = await current(store, identity)
+        assert resumed.phase == "waiting", resumed.safe_error_code
+        assert resumed.checkpoint["last_finding"] == "Version 2 was released."
+        assert host.physical_tools == 1
+        assert host.physical_models == ["plan", "child", "child", "join"]
+        after = await actions()
+        assert next(action for action in after if action.action_id == source.action_id) == source
+        assert next(action for action in after if action.action_id == planner.action_id) == planner
+        successor = next(action for action in after if action.intent.action_key ==
+            digest([planner.intent.action_key, "successor", planner.control_epoch]))
+        assert successor.state == "succeeded" and successor.control_epoch == resumed.control_epoch
+        assert successor.intent.request_digest == planner.intent.request_digest
+        assert successor.intent.permission_digest != planner.intent.permission_digest
+        assert successor.intent.maximum == planner.intent.maximum
+        assert resumed.definition.offline_grant_id == initial.definition.offline_grant_id
+        assert resumed.definition.limits == initial.definition.limits
+        assert resumed.usage["spent"]["tool_calls"] == 1 and resumed.usage["spent"]["model_calls"] == 4
+    asyncio.run(scenario())
+
+
 def test_restart_reuses_completed_children_and_source_actions(engine):
     host, runner, store, identity = engine
     async def scenario():

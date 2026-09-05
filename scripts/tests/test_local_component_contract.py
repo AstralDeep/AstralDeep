@@ -123,7 +123,7 @@ def test_local_component_contract_matches_manifest_and_package_metadata() -> Non
         "lets",
     ]
     assert local["build-tools"] == [
-        "setuptools==80.9.0",
+        "setuptools==83.0.0",
         "wheel==0.45.1",
         "hatchling==1.27.0",
         "uv_build==0.12.3",
