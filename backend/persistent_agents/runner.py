@@ -354,21 +354,25 @@ class AssignmentRunner:
                     {"role": "user", "content": canonical(bounded_context(context))}]
         # Completion capacity includes reasoning as well as visible JSON. The
         # full bound is reserved by ActionExecutor under the owner's limits.
-        maximum = 4096
+        # Explicit low effort keeps small steps from inheriting a provider's
+        # maximum reasoning setting; it does not change owner caps.
+        request = {"kind": "model", "max_output_tokens": 4096,
+                   "reasoning_effort": "low", "messages": messages}
         existing = await self.store.call("get_action_by_key", owner_id=executor.record.owner_id,
             assignment_id=executor.record.assignment_id, action_key=key)
         if existing is not None:
             retained = thaw(existing.intent.request)
             if (not isinstance(retained, dict)
-                    or set(retained) != {"kind", "messages", "max_output_tokens"}
+                    or set(retained) not in ({"kind", "messages", "max_output_tokens"},
+                                            {"kind", "messages", "max_output_tokens", "reasoning_effort"})
                     or retained["kind"] != "model" or retained["messages"] != messages
+                    or ("reasoning_effort" in retained and retained["reasoning_effort"] != "low")
                     or type(retained["max_output_tokens"]) is not int
                     or not 1 <= retained["max_output_tokens"] <= 8192
                     or digest(retained) != existing.intent.request_digest):
                 raise DispatchDenied("assignment_action_binding_changed")
             # An upgrade cannot rewrite an old intent or invalidate its receipt.
-            maximum = retained["max_output_tokens"]
-        request = {"kind": "model", "max_output_tokens": maximum, "messages": messages}
+            request = retained
         return await executor.action(key, request, task_id=task_id, event_id=event_id)
 
     async def episode(self, executor):

@@ -441,6 +441,34 @@ def test_read_failure_terminal_row_revision_form_and_begun_actions(host):
     assert "in flight" in result[2]
 
 
+@pytest.mark.parametrize("lifecycle", ["active", "paused", "stopped", "completed"])
+def test_assignment_error_guidance_matches_lifecycle_and_preserves_safe_history(host, lifecycle):
+    from astralprojection.chrome import render_html
+    from astralprojection.chrome.assignments import build_assignments_view
+
+    _orch, _socket, _, row = host
+    row.update(lifecycle=lifecycle, safe_error_code="assignment_phi_refused")
+    mapped, _ = surf._assignment_row(row)
+    mapped["activity"] = [{"title": "Result refused", "summary": "assignment_phi_refused", "created_at": "Earlier"}]
+    expected = "assignment_phi_refused"
+    if lifecycle in {"active", "paused"}:
+        expected += ". Review activity and restore authorization or revise the assignment before resuming."
+    assert mapped["safe_error"] == expected
+    html = render_html(build_assignments_view({"mode": "detail", "enabled": True,
+        "execution_enabled": True, "assignment": mapped}))
+    assert "assignment_phi_refused" in html
+    assert "Result refused" in html
+    assert "A release was published." in html
+    if lifecycle in {"stopped", "completed"}:
+        assert "before resuming" not in html
+        assert mapped["available_actions"] == []
+    else:
+        assert "before resuming" in html
+        assert {"chrome_assignment_stop", "chrome_assignment_revoke"} <= set(mapped["available_actions"])
+        if lifecycle == "active":
+            assert "chrome_assignment_pause" in mapped["available_actions"]
+
+
 @pytest.mark.parametrize("command,payload", [("pause", []), ("create", {"fields": form_fields(), "submission_id": str(uuid4()), "name": "unreviewed"}), ("revise", {"fields": form_fields(), "submission_id": str(uuid4()), "extra": True})])
 def test_transport_payload_cannot_override_form_or_add_fields(host, command, payload):
     orch, socket, _, row = host

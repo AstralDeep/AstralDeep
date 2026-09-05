@@ -22,6 +22,22 @@ The assessed image is `astraldeep:079-runtime-0dfc768f`, immutable ID `sha256:27
 
 Both affected packages are production dependencies, not merely test tools. The installed `presidio-anonymizer==2.2.364` requires `cryptography>=48.0.1,<49.0.0`, blocking a simple upgrade to the versions listed as patched. `python-jose==3.5.0` unconditionally requires ecdsa. Removing a required package or forcing an incompatible crypto version would need a separately qualified dependency change. The [cryptography changelog](https://cryptography.io/en/latest/changelog/) also records compatibility changes in 49.0.0; no broad upgrade was attempted.
 
+A fresh upstream check on 2026-09-05 confirmed that both installed parent
+versions are still the latest releases. An isolated Python 3.11 resolver probe
+rejects Presidio 2.2.364 with cryptography 50.0.1; the
+[Presidio compatibility change](https://github.com/data-privacy-stack/presidio/pull/2231)
+remains open and unmerged at `acf3a3d3fbf777698c0938eb72d184a73adc06ec`.
+[Python-jose's published documentation](https://pypi.org/project/python-jose/3.5.0/)
+does endorse removing unused native-backend dependencies when using
+cryptography. A bounded RS256 success/denial probe without ecdsa imports passes,
+but its released Requires-Dist metadata still requires ecdsa, and removal fails
+the image's existing `pip check` integrity gate. No check was suppressed or
+package metadata patched. A qualified packaging or JWT migration is separate
+work; there is no compatible version-only remediation in these releases.
+Fresh provider metadata, resolver/import probes and their digests are retained
+in `build/079/verification/runtime-advisories/upstream-20260905/`; the findings
+digest is `48ad60f133ff5cdb24e07b039f89114bb2b62ee9454bc8c7082ed55bc4497907`.
+
 Installed tooling was included in the audit: pytest 9.1.1, pytest-asyncio 1.4.0, setuptools 84.0.0, wheel 0.48.0, and pip 26.2.1 had no matches in this scan. The image's installed setuptools version is 84.0.0; the separately pinned component build requirement is not evidence of the final runtime version.
 
 The source inspection supports **no demonstrated affected application path**, not a proof of unreachability. Dynamic imports, native extension paths, generated code, operating-system packages, native-library advisories, and model-file advisories were not exhaustively analyzed. No OS scanner was run. No runtime, credentials, environment file, database, package manifest, or installed image contents were changed.

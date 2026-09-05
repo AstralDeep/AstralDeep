@@ -1,5 +1,30 @@
 # Feature 079 verification record
 
+## Follow-up repair qualification — 2026-09-05
+
+New model intents request `low` reasoning effort within the existing 4,096
+completion-token reservation. Legacy intents retain their exact request and
+digest; completed receipts are reused and begun failures are not replayed.
+The dispatch/execution/supervision/real-PostgreSQL run passed 168 tests and
+exposed one new test-only frozen-versus-JSON equality mismatch. After correcting
+that comparison with the existing thaw helper, all 46 model-allowance tests
+passed in 5.53 seconds. Production source did not change between those runs.
+Reports: `build/079/verification/coverage/reasoning-effort*`.
+
+The terminal adapter and shared wrist view preserve safe failure history while
+removing advice to resume stopped/completed assignments. Deep's rendered-view,
+personalization and native-surface integration tests passed 159/159 in 8.02
+seconds; Projection's shared-view/protocol/provenance tests passed 177 with one
+existing native-platform skip, and its shipped-client browser fixture passed
+5/5. New executable lines are fully covered (Deep 3/3, Projection 2/2).
+Projection's exact repair is `07e5c90cb310c48c2315997f74dc8dd6f5fa22ea` in draft
+PR #14; its updated hosted checks are separate qualification. Root Ruff 0.15.21,
+the documentation link check and both exact composition validations pass.
+
+The newly authorized follow-up test remains paused pending deployment of these
+repairs; its original counters and pending task are recorded in
+`live-observations.md`. The older runtime checkpoint below remains historical.
+
 ## Current production-preparation checkpoint — 2026-09-05
 
 Implemented and locally qualified, but not yet mergeable or production-ready.

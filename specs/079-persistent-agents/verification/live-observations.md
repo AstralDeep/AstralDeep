@@ -1,5 +1,35 @@
 # Bounded local assignment observations
 
+## Follow-up test authorization and diagnosis
+
+The owner's subsequent permission to perform the necessary work authorized the
+already reviewed follow-up test on 2026-09-05. **Public release monitor —
+follow-up verification** uses the same URL, cadence, daily/lifetime call,
+token and active-time caps as the original test below, one concurrent task,
+four tasks, zero recursive depth, one retry and a 30-second step timeout.
+Its instructions require release versions only, omit dates/names/identifiers,
+use the supplied observation once, and prohibit links and external changes.
+The original stopped assignment and its spending were left intact.
+
+Creation stored revision 1 / control version 1, with a next check at
+`2026-09-05T23:09:26.159467+00:00`. One public read and a real model planner
+produced a durable `baseline` task. Its worker returned the exact provider
+truncation code at `23:09:57.347318+00:00`; no accepted result or parent finding
+was stored. Pause at `23:10:56.965108+00:00` advanced control version to 2 and
+removed the next check. Charged usage remained **2/8 model calls, 1/12 tool
+calls, 9,896/32,000 tokens and 40,112/300,000 ms**, with zero reservations.
+
+The public System LLM settings identify `zai-org/GLM-5.3-Flash`. Its
+[maintainer documentation](https://huggingface.co/zai-org/GLM-5.3-Flash/commit/04c4e9e95c5da8862dced7e5056455116f83a7e0)
+states that omitted reasoning effort defaults to `max`. The follow-up runtime
+repair requests supported `low` effort for new persistent-agent model intents
+through the existing central dispatch. The 4,096 completion-token bound and
+owner limits remain unchanged. Existing three-key model intents retain their
+original request and digest, including the absence of reasoning effort;
+failed or uncertain begun actions are not replayed by an upgrade.
+
+## Original stopped test
+
 These are observations from the real signed-in browser and locally deployed
 candidate, recorded on 2026-09-05. They are diagnostic notes, not canonical
 provider-attested staging evidence. No credentials, rejected model content or

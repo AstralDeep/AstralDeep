@@ -309,6 +309,7 @@ class ActionExecutor:
                     message, _ = await self.orch._call_llm(
                         self.websocket, request["messages"], feature="persistent_assignment",
                         response_format={"type": "json_object"}, allow_stream=False,
+                        reasoning_effort=request.get("reasoning_effort"),
                     )
                     if message is None:
                         raise DispatchDenied("assignment_model_unconfigured")

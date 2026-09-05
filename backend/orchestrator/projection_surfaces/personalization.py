@@ -1227,7 +1227,9 @@ def _assignment_row(record):
         row["usage_summary"].append({"label": _ASSIGNMENT_LABELS[key],
             "value": f"Lifetime {spent}/{limits['lifetime'][key]}; today {daily}/{limits['daily'][key]}; reserved {outstanding}; remaining {max(0, min(limits['lifetime'][key] - spent - outstanding, limits['daily'][key] - daily - outstanding))}"})
     error = data.get("safe_error_code")
-    row["safe_error"] = f"{error}. Review activity and restore authorization or revise the assignment before resuming." if error else ""
+    row["safe_error"] = error or ""
+    if error and row["lifecycle"] in ("active", "paused"):
+        row["safe_error"] += ". Review activity and restore authorization or revise the assignment before resuming."
     row["available_actions"] = list(_ASSIGNMENT_ACTIONS) if row["lifecycle"] in ("active", "paused") else []
     row["submission_ids"] = {action: str(uuid.uuid4()) for action in row["available_actions"]}
     row["tasks"] = [{"title": task.get("title"), "state": task.get("state"), "result": task.get("bounded_result"),
