@@ -63,16 +63,18 @@ locally available commands were executed; Windows baseline failures and unavaila
 Apple/live targets are documented rather than counted as passes. T027 and T028
 are complete: exact component commits/pins pass validation, the broader security
 rerun passed 348 tests, and changed Deep Python coverage exceeds 90%.
-T030's driver is implemented and tested, with actual-container mismatch refusal;
-its authenticated scenarios are pending. T031 and final candidate review in T032
-remain open. See `verification/results.md` for exact evidence and authorization limits.
+T030's driver is implemented and tested; first/second-boot candidate binding and
+unauthenticated denial checks pass, but its authenticated scenarios are pending.
+T031 remains open at real owner sign-in. T032's final local review and handoff are
+complete with explicit baseline failures and missing native/release producers.
+See `verification/results.md` for exact evidence and authorization limits.
 
 - [x] T027 Run Plane repository/migration/regression tests on representative real PostgreSQL, then qualify exact Plane/schema/digest composition and Projection manifest pins in `config/astral-composition.json`; preserve component commit authorization boundaries (FR-020).
 - [x] T028 Run focused Deep security/scheduler/authority/admission/approval/delegation suites plus new feature suite and measure changed Python coverage at least 90%; record exact commands/results in `specs/079-persistent-agents/verification/results.md` (FR-009, FR-019, FR-020, SC-005).
 - [x] T029 [P] Run all locally available affected client tests/lint/build/parity gates, document any unavailable runner honestly in `specs/079-persistent-agents/verification/results.md` (FR-016, FR-020, SC-008).
 - [ ] T030 Implement/run `scripts/verify_persistent_agents_079.py` for candidate-bound real public-source, controlled revision, interruption/recovery, 25-idle-assignment and control-latency evidence; distinguish real and fixture observations (SC-001 through SC-007).
 - [ ] T031 Exercise creation/control/activity/approval against the live candidate on every affected client/form factor; retain exact observations and missing inputs in `specs/079-persistent-agents/verification/results.md` (FR-020, SC-008).
-- [ ] T032 Review all changed files, test failures and documentation for remaining defects; complete `specs/079-persistent-agents/quickstart.md`, update task state and curated knowledge-vault checkpoint, and leave a precise local handoff without claiming product push/deployment (FR-020).
+- [x] T032 Review all changed files, test failures and documentation for remaining defects; complete `specs/079-persistent-agents/quickstart.md`, update task state and curated knowledge-vault checkpoint, and leave a precise local handoff without claiming product push, production deployment or release (FR-020).
 
 ## Dependencies and parallel work
 

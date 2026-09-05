@@ -20,10 +20,10 @@ monitor needs no new price configuration. Selecting a currency cap requires a
 trusted finite quote covering each eligible action or activation/revision is
 rejected. Zero currency spending requires an explicit trusted zero-cost quote.
 
-Initially only Docker Engine was running. The current baseline has now been
+Initially only Docker Engine was running. The original baseline was then
 built successfully: app image
 `sha256:a33e6c5b7a1c1b74b1b2095b95e5f5c9a2e85fcb4d1e09ef10d0665dd44cf810`,
-healthy app and PostgreSQL, and running LiveKit/voice worker; see
+with healthy app and PostgreSQL, and running LiveKit/voice worker; see
 [verification/results.md](verification/results.md). This establishes baseline
 infrastructure, not Feature 079 live verification. A worker/infrastructure change
 must still be qualified with real PostgreSQL, Keycloak, workers, representative
@@ -100,9 +100,32 @@ component wheels. After source/component changes, use `make sync`; after boot-ti
 Compose environment changes, recreate the service. A restart alone does not
 install source edits or reread a changed environment.
 
+For local candidate verification, the recorded override is
+`build/079/verification/compose-candidate.yaml` (ignored operator configuration).
+It selects `astraldeep:079-local`, enables `FF_PERSISTENT_AGENTS`, preserves the
+existing authentication settings and durable roots, and removes the mutable
+`backend/agents` source mount so the evidence driver can verify image-baked code.
+Any explicitly configured artifact root must have its own persistent mount if
+it lies outside the existing mounted data roots. Preserve and verify its existing
+contents before recreating the container; do not overwrite a different existing
+host artifact directory.
+
+Before upgrading the live database from `075.001`, follow Plane's joint
+database/durable-root backup procedure with all writers stopped. Run schema
+evolution only through normal guarded startup. The previous `075.001` image
+cannot admit the upgraded `079.001` schema; recovery requires forward repair or
+the verified paired backup under closed admission.
+
+```powershell
+docker compose -f docker-compose.yml -f build/079/verification/compose-candidate.yaml build astraldeep
+docker compose -f docker-compose.yml -f build/079/verification/compose-candidate.yaml up -d --no-deps astraldeep
+```
+
 ## First live assignment
 
-1. Open the candidate backend in a real browser and sign in through Keycloak.
+1. Open the candidate backend at its configured public address in a real browser
+   and sign in through Keycloak. On this local setup use `http://localhost:8001`;
+   the existing OIDC client refuses a `127.0.0.1` callback.
    Check that Web Research is registered and `fetch_page` is permitted. Do not
    configure optional search-provider credentials for this example.
 2. Ask in chat: “Watch `https://www.python.org/downloads/` daily. Remember the

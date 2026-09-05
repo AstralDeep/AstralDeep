@@ -22,8 +22,9 @@ tuple; it never executes component imports or accepts arbitrary new expressions.
 Its native Windows suite passed **121 tests in 35.50s**; all **38 changed
 executable statements** were covered. Command: `uv tool run --python
 .venv/Scripts/python.exe --from pytest==8.4.2 --with pytest-cov==7.0.0 pytest
-scripts/tests/test_verify_composition.py --cov=scripts.verify_composition
---cov-report=json --cov-report=term -q` (report retained under
+scripts/tests/test_verify_composition.py -q --tb=short --cov=verify_composition_074
+--cov-report=term-missing --cov-report=json:$env:TEMP/079-composition-host-coverage.json`
+(PowerShell, no environment overrides; report copied under
 `build/079/verification/079-composition-host-coverage.json`).
 The broader security rerun passed **348 tests in 94.38s**, with zero failures,
 errors or skips, resolving the previous constructor errors. Exact commands,
@@ -35,6 +36,63 @@ authentication/environment settings except enabling `FF_PERSISTENT_AGENTS` and
 uses image-baked agent code instead of the broad mutable agent-source mount.
 Owner sign-in/consent and in-product model availability still need live evidence.
 No product push, merge or release has occurred.
+
+Deep implementation is committed locally at
+`756b338f3054bb8f509a2b94f0ac7c8b9b1b8cc3` (65 scoped files); the preexisting
+untracked `android-client/` remains untouched. The candidate image built
+successfully as `astraldeep:079-local`, image
+`sha256:64c788a91176f45def3a84dc15e991a84c274e63cbb0e60c5842ceda469f660c`.
+Its four exact local component wheels passed digest verification and `pip check`.
+
+The local application was upgraded through normal guarded startup after a
+verified paired snapshot of PostgreSQL and all five configured durable/source
+roots. The private backup is outside Git at
+`Y:/WORK/MCP/AstralDeep-079-precutover-20260905`; its manifest SHA-256 is
+`58862c5fbcf7178329eb6b46c4ec324f0285e83273267d670360eebccd826100`.
+All **1,335 files** were preserved and hashed, and every PostgreSQL custom archive
+section was readable. Same-dump attachment metadata contained **zero READY/live
+attachments**, two deleted records and 181 unreferenced snapshot files; all were
+preserved. This is archive/copy verification, not a restored-database rehearsal
+or a global data-repair claim. The local custom artifact root now has an explicit
+mount from a new `backend/data/personal-agent-artifacts-079` directory; the
+preexisting host artifact directory was left intact.
+
+First candidate boot passed `/healthz` and `/readyz`, reports installed schema
+`079.001`, and retains real authentication with the feature enabled only by the
+local override. The evidence driver's deployment binding matched **590 reviewed
+runtime files** against the actual running image and refused mutable code mounts.
+Unauthenticated and invalid-bearer assignment requests both returned **401** with
+`Cache-Control: no-store`; the unauthenticated shell returned **302** to login.
+Exact read-only diagnostic command: `.venv/Scripts/python.exe
+build/079/verification/check_candidate.py
+build/079/verification/079-candidate-first-boot.json`. This establishes local
+deployment and denial behavior; owner monitoring/controls/approval are still
+unverified.
+
+A second boot (`docker restart --timeout 30 astraldeep`) passed the same five
+checks and all 590 runtime hashes against the already-upgraded schema; report
+`build/079/verification/079-candidate-second-boot.json`. The existing voice worker
+was restarted afterward; app/PostgreSQL are healthy and LiveKit/voice worker run.
+This restart has no consented assignment and therefore does not establish live
+assignment recovery or action deduplication.
+
+Browser verification reached the real Keycloak login form through the configured
+`http://localhost:8001` address. The numeric `127.0.0.1` callback is not permitted
+by the existing OIDC client, although it works for the read-only deployment/API
+probes. No Keycloak settings were changed. The owner login tab is left open;
+owner sign-in, model availability and explicit offline consent remain pending.
+
+Native strict coverage collection validates these exact Deep/Projection commit
+identities but **does not pass the full report matrix**: Deep lacks a voice-worker
+producer report; Projection lacks six required producer reports (Windows Python,
+C#, JavaScript, iOS, macOS and watchOS). Authentic
+partial unions, unchanged input recordings, hashes, exact commands and missing
+inputs are retained in `build/079/verification/coverage/`. These diagnostic unions
+do not waive any platform or release gate. Android XML reports were exported with
+the committed Kover tasks from unchanged successful binary recordings, excluding
+the two test tasks; the authoritative report parser accepts both XML reports.
+The focused Projection rerun passed **45 tests in 1.87s**, tracing all three
+changed Python files; **203/204 changed executable lines (99.51%)** were covered.
 
 ## Historical local implementation checkpoint — 2026-09-05
 
