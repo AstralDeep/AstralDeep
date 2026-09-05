@@ -27,11 +27,11 @@ from .models import (
     CreateAssignmentRequest,
     ReviseAssignmentRequest,
     SourceSelection,
-    canonical,
     digest,
     validate_id,
 )
 from .store import AssignmentStore
+from .privacy import content_text, privacy_text, reviewed_urls
 
 
 def thaw(value):
@@ -225,11 +225,16 @@ class AssignmentService:
     async def _definition(self, owner_id, claims, body):
         if body.consent is not True:
             raise AssignmentError("assignment_consent_required", 422)
-        protected_text = canonical({"name": body.name, "instructions": body.instructions,
-                                    "source": body.source.model_dump(),
-                                    "completion_condition": body.completion_condition})
         try:
+            protected_text = privacy_text(content_text({
+                "name": body.name, "instructions": body.instructions,
+                "arguments": body.source.arguments,
+                "linked_document_urls": body.source.linked_document_urls,
+                "completion_condition": body.completion_condition,
+            }), reviewed_urls(body.source.model_dump()))
             contains_phi = await _thread(self.phi_gate.contains_phi, protected_text)
+        except ValueError as exc:
+            raise AssignmentError("assignment_sensitive_content_refused", 422) from exc
         except Exception as exc:
             raise AssignmentError("assignment_phi_gate_unavailable", 503) from exc
         if contains_phi:

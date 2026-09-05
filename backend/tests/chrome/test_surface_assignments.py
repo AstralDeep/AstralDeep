@@ -80,7 +80,8 @@ def form_fields():
     for key, value in limits.items():
         if isinstance(value, dict):
             for metric, amount in value.items():
-                if metric != "currency": fields[f"limits.{key}.{metric}"] = "" if amount is None else str(amount)
+                if metric != "currency":
+                    fields[f"limits.{key}.{metric}"] = "" if amount is None else str(amount)
         else:
             fields[f"limits.{key}"] = str(value)
     return fields

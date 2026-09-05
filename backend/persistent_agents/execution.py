@@ -28,18 +28,20 @@ from persistent_agents.dispatch_context import (
     canonical,
 )
 from persistent_agents.runtime_values import digest, extract_result, thaw
+from persistent_agents.privacy import content_text, privacy_text, redact_observation, reviewed_urls
 
 
 class ApprovalPending(RuntimeError):
     """The immutable action is persisted and requires attended owner review."""
 
 
-async def safe_text(text: str) -> None:
+async def safe_text(text: str, urls: tuple[str, ...] = ()) -> None:
     """Every payload is checked before assignment storage or downstream use."""
     from orchestrator.mas_defense import scan_message
-    if scan_message(text):
+    raw = content_text(text)
+    if scan_message(text) or scan_message(raw):
         raise DispatchDenied("assignment_result_quarantined")
-    if await asyncio.to_thread(get_phi_gate().contains_phi, text):
+    if await asyncio.to_thread(get_phi_gate().contains_phi, privacy_text(raw, urls)):
         raise DispatchDenied("assignment_phi_refused")
 
 
@@ -93,7 +95,7 @@ class ActionExecutor:
             )
 
     async def action(self, key: str, request: dict[str, Any], *, task_id=None, event_id=None):
-        await safe_text(canonical(request))
+        await safe_text(canonical(request), reviewed_urls(self.record.definition.source))
         for _ in range(256):
             existing = await self.store.call(
                 "get_action_by_key", owner_id=self.record.owner_id,
@@ -216,12 +218,21 @@ class ActionExecutor:
                         result = {"text": text}
                     else:
                         normalized = extract_result(response)
-                        text = normalized["text"] or canonical(normalized["data"])
-                        result = {"text": text[:4096], "revision_digest": digest(normalized),
-                                  "truncated": len(text) > 4096}
+                        # Scan the complete bounded observation before redaction
+                        # or truncation; an omitted tail cannot hide an injection.
+                        from orchestrator.mas_defense import scan_message
+                        original = canonical(normalized)
+                        if scan_message(original) or scan_message(content_text(normalized)):
+                            raise DispatchDenied("assignment_result_quarantined")
+                        protected, redacted = await asyncio.to_thread(
+                            redact_observation, normalized, get_phi_gate())
+                        await safe_text(canonical(protected), reviewed_urls(self.record.definition.source))
+                        text = protected["text"] or canonical(protected["data"])
+                        result = {"text": text[:4096], "revision_digest": digest(protected),
+                                  "truncated": len(text) > 4096, "redacted": redacted}
                     if len(canonical(result).encode("utf-8")) > 8192:
                         raise ValueError("assignment_result_limit")
-                    await safe_text(canonical(result))
+                    await safe_text(result["text"], reviewed_urls(self.record.definition.source))
                     # Unknown provider usage is conservatively charged at the
                     # reserved maximum. No absent monetary usage becomes zero.
                     usage = getattr(response, "usage", None)

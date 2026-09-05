@@ -151,6 +151,51 @@ class PHIGate:
             return None
         return None if self.contains_phi(value) else value
 
+    def redact_for_storage(self, text: str) -> tuple[str, bool]:
+        """Redact bounded source evidence, then enforce the unchanged gate.
+
+        This does not authorize or rewrite instructions or action arguments.
+        Missing/invalid detector output and identifiers that cannot be safely
+        redacted refuse the entire observation before any durable write.
+        """
+        from shared.phi_redactor import PHI_VALUE_PATTERNS
+
+        if not isinstance(text, str) or len(text.encode("utf-8")) > 65536 or self._analyzer is None:
+            raise ValueError("phi_redaction_unavailable")
+        original = text
+        for pattern, replacement in PHI_VALUE_PATTERNS:
+            text = pattern.sub(replacement, text)
+        try:
+            findings = self._analyzer.analyze(
+                text=text, language="en", entities=PHI_ENTITIES,
+                score_threshold=self._score_threshold,
+            )
+        except Exception as exc:
+            raise ValueError("phi_redaction_unavailable") from exc
+        if not isinstance(findings, (list, tuple)):
+            raise ValueError("phi_redaction_invalid")
+        spans = []
+        for finding in findings:
+            start, end = getattr(finding, "start", None), getattr(finding, "end", None)
+            if (type(start) is not int or type(end) is not int
+                    or not 0 <= start < end <= len(text)
+                    or getattr(finding, "entity_type", None) not in PHI_ENTITIES):
+                raise ValueError("phi_redaction_invalid")
+            spans.append((start, end))
+        # Merge overlaps before replacement so offsets remain tied to the
+        # detector input, even when recognizers report the same span twice.
+        merged = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        for start, end in reversed(merged):
+            text = text[:start] + "[REDACTED:phi]" + text[end:]
+        if self.contains_phi(text):
+            raise ValueError("phi_redaction_refused")
+        return text, text != original
+
     def detect_for_notice(self, text: Optional[str]) -> bool:
         """Notify-only detection: True only on a POSITIVE PHI signal.
 

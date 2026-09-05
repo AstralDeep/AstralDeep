@@ -32,6 +32,7 @@ from orchestrator.work_admission import (
 from persistent_agents.config import RunnerConfig
 from persistent_agents.dispatch_context import DispatchDenied, canonical
 from persistent_agents.execution import ActionExecutor, ApprovalPending, safe_text
+from persistent_agents.privacy import model_evidence, reviewed_urls
 from persistent_agents.runtime_values import (
     bounded_context,
     digest,
@@ -401,8 +402,8 @@ class AssignmentRunner:
         if not active:
             proposal = await self._model(executor, plan_key + ":plan", _PLANNER, {
                 "instructions": record.definition.instructions,
-                "observation": thaw(event.context), "tools": list(record.definition.allowed_tools),
-                "prior_observation": thaw(record.checkpoint.get("last_observation")),
+                "observation": model_evidence(event.context), "tools": list(record.definition.allowed_tools),
+                "prior_observation": model_evidence(record.checkpoint.get("last_observation")),
                 "prior_finding": record.checkpoint.get("last_finding"),
                 "maximum_tasks": min(8, record.definition.limits["max_tasks"]),
             }, event_id=event.event_id)
@@ -445,13 +446,14 @@ class AssignmentRunner:
         result = await self._model(executor, plan_key + ":join", _JOINER, {
             "instructions": record.definition.instructions,
             "completion_condition": record.definition.completion_condition,
-            "prior_observation": thaw(record.checkpoint.get("last_observation")),
+            "prior_observation": model_evidence(record.checkpoint.get("last_observation")),
             "prior_finding": record.checkpoint.get("last_finding"),
-            "results": [{"task_id": task["task_id"], "result": task["bounded_result"]} for task in tasks],
+            "results": [{"task": index + 1, "result": task["bounded_result"]}
+                        for index, task in enumerate(tasks)],
         }, event_id=event.event_id)
         completion = parse_completion(result["text"], record.definition.completion_condition)
         finding = completion["text"]
-        await safe_text(finding)
+        await safe_text(finding, reviewed_urls(record.definition.source))
         record = await self.store.call("assert_current_claim", fence=executor.claim.fence)
         checkpoint = thaw(record.checkpoint)
         checkpoint["last_checked_at"] = datetime.now(UTC).isoformat()
@@ -484,10 +486,10 @@ class AssignmentRunner:
     async def _task(self, executor, task, event, siblings):
         claimed = await self.store.call("claim_task", fence=executor.claim.fence,
                                         task_id=task["task_id"], expected_task_generation=task["task_generation"])
-        context = {"instruction": task["instruction"], "source": thaw(event.context),
+        context = {"instruction": task["instruction"], "source": model_evidence(event.context),
                    "instructions": executor.record.definition.instructions,
                    "completion_condition": executor.record.definition.completion_condition,
-                   "prior_observation": thaw(executor.record.checkpoint.get("last_observation")),
+                   "prior_observation": model_evidence(executor.record.checkpoint.get("last_observation")),
                    "prior_finding": executor.record.checkpoint.get("last_finding"),
                    "tools": task["allowed_tools"], "results": [],
                    "dependencies": [other["bounded_result"] for other in siblings
@@ -498,7 +500,7 @@ class AssignmentRunner:
                                          task_id=task["task_id"], event_id=event.event_id)
             step = parse_step(proposal["text"], set(task["allowed_tools"]))
             if step["kind"] == "result":
-                await safe_text(step["text"])
+                await safe_text(step["text"], reviewed_urls(executor.record.definition.source))
                 await self.store.call("complete_task", claim=claimed, result=AssignmentTaskResult(
                     state="completed", result_digest=digest(step["text"]), bounded_result=step["text"],
                     provenance={"event_id": event.event_id, "instruction_revision": task["instruction_revision"]},
@@ -508,5 +510,5 @@ class AssignmentRunner:
             result = await executor.action(key + ":tool", {
                 "kind": "tool", "agent_id": agent, "tool_name": tool, "arguments": step["arguments"],
             }, task_id=task["task_id"], event_id=event.event_id)
-            context["results"].append(result)
+            context["results"].append(model_evidence(result))
         raise DispatchDenied("assignment_step_limit")

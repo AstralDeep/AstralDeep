@@ -1,4 +1,4 @@
-"""Feature 068 — kiosk sign-in surface (/kiosk + /auth/kiosk/*).
+"""Feature 068 â€” kiosk sign-in surface (/kiosk + /auth/kiosk/*).
 
 Two properties carry the security of this surface and are pinned here:
 
@@ -14,8 +14,10 @@ refresh.
 from __future__ import annotations
 
 import base64
+from contextlib import asynccontextmanager
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
@@ -27,7 +29,7 @@ from shared.feature_flags import FeatureFlags
 
 
 def _jwt(payload: dict) -> str:
-    """An unsigned JWT — these paths decode without verifying (JWKS runs later)."""
+    """An unsigned JWT â€” these paths decode without verifying (JWKS runs later)."""
     def seg(obj):
         raw = json.dumps(obj).encode()
         return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
@@ -36,6 +38,15 @@ def _jwt(payload: dict) -> str:
 
 KIOSK_TOKEN = _jwt({"sub": "kiosk-user", "azp": "astral-kiosk"})
 WEB_TOKEN = _jwt({"sub": "web-user", "azp": "astral-frontend"})
+
+
+def _refresh_store(access):
+    """Client-selection unit seam; durable CAS is covered with real PostgreSQL."""
+    async def refresh(sid, *, owner_id, exchange):
+        payload = await exchange("r1", access)
+        return {"access_token": payload["access_token"],
+                "refresh_token": payload.get("refresh_token", "r1")}
+    return SimpleNamespace(refresh_credential=refresh)
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +125,7 @@ def test_kiosk_flag_defaults_off(monkeypatch):
 
 
 def test_flag_off_leaves_no_kiosk_route(monkeypatch):
-    """With the flag off the router is never included — the path 404s because
+    """With the flag off the router is never included â€” the path 404s because
     it does not exist, not because a handler refused it."""
     monkeypatch.delenv("FF_KIOSK_LOGIN", raising=False)
     app = FastAPI()
@@ -279,8 +290,8 @@ async def test_refresh_uses_the_issuing_client_and_withholds_the_web_secret(monk
         def raise_for_status(self):
             return None
 
-        def json(self):
-            return {"access_token": KIOSK_TOKEN, "refresh_token": "r2"}
+        async def aiter_bytes(self, chunk_size=8192):
+            yield json.dumps({"access_token": KIOSK_TOKEN, "refresh_token": "r2"}).encode()
 
     class _Client:
         def __init__(self, *a, **k):
@@ -292,12 +303,13 @@ async def test_refresh_uses_the_issuing_client_and_withholds_the_web_secret(monk
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url, data=None):
+        @asynccontextmanager
+        async def stream(self, method, url, data=None, **kwargs):
             sent.update(data or {})
-            return _Resp()
+            yield _Resp()
 
     monkeypatch.setattr(wa.httpx, "AsyncClient", _Client)
-    monkeypatch.setattr(wa, "_get_store", lambda: None)
+    monkeypatch.setattr(wa, "_get_store", lambda: _refresh_store(KIOSK_TOKEN))
 
     await wa._refresh_session("sid", {"access_token": KIOSK_TOKEN, "refresh_token": "r1"})
 
@@ -317,8 +329,8 @@ async def test_refresh_still_sends_the_secret_for_the_web_client(monkeypatch):
         def raise_for_status(self):
             return None
 
-        def json(self):
-            return {"access_token": WEB_TOKEN}
+        async def aiter_bytes(self, chunk_size=8192):
+            yield json.dumps({"access_token": WEB_TOKEN}).encode()
 
     class _Client:
         def __init__(self, *a, **k):
@@ -330,12 +342,13 @@ async def test_refresh_still_sends_the_secret_for_the_web_client(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url, data=None):
+        @asynccontextmanager
+        async def stream(self, method, url, data=None, **kwargs):
             sent.update(data or {})
-            return _Resp()
+            yield _Resp()
 
     monkeypatch.setattr(wa.httpx, "AsyncClient", _Client)
-    monkeypatch.setattr(wa, "_get_store", lambda: None)
+    monkeypatch.setattr(wa, "_get_store", lambda: _refresh_store(WEB_TOKEN))
 
     await wa._refresh_session("sid", {"access_token": WEB_TOKEN, "refresh_token": "r1"})
 

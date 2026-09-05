@@ -321,7 +321,7 @@ async def test_child_failure_cancels_and_joins_siblings_before_parent_release(su
 async def test_task_uses_bounded_steps_and_persists_result_provenance(supervisor):
     task = {"task_id": str(uuid4()), "task_generation": 0, "instruction_revision": 1,
             "instruction": "Analyze", "allowed_tools": ["web-research-1:fetch_page"], "depends_on": []}
-    event = SimpleNamespace(event_id=str(uuid4()), context={})
+    event = SimpleNamespace(event_id=str(uuid4()), context={"text": "Public release evidence"})
     supervisor.runner._model = AsyncMock(side_effect=[
         {"text": '{"kind":"tool","tool":"web-research-1:fetch_page","arguments":{"url":"https://example.org"}}'},
         {"text": '{"kind":"result","text":"Supported finding"}'},
@@ -362,8 +362,9 @@ async def test_approved_executor_binds_attended_claim_and_retains_outcome(superv
 
 @pytest.mark.asyncio
 async def test_activity_notification_cas_paginates_and_never_duplicates(supervisor, caplog):
-    activity = lambda sequence, state="pending": SimpleNamespace(activity_id=f"a-{sequence}", sequence=sequence,
-        title="Release finding", summary="A relevant change", notification_state=state)
+    def activity(sequence, state="pending"):
+        return SimpleNamespace(activity_id=f"a-{sequence}", sequence=sequence,
+            title="Release finding", summary="A relevant change", notification_state=state)
     first_page = tuple(activity(index, "sent") for index in range(1, 101))
     calls = []
     async def call(method, **kwargs):

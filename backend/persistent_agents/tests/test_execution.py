@@ -24,6 +24,7 @@ from persistent_agents.tests.test_dispatch import context
 from persistent_agents.tests.test_models import create_payload
 from persistent_agents.tests.test_service import service as shared_service
 from shared.protocol import MCPResponse
+from personalization.phi_gate import PHIGate
 
 service = shared_service
 
@@ -32,6 +33,8 @@ service = shared_service
 async def executor(service, monkeypatch):
     record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
     monkeypatch.setattr("persistent_agents.execution.safe_text", AsyncMock())
+    monkeypatch.setattr("persistent_agents.execution.get_phi_gate", lambda:
+        PHIGate(analyzer=SimpleNamespace(analyze=Mock(return_value=[]))))
     operation = SimpleNamespace(operation_id=uuid4(), execution_generation=1, execution_lease_token=uuid4())
     claim = SimpleNamespace(assignment=record, fence=object())
     socket = object()

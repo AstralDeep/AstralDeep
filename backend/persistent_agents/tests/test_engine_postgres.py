@@ -518,7 +518,9 @@ def test_replacement_runner_delivers_committed_memory_to_every_model(engine, pla
         await claim_and_run(replacement, store)
         assert replacement_host.physical_models == ["plan", "child", "child", "join"]
         for _, context in replacement_host.model_contexts:
-            assert context["prior_observation"] == observation
+            assert context["prior_observation"] == {
+                key: value for key, value in observation.items() if key != "revision_digest"}
+            assert "revision_digest" not in context["prior_observation"]
             assert context["prior_finding"] == prior_finding
         finished = await current(store, identity)
         assert finished.phase == "waiting", finished.safe_error_code

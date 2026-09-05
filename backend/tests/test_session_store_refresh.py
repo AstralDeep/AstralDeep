@@ -9,7 +9,9 @@ and ``orchestrator.web_auth._refresh_session`` with a monkeypatched
 tolerance). All rows use uuid4-unique ids so parallel runs never collide.
 """
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
+import json
 import time
 import uuid
 
@@ -96,6 +98,9 @@ class _FakeResponse:
     def json(self):
         return self._payload
 
+    async def aiter_bytes(self, chunk_size=8192):
+        yield json.dumps(self._payload).encode()
+
 
 def _fake_async_client(post_result=None, post_exc=None):
     """Factory for an httpx.AsyncClient stand-in (async context manager)."""
@@ -114,6 +119,13 @@ def _fake_async_client(post_result=None, post_exc=None):
             if post_exc is not None:
                 raise post_exc
             return post_result
+
+        @asynccontextmanager
+        async def stream(self, method, url, **kwargs):
+            assert method == "POST" and kwargs["follow_redirects"] is False
+            if post_exc is not None:
+                raise post_exc
+            yield post_result
 
     return _Client
 
@@ -413,7 +425,7 @@ def test_refresh_network_error_keeps_session(auth_env, monkeypatch, plane_runtim
         out = asyncio.run(web_auth._refresh_session(sid, sess))
         assert out is sess
         assert sess["access_token"] == "at-keep"
-        assert sess["refresh_token"] == "rt-keep"
+        assert sess["refresh_token"] == ""  # uncertain rotation is never replayed
         assert sid in web_auth._SESSIONS
         assert get_session_record(plane_runtime, sid) is not None
     finally:

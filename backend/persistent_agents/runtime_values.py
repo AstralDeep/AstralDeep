@@ -32,8 +32,8 @@ def digest(value: Any) -> str:
 def bounded_context(context: dict[str, Any]) -> dict[str, Any]:
     """Fit evidence into a durable request, retaining owner instructions intact.
 
-    A deterministic excerpt and digest identify omitted evidence. All original
-    completed results remain in Plane; this does not silently summarize them.
+    An explicit excerpt identifies omitted evidence. Original completed results
+    and their digests remain in Plane; this does not silently summarize them.
     """
     context = thaw(context)
     if len(canonical(context).encode("utf-8")) <= 5500:
@@ -42,7 +42,7 @@ def bounded_context(context: dict[str, Any]) -> dict[str, Any]:
     def excerpt(value, limit):
         if isinstance(value, str) and len(value.encode("utf-8")) > limit:
             prefix = value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
-            return prefix + " [evidence excerpt; sha256=" + digest(value) + "]"
+            return prefix + " [evidence excerpt]"
         if isinstance(value, dict):
             return {key: child if key.endswith(("_id", "_digest"))
                     else excerpt(child, limit) for key, child in value.items()}
