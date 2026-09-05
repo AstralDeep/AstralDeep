@@ -63,9 +63,9 @@ EXPECTED_PREFIX = {
     "sensitive_result": "SENS-",
 }
 TERMINAL_EXPECTATIONS = {
-    "failure": ("failed", "failure", "I couldn't complete that request."),
-    "refusal": ("refused", "refusal", "I can't help with that request."),
-    "cancellation": ("cancelled", "cancellation", "That request was cancelled."),
+    "failure": ("failed", "failure", "Request failed."),
+    "refusal": ("refused", "refusal", "I can't help with that."),
+    "cancellation": ("cancelled", "cancellation", "Request cancelled."),
 }
 TOP_LEVEL_KEYS = frozenset(
     {

@@ -10,6 +10,8 @@ permission-shaped reason instead of ``network_interrupted``.
 from __future__ import annotations
 
 import re
+import json
+from pathlib import Path
 
 from astralprojection.resources import static_path
 from webrender.chrome.composer_model import VOICE_REASONS
@@ -42,7 +44,11 @@ def test_every_server_refusal_reason_has_dedicated_composer_copy() -> None:
 
 def test_reason_text_keys_stay_inside_the_server_vocabulary() -> None:
     keys = _reason_text_keys()
-    unknown = keys - set(VOICE_REASONS)
+    manifest = json.loads((Path(__file__).resolve().parents[2]
+        / "components/AstralProjection/contracts/ui_protocol.json").read_text(encoding="utf-8"))
+    local_reasons = set(manifest["frame_contracts"]["voice_075"]["closed_reasons"])
+    assert "local_processing_not_guaranteed" in local_reasons
+    unknown = keys - (set(VOICE_REASONS) | local_reasons)
     assert not unknown, (
         f"client.js invents reasons the server never sends: {sorted(unknown)}"
     )

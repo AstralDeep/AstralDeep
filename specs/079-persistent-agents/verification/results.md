@@ -1,6 +1,75 @@
 # Feature 079 verification record
 
-## Current integration checkpoint — 2026-09-05
+## Current production-preparation checkpoint — 2026-09-05
+
+The owner authorized PRs and merges where gates permit. Plane
+[#7](https://github.com/AstralDeep/AstralPlane/pull/7) and Projection
+[#14](https://github.com/AstralDeep/AstralProjection/pull/14) are pushed draft PRs.
+Plane is `94caad85422287188842b33fa60c8af382595026`; Projection is now
+`a61dce71147c9904605356575259e618b7e4d8e3`, after correcting the Apple drift-test
+line wrapping identified by owner CI. Their independent CI/review and affected
+live-client requirements remain open. No merge or production deployment occurred.
+
+Deep runtime hardening is committed at
+`42b7ce56e1a9238728cf9b3f29e7847e635e810c`. It fixes shared browser/background
+refresh rotation, current-token logout, typed URL privacy views, unescaped full
+source injection checks, source-only redaction before durable hashing, model
+evidence envelopes and public-reader trailing-slash/relative redirects. The
+subsequent tooling changes correct native C# coverage parsing and atomic private
+NTFS report creation, and add the new parser tests to owner CI. The migration
+remains 079.001 with the prior qualified digest; no runtime dependency was added.
+
+Fresh local evidence, with exact commands and native reports in ignored
+`build/079/verification/`:
+
+| Check | Result |
+| --- | --- |
+| Persistent-agent, privacy, personalization and changed chrome suites | 548 passed in 218.45s; new privacy module 100% statement coverage; full original source is scanned before redaction/truncation |
+| Shared session/grant/authentication qualification | 89 passed in 20.07s; 96.23% changed-line coverage across 212 measured lines |
+| Plane credential/history repair against isolated PostgreSQL | 68 passed; 98.03% slice coverage, 100% new measured lines |
+| Page reader/shared egress tests | 235 passed; 12/12 changed executable lines covered |
+| Native C# coverage parser plus existing policy regressions | 163 passed, one environment skip; 99% changed-line coverage |
+| Live evidence driver | Windows 36 passed; Linux 35 passed, one NTFS-only skip; each 434/445 statements (97.53%) |
+| Voice/backend diagnostic fixture corrections | 152 passed in 26.24s; evaluator coverage 98%; clean main reproduces 14 prior failures |
+| Current schema/rollback fixtures | 16 passed against isolated PostgreSQL; historical 074/075 checks retained and exact 079 lineage added |
+| MCP denial fixtures | 25 passed; production-mode signing-key denial retained with a synthetic session-encryption prerequisite |
+| Full root Ruff 0.15.21 | Passed; the three new style errors from clean preflight are fixed |
+| Projection native Windows | 1,080 passed, nine skips in 1471.89s |
+| Projection C# / Node / shipped-client browser fixture | 37 / 28 / 5 passed; earlier Android gates remain passed |
+| Worker producer | 372 passed, two skips; 90.41% branch-inclusive coverage from the exact worker test image |
+
+The complete clean pre-hardening snapshot at Deep `3c5696f2` passed 773 root CI
+tooling tests (92% coverage) and 413 supplemental script tests, but its broader
+backend run returned 7,927 passes, 26 failures and 14 skips. Its explicit nested
+modules returned 2,350 passes, five failures and seven skips, with a separate
+worker-package collection prerequisite. Later targeted repairs above are real
+passes; a complete rerun of the final clean source is still required. The WS
+handshake test requires a qualified isolated running app. Worker tests belong
+in the worker image with its declared ONNX dependency, not the orchestrator image.
+
+The owner signed in and approved a bounded public Python release-page test.
+Its first creation was refused before an assignment/grant existed. The installed
+Presidio detector accepted a later complete public-page diagnostic after
+source-only redaction, and the real page reader succeeded after the redirect
+fix. These diagnostics do not claim an authenticated assignment/restart result.
+
+A clean LF runtime image from `42b7ce56` built successfully as
+`astraldeep:079-runtime-42b7ce56`, image
+`sha256:5222c2b266d77936c0e4c52880070598f1eec7e6a69ed657fb21e8dfb2c38e59`.
+It is not yet the final deployed candidate. Its clean composition digest is
+`d6b0095fa7e0ed7fbbeda1dbbfd719f11fe88d209462fe4c4b9005dc41ce189b`.
+The current declaration additionally repins Projection's tested formatting repair;
+build and live evidence must bind that final declaration separately.
+
+See [production-readiness.md](production-readiness.md) for the bounded test,
+clean-source rebuild, backup/restore, protected staging and publication gates.
+The curated vault checkpoint for runtime hardening and component draft PRs is
+`3676fd1`, pushed separately. Deep itself remains local at this checkpoint.
+
+## Historical local integration checkpoint — 2026-09-05
+
+The current section above supersedes authorization, component heads, native
+producer availability and runtime changes in the earlier checkpoint below.
 
 The owner authorized local feature commits and directed `AGENTS.md` to permit
 task-scoped local commits without additional approval. Push/merge/release/store

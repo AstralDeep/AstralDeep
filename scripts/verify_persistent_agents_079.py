@@ -167,7 +167,7 @@ def private_file(path):
         return
     # Never interpolate the path into shell source. Only a boolean leaves ACL inspection.
     code = """$ErrorActionPreference='Stop'
-$acl=Get-Acl -LiteralPath $env:ASTRAL_079_PRIVATE_FILE
+$acl=[System.IO.File]::GetAccessControl($env:ASTRAL_079_PRIVATE_FILE)
 $me=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
 $allowed=@($me,'S-1-5-18','S-1-5-32-544')
@@ -181,6 +181,49 @@ Write-Output 'private'
     encoded = base64.b64encode(code.encode("utf-16le")).decode()
     require(process(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                     environment=environment).strip() == b"private", "session_permissions_not_private")
+
+
+def create_private_file(path):
+    """Create exclusively with private permissions before writing any bytes.
+
+    Windows mode 0600 does not establish an NTFS DACL. Passing FileSecurity to
+    CreateNew applies its protected owner-only ACL atomically, so no reader can
+    acquire an inherited broad-read handle before the ACL is tightened.
+    """
+    if os.name != "nt":
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                       | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    code = """$ErrorActionPreference='Stop'
+$me=[System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl=[System.Security.AccessControl.FileSecurity]::new()
+$acl.SetOwner($me)
+$acl.SetAccessRuleProtection($true,$false)
+$rule=[System.Security.AccessControl.FileSystemAccessRule]::new(
+  $me,[System.Security.AccessControl.FileSystemRights]::FullControl,
+  [System.Security.AccessControl.AccessControlType]::Allow)
+$acl.AddAccessRule($rule)
+$stream=[System.IO.FileStream]::new(
+  $env:ASTRAL_079_PRIVATE_FILE,[System.IO.FileMode]::CreateNew,
+  [System.Security.AccessControl.FileSystemRights]::Write,
+  [System.IO.FileShare]::None,4096,[System.IO.FileOptions]::WriteThrough,$acl)
+$stream.Dispose()
+Write-Output 'created'
+"""
+    encoded = base64.b64encode(code.encode("utf-16le")).decode()
+    require(process(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                    environment={**os.environ, "ASTRAL_079_PRIVATE_FILE": str(path)}).strip()
+            == b"created", "private_file_creation_failed")
+    no_links(path)
+    private_file(path)
+    before = path.stat()
+    descriptor = os.open(path, os.O_WRONLY | os.O_BINARY)
+    after = os.fstat(descriptor)
+    if before.st_size != 0 or (before.st_dev, before.st_ino, before.st_size) != (
+        after.st_dev, after.st_ino, after.st_size
+    ):
+        os.close(descriptor)
+        raise EvidenceError("output_file_changed")
+    return descriptor
 
 
 def read_json_file(path, *, private=False, root=ROOT):
@@ -451,8 +494,9 @@ def quiet_observation(api, assignment_id, source_url, seconds, *, sleep=time.sle
     sleep(seconds)
     after = safe_snapshot(snapshot(api, assignment_id, source_url))
     # Delivery acknowledgement may advance independently while the agent waits.
-    comparable = lambda item: {**item, "activity": [{key: value for key, value in row.items()
-                                                   if key != "notification_state"} for row in item["activity"]]}
+    def comparable(item):
+        return {**item, "activity": [{key: value for key, value in row.items()
+                                      if key != "notification_state"} for row in item["activity"]]}
     require(comparable(before) == comparable(after), "waiting_assignment_changed_during_idle_window")
     return after
 
@@ -557,8 +601,7 @@ def write_report(path, report, *, root=ROOT):
     require(path.parent.is_dir() and not path.exists(), "output_missing_parent_or_exists")
     raw = canonical(report) + b"\n"
     require(len(raw) <= MAX_JSON, "report_size_bound")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
+    descriptor = create_private_file(path)
     try:
         if os.name == "nt":
             private_file(path)

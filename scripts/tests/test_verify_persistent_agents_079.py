@@ -38,9 +38,32 @@ def session_data(**changes):
 
 
 def private_json(path, value):
-    path.write_bytes(driver.canonical(value))
-    path.chmod(0o600)
+    if path.exists():
+        driver.private_file(path)
+        path.write_bytes(driver.canonical(value))
+    else:
+        descriptor = driver.create_private_file(path)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(driver.canonical(value))
     return path
+
+
+def broaden_permissions(path):
+    if os.name != "nt":
+        path.chmod(0o644)
+        return
+    code = """$ErrorActionPreference='Stop'
+$acl=[System.IO.File]::GetAccessControl($env:ASTRAL_079_PRIVATE_FILE)
+$everyone=[System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$rule=[System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,[System.Security.AccessControl.FileSystemRights]::Read,
+  [System.Security.AccessControl.AccessControlType]::Allow)
+$acl.AddAccessRule($rule)
+[System.IO.File]::SetAccessControl($env:ASTRAL_079_PRIVATE_FILE,$acl)
+"""
+    driver.process(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                    base64.b64encode(code.encode("utf-16le")).decode()],
+                   environment={**os.environ, "ASTRAL_079_PRIVATE_FILE": str(path)})
 
 
 @pytest.fixture
@@ -76,7 +99,8 @@ def raw_snapshot(generation=1):
 
 
 @pytest.mark.parametrize("raw,code", [(b'{"x":1,"x":2}', "duplicate"), (b'{"x":NaN}', "nonfinite"), (b'broken', "invalid"),
-                                     (b'x' * (driver.MAX_JSON + 1), "size_bound")])
+                                     (b'x' * (driver.MAX_JSON + 1), "size_bound")],
+                         ids=["duplicate", "nonfinite", "invalid", "oversized"])
 def test_strict_json_denials(raw, code):
     with pytest.raises(driver.EvidenceError, match=code):
         driver.strict_json(raw)
@@ -116,8 +140,8 @@ def test_private_session_target_expiry_token_and_permission_denials(workspace, t
         private_json(path, session_data(**changes))
         with pytest.raises(driver.EvidenceError, match=code):
             driver.load_session(path, BASE, ASSIGNMENT, "live-monitor", root=workspace, now=NOW)
-    path.chmod(0o644)
-    with pytest.raises(driver.EvidenceError, match="not_private"):
+    broaden_permissions(path)
+    with pytest.raises(driver.EvidenceError, match="not_private|local_verifier_failed"):
         driver.private_file(path)
 
 
@@ -408,11 +432,89 @@ def test_await_check_times_out_and_refuses_owner_holds(monkeypatch):
 def test_write_report_is_private_exclusive_and_bounded(workspace, tmp_path):
     path = tmp_path / "report.json"
     driver.write_report(path, {"status": "failed"}, root=workspace)
-    assert path.stat().st_mode & 0o777 == 0o600
+    driver.private_file(path)
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
     with pytest.raises(driver.EvidenceError, match="exists"):
         driver.write_report(path, {}, root=workspace)
     with pytest.raises(driver.EvidenceError, match="size_bound"):
         driver.write_report(tmp_path / "large.json", {"x": "x" * driver.MAX_JSON}, root=workspace)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Exercises actual NTFS security descriptors")
+def test_native_creation_has_protected_acl_before_first_write(tmp_path):
+    parent = tmp_path / "inherited-public"
+    parent.mkdir()
+    code = """$ErrorActionPreference='Stop'
+$acl=[System.IO.Directory]::GetAccessControl($env:ASTRAL_079_PRIVATE_FILE)
+$everyone=[System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$rule=[System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,[System.Security.AccessControl.FileSystemRights]::Read,
+  [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Allow)
+$acl.AddAccessRule($rule)
+[System.IO.Directory]::SetAccessControl($env:ASTRAL_079_PRIVATE_FILE,$acl)
+"""
+    driver.process(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                    base64.b64encode(code.encode("utf-16le")).decode()],
+                   environment={**os.environ, "ASTRAL_079_PRIVATE_FILE": str(parent)})
+    inherited = parent / "ordinary.json"
+    inherited.write_text("non-sensitive fixture")
+    with pytest.raises(driver.EvidenceError):
+        driver.private_file(inherited)
+    path = parent / "private'$(literal).json"
+    descriptor = driver.create_private_file(path)
+    try:
+        assert path.read_bytes() == b""
+        driver.private_file(path)
+        inspection = """$ErrorActionPreference='Stop'
+$acl=[System.IO.File]::GetAccessControl($env:ASTRAL_079_PRIVATE_FILE)
+$rules=$acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])
+if(-not $acl.AreAccessRulesProtected -or @($rules | Where-Object IsInherited).Count -ne 0){exit 1}
+Write-Output 'protected'
+"""
+        assert driver.process(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+            base64.b64encode(inspection.encode("utf-16le")).decode()],
+            environment={**os.environ, "ASTRAL_079_PRIVATE_FILE": str(path)}).strip() == b"protected"
+        os.write(descriptor, b"private fixture")
+    finally:
+        os.close(descriptor)
+    with pytest.raises(driver.EvidenceError):
+        driver.create_private_file(path)
+    assert path.read_bytes() == b"private fixture"
+    broaden_permissions(path)
+    with pytest.raises(driver.EvidenceError):
+        driver.private_file(path)
+
+
+def test_private_creation_refuses_failed_command_and_replaced_descriptor(tmp_path, monkeypatch):
+    path = tmp_path / "empty.json"
+    path.write_bytes(b"")
+    actual_fstat = os.fstat
+    actual_open = os.open
+    opened = []
+
+    def capture_open(*args):
+        descriptor = actual_open(*args)
+        opened.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(driver, "os", SimpleNamespace(**(vars(os) | {
+        "name": "nt", "O_BINARY": getattr(os, "O_BINARY", 0), "open": capture_open,
+        "fstat": lambda _: SimpleNamespace(st_dev=-1, st_ino=-1, st_size=0)})))
+    monkeypatch.setattr(driver, "private_file", Mock())
+    process = Mock(return_value=b"not-created")
+    monkeypatch.setattr(driver, "process", process)
+    with pytest.raises(driver.EvidenceError, match="creation_failed"):
+        driver.create_private_file(path)
+    assert not opened and path.read_bytes() == b""
+    process.return_value = b"created"
+    with pytest.raises(driver.EvidenceError, match="output_file_changed"):
+        driver.create_private_file(path)
+    with pytest.raises(OSError):
+        actual_fstat(opened[0])
+    assert path.read_bytes() == b""
 
 
 def arguments(tmp_path, scenario="live-monitor"):

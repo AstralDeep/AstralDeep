@@ -355,7 +355,7 @@ async def test_backend_restart_rollback_preserves_conversation_and_history() -> 
             "assistant",
         ]
         schema_before = _schema_identity(database)
-        assert schema_before["revision"] == "075.001"
+        assert schema_before["revision"] == "079.001"
         assert re.fullmatch(
             r"[0-9a-f]{64}",
             schema_before["astralplane_migration_digest"],

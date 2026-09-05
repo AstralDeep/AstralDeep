@@ -235,7 +235,10 @@ async def test_mcp_mint_with_signing_key_has_no_fault(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mcp_refusal_names_signing_key_not_idp_scopes(orchestrator_factory, monkeypatch):
+    from cryptography.fernet import Fernet
+
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
+    monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode("ascii"))
     monkeypatch.setenv("DELEGATION_REQUIRED", "true")
     monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
     monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
@@ -359,7 +362,7 @@ async def test_mcp_destructive_remote_compute_refusal_survives_supervisor_change
     from orchestrator import remote_confirmation
 
     monkeypatch.setattr(
-        remote_confirmation, "is_destructive_unattended", lambda tool, args: True
+        remote_confirmation, "is_destructive_unattended", lambda tool, args, agent: True
     )
     resp = await gate_orch.execute_mcp_tool(
         claims={"sub": "u1", "realm_access": {"roles": ["user"]}},

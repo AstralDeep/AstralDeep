@@ -74,6 +74,7 @@ jobs:
             scripts/tests/test_verify_migration_provenance.py
             scripts/tests/test_verify_primitive_coverage.py
             scripts/tests/test_verify_persistent_agents_079.py
+            scripts/tests/test_csharp_native_coverage_079.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
           python -m coverage run --source=scripts \

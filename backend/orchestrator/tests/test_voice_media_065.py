@@ -662,6 +662,8 @@ async def test_authenticated_runtime_stop_barges_in_before_capture_can_be_reenab
         capability=object(),  # type: ignore[arg-type]
         media=media,
         runtime=runtime,
+        backend_selection=runtime.backend_selection,
+        speech_backend=runtime.speech_backend,
         worker_control_settings=WorkerControlSettings(
             secret=b"voice-control-test-secret-with-32-bytes-minimum"
         ),

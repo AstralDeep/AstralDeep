@@ -123,6 +123,15 @@ docker compose -f docker-compose.yml -f build/079/verification/compose-candidate
 
 ## First live assignment
 
+Source observations may contain identifying text even on a public page. The
+runner scans the full bounded observation for injection, redacts identifying
+spans using the installed detector, then applies the unchanged privacy gate
+before retention or model use. Activity/result evidence records redaction and
+truncation. Owner instructions and action arguments are rejected when sensitive;
+they are never silently rewritten. An unknown refresh outcome requires fresh
+sign-in and re-consent, because retrying a potentially consumed rotating token
+could invalidate the browser and sibling agents.
+
 1. Open the candidate backend at its configured public address in a real browser
    and sign in through Keycloak. On this local setup use `http://localhost:8001`;
    the existing OIDC client refuses a `127.0.0.1` callback.

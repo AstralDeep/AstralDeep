@@ -87,6 +87,10 @@ class _Sessions:
         del self.records[session_id]
         return True
 
+    def delete_and_return(self, transaction, *, owner_id, session_id):
+        current = self.records.get(session_id)
+        return current if self.delete(transaction, owner_id=owner_id, session_id=session_id) else None
+
     def delete_owner(self, _transaction, *, owner_id):
         keys = [key for key, value in self.records.items() if value.owner_id == owner_id]
         for key in keys:

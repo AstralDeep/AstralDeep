@@ -165,8 +165,8 @@ def test_voice_compose_does_not_restore_operator_llm_environment():
 
         assert 'OPENAI_BASE_URL: ""' in main_service
         assert 'OPENAI_API_KEY: ""' in main_service
-        assert "VOICE_SPEECH_BASE_URL" not in main_service
-        assert "VOICE_SPEECH_API_KEY" not in main_service
+        assert 'VOICE_SPEECH_BASE_URL: ""' in main_service
+        assert 'VOICE_SPEECH_API_KEY: ""' in main_service
 
         assert "VOICE_SPEECH_BASE_URL: ${OPENAI_BASE_URL:?" in worker_service
         assert "VOICE_SPEECH_API_KEY: ${OPENAI_API_KEY:?" in worker_service

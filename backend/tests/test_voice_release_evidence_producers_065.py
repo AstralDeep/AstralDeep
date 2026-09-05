@@ -131,7 +131,7 @@ def test_projection_ci_owns_active_voice_contract_windows_and_web_checks() -> No
     assert "windows:" in workflow
     assert "required:" in workflow
     assert "--require-hashes" in workflow
-    assert "python -m pytest windows-client/tests -q" in workflow
+    assert r"python -m pytest windows-client\tests -q" in workflow
     assert "tests/voice-conversation-065.spec.js" in workflow
     required = workflow.split("\n  required:", 1)[1]
     for owner_job in ("python", "web", "windows"):

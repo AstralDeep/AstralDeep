@@ -78,6 +78,18 @@ See `verification/results.md` for exact evidence and authorization limits.
 
 ## Dependencies and parallel work
 
+### Production preparation follow-up (2026-09-05)
+
+The owner subsequently authorized PRs/merges where gates permit and production
+preparation. These tasks track defects exposed by actual signed-in and native
+qualification; the earlier local checkpoint is not a production-ready claim.
+
+- [x] T033 Coordinate browser/background refresh rotation through one durable session claim, safely convert legacy grants, and verify revocation/cancellation/logout races.
+- [x] T034 Fix typed URL/privacy boundaries, scan unescaped complete source evidence before redaction, retain only sanitized observations, and qualify with the installed detector.
+- [ ] T035 Complete native coverage producers and strict parser checks; correct stale 079 schema/dispatch fixtures, classify broader baseline failures, and record exact final source evidence.
+- [ ] T036 Build from clean committed LF source, verify installed runtime identity, run the bounded owner-approved assignment and controls/restart checks, and stop it after testing.
+- [ ] T037 Open owner-qualified PRs, satisfy independent review and CI before any merge, and retain concrete protected-staging/Apple/publication blockers in `verification/production-readiness.md`.
+
 - T001 precedes product edits; T003 precedes T004/T005. T006 can proceed alongside Plane after its public contract is fixed. Foundation must pass before story execution is enabled.
 - US1 uses the foundation. US2 extends its execution ledger. US3 controls/budgets must be complete before enabling unattended work for any live owner. US4 uses US1–US3 authority/recovery controls.
 - Plane owns one sequential edit lane (T004/T005/T008/T014/T016/T018/T019/T025); Deep owns another. Projection views and client parity tests run independently once action contracts are fixed. Shared files never have concurrent writers.

@@ -844,6 +844,7 @@ async def test_whole_attempt_deadline_is_retryable_and_has_no_late_success() -> 
     work = _ConnectionOperation(
         frame=SimpleNamespace(
             raw="{}",
+            parsed={"payload": {}},
             action="chrome_llm_save",
             surface="llm_settings",
             chat_id=None,
