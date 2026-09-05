@@ -35,6 +35,14 @@ its recovery obligations remain in force.
 
 ## Candidate and local evidence
 
+Plane draft [#7](https://github.com/AstralDeep/AstralPlane/pull/7), at
+`b20c8f3e06fc5302262fe3c8f049fa18a562e30f`, and Projection draft
+[#14](https://github.com/AstralDeep/AstralProjection/pull/14), at
+`6c7a9e2d294d7f3733b891e1fe42f22ebe958f5c`, now pass all required owner CI.
+Projection's optional next-major Android lane is skipped by its existing
+conditions. These results do not replace independent review or authenticated
+Feature 079 evidence on the affected clients. Neither PR is merged.
+
 `config/astral-composition.json` and its exact gitlinks identify the candidate
 component commits. Use the current committed record in `results.md` for the
 latest image, source manifest and test results. Older passing reports remain
@@ -87,6 +95,14 @@ Apple coverage and authenticated client/device flows are independent gaps.
    never copy or fall back to a user's provider key. Missing model configuration
    must produce an honest hold without charging a model call.
 
+The paired pre-cutover backup has now been restored in an isolated,
+network-disabled PostgreSQL container with private restored file roots.
+All 83 tables / 2,570 rows, 16 sequences, 467 catalog object/owner entries and
+five roots / 1,335 files match. The restored database remains at 075.001;
+application/IAM recovery and a new guarded 079 migration are separate checks.
+The original backup and production data were not modified. See
+[restore-rehearsal.md](restore-rehearsal.md) for evidence and limitations.
+
 ## Approved local live test
 
 The owner approved reading only `https://www.python.org/downloads/` every 60
@@ -96,16 +112,30 @@ are allowed. The test assignment must be stopped afterward. A delegation depth
 of zero respects the existing disabled recursive-delegation flag and narrows
 the approved limit. Login alone was not treated as offline consent.
 
-The first create attempt on the earlier image was refused by the privacy gate.
-The hardened clean image subsequently accepted the reviewed grant and completed
-one real public read. Missing System LLM configuration produced an honest failure
-with zero model usage; the owner then configured that model in-product. A resume
-attempt exposed an old permission digest on a proven-unstarted planner intent.
-The paused assignment, original tool receipt and budgets remain durable. The
-recovery repair passes its real PostgreSQL regression and surrounding execution
-suite; it never replaces a begun action, retained result or failed sensitive
-effect. The detailed UTC observations and remaining
-model/restart/stop checks are recorded in `results.md`.
+The test is now **stopped**. It verified real consent, public reads, model calls,
+revisions, pause/resume/stop and durable history/spending across rebuilds. Its
+latest result was rejected by the privacy gate; no completed baseline or finding
+was accepted. Rejected content was discarded, so the exact offending content is
+unknown. The remaining token allowance cannot reserve another planner call.
+Lifetime usage is 6/8 model calls, 5/12 tool calls, 27,143/32,000 tokens and
+108,817/300,000 ms, with no outstanding reservations. The stopped state and
+unchanged usage survive a full app restart. No budget was extended or reset.
+
+The test exposed and qualified recovery of proven-unstarted actions, early
+production validation, bounded failure diagnostics and sufficient completion
+capacity for reasoning models. New intents reserve 4,096 completion tokens;
+existing intents retain their exact old cap and identity. These changes pass
+their focused tests and independent review; they do not bypass privacy or allow
+replay of begun work. The final clean persistent-agent/voice run passed 461 tests
+with no failures or skips. See [live-observations.md](live-observations.md) and
+`results.md` for exact source-bound evidence.
+
+A read-only synthetic audit reproduced the existing broad date/DOB prefilter
+rejecting an ISO public-release date; six other authored planner examples passed.
+This does not identify the discarded live response. A further live diagnosis
+requires another explicitly bounded owner-approved test. Successful baseline,
+quiet polling, completed-result recovery and actual affected-client evidence
+remain required before promotion.
 
 ## Dependency and build qualification
 
@@ -118,6 +148,19 @@ the active tools omit nanoid/postcss-selector-parser and already contain the
 patched humanfs 0.16.8. The read-only advisory assessment retains exact graphs and
 primary links in `build/079/release-preflight/dependency-advisories.md`. No alert
 was dismissed, and this bounded assessment is not a full final-image scan.
+
+An exact runtime Python inventory audit subsequently found four unique open
+advisories in `cryptography==48.0.1` and `ecdsa==0.19.2`. Source/API inspection
+did not demonstrate an affected application path, but it is not an exhaustive
+unreachability proof or release waiver. Presidio requires cryptography below
+49, preventing a simple upgrade to the listed fixes; python-jose requires
+ecdsa. The spaCy model could not be audited through PyPI, and OS/native-library
+advisories were not scanned. All 145 installed distributions and dependency
+metadata match between images from `0dfc768f`, `9913610f` and `7c8cd1b7`, allowing the
+retained scan to be reused for that exact package set. See
+[runtime-advisories.md](runtime-advisories.md) for primary advisory links,
+version-range discrepancies and retained scanner identities. No alert or
+dependency constraint was suppressed.
 
 ## Publication and protected production gates
 
@@ -134,6 +177,18 @@ the first publication of a new branch as currently implemented. Ordinary local
 release preparation or a reviewed default-policy/process resolution is needed;
 generic PR authorization is not a fabricated provider approval. Bootstrap
 authorizes no merge, production promotion or release.
+
+At Deep `7c8cd1b7`, all three owner coverage producers pass the strict
+changed-code gate (2,784/2,873 executable lines, 96.90%). The actual
+`--repository-profile deep` pre-push parser still fails: that option narrows
+coverage ownership, while canonical release evidence still requires backend,
+web, Windows, Android, macOS, iOS, watchOS and documentation targets. Actual
+same-candidate staging/platform/provider inputs are missing. The concrete
+draft description, parser failure receipt and eight-target inventory are
+retained under `build/079/release-preflight/`; no Deep PR or initial feature
+push has occurred. Resolving this requires the missing canonical inputs or a
+reviewed default-policy/process decision; a seed push or unrelated PR cannot
+satisfy the existing bootstrap verifier.
 
 The inspected provider configuration has no `release-readiness-staging`
 environment and lacks `RELEASE_READINESS_ACTIVE`,

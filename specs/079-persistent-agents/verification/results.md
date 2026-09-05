@@ -2,6 +2,12 @@
 
 ## Current production-preparation checkpoint — 2026-09-05
 
+Implemented and locally qualified, but not yet mergeable or production-ready.
+The final live test is stopped after a privacy refusal; successful live baseline
+and affected-client evidence remain open. Runtime `7c8cd1b7` passes 461 focused
+tests and strict owner changed-line coverage at 96.90%. The component PRs pass CI,
+while Deep's initial publication is blocked by its canonical evidence policy.
+
 The owner authorized PRs and merges where gates permit. Plane
 [#7](https://github.com/AstralDeep/AstralPlane/pull/7) and Projection
 [#14](https://github.com/AstralDeep/AstralProjection/pull/14) are pushed draft PRs.
@@ -10,8 +16,10 @@ Plane is `b20c8f3e06fc5302262fe3c8f049fa18a562e30f`; Projection is now
 provenance after the reviewed changes. Both build backends pin patched
 setuptools 83.0.0; Plane's isolated CI group now pins pytest 9.1.1. Deep's
 component-builder declaration, Dockerfile, Makefile and installer agree on
-setuptools 83.0.0. No product runtime dependency was added. Independent CI/review and affected
-live-client requirements remain open. No merge or production deployment occurred.
+setuptools 83.0.0. No product runtime dependency was added. Both exact component
+heads now pass all required owner CI checks. Independent review and affected
+authenticated live-client requirements remain open. No merge or production
+deployment occurred.
 
 Deep runtime hardening is committed at
 `42b7ce56e1a9238728cf9b3f29e7847e635e810c`. It fixes shared browser/background
@@ -40,7 +48,7 @@ Fresh local evidence, with exact commands and native reports in ignored
 | Projection native Windows | 1,080 passed, nine skips in 1471.89s |
 | Projection C# / Node / shipped-client browser fixture | 37 / 28 / 5 passed; earlier Android gates remain passed |
 | Worker producer | 372 passed, two skips; 90.41% branch-inclusive coverage from the exact worker test image |
-| Deep strict owner coverage at `ffabed38` | 2,763/2,849 changed statements (96.98%); backend/tooling/voice-worker reports present; later source is requalified separately |
+| Deep strict owner coverage at `7c8cd1b7` | 2,784/2,873 changed statements (96.90%); backend/tooling/voice-worker reports and native inputs retained in a candidate-specific snapshot; no stale source observations reused |
 | Projection final build-tool repair | 1,190 Python owner tests passed; Ruff, exact hash-locked install, sdist/wheel build and installed import passed |
 | Plane final owner repair | Full PostgreSQL run: 2,188 passed, nine platform skips and one old build-pin assertion collected before its fix; the corrected owner/provenance slice then passed 21/21. Full coverage 88.94% (floor 88.75%); changed-line coverage 93.72%; Python 3.11/3.14 package smoke passed |
 | Deep component build-tool pin | Three existing contract/build suites passed 27 tests; exact version assertions retained |
@@ -48,6 +56,12 @@ Fresh local evidence, with exact commands and native reports in ignored
 | Current central dispatch/authority/entrypoint rerun | 186 passed in 18.35s; fresh source-bound coverage retained |
 | Resume repair and surrounding execution/engine/dispatch suites | 73 passed in 190.91s; real PostgreSQL regression preserves original receipts, grant and bounds while succeeding after model setup and pause/resume |
 | Workspace refresh audit fixture correction | Eight passed against the real isolated session/audit repositories; canonical rotation/deletion and original audit assertions retained |
+| Bounded rejected-result diagnostics | 125 passed in 12.08s; executor 97.88% statement coverage and privacy module 100%; unknown/private exception details remain generic |
+| Deterministic voice cancellation fixture | 126 passed in 3.53s; observes entry to the real settlement path before cancellation, retaining real cleanup and original-error assertions |
+| Clean `9913610f` host tooling and supplementary scripts | 817 passed, three skips, four canonical deselections; 457 passed, seven skips; canonical coverage floor, Ruff, pip check, exact component installer/composition and Gitleaks passed (1,046 commits, zero findings) |
+| Clean `9913610f` targeted backend integration | 814 passed, one expected protected-bridge skip and one voice reservation-ownership timing failure; all persistent-agent/startup/authentication scopes passed. The ownership fixture was subsequently corrected and its full 126-test file passed |
+| Completion allowance and retained model identities | 131 passed in 22.80s; runner 98.26% statement coverage; real PostgreSQL budget denial occurs before any model send; old 1,024-token completed/successor receipts remain reusable |
+| Final clean `7c8cd1b7` persistent-agent and voice suites | 461 passed, zero failures/skips in 186.41s; prior ownership fixture failure closed; all nine changed runner statements covered; exact source bridge retains unchanged `9913610f` tooling/worker evidence without relabeling it |
 
 The complete clean pre-hardening snapshot at Deep `3c5696f2` passed 773 root CI
 tooling tests (92% coverage) and 413 supplemental script tests, but its broader
@@ -60,9 +74,9 @@ in the worker image with its declared ONNX dependency, not the orchestrator imag
 
 The subsequent clean `ffabed38` rerun completed 8,034 backend passes, four failures
 and 14 skips, plus 2,375 passes, one failure and seven skips across sixteen nested
-module suites. Two stale supply-chain assertions are now corrected and pass;
-two workspace-refresh fixtures and one repeated-cancellation voice fixture are
-under final triage. The real isolated app passed health/readiness and the required
+module suites. Its five failures were corrected and separately requalified:
+two stale supply-chain assertions, two workspace-refresh fixtures, and one
+repeated-cancellation voice fixture. The real isolated app passed health/readiness and the required
 WebSocket handshake (one pass, zero skips). Whole-backend aggregate coverage is
 79.14%; the changed-code gate is a separate measurement above. Raw results remain
 bound to `ffabed38`, with later touched source qualified separately.
@@ -81,31 +95,104 @@ now creates a freshly authorized successor only for proven-unstarted ordinary
 model/read intents from an older control epoch, preserving all original receipts.
 Begun, uncertain, result-bearing and sensitive failed actions keep their existing
 identity. The full 73-test execution/engine/dispatch suite and independent review
-pass. No successful live model continuation, quiet poll,
-restart recovery or final stop is claimed at this checkpoint.
+pass. This earlier observation is followed by the live attempts below.
+
+The rebuilt `0dfc768f` image retained the paused assignment and original usage.
+Resume at 22:23:56 UTC reached real model execution and a persisted task plan,
+then failed with the original generic `assignment_result_refused`. Its rejected
+output was not retained, so the cause cannot be reconstructed. Pause at
+22:26:08 UTC was acknowledged at control version 6, with lifetime usage
+4/8 model calls, 3/12 tool calls, 9,579/32,000 tokens and 45,789/300,000 ms.
+
+The `9913610f` image adds bounded diagnostic identities, including exact provider
+`finish_reason=length` rejection, with 125 passing tests and independent review.
+The original assignment was revised through the real consent form at 22:37:50
+UTC to request one concise baseline task and reuse its supplied observation.
+All original daily/lifetime caps and spending were retained; the old task became
+superseded without changing its original action receipt. Resume at 22:38:07 UTC
+failed with `assignment_model_output_truncated` at 22:38:16 UTC. Usage reached
+5/8 model calls, 4/12 tool calls, 16,813/32,000 tokens and 77,306/300,000 ms.
+The assignment was paused again. This identifies a completion-limit failure for
+that attempt; it does not establish the cause of the earlier generic failure.
+No successful baseline, quiet poll or parent-result incorporation is claimed
+for these attempts.
+
+Runtime follow-up `7c8cd1b70b3eb4632a0cc8b6d851f0989ea68948` allocates 4,096
+completion tokens to new model intents, within the existing 8,192 dispatch
+ceiling and the owner's unchanged daily/lifetime limits. Completion includes
+reasoning and visible output. The entire conservative input/output allowance is
+reserved before dispatch; insufficient capacity denies the model call. Existing
+intents retain their stored cap only after exact shape, type, messages and digest
+validation, preserving old completed, failed, begun and uncertain identities.
+Configured System LLM model/effort selection and all replay/privacy gates stay
+in force. Independent review and the 131-test qualification pass. The distinct
+voice ownership fixture now observes the real reservation-lock release, retaining
+all original ownership/cancellation assertions; 126 tests pass.
+
+The final approved attempt on `7c8cd1b7` used reviewed instruction revision 3
+with the same original caps. At 22:48:30 UTC the planner passed the truncation
+check, but its result was rejected with `assignment_phi_refused`. It was stopped
+at 22:49:14 UTC and remains terminal at control version 12. Usage is 6/8 model
+calls, 5/12 tool calls, 27,143/32,000 tokens and 108,817/300,000 ms, with zero
+reservations. No complete new planner request fits the remaining token budget.
+No rejected content was retained, so neither a sensitive output nor a detector
+false positive is asserted. A separate synthetic audit reproduces the existing
+broad date/DOB policy rejecting an ISO public-release date, without establishing
+the live response's content. No privacy bypass or further model call occurred.
+See [live-observations.md](live-observations.md) for exact controls and limits.
+
+Final runtime image `sha256:12d4cf52c4bebfd8160ce5514c3f46381dafb35b9172303218d13822e2b089f6`
+was built from clean `7c8cd1b7` source and is deployed locally. All 591 runtime
+files, health/readiness and authentication denials pass; both isolated production
+configuration cases exit 78. A full app restart preserves the stopped assignment,
+revision, control version, history and exact usage. No successful live baseline,
+quiet poll, child-result incorporation or active-work recovery is claimed.
 
 A clean LF runtime image from `42b7ce56` built successfully as
 `astraldeep:079-runtime-42b7ce56`, image
 `sha256:5222c2b266d77936c0e4c52880070598f1eec7e6a69ed657fb21e8dfb2c38e59`.
-It is deployed locally, with 591 runtime files matched, healthy/readiness probes,
+It was deployed locally, with 591 runtime files matched, healthy/readiness probes,
 real Keycloak and absent/invalid bearer denials (401/no-store). It is not the final
 candidate after the later repairs. Its clean composition digest is
 `d6b0095fa7e0ed7fbbeda1dbbfd719f11fe88d209462fe4c4b9005dc41ce189b`.
 The current declaration additionally repins both components' tested build repairs;
-build and live evidence must bind that final declaration separately.
+the separately bound later images above supersede this historical image.
 
 An isolated, network-disabled production-posture container of the `42b7ce56`
 image exited 1 because database construction preceded the existing missing-secret
 gate. The entrypoint now invokes the unchanged posture check before constructing
-the runtime, retaining the embedded startup check. The final rebuilt image must
-demonstrate exit 78 before this smoke check is counted as passed.
+the runtime, retaining the embedded startup check. Rebuilt `0dfc768f` and
+`9913610f` images each demonstrate exit 78 with missing secrets and with
+production mock/placeholder configuration, using network-disabled isolated
+containers and their actual inspected exit codes.
+
+Clean LF candidate `9913610f6356937e53ed7ca0d8a26864e2a09083` built and ran locally
+as `astraldeep:079-runtime-9913610f`, image
+`sha256:49c8ad1ff803a6bcf21ae6eaa54fd40295ea9d684841cada2d786de2fbf9076a`.
+All 591 runtime files match; both probes, login redirect and absent/invalid
+bearer 401/no-store checks pass. Installed schema is 079.001, mock auth is false,
+and the feature is enabled only by the local candidate override. Clean LF
+composition digest is `626098190370e97a8faec463f1ab1fd36d0ac49a1b59cc30587b5c321eefb487`.
+
+The paired backup was successfully restored into an isolated, network-disabled
+PostgreSQL instance and private file roots. All 83 tables / 2,570 rows,
+16 sequences, 467 catalog object/owner entries and five roots / 1,335 files
+match. The restored database remains at 075.001; this is not a post-restore
+application/IAM or 079 migration claim. See [restore-rehearsal.md](restore-rehearsal.md).
+
+The exact Python dependency audit found four unique open advisories across
+cryptography and ecdsa. No affected application path was demonstrated, but
+Presidio's crypto constraint prevents a simple upgrade and no waiver was issued.
+All 145 installed package versions and metadata match between the audited
+`0dfc768f`, `9913610f` and `7c8cd1b7` images. The spaCy model and OS/native-library advisories
+remain outside the successful scan. See [runtime-advisories.md](runtime-advisories.md).
 
 See [production-readiness.md](production-readiness.md) for the bounded test,
 clean-source rebuild, backup/restore, protected staging and publication gates.
-The curated vault checkpoint for runtime hardening and component draft PRs is
-`173ad38`, pushed separately, records the first live read and Projection build
-repair. A subsequent final checkpoint must include the Plane repair and live
-recovery outcome. Deep itself remains local at this checkpoint.
+The separately pushed curated vault checkpoint `be82bc4` records final component
+CI, restore proof and the diagnosed live truncation. The following terminal-state
+checkpoint records the final privacy refusal and stopped assignment. Deep itself
+remains local on `codex/079-persistent-agents`; component PRs remain draft.
 
 ## Historical local integration checkpoint — 2026-09-05
 
