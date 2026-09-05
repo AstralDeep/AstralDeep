@@ -87,11 +87,17 @@ qualification; the earlier local checkpoint is not a production-ready claim.
 - [x] T033 Coordinate browser/background refresh rotation through one durable session claim, safely convert legacy grants, and verify revocation/cancellation/logout races.
 - [x] T034 Fix typed URL/privacy boundaries, scan unescaped complete source evidence before redaction, retain only sanitized observations, and qualify with the installed detector.
 - [ ] T035 Complete native coverage producers and strict parser checks; correct stale 079 schema/dispatch fixtures, classify broader baseline failures, and record exact final source evidence.
-- [ ] T036 Build from clean committed LF source, verify installed runtime identity, run the bounded owner-approved assignment and controls/restart checks, and stop it after testing.
+- [x] T036 Build from clean committed LF source, verify installed runtime identity, run the bounded owner-approved assignment and controls/restart checks, and stop it after testing. Runtime `48f8ea5f` completed an observation/child/parent episode and quiet polls across an idle restart; the supplied fallback yielded no release version. Detailed release-change, mid-effect and all-client scenarios remain in T030/T031/T040.
 - [ ] T037 Open owner-qualified PRs, satisfy independent review and CI before any merge, and retain concrete protected-staging/Apple/publication blockers in `verification/production-readiness.md`.
 - [x] T038 Qualify the live-discovered proven-unstarted pause/resume recovery repair, early production exit-78 gate, patched build/CI dependency locks and isolated paired-backup restore rehearsal; bind final source/image evidence without resetting the approved live-test budget.
 - [x] T039 Diagnose rejected model results using bounded codes without retaining content, reserve completion capacity for reasoning models while preserving existing action identities, and qualify the final clean persistent-agent/voice suites.
 - [ ] T040 Resolve the final live privacy refusal and complete a successful baseline/quiet-poll/result-recovery demonstration under a new explicitly bounded test authorization. The original assignment is stopped; its spending and failed receipts must not be reset, relabeled or bypassed.
+
+**T040 follow-up:** the newly authorized test completed a result, quiet polling
+and idle restart recovery without a privacy refusal, then stopped within its
+original bounds. Its finding reports no usable release version in the supplied observation,
+so a populated version baseline/change remains pending. The original discarded
+privacy refusal's content remains unknown; no bypass or causal claim was added.
 
 - T001 precedes product edits; T003 precedes T004/T005. T006 can proceed alongside Plane after its public contract is fixed. Foundation must pass before story execution is enabled.
 - US1 uses the foundation. US2 extends its execution ledger. US3 controls/budgets must be complete before enabling unattended work for any live owner. US4 uses US1–US3 authority/recovery controls.

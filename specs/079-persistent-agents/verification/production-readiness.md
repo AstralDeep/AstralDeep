@@ -35,10 +35,35 @@ its recovery obligations remain in force.
 
 ## Candidate and local evidence
 
+The owner subsequently authorized necessary draft publication after being
+informed of the unmet pre-push ordering. Deep's actual tested feature is being
+prepared as a diagnostic draft under that user instruction. This is not a
+provider-native Constitution-X bootstrap approval, passing canonical evidence
+verdict, independent review, or merge/release authorization. No policy or
+protected setting is weakened. The exact failed parser inventory, source-bound
+coverage and publication identities remain outside the candidate tree in
+`build/079/release-preflight/`.
+
+Current local runtime is `48f8ea5f`, image
+`sha256:c565761d9048eb786deed5c04990db97c6a78c7fa7d3d68007078f1bdfca2d0c`.
+It uses low reasoning effort for new bounded steps and retains legacy requests.
+It passes 591 runtime file bindings, health/readiness/authentication denials,
+both isolated production exit-78 checks, and unchanged dependency metadata.
+A real owner-approved episode completed and incorporated a child result;
+unchanged polling avoided additional model calls, and the completed result
+survived an app restart. The test is stopped with no pending check or reservation
+and all original limits respected. The result reports no available version in the supplied
+fallback view. Actual release-change, mid-effect recovery, load/control-latency,
+sensitive-action and every affected authenticated native-client scenario still
+need their designated evidence. See `live-observations.md` for exact limits,
+observations and the original stopped test.
+
 Plane draft [#7](https://github.com/AstralDeep/AstralPlane/pull/7), at
 `b20c8f3e06fc5302262fe3c8f049fa18a562e30f`, and Projection draft
 [#14](https://github.com/AstralDeep/AstralProjection/pull/14), at
-`6c7a9e2d294d7f3733b891e1fe42f22ebe958f5c`, now pass all required owner CI.
+`07e5c90cb310c48c2315997f74dc8dd6f5fa22ea`, retain separate owner CI.
+Plane's required checks pass. Projection's earlier `6c7a9e2` checks passed;
+the terminal-guidance repair at `07e5c90` is undergoing updated hosted checks.
 Projection's optional next-major Android lane is skipped by its existing
 conditions. These results do not replace independent review or authenticated
 Feature 079 evidence on the affected clients. Neither PR is merged.

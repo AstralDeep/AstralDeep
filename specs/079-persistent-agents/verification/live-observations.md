@@ -28,6 +28,44 @@ owner limits remain unchanged. Existing three-key model intents retain their
 original request and digest, including the absence of reasoning effort;
 failed or uncertain begun actions are not replayed by an upgrade.
 
+### Completed episode and quiet polling
+
+Clean runtime `48f8ea5ff6638061ff6a869b8e5bc4b45f9b9af0`, image
+`sha256:c565761d9048eb786deed5c04990db97c6a78c7fa7d3d68007078f1bdfca2d0c`,
+matches all 591 runtime files and passes health/readiness, absent/invalid
+authentication denials and both isolated production exit-78 cases. Its 145
+installed package versions/metadata and Python version match the audited image;
+the advisory findings remain open.
+
+The reviewed revision 2 narrowed the requested baseline to the newest stable
+version and first-observation status at `23:30:17.711676+00:00`, retaining all
+limits and usage. Resume at `23:30:42.752460+00:00` advanced control version to
+4. Three model calls completed the planner, child and parent integration by
+`23:30:52.508157+00:00`; the child is Completed with its result Incorporated.
+The finding honestly reports that no stable version was available in the
+supplied fallback view. This verifies a completed observation/task/result
+episode, **not a populated Python version baseline or a release-change event**.
+
+Usage then measured 5/8 model calls, 2/12 tool calls, 12,412/32,000 tokens and
+47,066/300,000 ms, with zero reservations. The unchanged scheduled check at
+`23:32:00.180809+00:00` consumed one read and 1,460 ms, with no new model call,
+token charge, finding or activity item. A full application restart preserved
+the exact completed child/result receipt, parent finding, revision/control,
+next check and all four counters. The first immediate HTTP probe during startup
+disconnected; a subsequent probe passed all five checks and all file bindings.
+This is idle-assignment recovery with an already completed result, not a
+mid-effect interruption/reconciliation test.
+
+After restart, the scheduled check at `23:33:12.474406+00:00` consumed one
+additional read and 1,519 ms, again without new model calls, tokens, findings or
+activity. Stop was acknowledged at `23:33:55.127347+00:00`: **Stopped, revision
+2 / control version 5, no next check, zero reservations**. Final usage is
+**5/8 model calls, 4/12 tool calls, 12,412/32,000 tokens and 50,045/300,000 ms**.
+The completed child and incorporated result remain visible. No limits were
+increased, spending reset, rejected content retained or privacy rule relaxed.
+After the previously scheduled next-check time passed, a fresh authenticated
+detail view still showed the same stopped state and counters; no new work ran.
+
 ## Original stopped test
 
 These are observations from the real signed-in browser and locally deployed

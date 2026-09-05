@@ -21,11 +21,31 @@ Projection's exact repair is `07e5c90cb310c48c2315997f74dc8dd6f5fa22ea` in draft
 PR #14; its updated hosted checks are separate qualification. Root Ruff 0.15.21,
 the documentation link check and both exact composition validations pass.
 
-The newly authorized follow-up test remains paused pending deployment of these
-repairs; its original counters and pending task are recorded in
-`live-observations.md`. The older runtime checkpoint below remains historical.
+The clean `48f8ea5f` runtime subsequently completed a live planner/child/parent
+episode, waited quietly on unchanged observations, preserved the incorporated
+result across an app restart and continued quiet polling. The finding records
+that no release version was available in the supplied fallback view; a populated
+version baseline/change event is not claimed. The owner test is now stopped at
+revision 2 / control version 5 with usage 5/8 model calls, 4/12 tool calls,
+12,412/32,000 tokens and 50,045/300,000 ms, with no next check or reservations.
+Exact chronology and limits are recorded in `live-observations.md`.
 
-## Current production-preparation checkpoint — 2026-09-05
+Image `sha256:c565761d9048eb786deed5c04990db97c6a78c7fa7d3d68007078f1bdfca2d0c`
+matches all 591 runtime files and passes health/readiness/authentication denials,
+both isolated production exit-78 cases, and unchanged metadata for 145 installed
+packages. The exact runtime strict owner coverage passes at **2,784/2,874 changed
+statements (96.87%)**, with all three required owner producers parsed. New reports
+replace every stale runner/execution/personalization observation; 57 source
+identities and unchanged copied worker mappings are verified. The canonical
+release parser still returns `missing_provider_inputs` for its eight-target
+matrix. Source-bound coverage is not staging or release authority.
+
+The following older runtime checkpoint is historical. Deep draft publication
+is authorized by the owner's subsequent instruction, with missing evidence
+explicitly retained; it is not a verified Constitution-X bootstrap or permission
+to represent the feature as mergeable or production-ready.
+
+## Earlier production-preparation checkpoint — 2026-09-05
 
 Implemented and locally qualified, but not yet mergeable or production-ready.
 The final live test is stopped after a privacy refusal; successful live baseline
