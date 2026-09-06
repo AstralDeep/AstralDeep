@@ -49,6 +49,7 @@ from orchestrator.auth import (
     get_current_user_payload,
     require_user_id,
     require_user_id_or_web_session,
+    verify_admin,
 )
 from shared.feature_flags import flags
 from orchestrator.work_admission import (
@@ -543,9 +544,24 @@ async def get_operation_submission(
     response_model=RuntimeMetricsResponse,
     summary="Inspect runtime reliability metrics",
     description=(
-        "Returns the authenticated operator a payload-free snapshot of "
-        "effective admission gauges and bounded reliability counters."
+        "Returns a verified administrator an authenticated, payload-free "
+        "snapshot of effective admission gauges and bounded reliability "
+        "counters, including the feature-080 background operation latency "
+        "aggregates, with a no-store response. Deployment-wide diagnostics "
+        "require the existing Keycloak admin role: an authenticated non-admin "
+        "principal is denied with 403 before any collector or admission "
+        "inspection occurs. Ordinary owner-scoped operation reconciliation "
+        "remains available to non-admin users on its own endpoints."
     ),
+    responses={
+        403: {
+            "description": (
+                "The principal is authenticated but lacks the admin role; "
+                "denied before any metrics or admission inspection."
+            )
+        },
+    },
+    dependencies=[Depends(verify_admin)],
 )
 async def get_runtime_reliability_metrics(
     request: Request,
