@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/080-runtime-metrics`
 **Created**: 2026-09-06
-**Status**: Specified; implementation authorized, release not authorized
+**Status**: Implemented and locally verified; not pushed, merged or deployed
 **Input**: The owner asked to begin practical priority improvements from the growth investigation using the current setup, retaining primitive UI and security and using Claude.
 
 ## User Scenarios & Testing

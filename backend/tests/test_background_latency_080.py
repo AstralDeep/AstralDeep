@@ -640,21 +640,23 @@ def test_skip_reasons_use_closed_vocabulary_without_offending_data() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_overflow_would_be_total_is_rejected_without_partial_mutation() -> None:
+@pytest.mark.parametrize("overflow_phase", ("queue_wait", "execution", "end_to_end"))
+def test_overflow_would_be_total_is_rejected_without_partial_mutation(
+    overflow_phase: str,
+) -> None:
     observability = _observability()
-    # Seed every cumulative sum at the maximum finite double so any further
-    # valid addition overflows.  See _HugeInstant for the narrowly-justified
-    # white-box injection that produces an overflow-scale duration.
-    for phase in ("queue_wait", "execution", "end_to_end"):
-        key = (
-            "background_operation_latency_seconds_sum",
-            (
-                ("deployment_instance", "candidate_a"),
-                ("phase", phase),
-                ("result_code", "completed"),
-            ),
-        )
-        observability._values[key] = sys.float_info.max
+    # Overflow each phase independently, including after earlier phases have
+    # staged valid updates. None of the observation may become visible.
+    key = (
+        "background_operation_latency_seconds_sum",
+        (
+            ("deployment_instance", "candidate_a"),
+            ("phase", overflow_phase),
+            ("result_code", "completed"),
+        ),
+    )
+    observability._values[key] = sys.float_info.max
+    before = observability.snapshot()
 
     operation = SimpleNamespace(
         state=OperationState.COMPLETED,
@@ -669,17 +671,7 @@ def test_overflow_would_be_total_is_rejected_without_partial_mutation() -> None:
         # A fail-closed rejection is acceptable; it must not mutate partially.
         pass
 
-    for phase in ("queue_wait", "execution", "end_to_end"):
-        assert _sum(observability, phase, "completed") == sys.float_info.max
-        assert not any(
-            sample.name
-            in {
-                "background_operation_latency_seconds_count",
-                "background_operation_latency_seconds_bucket",
-            }
-            and sample.labels.get("phase") == phase
-            for sample in observability.snapshot()
-        )
+    assert observability.snapshot() == before
     # Every retained value stays finite and non-negative.
     for sample in observability.snapshot():
         assert math.isfinite(sample.value)
