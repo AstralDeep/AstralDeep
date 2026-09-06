@@ -202,7 +202,7 @@ Finish with an evidence-backed summary: files changed, behavior changed, exact t
 <!-- SPECKIT START -->
 ## Active Feature Plan
 
-- `079-persistent-agents`: `specs/079-persistent-agents/plan.md`
+- `080-runtime-metrics`: `specs/080-runtime-metrics/plan.md`
 
 ## Active Technologies
 

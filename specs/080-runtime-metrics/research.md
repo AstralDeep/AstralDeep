@@ -1,0 +1,8 @@
+# Research decisions
+
+- Decision: reuse the existing metrics endpoint. Evidence: api.py exports RuntimeObservability with login enforcement, but no verify_admin dependency; the app includes operation_router without a router-wide admin dependency. Rationale: protect aggregate deployment activity without building a second exporter. Alternative: leave any-user access; rejected for deployment diagnostics. This is an intentional access tightening from feature060.
+- Decision: measure background terminal timestamps at BackgroundTaskManager._observe_terminal. Evidence: its _terminal_observed guard already owns one local observation. Rationale: avoid counting subscribers/replays as additional executions. Alternative: instrument _send_operation_terminal_to_context as suggested by the initial Claude audit; rejected for this scope because delivery is per subscriber/context.
+- Decision: fixed histogram aggregates rather than another gauge. Evidence: observe_operation_duration is a last-value gauge currently called by the MCP endpoint. Admission-age gauges describe the current backlog, not realized latency. Existing metrics remain unchanged.
+- Decision: fixed labels and numeric duration buckets, no task-kind or raw terminal-code labels. Existing syntax validation alone is not a finite vocabulary or proof that snake_case strings contain no identities.
+- Decision: local process-lifetime aggregates only. No database, vendor, cross-node transport, new dependency or billing authority is introduced.
+- Evidence: current main c1c70f83 source review plus read-only Claude audit on 2026-09-06. The audit is a lead; source seams and intended semantics were independently checked. No production measurements were made.

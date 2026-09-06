@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Callable, Mapping
 
-from orchestrator.work_admission import AdmissionClassStatus
+from orchestrator.work_admission import AdmissionClassStatus, OperationState
 
 
 _SAFE_TOKEN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -34,8 +34,39 @@ _ALLOWED_LABELS = frozenset(
         "voice_state",
         "voice_reason",
         "cleanup_outcome",
+        "latency_bucket",
     }
 )
+
+# Feature 080: fixed cumulative upper bounds (seconds) for background operation
+# latency.  The tokens are a closed vocabulary shared with contracts/metrics.md;
+# a future Prometheus adapter maps them to numeric ``le`` bounds.
+_BACKGROUND_LATENCY_BUCKETS: tuple[tuple[str, float], ...] = (
+    ("le_0_05", 0.05),
+    ("le_0_1", 0.1),
+    ("le_0_25", 0.25),
+    ("le_0_5", 0.5),
+    ("le_1", 1.0),
+    ("le_2_5", 2.5),
+    ("le_5", 5.0),
+    ("le_10", 10.0),
+    ("le_30", 30.0),
+    ("le_60", 60.0),
+    ("le_300", 300.0),
+    ("le_900", 900.0),
+    ("le_3600", 3600.0),
+    ("le_inf", math.inf),
+)
+_BACKGROUND_LATENCY_TOKENS = frozenset(token for token, _ in _BACKGROUND_LATENCY_BUCKETS)
+
+# Coarse, content-free outcome for each terminal operation state.  Non-terminal
+# or unrecognized (including unhashable) states omit the whole observation.
+_BACKGROUND_OUTCOMES: dict[OperationState, str] = {
+    OperationState.COMPLETED: "completed",
+    OperationState.FAILED: "failed",
+    OperationState.CANCELLED: "cancelled",
+    OperationState.RETRYABLE: "retryable",
+}
 
 _VOICE_STATES = frozenset(
     {
@@ -220,6 +251,8 @@ class RuntimeObservability:
             raise ValueError(
                 f"{label_name} label values must be safe bounded snake_case tokens"
             )
+        if label_name == "latency_bucket" and value not in _BACKGROUND_LATENCY_TOKENS:
+            raise ValueError("latency_bucket must use a fixed reviewed upper bound")
         return value
 
     @classmethod
@@ -566,6 +599,140 @@ class RuntimeObservability:
             "cleanup_outcome",
         )
         self.record("voice_cleanup_total", labels=labels)
+
+    @staticmethod
+    def _background_outcome(state: object) -> str | None:
+        try:
+            return _BACKGROUND_OUTCOMES.get(state)  # type: ignore[arg-type]
+        except TypeError:
+            # An unhashable state (e.g. a list) is an invalid observation, not
+            # an accidental exception; treat it as an omitted invalid state.
+            return None
+
+    @staticmethod
+    def _as_utc_datetime(value: object) -> datetime:
+        if not isinstance(value, datetime) or value.utcoffset() is None:
+            raise ValueError("background latency requires aware timestamps")
+        # Same-zone datetime subtraction otherwise measures wall time across
+        # daylight-saving transitions rather than realized elapsed time.
+        return value.astimezone(UTC)
+
+    @staticmethod
+    def _finite_duration(span: object) -> float:
+        seconds = span.total_seconds()
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            raise ValueError("background latency span must be numeric seconds")
+        seconds = float(seconds)
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError(
+                "background latency span must be finite and non-negative"
+            )
+        return seconds
+
+    def _record_background_skip(self, reason: str) -> None:
+        labels = self._base_labels()
+        labels["result_code"] = reason
+        key = self._key("background_operation_latency_skipped_total", labels)
+        with self._lock:
+            self._values[key] = self._validate_value(self._values.get(key, 0) + 1)
+
+    def observe_background_operation(self, operation: object) -> None:
+        """Aggregate one terminal background operation's realized latency.
+
+        Reads only the safe projection's coarse ``state`` and the
+        ``accepted_at``/``started_at``/``terminal_at`` timestamps — never an
+        identifier, task kind, raw terminal code, prompt, credential or
+        payload dimension.  Missing or invalid inputs record a single bounded
+        omission reason instead of inventing latency; a full observation
+        updates every affected phase atomically under the collector lock so no
+        snapshot can see a partial observation, and an overflowing cumulative
+        sum is rejected without partly mutating any counter.
+        """
+
+        state = getattr(operation, "state", None)
+        accepted_at = getattr(operation, "accepted_at", None)
+        started_at = getattr(operation, "started_at", None)
+        terminal_at = getattr(operation, "terminal_at", None)
+
+        outcome = self._background_outcome(state)
+        if outcome is None:
+            self._record_background_skip("invalid_state")
+            return
+        if accepted_at is None or terminal_at is None:
+            self._record_background_skip("missing_timestamp")
+            return
+        started = started_at is not None
+        try:
+            accepted_at = self._as_utc_datetime(accepted_at)
+            terminal_at = self._as_utc_datetime(terminal_at)
+            if started:
+                started_at = self._as_utc_datetime(started_at)
+            valid_order = (
+                accepted_at <= started_at <= terminal_at
+                if started else accepted_at <= terminal_at
+            )
+            durations = ()
+            if valid_order:
+                if started:
+                    spans = (
+                        ("queue_wait", started_at - accepted_at),
+                        ("execution", terminal_at - started_at),
+                        ("end_to_end", terminal_at - accepted_at),
+                    )
+                else:
+                    # Never-started work has no execution sample.
+                    spans = (
+                        ("queue_wait", terminal_at - accepted_at),
+                        ("end_to_end", terminal_at - accepted_at),
+                    )
+                durations = tuple(
+                    (phase, self._finite_duration(span)) for phase, span in spans
+                )
+        except Exception:
+            # Malformed timezone/conversion/arithmetic objects are timing
+            # omissions. Never retain or log their values or exception text.
+            self._record_background_skip("invalid_timestamp")
+            return
+        if not valid_order:
+            self._record_background_skip("invalid_order")
+            return
+
+        with self._lock:
+            staging: dict[
+                tuple[str, tuple[tuple[str, str], ...]], int | float
+            ] = {}
+            for phase, duration in durations:
+                labels = self._base_labels()
+                labels["phase"] = phase
+                labels["result_code"] = outcome
+                sum_key = self._key(
+                    "background_operation_latency_seconds_sum", labels
+                )
+                # Validate every increment before any mutation; a would-be
+                # overflow raises here, before staging is applied.
+                staging[sum_key] = self._validate_value(
+                    self._values.get(sum_key, 0.0) + duration
+                )
+                count_key = self._key(
+                    "background_operation_latency_seconds_count", labels
+                )
+                staging[count_key] = self._validate_value(
+                    self._values.get(count_key, 0) + 1
+                )
+                for token, bound in _BACKGROUND_LATENCY_BUCKETS:
+                    bucket_labels = dict(labels)
+                    bucket_labels["latency_bucket"] = token
+                    bucket_key = self._key(
+                        "background_operation_latency_seconds_bucket",
+                        bucket_labels,
+                    )
+                    current = self._values.get(bucket_key, 0)
+                    # Publish every bucket, including unchanged zero counts, so
+                    # each observed phase/outcome snapshot is interpretable.
+                    staging[bucket_key] = self._validate_value(
+                        current + (1 if duration <= bound else 0)
+                    )
+            self._values.update(staging)
 
     def snapshot(self) -> tuple[RuntimeMetricSample, ...]:
         """Return a deterministic copy suitable for an exporter or status API."""

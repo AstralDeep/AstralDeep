@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from orchestrator import api as api_module
-from orchestrator.auth import require_user_id
+from orchestrator.auth import get_current_user_payload, require_user_id
 from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.work_admission import (
     AdmissionClass,
@@ -291,6 +291,14 @@ def test_openapi_documents_both_authenticated_reconciliation_paths() -> None:
 
 def test_authenticated_metrics_export_refreshes_effective_admission_gauges() -> None:
     client = _client(_coordinator())
+    # Feature 080 gates deployment diagnostics behind the existing verified-admin
+    # role.  Override only the verified-payload boundary so the genuine
+    # ``verify_admin`` role check runs against a synthetic admin principal; never
+    # override ``verify_admin`` itself or weaken the owner-isolation fixtures.
+    client.app.dependency_overrides[get_current_user_payload] = lambda: {
+        "sub": "owner-a",
+        "realm_access": {"roles": ["admin", "user"]},
+    }
 
     response = client.get("/api/runtime-reliability/metrics")
 

@@ -589,6 +589,23 @@ class BackgroundTaskManager:
         except Exception:
             logger.debug("background operation telemetry failed", exc_info=True)
 
+    def _observe_background_latency(self, operation: OperationProjection) -> None:
+        """Record the once-per-task background latency observation.
+
+        The collector reads only coarse state and lifecycle timestamps.  Any
+        collector failure is contained with a fixed, content-free diagnostic so
+        terminal delivery, cancellation, cleanup and admission refresh remain
+        unaffected; no exception text or traceback that could carry user data is
+        logged.
+        """
+
+        try:
+            observe = getattr(self._observability, "observe_background_operation", None)
+            if callable(observe):
+                observe(operation)
+        except Exception:
+            logger.debug("background latency observation failed")
+
     async def _observe_admission(self) -> None:
         """Request one detached, coalesced effective-admission refresh."""
 
@@ -678,6 +695,7 @@ class BackgroundTaskManager:
         ):
             return
         bg_task._terminal_observed = True
+        self._observe_background_latency(operation)
         operation_kind = self._operation_kind(bg_task)
         result_code = operation.terminal_code or operation.state.value
         if operation.terminal_code == "queue_wait_expired":
