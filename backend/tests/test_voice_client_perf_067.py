@@ -226,9 +226,13 @@ def test_livekit_is_idle_prefetched_alongside_plotly(client_js):
 def test_every_livekit_sdk_entry_point_is_gated_by_the_loader(client_js):
     """``createVoiceRoom`` is the only door to ``window.LivekitClient``; both of
     its callers must ensure the SDK is resident first."""
-    activation = _js_function(client_js, "beginVoiceActivation")
+    router = _js_function(client_js, "routeVoiceBackendActivation")
+    assert 'voiceSpeechBackend === "client_local"' in router
+    assert "beginClientLocalActivation(kind, record.body)" in router
+    assert "beginRemoteVoiceActivation(kind)" in router
+    activation = _js_function(client_js, "beginRemoteVoiceActivation")
     assert "if (!livekitSdkReady() && sdkRetried !== true)" in activation
-    assert "ensureLiveKitSdk(function () { beginVoiceActivation(kind, true); })" in activation
+    assert "ensureLiveKitSdk(function () { beginRemoteVoiceActivation(kind, true); })" in activation
     # the gate runs before the room is built
     assert activation.index("ensureLiveKitSdk") < activation.index("createVoiceRoomFromGesture()")
 

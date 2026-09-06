@@ -17,3 +17,5 @@ b7d66e7621cfd4aa1af84d8e97293e1b4fba18f4:frontend/src/__tests__/llm_config_hook.
 839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_inbound_auth.py:generic-api-key:124
 839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_inbound_auth.py:generic-api-key:267
 40cc17aba0c6bd4d7ca3e22b76829b7b657e5b90:windows-client/tests/test_remote_machines_surface.py:private-key:42
+# Reviewed 079 test-only constructed JWT: private-owner payload, invalid literal signature.
+756b338f3054bb8f509a2b94f0ac7c8b9b1b8cc3:scripts/tests/test_verify_persistent_agents_079.py:generic-api-key:35

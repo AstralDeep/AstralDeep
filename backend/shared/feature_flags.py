@@ -45,6 +45,9 @@ class FeatureFlags:
             # the lead-dev security review of offline_grant.py is recorded
             # (025 T057 / 030 FR-004/FR-005). Default OFF.
             "scheduler_execution": self._read("FF_SCHEDULER_EXECUTION", False),
+            # 079: durable owner-directed agents; independently opt in only
+            # after the configured component/schema and consent gates pass.
+            "persistent_agents": self._read("FF_PERSISTENT_AGENTS", False),
             # 030-finish-soul-integration: injects the memory meta-tool
             # (remember / memory_search / memory_get) so the assistant can
             # actively use cross-session memory on request, mirroring

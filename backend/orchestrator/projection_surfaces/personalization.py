@@ -34,15 +34,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
-from datetime import datetime, timezone
-
-from pydantic import ValidationError
+from datetime import UTC, datetime
 
 from audit.hooks import record_generic
 from dreaming.consolidation import run_sweep
 from personalization.phi_gate import get_phi_gate
 from personalization.schemas import PersonalitySpec, ProfileUpdateRequest
+from pydantic import ValidationError
 from scheduler.store import ScheduleActionError, ScheduledJobStore
 from shared.feature_flags import flags
 from webrender.chrome import esc, notice_block
@@ -121,7 +121,7 @@ def _fmt_ts(ms) -> str:
     if not ms:
         return "—"
     try:
-        dt = datetime.fromtimestamp(int(ms) / 1000.0, tz=timezone.utc)
+        dt = datetime.fromtimestamp(int(ms) / 1000.0, tz=UTC)
         return dt.strftime("%Y-%m-%d %H:%M UTC")
     except (TypeError, ValueError, OSError, OverflowError):
         return "—"
@@ -132,7 +132,7 @@ def _claims(orch, websocket, user_id: str) -> dict:
     try:
         sessions = getattr(orch, "ui_sessions", None) or {}
         claims = sessions.get(websocket)
-    except Exception:  # pragma: no cover - defensive
+    except Exception:  # noqa: BLE001 - legacy audit attribution fallback, never assignment authority
         claims = None
     return claims or {"sub": user_id}
 
@@ -263,6 +263,10 @@ async def render(orch, user_id, roles, params) -> str:
         body = await asyncio.to_thread(_render_skills, orch, user_id)
     elif tab == "schedule":
         body = await asyncio.to_thread(_render_schedule, orch, user_id)
+        if flags.is_enabled("persistent_agents"):
+            from astralprojection.chrome import render_html
+            view = await _assignment_view(orch, user_id, params)
+            body = '<h3>Ongoing agents</h3>' + render_html(view) + '<h3>Scheduled tasks</h3>' + body
     else:
         body = await asyncio.to_thread(_render_dreaming, orch, user_id)
     return f'<div class="space-y-4">{_tab_bar(tab)}{body}</div>'
@@ -591,6 +595,11 @@ async def components(orch, user_id, roles, params):
         body = await asyncio.to_thread(_components_skills, orch, user_id)
     elif tab == "schedule":
         body = await asyncio.to_thread(_components_schedule, orch, user_id)
+        if flags.is_enabled("persistent_agents"):
+            view = await _assignment_view(orch, user_id, params)
+            body = [_sdui.text("Ongoing agents", "h3"),
+                    *[item.to_dict() for item in view.components],
+                    _sdui.text("Scheduled tasks", "h3"), *body]
     else:
         body = await asyncio.to_thread(_components_dreaming, orch, user_id)
     return [tab_bar, *body]
@@ -1115,6 +1124,380 @@ async def _handle_dreaming_trigger(orch, websocket, user_id, roles, payload):
     return (SURFACE_KEY, _params("dreaming"), notice_block("success", msg))
 
 
+_ASSIGNMENT_CONTROLS = ("create", "revise", "pause", "resume", "stop", "revoke", "run_now", "approval_decide")
+_ASSIGNMENT_ACTIONS = tuple(f"chrome_assignment_{suffix}" for suffix in _ASSIGNMENT_CONTROLS)
+_ASSIGNMENT_METRICS = ("model_calls", "tool_calls", "tokens", "elapsed_ms")
+_ASSIGNMENT_LIMITS = ("cadence_seconds", "max_retries", "max_concurrent_tasks", "max_depth", "max_tasks", "step_timeout_ms")
+_ASSIGNMENT_LABELS = {
+    "cadence_seconds": "Check interval (seconds)", "max_retries": "Retries",
+    "max_concurrent_tasks": "Concurrent tasks", "max_depth": "Delegation depth",
+    "max_tasks": "Task count", "step_timeout_ms": "Step timeout (milliseconds)",
+    "model_calls": "Model calls", "tool_calls": "Tool calls", "tokens": "Tokens",
+    "elapsed_ms": "Elapsed time (milliseconds)", "spend_micro_units": "Spending (millionths of currency unit)",
+}
+
+
+def _assignment_access(orch, websocket, user_id):
+    """Require the verified human socket; never synthesize claims for controls."""
+    from persistent_agents.models import AssignmentError
+    if not flags.is_enabled("persistent_agents"):
+        raise AssignmentError("assignment_feature_disabled", 503)
+    service = getattr(orch, "persistent_assignments", None)
+    if service is None:
+        raise AssignmentError("assignment_service_unavailable", 503)
+    claims = (getattr(orch, "ui_sessions", None) or {}).get(websocket)
+    if (websocket is None or getattr(websocket, "closed", False)
+            or not isinstance(claims, dict) or claims.get("sub") != user_id
+            or claims.get("act") or any(claims.get(key) for key in
+                ("machine_class", "machine_turn_class", "_machine_turn", "delegated"))):
+        raise AssignmentError("assignment_owner_required", 403)
+    return service, claims
+
+
+def _assignment_tool_options(orch, service, user_id, claims):
+    """Use the same live catalog as dispatch, including finite operation bounds."""
+    from persistent_agents.models import AssignmentError
+
+    from orchestrator.tool_visibility import eligible_tool_pairs
+    permissions = orch.tool_permissions
+    pairs = eligible_tool_pairs(orch, user_id,
+        disabled_agents=permissions.list_disabled_agents(user_id), identity_claims=claims)
+    tools, sources = [], []
+    for agent, skill in pairs:
+        identity = f"{agent}:{skill.id}"
+        try:
+            service.tool_bound(identity)
+        except AssignmentError:
+            continue
+        tools.append(identity)
+        if permissions.get_tool_scope(agent, skill.id) in ("tools:read", "tools:search"):
+            sources.append("public_page" if identity == "web-research-1:fetch_page" else identity)
+    return sources[:32], tools[:32]
+
+
+def _assignment_limits(flat=None):
+    from persistent_agents.models import AssignmentLimits
+    values = AssignmentLimits().model_dump()
+    if flat is None:
+        return values
+    for name in _ASSIGNMENT_LIMITS:
+        values[name] = flat[name]
+    for period, prefix in (("daily", "daily_"), ("lifetime", "")):
+        for name in (*_ASSIGNMENT_METRICS, "spend_micro_units"):
+            values[period][name] = flat.get(prefix + name)
+        values[period]["currency"] = flat.get("currency")
+    return AssignmentLimits.model_validate(values).model_dump()
+
+
+def _assignment_limit_fields(limits):
+    result = [{"name": key, "label": _ASSIGNMENT_LABELS[key], "value": limits[key]}
+              for key in _ASSIGNMENT_LIMITS]
+    for period in ("daily", "lifetime"):
+        result.extend({"name": f"{period}.{key}", "label": f"{period.title()} {_ASSIGNMENT_LABELS[key]}",
+                       "value": limits[period][key],
+                       "help": "Optional; only used with a currency cap." if key == "spend_micro_units" else "Finite hard limit."}
+                      for key in (*_ASSIGNMENT_METRICS, "spend_micro_units"))
+    return result
+
+
+def _assignment_row(record):
+    """Project allowlisted durable owner state; heartbeat versions are private."""
+    from persistent_agents.service import public_record
+    data = public_record(record)
+    definition, usage = data["definition"], data.get("usage", {})
+    source = definition["source"]
+    limits = _assignment_limits(definition["limits"])
+    currency = limits["lifetime"]["currency"]
+    source_key = "public_page" if source["profile"] == "public_page" else f"{source['agent_id']}:{source['tool_name']}"
+    row = {key: data.get(key) for key in ("assignment_id", "instruction_revision", "control_epoch", "lifecycle", "phase", "next_wake_at", "wake_reason", "last_check_at", "latest_result")}
+    if row["lifecycle"] in ("stopped", "completed"):
+        row["wake_reason"] = ""
+    row["definition"] = {key: definition.get(key) for key in ("name", "instructions", "allowed_tools", "completion_condition", "conversation_id")}
+    row["definition"].update(source_key=source_key, source_url=source["arguments"].get("url", ""),
+        source_arguments=json.dumps(source["arguments"], ensure_ascii=False) if source_key != "public_page" else "",
+        linked_document_urls="\n".join(source.get("linked_document_urls", [])),
+        currency_cap_enabled=currency is not None, currency=currency or "")
+    row["grant_summary"] = ("Revocable unattended authorization is bound; current permissions are rechecked for every action."
+        if data.get("authority", {}).get("grant_bound") else "Authorization required. Revise and approve to bind a current grant.")
+    row["currency_cap_label"] = f"{limits['lifetime']['spend_micro_units']} millionths of {currency}" if currency else "No currency cap"
+    row["monetary_cost_label"] = (f"{usage.get('spent', {}).get('spend_micro_units', 0)} millionths of {currency}"
+        if currency else "Unpriced/unknown")
+    row["limit_summary"] = [{"label": _ASSIGNMENT_LABELS[key], "value": str(limits[key])} for key in _ASSIGNMENT_LIMITS]
+    row["usage_summary"] = []
+    for key in _ASSIGNMENT_METRICS:
+        spent, outstanding, daily = (usage.get(bucket, {}).get(key, 0) for bucket in ("spent", "outstanding", "daily"))
+        row["usage_summary"].append({"label": _ASSIGNMENT_LABELS[key],
+            "value": f"Lifetime {spent}/{limits['lifetime'][key]}; today {daily}/{limits['daily'][key]}; reserved {outstanding}; remaining {max(0, min(limits['lifetime'][key] - spent - outstanding, limits['daily'][key] - daily - outstanding))}"})
+    error = data.get("safe_error_code")
+    row["safe_error"] = error or ""
+    if error and row["lifecycle"] in ("active", "paused"):
+        row["safe_error"] += ". Review activity and restore authorization or revise the assignment before resuming."
+    row["available_actions"] = list(_ASSIGNMENT_ACTIONS) if row["lifecycle"] in ("active", "paused") else []
+    row["submission_ids"] = {action: str(uuid.uuid4()) for action in row["available_actions"]}
+    row["tasks"] = [{"title": task.get("title"), "state": task.get("state"), "result": task.get("bounded_result"),
+        "incorporated": bool(task.get("incorporated_by")),
+        "dependency_summary": ", ".join(task.get("depends_on", [])),
+        "provenance_summary": "Recorded result " + task["result_digest"] if task.get("result_digest") else "No accepted result receipt yet."}
+        for task in data.get("tasks", [])[:32]]
+    return row, limits
+
+
+def _assignment_approval(action):
+    from persistent_agents.service import public_action
+    data = public_action(action)
+    intent = data["intent"]
+    request = intent["request"]
+    expiry = intent.get("approval_expires_at")
+    try:
+        parsed_expiry = datetime.fromisoformat(expiry)
+        expired = parsed_expiry.tzinfo is None or parsed_expiry.astimezone(UTC) <= datetime.now(UTC)
+    except (ValueError, TypeError):
+        expired = True
+    # Never expose credential-bearing fields, even from a malformed stored
+    # proposal. An incomplete review cannot be approved through this surface.
+    visible = _assignment_review_text(request)
+    if visible is None:
+        expired = True
+    # JSON is text escaped by Projection and never replacement tool arguments.
+    return {key: data.get(key) for key in ("action_id", "instruction_revision", "control_epoch", "state")} | {
+        "request_digest": intent["request_digest"], "expires_at": expiry, "expired": expired,
+        "tool_label": f"{request.get('agent_id', 'model')}:{request.get('tool_name', request.get('kind', 'operation'))}",
+        "target_label": "See exact parameters",
+        "arguments_summary": visible or "This operation contains protected or oversized fields and cannot be reviewed here.",
+        "consequence": intent.get("sensitivity", "Review the exact operation"),
+        "preconditions_summary": "Bound precondition " + intent["precondition_digest"],
+        "interactive_only": intent.get("interactive_only", False),
+        "submission_ids": {decision: str(uuid.uuid4()) for decision in ("approve", "decline")}}
+
+
+def _assignment_review_text(request):
+    from urllib.parse import parse_qsl, urlsplit
+
+    from persistent_agents.models import SourceSelection
+    protected = {"password", "secret", "token", "access_token", "refresh_token", "api_key", "apikey",
+                 "authorization", "cookie", "credentials", "private_key", "client_secret", "offline_grant_id"}
+
+    def safe(value, depth=0):
+        if depth > 8:
+            return False
+        if isinstance(value, dict):
+            return all(isinstance(key, str) and key.lower().replace("-", "_") not in protected and safe(child, depth + 1) for key, child in value.items())
+        if isinstance(value, (list, tuple)):
+            return all(safe(child, depth + 1) for child in value)
+        if isinstance(value, str) and value.startswith(("https://", "http://")):
+            parsed = urlsplit(value)
+            return not (parsed.username or parsed.password or any(key.lower().replace("-", "_") in protected for key, _ in parse_qsl(parsed.query)))
+        return value is None or type(value) in (str, int, float, bool)
+
+    if not safe(request):
+        return None
+    try:
+        # Reuse bounded secret-aware JSON validation, including finite numbers.
+        SourceSelection.bounded_arguments(request)
+        return json.dumps(request, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    except (ValueError, TypeError):
+        return None
+
+
+def _assignment_draft(params, definition):
+    """A chat proposal is only a validated form prefill, never consent."""
+    from persistent_agents.models import AssignmentError, SourceSelection
+    draft = params.get("assignment_draft", {})
+    if not isinstance(draft, dict) or set(draft) - {"name", "instructions", "source_url"}:
+        raise AssignmentError("assignment_draft_invalid", 422)
+    for key, maximum in (("name", 120), ("instructions", 4096)):
+        if key in draft and (not isinstance(draft[key], str) or not 1 <= len(draft[key]) <= maximum or not draft[key].strip() or "\x00" in draft[key]):
+            raise AssignmentError("assignment_draft_invalid", 422)
+    if "source_url" in draft:
+        SourceSelection(agent_id="web-research-1", tool_name="fetch_page", arguments={"url": draft["source_url"]})
+    definition.update(draft)
+    conversation = params.get("conversation_id")
+    if conversation is not None:
+        if not isinstance(conversation, str) or not 1 <= len(conversation) <= 128 or not conversation.strip() or "\x00" in conversation:
+            raise AssignmentError("assignment_destination_invalid", 422)
+        definition["conversation_id"] = conversation
+
+
+async def _assignment_state(orch, websocket, user_id, params):
+    from persistent_agents.models import AssignmentError
+    from persistent_agents.service import thaw
+    state = {"enabled": flags.is_enabled("persistent_agents"),
+             "execution_enabled": getattr(orch, "persistent_assignment_runner", None) is not None}
+    if not state["enabled"]:
+        return state
+    try:
+        service, claims = _assignment_access(orch, websocket, user_id)
+        identity = params.get("assignment_id")
+        mode = params.get("assignment_mode") or ("detail" if identity else "list")
+        if mode not in ("list", "detail", "create", "revise"):
+            raise AssignmentError("assignment_view_invalid", 422)
+        state.update(mode=mode, available_actions=["chrome_assignment_create"],
+            submission_ids={"chrome_assignment_create": str(uuid.uuid4())})
+        if mode == "list":
+            records = await service.list(user_id, claims, limit=50, after_id=params.get("assignment_cursor"))
+            state["assignments"] = [_assignment_row(item)[0] for item in records]
+            if len(records) == 50:
+                state["next_cursor"] = state["assignments"][-1]["assignment_id"]
+            return state
+        if mode == "create":
+            row, limits = {"definition": {"source_key": "public_page", "allowed_tools": ["web-research-1:fetch_page"], "currency_cap_enabled": False}}, _assignment_limits()
+        else:
+            row, limits = _assignment_row(await service.get(user_id, claims, identity))
+        state["assignment"] = row
+        if mode in ("create", "revise"):
+            state["source_options"], state["tool_options"] = await asyncio.to_thread(_assignment_tool_options, orch, service, user_id, claims)
+            state["registered_reader_enabled"] = any(source != "public_page" for source in state["source_options"])
+            state["limit_fields"] = _assignment_limit_fields(limits)
+            _assignment_draft(params, row["definition"])
+        else:
+            cursor = params.get("activity_cursor", "0")
+            if not isinstance(cursor, str) or not re.fullmatch(r"[0-9]{1,19}", cursor):
+                raise AssignmentError("assignment_cursor_invalid", 422)
+            activity = await service.activity(user_id, claims, identity, after_sequence=int(cursor), limit=50)
+            row["activity"] = [{key: thaw(item).get(key) for key in ("title", "summary", "created_at")} for item in activity]
+            if len(activity) == 50:
+                row["activity_cursor"] = str(thaw(activity[-1])["sequence"])
+            row["approvals"] = [_assignment_approval(item) for item in await service.proposals(user_id, claims, identity)]
+        return state
+    except (AssignmentError, ValidationError, ValueError, TypeError):
+        return {**state, "error": "This assignment view is unavailable or invalid. Reload Schedule and check your authorization."}
+    except Exception:  # noqa: BLE001 - fail closed without disclosing backend diagnostics
+        logger.error("assignment_surface_query_failed")
+        return {**state, "error": "The assignment state could not be loaded. Reload Schedule."}
+
+
+async def _assignment_view(orch, user_id, params):
+    from astralprojection.chrome.assignments import build_assignments_view
+
+    from orchestrator.chrome_events import current_surface_socket
+    return build_assignments_view(await _assignment_state(orch, current_surface_socket.get(), user_id, params))
+
+
+def _assignment_integer(value):
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,16}", value):
+        return int(value)
+    if type(value) is int:
+        return value
+    raise ValueError("invalid integer")
+
+
+def _assignment_form(fields):
+    """Strictly convert native/web form values to the one service request model."""
+    from persistent_agents.models import AssignmentError
+    if not isinstance(fields, dict) or fields.get("consent") is not True:
+        raise AssignmentError("assignment_consent_required", 422)
+    allowed = {"name", "instructions", "source_key", "source_url", "source_arguments", "linked_document_urls",
+        "allowed_tools", "conversation_id", "completion_condition", "consent", "currency_cap_enabled", "currency"}
+    limit_names = set(_ASSIGNMENT_LIMITS) | {f"{period}.{metric}" for period in ("daily", "lifetime") for metric in (*_ASSIGNMENT_METRICS, "spend_micro_units")}
+    if set(fields) - allowed - {f"limits.{name}" for name in limit_names}:
+        raise ValueError("invalid fields")
+    limits = {"daily": {}, "lifetime": {}}
+    capped = fields.get("currency_cap_enabled", False)
+    if type(capped) is not bool:
+        raise ValueError("invalid currency selection")
+    for name in limit_names:
+        value = fields.get(f"limits.{name}")
+        period, separator, metric = name.partition(".")
+        target = limits[period] if separator else limits
+        if metric == "spend_micro_units" and not capped:
+            target[metric] = None
+        else:
+            target[metric if separator else name] = _assignment_integer(value)
+    for period in ("daily", "lifetime"):
+        limits[period]["currency"] = fields.get("currency") if capped else None
+    source_key = fields.get("source_key")
+    if source_key == "public_page":
+        source = {"profile": "public_page", "agent_id": "web-research-1", "tool_name": "fetch_page", "arguments": {"url": fields.get("source_url")}}
+    else:
+        agent, tool = source_key.split(":", 1)
+        raw = fields.get("source_arguments", "")
+        if not isinstance(raw, str) or len(raw) > 8192:
+            raise ValueError("invalid reader selection")
+        source = {"profile": "registered_reader", "agent_id": agent, "tool_name": tool, "arguments": json.loads(raw)}
+    linked = fields.get("linked_document_urls", "")
+    if not isinstance(linked, str) or len(linked) > 8 * 2049:
+        raise ValueError("invalid linked URLs")
+    source["linked_document_urls"] = [url.strip() for url in linked.splitlines() if url.strip()]
+    tools = fields.get("allowed_tools")
+    if not isinstance(tools, list) or len(tools) > 32:
+        raise ValueError("invalid tools")
+    references = []
+    for identity in tools:
+        agent, tool = identity.split(":", 1)
+        references.append({"agent_id": agent, "tool_name": tool})
+    return {"name": fields.get("name"), "instructions": fields.get("instructions"), "source": source,
+        "allowed_tools": references, "limits": limits, "consent": True,
+        "conversation_id": fields.get("conversation_id") or None,
+        "completion_condition": fields.get("completion_condition") or None}
+
+
+def _assignment_handler(command):
+    async def handle(orch, websocket, user_id, roles, payload):
+        from persistent_agents.models import (
+            ApprovalDecisionRequest,
+            AssignmentError,
+            ControlRequest,
+            CreateAssignmentRequest,
+            ReviseAssignmentRequest,
+            validate_id,
+        )
+        params = _params("schedule")
+        try:
+            service, claims = _assignment_access(orch, websocket, user_id)
+            if not isinstance(payload, dict):
+                raise TypeError("invalid payload")
+            body = dict(payload)
+            # Clients echo their transport generation inside chrome payloads.
+            # Validate and discard only that envelope field; it grants no
+            # assignment authority and is not part of a durable owner command.
+            if "request_generation" in body:
+                validate_id(body.pop("request_generation"))
+            if command != "create":
+                identity = validate_id(body.pop("assignment_id"))
+                params["assignment_id"] = identity
+            if command in ("create", "revise"):
+                fields = _assignment_form(body.pop("fields", None))
+                if command == "create":
+                    request = CreateAssignmentRequest.model_validate({**fields, **body})
+                    # Unknown top-level fields are rejected; none can override reviewed fields.
+                    if set(body) != {"submission_id"}:
+                        raise ValueError("invalid payload")
+                    result = await service.create(user_id, claims, request)
+                    params["assignment_id"] = result.assignment_id
+                else:
+                    if set(body) != {"submission_id", "expected_instruction_revision", "expected_control_epoch"}:
+                        raise ValueError("invalid payload")
+                    request = ReviseAssignmentRequest.model_validate({**fields, **body})
+                    result = await service.revise(user_id, claims, identity, request)
+                message = "Assignment instructions and consent recorded."
+            elif command == "approval_decide":
+                action_id = validate_id(body.pop("action_id"))
+                request = ApprovalDecisionRequest.model_validate(body)
+                result = await service.decide(user_id, claims, identity, action_id, request, interaction=websocket)
+                outcome = getattr(result, "state", None) or getattr(result, "outcome", None)
+                message = ("Action outcome recorded. Reload activity for the durable result." if outcome in ("completed", "declined", "succeeded", "failed", "uncertain")
+                    else "Decision recorded. The attended security review may require another approval; inspect activity before continuing.")
+            else:
+                request = ControlRequest.model_validate(body)
+                result = await service.control(user_id, claims, identity, command.replace("_", "-"), request)
+                message = "Check requested within cadence and resource limits." if command == "run_now" else f"Assignment {command} recorded."
+            if getattr(result, "begun_action_ids", ()):
+                message += " An already started external request remains in flight; this control cannot undo it."
+            runner = getattr(orch, "persistent_assignment_runner", None)
+            if runner is not None:
+                runner.notify(params.get("assignment_id"))
+            return SURFACE_KEY, params, notice_block("success", message)
+        except (ValidationError, ValueError, TypeError, KeyError, AttributeError):
+            message = "Invalid assignment request. Reload the current form and review every field."
+        except AssignmentError as exc:
+            message = f"Assignment request refused ({exc.code}). Reload the current assignment and review your authorization."
+        except Exception:  # noqa: BLE001 - ambiguous outcomes require durable reconciliation
+            logger.error("assignment_surface_command_failed")
+            message = "The assignment outcome could not be confirmed. Reload activity before retrying; reuse the original submission for a transport retry."
+        return SURFACE_KEY, params, notice_block("error", message)
+    return handle
+
+
 HANDLERS = {
     "chrome_profile_save": _handle_profile_save,
     "chrome_memory_update": _handle_memory_update,
@@ -1124,6 +1507,14 @@ HANDLERS = {
     "chrome_job_resume": _handle_job_resume,
     "chrome_job_delete": _handle_job_delete,
     "chrome_job_run_now": _handle_job_run_now,
+    "chrome_assignment_create": _assignment_handler("create"),
+    "chrome_assignment_revise": _assignment_handler("revise"),
+    "chrome_assignment_pause": _assignment_handler("pause"),
+    "chrome_assignment_resume": _assignment_handler("resume"),
+    "chrome_assignment_stop": _assignment_handler("stop"),
+    "chrome_assignment_revoke": _assignment_handler("revoke"),
+    "chrome_assignment_run_now": _assignment_handler("run_now"),
+    "chrome_assignment_approval_decide": _assignment_handler("approval_decide"),
     "chrome_dreaming_toggle": _handle_dreaming_toggle,
     "chrome_dreaming_trigger": _handle_dreaming_trigger,
 }

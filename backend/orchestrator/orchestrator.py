@@ -15515,6 +15515,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tool_to_unqualified[_sched_name] = _sched_name
             scheduler_tool_injected = True
 
+        # Persistent owner controls remain available on narrow chat clients.
+        from persistent_agents import chat_tools as persistent_chat
+        persistent_tool_injected = False
+        if (flags.is_enabled("persistent_agents") and not draft_agent_id
+                and not getattr(websocket, "task", None)):
+            for definition in persistent_chat.meta_tool_definitions():
+                name = definition["function"]["name"]
+                tools_desc.append(definition)
+                tool_to_agent[name] = persistent_chat.META_AGENT_ID
+                tool_to_unqualified[name] = name
+            persistent_tool_injected = True
+            is_text_only = False
+
         # 030-finish-soul-integration — cross-session memory from chat: the
         # remember/memory_search/memory_get meta-tools make the feature-025
         # memory store usable on request (passive prompt recall is unchanged).
@@ -15643,7 +15656,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if flags.is_enabled("skill_packs") and hasattr(self, 'knowledge_index'):
                 try:
                     from orchestrator import skill_packs
-                    _meta = {"__orchestrator__", "__scheduler__", "__memory__",
+                    _meta = {"__orchestrator__", "__scheduler__", "__memory__", "__persistent_assignments__",
                              "__desktop_codegen__", "__subtasks__"}
                     _agents_in_play = {a for a in tool_to_agent.values() if a and a not in _meta}
                     _digest = skill_packs.build_skill_digest(
@@ -15660,7 +15673,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # Meta-tools (orchestrator/scheduler/memory pseudo-agents) are
             # excluded — they are not user "skills".
             personalization_skill_lines: List[str] = []
-            _meta_agent_ids = {"__orchestrator__", "__scheduler__", "__memory__", "__subtasks__",
+            _meta_agent_ids = {"__orchestrator__", "__scheduler__", "__memory__", "__subtasks__", "__persistent_assignments__",
                                "__desktop_codegen__"}
             for _td in tools_desc:
                 try:
@@ -15697,6 +15710,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
             # Feature 030 — recurring-work guidance accompanies the
             # scheduling meta-tool (stops the model denying the capability).
+            if persistent_tool_injected:
+                system_prompt += "\n" + persistent_chat.SYSTEM_PROMPT_ADDENDUM
             if scheduler_tool_injected:
                 system_prompt += scheduling_chat.SYSTEM_PROMPT_ADDENDUM
 
@@ -17011,6 +17026,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from the API response, or (None, None) on complete failure.
         """
         actor_user_id, auth_principal = self._llm_audit_principals(websocket)
+        from persistent_agents.dispatch_context import current_dispatch
+        persistent_dispatch = current_dispatch()
         try:
             client, source, resolved = await self._resolve_llm_client_for(websocket)
         except self._LLMUnavailable:
@@ -17091,6 +17108,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             stream_chat_id = _NARRATIVE_STREAM_CHAT.get()
         stream_allowed = (allow_stream and websocket is not None
                           and self._llm_streaming_enabled())
+        if persistent_dispatch is not None:
+            stream_allowed = False
         attempt = 0
         # 076 (FR-016): an endpoint that already rejected image parts for this
         # (base_url, model) gets text-only messages — the image messages are
@@ -17133,10 +17152,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
                         stream_allowed = False
                 if response is None:
-                    response = await asyncio.to_thread(
-                        client.chat.completions.create,
-                        **kwargs
-                    )
+                    if persistent_dispatch is not None:
+                        response = await persistent_dispatch.invoke_model(
+                            lambda request_kwargs=kwargs: asyncio.to_thread(
+                                client.chat.completions.create, **request_kwargs),
+                            kwargs,
+                        )
+                    else:
+                        response = await asyncio.to_thread(
+                            client.chat.completions.create,
+                            **kwargs
+                        )
                 choices = getattr(response, "choices", None)
                 if not choices:
                     raise _LLMMalformedResponseError()
@@ -17191,7 +17217,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # (hedge/refusal/empty), escalate ONE tier and re-issue once.
                 # Only for prose turns (tool-call turns aren't graded this
                 # way). Bounded by ``escalated`` so it happens at most once.
-                if (_route_tier is not None and not escalated and not tools_desc
+                if (persistent_dispatch is None
+                        and _route_tier is not None and not escalated and not tools_desc
                         and model_router.router_enabled()
                         and not model_router.confidence_ok(getattr(_msg, "content", None))):
                     _next = model_router.escalate(_route_tier)
@@ -17207,6 +17234,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         continue
                 return _msg, usage
             except Exception as e:
+                if persistent_dispatch is not None:
+                    # Each durable attempt is accounted independently. Provider
+                    # compatibility probes and retries require another reservation.
+                    raise
                 # 076 (FR-016): did the endpoint reject the image parts (a
                 # text-only model)? Strip them in place, remember it for this
                 # (base_url, model) and retry text-only once — the request is
@@ -19086,6 +19117,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 llm_tool_name = matches[0]
                 tool_name = (tool_to_unqualified or {}).get(llm_tool_name, tool_name)
                 agent_id = tool_to_agent.get(llm_tool_name)
+        from persistent_agents.dispatch_context import current_dispatch
+        persistent_dispatch = current_dispatch()
+        if persistent_dispatch is not None:
+            await persistent_dispatch.validate_tool(user_id, agent_id, tool_name, args)
         if agent_id == "__orchestrator__":
             from orchestrator import agentic_creation
             return await agentic_creation.handle_meta_tool(
@@ -19096,6 +19131,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # only; creation happens in the schedule_decision ui_event.
             from orchestrator import scheduling_chat
             return await scheduling_chat.handle_meta_tool(
+                self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
+            )
+        if agent_id == "__persistent_assignments__":
+            from persistent_agents import chat_tools
+            return await chat_tools.handle_meta_tool(
                 self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
             )
         if agent_id == "__memory__":
@@ -19344,6 +19384,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "ui_websocket": ui_websocket,
                 "parent_token": parent_payload,
             }
+            from persistent_agents.dispatch_context import current_dispatch
+            if current_dispatch() is not None:
+                self._dispatch_context[request_id]["persistent_assignment"] = True
         except Exception:  # never let bookkeeping break a dispatch
             logger.debug("dispatch context registration failed", exc_info=True)
 
@@ -19577,6 +19620,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     f"Hop refused: '{callee}' is not a dispatchable agent.",
                     ctx=ctx, detail="reserved_callee",
                     parent=ctx.get("parent_token"))
+            if ctx.get("persistent_assignment"):
+                return await _refuse(
+                    "Persistent assignment children require a durable task reservation.",
+                    ctx=ctx, detail="assignment_unreserved_hop")
             parent = ctx.get("parent_token")
             if not parent:
                 # No parent authority to attenuate — refuse rather than mint
@@ -19971,6 +20018,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         two write tools target the same agent.
         """
         # Phase 1: Prepare all tool calls (args, permissions, credentials)
+        from persistent_agents.dispatch_context import DispatchDenied, current_dispatch
+        if current_dispatch() is not None:
+            raise DispatchDenied("assignment_unreserved_parallel_call")
         prepared = []  # list of (index, tc, tool_name, agent_id, args | None, error_coro | None)
         separately_rendered_refusals: set[int] = set()
 
@@ -20032,6 +20082,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 from orchestrator import memory_chat
                 prepared.append((idx, tc, tool_name, agent_id, None,
                                  memory_chat.handle_meta_tool(
+                                     self, tool_name, args, user_id=user_id,
+                                     chat_id=chat_id, websocket=websocket)))
+                continue
+            if agent_id == "__persistent_assignments__":
+                from persistent_agents import chat_tools
+                prepared.append((idx, tc, tool_name, agent_id, None,
+                                 chat_tools.handle_meta_tool(
                                      self, tool_name, args, user_id=user_id,
                                      chat_id=chat_id, websocket=websocket)))
                 continue
@@ -20327,6 +20384,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """
         if max_retries is None:
             max_retries = self.MAX_RETRIES
+        from persistent_agents.dispatch_context import current_dispatch
+        if current_dispatch() is not None:
+            max_retries = 1
 
         last_result = None
 
@@ -20494,6 +20554,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         channel = protected_channel or self._protected_dispatch_channel(ui_websocket)
 
         async def guarded(final_arguments, physical_invoke):
+            from persistent_agents.dispatch_context import current_dispatch
+            persistent_dispatch = current_dispatch()
+            if persistent_dispatch is not None:
+                original_invoke = physical_invoke
+
+                async def physical_invoke(capabilities):
+                    return await persistent_dispatch.invoke_tool(
+                        lambda: original_invoke(capabilities)
+                    )
             return await self._execute_governed_attempt(
                 ui_websocket,
                 agent_id,
@@ -23997,6 +24066,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ``speak=False`` suppresses the watch spoken rendition for renders that
         re-present EXISTING content (chat re-hydration, viewport re-adaptation,
         the welcome canvas) — a turn is never auto-spoken twice (FR-030)."""
+        from persistent_agents.dispatch_context import current_dispatch
+        if current_dispatch() is not None:
+            # Assignment activity is published only after its fenced checkpoint.
+            # Per-tool transient frames cannot bypass stop/revision ordering.
+            return
         # Auto-route alert-only messages (any variant) to the chat panel
         # instead of the canvas — a frame that is nothing but alerts would
         # otherwise clobber the workspace with a partial single-alert render.
@@ -24835,6 +24909,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # off, no job-execution code path is reachable; chat-side scheduling
         # (proposals/consent cards) is unaffected and the surface reports
         # unattended execution as unavailable.
+        self.persistent_assignments = None
+        self.persistent_assignment_runner = None
+        if flags.is_enabled("persistent_agents"):
+            from persistent_agents.approvals import AssignmentApprovalBridge
+            from persistent_agents.runner import AssignmentRunner
+            from persistent_agents.service import AssignmentService
+            self.persistent_assignments = AssignmentService(self)
+            self.persistent_assignment_runner = AssignmentRunner(self, self.persistent_assignments)
+            self.persistent_assignments.approval_executor = AssignmentApprovalBridge(
+                self.persistent_assignment_runner)
+            self.persistent_assignment_runner.start()
+
         if flags.is_enabled("scheduler_execution"):
             try:
                 from scheduler.loop import SchedulerLoop
@@ -25168,6 +25254,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             memory_router,
         )
         from scheduler.api import schedule_router
+        from persistent_agents.api import assignment_router
         from dreaming.api import dreaming_router
         app.include_router(chat_router)
         app.include_router(component_router)
@@ -25210,6 +25297,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(skills_router)
         app.include_router(memory_router)
         app.include_router(schedule_router)
+        app.include_router(assignment_router)
         app.include_router(dreaming_router)
 
         # Audit HTTP middleware — records every authenticated REST request
@@ -25363,8 +25451,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         try:
             scheduler_loop = getattr(self, "_scheduler_loop", None)
-            if scheduler_loop is not None:
-                await scheduler_loop.stop()
+            persistent_runner = getattr(self, "persistent_assignment_runner", None)
+            try:
+                if persistent_runner is not None:
+                    await persistent_runner.stop()
+            finally:
+                persistent_service = getattr(self, "persistent_assignments", None)
+                if persistent_service is not None:
+                    persistent_service.store.close()
+                if scheduler_loop is not None:
+                    await scheduler_loop.stop()
         finally:
             try:
                 remainder = await self.async_task_manager.drain(
@@ -26009,6 +26105,14 @@ async def _join_orchestrator_close_through_cancellation(
         raise cancellation
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Reject unsafe production configuration before opening durable services."""
+    from orchestrator.session_store import assert_production_posture
+
+    assert_production_posture()
     orch = Orchestrator()
     asyncio.run(orch.start())
+
+
+if __name__ == "__main__":
+    main()

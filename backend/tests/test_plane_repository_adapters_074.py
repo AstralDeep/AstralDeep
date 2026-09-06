@@ -499,6 +499,9 @@ def test_offline_grant_adapter_requires_owner_for_validity(monkeypatch) -> None:
         db=_Database(offline_grants=repository),
         plane_repository=repository,
     )
+    monkeypatch.setattr(store, "_session_reference", lambda owner, token: {
+        "session_id": "session-a", "created_at": 1, "interactive_anchor": 1,
+    })
 
     grant_id = store.capture("alice", "refresh", "agent-a")
     assert store.is_valid(grant_id, user_id="alice") is True

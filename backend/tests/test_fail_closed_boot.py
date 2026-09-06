@@ -18,6 +18,50 @@ from orchestrator.auth import validate_agent_api_key
 from orchestrator.session_store import assert_production_posture, is_dev_mode
 
 
+@pytest.mark.parametrize("posture", [None, "production", "unknown"])
+def test_entrypoint_refuses_missing_secrets_before_durable_construction(monkeypatch, posture):
+    """An unreachable database must not mask the production configuration error."""
+    from orchestrator import orchestrator as entrypoint
+
+    if posture is None:
+        monkeypatch.delenv("ASTRAL_ENV", raising=False)
+    else:
+        monkeypatch.setenv("ASTRAL_ENV", posture)
+    monkeypatch.delenv("WEB_SESSION_ENC_KEY", raising=False)
+    monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
+
+    def forbidden_runtime():
+        pytest.fail("production refusal must precede durable runtime construction")
+
+    monkeypatch.setattr(entrypoint, "Orchestrator", forbidden_runtime)
+    with pytest.raises(SystemExit) as exc:
+        entrypoint.main()
+    assert exc.value.code == 78
+
+
+@pytest.mark.parametrize("posture", ["development", "production"])
+def test_entrypoint_admits_configured_startup(monkeypatch, posture):
+    """The early gate preserves development and explicitly configured production."""
+    from orchestrator import orchestrator as entrypoint
+
+    monkeypatch.setenv("ASTRAL_ENV", posture)
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
+    _configure_production_secrets(monkeypatch)
+    observed = []
+
+    class Runtime:
+        def __init__(self):
+            observed.append("constructed")
+
+        async def start(self):
+            observed.append("started")
+
+    monkeypatch.setattr(entrypoint, "Orchestrator", Runtime)
+    entrypoint.main()
+    assert observed == ["constructed", "started"]
+
+
 def _configure_production_secrets(monkeypatch):
     """Minimal valid production config for the extended boot gate."""
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", "x" * 44)

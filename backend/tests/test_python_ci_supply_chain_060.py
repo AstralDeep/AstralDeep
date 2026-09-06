@@ -35,6 +35,10 @@ REVIEWED_074_FINGERPRINTS = {
     "839b4e3840ac31c2cadb7c7ab7657818f0ad46a0:windows-client/tests/test_win_agent_inbound_auth.py:generic-api-key:267",
     "40cc17aba0c6bd4d7ca3e22b76829b7b657e5b90:windows-client/tests/test_remote_machines_surface.py:private-key:42",
 }
+REVIEWED_079_FINGERPRINT = (
+    "756b338f3054bb8f509a2b94f0ac7c8b9b1b8cc3:"
+    "scripts/tests/test_verify_persistent_agents_079.py:generic-api-key:35"
+)
 WINDOWS_CANDIDATE = (
     REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 )
@@ -174,10 +178,15 @@ def test_ci_secret_scan_uses_checksum_pinned_secret_free_cli() -> None:
 
 
 def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
-    fingerprints = GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
-    assert len(fingerprints) == 19
+    lines = GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
+    assert [line for line in lines if line.startswith("#")] == [
+        "# Reviewed 079 test-only constructed JWT: private-owner payload, invalid literal signature."
+    ]
+    fingerprints = [line for line in lines if not line.startswith("#")]
+    assert len(fingerprints) == 20
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
+    assert REVIEWED_079_FINGERPRINT in fingerprints
     assert all(
         re.fullmatch(
             r"[0-9a-f]{40}:[^:]+:(?:generic-api-key|private-key):[1-9][0-9]*",
@@ -212,6 +221,7 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
         "verify_composition.py",
         "verify_migration_provenance.py",
         "verify_primitive_coverage.py",
+        "verify_persistent_agents_079.py",
         "verify_release_evidence_bootstrap.py",
         "windows_release_candidate.py",
     }
@@ -236,6 +246,8 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
         "scripts/tests/test_verify_composition.py",
         "scripts/tests/test_verify_migration_provenance.py",
         "scripts/tests/test_verify_primitive_coverage.py",
+        "scripts/tests/test_verify_persistent_agents_079.py",
+        "scripts/tests/test_csharp_native_coverage_079.py",
     }
     array = job.partition("RELEASE_TOOL_TESTS=(")[2].partition(")")[0]
     assert set(re.findall(r"(?m)^\s+([^\s]+\.py)\s*$", array)) == expected_test_paths

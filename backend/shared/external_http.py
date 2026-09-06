@@ -64,12 +64,14 @@ class ResponseTooLargeError(ExternalHttpError):
     """Upstream response exceeded the configured size cap."""
 
 
-def normalize_url(raw: str) -> str:
+def normalize_url(raw: str, *, preserve_trailing_slash: bool = False) -> str:
     """Normalize a user-supplied URL into a canonical form.
 
     - Adds ``https://`` when no scheme is present.
     - Lowercases the scheme and host.
-    - Strips a trailing slash from the path (but preserves a lone ``/``).
+    - Strips a trailing slash from the path by default for service endpoints.
+      Page readers can preserve the exact resource path with
+      ``preserve_trailing_slash=True``.
     """
     if raw is None or not str(raw).strip():
         raise EgressBlockedError("URL is empty")
@@ -81,7 +83,7 @@ def normalize_url(raw: str) -> str:
     netloc = parsed.netloc.lower()
     path = parsed.path or ""
     # Strip trailing slash from any path (including the root "/").
-    if path.endswith("/"):
+    if not preserve_trailing_slash and path.endswith("/"):
         path = path[:-1]
     return urlunparse((scheme, netloc, path, parsed.params, parsed.query, parsed.fragment))
 

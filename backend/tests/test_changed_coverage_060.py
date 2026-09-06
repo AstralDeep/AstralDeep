@@ -487,6 +487,105 @@ def test_projection_profile_requires_projection_python_slot(tmp_path: Path) -> N
     assert "projection_python" in failure.value.message
 
 
+@pytest.mark.parametrize(
+    "relative,source,language,slot",
+    [
+        ("backend/webrender/static/client.js", "const value = 1;\n", "javascript", "javascript"),
+        ("windows-client/asr-helper/FrameProtocol.cs", "int value = 1;\n", "csharp", "windows_csharp"),
+    ],
+)
+@pytest.mark.parametrize("covered", [True, False])
+def test_strict_projection_overlapping_roots_require_only_the_correct_language_producer(
+    tmp_path: Path, relative: str, source: str, language: str, slot: str, covered: bool,
+) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    (repo / relative).write_text(source, encoding="utf-8")
+    candidate = _commit(repo, "change non-Python source under overlapping producer roots")
+    selection = _selection(repo, selection.base_sha, candidate)
+    if not covered:
+        if language == "javascript":
+            payload = json.loads(slots[slot].read_text(encoding="utf-8"))
+            payload["coverage"][relative]["s"]["0"] = 0
+            slots[slot].write_text(json.dumps(payload), encoding="utf-8")
+        else:
+            _cobertura(slots[slot], relative, {1: 0})
+
+    decision = _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert decision["status"] == ("pass" if covered else "fail")
+    assert decision["languages"][language] == {
+        "covered_lines": int(covered), "executable_lines": 1,
+        "percent": 100.0 if covered else 0.0,
+    }
+    assert set(decision["producer_slots"]) == set(collector.REPOSITORY_PROFILES["projection"].producer_keys)
+    if not covered:
+        assert any(failure["code"] == "coverage_below_threshold" and failure["scope"] == language
+                   for failure in decision["failures"])
+
+
+@pytest.mark.parametrize("path,owners", [
+    ("components/AstralProjection/backend/webrender/static/client.js", {"javascript"}),
+    ("components/AstralProjection/backend/webrender/renderer.py", {"projection_python"}),
+    ("components/AstralProjection/windows-client/asr-helper/FrameProtocol.cs", {"windows_csharp"}),
+    ("components/AstralProjection/windows-client/runtime.py", {"windows"}),
+    ("backend/orchestrator/runtime.py", {"backend"}),
+    ("backend/voice_agent/runtime.py", {"voice_worker"}),
+    ("components/AstralProjection/apple-clients/AstralCore/Sources/Core.swift", {"ios", "macos"}),
+    ("components/AstralProjection/apple-clients/AstralWatch/Watch.swift", {"watchos"}),
+    ("components/AstralProjection/backend/webrender/static/README.md", set()),
+    ("components/AstralProjection/backend/webrender/static/vendor/bundle.js", set()),
+    ("components/AstralProjection/windows-client/asr-helper/tests/ProtocolTests.cs", set()),
+])
+def test_strict_producer_ownership_preserves_language_and_platform_partitions(path, owners):
+    assert {slot for slot in collector.PRODUCER_BY_KEY
+            if collector._producer_applies_to_path(slot, path)} == owners
+
+
+def test_wrong_language_observations_cannot_satisfy_overlapping_python_producers():
+    for slot, path in (
+        ("projection_python", "components/AstralProjection/backend/webrender/static/client.js"),
+        ("windows", "components/AstralProjection/windows-client/asr-helper/FrameProtocol.cs"),
+    ):
+        foreign = collector.CoverageData(files={path}, observed={(path, 1)},
+                                         executable={(path, 1)}, covered={(path, 1)})
+        owned = collector._producer_owned_coverage(foreign, slot)
+        assert not owned.files and not owned.observed and not owned.executable and not owned.covered
+    for path in collector.VOICE_WORKER_SOURCE_ALIASES.values():
+        assert collector._producer_applies_to_path("voice_worker", path)
+    for path in collector.VOICE_WORKER_OVERWRITTEN_SHIMS:
+        assert collector._producer_applies_to_path("backend", path)
+        assert not collector._producer_applies_to_path("voice_worker", path)
+
+
+@pytest.mark.parametrize("relative,slot,foreign_slot,source", [
+    ("backend/webrender/static/extra.js", "javascript", "projection_python", "const value = 1;\n"),
+    ("windows-client/asr-helper/ExtraProtocol.cs", "windows_csharp", "windows", "int value = 1;\n"),
+])
+def test_wrong_producer_hits_cannot_fill_a_missing_required_native_file(
+    tmp_path, relative, slot, foreign_slot, source,
+):
+    from xml.etree import ElementTree as ET
+
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    (repo / relative).write_text(source, encoding="utf-8")
+    candidate = _commit(repo, "native change with wrong-producer coverage only")
+    selection = _selection(repo, selection.base_sha, candidate)
+    native = ET.parse(slots[foreign_slot])
+    values = {item.attrib["filename"]: {
+        int(line.attrib["number"]): int(line.attrib["hits"])
+        for line in item.findall("./lines/line")
+    } for item in native.findall(".//class")}
+    values[relative] = {1: 1}
+    _cobertura_many(slots[foreign_slot], values)
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        _evaluate_projection_strict(repo, selection, reports, slots)
+
+    assert failure.value.code == "producer_unmapped_changed_file"
+    assert slot in failure.value.message
+    assert relative in failure.value.message
+
+
 def test_projection_python_cli_rejects_duplicate_slot(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -1160,6 +1160,130 @@ def _cobertura_path(
     return next(iter(candidates), None)
 
 
+def _native_csharp_lines(node: ET.Element, label: str) -> dict[int, int]:
+    """Validate one native class or method's explicit, unique line witness."""
+
+    containers = _direct_children(node, "lines")
+    if len(containers) != 1 or not len(containers[0]):
+        raise CoveragePolicyError("unparseable_report", f"{label} lacks one nonempty lines manifest")
+    container = containers[0]
+    lines = _direct_children(container, "line")
+    if len(lines) != len(container) or len(lines) != sum(
+        _local_name(child) == "line" for child in container.iter()
+    ):
+        raise CoveragePolicyError("unparseable_report", f"{label} has an invalid lines manifest")
+    observations: dict[int, int] = {}
+    for line in lines:
+        number = _integer(line.get("number"), label=f"{label} line")
+        hits = _integer(line.get("hits"), label=f"{label} hits")
+        if number <= 0 or number in observations:
+            raise CoveragePolicyError("unparseable_report", f"{label} has a duplicate or invalid line")
+        observations[number] = hits
+    if node.get("line-rate") is None:
+        raise CoveragePolicyError("unparseable_report", f"{label} lacks line-rate")
+    _validate_rate(
+        node.get("line-rate"), covered=sum(hits > 0 for hits in observations.values()),
+        total=len(observations), label=f"{label} line-rate",
+    )
+    return observations
+
+
+def _native_csharp_methods(node: ET.Element) -> tuple[dict[int, int], int]:
+    """Require method witnesses to agree exactly with the enclosing class."""
+
+    containers = _direct_children(node, "methods")
+    if len(containers) != 1 or not len(containers[0]):
+        raise CoveragePolicyError("unparseable_report", "native C# class lacks one methods manifest")
+    methods = _direct_children(containers[0], "method")
+    if len(methods) != len(containers[0]):
+        raise CoveragePolicyError("unparseable_report", "native C# has an invalid methods manifest")
+    identities: set[tuple[str, str]] = set()
+    observations: dict[int, int] = {}
+    declared_rows = 0
+    for method in methods:
+        name, signature = method.get("name"), method.get("signature")
+        if not name or signature is None or (name, signature) in identities:
+            raise CoveragePolicyError("unparseable_report", "native C# has a duplicate or invalid method")
+        identities.add((name, signature))
+        lines = _native_csharp_lines(method, "native C# method")
+        declared_rows += len(lines)
+        for number, hits in lines.items():
+            if number in observations and observations[number] != hits:
+                raise CoveragePolicyError("unparseable_report", "native C# methods have conflicting hits")
+            observations[number] = hits
+    return observations, declared_rows
+
+
+def _parse_native_csharp_cobertura(root: ET.Element, target: CoverageTarget) -> CoverageData:
+    """Validate native per-class totals before unioning repeated source lines.
+
+    Microsoft.CodeCoverage repeats its method lines at class level and counts
+    shared compiler-closure lines once per class in root totals. Those copies
+    are accepted only with identical hit counts and one unambiguous source
+    manifest. Python's stricter, flat Cobertura contract remains separate.
+    """
+
+    sources = _cobertura_sources(root)
+    declared_total = _integer(root.get("lines-valid"), label="native C# lines-valid")
+    declared_covered = _integer(root.get("lines-covered"), label="native C# lines-covered")
+    packages = _direct_children(root, "packages")
+    if len(packages) != 1 or not len(packages[0]):
+        raise CoveragePolicyError("unparseable_report", "native C# lacks one packages manifest")
+    classes_seen: set[tuple[str, str]] = set()
+    source_manifests: dict[str, str] = {}
+    observations: dict[tuple[str, int], int] = {}
+    data = CoverageData()
+    total = covered_total = method_rows = 0
+    for package in packages[0]:
+        containers = _direct_children(package, "classes")
+        if _local_name(package) != "package" or len(containers) != 1 or not len(containers[0]):
+            raise CoveragePolicyError("unparseable_report", "native C# has an invalid classes manifest")
+        package_total = package_covered = 0
+        for cls in containers[0]:
+            raw, name = cls.get("filename"), cls.get("name")
+            if _local_name(cls) != "class" or not raw or not name:
+                raise CoveragePolicyError("unparseable_report", "native C# class lacks source/name manifest")
+            source = raw.replace("\\", "/")
+            if (source, name) in classes_seen:
+                raise CoveragePolicyError("unparseable_report", "native C# has a duplicate class manifest")
+            classes_seen.add((source, name))
+            path = _cobertura_path(raw, sources, target)
+            if path is not None:
+                if path in source_manifests and source_manifests[path] != source:
+                    raise CoveragePolicyError("unparseable_report", "native C# has aliased source manifests")
+                source_manifests[path] = source
+            lines = _native_csharp_lines(cls, "native C# class")
+            methods, rows = _native_csharp_methods(cls)
+            method_rows += rows
+            if methods != lines:
+                raise CoveragePolicyError("unparseable_report", "native C# method and class witnesses disagree")
+            package_total += len(lines)
+            package_covered += sum(hits > 0 for hits in lines.values())
+            for number, hits in lines.items():
+                identity = (source, number)
+                if identity in observations and observations[identity] != hits:
+                    raise CoveragePolicyError("unparseable_report", "native C# classes have conflicting hits")
+                observations[identity] = hits
+                if path is not None:
+                    data.add(path, number, hits > 0)
+        _validate_rate(
+            package.get("line-rate"), covered=package_covered,
+            total=package_total, label="native C# package line-rate",
+        )
+        total += package_total
+        covered_total += package_covered
+    if len(classes_seen) != sum(_local_name(node) == "class" for node in root.iter()):
+        raise CoveragePolicyError("unparseable_report", "native C# contains unbound class manifests")
+    if total + method_rows != sum(_local_name(node) == "line" for node in root.iter()):
+        raise CoveragePolicyError("unparseable_report", "native C# contains unbound line manifests")
+    if (total, covered_total) != (declared_total, declared_covered):
+        raise CoveragePolicyError("unparseable_report", "native C# root totals disagree with classes")
+    if root.get("line-rate") is None:
+        raise CoveragePolicyError("unparseable_report", "native C# root lacks line-rate")
+    _validate_rate(root.get("line-rate"), covered=covered_total, total=total, label="native C# root line-rate")
+    return data
+
+
 def _parse_cobertura(content: bytes, target: CoverageTarget) -> CoverageData:
     try:
         root = ET.fromstring(content)
@@ -1167,6 +1291,10 @@ def _parse_cobertura(content: bytes, target: CoverageTarget) -> CoverageData:
         raise CoveragePolicyError(
             "unparseable_report", "invalid Cobertura XML"
         ) from exc
+    if target.key == "windows_csharp" and any(
+        _local_name(node) == "methods" for node in root.iter()
+    ):
+        return _parse_native_csharp_cobertura(root, target)
     data = CoverageData()
     declared_valid = _integer(root.get("lines-valid"), label="Cobertura lines-valid")
     declared_covered = _integer(
@@ -1718,6 +1846,9 @@ def _path_matches_root(path: str, root: str) -> bool:
 def _producer_applies_to_path(slot_key: str, path: str) -> bool:
     """Return whether a strict producer is responsible for one maintained path."""
 
+    classified = classify_path(path)
+    if classified is None or classified.key != PRODUCER_BY_KEY[slot_key].target_key:
+        return False
     if slot_key == "backend":
         return path in VOICE_WORKER_OVERWRITTEN_SHIMS or (
             path.startswith("backend/") and not path.startswith("backend/voice_agent/")

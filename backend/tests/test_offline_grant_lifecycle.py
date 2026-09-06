@@ -54,6 +54,7 @@ def fernet_key(monkeypatch):
     constant that offline_grant imported from agentic_settings at load time."""
     key = Fernet.generate_key().decode()
     monkeypatch.setenv("OFFLINE_GRANT_ENC_KEY", key)
+    monkeypatch.setenv("WEB_SESSION_ENC_KEY", key)
     monkeypatch.setattr(og, "OFFLINE_GRANT_ENC_KEY", key)
     return key
 
@@ -73,6 +74,16 @@ def _grant_record(plane_runtime, user_id, grant_id):
             owner_id=user_id,
             grant_id=grant_id,
         )
+
+
+def _capture(store, user_id, refresh_token, agent_id=None):
+    """Capture consent from a real canonical session, as product callers do."""
+    if refresh_token:
+        web_session_store(store._grants.plane_runtime).create(
+            "consent-" + uuid.uuid4().hex, user_id=user_id,
+            access_token="access-initial", refresh_token=refresh_token,
+            hard_max_seconds=365 * 86400)
+    return store.capture(user_id, refresh_token, agent_id=agent_id)
 
 
 def _has_live_grant(plane_runtime, user_id):
@@ -121,6 +132,13 @@ def _install_fake_idp(monkeypatch, status=200, payload=None):
     class _FakeResp:
         def __init__(self):
             self.status = status
+            self.content = self
+
+        async def readexactly(self, size):
+            body = json.dumps(payload).encode()
+            if len(body) >= size:
+                return body[:size]
+            raise asyncio.IncompleteReadError(body, size)
 
         async def text(self):
             return json.dumps(payload)
@@ -145,7 +163,8 @@ def _install_fake_idp(monkeypatch, status=200, payload=None):
         async def __aexit__(self, *exc):
             return False
 
-        def post(self, url, data=None):
+        def post(self, url, data=None, **kwargs):
+            assert kwargs["allow_redirects"] is False
             captured.append((url, dict(data or {})))
             return _FakePostCM()
 
@@ -165,7 +184,7 @@ def test_capture_persists_encrypted_grant(
     user_id = f"u-{uuid.uuid4()}"
     plaintext = f"offline-rt-{uuid.uuid4()}"
     try:
-        grant_id = grant_store.capture(user_id, plaintext, agent_id="grants")
+        grant_id = _capture(grant_store, user_id, plaintext, agent_id="grants")
         row = _grant_record(plane_runtime, user_id, grant_id)
         assert row is not None
         assert row.grant_id == grant_id
@@ -174,7 +193,9 @@ def test_capture_persists_encrypted_grant(
 
         enc = row.encrypted_refresh_token
         assert plaintext.encode() not in enc                      # not plaintext at rest
-        assert Fernet(fernet_key.encode()).decrypt(enc).decode() == plaintext
+        decrypted = Fernet(fernet_key.encode()).decrypt(enc).decode()
+        assert decrypted.startswith(og._SESSION_REFERENCE_PREFIX)
+        assert plaintext not in decrypted
 
         cap_days = og.OFFLINE_GRANT_MAX_DAYS
         assert row.expires_at - row.issued_at == cap_days * _DAY_MS
@@ -205,7 +226,7 @@ def test_capture_rejects_empty_refresh_token(plane_runtime, grant_store):
     user_id = f"u-{uuid.uuid4()}"
     try:
         with pytest.raises(OfflineGrantError, match="no refresh token"):
-            grant_store.capture(user_id, "")
+            _capture(grant_store, user_id, "")
         assert _has_live_grant(plane_runtime, user_id) is False
     finally:
         _revoke_grants(plane_runtime, user_id)
@@ -222,7 +243,7 @@ def test_revoke_for_user_sets_revoked_at_and_returns_count(
     stamps revoked_at; a second call is a no-op (already revoked)."""
     user_id = f"u-{uuid.uuid4()}"
     try:
-        grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
+        grant_id = _capture(grant_store, user_id, f"rt-{uuid.uuid4()}")
 
         assert grant_store.revoke_for_user(user_id) == 1
         row = _grant_record(plane_runtime, user_id, grant_id)
@@ -246,7 +267,7 @@ def test_mint_refuses_revoked_grant_before_any_idp_call(
     user_id = f"u-{uuid.uuid4()}"
     calls = _install_exploding_idp(monkeypatch)
     try:
-        grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
+        grant_id = _capture(grant_store, user_id, f"rt-{uuid.uuid4()}")
         assert grant_store.revoke_for_user(user_id) == 1
 
         with pytest.raises(OfflineGrantError, match="revoked"):
@@ -320,7 +341,7 @@ def test_mint_happy_path_round_trips_refresh_token(
         monkeypatch, status=200, payload={"access_token": "fresh-at-123"}
     )
     try:
-        grant_id = grant_store.capture(user_id, plaintext)
+        grant_id = _capture(grant_store, user_id, plaintext)
         token = asyncio.run(
             grant_store.mint_access_token(grant_id, user_id=user_id)
         )
@@ -345,7 +366,7 @@ def test_mint_fails_safe_on_idp_rejection(
     monkeypatch.setenv("KEYCLOAK_TOKEN_URL", "http://keycloak.test/token")
     _install_fake_idp(monkeypatch, status=401, payload={"error": "invalid_grant"})
     try:
-        grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
+        grant_id = _capture(grant_store, user_id, f"rt-{uuid.uuid4()}")
         with pytest.raises(OfflineGrantError, match="refresh exchange failed"):
             asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))
     finally:
@@ -386,7 +407,7 @@ def test_auth_logout_revokes_real_offline_grant(
         sid, user_id=user_id, access_token="at", refresh_token=session_refresh,
         hard_max_seconds=web_auth.HARD_MAX_SECONDS,
     )
-    grant_id = grant_store.capture(user_id, f"offline-rt-{uuid.uuid4()}")
+    grant_id = grant_store.capture(user_id, session_refresh)
     assert grant_store.is_valid(grant_id, user_id=user_id) is True
 
     req = _FakeRequest(cookies={web_auth.COOKIE_NAME: web_auth._sign(sid)})
@@ -487,7 +508,7 @@ def test_mint_uses_authority_derived_endpoint(
         monkeypatch, status=200, payload={"access_token": "fresh-at-authority"}
     )
     try:
-        grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
+        grant_id = _capture(grant_store, user_id, f"rt-{uuid.uuid4()}")
         token = asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))
         assert token == "fresh-at-authority"
         assert captured[0][0] == (
@@ -514,7 +535,7 @@ def test_mint_refuses_before_idp_when_endpoint_unconfigured(
 
     monkeypatch.setattr(og, "_fernet", _spy_fernet)
     try:
-        grant_id = grant_store.capture(user_id, f"rt-{uuid.uuid4()}")
+        grant_id = _capture(grant_store, user_id, f"rt-{uuid.uuid4()}")
         decrypts.clear()  # capture legitimately encrypts
         with pytest.raises(og.TokenEndpointUnconfigured, match="KEYCLOAK_AUTHORITY"):
             asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))

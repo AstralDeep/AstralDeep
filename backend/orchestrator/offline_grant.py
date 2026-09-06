@@ -2,21 +2,25 @@
 
 ⚠️ SECURITY-CRITICAL — gated by task T057 (lead-dev security review) before merge.
 
-At job-creation consent time (user present, live session) we capture the user's
-Keycloak ``offline_access`` refresh token, encrypt it at rest, and record a hard
-365-day expiry. Per run, the scheduler:
+At consent time (user present, live session) we store an encrypted reference to
+the user's canonical Keycloak session credential and a hard 365-day grant cap.
+Browser and background refreshes share one durable claim/rotation sequence.
+Per run, the scheduler:
   1. loads the grant; refuses if revoked / expired (FR-024),
   2. exchanges the refresh token at Keycloak for a fresh short-lived access token,
   3. (caller then) intersects the job's consented scopes with the user's CURRENT
      scopes and performs the existing RFC 8693 delegated exchange.
 
-The refresh token is encrypted with Fernet (``cryptography``, already a
-dependency) using ``OFFLINE_GRANT_ENC_KEY``. It is NEVER returned by any API and
-NEVER logged. If the key is unset, capture fails closed (no plaintext storage).
+The grant reference uses ``OFFLINE_GRANT_ENC_KEY``; the canonical credential
+remains encrypted under the existing web-session key. Tokens are never returned
+by an API or logged. Legacy copied grants convert only on an exact live-session
+match. Unknown refresh outcomes require fresh sign-in and renewed consent;
+potentially consumed tokens are never retried.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -34,6 +38,10 @@ from orchestrator.plane_repository_context import (
 logger = logging.getLogger("orchestrator.offline_grant")
 
 _DAY_MS = 86_400_000
+_SESSION_REFERENCE_PREFIX = "\x00astral-offline-session/v1\x00"
+_REFRESH_HTTP_SECONDS = 10
+_REFRESH_BODY_BYTES = 65536
+_GRANT_MINT_SECONDS = 20
 
 
 class OfflineGrantError(RuntimeError):
@@ -169,14 +177,17 @@ class OfflineGrantStore:
         )
 
     def capture(self, user_id: str, refresh_token: str, agent_id: Optional[str] = None) -> str:
-        """Encrypt + store a refresh token captured from the live session.
+        """Encrypt a reference to the consented live session credential family.
 
         Returns the new grant id. Raises OfflineGrantError if encryption is not
         configured (fail closed — never store plaintext).
         """
         if not refresh_token:
             raise OfflineGrantError("no refresh token available in the session (offline_access not granted)")
-        token_enc = _fernet().encrypt(refresh_token.encode("utf-8"))
+        cipher = _fernet()
+        reference = self._session_reference(user_id, refresh_token)
+        token_enc = cipher.encrypt((_SESSION_REFERENCE_PREFIX + json.dumps(
+            reference, sort_keys=True, separators=(",", ":"))).encode())
         grant_id = str(uuid.uuid4())
         now = _now_ms()
         expires = now + OFFLINE_GRANT_MAX_DAYS * _DAY_MS
@@ -190,6 +201,49 @@ class OfflineGrantStore:
             expires_at=expires,
         )
         return grant_id
+
+    def _sessions(self):
+        from orchestrator.session_store import WebSessionStore
+        return WebSessionStore(plane_runtime=self._grants.plane_runtime)
+
+    def _session_reference(self, user_id, refresh_token):
+        from orchestrator.session_store import SessionStoreError
+        try:
+            return self._sessions().session_reference(user_id, refresh_token)
+        except SessionStoreError:
+            raise OfflineGrantError("live session credential required; re-consent required") from None
+
+    def _resolve_reference(self, grant):
+        try:
+            plaintext = _fernet().decrypt(grant.encrypted_refresh_token).decode()
+        except Exception:
+            raise OfflineGrantError("offline grant credential cannot be decrypted") from None
+        if not plaintext.startswith(_SESSION_REFERENCE_PREFIX):
+            # A legacy copied token is never sent to the IdP. Convert only an
+            # exact current-session match, otherwise request fresh consent.
+            reference = self._session_reference(grant.owner_id, plaintext)
+            ciphertext = _fernet().encrypt((_SESSION_REFERENCE_PREFIX + json.dumps(
+                reference, sort_keys=True, separators=(",", ":"))).encode())
+            updated = self._grants.call(
+                self._grants.repository.replace_refresh_token_if_current,
+                owner_id=grant.owner_id, grant_id=grant.grant_id,
+                expected_encrypted_refresh_token=grant.encrypted_refresh_token,
+                encrypted_refresh_token=ciphertext, as_of=_now_ms())
+            if updated is None:
+                raise OfflineGrantError("offline grant changed; retry with current authority")
+            return reference
+        try:
+            reference = json.loads(plaintext[len(_SESSION_REFERENCE_PREFIX):])
+            if (not isinstance(reference, dict)
+                    or set(reference) != {"session_id", "created_at", "interactive_anchor"}
+                    or not isinstance(reference["session_id"], str)
+                    or not 1 <= len(reference["session_id"]) <= 1024
+                    or any(type(reference[k]) is not int or reference[k] < 0
+                           for k in ("created_at", "interactive_anchor"))):
+                raise ValueError
+            return reference
+        except (ValueError, TypeError):
+            raise OfflineGrantError("offline grant session reference is malformed") from None
 
     def _grant(self, user_id: str, grant_id: str):
         return self._grants.call(
@@ -238,6 +292,14 @@ class OfflineGrantStore:
         return None if reference is None else reference.grant_id
 
     async def mint_access_token(self, grant_id: str, *, user_id: str) -> str:
+        """Bound the entire fresh-authority path, including durable acquisition."""
+        try:
+            async with asyncio.timeout(_GRANT_MINT_SECONDS):
+                return await self._mint_access_token(grant_id, user_id=user_id)
+        except TimeoutError:
+            raise OfflineGrantError("offline grant mint time limit exceeded") from None
+
+    async def _mint_access_token(self, grant_id: str, *, user_id: str) -> str:
         """Exchange the stored refresh token for a fresh access token at Keycloak.
 
         Raises OfflineGrantError on revoked/expired grants or refresh failure
@@ -256,30 +318,48 @@ class OfflineGrantStore:
         # anything (and without a doomed HTTP call).
         token_url = resolve_token_endpoint()
 
-        refresh_token = _fernet().decrypt(
-            grant.encrypted_refresh_token
-        ).decode("utf-8")
-        client_id = os.getenv("KEYCLOAK_CLIENT_ID") or os.getenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-        data = {
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-            "refresh_token": refresh_token,
-        }
-        client_secret = os.getenv("KEYCLOAK_CLIENT_SECRET")
-        if client_secret:
-            data["client_secret"] = client_secret
+        reference = await asyncio.to_thread(self._resolve_reference, grant)
+        from orchestrator.session_store import SessionStoreError
+        from orchestrator.web_auth import _session_client_id
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(token_url, data=data) as resp:
-                if resp.status != 200:
-                    # Keycloak-side revocation / invalid refresh → fail safe.
-                    body = await resp.text()
-                    logger.warning("offline_grant.refresh_failed", extra={"status": resp.status})
-                    raise OfflineGrantError(f"refresh exchange failed ({resp.status}): {body[:200]}")
-                payload = await resp.json()
-        access_token = payload.get("access_token")
-        if not access_token:
-            raise OfflineGrantError("refresh exchange returned no access_token")
+        async def exchange(refresh_token, prior_access):
+            current = await asyncio.to_thread(self._grant, user_id, grant_id)
+            if current is None or not current.active or current.expires_at <= _now_ms():
+                raise OfflineGrantError("offline grant revoked or expired")
+            web_client = os.getenv("KEYCLOAK_CLIENT_ID") or "astral-frontend"
+            client_id = _session_client_id({"access_token": prior_access}) or web_client
+            data = {"grant_type": "refresh_token", "client_id": client_id,
+                    "refresh_token": refresh_token}
+            client_secret = os.getenv("KEYCLOAK_CLIENT_SECRET")
+            if client_secret and client_id == web_client:
+                data["client_secret"] = client_secret
+            timeout = aiohttp.ClientTimeout(total=_REFRESH_HTTP_SECONDS)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(token_url, data=data, allow_redirects=False) as resp:
+                    if resp.status != 200:
+                        logger.warning("offline_grant.refresh_failed", extra={"status": resp.status})
+                        raise OfflineGrantError(f"refresh exchange failed ({resp.status})")
+                    try:
+                        body = await resp.content.readexactly(_REFRESH_BODY_BYTES + 1)
+                    except asyncio.IncompleteReadError as ended:
+                        body = ended.partial
+                    if len(body) > _REFRESH_BODY_BYTES:
+                        raise OfflineGrantError("refresh exchange response exceeds limit")
+                    try:
+                        return json.loads(body)
+                    except (ValueError, UnicodeError):
+                        raise OfflineGrantError("refresh exchange response is malformed") from None
+
+        try:
+            row = await self._sessions().refresh_credential(
+                reference["session_id"], owner_id=user_id, exchange=exchange,
+                reference=reference)
+        except (SessionStoreError, aiohttp.ClientError, TimeoutError):
+            raise OfflineGrantError("session refresh unavailable; fresh sign-in may be required") from None
+        current = await asyncio.to_thread(self._grant, user_id, grant_id)
+        if current is None or not current.active or current.expires_at <= _now_ms():
+            raise OfflineGrantError("offline grant revoked or expired during refresh")
+        access_token = row["access_token"]
         # 030 FR-017: structured observability for grant mints (success path).
         logger.info("offline_grant.minted",
                     extra={"grant_id": grant_id, "user_id": grant.owner_id})

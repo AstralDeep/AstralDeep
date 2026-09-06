@@ -21,6 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 from orchestrator.auth import require_user_id
 from orchestrator.voice_api import router as voice_router
 from orchestrator.voice_bootstrap import VoiceServices
+from orchestrator.voice_backend import SpeechBackendSelection
 from orchestrator.voice_coordinator import (
     FIXED_VOICE_PROFILE,
     AdmissionRefusal,
@@ -447,6 +448,8 @@ def test_voice_status_without_endpoint_has_empty_refusals() -> None:
 class _FakeServices:
     def __init__(self) -> None:
         self.calls = 0
+        self.backend_selection = SpeechBackendSelection.from_environ({})
+        self.speech_backend = self.backend_selection.value
 
     def voice_status(self) -> dict[str, object]:
         self.calls += 1

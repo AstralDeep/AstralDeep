@@ -63,7 +63,8 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 FETCH_MAX_BYTES = 1024 * 1024   # 1 MB hard cap per fetch
-FETCH_TIMEOUT_S = 15            # per-fetch timeout
+FETCH_TIMEOUT_S = 15            # per-hop transport timeout
+FETCH_TOTAL_TIMEOUT_S = 30      # shared redirect-chain budget
 SEARCH_TIMEOUT_S = 15
 DEFAULT_MAX_RESULTS = 8
 MAX_RESULTS_CAP = 20
@@ -400,24 +401,34 @@ def _fetch_url(url: str):
 
     ``shared.external_http`` keeps ``allow_redirects=False`` so every hop is
     re-validated against the SSRF policy (a redirect into a private network is
-    blocked just like a direct request).
+    blocked just like a direct request). Hops share a monotonic budget; no
+    expired response is accepted or further hop issued. The underlying
+    synchronous transport retains its connect/read timeout semantics.
     """
-    current = external_http.normalize_url(url)
+    current = external_http.normalize_url(url, preserve_trailing_slash=True)
+    deadline = time.monotonic() + FETCH_TOTAL_TIMEOUT_S
     for _hop in range(MAX_REDIRECT_HOPS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ServiceUnreachableError("Page fetch exceeded its timeout budget")
         resp = external_http.request(
             "GET", current,
             api_key="",
-            timeout=FETCH_TIMEOUT_S,
+            timeout=min(FETCH_TIMEOUT_S, remaining),
             max_response_bytes=FETCH_MAX_BYTES,
             extra_headers={"User-Agent": USER_AGENT},
         )
+        if time.monotonic() >= deadline:
+            raise ServiceUnreachableError("Page fetch exceeded its timeout budget")
         if resp.status_code in (301, 302, 303, 307, 308):
             headers = resp.headers or {}
             location = headers.get("Location") or headers.get("location")
             if not location:
                 raise ServiceUnreachableError(
                     f"Redirect from {current} carried no Location header")
-            current = external_http.normalize_url(urljoin(current + "/", location))
+            current = external_http.normalize_url(
+                urljoin(current, location), preserve_trailing_slash=True,
+            )
             continue
         return resp
     raise ServiceUnreachableError(f"Too many redirects while fetching {url}")

@@ -18,9 +18,11 @@ VOID_TAGS = frozenset({
     "meta", "param", "source", "track", "wbr",
 })
 
-#: class/id substrings that mark an element as page chrome rather than content.
+#: Bare ``menu`` is ambiguous: content lists use it too. Require an explicit
+#: navigation role or a clearly qualified site-navigation class/id instead.
 _SKIP_ATTR_RE = re.compile(
-    r"(?:^|[\s_-])(?:nav|navbar|navigation|menu|megamenu|header|masthead|"
+    r"(?:^|[\s_-])(?:nav|navbar|navigation|(?:site|main|global|mobile)[_-]menu|"
+    r"megamenu|header|masthead|"
     r"footer|sidebar|sidenav|breadcrumb|cookie|consent|gdpr|banner|usa-banner|"
     r"skiplink|skip-link|skip-to|skipnav|social|share|sharing|subscribe|"
     r"newsletter|toolbar|sitesearch|search-form|pagination|pager|"
@@ -29,9 +31,9 @@ _SKIP_ATTR_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: ARIA landmark roles that denote chrome rather than the main content.
+#: Explicit ARIA navigation/menu roles and landmarks denote page chrome.
 _SKIP_ROLES = frozenset({
-    "navigation", "banner", "search", "contentinfo", "complementary",
+    "navigation", "menu", "menubar", "banner", "search", "contentinfo", "complementary",
 })
 
 #: Whole lines that are pure boilerplate — gov banners, skip links, cookie/legal

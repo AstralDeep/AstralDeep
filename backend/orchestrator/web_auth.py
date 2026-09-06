@@ -276,7 +276,8 @@ def _record_death(sid: str, reason: str) -> None:
 
 def _session_by_sid(sid: str) -> Optional[Dict[str, Any]]:
     sess = _SESSIONS.get(sid)
-    if sess is not None:
+    store = _get_store()
+    if sess is not None and store is None:
         if (time.time() - sess.get("created_at", 0)) > HARD_MAX_SECONDS:
             _SESSIONS.pop(sid, None)
             store = _get_store()
@@ -286,11 +287,11 @@ def _session_by_sid(sid: str) -> Optional[Dict[str, Any]]:
             _record_death(sid, "hard_cap")
             return None
         return sess
-    store = _get_store()
     if store is None:
         return None
     row = store.get(sid)  # enforces the hard cap itself
     if row is None:
+        _SESSIONS.pop(sid, None)
         reason = None
         try:
             reason = store.pop_death_reason(sid)
@@ -299,14 +300,18 @@ def _session_by_sid(sid: str) -> Optional[Dict[str, Any]]:
         if reason:
             _record_death(sid, reason)
         return None
-    sess = {
+    updated = {
         "sid": sid,
         "access_token": row["access_token"],
         "refresh_token": row["refresh_token"],
         "sub": row["user_id"],
         "created_at": row["interactive_anchor"],
-        "resumed": True,  # any store re-read is by definition a resume
+        "resumed": sess.get("resumed", False) if sess is not None else True,
     }
+    if sess is None:
+        sess = updated
+    else:
+        sess.update(updated)
     _SESSIONS[sid] = sess
     return sess
 
@@ -356,24 +361,37 @@ def _session_client_id(sess: Dict[str, Any]) -> str:
 async def _refresh_session(sid: str, sess: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Silent refresh at Keycloak (D2). Returns the refreshed session or None.
 
-    Never moves the interactive anchor; failure kills the session (the user
-    must sign in interactively) and audits ``auth.token_refresh_failed``.
+    Never moves the interactive anchor. Explicit IdP refusal kills the session;
+    unknown outcomes retain usable access while the durable refresh claim stays
+    fenced. Successful tokens are returned only after canonical settlement.
     """
     authority, web_client_id, client_secret = _keycloak_config()
-    refresh_token = sess.get("refresh_token", "")
-    if not authority or not refresh_token:
+    store = _get_store()
+    if not authority or store is None:
         return None
-    # Refresh as the issuing client: the secret belongs to the web client alone
-    # and is never sent for a public client (mirrors _revoke_refresh_token).
-    effective = _session_client_id(sess) or web_client_id
-    data = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": effective}
-    if client_secret and effective == web_client_id:
-        data["client_secret"] = client_secret
+    from orchestrator.session_store import SessionRefreshUnavailable
+
+    async def exchange(refresh_token, prior_access):
+        effective = _session_client_id({"access_token": prior_access}) or web_client_id
+        data = {"grant_type": "refresh_token", "refresh_token": refresh_token,
+                "client_id": effective}
+        if client_secret and effective == web_client_id:
+            data["client_secret"] = client_secret
+        async with httpx.AsyncClient(timeout=10) as client:
+            async with client.stream(
+                "POST", f"{authority}/protocol/openid-connect/token", data=data,
+                follow_redirects=False,
+            ) as resp:
+                resp.raise_for_status()
+                body = bytearray()
+                async for chunk in resp.aiter_bytes(chunk_size=8192):
+                    body.extend(chunk)
+                    if len(body) > 65536:
+                        raise SessionRefreshUnavailable("refresh response exceeds limit")
+                return json.loads(body)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(f"{authority}/protocol/openid-connect/token", data=data)
-        resp.raise_for_status()
-        tok = resp.json()
+        row = await store.refresh_credential(
+            sid, owner_id=sess.get("sub", ""), exchange=exchange)
     except httpx.HTTPStatusError:
         # Keycloak refused the refresh token (revoked/expired) — dead session.
         logger.info("web_auth: refresh refused for session %s — clearing", sid[:8])
@@ -381,20 +399,13 @@ async def _refresh_session(sid: str, sess: Dict[str, Any]) -> Optional[Dict[str,
                             description="Silent token refresh refused by the identity provider")
         return None
     except Exception:
-        # IdP unreachable: keep the session (offline tolerance) — the caller
-        # may still succeed with the current token if it hasn't expired.
-        logger.warning("web_auth: refresh attempt failed (IdP unreachable?)", exc_info=True)
+        # Existing access retains offline tolerance. The potentially consumed
+        # refresh token remains fenced in Plane and is never retried or returned.
+        sess["refresh_token"] = ""
+        logger.warning("web_auth: session refresh unavailable")
         return sess
-    sess["access_token"] = tok.get("access_token", "") or sess["access_token"]
-    new_refresh = tok.get("refresh_token", "")
-    if new_refresh:
-        sess["refresh_token"] = new_refresh
-    store = _get_store()
-    if store is not None:
-        try:
-            await store.aupdate_tokens(sid, access_token=sess["access_token"], refresh_token=sess["refresh_token"])
-        except Exception:
-            logger.warning("web_auth: failed persisting refreshed tokens", exc_info=True)
+    sess["access_token"] = row["access_token"]
+    sess["refresh_token"] = row["refresh_token"]
     return sess
 
 
@@ -404,7 +415,10 @@ async def _kill_session(sid: str, sess: Dict[str, Any], *, audit_action: Optiona
     store = _get_store()
     if store is not None:
         try:
-            await store.adelete(sid)
+            deleted = await store.adelete(sid)
+            sess["refresh_token"] = "" if deleted is None else deleted["refresh_token"]
+            if deleted is not None:
+                sess["access_token"] = deleted["access_token"]
         except Exception:
             logger.debug("web_auth: store delete failed", exc_info=True)
     if audit_action:

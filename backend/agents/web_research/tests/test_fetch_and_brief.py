@@ -47,6 +47,23 @@ def test_fetch_page_renders_card_with_markdown(rmock: HttpMock) -> None:
     assert result["_data"]["truncated"] is False
 
 
+def test_fetch_page_keeps_release_menu_rows(rmock: HttpMock) -> None:
+    html = (
+        '<html><body><nav>Site links</nav><main><h1>Release archive</h1>'
+        '<ol class="list-row-container menu"><li><a href="/release/4-7-2">Atlas 4.7.2</a>'
+        '<span>Stable</span></li><li>Atlas 4.6.9</li></ol>'
+        '<ul class="main-menu"><li>Navigation links</li></ul></main></body></html>'
+    )
+    rmock.add("GET", "https://example.com/releases", status=200,
+              body=html.encode("utf-8"), headers={"Content-Type": "text/html"})
+    result = fetch_page(url="https://example.com/releases")
+    text = result["_ui_components"][0]["content"][1]["content"]
+    assert "Atlas 4.7.2" in text and "Atlas 4.6.9" in text
+    assert "Stable" in text
+    assert "Site links" not in text and "Navigation links" not in text
+    assert result["_data"]["truncated"] is False
+
+
 def test_fetch_page_truncation_notice_when_capped(rmock: HttpMock) -> None:
     long_paragraph = "word " * ((PAGE_TEXT_CAP // 5) + 2000)
     html = f"<html><head><title>Long</title></head><body><p>{long_paragraph}</p></body></html>"

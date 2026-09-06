@@ -1256,6 +1256,7 @@ async def test_local_early_validation_settlement_joins_repeated_cancellation(
     mutation_kind: str,
     replayed: bool,
     invalid_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A validation error remains primary until its exact slot is settled."""
 
@@ -1301,6 +1302,14 @@ async def test_local_early_validation_settlement_joins_repeated_cancellation(
         speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
         clock=lambda: NOW,
     )
+    settlement_entered = asyncio.Event()
+    real_settlement = runtime._settle_local_activation_failure
+
+    async def observe_settlement(*args: Any, **kwargs: Any) -> None:
+        settlement_entered.set()
+        await real_settlement(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "_settle_local_activation_failure", observe_settlement)
     request = _round2_request()
     if mutation_kind == "takeover":
         request.update(
@@ -1330,10 +1339,9 @@ async def test_local_early_validation_settlement_joins_repeated_cancellation(
     if not replayed:
         assert await asyncio.to_thread(cleanup_entered.wait, 1)
     else:
-        for _ in range(100):
-            if task.done():
-                break
-            await asyncio.sleep(0)
+        # Yielding the event loop cannot prove the repository thread returned.
+        # Cancel only after the validation error owns its real settlement path.
+        await asyncio.wait_for(settlement_entered.wait(), timeout=3)
     task.cancel()
     task.cancel()
     await asyncio.sleep(0)
@@ -1393,6 +1401,16 @@ async def test_same_activation_id_reservations_have_exact_request_ownership(
         clock=lambda: NOW,
     )
 
+    second_reserved = asyncio.Event()
+
+    class ObservedReservationLock(asyncio.Lock):
+        def release(self) -> None:
+            super().release()
+            if len(runtime._local_activation_reservations) == 2:
+                second_reserved.set()
+
+    runtime._local_activation_capacity_lock = ObservedReservationLock()
+
     def request_coroutine() -> Any:
         if mutation_kind == "create":
             return runtime.create_session(
@@ -1413,10 +1431,9 @@ async def test_same_activation_id_reservations_have_exact_request_ownership(
     first = asyncio.create_task(request_coroutine())
     assert await asyncio.to_thread(entered[0].wait, 1)
     second = asyncio.create_task(request_coroutine())
-    for _ in range(100):
-        if len(runtime._local_activation_reservations) == 2:
-            break
-        await asyncio.sleep(0)
+    # Takeover first awaits a repository thread; event-loop turns do not prove
+    # that work finished. Observe the actual reservation lock release instead.
+    await asyncio.wait_for(second_reserved.wait(), timeout=2)
     assert not entered[1].is_set()
     assert len(runtime._local_activation_reservations) == 2
     assert len({id(item) for item in runtime._local_activation_reservations}) == 2

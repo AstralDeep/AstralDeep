@@ -534,9 +534,11 @@ def _assignment_target(statement: ast.stmt) -> tuple[str, ast.AST] | None:
     return None
 
 
-def _literal_assignments(path: Path) -> dict[str, object]:
+def _literal_assignments(
+    path: Path, *, reviewed_literals: dict[str, object] | None = None
+) -> dict[str, object]:
     tree = _parse_python(path)
-    values: dict[str, object] = {}
+    values: dict[str, object] = dict(reviewed_literals or {})
     pending: list[tuple[str, ast.AST]] = []
     for statement in tree.body:
         target = _assignment_target(statement)
@@ -655,10 +657,73 @@ def compute_primitives_digest(component_root: Path) -> str:
     return digest.hexdigest()
 
 
+def _plane_assignment_schema_literals(
+    component_root: Path, tree: ast.Module
+) -> dict[str, object]:
+    """Read one reviewed local literal module; never execute or resolve imports.
+
+    Historical registries remain entirely local to migrations.py. Feature 079
+    uses one exact absolute import and a data-only sibling module. Aliasing,
+    rebinding, executable module statements, and filesystem indirection are
+    refused instead of extending the general literal expression vocabulary.
+    """
+    module = "astralplane.database.assignment_schema"
+    symbol = "ASSIGNMENT_SCHEMA_STATEMENTS"
+    imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+               and (node.module == module or any(alias.name == symbol or alias.asname == symbol
+                                                for alias in node.names))]
+    if not imports:
+        return {}
+    if (len(imports) != 1 or imports[0] not in tree.body or imports[0].level != 0
+            or imports[0].module != module or len(imports[0].names) != 1
+            or imports[0].names[0].name != symbol or imports[0].names[0].asname is not None):
+        raise CompositionError("Plane assignment schema import is not the reviewed exact import")
+    for node in ast.walk(tree):
+        if node is imports[0]:
+            continue
+        if ((isinstance(node, ast.Name) and node.id == symbol and isinstance(node.ctx, (ast.Store, ast.Del)))
+                or (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == symbol)
+                or (isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+                    alias.name == "*" or (alias.asname or alias.name.split(".")[0]) == symbol
+                    for alias in node.names))):
+            raise CompositionError("Plane assignment schema import is rebound or ambiguous")
+    path = component_root / "src/astralplane/database/assignment_schema.py"
+    try:
+        root = component_root.resolve()
+        redirected = (not path.resolve().is_relative_to(root)
+                      or any(parent.is_symlink() for parent in (path, *path.parents) if parent != component_root
+                             and parent.is_relative_to(component_root)))
+    except (OSError, RuntimeError) as exc:
+        raise CompositionError("Plane assignment schema source is unavailable") from exc
+    if redirected:
+        raise CompositionError("Plane assignment schema must be a regular local source file")
+    try:
+        if not path.is_file() or path.stat().st_size > 1_048_576:
+            raise CompositionError("Plane assignment schema source is missing or exceeds the byte bound")
+    except OSError as exc:
+        raise CompositionError("Plane assignment schema source is unavailable") from exc
+    declarations = _parse_python(path).body
+    if (declarations and isinstance(declarations[0], ast.Expr)
+            and isinstance(declarations[0].value, ast.Constant) and isinstance(declarations[0].value.value, str)):
+        declarations = declarations[1:]
+    if (len(declarations) != 1 or not isinstance(declarations[0], ast.Assign)
+            or len(declarations[0].targets) != 1 or not isinstance(declarations[0].targets[0], ast.Name)
+            or declarations[0].targets[0].id != symbol or not isinstance(declarations[0].value, ast.Tuple)):
+        raise CompositionError("Plane assignment schema must contain only the reviewed literal tuple")
+    items = declarations[0].value.elts
+    if (not 1 <= len(items) <= _MAX_LITERAL_SEQUENCE_ITEMS or any(
+            not isinstance(item, ast.Constant) or not isinstance(item.value, str) or not item.value
+            for item in items)):
+        raise CompositionError("Plane assignment schema must be a bounded nonempty string tuple")
+    return {symbol: tuple(item.value for item in items)}
+
+
 def _plane_migration_digest(component_root: Path) -> str:
     path = component_root / "src" / "astralplane" / "database" / "migrations.py"
     tree = _parse_python(path)
-    literals = _literal_assignments(path)
+    literals = _literal_assignments(
+        path, reviewed_literals=_plane_assignment_schema_literals(component_root, tree)
+    )
     migrations: dict[str, dict[str, object]] = {}
     registry_names: tuple[str, ...] | None = None
     registry_verifier_checksums: tuple[str | None, str | None] = (None, None)

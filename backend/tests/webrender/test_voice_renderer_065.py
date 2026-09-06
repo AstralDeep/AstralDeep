@@ -161,9 +161,12 @@ def test_client_uses_explicit_media_and_all_required_voice_frame_handlers() -> N
     missing = sorted(item for item in required if item not in source)
     assert not missing, f"web voice controller is missing contract seams: {missing}"
 
-    assert "SpeechRecognition" not in source
+    assert "window.SpeechRecognition" in source
+    assert "recognizer.processLocally = true;" in source
+    assert "recognizer.processLocally !== true" in source
+    assert 'voiceSpeechBackend === "client_local"' in source
     assert "webkitSpeechRecognition" not in source
-    assert "speechSynthesis" not in source
+    assert "speechSynthesis" in source
 
 
 def test_client_requires_exact_worker_identity_at_data_and_track_boundaries() -> None:

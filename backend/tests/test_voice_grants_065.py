@@ -360,6 +360,8 @@ async def test_worker_challenge_is_authenticated_single_use_and_no_store() -> No
 
 
 def test_client_grant_http_response_is_authenticated_no_store_and_secret_free() -> None:
+    from orchestrator.voice_backend import SpeechBackendSelection
+    selection = SpeechBackendSelection.from_environ({})
     bearer = "v1." + "a" * 64 + "." + "b" * 43
     client_grant = {
         "transport": "livekit",
@@ -393,7 +395,8 @@ def test_client_grant_http_response_is_authenticated_no_store_and_secret_free() 
         return None
 
     orchestrator = SimpleNamespace(
-        voice_runtime=SimpleNamespace(create_session=create_session),
+        voice_runtime=SimpleNamespace(create_session=create_session,
+            speech_backend=selection.value, backend_selection=selection),
         publish_voice_composer_state=publish,
         validate_voice_control_binding=lambda **_kwargs: VoiceControlClaims(
             subject=USER_ID,

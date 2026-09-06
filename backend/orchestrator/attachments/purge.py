@@ -54,6 +54,14 @@ class AttachmentPurgeReadinessError(RuntimeError):
         super().__init__(code)
 
 
+class AccountRetirementNeedsReconciliation(RuntimeError):
+    """Assignments were fenced; unresolved effects prevent account erasure."""
+
+    def __init__(self, unresolved_action_count: int) -> None:
+        self.unresolved_action_count = unresolved_action_count
+        super().__init__("account_retirement_reconciliation_required")
+
+
 @dataclass(frozen=True, slots=True)
 class AttachmentPurgeOutcome:
     """One committed logical deletion and its post-commit physical result."""
@@ -451,25 +459,41 @@ class AttachmentPurgeCoordinator:
         *,
         owner_id: str,
     ) -> tuple[PurgeScheduleResult, datetime]:
-        """Commit one owner tombstone without touching its blob namespace."""
+        """Fence owner assignments before scheduling physical namespace cleanup.
+
+        An unresolved external effect is retained for explicit reconciliation.
+        Its stop commits even though this call cannot yet accept physical purge.
+        """
 
         observed_at = self._now()
         degraded_epoch: int | None = None
+        unresolved_action_count = 0
+        scheduled = None
         try:
-            with self._state_lock:
-                self._mark_incomplete_locked("purge_reconciliation_incomplete")
-                degraded_epoch = self._state_epoch
             with self._runtime.transaction() as transaction:
-                scheduled = self._repository.schedule_owner_namespace(
-                    transaction,
-                    owner_id=owner_id,
-                    requested_at=observed_at,
-                    deleted_at=_epoch_milliseconds(observed_at),
-                )
+                catalog = getattr(self._runtime, "repositories", None)
+                assignments = getattr(catalog, "assignments", None)
+                if assignments is not None:
+                    retirement = assignments.retire_owner(transaction, owner_id=owner_id)
+                    unresolved_action_count = len(retirement.unresolved_action_ids)
+                if not unresolved_action_count:
+                    with self._state_lock:
+                        self._mark_incomplete_locked("purge_reconciliation_incomplete")
+                        degraded_epoch = self._state_epoch
+                    scheduled = self._repository.schedule_owner_namespace(
+                        transaction,
+                        owner_id=owner_id,
+                        requested_at=observed_at,
+                        deleted_at=_epoch_milliseconds(observed_at),
+                    )
         except BaseException as exc:
             if degraded_epoch is not None and _is_definite_schedule_rollback(exc):
                 self._restore_after_definite_rollback(degraded_epoch)
             raise
+        if unresolved_action_count:
+            # Raise only after transaction exit: rolling back would revive the
+            # very work the owner has asked to retire.
+            raise AccountRetirementNeedsReconciliation(unresolved_action_count)
         return scheduled, observed_at
 
     def abandon_pending_materialization(
@@ -970,10 +994,11 @@ async def _join_worker_through_cancellation(future: asyncio.Future[Any]) -> Any:
 
 
 __all__ = (
+    "AccountRetirementNeedsReconciliation",
     "AttachmentPurgeAcceptance",
     "AttachmentPurgeCoordinator",
     "AttachmentPurgeOutcome",
-    "AttachmentPurgeStatus",
     "AttachmentPurgeReadinessError",
+    "AttachmentPurgeStatus",
     "purge_coordinator_from_orchestrator",
 )

@@ -16,11 +16,15 @@ analog of 016's client revocation queue).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import secrets
 import time
+from dataclasses import replace
 from typing import Any, Dict, Optional
 
+from astralplane.repositories import RepositoryConflictError, RepositoryNotFoundError
 from astralplane.repositories.history import SessionRecord
 from orchestrator.plane_repository_context import (
     PlaneRepositoryContext,
@@ -30,6 +34,9 @@ from orchestrator.plane_repository_context import (
 logger = logging.getLogger("orchestrator.session_store")
 
 _DEV_VALUES = ("development", "dev")
+REFRESH_WAIT_SECONDS = 15.0
+_REFRESH_CLAIM_PREFIX = "\x00astral-session-refresh/v1\x00"
+_TOKEN_MAX_BYTES = 32768
 
 
 def is_dev_mode() -> bool:
@@ -53,7 +60,8 @@ def assert_production_posture() -> None:
     serve a production-mode process with a configuration that would silently
     run open or unprotected. Collects EVERY problem before exiting so the
     operator gets one actionable checklist. Raises ``SystemExit(78)``
-    (EX_CONFIG) — called from ``Orchestrator.start``.
+    (EX_CONFIG) — called before command-line runtime construction and again
+    from ``Orchestrator.start`` for embedded callers.
 
     Development mode (``ASTRAL_ENV=development``) skips everything except the
     advisory warnings — local dev stays friction-free (spec A13)."""
@@ -124,6 +132,15 @@ def _enc_key() -> Optional[bytes]:
 
 class SessionStoreError(Exception):
     """Raised when the store cannot operate safely (e.g. no key in prod)."""
+
+
+class SessionRefreshUnavailable(SessionStoreError):
+    """Refresh cannot safely continue; existing access may still be usable."""
+
+
+def _valid_token(value: object) -> bool:
+    return (isinstance(value, str) and 0 < len(value) <= _TOKEN_MAX_BYTES
+            and value.isascii() and all(32 < ord(ch) < 127 for ch in value))
 
 
 class WebSessionStore:
@@ -207,9 +224,11 @@ class WebSessionStore:
 
     def _dec(self, value: str) -> str:
         if self._fernet is None:
-            return value or ""
+            return "" if (value or "").startswith(_REFRESH_CLAIM_PREFIX) else value or ""
         try:
-            return self._fernet.decrypt((value or "").encode()).decode()
+            plaintext = self._fernet.decrypt((value or "").encode()).decode()
+            # A claim is authenticated ciphertext, never an OAuth credential.
+            return "" if plaintext.startswith(_REFRESH_CLAIM_PREFIX) else plaintext
         except Exception:
             logger.warning("session_store: token decrypt failed (key rotated?) — treating session as dead")
             return ""
@@ -261,27 +280,21 @@ class WebSessionStore:
 
     def get(self, sid: str) -> Optional[Dict[str, Any]]:
         """Return the live session (cap-checked); expired sessions are deleted."""
-        row = self._cache.get(sid)
-        if row is None:
-            with self._sessions.transaction() as transaction:
-                record = self._sessions.repository.get_by_session_id_for_administration(
-                    transaction,
-                    session_id=sid,
-                )
-                if record is None:
-                    return None
-                row = self._from_record(record)
-                if not row["access_token"] and not row["refresh_token"]:
-                    # Undecryptable (key rotation) — dead session.
-                    self._sessions.repository.delete(
-                        transaction,
-                        owner_id=record.owner_id,
-                        session_id=record.session_id,
-                    )
-                    return None
-            if row is None:  # pragma: no cover - narrows Optional for type checkers
+        # Other workers rotate this exact credential family. A process cache
+        # cannot decide token validity or whether a logout has deleted a row.
+        with self._sessions.transaction() as transaction:
+            record = self._sessions.repository.get_by_session_id_for_administration(
+                transaction, session_id=sid)
+            if record is None:
+                self._cache.pop(sid, None)
                 return None
-            self._cache[sid] = row
+            row = self._from_record(record)
+            if not row["access_token"] and not row["refresh_token"]:
+                self._sessions.repository.delete(
+                    transaction, owner_id=record.owner_id, session_id=record.session_id)
+                self._cache.pop(sid, None)
+                return None
+        self._cache[sid] = row
         if int(time.time()) >= row["hard_expires_at"]:
             # 016 hard cap: only interactive login can start a new session.
             logger.info("session_store: session %s hit the 365-day cap — cleared", sid[:8])
@@ -326,6 +339,111 @@ class WebSessionStore:
             self._death_reasons.clear()
         self._death_reasons[sid] = reason
 
+    def session_reference(self, owner_id: str, refresh_token: str) -> dict:
+        """Resolve a consented token to its exact live canonical session."""
+        if not _valid_token(refresh_token) or self._fernet is None:
+            raise SessionRefreshUnavailable("live encrypted session required")
+        with self._sessions.transaction() as transaction:
+            record = self._sessions.repository.get_latest_live_for_owner(
+                transaction, owner_id=owner_id, observed_at=int(time.time()))
+        current = self._dec(record.refresh_token_ciphertext) if record is not None else ""
+        if not _valid_token(current) or not secrets.compare_digest(current, refresh_token):
+            raise SessionRefreshUnavailable("refresh token does not match the live session")
+        return {"session_id": record.session_id, "created_at": record.created_at,
+                "interactive_anchor": record.interactive_anchor}
+
+    def _refresh_record(self, sid, owner_id, reference):
+        record = self._sessions.call(self._sessions.repository.get,
+                                     owner_id=owner_id, session_id=sid)
+        if record is None or record.hard_expires_at <= int(time.time()):
+            raise SessionRefreshUnavailable("session missing or expired")
+        if reference is not None and (
+            record.created_at != reference["created_at"]
+            or record.interactive_anchor != reference["interactive_anchor"]
+        ):
+            raise SessionRefreshUnavailable("session identity changed; re-consent required")
+        return record
+
+    def _claim_refresh(self, sid, owner_id, reference):
+        if self._fernet is None:
+            raise SessionRefreshUnavailable("encrypted session required for refresh")
+        record = self._refresh_record(sid, owner_id, reference)
+        try:
+            plaintext = self._fernet.decrypt(
+                record.refresh_token_ciphertext.encode()).decode()
+        except Exception:
+            raise SessionRefreshUnavailable("session credential cannot be decrypted") from None
+        if plaintext.startswith(_REFRESH_CLAIM_PREFIX):
+            try:
+                claim = json.loads(plaintext[len(_REFRESH_CLAIM_PREFIX):])
+                started = claim["started"]
+                if (type(started) not in (int, float) or
+                        not 0 <= time.time() - started < REFRESH_WAIT_SECONDS):
+                    raise ValueError
+            except (ValueError, KeyError, TypeError):
+                raise SessionRefreshUnavailable("prior refresh outcome unknown; sign in again") from None
+            return None
+        if not _valid_token(plaintext):
+            raise SessionRefreshUnavailable("session has no valid refresh credential")
+        marker = _REFRESH_CLAIM_PREFIX + json.dumps(
+            {"nonce": secrets.token_hex(32), "started": time.time()})
+        claimed = replace(record, refresh_token_ciphertext=self._enc(marker),
+                          last_refresh_at=max(int(time.time()), record.last_refresh_at + 1))
+        try:
+            self._sessions.call(self._sessions.repository.compare_and_set_refresh,
+                                record=claimed,
+                                expected_last_refresh_at=record.last_refresh_at)
+        except RepositoryConflictError:
+            return None
+        except RepositoryNotFoundError:
+            raise SessionRefreshUnavailable("session was revoked") from None
+        return claimed, plaintext, self._dec(record.access_token_ciphertext)
+
+    def _settle_refresh(self, claimed, access, refresh, reference):
+        self._refresh_record(claimed.session_id, claimed.owner_id, reference)
+        replacement = replace(
+            claimed, access_token_ciphertext=self._enc(access),
+            refresh_token_ciphertext=self._enc(refresh),
+            last_refresh_at=max(int(time.time()), claimed.last_refresh_at + 1))
+        try:
+            self._sessions.call(self._sessions.repository.compare_and_set_refresh,
+                                record=replacement,
+                                expected_last_refresh_at=claimed.last_refresh_at)
+        except (RepositoryConflictError, RepositoryNotFoundError):
+            raise SessionRefreshUnavailable("session changed during refresh") from None
+        if replacement.hard_expires_at <= int(time.time()):
+            raise SessionRefreshUnavailable("session expired during refresh")
+        row = self._from_record(replacement)
+        self._cache[claimed.session_id] = row
+        return row
+
+    async def refresh_credential(self, sid, *, owner_id, exchange, reference=None):
+        """Serialize consumers before HTTP and persist rotation before returning.
+
+        Cancellation, a crash, or an ambiguous response keeps the authenticated
+        claim in place. Nobody retries the potentially consumed old token.
+        """
+        try:
+            async with asyncio.timeout(REFRESH_WAIT_SECONDS):
+                while True:
+                    acquired = await asyncio.to_thread(
+                        self._claim_refresh, sid, owner_id, reference)
+                    if acquired is not None:
+                        break
+                    await asyncio.sleep(.1)
+                claimed, refresh, access = acquired
+                payload = await exchange(refresh, access)
+                if (not isinstance(payload, dict)
+                        or not _valid_token(payload.get("access_token"))
+                        or ("refresh_token" in payload
+                            and not _valid_token(payload["refresh_token"]))):
+                    raise SessionRefreshUnavailable("malformed refresh response")
+                return await asyncio.to_thread(
+                    self._settle_refresh, claimed, payload["access_token"],
+                    payload.get("refresh_token", refresh), reference)
+        except TimeoutError:
+            raise SessionRefreshUnavailable("refresh time limit exceeded") from None
+
     def pop_death_reason(self, sid: str) -> Optional[str]:
         """Why get() last refused this sid ('hard_cap'), consumed on read."""
         return self._death_reasons.pop(sid, None)
@@ -340,6 +458,8 @@ class WebSessionStore:
             if current is None:
                 self._cache.pop(sid, None)
                 return
+            if not self._dec(current.refresh_token_ciphertext):
+                raise SessionRefreshUnavailable("unsettled refresh cannot be overwritten")
             refreshed_at = max(int(time.time()), current.last_refresh_at + 1)
             refreshed = SessionRecord(
                 session_id=current.session_id,
@@ -383,23 +503,21 @@ class WebSessionStore:
         self._cache[sid] = self._from_record(stored)
 
     def delete(self, sid: str) -> Optional[Dict[str, Any]]:
-        """Delete a session; returns the cached row (for revocation) if known."""
-        row = self._cache.pop(sid, None)
+        """Delete and return the exact durable credential for revocation."""
+        self._cache.pop(sid, None)
         with self._sessions.transaction() as transaction:
             record = self._sessions.repository.get_by_session_id_for_administration(
                 transaction,
                 session_id=sid,
             )
             if record is None:
-                return row
-            if row is None:
-                row = self._from_record(record)
-            self._sessions.repository.delete(
+                return None
+            deleted = self._sessions.repository.delete_and_return(
                 transaction,
                 owner_id=record.owner_id,
                 session_id=record.session_id,
             )
-        return row
+        return None if deleted is None else self._from_record(deleted)
 
     def delete_for_user(self, user_id: str) -> int:
         """Delete every session of a user (user-switch revocation, 016 FR-008)."""

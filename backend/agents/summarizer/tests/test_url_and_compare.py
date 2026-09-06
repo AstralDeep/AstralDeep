@@ -49,6 +49,26 @@ def test_summarize_url_happy_path(rmock: HttpMock, fake_openai) -> None:
     assert "<html" not in sent
 
 
+def test_summarize_url_sends_content_menu_to_model(rmock: HttpMock, fake_openai) -> None:
+    html = (
+        '<html><body><h1>Seasonal food guide</h1>'
+        '<ul id="menu"><li>Roasted squash with rice</li><li>Fresh pear tart</li></ul>'
+        '<div role="menubar">Account navigation</div>'
+        '<div class="global-menu">Global navigation</div>'
+        '<script>tracking()</script></body></html>'
+    )
+    rmock.add("GET", "https://example.com/food", status=200,
+              body=html.encode("utf-8"), headers={"Content-Type": "text/html"})
+    fake_cls = fake_openai(GOOD_JSON)
+    result = summarize_url(url="https://example.com/food")
+    assert result["_data"]["url"] == "https://example.com/food"
+    assert len(fake_cls.calls_log) == 1
+    sent = fake_cls.calls_log[0]["messages"][1]["content"]
+    assert "Roasted squash with rice" in sent and "Fresh pear tart" in sent
+    assert "Account navigation" not in sent and "Global navigation" not in sent
+    assert "tracking()" not in sent
+
+
 def test_summarize_url_egress_refusal_on_private_host() -> None:
     result = summarize_url(url="https://internal.example.com/wiki")
     alert = result["_ui_components"][0]

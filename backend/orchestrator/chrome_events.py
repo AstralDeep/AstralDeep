@@ -354,16 +354,37 @@ async def _audit_admin_rejection(orch, websocket, user_id: str, what: str):
         logger.debug("chrome: admin-rejection audit failed", exc_info=True)
 
 
-# Feature 054: the only chrome actions an unconfigured user may perform —
-# the setup surface's own actions. Everything else (surface navigation,
-# close, other surfaces' handlers) is refused server-side while gated
-# (FR-014); sign-out is NOT a chrome action and stays reachable.
+# Feature 054: setup actions remain available while unconfigured. Feature 079
+# also preserves owner inspection and authority-reducing assignment controls;
+# continued work, consent and approvals retain the setup gate.
 _LLM_GATE_ALLOWED_ACTIONS = frozenset({
     "chrome_llm_models", "chrome_llm_test", "chrome_llm_save", "chrome_llm_clear",
 })
 
 
-async def _llm_gate_refusal(orch, websocket, action: str, user_id: str) -> bool:
+def _assignment_control_without_llm(orch, websocket, action, payload, user_id):
+    """Let a verified owner inspect or quiesce work without granting new work."""
+    if action not in {"chrome_assignment_pause", "chrome_assignment_stop", "chrome_assignment_revoke"}:
+        if action != "chrome_open" or not isinstance(payload, dict):
+            return False
+        params = payload.get("params")
+        if (payload.get("surface") != "personalization" or not isinstance(params, dict)
+                or params.get("tab") != "schedule"
+                or params.get("assignment_mode") not in (None, "list", "detail")):
+            return False
+    from persistent_agents.models import AssignmentError
+
+    from orchestrator.projection_surfaces.personalization import _assignment_access
+    try:
+        # Reuse the same feature, live human socket and owner checks as the
+        # final handler. Every resource read/control still enforces its owner.
+        _assignment_access(orch, websocket, user_id)
+    except (AssignmentError, TypeError, AttributeError):
+        return False
+    return True
+
+
+async def _llm_gate_refusal(orch, websocket, action: str, user_id: str, *, payload=None) -> bool:
     """Server-authoritative first-run gate (feature 054, FR-014).
 
     Returns True when the action was refused: the refusal is audited
@@ -380,6 +401,8 @@ async def _llm_gate_refusal(orch, websocket, action: str, user_id: str) -> bool:
         logger.exception("chrome: llm gate predicate failed (failing open)")
         return False
     if action in _LLM_GATE_ALLOWED_ACTIONS:
+        return False
+    if _assignment_control_without_llm(orch, websocket, action, payload, user_id):
         return False
     try:
         actor_user_id, auth_principal = orch._llm_audit_principals(websocket)
@@ -405,11 +428,9 @@ async def handle_chrome_event(orch, websocket, action: str, payload: dict,
     if not _is_chrome_action(action):
         return False
     payload = payload or {}
-    # Feature 054: while the caller has no LLM configuration, every chrome
-    # action except the setup surface's own handlers is answered with the
-    # mandatory setup dialog (chrome_open of ANY surface — including "llm"
-    # itself — lands on the mandatory variant; chrome_close is refused).
-    if await _llm_gate_refusal(orch, websocket, action, user_id):
+    # New work and approvals keep the normal setup gate. Owner Schedule reads
+    # and pause/stop/revoke remain operable when personal LLM setup is absent.
+    if await _llm_gate_refusal(orch, websocket, action, user_id, payload=payload):
         return True
     roles = _roles(orch, websocket)
     # Resolved before the handler runs so an exception's error notice carries

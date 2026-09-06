@@ -20,20 +20,20 @@ import uuid
 from datetime import UTC, datetime
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from astralplane import BlobSizeLimitError
 from astralplane.errors import PlaneError
-
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import JSONResponse
 from orchestrator.attachments import content_type as ct
 from orchestrator.attachments.materialization import (
     AttachmentContentTypeMismatchError,
     materialization_service_from_orchestrator,
 )
+from orchestrator.attachments.purge import AccountRetirementNeedsReconciliation
 from orchestrator.attachments.repository import AttachmentRepository
 from orchestrator.auth import require_user_id
 from orchestrator.plane_repository_context import plane_source_from_orchestrator
+from pydantic import BaseModel
 
 logger = logging.getLogger("AttachmentsAPI")
 
@@ -391,6 +391,17 @@ async def begin_account_retirement(
         )
 
         acceptance = await initiate_account_retirement(coordinator, user_id)
+    except AccountRetirementNeedsReconciliation as exc:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            headers={"Cache-Control": "no-store"},
+            content={
+                "status": "reconciliation_required",
+                "code": "account_retirement_reconciliation_required",
+                "unresolved_action_count": exc.unresolved_action_count,
+                "detail": "Ongoing agents were stopped. Review their unresolved actions before completing account retirement.",
+            },
+        )
     except Exception as exc:
         logger.warning(
             "Account retirement cleanup could not be accepted for owner=%s",

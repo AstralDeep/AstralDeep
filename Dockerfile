@@ -12,7 +12,7 @@ WORKDIR /build
 # build isolation while producing the four wheels, so only these preinstalled
 # backends and the exact local submodule sources can participate in the build.
 RUN python -m pip install --no-cache-dir \
-        setuptools==80.9.0 \
+        setuptools==83.0.0 \
         wheel==0.45.1 \
         hatchling==1.27.0 \
         uv_build==0.12.3
