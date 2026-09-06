@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
@@ -55,6 +57,52 @@ def test_should_skip_attrs_keeps_content_elements():
     assert not wr.should_skip_attrs([("class", "overview")])
     assert not wr.should_skip_attrs([("id", "main")])
     assert not wr.should_skip_attrs([])
+
+
+@pytest.mark.parametrize("attribute", ["class", "id"])
+@pytest.mark.parametrize("value", ["menu", "document-list menu", "download-menu", "menu-reference"])
+def test_menu_attribute_alone_does_not_discard_content(attribute, value):
+    assert not wr.should_skip_attrs([(attribute, value)])
+
+
+@pytest.mark.parametrize("attribute", ["class", "id"])
+@pytest.mark.parametrize("value", [
+    "site-menu", "main-menu", "global_menu", "mobile-menu expanded", "megamenu",
+])
+def test_qualified_navigation_menus_remain_chrome(attribute, value):
+    assert wr.should_skip_attrs([(attribute, value)])
+
+
+@pytest.mark.parametrize("role", ["navigation", "menu", "menubar", "MENU"])
+def test_explicit_navigation_roles_remain_chrome(role):
+    assert wr.should_skip_attrs([("role", role)])
+
+
+@pytest.mark.parametrize("extractor", ["web_research", "summarizer"])
+def test_both_extractors_keep_menu_content_and_remove_explicit_navigation(extractor):
+    html = (
+        "<html><body><main><h1>Product release archive</h1>"
+        '<ol class="document-list menu"><li><a href="/releases/4-7-2">'
+        'Atlas 4.7.2</a><span>Stable release</span><br><img src="badge.png"></li></ol>'
+        '<ul id="menu"><li>Atlas 4.6.9 remains supported</li></ul>'
+        '<nav><a>Semantic navigation</a></nav><div role="menu">Role menu</div>'
+        '<div role="menubar">Role menubar</div><div role="navigation">Role navigation</div>'
+        '<div class="site-menu">Site navigation</div>'
+        '<div id="mobile_menu">Mobile navigation</div>'
+        '<script>hidden_code()</script><p>End of release archive.</p></main></body></html>'
+    )
+    if extractor == "web_research":
+        from agents.web_research.mcp_tools import _extract_readable
+        _, text = _extract_readable(html)
+    else:
+        from agents.summarizer.mcp_tools import _extract_text
+        _, text = _extract_text(SimpleNamespace(text=html, headers={"Content-Type": "text/html"}))
+    for content in ("Product release archive", "Atlas 4.7.2", "Stable release",
+                    "Atlas 4.6.9 remains supported", "End of release archive."):
+        assert content in text
+    for chrome in ("Semantic navigation", "Role menu", "Role menubar", "Role navigation",
+                   "Site navigation", "Mobile navigation", "hidden_code"):
+        assert chrome not in text
 
 
 def test_clean_page_text_drops_boilerplate_and_junk_keeps_prose():
