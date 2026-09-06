@@ -86,7 +86,7 @@ qualification; the earlier local checkpoint is not a production-ready claim.
 
 - [x] T033 Coordinate browser/background refresh rotation through one durable session claim, safely convert legacy grants, and verify revocation/cancellation/logout races.
 - [x] T034 Fix typed URL/privacy boundaries, scan unescaped complete source evidence before redaction, retain only sanitized observations, and qualify with the installed detector.
-- [ ] T035 Complete native coverage producers and strict parser checks; correct stale 079 schema/dispatch fixtures, classify broader baseline failures, and record exact final source evidence.
+- [x] T035 Complete native coverage producers and strict parser checks; correct stale 079 schema/dispatch fixtures, classify broader baseline failures, and record exact final source evidence. Deep `b525671c` passes all three owner producers at 96.88%; Projection `07e5c90c` passes all nine at 99.52%. The actual canonical parser still refuses missing provider inputs, retained under T030/T031/T037.
 - [x] T036 Build from clean committed LF source, verify installed runtime identity, run the bounded owner-approved assignment and controls/restart checks, and stop it after testing. Runtime `48f8ea5f` completed an observation/child/parent episode and quiet polls across an idle restart; the supplied fallback yielded no release version. Detailed release-change, mid-effect and all-client scenarios remain in T030/T031/T040.
 - [ ] T037 Open owner-qualified PRs, satisfy independent review and CI before any merge, and retain concrete protected-staging/Apple/publication blockers in `verification/production-readiness.md`.
 - [x] T038 Qualify the live-discovered proven-unstarted pause/resume recovery repair, early production exit-78 gate, patched build/CI dependency locks and isolated paired-backup restore rehearsal; bind final source/image evidence without resetting the approved live-test budget.
@@ -98,6 +98,20 @@ and idle restart recovery without a privacy refusal, then stopped within its
 original bounds. Its finding reports no usable release version in the supplied observation,
 so a populated version baseline/change remains pending. The original discarded
 privacy refusal's content remains unknown; no bypass or causal claim was added.
+
+The final `b525671c` test used only that follow-up's remaining allowance. It
+completed planner/child/parent work without a privacy refusal, but the parent
+rejected the child's unsupported completion claim from empty source tables.
+It is stopped; combined usage is 8 model calls, 5 tool calls, 15,188 tokens and
+56,500 ms within the original 8/12/32,000/300,000 caps. A populated version
+baseline/change remains open; no capacity or failed receipt was reset.
+
+The missing release rows were subsequently traced to ambiguous `menu` CSS
+classification. Runtime `5b055eb9` fixes both existing readers (203 tests,
+100% shared-helper coverage). One normal deployed public read preserves release
+versions through the unchanged privacy/context functions. This source-only
+proof spends no model allowance and does not close the autonomous baseline,
+release-change or all-client requirements.
 
 - T001 precedes product edits; T003 precedes T004/T005. T006 can proceed alongside Plane after its public contract is fixed. Foundation must pass before story execution is enabled.
 - US1 uses the foundation. US2 extends its execution ledger. US3 controls/budgets must be complete before enabling unattended work for any live owner. US4 uses US1–US3 authority/recovery controls.

@@ -1,5 +1,102 @@
 # Feature 079 verification record
 
+## Final source-reader qualification — 2026-09-06 UTC
+
+Runtime `5b055eb9af958039f45c4387690cb7d669fb4783` repairs a demonstrated
+reader defect: the generic CSS class `menu` wrongly discarded Python's release
+list. Ordinary content lists now survive; explicit navigation tags, roles and
+qualified site-menu attributes remain excluded. The same shared repair serves
+Web Research and Summarizer, with no site-specific exception or new dependency.
+Their full module suites plus shared regressions pass **203 tests**, no skips;
+the complete shared helper has **38/38 statements covered (100%)**.
+
+The clean final image is
+`sha256:72d91507a782685f6e691838dda79b245387f5252881adfd0edfbe033509f1a1`.
+All 591 runtime bindings, five health/readiness/authentication checks, both
+isolated exit-78 cases and unchanged metadata for 145 distributions pass.
+The first HTTP check disconnected while the recreated application warmed;
+the subsequent complete check passed. No schema or contract changed.
+
+A read-only diagnostic invoked the unchanged deployed public-page tool once,
+then its installed injection, Presidio redaction, PHI and bounded-context
+functions. The reader retained 18,953 characters and 210 version occurrences;
+59 occurrences remained in the existing 4,096-character observation, including
+the observed stable version. The authored planner context fits in 4,509 bytes.
+No module override, model call, assignment, grant or private database access
+was used. This proves the extraction/privacy repair, not a new autonomous
+version-baseline episode. Exact aggregate proof is retained in
+`build/079/release-preflight/python-public-page-extraction-repaired.json`.
+
+All three temporary assignments remain stopped with their prior counters and
+no next check after the final rebuild. Their actual episodes remain recorded
+against the earlier runtimes below. A new accepted version baseline/change,
+in-flight interruption, full authenticated client evidence and protected
+release requirements remain open. Final candidate coverage and publication
+receipts are source-bound outside the candidate tree.
+
+## Final runtime and native coverage repair — 2026-09-06 UTC
+
+Runtime `b525671c3b5dab0a7fb523080bed12476c408052` preserves larger evidence excerpts within the existing
+5,500-byte context and 8,192-byte serialized action bounds. Exact legacy
+requests and digests remain valid; arbitrary retained message substitutions
+are refused. A serialized-escaping overflow uses the original bounded context.
+No owner limit, privacy gate or replay rule changes. Stopped/completed views
+no longer display a current cadence wait; durable history remains intact.
+
+- Full persistent-agent suite: **389 passed**, no failures/skips, one existing
+  xunit2 record-property warning, 209.80 seconds. Fresh complete-file coverage
+  is runner 284/289 (98.27%) and context/parser 114/123 (92.68%); all newly
+  executable lines are covered. Tested bytes match the committed source.
+- Independent context compatibility probe: **300 cases passed**; exact legacy
+  projection, size bounds, identifiers, owner instructions and input immutability.
+- Deep terminal/shared-control suites: **159 passed**; both new lines covered.
+- Native coverage collector suites: **181 passed**, one existing unavailable
+  Python 3.14 skip. Three new lines are covered. Producer ownership now matches
+  both language and platform; all required producers and the 90% floor remain.
+- Exact component-contract suites: **277 passed** after updating the stale
+  expected Projection commit. The same fixture caused both initial Deep draft
+  CI failures; those failed provider reports remain retained.
+- Root Ruff 0.15.21 and diff checks pass.
+
+Strict Deep owner coverage at `b525671c` passes **2,796/2,886 changed executable
+lines (96.88%)**, with all three producers. Every old observation for the changed
+runner, context, personalization and collector files was replaced with fresh
+native data; 57 source blobs and retained worker mappings are verified.
+The canonical parser still exits 1 with `missing_provider_inputs`. Exact
+commands, reports and native-recording identities are retained under
+`build/079/verification/coverage/b525671c/`; the eight-target inventory is
+`build/079/release-preflight/deep-owner-b525671c-input-inventory.json`.
+
+Projection `07e5c90c` passes all required owner CI (15 successful checks, one
+optional next-major Android skip). Seven native Apple/Android archives have
+verified provider digests. Combined with explicitly source-bound local native
+records, its strict nine-producer coverage passes **206/207 (99.52%)**.
+Plane `b20c8f3e` passes all five owner CI checks. These are build/test evidence;
+authenticated Feature 079 flows on every affected client remain separate.
+
+The clean LF build is `sha256:d08279202003782159968c8546d0f135f85a80191e799fe3ee195ede1e5a7b12`. All 591 runtime file bindings, five
+health/readiness/authentication checks and both isolated production exit-78
+cases pass. All 145 installed distribution metadata records and Python match
+the audited image; the four unique runtime advisories remain open.
+
+The final remaining-allowance live episode completed planner/child/parent work
+without a privacy refusal, but the source still supplied empty release tables.
+The parent explicitly rejected the child's unsupported completion claim and
+kept the assignment incomplete. It was stopped with no next check/reservations.
+Combined follow-up spending is 8 model calls, 5 tool calls, 15,188 tokens and
+56,500 ms, within the approved 8/12/32,000/300,000 caps. A populated release
+baseline/change remains unverified; no rejected content was retained or budget
+reset. Exact chronology follows in `live-observations.md`.
+
+Deep draft [#193](https://github.com/AstralDeep/AstralDeep/pull/193) and companion
+drafts are published for diagnostic review. Review, canonical provider/staging
+evidence, affected-client live checks and advisory disposition remain open.
+No merge, production promotion or release occurred. Exact source-bound coverage,
+parser refusals, native recordings and publication identities remain in
+`build/079/verification/coverage/` and `build/079/release-preflight/`.
+
+The following earlier runtime checkpoints retain their original test identities.
+
 ## Follow-up repair qualification — 2026-09-05
 
 New model intents request `low` reasoning effort within the existing 4,096

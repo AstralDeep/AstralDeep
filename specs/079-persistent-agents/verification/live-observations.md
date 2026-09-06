@@ -1,5 +1,62 @@
 # Bounded local assignment observations
 
+## Source diagnosis and final repair (no additional model allowance)
+
+A subsequent public read identified the concrete extraction cause: 261 release
+version occurrences were inside a content list with CSS class
+`list-row-container menu`. The shared reader's generic `menu` chrome heuristic
+discarded that entire list before privacy processing or model context bounds.
+This explains the missing rows in the reader; it does not identify the original
+discarded model response that triggered a privacy refusal.
+
+Runtime `5b055eb9af958039f45c4387690cb7d669fb4783` fixes ambiguous content-menu
+classification in both existing readers and passes 203 tests. A read-only
+diagnostic on the installed final image retained 210 version occurrences from
+one normal public-page fetch; 59 remained after the existing full injection
+scan, source-only Presidio redaction, PHI checks and 4,096-character observation
+bound. An authored planner context retained the observed version and fit the
+existing limits. No deployed module was overridden, and no model, assignment,
+grant or private database was used. This is source/guard verification, not a
+new model-derived assignment finding or a reset of the exhausted test budget.
+
+A fresh authenticated Schedule view after the final rebuild showed all three
+temporary assignments Stopped, their exact earlier counters retained and no
+next check. The earlier lifecycle observations below keep their actual runtime
+identities; the new extraction repair does not relabel those findings.
+
+## Final remaining-allowance test — 2026-09-06 UTC
+
+The owner's standing authorization covered completion of the already reviewed
+bounded test. **Public release monitor — remaining allowance** received only
+the unused daily/lifetime capacity from the stopped follow-up: 3 model calls,
+8 tool calls, 19,588 tokens and 249,955 ms. URL, cadence, tool, one-task
+concurrency, depth zero, four-task cap, retry and timeout remained unchanged.
+It requested the first observed stable version and completion only after an
+actual version baseline. Earlier assignments and charges were not modified.
+
+Clean runtime `b525671c3b5dab0a7fb523080bed12476c408052`, image `sha256:d08279202003782159968c8546d0f135f85a80191e799fe3ee195ede1e5a7b12`, passed 591 source bindings and
+the startup/authentication checks before activation. Creation acknowledged
+revision 1/control 1 and a next check of `2026-09-06T00:05:01.330055+00:00`.
+At `00:05:10.628891+00:00`, a real planner, child and parent episode completed.
+The child's recorded result was incorporated, but its claim of completion
+despite unknown version data was explicitly rejected by the parent finding.
+The supplied fallback's release tables remained empty; no populated version
+baseline was accepted. The assignment correctly remained Waiting, with the
+completion condition unmet. No privacy refusal occurred in this episode.
+
+Stop was acknowledged at `00:05:40.030292+00:00`, revision 1/control 2,
+**Stopped, no next check and zero reservations**. Final usage: **3/3 model
+calls, 1/8 tool calls, 2,776/19,588 tokens and 6,455/249,955 ms**. The current
+cadence wait is blank on the terminal view; the completed task, uncertainty
+and activity remain visible. Together with the prior follow-up, total spending
+is **8/8 model calls, 5/12 tool calls, 15,188/32,000 tokens and 56,500/300,000
+ms**. No remaining model capacity is reused or replenished.
+
+The richer-context regression is verified with authored source fixtures; this
+live result does not establish that earlier truncation caused the missing
+version. Source-specific baseline/change verification remains open. Earlier
+quiet-poll and idle-restart evidence below retains its actual runtime identity.
+
 ## Follow-up test authorization and diagnosis
 
 The owner's subsequent permission to perform the necessary work authorized the

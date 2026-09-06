@@ -36,37 +36,45 @@ its recovery obligations remain in force.
 ## Candidate and local evidence
 
 The owner subsequently authorized necessary draft publication after being
-informed of the unmet pre-push ordering. Deep's actual tested feature is being
-prepared as a diagnostic draft under that user instruction. This is not a
+informed of the unmet pre-push ordering. Deep's tested feature is published
+as a diagnostic draft under that user instruction. This is not a
 provider-native Constitution-X bootstrap approval, passing canonical evidence
 verdict, independent review, or merge/release authorization. No policy or
 protected setting is weakened. The exact failed parser inventory, source-bound
 coverage and publication identities remain outside the candidate tree in
 `build/079/release-preflight/`.
 
-Current local runtime is `48f8ea5f`, image
-`sha256:c565761d9048eb786deed5c04990db97c6a78c7fa7d3d68007078f1bdfca2d0c`.
-It uses low reasoning effort for new bounded steps and retains legacy requests.
-It passes 591 runtime file bindings, health/readiness/authentication denials,
-both isolated production exit-78 checks, and unchanged dependency metadata.
-A real owner-approved episode completed and incorporated a child result;
-unchanged polling avoided additional model calls, and the completed result
-survived an app restart. The test is stopped with no pending check or reservation
-and all original limits respected. The result reports no available version in the supplied
-fallback view. Actual release-change, mid-effect recovery, load/control-latency,
-sensitive-action and every affected authenticated native-client scenario still
-need their designated evidence. See `live-observations.md` for exact limits,
-observations and the original stopped test.
+Current local runtime is `5b055eb9af958039f45c4387690cb7d669fb4783`, image `sha256:72d91507a782685f6e691838dda79b245387f5252881adfd0edfbe033509f1a1`.
+Its unchanged persistent-agent modules retain their 389-test qualification.
+The final image passes all 591 runtime file bindings,
+health/readiness/authentication denials, both isolated production exit-78
+checks and unchanged dependency metadata. Larger evidence excerpts retain
+the same context/action caps and exact legacy request compatibility.
+The final shared-reader repair passes another 203 tests with complete helper
+coverage. A normal deployed public read now preserves release identifiers
+through the unchanged privacy/context functions; that diagnostic uses no model
+or assignment and is distinguished from the earlier autonomous episodes.
 
-Plane draft [#7](https://github.com/AstralDeep/AstralPlane/pull/7), at
-`b20c8f3e06fc5302262fe3c8f049fa18a562e30f`, and Projection draft
-[#14](https://github.com/AstralDeep/AstralProjection/pull/14), at
-`07e5c90cb310c48c2315997f74dc8dd6f5fa22ea`, retain separate owner CI.
-Plane's required checks pass. Projection's earlier `6c7a9e2` checks passed;
-the terminal-guidance repair at `07e5c90` is undergoing updated hosted checks.
-Projection's optional next-major Android lane is skipped by its existing
-conditions. These results do not replace independent review or authenticated
-Feature 079 evidence on the affected clients. Neither PR is merged.
+Real bounded episodes completed and incorporated child results. Unchanged
+polling avoided new model calls; completed work survived an idle restart.
+All temporary assignments are stopped with no next check/reservations.
+The final parent rejected a child's unsupported completion claim from empty
+source tables. A populated version baseline/change, mid-effect recovery,
+load/control-latency, sensitive-action and every affected authenticated
+native-client scenario still need designated evidence. Exact per-test and
+aggregate spending is recorded in `live-observations.md`.
+
+Deep draft [#193](https://github.com/AstralDeep/AstralDeep/pull/193) is published.
+Its first two failing CI jobs shared a stale Projection-pin fixture, now fixed
+with 277 passing component-contract tests; updated provider checks are recorded
+separately. Plane draft [#7](https://github.com/AstralDeep/AstralPlane/pull/7),
+at `b20c8f3e06fc5302262fe3c8f049fa18a562e30f`, passes all five owner CI checks.
+Projection draft [#14](https://github.com/AstralDeep/AstralProjection/pull/14),
+at `07e5c90cb310c48c2315997f74dc8dd6f5fa22ea`, passes all 15 required checks;
+the existing optional next-major Android lane is skipped. Its complete nine
+native producer matrix passes strict coverage at 206/207 (99.52%).
+These results do not replace independent review, authenticated live-client
+evidence or the protected release decision. No PR is merged.
 
 `config/astral-composition.json` and its exact gitlinks identify the candidate
 component commits. Use the current committed record in `results.md` for the
@@ -84,7 +92,7 @@ tests, nine skips), C# helper tests (37), Node tests (28), and a five-case real
 client.js browser fixture. The previously recorded Android gates passed. Its
 native C# coverage is accepted only after validating the method/class/root
 witnesses; the parser correction retains all thresholds and conflict denials.
-Apple coverage and authenticated client/device flows are independent gaps.
+Apple native coverage is now collected at 07e5 as described above; authenticated client/device flows remain open.
 
 ## Reproducible build and cutover
 
@@ -128,7 +136,7 @@ application/IAM recovery and a new guarded 079 migration are separate checks.
 The original backup and production data were not modified. See
 [restore-rehearsal.md](restore-rehearsal.md) for evidence and limitations.
 
-## Approved local live test
+## Original approved live test (historical)
 
 The owner approved reading only `https://www.python.org/downloads/` every 60
 seconds, capped at eight model calls, 12 tool calls, 32,000 tokens and 300,000 ms
@@ -157,10 +165,9 @@ with no failures or skips. See [live-observations.md](live-observations.md) and
 
 A read-only synthetic audit reproduced the existing broad date/DOB prefilter
 rejecting an ISO public-release date; six other authored planner examples passed.
-This does not identify the discarded live response. A further live diagnosis
-requires another explicitly bounded owner-approved test. Successful baseline,
-quiet polling, completed-result recovery and actual affected-client evidence
-remain required before promotion.
+This does not identify the discarded live response. Subsequent authorized tests are recorded in `live-observations.md`. Quiet polling
+and completed-result idle recovery are verified; a populated baseline/change
+and actual affected-client evidence remain required before promotion.
 
 ## Dependency and build qualification
 
@@ -203,17 +210,20 @@ release preparation or a reviewed default-policy/process resolution is needed;
 generic PR authorization is not a fabricated provider approval. Bootstrap
 authorizes no merge, production promotion or release.
 
-At Deep `7c8cd1b7`, all three owner coverage producers pass the strict
-changed-code gate (2,784/2,873 executable lines, 96.90%). The actual
-`--repository-profile deep` pre-push parser still fails: that option narrows
-coverage ownership, while canonical release evidence still requires backend,
-web, Windows, Android, macOS, iOS, watchOS and documentation targets. Actual
-same-candidate staging/platform/provider inputs are missing. The concrete
-draft description, parser failure receipt and eight-target inventory are
-retained under `build/079/release-preflight/`; no Deep PR or initial feature
-push has occurred. Resolving this requires the missing canonical inputs or a
-reviewed default-policy/process decision; a seed push or unrelated PR cannot
-satisfy the existing bootstrap verifier.
+All three Deep owner coverage producers are measured against the unchanged
+90% floor with source-specific native records and exact final candidate receipts.
+The `--repository-profile deep` parser narrows coverage ownership; canonical
+release evidence still requires backend, web, Windows, Android, macOS, iOS,
+watchOS and documentation. It continues to refuse missing provider inputs.
+
+Deep PR193 was subsequently published as a diagnostic draft under the owner's
+informed instruction to proceed despite unmet ordinary pre-push ordering.
+The failed parser receipt and eight-target inventory remain external to the
+candidate tree. That instruction is not represented as provider-native
+bootstrap approval, independent review, a protected exception or a release
+verdict. Diagnostic CI may omit full backend/image/staging execution, and the
+voice-worker job explicitly performs no work without its closure variable.
+No protected setting or product gate was weakened.
 
 The inspected provider configuration has no `release-readiness-staging`
 environment and lacks `RELEASE_READINESS_ACTIVE`,
