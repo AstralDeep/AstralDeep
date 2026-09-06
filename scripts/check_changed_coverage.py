@@ -1846,6 +1846,9 @@ def _path_matches_root(path: str, root: str) -> bool:
 def _producer_applies_to_path(slot_key: str, path: str) -> bool:
     """Return whether a strict producer is responsible for one maintained path."""
 
+    classified = classify_path(path)
+    if classified is None or classified.key != PRODUCER_BY_KEY[slot_key].target_key:
+        return False
     if slot_key == "backend":
         return path in VOICE_WORKER_OVERWRITTEN_SHIMS or (
             path.startswith("backend/") and not path.startswith("backend/voice_agent/")

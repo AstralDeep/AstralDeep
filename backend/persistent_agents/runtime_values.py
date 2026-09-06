@@ -35,6 +35,16 @@ def bounded_context(context: dict[str, Any]) -> dict[str, Any]:
     An explicit excerpt identifies omitted evidence. Original completed results
     and their digests remain in Plane; this does not silently summarize them.
     """
+    return _bounded_context(context, (4096, 2048, 1024, 512, 256, 128, 64, 32))
+
+
+def legacy_bounded_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Preserve original intent binding and the fallback for serialized requests."""
+    return _bounded_context(context, (512, 256, 128, 64, 32))
+
+
+def _bounded_context(context: dict[str, Any], limits: tuple[int, ...]) -> dict[str, Any]:
+    """Apply reviewed excerpt sizes while preserving the 5,500-byte ceiling."""
     context = thaw(context)
     if len(canonical(context).encode("utf-8")) <= 5500:
         return context
@@ -50,7 +60,7 @@ def bounded_context(context: dict[str, Any]) -> dict[str, Any]:
             return [excerpt(child, limit) for child in value]
         return value
 
-    for limit in (512, 256, 128, 64, 32):
+    for limit in limits:
         bounded = {key: value if key in {"instructions", "instruction", "completion_condition", "tools"}
                    else excerpt(value, limit) for key, value in context.items()}
         if len(canonical(bounded).encode("utf-8")) <= 5500:

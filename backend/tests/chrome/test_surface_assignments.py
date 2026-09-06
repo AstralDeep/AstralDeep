@@ -454,6 +454,7 @@ def test_assignment_error_guidance_matches_lifecycle_and_preserves_safe_history(
     if lifecycle in {"active", "paused"}:
         expected += ". Review activity and restore authorization or revise the assignment before resuming."
     assert mapped["safe_error"] == expected
+    assert row["wake_reason"] == "cadence"
     html = render_html(build_assignments_view({"mode": "detail", "enabled": True,
         "execution_enabled": True, "assignment": mapped}))
     assert "assignment_phi_refused" in html
@@ -461,9 +462,13 @@ def test_assignment_error_guidance_matches_lifecycle_and_preserves_safe_history(
     assert "A release was published." in html
     if lifecycle in {"stopped", "completed"}:
         assert "before resuming" not in html
+        assert mapped["wake_reason"] == ""
+        assert "cadence" not in html
         assert mapped["available_actions"] == []
     else:
         assert "before resuming" in html
+        assert mapped["wake_reason"] == "cadence"
+        assert "cadence" in html
         assert {"chrome_assignment_stop", "chrome_assignment_revoke"} <= set(mapped["available_actions"])
         if lifecycle == "active":
             assert "chrome_assignment_pause" in mapped["available_actions"]

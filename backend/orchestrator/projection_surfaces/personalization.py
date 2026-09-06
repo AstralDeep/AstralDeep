@@ -1210,6 +1210,8 @@ def _assignment_row(record):
     currency = limits["lifetime"]["currency"]
     source_key = "public_page" if source["profile"] == "public_page" else f"{source['agent_id']}:{source['tool_name']}"
     row = {key: data.get(key) for key in ("assignment_id", "instruction_revision", "control_epoch", "lifecycle", "phase", "next_wake_at", "wake_reason", "last_check_at", "latest_result")}
+    if row["lifecycle"] in ("stopped", "completed"):
+        row["wake_reason"] = ""
     row["definition"] = {key: definition.get(key) for key in ("name", "instructions", "allowed_tools", "completion_condition", "conversation_id")}
     row["definition"].update(source_key=source_key, source_url=source["arguments"].get("url", ""),
         source_arguments=json.dumps(source["arguments"], ensure_ascii=False) if source_key != "public_page" else "",
