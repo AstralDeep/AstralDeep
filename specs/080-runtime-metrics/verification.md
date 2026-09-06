@@ -72,7 +72,7 @@ The final decision records the exact committed candidate SHA and native report i
 
 ## Scope and remaining qualification
 
-No dependency, schema/migration, feature flag, component pin, UI primitive, renderer, frame, client contract, IAM provider, hosting topology or running service changed. No product push, merge, release or deployment occurred. The local feature branch is `codex/080-runtime-metrics`; the vault separately records the checkpoint.
+No dependency, schema/migration, feature flag, component pin, UI primitive, renderer, frame, client contract, IAM provider, hosting topology or running service changed. At the local implementation checkpoint `9e54c53b`, no product push, merge, release or deployment had occurred. The owner subsequently authorized publishing `codex/080-runtime-metrics` and a PR for review. The PR description and curated vault record track remote status; merge, release and deployment remain outside this request.
 
 This result does not establish full release readiness. The strict Deep coverage gate requires distinct useful backend, voice-worker and tooling producer reports; only the backend producer was run for this local diagnostic. Applicable full backend/module/image/boot/security gates and exact-candidate verification through real configured IAM and representative background operations remain before promotion. No live server or native-client verification was performed. Existing metrics and owner-scoped APIs are regression-tested locally; this does not prove capacity at any MAU milestone or clinical compliance.
 

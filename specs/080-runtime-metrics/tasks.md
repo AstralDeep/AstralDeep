@@ -39,4 +39,4 @@ T001–T004 precede implementation. T005/T007/T008 may be written independently;
 
 ## Before merge/deployment (separate qualification)
 
-The local implementation tasks do not authorize publication. Real configured IAM and representative background task verification on the exact candidate, applicable full backend/module/image/boot/secret gates, independent review and ordinary release controls remain required before merge/promotion. Record outstanding evidence honestly in verification.md; do not fabricate completed tasks for external deployment evidence.
+The owner subsequently authorized branch and PR publication for review. Real configured IAM and representative background task verification on the exact candidate, applicable full backend/module/image/boot/secret gates, independent review and ordinary release controls remain required before merge/promotion. Record outstanding evidence honestly in verification.md; do not fabricate completed tasks for external deployment evidence.

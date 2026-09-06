@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/080-runtime-metrics`
 **Created**: 2026-09-06
-**Status**: Implemented and locally verified; not pushed, merged or deployed
+**Status**: Implemented and locally verified; review publication authorized, merge/deployment not authorized
 **Input**: The owner asked to begin practical priority improvements from the growth investigation using the current setup, retaining primitive UI and security and using Claude.
 
 ## User Scenarios & Testing
@@ -77,10 +77,12 @@ As an operator, I need aggregate realized queue, execution and total elapsed tim
 - Admin is the existing Keycloak admin role; no new IAM role or identity provider is needed.
 - Timing scope is background tasks observed by the existing BackgroundTaskManager. MCP and other existing metrics remain compatible; first-render/client latency and distributed telemetry are separate work.
 - Population-wide diagnostic access tightening is intentional and documented. The UI contract remains unchanged.
-- No purchase, product push, merge or production deployment is requested by this implementation step.
+- The initial implementation step did not request publication. The owner subsequently requested a PR for review, authorizing branch push and review publication; purchase, merge and production deployment remain outside this request.
 
 ## Clarifications
 
 ### Session 2026-09-06
 
 No critical ambiguity requires user input. Existing role enforcement, fixed aggregate-only telemetry and a background-manager scope are conservative implementation choices within the owner's authorization. Security/privacy, lifecycle semantics, failure handling, units, concurrency and release boundaries are explicit above.
+
+The owner subsequently requested notification when the PR is ready for review. Only Deep changed, so one PR covers this feature. It may be published for code review with the remaining pre-merge qualification listed explicitly; no release-evidence bootstrap or deployment is requested.
