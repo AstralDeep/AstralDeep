@@ -202,7 +202,7 @@ Finish with an evidence-backed summary: files changed, behavior changed, exact t
 <!-- SPECKIT START -->
 ## Active Feature Plan
 
-- `080-runtime-metrics`: `specs/080-runtime-metrics/plan.md`
+- `088-rewrite-integration`: `specs/088-rewrite-integration/plan.md`
 
 ## Active Technologies
 
