@@ -671,6 +671,112 @@ async def test_disconnect_detaches_viewer_but_does_not_cancel_user_save() -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("disconnected", [False, True])
+async def test_saved_key_endpoint_change_has_typed_terminal_and_recovery_message(
+    monkeypatch, store, fake_db, fake_recorder, disconnected,
+) -> None:
+    probe = AsyncMock(side_effect=AssertionError("must refuse before contacting a provider"))
+    monkeypatch.setattr(handlers, "probe_chat_completion", probe)
+    await store.set(
+        USER_ID, provider="custom", base_url="https://old.example/v1",
+        model="old-model", api_key=API_KEY,
+    )
+    before = dict(fake_db.users[USER_ID])
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.work_admission = _coordinator()
+    orch.runtime_observability = None
+    orch._interactive_capacity_event = None
+    orch._interactive_capacity_revision = 0
+    orch._safe_send = AsyncMock(return_value=True)
+    orch._llm_store = store
+    orch.audit_recorder = fake_recorder
+    websocket = object()
+    context = _context(websocket)
+    orch._ws_llm_gated = {id(websocket): True}
+    orch.ui_sessions = {websocket: {"sub": USER_ID}}
+    parsed = json.loads(_ui_save(
+        submission_id=uuid.uuid4(), request_generation=uuid.uuid4(),
+    ))
+    parsed["payload"]["fields"] = {
+        "provider": "custom", "base_url": "https://new.example/v1",
+        "model": "new-model", "api_key": "",
+    }
+    frame = orch._connection_frame(context, json.dumps(parsed), parsed)
+    assert frame is not None
+    _frame, owner, accepted, _projection = orch._submit_connection_batch(context, [frame])[0]
+    work = _ConnectionOperation(
+        frame=frame, owner=owner, operation_id=accepted.operation_id,
+        auth_principal="owner@example.test",
+    )
+    if disconnected:
+        context.closing = True
+        orch.ui_sessions.clear()
+
+    await orch._run_connection_operation(context, work)
+
+    expected = (
+        "The endpoint changed; enter the API key again. "
+        "For a keyless endpoint, clear the saved configuration first."
+    )
+    projection = orch.work_admission.query_operation(
+        owner=_user_owner(), operation_id=accepted.operation_id,
+    )
+    assert projection.state is OperationState.FAILED
+    assert projection.terminal_code == "validation_failed"
+    assert projection.safe_summary == expected
+    frames = [json.loads(call.args[1]) for call in orch._safe_send.await_args_list]
+    terminal = [frame for frame in frames if frame.get("terminal") is True]
+    assert len(terminal) == 1
+    assert terminal[0]["error"]["code"] == "validation_failed"
+    assert terminal[0]["error"]["message"] == expected
+    assert API_KEY not in json.dumps(frames)
+    assert not any(frame.get("type") == "llm_config_ack" for frame in frames)
+    assert fake_db.users[USER_ID] == before
+    assert orch._ws_llm_gated[id(websocket)] is True
+    probe.assert_not_awaited()
+    fake_recorder.record.assert_not_awaited()
+
+    # Reconnecting consumers receive the same fixed explanation from the
+    # durable terminal, without a new provider call or secret disclosure.
+    reconnect = _context(object())
+    await orch._send_operation_projection(reconnect, frame, work, projection)
+    replay = json.loads(orch._safe_send.await_args.args[1])
+    assert replay["error"] == terminal[0]["error"]
+    assert API_KEY not in json.dumps(replay)
+    probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("summary", [API_KEY, "<script>private provider error</script>", None])
+async def test_credential_validation_terminal_does_not_echo_other_summaries(summary):
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.runtime_observability = None
+    orch._safe_send = AsyncMock(return_value=True)
+    context = _context(object())
+    frame = SimpleNamespace(
+        action="chrome_llm_save", surface="llm_settings", chat_id=None,
+        request_generation=uuid.uuid4(), operation_kind="llm_credential_save",
+    )
+    operation = SimpleNamespace(
+        operation_id=uuid.uuid4(), state=OperationState.FAILED, state_revision=2,
+        terminal_code="validation_failed", safe_summary=summary,
+    )
+    work = _ConnectionOperation(
+        frame=frame, owner=_user_owner(), operation_id=operation.operation_id,
+    )
+
+    await orch._send_operation_projection(context, frame, work, operation)
+
+    terminal = json.loads(orch._safe_send.await_args.args[1])
+    assert terminal["error"] == {
+        "code": "validation_failed",
+        "message": "Check the provider, model, and credentials, then try again.",
+    }
+    assert API_KEY not in json.dumps(terminal)
+    assert "private provider error" not in json.dumps(terminal)
+
+
+@pytest.mark.asyncio
 async def test_disconnected_save_finishes_from_captured_user_authority(
     monkeypatch,
     store,

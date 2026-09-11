@@ -165,7 +165,8 @@ def test_summarize_text_llm_exception_is_error(fake_openai) -> None:
     result = summarize_text(text="Snakes.")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "model exploded" in alert["message"]
+    assert "summary could not be generated" in alert["message"]
+    assert "model exploded" not in alert["message"]
 
 
 def test_summarize_text_prefers_session_credentials(fake_openai) -> None:

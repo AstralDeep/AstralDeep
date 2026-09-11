@@ -198,7 +198,10 @@ def test_malformed_rotation_is_not_returned_or_replayed(stores, payload):
     assert sessions.get(sid)["refresh_token"] == ""
 
 
-@pytest.mark.parametrize("body", [b"{broken", b"x" * 65537, b"\xff"])
+@pytest.mark.parametrize(
+    "body", [b"{broken", b"x" * 65537, b"\xff"],
+    ids=["invalid-json", "oversized-body", "invalid-utf8"],
+)
 def test_http_response_is_bounded_and_malformed_body_is_sanitized(stores, monkeypatch, body):
     sessions, grants, owner, sid = stores
     grant_id = grants.capture(owner, "refresh-initial")

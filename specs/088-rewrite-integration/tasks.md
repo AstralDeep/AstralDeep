@@ -21,10 +21,10 @@ Establish interfaces and baseline regression locations before implementation; th
 
 Independent test: one Send starts ordinary chat/public research; all existing controls remain reachable, drafts are owner-safe, and 320px/200% text remains usable. Initial welcome/shell work can proceed independently of later durable APIs.
 
-- [ ] T006 [P] [US1] Add focused welcome hierarchy/action/retirement and accessibility regressions in backend/tests/test_welcome.py and backend/tests/test_welcome_identity.py (FR-003, FR-004, FR-028).
-- [ ] T007 [US1] Simplify default welcome and disclose additional examples using existing primitives in backend/orchestrator/welcome.py; preserve opt-in permissions and ordinary chat_message dispatch (FR-003, FR-004, FR-005).
-- [ ] T008 [US1] Simplify shell copy/composer styling and accessible names in components/AstralProjection/backend/webrender/templates/shell.html and static/astral.css; preserve theme roles, voice and attachment hooks (FR-003, FR-028).
-- [ ] T009 [US1] Add owner-change/logout/reconnect and both bootstrap-order browser regressions under components/AstralProjection/tests/; implement verified-owner draft/config lifecycle in components/AstralProjection/backend/webrender/static/client.js if needed, without importing donor global state (FR-011, FR-012, SC-003).
+- [x] T006 [P] [US1] Add focused welcome hierarchy/action/retirement and accessibility regressions in backend/tests/test_welcome.py and backend/tests/test_welcome_identity.py (FR-003, FR-004, FR-028).
+- [x] T007 [US1] Simplify default welcome and disclose additional examples using existing primitives in backend/orchestrator/welcome.py; preserve opt-in permissions and ordinary chat_message dispatch (FR-003, FR-004, FR-005).
+- [x] T008 [US1] Simplify shell copy/composer styling and accessible names in components/AstralProjection/backend/webrender/templates/shell.html and static/astral.css; preserve theme roles, voice and attachment hooks (FR-003, FR-028).
+- [x] T009 [US1] Add owner-change/logout/reconnect and both bootstrap-order browser regressions under components/AstralProjection/tests/; implement verified-owner draft/config lifecycle in components/AstralProjection/backend/webrender/static/client.js if needed, without importing donor global state (FR-011, FR-012, SC-003).
 - [ ] T010 [US1] Add shared recent-work/result view builders in components/AstralProjection/src/astralprojection/chrome/work.py and authorized adapters in backend/orchestrator/projection_surfaces/work.py after T027; expose detail through registered surfaces (FR-003, FR-023).
 - [ ] T011 [US1] Wire server-owned navigation and full advanced composition selections through components/AstralProjection/backend/webrender/chrome/menu_model.py and backend/orchestrator/chrome_events.py after T027/T037; retain attachment/voice/history and role filtering (FR-003, FR-004, FR-023).
 - [ ] T012 [US1] Add public offline document/manifest and safe static-only worker packaging under components/AstralProjection/backend/webrender/static/ with resource/cache tests in tests/test_resources.py; never cache personalized shell/API/auth (FR-023, FR-028).
@@ -37,7 +37,7 @@ Independent test: existing accounts, providers, tools and clients still work; up
 - [ ] T014 [P] [US2] Add institutional issuer/client/BFF/native compatibility and owner denial fixtures under backend/tests/ using existing auth interfaces; preserve cookie CSRF, azp and RFC 8693 behavior (FR-002).
 - [ ] T015 [US2] Integrate new work ingress with current Keycloak/session context in backend/orchestrator/auth.py and proposed backend/orchestrator/work_api.py; do not introduce donor SessionService or identity tables (FR-002, FR-010).
 - [ ] T016 [US2] Add provider breadth and user/system separation cases under backend/llm_config/tests/; qualify optional local inference framing/accounting through backend/llm_config/client_factory.py without removing existing providers (FR-019).
-- [ ] T017 [US2] Bind provider endpoint/key retention edits explicitly in backend/orchestrator/projection_surfaces/llm.py and existing encrypted provider services; test changed destination, keep/replace/remove and redaction (FR-019).
+- [x] T017 [US2] Bind provider endpoint/key retention edits explicitly in backend/orchestrator/projection_surfaces/llm.py and existing encrypted provider services; test changed destination, keep/replace/remove and redaction (FR-019).
 - [ ] T018 [US2] Exercise retained clinical/bundled/external tools, attachments, voice, workspace, remote execution and automatic skills/memory through existing backend/tests/ and module suites; record each retained inventory row (FR-001, FR-025).
 - [ ] T019 [US2] Qualify populated/repeated Plane upgrade and recovery with exact matching application pins in components/AstralPlane/tests/test_schema_migrations.py and specs/088-rewrite-integration/verification.md after all schema tasks; preserve owner associations, unresolved effects and audit (FR-026, SC-005).
 - [ ] T020 [US2] Run real institutional web/native sign-in and two-owner/revocation/egress/provider denials against isolated candidate staging; record exact artifacts and human-performed sign-in in specs/088-rewrite-integration/verification.md (FR-002, SC-006).
@@ -46,9 +46,9 @@ Independent test: existing accounts, providers, tools and clients still work; up
 
 Independent test: restart/retry/cancel/control operations preserve logical identity, charges and effect fences; ephemeral sources are reacquired.
 
-- [ ] T021 [P] [US3] Add one-shot/legacy profile, mixed capacity, owner isolation and idempotency fixtures in components/AstralPlane/tests/repositories/test_assignments.py and test_work_admission.py (FR-006, FR-007).
-- [ ] T022 [US3] Implement additive assignment execution profile and source-less one-shot constructor using existing models/repositories in components/AstralPlane/src/astralplane/repositories/assignment_models.py and assignments.py; preserve legacy validators/capacity (FR-004, FR-006).
-- [ ] T023 [US3] Add guarded 088 migration/profile/idempotency receipts and contract metadata in components/AstralPlane/src/astralplane/database/migrations.py; reserve exact revision only after component collision check (FR-006, FR-026).
+- [x] T021 [P] [US3] Add one-shot/legacy profile, mixed capacity, owner isolation and idempotency fixtures in components/AstralPlane/tests/repositories/test_assignments.py and test_work_admission.py (FR-006, FR-007).
+- [x] T022 [US3] Implement additive assignment execution profile and source-less one-shot constructor using existing models/repositories in components/AstralPlane/src/astralplane/repositories/assignment_models.py and assignments.py; preserve legacy validators/capacity (FR-004, FR-006).
+- [x] T023 [US3] Add guarded 088 migration/profile/idempotency receipts and contract metadata in components/AstralPlane/src/astralplane/database/migrations.py; reserve exact revision only after component collision check (FR-006, FR-026).
 - [ ] T024 [US3] Add wait/wake receipts, current version/control validation and terminal result projection to existing Plane assignment repository with denial/concurrency tests; preserve cancellation/reconciliation semantics (FR-007).
 - [ ] T025 [US3] Add transient-input/reconstruction disposition and result-availability metadata to Plane action models/repository; test no private plaintext retention and stale settlement-only behavior (FR-009, FR-018).
 - [ ] T026 [US3] Integrate one-shot episode handling and both current execution fences into backend/persistent_agents/runner.py, service.py and execution.py; use current dispatcher, authority and provider resolution (FR-006, FR-010).
@@ -128,4 +128,3 @@ Parallel examples: US1 welcome tests and Projection source baselines; US2 auth a
 ## Delivery strategy
 
 First increment: calm welcome/shell over existing ordinary dispatch, with tests. Next: durable work/read models, identity/provider compatibility and common source/guidance contracts. Then integrate all remaining donor capabilities and qualify the complete web milestone with native compatibility. Finally complete native redesign and all evidence. An increment is not the full requested integration; task checkboxes and inventory evidence must remain truthful. Local work is authorized; product push/deploy/release are not implied.
-

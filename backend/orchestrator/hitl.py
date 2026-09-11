@@ -19,8 +19,12 @@ classification helpers themselves are side-effect free and always safe to call.
 from __future__ import annotations
 
 import os
+import ipaddress
+import re
 from dataclasses import dataclass, field
+from importlib import import_module
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 # ── Typed risk codes ─────────────────────────────────────────────────────────
 EGRESS, CROSS_PRINCIPAL, IRREVERSIBLE, UNTRUSTED_TAINTED = (
@@ -51,6 +55,99 @@ _IRREVERSIBLE_PREFIXES = (
     "pay_",
     "deploy_",
 )
+
+# Host-owned contracts, not model annotations or a remote agent's claimed name.
+_PUBLIC_READS = {
+    ("web-research-1", "web_search"): ("web_research", "WebResearchAgent", "query", {"max_results"}),
+    ("web-research-1", "fetch_page"): ("web_research", "WebResearchAgent", "url", set()),
+    ("web-research-1", "research_brief"): ("web_research", "WebResearchAgent", "topic", {"depth"}),
+    ("general-1", "search_arxiv"): ("general", "GeneralAgent", "query", {"max_results"}),
+    ("summarizer-1", "summarize_url"): ("summarizer", "SummarizerAgent", "url", set()),
+}
+_SENSITIVE_INPUT = re.compile(
+    r"(?i)(?:\b(?:api[_ -]?key|access[_ -]?token|secret|password|authorization|bearer|"
+    r"patient|medical.record|mrn|ssn|date.of.birth|dob|credential|token|signature)\b|-----BEGIN|"
+    r"\bsk-[\w-]{12,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+|"
+    r"\b\d{3}-\d{2}-\d{4}\b|\b\d{7,}\b|[\w.+-]+@[\w-]+\.[\w.-]+|"
+    r"\b\d{3}[- .]\d{3}[- .]\d{4}\b)"
+)
+_SENSITIVE_QUERY_KEYS = frozenset({
+    "key", "api_key", "apikey", "token", "access_token", "auth", "authorization",
+    "password", "secret", "code", "state", "sig", "signature", "session", "session_id",
+    "x-amz-signature", "x-amz-credential",
+})
+
+
+def sensitive_url(url) -> bool:
+    """Credential-bearing URL forms never qualify as ordinary public reads."""
+    return bool(url.username or url.password or any(
+        key.lower() in _SENSITIVE_QUERY_KEYS for key, _ in parse_qsl(url.query)))
+
+
+def registered_public_reader(orch, agent_id: str, tool_name: str) -> bool:
+    """Verify the actual in-process first-party class, function and read scope.
+
+    A remote/user agent cannot opt into this contract by copying its names or
+    metadata. Transport fallback conservatively retains confirmation.
+    """
+    contract = _PUBLIC_READS.get((agent_id, tool_name))
+    if contract is None:
+        return False
+    package, class_name, _, _ = contract
+    try:
+        module = import_module(f"agents.{package}.{package}_agent")
+        agent = getattr(orch, "local_agents", {}).get(agent_id)
+        registry = import_module(f"agents.{package}.mcp_tools").TOOL_REGISTRY
+        entry = agent.mcp_server.tools.get(tool_name)
+        return (type(agent) is getattr(module, class_name)
+                and entry["function"] is registry[tool_name]["function"]
+                and entry.get("scope") in {"tools:read", "tools:search"})
+    except (AttributeError, ImportError, KeyError, TypeError):
+        return False
+
+
+def public_read_arguments(agent_id: str, tool_name: str, args: Optional[dict]) -> bool:
+    """Recognize bounded public query/GET arguments, never arbitrary payloads.
+
+    This only narrows the redundant HITL notice. DNS/redirect/SSRF validation,
+    PHI hooks, policy and tool grants remain independent dispatch requirements.
+    Unknown fields, credentials, identifiers and non-public URL forms do not
+    receive the public-read exception.
+    """
+    contract = _PUBLIC_READS.get((agent_id, tool_name))
+    if contract is None or not isinstance(args, dict):
+        return False
+    _, _, value_key, options = contract
+    if set(args) - ({value_key} | options):
+        return False
+    value = args.get(value_key)
+    if not isinstance(value, str) or not 0 < len(value.strip()) <= 4096:
+        return False
+    decoded = unquote(unquote(value))
+    if any(ord(char) < 32 for char in decoded) or _SENSITIVE_INPUT.search(decoded):
+        return False
+    if "max_results" in args and (type(args["max_results"]) is not int
+                                  or not 1 <= args["max_results"] <= 20):
+        return False
+    if "depth" in args and args["depth"] not in ("shallow", "standard"):
+        return False
+    if value_key == "url":
+        try:
+            url = urlsplit(decoded)
+            host = url.hostname
+            if (url.scheme not in ("http", "https") or not host or sensitive_url(url)
+                    or url.fragment or url.port not in (None, 80, 443)
+                    or host == "localhost" or host.endswith((".local", ".internal"))):
+                return False
+            try:
+                if not ipaddress.ip_address(host).is_global:
+                    return False
+            except ValueError:
+                if "." not in host:
+                    return False
+        except ValueError:
+            return False
+    return True
 
 #: Human phrase shown on the confirmation card for each risk code.
 _RISK_PHRASES = {
@@ -89,6 +186,8 @@ def assess_risk(
     actor_principal: Optional[str] = None,
     target_principal: Optional[str] = None,
     trust: str = "trusted",
+    agent_id: Optional[str] = None,
+    public_reader: bool = False,
 ) -> List[str]:
     """Classify a pending tool call into the sorted list of risk codes that apply.
 
@@ -101,17 +200,20 @@ def assess_risk(
     - :data:`UNTRUSTED_TAINTED` — ``trust`` is ``"untrusted"`` (the call is built
       from untrusted data).
 
-    ``args`` is accepted for call-site symmetry / future use and does not affect
-    the classification today.
+    ``public_reader`` is a server-verified registration, never a client hint.
+    Its bounded public queries/GETs are already authorized by the research
+    request. Sensitive/unknown arguments retain egress review. Untrusted source
+    URLs may be read, but never gain authority to write or send other payloads.
     """
     risks: List[str] = []
-    if _is_egress(tool_name):
+    public_read = public_reader and public_read_arguments(agent_id, tool_name, args)
+    if not public_read and (_is_egress(tool_name) or (agent_id, tool_name) in _PUBLIC_READS):
         risks.append(EGRESS)
     if _is_irreversible(tool_name):
         risks.append(IRREVERSIBLE)
     if actor_principal and target_principal and actor_principal != target_principal:
         risks.append(CROSS_PRINCIPAL)
-    if trust == "untrusted":
+    if trust == "untrusted" and not public_read:
         risks.append(UNTRUSTED_TAINTED)
     return sorted(risks)
 

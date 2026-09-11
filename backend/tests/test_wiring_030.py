@@ -611,15 +611,22 @@ def test_schedule_human_cadence_lines():
 
 def test_welcome_buttons_have_unique_accessible_names():
     components = welcome_components()
-    grid = [c for c in components if c.get("type") == "grid"][0]
+
+    def walk(nodes):
+        for node in nodes:
+            yield node
+            for key in ("children", "content"):
+                if isinstance(node.get(key), list):
+                    yield from walk(node[key])
+
     labels = []
-    for card in grid.get("children", []) or []:
-        for child in card.get("content", []) or []:
-            if child.get("type") == "button" and child.get("action") == "chat_message":
-                # astralprims to_dict() merges `attributes` at the top level.
-                labels.append(child.get("aria-label"))
+    for child in walk(components):
+        if child.get("type") == "button" and child.get("action") == "chat_message":
+            # astralprims to_dict() merges `attributes` at the top level.
+            labels.append(child.get("aria-label"))
+            assert child.get("aria-label") == child.get("label")
     assert len(labels) == 6
-    assert all(label and label.startswith("Run example: ") for label in labels)
+    assert all(labels)
     assert len(set(labels)) == 6  # all distinct
 
 

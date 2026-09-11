@@ -93,7 +93,7 @@ def test_fetch_page_egress_refusal_on_private_host() -> None:
     result = fetch_page(url="https://internal.example.com/secret")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "egress is blocked" in alert["message"]
+    assert "blocked by network policy" in alert["message"]
 
 
 def test_fetch_page_follows_redirect_with_revalidation(rmock: HttpMock) -> None:
@@ -112,7 +112,7 @@ def test_fetch_page_redirect_into_private_space_is_blocked(rmock: HttpMock) -> N
     result = fetch_page(url="https://redirect.example.com/trap")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "egress is blocked" in alert["message"]
+    assert "blocked by network policy" in alert["message"]
 
 
 def test_fetch_page_redirect_without_location_is_error(rmock: HttpMock) -> None:
@@ -120,7 +120,7 @@ def test_fetch_page_redirect_without_location_is_error(rmock: HttpMock) -> None:
     result = fetch_page(url="https://redirect.example.com/nowhere")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "Location" in alert["message"]
+    assert "could not be retrieved" in alert["message"]
 
 
 def test_fetch_page_redirect_loop_is_error(rmock: HttpMock) -> None:
@@ -129,7 +129,7 @@ def test_fetch_page_redirect_loop_is_error(rmock: HttpMock) -> None:
     result = fetch_page(url="https://redirect.example.com/loop")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "Too many redirects" in alert["message"]
+    assert "could not be retrieved" in alert["message"]
 
 
 def test_fetch_page_unreachable_is_error_alert() -> None:
@@ -257,8 +257,8 @@ def test_brief_search_failure_is_actionable_error() -> None:
         result = research_brief(topic="pythons")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "DuckDuckGo" in alert["message"]
-    assert "SEARCH_API_URL" in alert["message"]
+    assert "Keyless search is unavailable" in alert["message"]
+    assert "API key in agent settings" in alert["message"]
 
 
 def test_brief_no_search_results_is_error(rmock: HttpMock) -> None:
@@ -308,7 +308,8 @@ def test_brief_llm_exception_is_synthesis_error(rmock: HttpMock, fake_openai) ->
     result = research_brief(topic="pythons")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "model exploded" in alert["message"]
+    assert "summary could not be generated" in alert["message"]
+    assert "model exploded" not in alert["message"]
 
 
 def test_brief_empty_topic_is_error() -> None:

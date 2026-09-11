@@ -131,18 +131,40 @@ def _provider_key(fields: Dict[str, str]) -> str:
     return CUSTOM_PROVIDER_KEY
 
 
+class SavedKeyEndpointChanged(ValueError):
+    """Safe validation refusal when a saved secret's destination changes."""
+
+    MESSAGE = (
+        "The endpoint changed; enter the API key again. "
+        "For a keyless endpoint, clear the saved configuration first."
+    )
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+
+def _require_saved_key_destination(saved: Any, fields: Dict[str, str]) -> None:
+    """Bind implicit key reuse to the same server-resolved API endpoint."""
+    destination = _effective_base_url(_provider_key(fields), fields)
+    saved_destination = str(getattr(saved, "base_url", "")).strip().rstrip("/")
+    if not destination or destination.strip().rstrip("/") != saved_destination:
+        raise SavedKeyEndpointChanged()
+
+
 async def _resolve_api_key(orch: Any, websocket: Any, user_id: str,
                            fields: Dict[str, str]) -> Tuple[str, bool]:
     """Resolve the API key for an action: submitted value or the saved one.
 
-    The password field is write-only — a blank submission means "keep the
-    key already saved" (the form's hint says so).
+    A blank password keeps the saved key only at the same API endpoint.
+    Changing its destination requires explicit key entry before any probe,
+    model listing or save. Preset endpoints are resolved by the server.
     """
     submitted = fields.get("api_key", "")
     if submitted:
         return submitted, False
     saved = await _saved_config(orch, user_id)
     if saved is not None and getattr(saved, "api_key", ""):
+        _require_saved_key_destination(saved, fields)
         return saved.api_key, True
     return "", False
 
@@ -323,10 +345,10 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     key_optional = preset is not None and not preset.key_required
     key_label = "API key" + (" (optional for local runtimes)" if key_optional else "")
     if saved is not None and saved.has_key:
-        key_placeholder = "Saved — leave blank to keep"
+        key_placeholder = "Saved — leave blank to keep at this endpoint"
         key_hint = (
             '<p class="text-xs text-astral-muted">An API key is saved for your account. '
-            "It is never displayed; leave the field blank to keep using it.</p>"
+            "Leave blank to keep it at this endpoint. Enter it again if the endpoint changes.</p>"
         )
     else:
         key_placeholder = (preset.key_prefix_hint if preset else "") or "sk-..."
@@ -441,7 +463,7 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     ]
     key_optional = preset is not None and not preset.key_required
     if saved is not None and saved.has_key:
-        key_help = "A key is saved for your account; leave blank to keep it."
+        key_help = "A key is saved; leave blank at this endpoint. Enter it again if the endpoint changes."
     elif key_optional:
         key_help = "Optional for local runtimes."
     else:
@@ -517,7 +539,10 @@ async def _handle_models(orch: Any, websocket: Any, user_id: str, roles: Any, pa
     if not base_url:
         return (SURFACE_KEY, keep, notice_block(
             "error", "Enter the endpoint address for your custom provider."))
-    api_key, _used_saved = await _resolve_api_key(orch, websocket, user_id, fields)
+    try:
+        api_key, _used_saved = await _resolve_api_key(orch, websocket, user_id, fields)
+    except SavedKeyEndpointChanged as exc:
+        return (SURFACE_KEY, keep, notice_block("error", str(exc)))
     preset = get_preset(provider)
     if not api_key and (preset is None or preset.key_required):
         return (SURFACE_KEY, keep, notice_block(
@@ -562,7 +587,10 @@ async def _handle_test(orch: Any, websocket: Any, user_id: str, roles: Any, payl
             "error", "Enter the endpoint address for your custom provider."))
     if not model:
         return (SURFACE_KEY, keep, notice_block("error", "Model is required."))
-    api_key, _used_saved = await _resolve_api_key(orch, websocket, user_id, fields)
+    try:
+        api_key, _used_saved = await _resolve_api_key(orch, websocket, user_id, fields)
+    except SavedKeyEndpointChanged as exc:
+        return (SURFACE_KEY, keep, notice_block("error", str(exc)))
     preset = get_preset(provider)
     if not api_key and (preset is None or preset.key_required):
         return (SURFACE_KEY, keep, notice_block(
@@ -605,7 +633,10 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
     fields = _fields(payload)
     provider = _provider_key(fields)
     keep = _keep_params(fields, provider)
-    api_key, used_saved = await _resolve_api_key(orch, websocket, user_id, fields)
+    try:
+        api_key, used_saved = await _resolve_api_key(orch, websocket, user_id, fields)
+    except SavedKeyEndpointChanged as exc:
+        return (SURFACE_KEY, keep, notice_block("error", str(exc)))
     store = _store(orch)
     if store is None:
         return (SURFACE_KEY, keep, notice_block(

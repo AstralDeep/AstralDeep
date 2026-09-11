@@ -205,6 +205,9 @@ class _TP:
     def is_scope_enabled(self, u, a, s):
         return True
 
+    def is_skill_authorized(self, u, a, t):
+        return True
+
 
 def _porch():
     return types.SimpleNamespace(

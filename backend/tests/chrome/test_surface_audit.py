@@ -6,7 +6,10 @@ self-recording is observed through a fake process recorder installed via
 ``audit.recorder.set_recorder``. Assertion style follows
 ``backend/tests/chrome/test_topbar.py`` (structural, not byte-exact).
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import html as html_module
+import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -305,3 +308,191 @@ async def test_handler_tolerates_missing_fields():
     assert surface == "audit"
     assert params == {}
     assert notice == ""
+
+
+def _payloads(html):
+    return [json.loads(html_module.unescape(value)) for value in
+            re.findall(r"data-ui-payload='([^']+)'", html)]
+
+
+async def test_dates_are_inclusive_utc_and_recorded(recorder):
+    repo = FakeRepo()
+    rendered = await audit_surface.render(make_orch(repo), "user-1", [], {
+        "from": "2026-09-01", "to": "2026-09-11",
+    })
+    kwargs = repo.list_calls[0][1]
+    assert kwargs["from_ts"] == datetime(2026, 9, 1, tzinfo=timezone.utc)
+    assert kwargs["to_ts"] == datetime(2026, 9, 12, tzinfo=timezone.utc)
+    assert 'value="2026-09-01"' in rendered
+    assert recorder.events[0].inputs_meta["filters"]["from"] == "2026-09-01T00:00:00+00:00"
+    assert recorder.events[0].inputs_meta["filters"]["to"] == "2026-09-12T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("params", [
+    {"from": "not a date"}, {"to": "10000-01-01"},
+    {"from": "20260911"}, {"to": "9999-12-31"},
+    {"from": "2026-09-12", "to": "2026-09-11"},
+])
+async def test_invalid_dates_preserve_filter_form_without_query(params):
+    repo = FakeRepo()
+    rendered = await audit_surface.render(make_orch(repo), "user-1", [], params)
+    assert "Choose valid dates" in rendered
+    assert 'name="from"' in rendered
+    assert repo.list_calls == []
+
+
+@pytest.mark.parametrize("history", ["not json", "{}", '[1]', json.dumps([""] * 101),
+                                      json.dumps(["x" * 513]), None])
+def test_untrusted_history_is_bounded(history):
+    assert audit_surface._history(history) == []
+
+
+async def test_previous_next_and_detail_preserve_filtered_page():
+    repo = FakeRepo(items=[make_dto()], next_cursor="next-page")
+    params = {"cursor": "current-page", "history": '["", "prior-page"]',
+              "from": "2026-09-01", "event_class": "auth", "q": "sign in"}
+    rendered = await audit_surface.render(make_orch(repo), "user-1", [], params)
+    payloads = _payloads(rendered)
+    previous = next(p["fields"] for p in payloads if p.get("fields", {}).get("cursor") == "prior-page")
+    following = next(p["fields"] for p in payloads if p.get("fields", {}).get("cursor") == "next-page")
+    assert previous["from"] == following["from"] == "2026-09-01"
+    assert previous["q"] == following["q"] == "sign in"
+    assert json.loads(previous["history"]) == [""]
+    assert json.loads(following["history"]) == ["", "prior-page", "current-page"]
+    detail = next(p for p in payloads if p.get("params", {}).get("event_id"))
+    repo.detail = make_dto()
+    body = await audit_surface.render(make_orch(repo), "user-1", [], detail["params"])
+    assert _payloads(body)[0]["params"] == detail["params"]["return_to"]
+    assert repo.get_calls[-1] == ("user-1", EVENT_ID)
+
+
+async def test_invalid_cursor_resets_navigation_history():
+    repo = FakeRepo(items=[make_dto()], next_cursor="next", fail_on_cursor=True)
+    rendered = await audit_surface.render(make_orch(repo), "user-1", [], {
+        "cursor": "bad", "history": '["old"]',
+    })
+    assert ">Previous</button>" not in rendered
+    next_page = next(p["fields"] for p in _payloads(rendered)
+                     if p.get("fields", {}).get("cursor") == "next")
+    assert json.loads(next_page["history"]) == [""]
+
+
+async def test_repeated_navigation_is_disclosed_and_failures_stay_visible():
+    repo = FakeRepo(items=[
+        make_dto(action_type="ws.chrome_open"),
+        make_dto(event_id=EVENT_ID_2, action_type="ws.chrome_close"),
+        make_dto(action_type="ws.chrome_open", outcome="failure", description="Denied"),
+    ])
+    rendered = await audit_surface.render(make_orch(repo), "user-1", [], {})
+    assert "2 navigation and audit views" in rendered
+    assert '<details class="astral-collapsible ' in rendered
+    assert rendered.count('class="astral-audit-row') == 3
+    assert rendered.index("</details>") < rendered.index("Denied")
+    assert "2026-06-01 (UTC)" in rendered
+
+
+async def test_missing_detail_keeps_back_navigation_and_rejects_unknown_keys():
+    rendered = await audit_surface.render(make_orch(FakeRepo()), "user-1", [], {
+        "event_id": EVENT_ID, "return_to": {"q": "<script>", "owner_id": "other"},
+    })
+    assert _payloads(rendered)[0]["params"] == {"q": "<script>"}
+    assert "<script>" not in rendered
+    rendered = await audit_surface.render(make_orch(FakeRepo()), "user-1", [], {
+        "event_id": EVENT_ID, "return_to": ["bad"],
+    })
+    assert _payloads(rendered)[0]["params"] == {}
+
+
+async def test_page_handler_carries_date_bounds_and_cursor_stack():
+    result = await audit_surface._handle_audit_page(None, None, "user-1", [], {
+        "fields": {"from": "2026-09-01", "to": "2026-09-11", "history": '[""]'},
+    })
+    assert result[1] == {"from": "2026-09-01", "to": "2026-09-11", "history": '[""]'}
+
+
+async def test_through_date_includes_last_microsecond_and_excludes_next_day():
+    last_instant = datetime(2026, 9, 11, 23, 59, 59, 999999, tzinfo=timezone.utc)
+    next_day = datetime(2026, 9, 12, tzinfo=timezone.utc)
+
+    class HalfOpenRepo(FakeRepo):
+        def list_for_user(self, user_id, **kwargs):
+            super().list_for_user(user_id, **kwargs)
+            return [dto for dto in self.items if kwargs["from_ts"] <= dto.recorded_at < kwargs["to_ts"]], None
+
+    repo = HalfOpenRepo(items=[make_dto(recorded_at=next_day, description="Next day"),
+                              make_dto(recorded_at=last_instant, description="Last instant")])
+    body = await audit_surface.render(make_orch(repo), "user-1", [], {
+        "from": "2026-09-11", "to": "2026-09-11",
+    })
+    assert "Last instant" in body and "Next day" not in body
+
+
+async def test_day_groups_and_timestamps_are_normalized_to_utc():
+    eastern = timezone(timedelta(hours=-4))
+    repo = FakeRepo(items=[make_dto(recorded_at=datetime(2026, 9, 10, 22, tzinfo=eastern))])
+    body = await audit_surface.render(make_orch(repo), "user-1", [], {})
+    assert "2026-09-11 (UTC)" in body
+    assert "2026-09-11 02:00:00" in body
+    assert "2026-09-10" not in body
+
+
+@pytest.mark.parametrize("payload", [None, [], "bad", {"fields": []}, {"fields": "bad"},
+    {"fields": {"q": ["bad"], "cursor": {"owner_id": "other"}, "owner_id": "other"}}])
+async def test_page_handler_discards_nonscalar_and_unknown_navigation(payload):
+    assert await audit_surface._handle_audit_page(None, None, "user-1", [], payload) == ("audit", {}, "")
+
+
+@pytest.mark.parametrize("params", [{"q": "x" * 257}, {"cursor": "x" * 513}, {"q": "bad\x00query"}])
+async def test_invalid_filter_sizes_and_nulls_are_rejected_before_query(params):
+    repo = FakeRepo()
+    body = await audit_surface.render(make_orch(repo), "user-1", [], params)
+    assert 'role="status"' in body and not repo.list_calls
+    result = await audit_surface._handle_audit_page(None, None, "user-1", [], {"fields": params})
+    assert result[1] == {} and result[2]
+
+
+async def test_detail_return_cannot_amplify_oversized_or_nested_parameters():
+    body = await audit_surface.render(make_orch(FakeRepo()), "user-1", [], {
+        "event_id": EVENT_ID, "return_to": {"q": "x" * 257},
+    })
+    assert _payloads(body)[0]["params"] == {}
+    body = await audit_surface.render(make_orch(FakeRepo()), "user-1", [], {
+        "event_id": EVENT_ID, "return_to": {"q": {"owner_id": "other"}, "history": "not json"},
+    })
+    assert _payloads(body)[0]["params"] == {"history": "[]"}
+
+
+def test_history_rejects_large_documents_and_excessive_nesting():
+    assert audit_surface._history(" " * 16_385) == []
+    assert audit_surface._history("[" * 1500 + "]" * 1500) == []
+    assert audit_surface._history([]) == []
+
+
+async def test_unexpected_query_validation_error_is_not_retried_as_bad_cursor():
+    class BrokenRepo(FakeRepo):
+        def list_for_user(self, user_id, **kwargs):
+            super().list_for_user(user_id, **kwargs)
+            raise ValueError("repository unavailable")
+    repo = BrokenRepo()
+    with pytest.raises(ValueError, match="repository unavailable"):
+        await audit_surface.render(make_orch(repo), "user-1", [], {})
+    assert len(repo.list_calls) == 1
+
+
+async def test_missing_page_history_returns_previous_to_newest_with_filters():
+    body = await audit_surface.render(make_orch(FakeRepo()), "user-1", [], {"cursor": "later", "q": "needle"})
+    pages = [p["fields"] for p in _payloads(body) if p.get("fields", {}).get("q") == "needle"]
+    assert any(p.get("cursor") == "" and p.get("history") == "[]" for p in pages)
+    assert any("cursor" not in p and "history" not in p for p in pages)
+
+
+async def test_date_and_navigation_grouping_preserves_order_and_every_event():
+    rows = [make_dto(event_id=f"{n:08}-1111-1111-1111-111111111111",
+                     recorded_at=datetime(2026, 9, 11 if n < 4 else 10, tzinfo=timezone.utc),
+                     action_type="ws.chrome_open" if n in (1, 2, 4, 5) else "tool.run",
+                     description=f"Record number {n}") for n in range(1, 6)]
+    body = await audit_surface.render(make_orch(FakeRepo(items=rows)), "user-1", [], {})
+    positions = [body.index(f"Record number {n}") for n in range(1, 6)]
+    assert positions == sorted(positions)
+    assert body.count('class="astral-audit-row') == 5
+    assert body.count("<details ") == 2

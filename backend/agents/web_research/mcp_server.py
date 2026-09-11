@@ -89,6 +89,11 @@ class MCPServer:
                 tool_fn = self.tools[tool_name]["function"]
                 result = tool_fn(**arguments)
 
+                # First-party tool failures carry bounded, actionable messages
+                # and explicit terminal status; do not retry the same refusal.
+                if isinstance(result, dict) and isinstance(result.get("_error"), dict):
+                    return MCPResponse(request_id=request.request_id, error=result["_error"])
+
                 # Check if the tool itself returned an error via UI components
                 if isinstance(result, dict) and "_ui_components" in result:
                     ui_comps = result["_ui_components"]

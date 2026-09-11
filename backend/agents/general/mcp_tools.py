@@ -33,6 +33,7 @@ except ImportError:
 
 # Expression evaluator
 from shared.expression_evaluator import ExpressionEvaluator  # noqa: E402
+from shared import external_http  # noqa: E402
 from shared.llm_text import strip_reasoning_markup  # noqa: E402
 
 
@@ -950,7 +951,7 @@ def search_wikipedia(query: str, language: str = "en", session_id: str = "defaul
 
 def extract_search_terms(query: str, **kwargs) -> str:
     """Extract relevant search terms from a natural language query using LLM."""
-    logger.debug(f"Extracting search terms for: {query}")
+    logger.debug("Extracting academic search terms")
     # Feature 054: the per-turn credentials the orchestrator injects
     # (_session_llm_credentials) are preferred, then the agent's own
     # credential bundle. No env fallback — the operator-default path is gone.
@@ -986,11 +987,27 @@ def extract_search_terms(query: str, **kwargs) -> str:
             timeout=10 # Add timeout
         )
         terms = strip_reasoning_markup(response.choices[0].message.content or "").strip()
-        logger.debug(f"extracted terms: {terms}")
+        logger.debug("Academic search terms extracted")
         return terms or query.strip()
     except Exception as e:
-        logger.error(f"Error extracting search terms: {e}")
+        logger.warning("search_terms_extraction_failed error_type=%s", type(e).__name__)
         return query.strip()
+
+class _ArxivEgressTransport:
+    """Bound arxiv.py's transport to one egress-validated, size-capped request."""
+
+    def __init__(self):
+        self.requested = False
+
+    def get(self, url, *, headers):
+        if self.requested:
+            raise external_http.ServiceUnreachableError("arxiv_request_limit")
+        self.requested = True
+        return external_http.request(
+            "GET", url, api_key="", timeout=15, max_response_bytes=1024 * 1024,
+            allow_redirects=False, extra_headers=headers,
+        )
+
 
 def search_arxiv(query: str, max_results: int = 10, session_id: str = "default", **kwargs) -> Dict[str, Any]:
     """Search arXiv for papers related to the query.
@@ -999,21 +1016,34 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
         query: The search query
         max_results: Maximum number of results (default: 10)
     """
-    logger.debug(f"search_arxiv called with query: {query}")
+    query = str(query or "").strip()
+    if not query:
+        return create_ui_response([Alert(
+            title="Search arXiv", message="Enter a topic to search for papers.", variant="error",
+        )])
+    try:
+        limit = max(1, min(int(max_results), 20))
+    except (TypeError, ValueError, OverflowError):
+        limit = 10
     # Use LLM to extract clean search terms
     clean_query = extract_search_terms(query, **kwargs)
-    logger.debug(f"Original query: '{query}' -> Cleaned query: '{clean_query}'")
     
     try:
         logger.debug("Executing arxiv search...")
         search = arxiv.Search(
             query=clean_query,
-            max_results=int(max_results),
+            max_results=limit,
             sort_by=arxiv.SortCriterion.Relevance
         )
         
+        client = arxiv.Client(page_size=limit, num_retries=0)
+        # arxiv.py exposes no transport parameter. Replace only its session;
+        # retain the public Client.results API and test the installed parser
+        # against real Atom bytes so upgrades cannot bypass the egress gate.
+        client._session.close()
+        client._session = _ArxivEgressTransport()
         results = []
-        for paper in search.results():
+        for paper in client.results(search):
             results.append({
                 "title": paper.title,
                 "authors": [author.name for author in paper.authors],
@@ -1096,15 +1126,21 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
             "_data": results
         }
     except Exception as e:
-        logger.error(f"Error searching arXiv: {e}")
+        logger.warning("arxiv_search_failed error_type=%s", type(e).__name__)
         components = [
             Alert(
                 title="Search Error",
-                message=f"Error searching arXiv: {str(e)}",
+                message="arXiv is unavailable right now. Try again later or search another source.",
                 variant="error"
             )
         ]
-        return create_ui_response(components)
+        return {
+            **create_ui_response(components),
+            "_error": {
+                "code": "ARXIV_UNAVAILABLE", "message": components[0].message,
+                "retryable": False,
+            },
+        }
 
 
 # =============================================================================

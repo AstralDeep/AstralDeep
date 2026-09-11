@@ -136,12 +136,12 @@ def test_ddg_unreachable_names_backend_and_remedy() -> None:
         result = web_search(query="python")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "DuckDuckGo" in alert["message"]
-    assert "SEARCH_API_URL" in alert["message"]
+    assert "Keyless search is unavailable" in alert["message"]
+    assert "API key in agent settings" in alert["message"]
 
 
 # ---------------------------------------------------------------------------
-# DuckDuckGo bot challenge (HTTP 202) -> Lite retry -> honest failure
+# DuckDuckGo bot challenge (HTTP 202) -> bounded refusal without retry
 # ---------------------------------------------------------------------------
 
 
@@ -149,27 +149,17 @@ def _ddg_calls(rmock: HttpMock):
     return [c["url"] for c in rmock.calls if c["method"] == "GET"]
 
 
-def test_ddg_202_challenge_retries_once_via_lite_and_succeeds(rmock: HttpMock) -> None:
+def test_ddg_202_challenge_stops_without_trying_other_endpoints(rmock: HttpMock) -> None:
     rmock.add("GET", DDG_HTML_URL, status=202, body=CHALLENGE_HTML.encode("utf-8"))
     rmock.add("GET", DDG_LITE_URL, status=200, body=LITE_HTML.encode("utf-8"))
     result = web_search(query="python tutorial")
-    assert _ddg_calls(rmock) == [DDG_HTML_URL, DDG_LITE_URL]
-    lite_call = rmock.calls[-1]
-    assert lite_call["params"] == {"q": "python tutorial"}
-    assert lite_call["headers"]["User-Agent"].startswith("Mozilla/5.0")
-    assert lite_call["allow_redirects"] is False
-    card = result["_ui_components"][0]
-    assert card["type"] == "card"
-    listing = card["content"][0]
-    assert listing["items"] == [
-        {"title": "Python Tutorial — Example",
-         "url": "https://example.com/python",
-         "subtitle": "Learn Python from scratch."},
-        {"title": "Direct result",
-         "url": "https://direct.example.org/page",
-         "subtitle": "A direct, unwrapped link."},
-    ]
-    assert result["_data"]["backend"] == mcp_tools.DDG_LITE_BACKEND
+    assert _ddg_calls(rmock) == [DDG_HTML_URL]
+    alert = result["_ui_components"][0]
+    assert alert["message"] == (
+        "Keyless search is blocked. Add a search provider API key in agent settings "
+        "for reliable/higher-limit search."
+    )
+    assert result["_data"] is None  # no fabricated results
 
 
 def test_ddg_200_challenge_body_without_anchors_is_treated_as_challenge(rmock: HttpMock) -> None:
@@ -177,25 +167,23 @@ def test_ddg_200_challenge_body_without_anchors_is_treated_as_challenge(rmock: H
     rmock.add("GET", DDG_HTML_URL, status=200, body=CHALLENGE_HTML.encode("utf-8"))
     rmock.add("GET", DDG_LITE_URL, status=200, body=LITE_HTML.encode("utf-8"))
     result = web_search(query="python tutorial")
-    assert _ddg_calls(rmock) == [DDG_HTML_URL, DDG_LITE_URL]
-    assert result["_ui_components"][0]["type"] == "card"
-    assert result["_data"]["backend"] == mcp_tools.DDG_LITE_BACKEND
+    assert _ddg_calls(rmock) == [DDG_HTML_URL]
+    assert result["_ui_components"][0]["message"].startswith("Keyless search is blocked.")
 
 
 def test_ddg_202_then_lite_202_is_actionable_error_never_fabricated(rmock: HttpMock) -> None:
     rmock.add("GET", DDG_HTML_URL, status=202, body=CHALLENGE_HTML.encode("utf-8"))
     rmock.add("GET", DDG_LITE_URL, status=202, body=CHALLENGE_HTML.encode("utf-8"))
     result = web_search(query="python tutorial")
-    assert _ddg_calls(rmock) == [DDG_HTML_URL, DDG_LITE_URL]  # exactly one retry
+    assert _ddg_calls(rmock) == [DDG_HTML_URL]
     alert = result["_ui_components"][0]
     assert alert["type"] == "alert"
     assert alert["variant"] == "error"
-    assert "bot challenge" in alert["title"]
-    assert "bot challenge" in alert["message"]
-    assert "DuckDuckGo" in alert["message"]
-    assert "202" in alert["message"]
-    assert "SEARCH_API_URL" in alert["message"]
-    assert "No results were fabricated" in alert["message"]
+    assert alert["title"] == "Search unavailable"
+    assert "Keyless search is blocked" in alert["message"]
+    assert "API key in agent settings" in alert["message"]
+    assert "202" not in alert["message"]
+    assert "quota" not in alert["message"]
     assert "No results found" not in alert["message"]
 
 
@@ -205,9 +193,9 @@ def test_ddg_202_then_lite_transport_failure_is_actionable_error(rmock: HttpMock
     result = web_search(query="python tutorial")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "bot challenge" in alert["message"]
-    assert "Lite endpoint retry failed" in alert["message"]
-    assert "SEARCH_API_URL" in alert["message"]
+    assert "Keyless search is blocked" in alert["message"]
+    assert "API key in agent settings" in alert["message"]
+    assert _ddg_calls(rmock) == [DDG_HTML_URL]
 
 
 def test_ddg_challenge_surfaces_in_research_brief_as_challenge_error(rmock: HttpMock) -> None:
@@ -217,9 +205,9 @@ def test_ddg_challenge_surfaces_in_research_brief_as_challenge_error(rmock: Http
     result = research_brief(topic="python tutorial")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "bot challenge" in alert["message"]
+    assert "Keyless search is blocked" in alert["message"]
     assert "returned no results" not in alert["message"]
-    assert "SEARCH_API_URL" in alert["message"]
+    assert "API key in agent settings" in alert["message"]
 
 
 def test_ddg_genuine_empty_page_is_still_no_results_without_lite_retry(rmock: HttpMock) -> None:
@@ -245,14 +233,13 @@ def test_ddg_empty_page_echoing_challenge_words_in_query_is_no_results(rmock: Ht
     assert result["_data"]["results"] == []
 
 
-def test_ddg_202_then_lite_genuinely_empty_is_no_results(rmock: HttpMock) -> None:
+def test_ddg_challenge_is_not_reclassified_using_another_endpoint(rmock: HttpMock) -> None:
     rmock.add("GET", DDG_HTML_URL, status=202, body=CHALLENGE_HTML.encode("utf-8"))
     rmock.add("GET", DDG_LITE_URL, status=200, body=LITE_EMPTY_HTML.encode("utf-8"))
     result = web_search(query="zxqv-nothing")
-    assert _ddg_calls(rmock) == [DDG_HTML_URL, DDG_LITE_URL]
-    assert result["_ui_components"][0]["variant"] == "info"
-    assert result["_data"]["results"] == []
-    assert result["_data"]["backend"] == mcp_tools.DDG_LITE_BACKEND
+    assert _ddg_calls(rmock) == [DDG_HTML_URL]
+    assert result["_ui_components"][0]["variant"] == "error"
+    assert result["_data"] is None
 
 
 def test_ddg_normal_200_with_results_never_touches_lite(rmock: HttpMock) -> None:
@@ -317,24 +304,24 @@ def test_provider_max_results_is_clamped_to_twenty(rmock: HttpMock) -> None:
     assert rmock.calls[-1]["json"]["max_results"] == 20
 
 
-def test_provider_malformed_payload_yields_no_results(rmock: HttpMock) -> None:
+def test_provider_malformed_payload_is_failure_not_no_results(rmock: HttpMock) -> None:
     rmock.add("POST", PROVIDER_URL, status=200, json={"unexpected": True})
     result = web_search(query="python", _credentials=PROVIDER_CREDS)
-    assert result["_ui_components"][0]["variant"] == "info"
-    assert result["_data"]["results"] == []
+    assert result["_ui_components"][0]["variant"] == "error"
+    assert result["_error"]["code"] == "SEARCH_UNAVAILABLE"
 
 
-def test_provider_invalid_json_body_yields_no_results(rmock: HttpMock) -> None:
+def test_provider_invalid_json_body_is_failure_not_no_results(rmock: HttpMock) -> None:
     rmock.add("POST", PROVIDER_URL, status=200, body=b"definitely not json")
     result = web_search(query="python", _credentials=PROVIDER_CREDS)
-    assert result["_ui_components"][0]["variant"] == "info"
-    assert result["_data"]["results"] == []
+    assert result["_ui_components"][0]["variant"] == "error"
+    assert result["_error"]["code"] == "SEARCH_UNAVAILABLE"
 
 
-def test_provider_non_dict_payload_yields_no_results(rmock: HttpMock) -> None:
+def test_provider_non_dict_payload_is_failure_not_no_results(rmock: HttpMock) -> None:
     rmock.add("POST", PROVIDER_URL, status=200, json=[1, 2, 3])
     result = web_search(query="python", _credentials=PROVIDER_CREDS)
-    assert result["_data"]["results"] == []
+    assert result["_error"]["code"] == "SEARCH_UNAVAILABLE"
 
 
 def test_provider_skips_malformed_result_items(rmock: HttpMock) -> None:
@@ -354,7 +341,7 @@ def test_provider_auth_failure_is_error_alert(rmock: HttpMock) -> None:
     result = web_search(query="python", _credentials=PROVIDER_CREDS)
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "SEARCH_API_URL" in alert["message"]
+    assert "Check the API key in agent settings" in alert["message"]
 
 
 def test_provider_on_private_host_is_refused() -> None:
@@ -364,7 +351,7 @@ def test_provider_on_private_host_is_refused() -> None:
     result = web_search(query="python", _credentials=creds)
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "egress is blocked" in alert["message"]
+    assert "blocked by network policy" in alert["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +406,7 @@ def test_web_search_unexpected_error_is_error_alert() -> None:
         result = web_search(query="python")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "SEARCH_API_URL" in alert["message"]
+    assert "API key in agent settings" in alert["message"]
 
 
 def test_no_api_key_echoed_in_responses(rmock: HttpMock) -> None:

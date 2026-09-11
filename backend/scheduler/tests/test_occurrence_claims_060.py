@@ -2014,21 +2014,33 @@ async def test_dispatch_cancels_handler_immediately_on_renewal_loss(monkeypatch)
     store = _LoopStore(attempt)
     coordinator = _LoopCoordinator()
     cancelled = asyncio.Event()
+    entered = asyncio.Event()
+    renewal_lost = None
 
     async def blocking_runner(attempt, claim_lost):
+        nonlocal renewal_lost
+        renewal_lost = claim_lost
+        entered.set()
         try:
             await asyncio.Event().wait()
         finally:
             cancelled.set()
 
-    class SoonLostKeeper(_ScriptKeeper):
-        def start(self):
-            asyncio.get_running_loop().call_later(0.01, self.lost.set)
-
-    monkeypatch.setattr(scheduler_loop_module, "ClaimLeaseKeeper", SoonLostKeeper)
-    await _script_loop(
+    monkeypatch.setattr(scheduler_loop_module, "ClaimLeaseKeeper", _ScriptKeeper)
+    dispatch = asyncio.create_task(_script_loop(
         store, _LoopRunner(blocking_runner), coordinator
-    )._dispatch_claim(attempt.claim)
+    )._dispatch_claim(attempt.claim))
+    try:
+        # Lose renewal during execution; a timer can fire before dispatch starts
+        # on a loaded host, which exercises the separate pre-start refusal test.
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert renewal_lost is not None
+        renewal_lost.set()
+        await asyncio.wait_for(dispatch, timeout=2)
+    finally:
+        if not dispatch.done():
+            dispatch.cancel()
+        await asyncio.gather(dispatch, return_exceptions=True)
     assert cancelled.is_set()
     assert coordinator.terminal[0][1]["terminal_code"] == "claim_lost"
 

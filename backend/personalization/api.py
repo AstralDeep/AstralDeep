@@ -202,7 +202,7 @@ async def list_skills(request: Request, user_id: str = Depends(require_user_id))
                 "tool_name": tool_name,
                 "scope": scope,
                 "enabled": tp.is_tool_allowed(user_id, agent_id, tool_name),
-                "authorized": tp.is_scope_enabled(user_id, agent_id, scope),
+                "authorized": tp.is_skill_authorized(user_id, agent_id, tool_name),
             })
     return {"skills": catalog}
 
@@ -214,7 +214,7 @@ async def toggle_skill(body: SkillToggleRequest, request: Request,
     tp = _tool_permissions(request)
     required_scope = tp.get_tool_scope(body.agent_id, body.tool_name)
     # FR-011: enabling a skill can never exceed the user's granted scope.
-    if body.enabled and not tp.is_scope_enabled(user_id, body.agent_id, required_scope):
+    if body.enabled and not tp.is_skill_authorized(user_id, body.agent_id, body.tool_name):
         raise HTTPException(
             status_code=403,
             detail=f"This skill needs the '{required_scope}' permission, which you haven't been granted.",

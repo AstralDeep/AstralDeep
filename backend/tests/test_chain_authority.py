@@ -109,6 +109,7 @@ async def test_derive_success_shape():
     assert out.access_token == "fresh-token"
     # Narrowed to (consented ∩ current): write consented but not current.
     assert out.allowed_scopes == ["tools:read"]
+    assert out.agent_id == "a1"
     assert out.principal == "machine:scheduled_job"
     assert out.consent_ref == "g1"
     claims = out.machine_claims()
@@ -136,6 +137,27 @@ async def test_derive_falls_back_to_latest_valid_grant():
     assert out.consent_ref == "g-standing"
     assert out.principal == "machine:draft_self_test"
     grants.latest_valid_for.assert_called_once_with("u1", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turn_class", [
+    "scheduled_job", "persistent_assignment", "parser_replay", "draft_self_test",
+])
+@pytest.mark.parametrize("consented_scopes", [None, []])
+async def test_only_unspecified_parser_and_draft_scopes_use_standing_authority(turn_class, consented_scopes):
+    from orchestrator.chain_authority import machine_scope_ceiling, machine_session_binding
+
+    mta, _, _ = _mta()
+    out = await mta.derive(
+        user_id="u1", agent_id=None, consented_scopes=consented_scopes,
+        grant_id="g1", turn_class=turn_class,
+    )
+    assert isinstance(out, MachineAuthority)
+    ceiling = machine_scope_ceiling(machine_session_binding(out))
+    if consented_scopes is None and turn_class in {"parser_replay", "draft_self_test"}:
+        assert ceiling is None
+    else:
+        assert ceiling == frozenset()
 
 
 @pytest.mark.asyncio

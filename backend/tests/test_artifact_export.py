@@ -276,7 +276,8 @@ def test_canvas_export_standalone_document(client, orch):
     assert 'class="astral-chart"' not in html
     assert ">x<" in html and ">y<" in html
     # Provenance + date stamped.
-    assert "astral-provenance--grounded" in html
+    assert 'class="astral-provenance astral-provenance--grounded' not in html
+    assert "tool data" not in html
     assert "2 grounded" in html and "1 generated" in html
     assert f"Generated {date.today().isoformat()} by AstralDeep" in html
     orch._canvas_components.assert_called_once_with(CHAT_ID, USER_ID)
@@ -295,6 +296,41 @@ def test_canvas_export_audited(client, orch, monkeypatch):
     orch._canvas_components.return_value = _canvas()
     assert client.get(f"/api/export/canvas/{CHAT_ID}.html", headers=AUTH).status_code == 200
     assert rec.await_args.kwargs["action"] == "canvas_exported"
+
+
+def test_visual_canvas_export_binds_owner_and_render_revision(client, orch):
+    orch._canvas_components.return_value = _canvas()
+    repository = orch.runtime_composition.plane.repositories.history.conversations
+    repository.get.return_value = SimpleNamespace(render_revision=8)
+    response = client.get(f"/api/export/canvas/{CHAT_ID}.html?render_revision=8", headers=AUTH)
+    assert response.status_code == 200
+    assert response.headers["X-Astral-Render-Revision"] == "8"
+    assert repository.get.call_count == 2
+    assert repository.get.call_args.kwargs == {"owner_id": USER_ID, "conversation_id": CHAT_ID}
+
+
+@pytest.mark.parametrize("revisions", [[9], [8, 9]])
+def test_visual_canvas_export_refuses_stale_or_concurrently_changed_revision(client, orch, revisions):
+    orch._canvas_components.return_value = _canvas()
+    repository = orch.runtime_composition.plane.repositories.history.conversations
+    repository.get.side_effect = [SimpleNamespace(render_revision=value) for value in revisions]
+    response = client.get(f"/api/export/canvas/{CHAT_ID}.html?render_revision=8", headers=AUTH)
+    assert response.status_code == 409
+    assert "X-Astral-Render-Revision" not in response.headers
+
+
+def test_visual_canvas_export_foreign_revision_is_uniform_not_found(client, orch):
+    orch.runtime_composition.plane.repositories.history.conversations.get.return_value = None
+    response = client.get(f"/api/export/canvas/{CHAT_ID}.html?render_revision=8", headers=AUTH)
+    assert response.status_code == 404
+    orch._canvas_components.assert_not_called()
+
+
+@pytest.mark.parametrize("revision", ["-1", "unknown"])
+def test_visual_canvas_export_rejects_invalid_revision(client, orch, revision):
+    response = client.get(f"/api/export/canvas/{CHAT_ID}.html?render_revision={revision}", headers=AUTH)
+    assert response.status_code == 422
+    orch._canvas_components.assert_not_called()
 
 
 # ───────────────────────── Flag + auth gates ─────────────────────────────────

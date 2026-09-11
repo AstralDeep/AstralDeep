@@ -100,6 +100,9 @@ class MCPServer:
 
                 result = tool_fn(**arguments)
 
+                if isinstance(result, dict) and isinstance(result.get("_error"), dict):
+                    return MCPResponse(request_id=request.request_id, error=result["_error"])
+
                 # Check if the tool itself returned an error via UI components
                 if isinstance(result, dict) and "_ui_components" in result:
                     ui_comps = result["_ui_components"]

@@ -208,6 +208,33 @@ async def test_run_designer_passes_connecting_device(monkeypatch):
     assert seen["device"]["max_grid_columns"] == 1
 
 
+@pytest.mark.parametrize("progress", [True, False])
+async def test_designer_progress_counts_planning_and_draft_calls_truthfully(monkeypatch, progress):
+    """A planning pass plus one draft is two calls, despite a one-round limit."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from orchestrator.orchestrator import Orchestrator
+
+    async def design(**kwargs):
+        await kwargs["llm_call"]([])
+        await kwargs["llm_call"]([])
+        return None
+
+    monkeypatch.setenv("UI_DESIGNER_MAX_ROUNDS", "1")
+    monkeypatch.setattr(ui_designer, "design_round", design)
+    fake = SimpleNamespace(
+        workspace=SimpleNamespace(live_layouts=lambda *a: [], live_rows=lambda *a: []),
+        _safe_send=AsyncMock(), _call_llm=AsyncMock(return_value=(SimpleNamespace(content="{}"), {})),
+    )
+    await Orchestrator._run_designer(fake, object(), _COMPS, "chat", "user", "show", "lk",
+                                     progress=progress)
+    messages = [json.loads(call.args[1])["message"] for call in fake._safe_send.call_args_list]
+    assert messages == (["Designing your layout (pass 1)...", "Designing your layout (pass 2)..."]
+                        if progress else [])
+
+
 def test_designer_device_fail_open():
     from types import SimpleNamespace
     from orchestrator.orchestrator import _designer_device

@@ -15,6 +15,31 @@ single accent for the principal action; avoid dashboard cards for every datum.
 Conversation and result text should normally remain within approximately 70
 characters per line. Preserve code typography and high-contrast/reduced-motion modes.
 
+The owner rejected the first sparse-canvas/narrow-rail screenshots on 2026-09-10.
+The revised web start view therefore has one centered 44rem working column:
+welcome heading, any required permission notice, multiline composer, three compact
+example shortcuts and an additional-examples disclosure. The composer is the main
+visual surface. The empty transcript rail and canvas do not occupy the starting
+screen; Send, restoration, real output or opening history reveals the existing
+responsive workspace. New chat returns to the start arrangement.
+
+Retain the semantic midnight tokens: background `#0F1221`, surface `#1A1E2E`,
+primary `#6366F1`, text `#F3F4F6` and muted `#9CA3AF`; user-selected themes still
+override them. Use the existing locally hosted Inter with a medium-weight heading,
+regular shortcut labels and one restrained composer border. Remove decorative
+background gradients and repeated control containers. Narrow layouts use small
+fixed inline gutters so enlarged text keeps usable writing space.
+
+Projection owns empty welcome placement hosts around the permanently mounted
+composer. Its web adapter moves only recognized top-level server-rendered welcome
+nodes, preserving their identity and accessibility wrappers. It never clones the
+composer or invents a second example catalog. Full replacement, partial update,
+retirement and account cleanup govern these hosts; late welcome cannot overwrite
+active work. DOM, reading and keyboard order match the visible layout. Enter sends;
+Shift+Enter inserts a line and IME composition never accidentally submits. These
+are web presentation changes within the approved web-first scope, with no new
+primitive, shared protocol frame or IAM path.
+
 The primary action is **Send**. Ordinary chat and requested public research enter the
 existing authenticated dispatcher immediately, with normal admission, provider,
 permission, PHI, egress and budget checks. There is no mandatory assignment-review

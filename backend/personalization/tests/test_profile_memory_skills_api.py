@@ -35,6 +35,9 @@ class _FakeTP:
     def is_scope_enabled(self, user_id, agent_id, scope):
         return self._authorized
 
+    def is_skill_authorized(self, user_id, agent_id, tool_name):
+        return self._authorized
+
     def is_tool_allowed(self, user_id, agent_id, tool_name):
         return self.enabled.get((agent_id, tool_name), False)
 

@@ -398,6 +398,36 @@ class ToolPermissionManager:
         )
         return next((row.enabled for row in rows if row.scope == scope), False)
 
+    def is_skill_authorized(self, user_id: str, agent_id: str, tool_name: str) -> bool:
+        """Whether the owner can enable this registered skill's required permission.
+
+        The catalog must include the same safe/owned-agent baseline as dispatch.
+        A per-tool opt-out may be reversed only while that baseline or an explicit
+        scope grant still authorizes it. Unknown and foreign private tools deny.
+        """
+        scope = self._tool_scope_map.get(agent_id, {}).get(tool_name)
+        if scope not in VALID_SCOPES:
+            return False
+        try:
+            agent = self._agents.call(
+                self._agents.repository.get_agent_for_administration, agent_id=agent_id,
+            )
+            if agent is not None and (agent.deleted_at is not None or agent.owner_id != user_id):
+                return False
+            if self.is_tool_allowed(user_id, agent_id, tool_name):
+                return True
+            rows = self._policy.call(
+                self._policy.repository.list_scopes, owner_id=user_id, agent_id=agent_id,
+            )
+            explicit = next((row for row in rows if row.scope == scope), None)
+            if explicit is not None:
+                return explicit.enabled
+            return ((self._is_safe_agent(agent_id) and self._safe_flip_allowed(agent_id))
+                    or self._is_owned_user_agent(user_id, agent_id))
+        except Exception:
+            logger.debug("skill authorization check failed", exc_info=True)
+            return False
+
     def set_agent_scopes(self, user_id: str, agent_id: str, scopes: Dict[str, bool]):
         """Set scope permissions for a user/agent combination.
 

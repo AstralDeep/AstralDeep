@@ -41,3 +41,168 @@ Donor test passes and reproductions are historical review evidence, never integr
 Repeated Projection baseline after installing tooling and synchronizing components: **76 passed in 9.51s**, including packaging. Formal read-only Analyze found 0 critical issues and one high ordering inconsistency; all 36 FR/SC and 35 adopted/12 retained families have task coverage, with no unmapped tasks. The Accept contract now authenticates/resolves the original receipt before new-admission guidance expansion; integration tests must verify changed guidance after accepted submission.
 
 Changed coverage, browser tests/live visual review, real institutional authenticated dispatch, representative migration/recovery, native compatibility/redesign, source grounding/human evaluation and full component/backend CI remain required. Public OIDC discovery confirms the issuer/S256 only; it does not verify client administration, mappers or authenticated journeys. No product push is authorized by this record.
+
+## Local implementation checkpoint after UI feedback (2026-09-10)
+
+The owner rejected the initial sparse-canvas/narrow-rail screenshots. The revised
+web implementation uses one centered multiline composer, a restrained heading and
+three compact examples with further examples disclosed. Reading/keyboard order
+matches the layout through Projection-owned empty welcome placement hosts; the
+original server-rendered nodes and composer/voice controls remain mounted. Send,
+restoration, history or real output opens the existing responsive work layout;
+New chat returns to the start arrangement. Semantic theme overrides remain intact.
+No shared frame, primitive, IAM client or native layout contract changed.
+
+### Executed UI checks
+
+| Command/context | Result |
+| --- | --- |
+| Projection: `../../.venv/Scripts/python.exe -m pytest tests/chrome tests/webrender tests/rote tests/test_protocol.py tests/test_resources.py -q` | **958 passed, 1 skipped**, 7.51s. Skip requires the immutable extraction-source repository environment. Old single-line/voice-before-input expectations were updated to the new accessible multiline order. The extraction transformation ledger binds exact changed bytes and preserves original source tuples. |
+| Deep: explicit Projection/backend/src and Deep/backend on `PYTHONPATH`; `pytest backend/tests/test_welcome.py backend/tests/test_welcome_identity.py --cov=orchestrator.welcome --cov-branch --cov-report=xml:build/088/welcome-coverage.xml -q` | **20 passed**, 100% statement coverage, 98% statement/branch combined (40 statements, 0 missed; one partial branch). An earlier malformed coverage module argument collected no coverage; this corrected run supersedes it. |
+| Projection/web-ci: `node node_modules/@playwright/test/cli.js test tests/continuity-contract-060.spec.js --config=.088-playwright.config.mjs` | **59 passed**, 36.9s in installed Edge. Synthetic transport/DOM regression evidence, not pinned-Chromium or institutional release proof. Covers account/logout/reconnect, delayed uploads/export/share/clipboard, fresh owner transport, start/work transitions, welcome full/partial replacement and retirement, history at three widths, keyboard/IME and mounted-node identity. |
+| Same Edge config: `tests/voice-conversation-065.spec.js --grep "auth\|logout\|cleanup\|typed\|new chat" --reporter=line` | **19 passed**, 16.7s. Existing voice authorization, typed fallback and logout cleanup regression fixtures; not live microphone/Keycloak verification. |
+| `corepack npm run lint`; targeted Python Ruff; both repository `git diff --check` | Passed for touched UI sources/tests. |
+| `python build/088/ui-preview/render.py`; `node build/088/ui-preview/check.mjs` | Current server-owned welcome and Projection shell rendered at 1440px, 320px and 320px with 200% root text. No horizontal overflow/page errors; all six examples remain accessible through disclosure. |
+| `node build/088/ui-preview/live-layout.mjs` | **3 layouts passed**, 1440/768/320px, using actual shell + renderer + client source with isolated fake transport. Verified natural control order, Send to work, New chat to start, welcome re-entry and unchanged composer identity. This is browser runtime evidence, **not a live backend**. |
+
+Images and diagnostic scripts are ignored local artifacts under
+`build/088/ui-preview/`; the final screenshots are `runtime-1440.png`,
+`runtime-768.png`, `runtime-320.png`, plus the enlarged-text `text200.png`.
+The local Edge test config is untracked tooling and is not part of product packaging.
+
+The broader Deep source attempt covering shell assets, client contract, first-turn,
+history and wiring produced **73 passed, 17 skipped and 5 setup errors**. The errors
+occur while constructing the PostgreSQL pool at the test environment's unavailable
+host database; no qualifying backend-wide pass is claimed. Focused welcome,
+surface/operation fixtures and Projection source checks above are independent.
+
+### Security and durable-work increments
+
+- Provider keys: implicit reuse is bound to the same server-resolved endpoint for
+  personal and system probe/model/save paths. Endpoint changes require explicit
+  key entry; the admitted operation and terminal replay expose only the fixed safe
+  validation message. **273 tests passed** across LLM configuration and chrome
+  dispatch; **47/47 changed executable Python lines covered**. These are isolated
+  operation/credential fixtures, with no live provider or IAM traffic.
+- Browser privacy: logout/owner changes clear drafts, staged files, queued actions,
+  private caches/transcripts/notices and owner-specific late callbacks. Owner change
+  replaces the socket before another principal can receive queued old frames.
+  Same-owner reconnect retains the draft. Deep's configuration is server-injected;
+  the donor's competing public-config/session Promise.all bootstrap is not adopted.
+  Existing shell bootstrap guards and delayed-session/logout fixtures cover the
+  integrated boundary instead of adding an unnecessary public-config fetch.
+- Plane foundation: typed one-shot admission, original-key receipts and guarded
+  `079.001 → 088.001` schema edge are locally implemented. Independent review
+  reproduced and corrected profile-unfiltered recovery and deleted-receipt UUID
+  reuse; public predecessor metadata was also corrected. Final source run:
+  **335 passed**, **175/183 changed executable lines covered (95.63%)**. Independent
+  reviewer reran **11 targeted tests**, all passed. T024/T025 controls/transient
+  actions and enhanced Deep runtime wiring remain unimplemented.
+
+Runtime changes remain local and uncommitted on the named 088 component/Deep
+branches at this checkpoint. Only the earlier planning checkpoint `146d339a` is
+committed in Deep. Composition pins and installed baseline component wheels have
+not been advanced to these candidates. Standalone rewrite data/services remain
+untouched. Full navigation/work/guidance/monitoring/framework adoption, live
+institutional IAM, representative full migration/recovery, native redesign,
+release evidence and deployment remain open; this UI increment does not complete
+the overall integration.
+
+## Local test deployment and Docker cleanup, 2026-09-11
+
+The owner requested removal of rewrite Docker containers/images, then explicitly
+authorized its saved volumes too. Removed 32 donor containers, one disposable Plane
+test container, 26 rewrite-owned images, `astral-rewrite_pgdata`, and
+`astral-rewrite_ollama-models`. The disposable container's anonymous volume was
+automatically removed. Original `astraldeep_pgdata`, legacy Deep files, unrelated
+projects, shared upstream images, and donor source were preserved. Exact scoped
+identities are recorded in ignored `.work/docker-cleanup-20260911.json`.
+
+The runtime uses a separate clean checkout, `build/088/local-test`, on local branch
+`codex/088-local-test-20260911` at Deep
+`974dfd992bad8d50c4d100c3fa933ffdce36c1c9`. Projection's eight reviewed UI/privacy
+files are locally committed at `aa9e0977b964d7ba770fa2917e26c5c040715a96`.
+This candidate deliberately retains qualified Plane
+`b20c8f3e06fc5302262fe3c8f049fa18a562e30f` / schema `079.001`; it does not deploy
+the unfinished Plane-088 foundation. Original Deep/Plane working changes remain
+preserved. Both composition checks pass; the candidate composition digest is
+`95ab34684d8ce550b6682d0cb059848f71daa9b6a2a11e5b0ebf3ac210bddebf`.
+
+Canonical startup command:
+
+```powershell
+& './build/088/local-runtime/start-local.ps1'
+```
+
+The build/start command exited **0**, built and verified four exact component
+wheels, and passed `pip check`. Compose project `astraldeep-088` runs the app,
+PostgreSQL, LiveKit, and voice worker with loopback-only published ports. The app
+and PostgreSQL are healthy with zero restarts; the other two containers run with
+zero restarts and have no Docker healthcheck. Worker preflight reports success.
+The app image is
+`sha256:2a41a1bded603d9cf57ea138183afc19588da3500156eb68f34187614fbf5977`;
+the worker image is
+`sha256:2910e475b90ee0c36027e626cf94385d05b1f3b4b6dd413c1e54902a621461b3`.
+Storage uses isolated `astraldeep-088-test-pgdata` and ignored runtime data/tmp/
+knowledge directories; its private audit key is separate from existing data.
+
+`verify-public-surface.py` passed **18 live checks** at
+`2026-09-11T14:47:34Z`: liveness/readiness 200, signed-out session posture, three
+protected API 401 denials, exact committed CSS/JS bytes, and existing-Keycloak
+login redirect with S256 and `http://localhost:8001/auth/callback`. Report digest:
+`8e70eea7fdffa555f8f6b7c4bb7cb0c1b662bbabd8242c9347ec303c94018ead`.
+A fresh in-app browser navigation reached the institutional **Sign in to Astral**
+page. No user sign-in or provider credential entry was performed.
+
+The test URL is **http://localhost:8001**. Full commands, image/storage identities,
+and safe stop/restart instructions are in ignored `build/088/local-runtime/README.md`.
+Authenticated UI/Send/provider flows, callback completion, account switching,
+microphone/media and native clients remain pending. This is a locally running
+UI/provider increment, not the full integration or a production release. No
+product branch was pushed or merged; local runtime files have no remote backup.
+
+## September 11 research review and authorized PR preparation
+
+This checkpoint supersedes the earlier local-only publication scope: the owner
+explicitly requested review PRs for every touched rewrite repository and approved
+merging/closing LETS dependency updates. Rewrite PRs remain drafts; full integration,
+native qualification, institutional signed-in staging and release evidence remain
+open. No rewrite merge or production release is authorized or claimed.
+
+- Combined current Deep regression command: `python build/088/research-review/run_checks.py`:
+  **1549 passed** in 240 seconds. One collection warning concerns the existing
+  `TestConnectionResponse` Pydantic class, not a failed test.
+- Final HITL proposal-race amendment: **188 passed**, including real UI-event,
+  direct/parallel dispatch, public-read denials, policy/hook mutation, revocation,
+  session changes, duplicate clicks, and one-attempt physical execution. Independent
+  review reproduced the three original admission/effect/retry defects and verified
+  each fix; 113 earlier exact-source tests also passed independently.
+- Changed Deep executable Python: **848/856 lines (99.1%) across 23 modules**;
+  every changed module exceeds 90%. The final HITL helper line map comes from its
+  final-source targeted run, replacing the earlier map rather than combining
+  different source revisions. Research-specific source was independently 110/110.
+- Actual Projection renderer/CSS showed complete pending/declined/approved cards
+  at 1440 and 393 pixels, with internal code-preview scrolling, visible actions,
+  no page overflow and no browser errors. These use synthetic DTOs and transport;
+  they do not claim user sign-in or a live user-approved external effect.
+- Ruff and Git diff checks pass. Checksum-verified Gitleaks 8.30.1 found no leaks in
+  the five local Deep increment commits or the two Projection increment commits.
+- Installed local source: Deep `5893f8617e33e5f40683452dcee3a62e43e8fa0f`,
+  Projection `cae52a2a743423561f9c46546cd2341f6af66aba`, Plane
+  `8924bd4ba154a00184218c5b50c3de3bab9d13c4` / schema `079.001`.
+  App image `sha256:16665c5b424870090898d7f7ec27f5891bb582148a3ba1b809df75a5d253f824`.
+  All 23 reviewed production files match the running container; scheduler execution
+  remains enabled. Installed arxiv 4.0.1 returns three actual public papers through
+  the updated MCP adapter. A direct keyless-search probe observes HTTP 202 and the
+  short `SEARCH_BLOCKED` API-key remedy, with `retryable=False`.
+- LETS PR #49 merged at `78d035f44213d1eb5c13ea6a61b1a36d37ab7d4b` after all
+  eleven hosted checks passed. Its seven superseded Dependabot PRs #42–#48 are
+  closed; zero open PRs and zero open security alerts were verified, with no alert
+  dismissed. The explicit libuuid security fix leaves zero HIGH/CRITICAL scan
+  findings. Existing v1.0.11 and the Deep pin remain unchanged. A local Windows
+  coverage timing failure was reproduced on unchanged LETS main; hosted Linux
+  and Windows qualification passed.
+
+Diagnostic logs, source hashes, exact test manifests and local deployment evidence
+are retained under ignored `build/088/research-review/`. User credentials, pending
+approval arguments and raw upstream bodies are not included in this checkpoint.

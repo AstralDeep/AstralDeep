@@ -73,7 +73,7 @@ def test_summarize_url_egress_refusal_on_private_host() -> None:
     result = summarize_url(url="https://internal.example.com/wiki")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "egress is blocked" in alert["message"]
+    assert "blocked by network policy" in alert["message"]
 
 
 def test_summarize_url_over_one_megabyte_is_refused(rmock: HttpMock) -> None:
@@ -122,7 +122,7 @@ def test_summarize_url_redirect_without_location_is_error(rmock: HttpMock) -> No
     result = summarize_url(url="https://redirect.example.com/nowhere")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "Location" in alert["message"]
+    assert "could not be retrieved" in alert["message"]
 
 
 def test_summarize_url_redirect_loop_is_error(rmock: HttpMock) -> None:
@@ -131,7 +131,7 @@ def test_summarize_url_redirect_loop_is_error(rmock: HttpMock) -> None:
     result = summarize_url(url="https://redirect.example.com/loop")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "Too many redirects" in alert["message"]
+    assert "could not be retrieved" in alert["message"]
 
 
 def test_extract_text_non_html_passthrough() -> None:
@@ -251,4 +251,5 @@ def test_compare_documents_llm_exception(fake_openai) -> None:
     result = compare_documents(text_a="aaa", text_b="bbb")
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
-    assert "boom" in alert["message"]
+    assert "documents could not be compared" in alert["message"]
+    assert "boom" not in alert["message"]

@@ -5,13 +5,13 @@
     "astral-projection": {
       "repository": "https://github.com/AstralDeep/AstralProjection.git",
       "path": "components/AstralProjection",
-      "commit": "07e5c90cb310c48c2315997f74dc8dd6f5fa22ea",
+      "commit": "cae52a2a743423561f9c46546cd2341f6af66aba",
       "contract_version": "astralprojection.contract/v1"
     },
     "astral-plane": {
       "repository": "https://github.com/AstralDeep/AstralPlane.git",
       "path": "components/AstralPlane",
-      "commit": "b20c8f3e06fc5302262fe3c8f049fa18a562e30f",
+      "commit": "8924bd4ba154a00184218c5b50c3de3bab9d13c4",
       "contract_version": "astralplane.contract/v1"
     },
     "astral-primitives": {
