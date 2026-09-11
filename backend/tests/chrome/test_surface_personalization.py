@@ -132,6 +132,9 @@ class FakeToolPermissions:
     def is_scope_enabled(self, user_id, agent_id, scope):
         return self._scope_grants.get((user_id, agent_id, scope), False)
 
+    def is_skill_authorized(self, user_id, agent_id, tool_name):
+        return self.is_scope_enabled(user_id, agent_id, self.get_tool_scope(agent_id, tool_name))
+
     def is_tool_allowed(self, user_id, agent_id, tool_name):
         return self._allowed.get((user_id, agent_id, tool_name), False)
 
@@ -400,7 +403,7 @@ def test_skills_tab_renders_toggle_and_unavailable_reason():
     assert "&quot;enabled&quot;: false" in html
     # Unauthorized skill renders the reason, not a toggle.
     assert "tools:system" in html
-    assert "haven&#x27;t been granted" in html
+    assert "Agents &amp; permissions" in html
 
 
 def test_schedule_tab_lists_jobs_with_actions_history_and_chat_hint(monkeypatch):
@@ -504,6 +507,61 @@ def test_profile_save_success_parses_goals_and_returns_success_notice():
     assert repo.upsert_calls[0]["profession"] == "data engineer"
     # Notes unchanged vs existing profile → personality untouched (None).
     assert repo.upsert_calls[0]["personality"] is None
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_phi_notice_control_has_same_saved_choice_on_web_and_native(monkeypatch, enabled):
+    orch = make_orch()
+    monkeypatch.setattr(surf, "notices_enabled", lambda *_: enabled)
+    html = render(orch)
+    components = surf._components_soul(orch, "u1", {})
+    label = "Turn off PHI reminders" if enabled else "Turn on PHI reminders"
+    assert label in html and label in str(components)
+    assert {"chat_phi_notice_enabled": not enabled} in _html_action_payloads(html, "chrome_profile_save")
+    assert {"chat_phi_notice_enabled": not enabled} in _sdui_action_payloads(components, "chrome_profile_save")
+
+
+def test_phi_preference_save_is_owner_scoped_audited_and_leaves_profile_untouched(monkeypatch):
+    orch, writes = make_orch(), []
+    from unittest.mock import AsyncMock
+    audit = AsyncMock()
+    monkeypatch.setattr(surf, "record_generic", audit)
+    monkeypatch.setattr(surf, "set_notices_enabled", lambda _orch, uid, value: writes.append((uid, value)))
+    _, _, notice = call(surf._handle_profile_save, orch, {"chat_phi_notice_enabled": False, "user_id": "other"})
+    assert writes == [("u1", False)]
+    assert "PHI reminders off" in notice
+    assert not orch.personalization_service.repo.upsert_calls
+    assert audit.await_args.kwargs["claims"]["sub"] == "u1"
+    assert audit.await_args.kwargs["outputs_meta"] == {"enabled": False}
+
+
+@pytest.mark.parametrize("value", [None, "false", 0])
+def test_phi_preference_requires_boolean(monkeypatch, value):
+    def unexpected(*_):
+        raise AssertionError("invalid preference must not persist")
+    monkeypatch.setattr(surf, "set_notices_enabled", unexpected)
+    _, _, notice = call(surf._handle_profile_save, make_orch(), {"chat_phi_notice_enabled": value})
+    assert "Invalid PHI reminder preference" in notice
+
+
+def test_phi_preference_storage_failure_is_not_success(monkeypatch):
+    def unavailable(*_):
+        raise RuntimeError("unavailable")
+    monkeypatch.setattr(surf, "set_notices_enabled", unavailable)
+    _, _, notice = call(surf._handle_profile_save, make_orch(), {"chat_phi_notice_enabled": True})
+    assert "was not saved" in notice
+
+
+def test_effectively_authorized_skill_can_be_toggled_without_raw_scope_row():
+    orch = make_orch()
+    orch.tool_permissions.is_skill_authorized = lambda _u, _a, name: name == "search_docs"
+    orch.tool_permissions._scope_grants.clear()
+    html = render(orch, {"tab": "skills"})
+    assert "Enabled" in html and "Disable" in html
+    _, _, notice = call(surf._handle_skill_toggle, orch, {
+        "agent_id": "helper", "tool_name": "search_docs", "enabled": True,
+    })
+    assert "Enabled" in notice
 
 
 def test_profile_save_changed_notes_merge_existing_personality():

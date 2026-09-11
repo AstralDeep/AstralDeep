@@ -3,8 +3,7 @@
 MCP Tools for the Web Research agent — tool functions that return UI Primitives.
 
 Includes:
-- web_search: keyless DuckDuckGo HTML search (one retry via the Lite endpoint
-  when DuckDuckGo answers its bot challenge), or an operator/user-configured
+- web_search: keyless DuckDuckGo HTML search (stops on a bot challenge), or an operator/user-configured
   Tavily-compatible JSON search provider (SEARCH_API_URL + SEARCH_API_KEY)
 - fetch_page: egress-gated page fetch (1 MB / 15 s) with readable-text extraction
 - research_brief: search -> fetch top sources -> one LLM synthesis call that
@@ -55,8 +54,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DDG_HTML_URL = "https://html.duckduckgo.com/html/"
-# Second keyless endpoint, tried once when the HTML one answers with its
-# bot challenge. Different markup (a results table), so it has its own parser.
+# Retained for parsing existing Lite result fixtures; challenges never trigger
+# an alternate-endpoint request.
 DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -84,8 +83,7 @@ DDG_LITE_BACKEND = "DuckDuckGo Lite search"
 PROVIDER_BACKEND = "the configured search provider (SEARCH_API_URL)"
 
 _CREDENTIAL_REMEDY = (
-    "You can configure a search provider via the optional SEARCH_API_URL and "
-    "SEARCH_API_KEY credentials in the agent's settings."
+    "Add a search provider API key in agent settings for reliable/higher-limit search."
 )
 
 # DuckDuckGo intermittently answers non-browser traffic from datacenter
@@ -106,12 +104,7 @@ _DDG_CHALLENGE_MARKERS = (
 
 
 class DDGChallengeError(ServiceUnreachableError):
-    """DuckDuckGo refused the keyless search with its bot challenge.
-
-    A transient backend refusal (the same address is served real results a
-    moment later), raised only after the Lite endpoint retry also failed, so
-    the caller reports an actionable error instead of an empty result set.
-    """
+    """DuckDuckGo refused keyless search; stop without attempting its challenge."""
 
 
 # ---------------------------------------------------------------------------
@@ -270,9 +263,9 @@ def _search_via_provider(query: str, max_results: int,
     try:
         payload = resp.json() if resp.content else {}
     except ValueError:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
+        raise ServiceUnreachableError("invalid_search_provider_response") from None
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        raise ServiceUnreachableError("invalid_search_provider_response")
     results: List[Dict[str, str]] = []
     for item in (payload.get("results") or [])[:max_results]:
         if not isinstance(item, dict):
@@ -317,41 +310,15 @@ def _is_ddg_challenge(status: int, html_text: str, results: List[Dict[str, str]]
 
 
 def _search_via_duckduckgo(query: str, max_results: int) -> Tuple[List[Dict[str, str]], str]:
-    """Keyless DuckDuckGo search; returns (results, backend name).
-
-    GETs the HTML endpoint first. When it answers with the bot challenge
-    (a transient refusal of non-browser traffic, not an empty result set),
-    retries ONCE against the Lite endpoint. If that is refused or fails too,
-    raises :class:`DDGChallengeError` so the caller renders an actionable
-    error — results are never fabricated (FR-012).
-    """
+    """Run one keyless search; a challenge stops without trying other endpoints."""
     resp = _ddg_get(DDG_HTML_URL, query)
     results = _parse_ddg_html(resp.text, max_results)
     if not _is_ddg_challenge(resp.status_code, resp.text, results):
         return results, DDG_BACKEND
 
-    logger.warning(
-        "DuckDuckGo HTML endpoint answered its bot challenge (HTTP %s, %d bytes); "
-        "retrying once via the Lite endpoint", resp.status_code, len(resp.content or b""))
-    html_verdict = f"the HTML endpoint answered HTTP {resp.status_code} with a challenge page"
-    try:
-        lite = _ddg_get(DDG_LITE_URL, query)
-    except ExternalHttpError as e:
-        raise DDGChallengeError(
-            f"DuckDuckGo's bot challenge blocked the keyless search: {html_verdict} "
-            f"and the Lite endpoint retry failed ({e}). This is a transient refusal "
-            "of non-browser traffic from this server's address, not an empty result "
-            "set — retry shortly.") from e
-    lite_results = _parse_ddg_html(lite.text, max_results, parser_cls=DDGLiteResultParser)
-    if _is_ddg_challenge(lite.status_code, lite.text, lite_results):
-        logger.warning("DuckDuckGo Lite endpoint also answered its bot challenge (HTTP %s)",
-                       lite.status_code)
-        raise DDGChallengeError(
-            f"DuckDuckGo's bot challenge blocked the keyless search: {html_verdict} "
-            f"and the Lite endpoint retry answered HTTP {lite.status_code} with a "
-            "challenge page too. This is a transient refusal of non-browser traffic "
-            "from this server's address, not an empty result set — retry shortly.")
-    return lite_results, DDG_LITE_BACKEND
+    logger.warning("keyless_search_blocked status=%s bytes=%d",
+                   resp.status_code, len(resp.content or b""))
+    raise DDGChallengeError("keyless_search_blocked")
 
 
 def _perform_search(query: str, max_results: int,
@@ -369,26 +336,63 @@ def _search_backend_name(kwargs: Dict[str, Any]) -> str:
 
 
 def _search_failure_alert(backend: str, exc: Exception) -> Alert:
-    """FR-012: actionable error naming the failed backend; never fabricate.
-
-    A DuckDuckGo bot-challenge refusal gets its own title so the user can
-    tell a transient upstream refusal apart from a misconfigured provider;
-    the remedy (SEARCH_API_URL) is the same either way.
-    """
+    """Return fixed actionable text; provider bodies and secrets stay private."""
+    logger.warning("search_failed backend=%s error_type=%s status=%s",
+                   backend, type(exc).__name__, _http_status(exc))
     if isinstance(exc, DDGChallengeError):
-        return Alert(
-            variant="error",
-            title="Search blocked by DuckDuckGo's bot challenge",
-            message=f"{exc} No results were fabricated. {_CREDENTIAL_REMEDY}",
-        )
-    return Alert(
-        variant="error",
-        title="Search failed",
-        message=(
-            f"{backend} could not complete the search: {exc} "
-            f"No results were fabricated. {_CREDENTIAL_REMEDY}"
-        ),
+        message = f"Keyless search is blocked. {_CREDENTIAL_REMEDY}"
+    elif isinstance(exc, EgressBlockedError):
+        message = "The search provider address is blocked by network policy. Check its URL in agent settings."
+    elif isinstance(exc, AuthFailedError) and backend == PROVIDER_BACKEND:
+        message = "The search provider rejected its credentials. Check the API key in agent settings."
+    elif _http_status(exc) == 429:
+        message = "The search provider's rate limit was reached. Try later or check your provider plan."
+    elif backend == PROVIDER_BACKEND:
+        message = "The search provider is unavailable. Try later or check the provider URL and API key in agent settings."
+    else:
+        message = f"Keyless search is unavailable. {_CREDENTIAL_REMEDY}"
+    return Alert(variant="error", title="Search unavailable", message=message)
+
+
+def _http_status(exc: Exception) -> Optional[int]:
+    """Read only the fixed status prefix emitted by the approved HTTP layer."""
+    match = re.match(
+        r"^(?:Authentication failed \(|Rate-limited by upstream \(|"
+        r"Upstream server error \(|Upstream returned )(\d{3})(?:\)|:)", str(exc),
     )
+    return int(match[1]) if match else None
+
+
+def _tool_failure(alert: Alert, code: str) -> Dict[str, Any]:
+    """Carry a terminal public error through the agent's MCP response adapter."""
+    return {
+        **create_ui_response([alert]),
+        "_error": {"code": code, "message": alert.message, "retryable": False},
+    }
+
+
+def _search_failure(backend: str, exc: Exception) -> Dict[str, Any]:
+    code = "SEARCH_UNAVAILABLE"
+    if isinstance(exc, DDGChallengeError):
+        code = "SEARCH_BLOCKED"
+    elif isinstance(exc, EgressBlockedError):
+        code = "SEARCH_EGRESS_BLOCKED"
+    elif isinstance(exc, AuthFailedError) and backend == PROVIDER_BACKEND:
+        code = "SEARCH_AUTH_FAILED"
+    elif _http_status(exc) == 429:
+        code = "SEARCH_RATE_LIMITED"
+    return _tool_failure(_search_failure_alert(backend, exc), code)
+
+
+def _fetch_failure_message(exc: Exception) -> str:
+    """Classify a fetch failure without exposing URL tokens or upstream HTML."""
+    if isinstance(exc, EgressBlockedError):
+        return "This page is blocked by network policy. Choose another source."
+    if isinstance(exc, AuthFailedError):
+        return "This page requires access that is unavailable here. Choose a public source."
+    if _http_status(exc) == 404:
+        return "This page was not found. Check the link or choose another source."
+    return "This page could not be retrieved. Try later or choose another source."
 
 
 # ---------------------------------------------------------------------------
@@ -630,11 +634,11 @@ def _credentials_check(**kwargs) -> Dict[str, Any]:
     try:
         _search_via_provider("connectivity probe", 1, api_url, api_key)
     except AuthFailedError as e:
-        return {"credential_test": "auth_failed", "detail": str(e)}
+        return {"credential_test": "auth_failed", "detail": _search_failure_alert(PROVIDER_BACKEND, e).message}
     except (ServiceUnreachableError, EgressBlockedError, RateLimitedError) as e:
-        return {"credential_test": "unreachable", "detail": str(e)}
+        return {"credential_test": "unreachable", "detail": _search_failure_alert(PROVIDER_BACKEND, e).message}
     except Exception as e:
-        return {"credential_test": "unexpected", "detail": str(e)}
+        return {"credential_test": "unexpected", "detail": _search_failure_alert(PROVIDER_BACKEND, e).message}
     return {"credential_test": "ok"}
 
 
@@ -656,10 +660,9 @@ def web_search(query: str = "", max_results: int = DEFAULT_MAX_RESULTS, **kwargs
     try:
         results, backend = _perform_search(query, n, kwargs)
     except ExternalHttpError as e:
-        return create_ui_response([_search_failure_alert(backend, e)])
+        return _search_failure(backend, e)
     except Exception as e:  # defensive: parser or payload surprises
-        logger.error("web_search failed on %s: %s", backend, e)
-        return create_ui_response([_search_failure_alert(backend, e)])
+        return _search_failure(backend, e)
 
     if not results:
         return {
@@ -696,17 +699,25 @@ def fetch_page(url: str = "", **kwargs) -> Dict[str, Any]:
     try:
         resp = _fetch_url(url)
     except ResponseTooLargeError:
-        return create_ui_response([
+        return _tool_failure(
             Alert(variant="error", title="Page too large",
-                  message=(f"The page at {url} exceeds the "
-                           f"{FETCH_MAX_BYTES // (1024 * 1024)} MB fetch limit "
-                           "and was not retrieved.")),
-        ])
+                  message=f"This page exceeds the {FETCH_MAX_BYTES // (1024 * 1024)} MB limit. Choose a smaller source."),
+            "UPSTREAM_TOO_LARGE",
+        )
     except ExternalHttpError as e:
-        return create_ui_response([
+        logger.warning("page_fetch_failed error_type=%s status=%s", type(e).__name__, _http_status(e))
+        code = "UPSTREAM_UNAVAILABLE"
+        if isinstance(e, EgressBlockedError):
+            code = "UPSTREAM_BLOCKED"
+        elif isinstance(e, AuthFailedError):
+            code = "UPSTREAM_ACCESS_DENIED"
+        elif _http_status(e) == 404:
+            code = "UPSTREAM_NOT_FOUND"
+        return _tool_failure(
             Alert(variant="error", title="Fetch failed",
-                  message=f"Could not fetch {url}: {e}"),
-        ])
+                  message=_fetch_failure_message(e)),
+            code,
+        )
 
     if _looks_like_html(resp):
         title, text = _extract_readable(resp.text)
@@ -760,7 +771,7 @@ def research_brief(topic: str = "", depth: str = "standard", **kwargs) -> Dict[s
     try:
         results, backend = _perform_search(topic, DEFAULT_MAX_RESULTS, kwargs)
     except Exception as e:
-        return create_ui_response([_search_failure_alert(backend, e)])
+        return _search_failure(backend, e)
     if not results:
         return create_ui_response([
             Alert(variant="error", title="Research brief failed",
@@ -785,7 +796,7 @@ def research_brief(topic: str = "", depth: str = "standard", **kwargs) -> Dict[s
         try:
             resp = _fetch_url(result["url"])
         except Exception as e:
-            logger.warning("research_brief: skipping %s (%s)", result["url"], e)
+            logger.warning("research_source_skipped error_type=%s", type(e).__name__)
             continue
         title, text = _extract_readable(resp.text) if _looks_like_html(resp) \
             else ("", (resp.text or "").strip())
@@ -836,11 +847,12 @@ def research_brief(topic: str = "", depth: str = "standard", **kwargs) -> Dict[s
         )
         brief = strip_reasoning_markup(response.choices[0].message.content or "").strip()
     except Exception as e:
-        logger.error("research_brief synthesis failed: %s", e)
-        return create_ui_response([
+        logger.warning("research_synthesis_failed error_type=%s", type(e).__name__)
+        return _tool_failure(
             Alert(variant="error", title="Synthesis failed",
-                  message=f"The LLM synthesis call failed: {e}"),
-        ])
+                  message="The research summary could not be generated. Try again or check your LLM settings."),
+            "RESEARCH_SUMMARY_UNAVAILABLE",
+        )
     if not brief:
         return create_ui_response([
             Alert(variant="error", title="Synthesis failed",

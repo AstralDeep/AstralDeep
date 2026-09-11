@@ -19,7 +19,7 @@ refuses ``wel_`` identities outright.
 import re
 from typing import Any, Dict, List
 
-from astralprims import Button, Card, Grids, Hero, Text
+from astralprims import Button, Card, Collapsible, Grids, Hero, Text
 from shared.feature_flags import flags
 
 
@@ -34,7 +34,7 @@ def _stamp(comp: Dict[str, Any], ident: str) -> Dict[str, Any]:
     comp["component_id"] = ident
     return comp
 
-#: (title, caption, query) — one tile per example. Queries are aimed at the
+#: (title, caption, query) — the complete curated example catalog. Queries target the
 #: post-029 agent catalog: connectors dashboards, weather, web_research,
 #: summarizer, dice_roller, general system metrics.
 WELCOME_EXAMPLES = [
@@ -97,14 +97,14 @@ def enable_agents_card() -> Dict[str, Any]:
                payload={"source": "welcome"}),
         Button(label="Choose agents individually", action="chrome_open",
                payload={"surface": "agents"}, variant="secondary"),
-    ]).to_dict()
+    ], attributes={"data-welcome": "permission"}).to_dict()
 
 
 def welcome_components(tools_available: bool = True) -> List[Dict[str, Any]]:
     """The welcome canvas as plain component dicts (pre-ROTE).
 
-    Not workspace components — no identities, never persisted; the canvas
-    they occupy is replaced by the first real render/upsert of the session.
+    Welcome identities are ephemeral, never workspace-persisted. Additional
+    examples use the shared disclosure primitive rather than filling the canvas.
 
     Args:
         tools_available: per-user flag from
@@ -112,28 +112,29 @@ def welcome_components(tools_available: bool = True) -> List[Dict[str, Any]]:
             enable-agents consent card is prepended so the examples below are
             honest promises instead of guaranteed failures (feature 030).
     """
-    cards = [
-        Card(title=title, content=[
-            Text(content=caption, variant="caption"),
-            # aria-label disambiguates the six otherwise-identical "Run
-            # example" accessible names (030 a11y finding); rendered via the
-            # webrender attribute whitelist.
-            Button(label="Run example", action="chat_message",
-                   payload={"message": query}, variant="secondary",
-                   attributes={"aria-label": f"Run example: {title}"}),
-        ])
-        for title, caption, query in WELCOME_EXAMPLES
-    ]
+    examples = {}
+    for title, _caption, query in WELCOME_EXAMPLES:
+        label = title.split(" ", 1)[1]
+        examples[_slug(title)] = Button(
+            label=label, action="chat_message", payload={"message": query},
+            variant="secondary",
+            attributes={"aria-label": label, "data-welcome": "example"},
+        )
+    primary = ("research_brief", "summarize_a_page", "weather_outlook")
     tree = [
         Hero(
-            title="What would you like to build?",
-            eyebrow="Welcome",
-            subtitle=("Ask in plain language — agents answer with live, interactive "
-                      "components: dashboards, charts, tables, timelines and cited briefs."),
-            variant="gradient",
+            title="How can I help?", variant="subtle",
+            attributes={"data-welcome": "intro"},
         ),
-        Grids(columns=2, children=cards),
-        Text(content="Run an example, or type your own request.", variant="caption"),
+        Grids(
+            columns=3, gap=12, children=[examples[key] for key in primary],
+            attributes={"data-welcome": "examples"},
+        ),
+        Collapsible(
+            title="More examples",
+            content=[button for key, button in examples.items() if key not in primary],
+            default_open=False, attributes={"data-welcome": "more"},
+        ),
     ]
     rendered = [c.to_dict() for c in tree]
     if not tools_available:
@@ -145,21 +146,19 @@ def welcome_components(tools_available: bool = True) -> List[Dict[str, Any]]:
 
 def _stamp_welcome_tree(rendered: List[Dict[str, Any]]) -> None:
     """Assign wel_ identities in place: top-level components own the purge
-    contract; example cards inside the grid get per-example ids too so any
-    future targeted ops (and tests) can address them individually."""
+    contract; example buttons retain their stable per-example ids across both
+    the visible grid and the disclosure. The consent card stays independently
+    addressable and is never mistaken for an ordinary example."""
     for comp in rendered:
         ctype = comp.get("type")
         if ctype == "hero":
             _stamp(comp, "wel_hero")
         elif ctype == "grid":
             _stamp(comp, "wel_examples")
-            for child in comp.get("children") or []:
-                if not isinstance(child, dict):
-                    continue
-                title = child.get("title") or ""
-                if title:
-                    _stamp(child, f"wel_ex_{_slug(title)}")
-        elif ctype == "text":
-            _stamp(comp, "wel_hint")
+        elif ctype == "collapsible":
+            _stamp(comp, "wel_more")
         elif ctype == "card":  # the enable-agents consent card
             _stamp(comp, "wel_enable")
+        for child in comp.get("children", []) + comp.get("content", []):
+            if child.get("action") == "chat_message":
+                _stamp(child, f"wel_ex_{_slug(child['label'])}")

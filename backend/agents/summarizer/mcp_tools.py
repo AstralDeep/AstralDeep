@@ -32,6 +32,8 @@ from astralprims import (  # noqa: E402
 )
 from shared import external_http  # noqa: E402
 from shared.external_http import (  # noqa: E402
+    AuthFailedError,
+    EgressBlockedError,
     ExternalHttpError,
     ResponseTooLargeError,
     ServiceUnreachableError,
@@ -403,6 +405,14 @@ def _summary_card(label: str, summary: Dict[str, Any]) -> Card:
 # ---------------------------------------------------------------------------
 
 
+def _tool_failure(code: str, message: str, title: str) -> Dict[str, Any]:
+    """Return a terminal, fixed public error without upstream response details."""
+    return {
+        **create_ui_response([Alert(variant="error", title=title, message=message)]),
+        "_error": {"code": code, "message": message, "retryable": False},
+    }
+
+
 def summarize_text(text: str = "", focus: Optional[str] = None, **kwargs) -> Dict[str, Any]:
     """Summarize text into TL;DR / key points / notable quotes Tabs."""
     text = str(text or "")
@@ -423,11 +433,12 @@ def summarize_text(text: str = "", focus: Optional[str] = None, **kwargs) -> Dic
             Alert(variant="error", title="LLM unavailable", message=str(e)),
         ])
     except Exception as e:
-        logger.error("summarize_text LLM call failed: %s", e)
-        return create_ui_response([
-            Alert(variant="error", title="Summarization failed",
-                  message=f"The LLM call failed: {e}"),
-        ])
+        logger.warning("summary_failed error_type=%s", type(e).__name__)
+        return _tool_failure(
+            "RESEARCH_SUMMARY_UNAVAILABLE",
+            "The summary could not be generated. Try again or check your LLM settings.",
+            "Summarization failed",
+        )
 
     components: List[Any] = []
     if capped:
@@ -472,13 +483,10 @@ def _fetch_via_peer(url: str, kwargs: Dict[str, Any]) -> Optional[Tuple[str, str
             runtime.loop)
         resp = future.result(timeout=35)
     except Exception as e:
-        logger.info("summarize_url: peer fetch hop unavailable (%s) — "
-                    "falling back to local fetch", e)
+        logger.info("peer_fetch_unavailable error_type=%s; using local fetch", type(e).__name__)
         return None
     if resp is None or getattr(resp, "error", None):
-        reason = (getattr(resp, "error", None) or {}).get("message", "refused")
-        logger.info("summarize_url: peer fetch hop refused (%s) — "
-                    "falling back to local fetch", reason)
+        logger.info("peer_fetch_refused; using local fetch")
         return None
     data = resp.result if isinstance(resp.result, dict) else {}
     text = ""
@@ -520,17 +528,22 @@ def summarize_url(url: str = "", **kwargs) -> Dict[str, Any]:
     try:
         resp = _fetch_url(url)
     except ResponseTooLargeError:
-        return create_ui_response([
-            Alert(variant="error", title="Page too large",
-                  message=(f"The page at {url} exceeds the "
-                           f"{FETCH_MAX_BYTES // (1024 * 1024)} MB fetch limit "
-                           "and was not retrieved.")),
-        ])
+        return _tool_failure(
+            "UPSTREAM_TOO_LARGE",
+            f"This page exceeds the {FETCH_MAX_BYTES // (1024 * 1024)} MB limit. Choose a smaller source.",
+            "Page too large",
+        )
     except ExternalHttpError as e:
-        return create_ui_response([
-            Alert(variant="error", title="Fetch failed",
-                  message=f"Could not fetch {url}: {e}"),
-        ])
+        code = "UPSTREAM_UNAVAILABLE"
+        message = "This page could not be retrieved. Try later or choose another source."
+        if isinstance(e, EgressBlockedError):
+            code, message = "UPSTREAM_BLOCKED", "This page is blocked by network policy. Choose another source."
+        elif isinstance(e, AuthFailedError):
+            code, message = "UPSTREAM_ACCESS_DENIED", "This page requires access that is unavailable here. Choose a public source."
+        elif str(e).startswith("Upstream returned 404:"):
+            code, message = "UPSTREAM_NOT_FOUND", "This page was not found. Check the link or choose another source."
+        logger.warning("summary_page_fetch_failed code=%s error_type=%s", code, type(e).__name__)
+        return _tool_failure(code, message, "Fetch failed")
 
     title, text = _extract_text(resp)
     return _summarize_fetched(url, title, text, kwargs)
@@ -592,11 +605,12 @@ def compare_documents(text_a: str = "", text_b: str = "",
             Alert(variant="error", title="LLM unavailable", message=str(e)),
         ])
     except Exception as e:
-        logger.error("compare_documents LLM call failed: %s", e)
-        return create_ui_response([
-            Alert(variant="error", title="Comparison failed",
-                  message=f"The LLM call failed: {e}"),
-        ])
+        logger.warning("document_comparison_failed error_type=%s", type(e).__name__)
+        return _tool_failure(
+            "RESEARCH_SUMMARY_UNAVAILABLE",
+            "The documents could not be compared. Try again or check your LLM settings.",
+            "Comparison failed",
+        )
 
     rows = [[d["aspect"], d["a"], d["b"]] for d in differences]
     if not rows:

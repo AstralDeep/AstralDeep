@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Any
 
 from orchestrator.task_state import TaskState
+from orchestrator.tool_feedback import tool_failure_content
 
 logger = logging.getLogger("Orchestrator.Coordinator")
 
@@ -258,7 +259,7 @@ Rules:
                             content_str = "No output"
                             if res:
                                 if res.error:
-                                    content_str = f"Error: {res.error.get('message')}"
+                                    content_str = tool_failure_content(tc.function.name, res.error)
                                 elif res.result:
                                     content_str = json.dumps(res.result.get("_data", res.result) if isinstance(res.result, dict) else res.result)
                             messages.append({
@@ -266,7 +267,10 @@ Rules:
                                 "tool_call_id": tc.id,
                                 "content": content_str,
                             })
-                            subtask.result = res.result if res else None
+                            subtask.result = (
+                                json.loads(tool_failure_content(tc.function.name, res.error))
+                                if res and res.error else res.result if res else None
+                            )
                     else:
                         # Final response from this subtask
                         subtask.result = {"summary": llm_msg.content}
@@ -305,7 +309,8 @@ Rules:
         results_summary = []
         for st in completed_subtasks:
             status = "completed" if st.state == TaskState.COMPLETED else "failed"
-            result_str = json.dumps(st.result)[:2000] if st.result else st.error or "no result"
+            result_str = json.dumps(st.result)[:2000] if st.result else (
+                "Subtask could not complete." if st.error else "no result")
             results_summary.append(f"- {st.description} [{status}]: {result_str}")
 
         synthesis_messages = [

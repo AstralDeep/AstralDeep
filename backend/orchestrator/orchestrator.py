@@ -753,6 +753,13 @@ def _tag_source(comp, agent_id, tool_name, tool_params=None, correlation_id=None
                 _tag_source(child, agent_id, tool_name, correlation_id=correlation_id)
 
 
+def _tag_tool_result_source(comp, result, agent_id, tool_name, tool_params, correlation_id=None):
+    """Pending approval cards carry an opaque request, never replay arguments."""
+    data = result.result.get("_data") if isinstance(getattr(result, "result", None), dict) else None
+    pending = isinstance(data, dict) and data.get("status") == "confirmation_required"
+    _tag_source(comp, agent_id, tool_name, None if pending else tool_params, correlation_id)
+
+
 def _sanitize_text_response(content: str) -> str:
     """Strip leaked tool-call tokens from a text response.
 
@@ -7431,6 +7438,13 @@ class Orchestrator:
                     }.get(code, "The operation could not be completed.")
                 ),
             }
+            if code == "validation_failed" and frame.operation_kind == "llm_credential_save":
+                from orchestrator.projection_surfaces.llm import SavedKeyEndpointChanged
+
+                # Only this fixed server message may cross the terminal/replay
+                # boundary. Other summaries can contain upstream private data.
+                if getattr(operation, "safe_summary", None) == SavedKeyEndpointChanged.MESSAGE:
+                    error["message"] = SavedKeyEndpointChanged.MESSAGE
         from orchestrator.chrome_events import emit_operation_status
 
         await emit_operation_status(
@@ -8557,10 +8571,11 @@ class Orchestrator:
         the already-admitted LLM surface payload.
         """
 
-        from llm_config.ws_handlers import handle_llm_config_set
+        from llm_config.ws_handlers import LLMConfigOperationFailure, handle_llm_config_set
 
         if work.frame.action == "chrome_llm_save":
             from orchestrator.projection_surfaces.llm import (
+                SavedKeyEndpointChanged,
                 _fields,
                 _provider_key,
                 _resolve_api_key,
@@ -8569,12 +8584,19 @@ class Orchestrator:
             payload = work.frame.parsed.get("payload")
             fields = _fields(payload)
             provider = _provider_key(fields)
-            api_key, _used_saved = await _resolve_api_key(
-                self,
-                context.websocket,
-                work.owner.owner_user_id or "legacy",
-                fields,
-            )
+            try:
+                api_key, _used_saved = await _resolve_api_key(
+                    self,
+                    context.websocket,
+                    work.owner.owner_user_id or "legacy",
+                    fields,
+                )
+            except SavedKeyEndpointChanged as exc:
+                raise LLMConfigOperationFailure(
+                    state=OperationState.FAILED,
+                    code="validation_failed",
+                    safe_summary=str(exc),
+                ) from None
             config = {
                 "provider": provider,
                 "api_key": api_key,
@@ -11970,6 +11992,11 @@ class Orchestrator:
                     await self._handle_component_restore(websocket, user_id, msg.payload or {})
 
                 elif msg.action == "authorize_action":
+                    if "hitl_request_id" in (msg.payload or {}):
+                        from orchestrator import hitl_confirmation
+                        await hitl_confirmation.handle_decision(
+                            self, websocket, user_id, msg.payload or {})
+                        return
                     # C-S8 — the user confirmed a require_token-gated call: mint a
                     # one-time token and re-dispatch the call through the normal
                     # tool gate (which verifies + consumes it).
@@ -13592,12 +13619,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
           VirtualWebSocket turn still resolves the SYSTEM LLM credential (054),
           so who PAID and who AUTHORIZED stay distinct.
         """
+        from orchestrator.chain_authority import machine_session_binding
+
+        binding = machine_session_binding(authority)
         claims = authority.machine_claims()
         try:
             vws.machine_claims = claims
         except Exception:  # pragma: no cover — VirtualWebSocket accepts attrs
             logger.debug("machine claims binding failed", exc_info=True)
-        self.ui_sessions[vws] = {**claims, "_raw_token": authority.access_token}
+        self.ui_sessions[vws] = binding
 
     def _unbind_machine_turn(self, vws) -> None:
         """Drop a machine turn's session binding when the turn ends."""
@@ -15591,6 +15621,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         task_terminal_on_exit = None
         task_error_on_exit = None
         active_request_token = None
+        from orchestrator.tool_feedback import turn_tool_notices
+        _tool_notices = turn_tool_notices()
+        _tool_notices.__enter__()
         try:
             # ------------------------------------------------------------------
             # SYSTEM PROMPT
@@ -16132,7 +16165,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                     t_params = {}
                             corr_id = getattr(res, "correlation_id", None)
                             for comp in res.ui_components:
-                                _tag_source(comp, a_id, t_name, tool_params=t_params, correlation_id=corr_id)
+                                _tag_tool_result_source(comp, res, a_id, t_name, t_params, corr_id)
                                 tool_ui_components.append(comp)
 
                     if tool_ui_components:
@@ -16171,7 +16204,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # serialization) — see _tool_result_to_llm_content.
                     for i, tc in enumerate(llm_msg.tool_calls):
                         res = tool_results[i] if i < len(tool_results) else None
-                        tool_content = self._tool_result_to_llm_content(res)
+                        tool_content = self._tool_result_to_llm_content(res, tc.function.name)
                         # Spotlight untrusted tool output. A tool's own
                         # `_model_digest` is tool-authored and trusted; only
                         # raw, non-digest output is wrapped as untrusted data
@@ -16758,6 +16791,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             exc_info=True,
                         )
             _perm_memo.__exit__(None, None, None)
+            _tool_notices.__exit__(None, None, None)
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
             if active_request_token is not None:
@@ -17865,7 +17899,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return any(sig in text for sig in signals)
 
     @staticmethod
-    def _tool_result_to_llm_content(res) -> str:
+    def _tool_result_to_llm_content(res, tool_name=None) -> str:
         """Two-tier tool output: the text a tool result contributes to the LLM
         conversation.
 
@@ -17886,7 +17920,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if res is None:
             return "No output"
         if getattr(res, "error", None):
-            return f"Error: {res.error.get('message')}"
+            from orchestrator.tool_feedback import tool_failure_content
+            return tool_failure_content(tool_name, res.error)
         result = getattr(res, "result", None)
         if not result:
             return "No output"
@@ -17902,6 +17937,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """True when a tool result carries a ``_model_digest`` — i.e. the
         LLM-visible text is tool-authored (trusted) and should NOT be wrapped
         as untrusted by datamarking."""
+        if getattr(res, "error", None):
+            return False
         result = getattr(res, "result", None)
         return isinstance(result, dict) and result.get("_model_digest") is not None
 
@@ -18556,6 +18593,36 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # direct, parallel, MCP, component, and chained call reaches this shared
         # gate before credentials or delegation are minted.
         _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+        from orchestrator.chain_authority import machine_scope_ceiling
+
+        machine_scopes = machine_scope_ceiling(_session_claims)
+        if machine_scopes is not None and agent_id:
+            try:
+                required_scope = await asyncio.to_thread(
+                    self.tool_permissions.get_tool_scope, agent_id, tool_name
+                )
+            except Exception:
+                required_scope = None
+            if (
+                _session_claims.get("sub") != user_id
+                or _session_claims.get("_machine_authority_agent") not in (None, agent_id)
+                or required_scope not in machine_scopes
+            ):
+                err_msg = (
+                    f"Tool '{tool_name}' is outside this unattended task's approved "
+                    "permissions. Approve a new schedule to change its authority."
+                )
+                await self._audit_gate_denial(
+                    websocket, user_id, agent_id, tool_name, chat_id, args,
+                    gate="machine_scope", detail="outside_consented_scopes",
+                )
+                return GateRefusal(
+                    response=MCPResponse(
+                        error={"message": err_msg, "retryable": False}
+                    ),
+                    render_components=[Alert(message=err_msg, variant="warning").to_dict()],
+                    render_target="chat",
+                )
         identity_card = (
             getattr(self, "agent_cards", {}).get(agent_id)
             if agent_id
@@ -18747,6 +18814,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from orchestrator import supervisor as _sup
             if _sup.supervisor_enabled():
                 request_text = self._current_request_text(chat_id)
+                from orchestrator import hitl_confirmation
+                if hitl_confirmation.matching_approval(
+                        self, user_id, chat_id, agent_id, tool_name, args):
+                    # The authenticated click names this exact stored action.
+                    request_text = _sup.mcp_intent_text(tool_name)
                 if _session_claims.get("_invocation_channel") == "mcp":
                     # Over MCP there is no natural-language turn: the caller
                     # names the tool explicitly, which IS the expressed
@@ -18776,15 +18848,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 args, user_text=self._current_request_text(chat_id)))
                 except Exception:
                     trust = "trusted"
-                risks = _hitl.assess_risk(tool_name, args, actor_principal=user_id, trust=trust)
+                risks = _hitl.assess_risk(
+                    tool_name, args, actor_principal=user_id, trust=trust,
+                    agent_id=agent_id,
+                    public_reader=_hitl.registered_public_reader(self, agent_id, tool_name))
                 if _hitl.requires_confirmation(risks):
-                    req = _hitl.confirmation_request(tool_name, risks)
                     logger.warning("hitl.confirm user=%s tool=%s risks=%s", user_id, tool_name, risks)
-                    alert = Alert(message=req.summary, variant="warning")
-                    return GateRefusal(
-                        response=MCPResponse(
-                            error={"message": req.summary, "retryable": False}),
-                        render_components=[alert.to_dict()])
+                    from orchestrator import hitl_confirmation
+                    pending = await hitl_confirmation.evaluate(
+                        self, websocket, user_id, chat_id, agent_id, tool_name, args, risks)
+                    if pending is not None:
+                        # Cards are tool results: the atomic turn commit retains
+                        # them and every client receives actionable buttons.
+                        return GateRefusal(
+                            response=pending,
+                            render_components=[Alert(message=pending.error["message"], variant="warning").to_dict()]
+                            if pending.error else None,
+                            render_target="chat" if pending.error else None)
 
         # Map file paths if chat_id provided
         if chat_id:
@@ -18897,7 +18977,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             delegation_token = await self._get_delegation_token(websocket, agent_id, user_id)
             if delegation_token:
                 args["_delegation_token"] = delegation_token
-            elif self._delegation_required():
+            elif self._delegation_required() or machine_scopes is not None:
                 # Feature 030 / Constitution VII: agents MUST act under RFC
                 # 8693 delegated tokens. The walkthrough found the deployed
                 # realm missing the tools:* client scopes — every exchange
@@ -18931,6 +19011,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         f"Tool execution is disabled: you haven't granted '{agent_id}' "
                         "any tool permissions, so it cannot act on your behalf. "
                         "Enable the agent's tools under Settings → Agents & permissions."
+                    )
+                elif machine_scopes is not None:
+                    err_msg = (
+                        "Tool execution is disabled: this unattended task could not "
+                        f"obtain delegated authorization for agent '{agent_id}'. "
+                        "An administrator must verify the Keycloak token-exchange "
+                        "configuration before the task can use tools."
                     )
                 else:
                     err_msg = (
@@ -19059,6 +19146,48 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             hop_correlation_id=hop_correlation_id,
         )
 
+    async def _guard_machine_meta_tool(
+        self, websocket, agent_id, tool_name, args, chat_id, user_id,
+    ) -> Optional[MCPResponse]:
+        """Bound host meta-tools before their ordinary real-agent gate exemption.
+
+        Mutating meta-tools have no unattended consent policy. A task cannot
+        manufacture a draft/self-test, memory write, or new owner-control flow
+        to escape its approved tool ceiling. Read-only host discovery requires
+        read consent; decomposition preserves the private parent binding.
+        """
+        if not isinstance(agent_id, str) or not agent_id.startswith("__"):
+            return None
+        from orchestrator.chain_authority import machine_scope_ceiling
+
+        session = self.ui_sessions.get(websocket, {})
+        scopes = machine_scope_ceiling(session)
+        if scopes is None:
+            return None
+        read_only = (agent_id, tool_name) in {
+            ("__memory__", "memory_get"), ("__memory__", "memory_search"),
+            ("__desktop_codegen__", "offer_desktop_codegen"),
+        }
+        decomposition = (agent_id, tool_name) == ("__subtasks__", "delegate_subtasks")
+        if session.get("sub") == user_id and scopes and (
+            decomposition or (
+                read_only and "tools:read" in scopes
+                and session.get("_machine_authority_agent") is None
+            )
+        ):
+            return None
+        await self._audit_gate_denial(
+            websocket, user_id, agent_id, tool_name, chat_id, args,
+            gate="machine_scope", detail="host_meta_tool_not_consented",
+        )
+        return MCPResponse(error={
+            "code": "machine_meta_scope_denied", "retryable": False,
+            "message": (
+                f"Tool '{tool_name}' is not approved for this unattended task. "
+                "Request this action in an attended conversation."
+            ),
+        })
+
     async def execute_single_tool(self, websocket, tool_call, tool_to_agent: Dict, chat_id: str = None, user_id: str = None, tool_to_unqualified: Optional[Dict[str, str]] = None, parent_token: Optional[Dict[str, Any]] = None, initiating_agent_id: Optional[str] = None) -> Optional[MCPResponse]:
         """Execute a single tool call and render its UI components. Returns the Result object.
 
@@ -19121,6 +19250,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         persistent_dispatch = current_dispatch()
         if persistent_dispatch is not None:
             await persistent_dispatch.validate_tool(user_id, agent_id, tool_name, args)
+        meta_refusal = await self._guard_machine_meta_tool(
+            websocket, agent_id, tool_name, args, chat_id, user_id,
+        )
+        if meta_refusal is not None:
+            await self.send_ui_render(websocket, [Alert(
+                message=meta_refusal.error["message"], variant="warning",
+            ).to_dict()], target="chat")
+            return meta_refusal
         if agent_id == "__orchestrator__":
             from orchestrator import agentic_creation
             return await agentic_creation.handle_meta_tool(
@@ -19217,7 +19354,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             correlation_id=auth.hop_correlation_id,
             args_meta={k: v for k, v in args.items() if not (isinstance(k, str) and k.startswith("_"))},
         ) as _audit_ctx:
-            result = await self._execute_with_retry(
+            from orchestrator import hitl_confirmation
+            hitl_refusal = hitl_confirmation.effect_refusal(
+                self, websocket, user_id, chat_id, agent_id, tool_name, args)
+            result = hitl_refusal or await self._execute_with_retry(
                 websocket,
                 agent_id,
                 tool_name,
@@ -19299,11 +19439,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # collects the round's components and either runs the adaptive UI
         # designer over them or flat-appends them to the workspace (029).
         if result and result.error:
-            # Errors are still shown immediately so the user knows something went wrong
             err_msg = result.error.get('message', 'Unknown error')
-            await self.send_ui_render(websocket, [
-                Alert(message=f"Tool '{tool_name}' failed: {err_msg}", variant="error").to_dict()
-            ], target="chat")
+            from orchestrator.tool_feedback import tool_failure_notice
+            notice = tool_failure_notice(tool_name, result.error)
+            if notice is not None:
+                await self.send_ui_render(websocket, [notice], target="chat")
 
             # Auto-fix: if this is a draft agent, attempt to fix the tool
             # error automatically. 030: the draft check now gates the STATUS
@@ -20059,6 +20199,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # agent_id resolved above (before the JSON parse) so the parse-fail
             # error path can include it in the prepared tuple.
 
+            meta_refusal = await self._guard_machine_meta_tool(
+                websocket, agent_id, tool_name, args, chat_id, user_id,
+            )
+            if meta_refusal is not None:
+                async def _meta_refused(response=meta_refusal):
+                    return response
+                prepared.append((idx, tc, tool_name, agent_id, None, _meta_refused()))
+                continue
+
             # Feature 027/030/039 — meta-tools dispatch directly, with the SAME
             # four reserved pseudo-agent branches as the single path (056 US3
             # T008/FR-018 — previously only __orchestrator__ worked here). The
@@ -20235,20 +20384,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # Process results — don't render here, caller batches into collapsible
         final_results = []
         error_components = []
+        from orchestrator.tool_feedback import tool_failure_notice
         
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 err_res = MCPResponse(error={"message": str(result)})
                 final_results.append(err_res)
-                error_components.append(Alert(message=f"Tool error: {str(result)}", variant="error").to_dict())
+                notice = tool_failure_notice(tool_names[i], err_res.error)
+                if notice is not None:
+                    error_components.append(notice)
             else:
                 final_results.append(result)
                 if result and result.error and i not in separately_rendered_refusals:
-                    error_components.append(Alert(message=f"Tool '{tool_names[i]}' failed: {result.error.get('message')}", variant="error").to_dict())
+                    notice = tool_failure_notice(tool_names[i], result.error)
+                    if notice is not None:
+                        error_components.append(notice)
 
         # Only render errors immediately — successful results are batched by caller
         if error_components:
-            await self.send_ui_render(websocket, error_components)
+            await self.send_ui_render(websocket, error_components, target="chat")
 
         # Auto-fix: attempt to fix draft agent tool errors
         if hasattr(self, 'lifecycle_manager'):
@@ -20312,6 +20466,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         """Enter the final adapter around exactly one physical actuator call."""
 
         from orchestrator.governed_dispatch import GovernedDispatchError
+        from orchestrator import hitl_confirmation
+
+        async def reviewed_invoke(capabilities):
+            refusal = hitl_confirmation.effect_refusal(
+                self, websocket, user_id, conversation_id, agent_id, tool_name, args, start=True)
+            return refusal or await invoke(capabilities)
 
         adapter = self._governed_dispatch_adapter()
         scope = self.tool_permissions.get_tool_scope(agent_id, tool_name) or ""
@@ -20332,7 +20492,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 channel=channel,
                 audit_correlation_id=correlation,
                 final_arguments=args,
-                invoke=invoke,
+                invoke=reviewed_invoke,
                 actor_user_id=actor_user_id,
                 auth_principal=auth_principal,
                 conversation_id=conversation_id,
@@ -20386,6 +20546,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             max_retries = self.MAX_RETRIES
         from persistent_agents.dispatch_context import current_dispatch
         if current_dispatch() is not None:
+            max_retries = 1
+        from orchestrator import hitl_confirmation
+        if hitl_confirmation.approved_call(self, user_id, audit_conversation_id, agent_id, tool_name):
+            # A timeout may mean the effect happened. One approval never
+            # authorizes another physical attempt or transport fallback.
             max_retries = 1
 
         last_result = None
@@ -21384,6 +21549,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if not raw_token:
                 return None
 
+            from orchestrator.chain_authority import machine_scope_ceiling
+
+            machine_scopes = machine_scope_ceiling(session)
+            if machine_scopes is not None and (
+                session.get("sub") != user_id
+                or session.get("_machine_authority_agent") not in (None, agent_id)
+            ):
+                return None
+
             # Build the effective scope: only tools that pass BOTH checks
             agent_flags = self.security_flags.get(agent_id, {})
 
@@ -21397,10 +21571,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # Exclude user-disabled
                     if not self.tool_permissions.is_tool_allowed(user_id, agent_id, skill.id):
                         continue
+                    if machine_scopes is not None and (
+                        self.tool_permissions.get_tool_scope(agent_id, skill.id)
+                        not in machine_scopes
+                    ):
+                        continue
                     allowed.append(skill.id)
-                return allowed, self.tool_permissions.get_enabled_scope_names(user_id, agent_id)
+                scopes = self.tool_permissions.get_enabled_scope_names(user_id, agent_id)
+                if machine_scopes is not None:
+                    scopes = [scope for scope in scopes if scope in machine_scopes]
+                return allowed, scopes
 
             allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
+
+            if machine_scopes is not None and not enabled_scopes:
+                return None
 
             result = await self.delegation.exchange_token_for_agent(
                 raw_token, agent_id, allowed_tools, user_id, enabled_scopes
@@ -22917,8 +23102,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 try:
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status", "status": "thinking",
-                        "message": f"Designing your layout (pass {_designer_pass['n']} of "
-                                   f"{ui_designer.designer_max_rounds()})...",
+                        # The optional schema-planning call and repair calls
+                        # also use this callback; max_rounds counts drafts only.
+                        "message": f"Designing your layout (pass {_designer_pass['n']})...",
                     }))
                 except Exception:
                     logger.debug("designer progress status send failed", exc_info=True)
@@ -24400,32 +24586,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         fail-closed Presidio gate, and audit stays content-free. Shown at
         most once per chat per socket. Never raises into the chat turn.
         """
-        try:
-            if not message or not chat_id:
-                return
-            if not hasattr(self, "_phi_notified"):
-                self._phi_notified = set()
-            key = (id(websocket), chat_id)
-            if key in self._phi_notified:
-                return
-            from personalization.phi_gate import get_phi_gate
-            gate = get_phi_gate()
-            hit = await asyncio.to_thread(gate.detect_for_notice, message)
-            if not hit:
-                return
-            self._phi_notified.add(key)
-            logger.info(f"phi_notice.shown chat_id={chat_id}")  # content-free
-            await self.send_ui_render(websocket, [Alert(
-                title="Possible PHI in your message",
-                message=("This looks like it may contain protected health information. "
-                         "It stays in this chat's transcript only — it is never added to "
-                         "cross-session memory, and audit logs record message lengths, "
-                         "not content. Prefer synthetic or de-identified data where "
-                         "possible."),
-                variant="warning",
-            ).to_dict()], target="chat")
-        except Exception:
-            logger.debug("phi notice failed (non-fatal)", exc_info=True)
+        from personalization.chat_notices import notify_if_detected
+
+        await notify_if_detected(self, websocket, chat_id, user_id, message)
 
     def _text_only_cta_components(self, user_id: str) -> List[Dict[str, Any]]:
         """Deterministic enable affordance for text-only replies (feature 030).

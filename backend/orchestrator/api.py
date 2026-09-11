@@ -21,7 +21,7 @@ from datetime import UTC, date, datetime
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlencode, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
@@ -2814,6 +2814,18 @@ async def export_component_csv(
     )
 
 
+def _export_canvas_revision(orch, chat_id: str, user_id: str) -> int:
+    """Read an owner-scoped revision through the public Plane repository."""
+    runtime, repositories = _plane_boundary(orch)
+    with runtime.transaction() as transaction:
+        record = repositories.history.conversations.get(
+            transaction, owner_id=user_id, conversation_id=chat_id,
+        )
+        if record is None:
+            raise HTTPException(status_code=404, detail="Nothing to export for this chat")
+        return record.render_revision
+
+
 @export_router.get(
     "/canvas/{chat_id}.html",
     summary="Export the chat's workspace canvas as a standalone HTML document",
@@ -2822,28 +2834,40 @@ async def export_component_csv(
 async def export_canvas_html(
     request: Request,
     chat_id: str,
+    render_revision: Optional[int] = Query(default=None, ge=0),
     user_id: str = Depends(require_user_id_or_web_session),
 ):
     _flag_404("artifact_export")
     orch = _get_orchestrator(request)
+    if render_revision is not None:
+        current = await asyncio.to_thread(_export_canvas_revision, orch, chat_id, user_id)
+        if current != render_revision:
+            raise HTTPException(status_code=409, detail="Canvas changed; reload before exporting")
     # Materialized designed layouts, (chat_id, user_id)-scoped — an unowned
     # chat and an empty canvas are indistinguishable (uniform 404).
     components = await asyncio.to_thread(orch._canvas_components, chat_id, user_id)
     if not components:
         raise HTTPException(status_code=404, detail="Nothing to export for this chat")
     html = await asyncio.to_thread(_render_export_html, components, "AstralDeep workspace")
+    if render_revision is not None:
+        current = await asyncio.to_thread(_export_canvas_revision, orch, chat_id, user_id)
+        if current != render_revision:
+            raise HTTPException(status_code=409, detail="Canvas changed; reload before exporting")
     try:
         from audit.hooks import record_workspace_event
         await record_workspace_event(
             user_id=user_id, action="canvas_exported", chat_id=chat_id,
-            detail={"format": "html", "components": len(components)},
+            detail={"format": "html", "components": len(components),
+                    **({"render_revision": render_revision} if render_revision is not None else {})},
         )
     except Exception:
         logger.debug("export audit failed", exc_info=True)
     return Response(
         content=html,
         media_type="text/html; charset=utf-8",
-        headers={"Content-Disposition":
+        headers={**({"X-Astral-Render-Revision": str(render_revision)}
+                    if render_revision is not None else {}),
+                 "Content-Disposition":
                  f'attachment; filename="{_export_filename("canvas-" + chat_id, "html")}"'},
     )
 

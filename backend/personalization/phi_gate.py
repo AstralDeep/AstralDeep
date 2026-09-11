@@ -203,7 +203,10 @@ class PHIGate:
         storage), this is for user-facing awareness notices (feature 030
         chat banner) and FAILS OPEN: an unavailable or erroring analyzer
         returns False so the notice never fires on every message in a
-        deployment without Presidio. The regex prefilter (MRN/SSN-style
+        deployment without Presidio. A location by itself is not a clinical
+        identifier: public weather/travel queries must not trigger this
+        optional notice. The durable storage detector remains unchanged.
+        The regex prefilter (MRN/SSN-style
         identifiers) still fires without the analyzer.
         """
         if text is None:
@@ -219,13 +222,13 @@ class PHIGate:
             results = self._analyzer.analyze(
                 text=text,
                 language="en",
-                entities=PHI_ENTITIES,
+                entities=[entity for entity in PHI_ENTITIES if entity != "LOCATION"],
                 score_threshold=self._score_threshold,
             )
         except Exception as exc:
             logger.debug("phi_gate.notice_analyze_failed_fail_open", extra={"error": str(exc)})
             return False
-        return bool(results)
+        return any(getattr(result, "entity_type", None) != "LOCATION" for result in results)
 
 
 # ---------------------------------------------------------------------------

@@ -35,7 +35,11 @@ def test_none_result():
 
 
 def test_error_result():
-    assert _to_content(_res(error={"message": "boom"})) == "Error: boom"
+    error = json.loads(_to_content(_res(error={"message": "private diagnostic"})))
+    assert error == {
+        "status": "error", "code": "TOOL_FAILED", "retryable": False,
+        "message": "Tool could not complete. Try again.",
+    }
 
 
 def test_empty_result_is_no_output():

@@ -44,6 +44,64 @@ MACHINE_TURN_CLASSES = (
     "scheduled_job", "parser_replay", "draft_self_test", "persistent_assignment",
 )
 
+_MACHINE_SCOPE_KEY = "_machine_authority_scopes"
+_STANDING_CONSENT_CLASSES = ("parser_replay", "draft_self_test")
+
+
+def machine_scope_ceiling(session: Dict[str, Any]) -> Optional[frozenset[str]]:
+    """Return the bound machine ceiling, with malformed bindings denying tools.
+
+    ``None`` denotes interactive permission handling, including the existing
+    parser/draft standing-consent paths when no scope list was supplied.
+    An explicitly empty list grants no tools in every class. Missing or invalid
+    machine bindings deny tools. Only the host constructs this private binding.
+    """
+    if "machine_class" not in session and _MACHINE_SCOPE_KEY not in session:
+        return None
+    from orchestrator.tool_permissions import VALID_SCOPES
+
+    scopes = session.get(_MACHINE_SCOPE_KEY)
+    if (
+        session.get("machine_class") in _STANDING_CONSENT_CLASSES
+        and _MACHINE_SCOPE_KEY in session
+        and scopes is None
+    ):
+        return None
+    if (
+        session.get("machine_class") not in MACHINE_TURN_CLASSES
+        or not isinstance(scopes, tuple)
+        or any(not isinstance(scope, str) or scope not in VALID_SCOPES for scope in scopes)
+    ):
+        return frozenset()
+    return frozenset(scopes)
+
+
+def machine_session_binding(authority: MachineAuthority) -> Dict[str, Any]:
+    """Snapshot derived authority for dispatch, independently of its source list."""
+    from orchestrator.tool_permissions import VALID_SCOPES
+
+    scopes = authority.allowed_scopes
+    if (
+        authority.turn_class not in MACHINE_TURN_CLASSES
+        or not authority.user_id
+        or not isinstance(authority.scope_ceiling_required, bool)
+        or (not authority.scope_ceiling_required and (
+            authority.turn_class not in _STANDING_CONSENT_CLASSES or scopes
+        ))
+        or (authority.agent_id is not None and (
+            not isinstance(authority.agent_id, str) or not authority.agent_id
+        ))
+        or not isinstance(scopes, (list, tuple))
+        or any(not isinstance(scope, str) or scope not in VALID_SCOPES for scope in scopes)
+    ):
+        raise ValueError("invalid machine authority binding")
+    return {
+        **authority.machine_claims(),
+        "_raw_token": authority.access_token,
+        _MACHINE_SCOPE_KEY: tuple(scopes) if authority.scope_ceiling_required else None,
+        "_machine_authority_agent": authority.agent_id,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Chain budget (FR-021)
@@ -136,6 +194,12 @@ class MachineAuthority:
     user_id: str
     consent_ref: str
     turn_class: str
+    agent_id: Optional[str] = None
+    # Parser replay and draft self-tests predate per-task scope consent; they
+    # use an owner-validated original request and a standing offline grant.
+    # Keep that unspecified list distinct from explicitly empty task consent.
+    # Scheduled jobs and persistent assignments always require a ceiling.
+    scope_ceiling_required: bool = True
 
     def machine_claims(self) -> Dict[str, Any]:
         """Synthetic claims dict for audit attribution (NO token material)."""
@@ -285,6 +349,10 @@ class MachineTurnAuthority:
             user_id=user_id,
             consent_ref=resolved_grant,
             turn_class=turn_class,
+            agent_id=agent_id,
+            scope_ceiling_required=(
+                consented_scopes is not None or turn_class not in _STANDING_CONSENT_CLASSES
+            ),
         )
         logger.info(
             "machine_turn.derived class=%s user=%s agent=%s consent_ref=%s scopes=%s",

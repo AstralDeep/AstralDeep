@@ -31,6 +31,7 @@ def gate_orchestrator(monkeypatch):
     orchestrator = Orchestrator.__new__(Orchestrator)
     orchestrator.security_flags = {}
     orchestrator.ui_sessions = {websocket: {"sub": "owner-a"}}
+    orchestrator._ws_active_chat = {id(websocket): "chat-a"}
     orchestrator.agent_cards = {}
     orchestrator.agents = {
         "agent-a": object(),
@@ -156,12 +157,10 @@ async def test_egress_hitl_denial_precedes_lets(gate_orchestrator, monkeypatch) 
     monkeypatch.setattr(hitl, "hitl_enabled", lambda: True)
     monkeypatch.setattr(hitl, "assess_risk", lambda *_args, **_kwargs: ("egress",))
     monkeypatch.setattr(hitl, "requires_confirmation", lambda _risks: True)
-    monkeypatch.setattr(
-        hitl,
-        "confirmation_request",
-        lambda *_args: SimpleNamespace(summary="egress confirmation required"),
-    )
-    assert "egress" in str((await _deny(orchestrator, websocket)).response.error)
+    response = (await _deny(orchestrator, websocket)).response
+    assert response.error is None
+    assert response.result["_data"]["status"] == "confirmation_required"
+    assert "send data off this system" in str(response.ui_components)
 
 
 @pytest.mark.asyncio

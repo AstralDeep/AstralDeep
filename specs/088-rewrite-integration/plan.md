@@ -40,7 +40,16 @@ Pre-design and post-design assessment: compatible with existing architecture and
 | Staging | Isolated exact candidate images with real configured institutional IAM, PostgreSQL/workers and representative migrated synthetic/approved data. Bind commands, migration receipts and affected live client observations to exact Deep/component SHAs. Empty/mock-only fixtures do not qualify. |
 | Release evidence | Existing `scripts/prepare_release_evidence.py` must run with canonical candidate inputs before an authorized product push. Local output stays diagnostic; existing protected CI verifies canonical identities, digests and policy. |
 | Exceptions/bootstrap | None requested or authorized. Missing evidence remains open. Any later structural remote-only blocker requires Constitution X's exact SHA/scope/expiry, external inventory and separate provider-native lead approval before push; no trust/staging/coverage waiver. |
-| Publication | Product push, merge, deployment and release are outside current local implementation scope. Retain protected publishers, native short-lived CI identity and create-only collision policy; candidate jobs remain unprivileged. |
+| Publication | The owner's September 11 follow-up explicitly authorizes review branches and draft PRs for the touched repositories. Rewrite merge, production deployment and release remain unauthorized. Keep incomplete qualification visible; retain protected publishers, native short-lived CI identity and create-only collision policy. Candidate jobs remain unprivileged. |
+
+The September 11 PR request authorizes code-review publication of the implemented
+increments and clearly labeled unfinished Plane foundation. It creates no staging
+or release claim, protected exception, qualification waiver, or release-evidence
+bootstrap. Run the local release-evidence diagnostic and retain its missing-input
+result; draft review publication does not make that result an authorization to merge
+or release. The installed local candidate continues to pin qualified Plane 079.001.
+The separate LETS dependency maintenance request authorizes merging its reviewed
+updates only after its normal checks pass.
 
 ## Architecture and sequence
 

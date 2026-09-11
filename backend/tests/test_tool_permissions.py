@@ -174,6 +174,45 @@ def _override_rows(manager, owner_id, agent_id):
     )
 
 
+def test_skill_authorization_tracks_safe_baseline_without_losing_opt_out(monkeypatch):
+    manager = _manager(_PlaneRuntime())
+    manager.register_tool_scopes("helper", {"search": "tools:read"})
+    monkeypatch.setattr(manager, "_is_safe_agent", lambda _: True)
+    monkeypatch.setattr(manager, "_safe_flip_allowed", lambda _: True)
+    assert manager.is_skill_authorized("alice", "helper", "search")
+    manager.set_tool_permission("alice", "helper", "search", "tools:read", False)
+    assert not manager.is_tool_allowed("alice", "helper", "search")
+    assert manager.is_skill_authorized("alice", "helper", "search")
+    manager.set_agent_scopes("alice", "helper", {"tools:read": False})
+    assert not manager.is_skill_authorized("alice", "helper", "search")
+    manager.set_agent_scopes("alice", "helper", {"tools:read": True})
+    assert manager.is_skill_authorized("alice", "helper", "search")
+
+
+def test_skill_authorization_owned_agent_foreign_owner_and_deleted():
+    runtime = _PlaneRuntime()
+    runtime.repositories.agents.user_agents["private"] = SimpleNamespace(owner_id="alice", deleted_at=None)
+    manager = _manager(runtime)
+    manager.register_tool_scopes("private", {"search": "tools:read"})
+    manager.set_tool_permission("alice", "private", "search", "tools:read", False)
+    assert manager.is_skill_authorized("alice", "private", "search")
+    assert not manager.is_skill_authorized("bob", "private", "search")
+    runtime.repositories.agents.user_agents["private"].deleted_at = 1
+    assert not manager.is_skill_authorized("alice", "private", "search")
+
+
+def test_skill_authorization_unknown_and_storage_failure_deny(monkeypatch):
+    manager = _manager(_PlaneRuntime())
+    manager.register_tool_scopes("helper", {"search": "tools:read", "unknown": "unknown"})
+    assert not manager.is_skill_authorized("alice", "helper", "unknown")
+    assert not manager.is_skill_authorized("alice", "helper", "missing")
+    assert not manager.is_skill_authorized("alice", "helper", "search")
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("storage unavailable")
+    monkeypatch.setattr(manager._agents, "call", unavailable)
+    assert not manager.is_skill_authorized("alice", "helper", "search")
+
+
 @pytest.fixture
 def plane_runtime():
     return _PlaneRuntime()

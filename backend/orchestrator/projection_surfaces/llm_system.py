@@ -30,6 +30,7 @@ from llm_config.providers import all_presets, get_preset
 from llm_config.ws_handlers import validate_config_submission
 from webrender.chrome import esc, notice_block
 from orchestrator.projection_surfaces.llm import (
+    SavedKeyEndpointChanged,
     _INPUT_CLS,
     _LABEL_CLS,
     _LABEL_TEXT_CLS,
@@ -43,6 +44,7 @@ from orchestrator.projection_surfaces.llm import (
     _provider_endpoints_json,
     _provider_field,
     _provider_key,
+    _require_saved_key_destination,
     _request_shim,
     _validation_message,
 )
@@ -79,12 +81,13 @@ async def _system_config(orch: Any):
 
 
 async def _resolve_api_key_sys(orch: Any, fields: Dict[str, str]):
-    """Submitted key, else the saved system key (write-only semantics)."""
+    """Submitted key, else a saved system key bound to the same endpoint."""
     submitted = fields.get("api_key", "")
     if submitted:
         return submitted, False
     saved = await _system_config(orch)
     if saved is not None and getattr(saved, "api_key", ""):
+        _require_saved_key_destination(saved, fields)
         return saved.api_key, True
     return "", False
 
@@ -115,7 +118,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         badge = ('<span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 '
                  'rounded-full bg-green-500/10 text-green-400 border border-green-500/20">'
                  "configured</span>")
-        key_placeholder = "Saved — leave blank to keep"
+        key_placeholder = "Saved — leave blank to keep at this endpoint"
         clear_btn = _button("chrome_llm_sys_clear", "Clear system credential", collect=False)
     else:
         badge = ('<span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 '
@@ -171,7 +174,10 @@ async def _handle_models(orch: Any, websocket: Any, user_id: str, roles: Any, pa
     if not base_url:
         return (SURFACE_KEY, keep, notice_block(
             "error", "Enter the endpoint address for your custom provider."))
-    api_key, _used = await _resolve_api_key_sys(orch, fields)
+    try:
+        api_key, _used = await _resolve_api_key_sys(orch, fields)
+    except SavedKeyEndpointChanged as exc:
+        return (SURFACE_KEY, keep, notice_block("error", str(exc)))
     preset = get_preset(provider)
     if not api_key and (preset is None or preset.key_required):
         return (SURFACE_KEY, keep, notice_block(
@@ -207,7 +213,10 @@ async def _handle_test(orch: Any, websocket: Any, user_id: str, roles: Any, payl
     if not base_url or not model:
         return (SURFACE_KEY, keep, notice_block(
             "error", "Endpoint and model are required to test the connection."))
-    api_key, _used = await _resolve_api_key_sys(orch, fields)
+    try:
+        api_key, _used = await _resolve_api_key_sys(orch, fields)
+    except SavedKeyEndpointChanged as exc:
+        return (SURFACE_KEY, keep, notice_block("error", str(exc)))
     preset = get_preset(provider)
     if not api_key and (preset is None or preset.key_required):
         return (SURFACE_KEY, keep, notice_block(
@@ -234,7 +243,10 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
     fields = _fields(payload)
     provider = _provider_key(fields)
     keep = _keep(fields, provider)
-    api_key, used_saved = await _resolve_api_key_sys(orch, fields)
+    try:
+        api_key, used_saved = await _resolve_api_key_sys(orch, fields)
+    except SavedKeyEndpointChanged as exc:
+        return (SURFACE_KEY, keep, notice_block("error", str(exc)))
     store = _store(orch)
     if store is None:
         return (SURFACE_KEY, keep, notice_block(

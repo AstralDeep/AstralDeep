@@ -40,6 +40,7 @@ from datetime import UTC, datetime
 
 from audit.hooks import record_generic
 from dreaming.consolidation import run_sweep
+from personalization.chat_notices import notices_enabled, set_notices_enabled
 from personalization.phi_gate import get_phi_gate
 from personalization.schemas import PersonalitySpec, ProfileUpdateRequest
 from pydantic import ValidationError
@@ -309,7 +310,31 @@ def _render_soul(orch, user_id: str, params: dict) -> str:
         f'<p class="text-xs text-astral-muted">Personality guides tone and voice only — it '
         f"never overrides the safety, privacy, or HIPAA/compliance rules. Free-text values "
         f"are screened; anything that looks like protected health information is rejected.</p>"
+        + _render_chat_notice_preference(orch, user_id)
     )
+
+
+def _chat_notice_state(orch, user_id):
+    try:
+        return notices_enabled(orch, user_id)
+    except Exception:
+        logger.debug("chat notice preference unavailable", exc_info=True)
+        return None
+
+
+def _render_chat_notice_preference(orch, user_id):
+    enabled = _chat_notice_state(orch, user_id)
+    if enabled is None:
+        return _unavailable("Chat PHI reminder settings are temporarily unavailable.")
+    toggle = _btn(
+        "Turn off PHI reminders" if enabled else "Turn on PHI reminders",
+        "chrome_profile_save", {"chat_phi_notice_enabled": not enabled},
+    )
+    return (f'<div class="{_CARD_CLS} space-y-2"><h3>Chat PHI reminders</h3>'
+            '<p class="text-sm text-astral-muted">Show optional reminders when a message '
+            'may contain identifying information. Your choice is saved for your account. '
+            'Privacy and memory protections stay active.</p>'
+            f'<p class="text-sm">Currently {"on" if enabled else "off"}</p>{toggle}</div>')
 
 
 async def _render_memory(orch, user_id: str) -> str:
@@ -369,7 +394,7 @@ def _render_skills(orch, user_id: str) -> str:
                 "tool_name": tool_name,
                 "scope": scope,
                 "enabled": tp.is_tool_allowed(user_id, agent_id, tool_name),
-                "authorized": tp.is_scope_enabled(user_id, agent_id, scope),
+                "authorized": tp.is_skill_authorized(user_id, agent_id, tool_name),
             })
     if not catalog:
         return (
@@ -384,9 +409,9 @@ def _render_skills(orch, user_id: str) -> str:
             f'border border-white/10 text-astral-muted">{esc(entry["scope"])}</span>'
         )
         header = (
-            f'<div class="flex items-center gap-2 min-w-0">'
-            f'<span class="text-sm text-astral-text truncate">{esc(entry["tool_name"])}</span>'
-            f'<span class="text-xs text-astral-muted truncate">{esc(entry["agent_id"])}</span>'
+            f'<div class="flex flex-wrap items-center gap-2 min-w-0">'
+            f'<span class="text-sm text-astral-text break-words">{esc(entry["tool_name"])}</span>'
+            f'<span class="text-xs text-astral-muted break-words">{esc(entry["agent_id"])}</span>'
             f"{scope_badge}</div>"
         )
         if entry["authorized"]:
@@ -406,8 +431,7 @@ def _render_skills(orch, user_id: str) -> str:
         else:
             # Render unavailable-with-reason; no toggle is offered (FR-011).
             reason = (
-                f"Unavailable — requires the '{entry['scope']}' permission, which you "
-                f"haven't been granted."
+                f"Enable '{entry['scope']}' for this agent in Settings → Agents & permissions."
             )
             right = f'<span class="text-xs text-yellow-400">{esc(reason)}</span>'
         rows.append(
@@ -619,6 +643,15 @@ def _components_soul(orch, user_id, params):
         profession = str(profile.get("profession") or "")
         goals_text = "\n".join(str(g) for g in (profile.get("goals") or []))
         notes = str((profile.get("personality") or {}).get("notes") or "")
+    enabled = _chat_notice_state(orch, user_id)
+    reminder = (_sdui.alert("Chat PHI reminder settings are temporarily unavailable.", "warning")
+                if enabled is None else _sdui.card("Chat PHI reminders", [
+                    _sdui.text("Show optional reminders for identifying information. Your choice "
+                               "is saved for your account; privacy and memory protections stay active.",
+                               "caption"),
+                    _sdui.button("Turn off PHI reminders" if enabled else "Turn on PHI reminders",
+                                 "chrome_profile_save", {"chat_phi_notice_enabled": not enabled}),
+                ]))
     return [
         _sdui.form(
             [_sdui.field("profession", "Profession", "text", default=profession,
@@ -629,6 +662,7 @@ def _components_soul(orch, user_id, params):
             submit_action="chrome_profile_save", submit_label="Save profile"),
         _sdui.text("Personality guides tone and voice only — it never overrides the safety, "
                    "privacy, or HIPAA rules, and free-text values are PHI-screened.", "caption"),
+        reminder,
     ]
 
 
@@ -674,7 +708,7 @@ def _components_skills(orch, user_id):
             catalog.append({
                 "agent_id": agent_id, "tool_name": tool_name, "scope": scope,
                 "enabled": tp.is_tool_allowed(user_id, agent_id, tool_name),
-                "authorized": tp.is_scope_enabled(user_id, agent_id, scope),
+                "authorized": tp.is_skill_authorized(user_id, agent_id, tool_name),
             })
     if not catalog:
         return [_sdui.alert("No skills are available yet.", "info")]
@@ -692,8 +726,7 @@ def _components_skills(orch, user_id):
                 variant="secondary" if e["enabled"] else "primary"))
         else:
             children.append(_sdui.text(
-                f"Unavailable — requires the '{e['scope']}' permission, which you haven't "
-                f"been granted.", "caption"))
+                f"Enable '{e['scope']}' for this agent in Settings → Agents & permissions.", "caption"))
         out.append(_sdui.card(f"{e['tool_name']} · {e['agent_id']}", children))
     return out
 
@@ -793,6 +826,8 @@ def _components_dreaming(orch, user_id):
 
 async def _handle_profile_save(orch, websocket, user_id, roles, payload):
     """Save the soul form — same validation/PHI gate/audit as PUT /profile."""
+    if "chat_phi_notice_enabled" in payload:
+        return await _handle_chat_notice_preference(orch, websocket, user_id, payload)
     svc = _svc(orch)
     if svc is None:
         return (SURFACE_KEY, _params("soul"),
@@ -857,6 +892,25 @@ async def _handle_profile_save(orch, websocket, user_id, roles, payload):
         outputs_meta={"changed": changed},
     )
     return (SURFACE_KEY, _params("soul"), notice_block("success", "Profile saved."))
+
+
+async def _handle_chat_notice_preference(orch, websocket, user_id, payload):
+    enabled = payload.get("chat_phi_notice_enabled")
+    if type(enabled) is not bool or not user_id:
+        return SURFACE_KEY, _params("soul"), notice_block("error", "Invalid PHI reminder preference.")
+    try:
+        await asyncio.to_thread(set_notices_enabled, orch, user_id, enabled)
+    except Exception:
+        logger.debug("chat notice preference save failed", exc_info=True)
+        return SURFACE_KEY, _params("soul"), notice_block("error", "PHI reminder preference was not saved. Try again.")
+    await record_generic(
+        claims=_claims(orch, websocket, user_id), event_class="settings",
+        action_type="settings.chat_phi_notice", description="Updated chat PHI reminder preference",
+        outputs_meta={"enabled": enabled},
+    )
+    return SURFACE_KEY, _params("soul"), notice_block(
+        "success", f"PHI reminders {'on' if enabled else 'off'}. Privacy and memory protections stay active.",
+    )
 
 
 async def _handle_memory_update(orch, websocket, user_id, roles, payload):
@@ -924,7 +978,7 @@ async def _handle_skill_toggle(orch, websocket, user_id, roles, payload):
     required_scope = tp.get_tool_scope(agent_id, tool_name)
     # FR-011: enabling a skill can never exceed the user's granted scope.
     if enabled and not await asyncio.to_thread(
-            tp.is_scope_enabled, user_id, agent_id, required_scope):
+            tp.is_skill_authorized, user_id, agent_id, tool_name):
         return (SURFACE_KEY, _params("skills"), notice_block(
             "error",
             f"This skill needs the '{required_scope}' permission, which you haven't "

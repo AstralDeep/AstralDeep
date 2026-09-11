@@ -32,8 +32,8 @@ class WebResearchAgent(BaseA2AAgent):
     service_name = "Web Research"
     description = (
         "Searches the web, fetches pages through the platform's egress-gated "
-        "HTTP layer, and synthesizes cited research briefs. Works with zero "
-        "configuration via a keyless DuckDuckGo HTML search path; when the "
+        "HTTP layer, and synthesizes cited research briefs. Offers keyless "
+        "DuckDuckGo search, which may be blocked by the provider; when the "
         "optional SEARCH_API_URL + SEARCH_API_KEY credentials are saved, a "
         "Tavily-compatible search provider is preferred. Briefs cite only "
         "sources that were actually fetched — sources are never fabricated."
@@ -47,7 +47,7 @@ class WebResearchAgent(BaseA2AAgent):
                 "label": "Search Provider URL",
                 "description": (
                     "Optional. URL of a Tavily-compatible JSON search endpoint. "
-                    "When absent, the keyless DuckDuckGo HTML path is used."
+                    "When absent, keyless search is used and may be blocked."
                 ),
                 "required": False,
                 "type": "api_key",
@@ -57,8 +57,8 @@ class WebResearchAgent(BaseA2AAgent):
                 "key": "SEARCH_API_KEY",
                 "label": "Search Provider API Key",
                 "description": (
-                    "Optional. API key for the configured search provider. "
-                    "Sent as a Bearer token; paired with SEARCH_API_URL."
+                    "Optional. Add a key for reliable/higher-limit search. "
+                    "Use it with the Search Provider URL above."
                 ),
                 "required": False,
                 "type": "api_key",

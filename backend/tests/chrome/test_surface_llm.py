@@ -398,7 +398,7 @@ def test_save_failed_probe_refuses_and_stores_nothing(monkeypatch):
     assert orch.audit_recorder.events[0].outcome == "failure"
 
 
-def test_save_blank_key_keeps_saved_key(monkeypatch):
+def test_save_blank_key_keeps_saved_key_at_same_endpoint(monkeypatch):
     calls = {}
     _probe_ok(monkeypatch, calls)
     orch = make_orch()
@@ -407,7 +407,7 @@ def test_save_blank_key_keeps_saved_key(monkeypatch):
     orch._llm_store.seed("u1", base_url="https://old.test/v1", model="old-model")
     surface, _params, notice = run(llm_surface.HANDLERS["chrome_llm_save"](
         orch, ws, "u1", ["user"],
-        _payload(provider="custom", base_url="https://new.test/v1",
+        _payload(provider="custom", base_url="https://old.test/v1/",
                  api_key="", model="new-model"),
     ))
     assert surface == "llm"
@@ -417,6 +417,73 @@ def test_save_blank_key_keeps_saved_key(monkeypatch):
     assert [e.action_type for e in orch.audit_recorder.events] == [
         "llm_config.tested", "llm_config.updated"]
     assert "kept" in notice
+
+
+@pytest.mark.parametrize("action", ["chrome_llm_models", "chrome_llm_test", "chrome_llm_save"])
+@pytest.mark.parametrize("destination", [
+    "https://new.test/v1", "https://old.test/v2", "http://old.test/v1",
+])
+def test_saved_key_never_reaches_a_changed_endpoint(monkeypatch, action, destination):
+    async def forbidden_probe(**kwargs):
+        raise AssertionError("a saved key must not reach a changed endpoint")
+
+    monkeypatch.setattr("llm_config.api.list_models", forbidden_probe)
+    monkeypatch.setattr("llm_config.api.test_connection", forbidden_probe)
+    monkeypatch.setattr("llm_config.ws_handlers.probe_chat_completion", forbidden_probe)
+    orch = make_orch()
+    ws = FakeWS()
+    register(orch, ws)
+    orch._llm_store.seed("u1", base_url="https://old.test/v1", model="old-model")
+    before = orch._llm_store.get_sync("u1")
+
+    surface, params, notice = run(llm_surface.HANDLERS[action](
+        orch, ws, "u1", ["user"],
+        _payload(provider="custom", base_url=destination, api_key="", model="new-model"),
+    ))
+
+    assert surface == "llm"
+    assert "enter the API key again" in notice
+    assert SECRET not in notice and "api_key" not in params
+    assert orch._llm_store.get_sync("u1") is before
+    assert not orch.audit_recorder.events  # no probe or mutation occurred
+
+
+def test_explicit_key_can_replace_saved_key_for_new_endpoint(monkeypatch):
+    calls = {}
+    _probe_ok(monkeypatch, calls)
+    orch = make_orch()
+    ws = FakeWS()
+    register(orch, ws)
+    orch._llm_store.seed("u1", base_url="https://old.test/v1", model="old-model")
+
+    run(llm_surface.HANDLERS["chrome_llm_save"](
+        orch, ws, "u1", ["user"],
+        _payload(provider="custom", base_url="https://new.test/v1",
+                 api_key="explicit-replacement-key", model="new-model"),
+    ))
+
+    assert calls["api_key"] == "explicit-replacement-key"
+    assert calls["base_url"] == "https://new.test/v1"
+    assert orch._llm_store.get_sync("u1").api_key == "explicit-replacement-key"
+
+
+def test_saved_key_destination_uses_server_derived_preset(monkeypatch):
+    seen = {}
+
+    async def fake_list_models(*, body, **kwargs):
+        seen.update(base_url=body.base_url, api_key=body.api_key)
+        return ListModelsResponse(ok=True, models=["m"], probed_at="t")
+
+    monkeypatch.setattr("llm_config.api.list_models", fake_list_models)
+    orch = make_orch()
+    ws = FakeWS()
+    register(orch, ws)
+    orch._llm_store.seed("u1", provider="openai", base_url="https://api.openai.com/v1")
+    run(llm_surface.HANDLERS["chrome_llm_models"](
+        orch, ws, "u1", ["user"],
+        _payload(provider="openai", base_url="https://untrusted.test/v1", api_key=""),
+    ))
+    assert seen == {"base_url": "https://api.openai.com/v1", "api_key": SECRET}
 
 
 def test_clear_drops_record_audits_and_regates():
