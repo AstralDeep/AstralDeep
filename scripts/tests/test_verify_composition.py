@@ -47,13 +47,13 @@ MODULE_NAMES = {
     "astral-primitives": "AstralPrimitives",
     "lets": "LETS",
 }
-EXPECTED_PLANE_COMMIT_079 = "b20c8f3e06fc5302262fe3c8f049fa18a562e30f"
+EXPECTED_PLANE_COMMIT_088 = "8924bd4ba154a00184218c5b50c3de3bab9d13c4"
 EXPECTED_PLANE_SCHEMA_REVISION_079 = "079.001"
 EXPECTED_PLANE_MIGRATION_SHA256_079 = (
     "2353261227ed72d030ab2426b1a7229c8a1302c669a241dc6b84e3e77e003cad"
 )
-EXPECTED_PROJECTION_COMMIT_079 = (
-    "07e5c90cb310c48c2315997f74dc8dd6f5fa22ea"
+EXPECTED_PROJECTION_COMMIT_088 = (
+    "72553e3b533a5284efb6cf425711be0fb8b6d2a9"
 )
 EXPECTED_PROJECTION_PROTOCOL_SHA256_079 = (
     "550a61f01c2f2edbfbe1a2bf0e54ee6d2a964f59c37fa7dbfc9f5e23c9c80d4c"
@@ -363,7 +363,7 @@ def test_current_composition_has_exact_pins_canonical_urls_and_contracts() -> No
     assert report.diagnostics == ()
 
 
-def test_composition_pins_exact_plane_and_projection_079() -> None:
+def test_composition_pins_exact_plane_and_projection_088() -> None:
     manifest = json.loads(
         (REPOSITORY_ROOT / "config/astral-composition.json").read_text(
             encoding="utf-8"
@@ -371,7 +371,7 @@ def test_composition_pins_exact_plane_and_projection_079() -> None:
     )
 
     assert manifest["components"]["astral-plane"]["commit"] == (
-        EXPECTED_PLANE_COMMIT_079
+        EXPECTED_PLANE_COMMIT_088
     )
     assert manifest["compatibility"]["data_plane"]["schema_revision"] == (
         EXPECTED_PLANE_SCHEMA_REVISION_079
@@ -380,7 +380,7 @@ def test_composition_pins_exact_plane_and_projection_079() -> None:
         EXPECTED_PLANE_MIGRATION_SHA256_079
     )
     assert manifest["components"]["astral-projection"]["commit"] == (
-        EXPECTED_PROJECTION_COMMIT_079
+        EXPECTED_PROJECTION_COMMIT_088
     )
     assert manifest["compatibility"]["ui_protocol"]["sha256"] == (
         EXPECTED_PROJECTION_PROTOCOL_SHA256_079
@@ -388,10 +388,10 @@ def test_composition_pins_exact_plane_and_projection_079() -> None:
 
     assert _gitlink_commit(
         REPOSITORY_ROOT, COMPONENT_PATHS["astral-plane"]
-    ) == EXPECTED_PLANE_COMMIT_079
+    ) == EXPECTED_PLANE_COMMIT_088
     assert _gitlink_commit(
         REPOSITORY_ROOT, COMPONENT_PATHS["astral-projection"]
-    ) == EXPECTED_PROJECTION_COMMIT_079
+    ) == EXPECTED_PROJECTION_COMMIT_088
 
 
 def test_synthetic_exact_pins_and_no_floating_branch_pass(checkout: Path) -> None:

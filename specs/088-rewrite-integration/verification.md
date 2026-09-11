@@ -206,3 +206,40 @@ open. No rewrite merge or production release is authorized or claimed.
 Diagnostic logs, source hashes, exact test manifests and local deployment evidence
 are retained under ignored `build/088/research-review/`. User credentials, pending
 approval arguments and raw upstream bodies are not included in this checkpoint.
+
+### Published review drafts and CI test repair
+
+The owner-authorized drafts are [Deep #195](https://github.com/AstralDeep/AstralDeep/pull/195),
+[Projection #15](https://github.com/AstralDeep/AstralProjection/pull/15) and
+[Plane #8](https://github.com/AstralDeep/AstralPlane/pull/8). No rewrite merge or
+release occurred. The separate donor repository has no remote; Primitives did
+not change. LETS maintenance is the separately merged PR described above.
+
+Initial Deep CI failed one stale exact-component assertion shared by two jobs;
+the test now checks the reviewed pins while retaining exact schema, migration,
+protocol and gitlink assertions. Initial Android instrumentation likewise still
+expected the intentionally removed grounded badge. Projection test-only commit
+`72553e3b533a5284efb6cf425711be0fb8b6d2a9` checks its absence, retained stamped
+metadata and actions, and visible estimated/generated warnings. Local Android
+lint and instrumented Kotlin compilation passed, along with 13 targeted JVM
+tests. A local emulator could not start because its disk-space check failed;
+hosted instrumentation reruns on the corrected test revision. The Deep manifest
+pins this test revision; the installed candidate retains byte-identical runtime
+sources at its previously recorded Projection commit.
+
+Both exact Deep CI cohorts passed locally in a source-free isolated Linux
+checkout with Python 3.11.16 and the hash-locked CI tools: component contracts
+274 passed / three deselected; release tooling 833 passed / five skipped / four
+deselected. Tooling coverage was 92.01% against 90%; the documentation link check
+passed for all 25 maintained Markdown files. Coverage XML and exact commands
+are retained under ignored `build/088/ci-pin-repair/`.
+
+Plane hosted CI passed at `c8303a2e5a2243388d195c2d325523ba4228efd7`: 2251 tests
+passed, nine Windows-only tests skipped on Linux, total branch coverage 89.26%
+against 88.75%, and changed-line coverage 203/211 (96%) against 90%. This includes
+both tests that failed the earlier local diagnostic, which ended at 671 passes
+and two failures. One local failure was caused by that diagnostic's custom
+five-second advisory-lock timeout; the other was an intermittent empty claim
+with two fresh focused passes. Neither failure was hidden or weakened. T024/T025,
+enhanced Deep wiring and full integrated acceptance remain open; the running app
+continues to use Plane 079.001 and does not consume the unfinished 088 foundation.
