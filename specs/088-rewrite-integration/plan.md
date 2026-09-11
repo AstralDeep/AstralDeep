@@ -4,7 +4,7 @@
 
 ## Summary
 
-Port every rewrite capability through existing Deep/Plane/Projection boundaries, beginning with a calmer web experience. Keep institutional Keycloak, existing accounts/data and richer ecosystem capabilities. Ordinary Send uses normal dispatch; consequential effects, publication and new authority retain approval. The owner authorized web first and native redesign afterward, with all clients in the overall scope. Leave the standalone rewrite and its data untouched.
+Port every rewrite capability through existing Deep/Plane/Projection boundaries, beginning with a calmer web experience. Keep institutional Keycloak, existing accounts/data and richer ecosystem capabilities. Ordinary Send uses normal dispatch; consequential effects, publication and new authority retain approval. The September 11 follow-up advances Android and Apple native parity and store preparation; Windows redesign is explicitly excluded from this milestone. Leave the standalone rewrite and its data untouched.
 
 ## Technical Context
 
@@ -50,6 +50,14 @@ result; draft review publication does not make that result an authorization to m
 or release. The installed local candidate continues to pin qualified Plane 079.001.
 The separate LETS dependency maintenance request authorizes merging its reviewed
 updates only after its normal checks pass.
+
+The current September 11 follow-up authorizes qualified store publication and
+promotion of completed draft PRs to ready for review; the owner reserves merging.
+This supersedes the earlier publication-authority limit, but supplies no missing
+institutional login, store credentials, protected release decision or qualification
+evidence. Existing draft PRs remain drafts until those completion conditions hold.
+The current native parity work targets implemented web behavior, not fictitious
+clients for unimplemented operation/guidance/framework APIs.
 
 ## Architecture and sequence
 

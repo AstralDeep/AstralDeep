@@ -621,6 +621,134 @@ async def _detail_context(orch, user_id, agent_id) -> dict:
     }
 
 
+def _effective_permissions(tool_scope_map, user_id, agent_id, ctx):
+    """Use the runtime permission resolver for both web and native settings."""
+    from orchestrator.tool_permissions import resolve_effective_tool_permissions
+    from shared.feature_flags import flags
+
+    return resolve_effective_tool_permissions(
+        tool_scope_map,
+        owner_id=user_id,
+        agent_id=agent_id,
+        scope_rows=ctx["scope_states"],
+        override_rows=ctx["tool_override_states"],
+        safe_default=bool(
+            flags.is_enabled("safe_agents") and ctx["is_safe"] and ctx["is_public"]),
+    )
+
+
+def _permission_snapshot(tool_scope_map, per_tool, scope_state, card):
+    """Project section masters and tool overrides using the existing form names."""
+    descriptions = {skill.id: skill.description for skill in card.skills}
+    destructive = {
+        skill.id: (getattr(skill, "metadata", None) or {}).get("destructive")
+        for skill in card.skills
+    }
+    rows = []
+    for kind in PERMISSION_KINDS:
+        tools = sorted(tool for tool, required in tool_scope_map.items() if required == kind)
+        if not tools:
+            continue
+        master = f"{SCOPE_FIELD_PREFIX}{kind}"
+        master_on = bool(scope_state.get(kind)) or any(
+            per_tool.get(tool, {}).get(kind, False) for tool in tools)
+        rows.append({
+            "field_name": master, "scope": kind,
+            "label": f"Enable all {_KIND_LABELS[kind]} tools",
+            "description": _KIND_DESCRIPTIONS[kind], "enabled": master_on,
+        })
+        for tool in tools:
+            rows.append({
+                "field_name": f"{tool}::{kind}", "tool_name": tool, "scope": kind,
+                "description": descriptions.get(tool, ""),
+                "enabled": bool(per_tool.get(tool, {}).get(kind, False)),
+                "visible_when": {"field": master, "equals": True, "default": master_on},
+            })
+    for tool in sorted(tool_scope_map):
+        if tool_scope_map[tool] not in PERMISSION_KINDS:
+            rows.append({"tool_name": tool, "scope": tool_scope_map[tool],
+                         "description": descriptions.get(tool, "")})
+    for row in rows:
+        classification = destructive.get(row.get("tool_name"))
+        if classification and classification != "never":
+            row["destructive"] = (
+                "Destructive" if classification == "always" else "Sometimes destructive")
+    return rows
+
+
+def _credential_snapshot(keys, card):
+    """Expose credential declarations and stored-key presence, never values."""
+    declared, labels, optional = _normalize_credential_entries(
+        (getattr(card, "metadata", None) or {}).get("required_credentials"))
+    stored = set(keys)
+    return [
+        {"key": key, "label": labels.get(key, key),
+         "optional": key in optional, "stored": key in stored}
+        for key in dict.fromkeys(declared + sorted(stored))
+    ]
+
+
+def _external_identity_snapshot(links, agent_id, card):
+    """Include only an already verified identity for this agent/provider."""
+    metadata = getattr(card, "metadata", None) or {}
+    declaration = metadata.get("external_identity") if isinstance(metadata, dict) else None
+    if not isinstance(declaration, dict) or declaration.get("provider") != "orcid":
+        return None
+    identity = {"provider": "orcid"}
+    linked = next((link for link in links
+                   if link.agent_id == agent_id and link.provider == "orcid"), None)
+    if linked:
+        identity["subject"] = linked.subject
+    # The existing ORCID start route requires a web cookie session. A native
+    # bearer session cannot authorize a browser link; the builder names the
+    # web-client handoff until that flow is qualified.
+    return identity
+
+
+async def components(orch, user_id, roles, params):
+    """Build native agent settings from the web surface's owner-scoped reads."""
+    from astralprojection.chrome.agents import build_agents_view
+
+    params = params if isinstance(params, dict) else {}
+    tab = "public" if params.get("tab") == "public" else "mine"
+    agent_id = str(params.get("agent_id") or "")
+    if not agent_id:
+        email, ownership, disabled = await _list_context(orch, user_id)
+        rows = await asyncio.to_thread(_agent_rows, orch, ownership, disabled)
+        visible = []
+        for row in rows:
+            owned = bool(email) and row.get("owner_email") == email
+            if (tab == "public" and row["is_public"]) or (tab == "mine" and owned):
+                visible.append({**row, "owned": owned})
+        view = build_agents_view(visible, tab=tab)
+    else:
+        card = orch.agent_cards.get(agent_id)
+        if not card:
+            view = build_agents_view(selected={}, tab=tab)
+        else:
+            ctx = await _detail_context(orch, user_id, agent_id)
+            tool_scope_map = orch.tool_permissions.get_tool_scope_map(agent_id)
+            per_tool = _effective_permissions(tool_scope_map, user_id, agent_id, ctx)
+            owned = bool(ctx["user_email"]) and ctx["owner_email"] == ctx["user_email"]
+            view = build_agents_view(
+                tab=tab,
+                selected={
+                    "id": agent_id, "name": card.name, "description": card.description,
+                    "owner_email": ctx["owner_email"], "owned": owned,
+                    "is_public": ctx["is_public"], "is_safe": ctx["is_safe"],
+                    "disabled": not ctx["enabled"],
+                    "external_identity": _external_identity_snapshot(
+                        ctx["external_identity_links"], agent_id, card),
+                },
+                can_configure=True,
+                can_set_visibility=owned,
+                can_set_safe=bool(ctx["safe_known"] and (owned or "admin" in (roles or []))),
+                permissions=_permission_snapshot(tool_scope_map, per_tool, ctx["scope_state"], card),
+                credentials=_credential_snapshot(ctx["credential_keys"], card),
+            )
+    return [component.to_dict() for component in view.components]
+
+
 async def _render_detail(orch, user_id, roles, agent_id: str, tab: str) -> str:
     """Render the per-agent detail body (≤3 DB round trips total)."""
     card = orch.agent_cards.get(agent_id)
@@ -637,19 +765,7 @@ async def _render_detail(orch, user_id, roles, agent_id: str, tab: str) -> str:
     # picker must show them ON rather than contradict the gate. is_safe/is_public
     # come from _detail_context (no extra query); pass the flip in to stay within
     # the detail render's DB round-trip budget.
-    from shared.feature_flags import flags
-    safe_default = bool(
-        flags.is_enabled("safe_agents") and ctx["is_safe"] and ctx["is_public"])
-    from orchestrator.tool_permissions import resolve_effective_tool_permissions
-
-    per_tool = resolve_effective_tool_permissions(
-        tool_scope_map,
-        owner_id=user_id,
-        agent_id=agent_id,
-        scope_rows=ctx["scope_states"],
-        override_rows=ctx["tool_override_states"],
-        safe_default=safe_default,
-    )
+    per_tool = _effective_permissions(tool_scope_map, user_id, agent_id, ctx)
     tool_descriptions = {s.id: s.description for s in card.skills}
     # Feature 063 (FR-025): destructive classification propagated from the
     # agent's TOOL_REGISTRY via the card skill metadata (base_agent).

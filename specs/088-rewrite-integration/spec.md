@@ -24,6 +24,20 @@ The source baselines are AstralDeep `2de5d867413ce2aec5b7448dca8eeaa42674a7e3`, 
 - Q: Must records from the standalone rewrite installation be imported? → A: No. Integrate all features, preserve existing AstralDeep data, and leave rewrite data untouched.
 - Q: Must all redesigned native clients ship with the first integrated release? → A: No. Deliver the redesigned web experience first; native redesign follows. All clients remain in the overall scope.
 
+### Session 2026-09-11 — native release follow-up
+
+- The owner now requests the current 088 web experience on Android, iOS, macOS
+  and watchOS, with native implementations and store preparation. Windows is
+  explicitly excluded from this redesign milestone and retains its existing
+  compatible client. The new timing supersedes the earlier native deferral for
+  the included targets; it does not mark unfinished runtime integration complete.
+- The owner authorizes store publication when qualification is complete, or an
+  upload-ready Android App Bundle for manual submission if automated submission
+  is unavailable. After completion, the changed repositories' existing draft PRs
+  should become ready for review; the owner will merge in the dependency order
+  supplied. Store credentials, protected release controls and live checks remain
+  required; an unsigned or historical bundle is not an upload-ready 088 artifact.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Start useful work without learning the system (Priority: P1)
@@ -166,7 +180,7 @@ Existing native clients retain compatible access during the first web release. T
 - **FR-021**: Supported REST, MCP, A2A, synchronous/asynchronous SDK and framework adapter workflows MUST share the same admission, owner, lifecycle and effect authorization semantics.
 - **FR-022**: Owners MUST have task outcome/timing/usage views; administrators MUST have bounded privacy-preserving diagnostics. Unknown cost, incomplete measurement and uncertain effects MUST remain explicit.
 - **FR-023**: Shared UI content, form semantics and actions MUST be validated, versioned and rendered through the ecosystem's authoritative components. Unsafe/unknown content MUST have a defined refusal or handoff.
-- **FR-024**: The first integrated release MAY introduce the redesigned web experience before native redesign, as explicitly authorized on 2026-09-10. Existing native access MUST remain compatible, new unsupported interactions MUST receive server-owned dispositions, and native redesign/qualification MUST remain open tracked work.
+- **FR-024**: The current native milestone MUST adapt the implemented 088 web experience to Android, iOS, macOS and watchOS, as requested on 2026-09-11. Equivalent form factors use the same start/work arrangement, semantic theme, server-owned content/chrome and ordinary/effect authorization behavior. Windows retains its existing compatible layout and is excluded from this redesign milestone. Hardware-limited interactions MUST receive explicit server-declared dispositions and remain documented parity gaps until qualified; they cannot silently count as exact behavior parity. Native and full-feature qualification remain open until actual evidence closes them.
 - **FR-025**: Every adopted donor capability and every retained old capability in the acceptance inventory MUST have a traceable disposition and verification evidence; no donor limitation, source file or passing fixture test may substitute for integrated functionality.
 - **FR-026**: Upgrade and recovery MUST preserve representative existing data, ownership, task fences and audit provenance. Standalone rewrite data and services MUST remain untouched and MUST NOT be imported.
 - **FR-027**: Readiness, backup/restore, audit integrity, contract generation and operational qualification MUST cover the integrated application. Deployment/release authority remains subject to the existing release workflow.

@@ -40,6 +40,39 @@ Shift+Enter inserts a line and IME composition never accidentally submits. These
 are web presentation changes within the approved web-first scope, with no new
 primitive, shared protocol frame or IAM path.
 
+The 2026-09-11 native follow-up applies this arrangement to Android and Apple
+clients. `Projection/contracts/ui_protocol.json` now records
+`presentation_contracts.workspace_088`, with an actual server-generated welcome
+fixture under `contracts/fixtures/workspace_088/`. Only recognized top-level
+`data-welcome` roles with absent or `wel_` identity may enter start slots;
+identified results and nested hints remain ordinary content. The same ephemeral
+owner-bound composer survives resizing and same-owner reconnect, and clears on
+sign-out, owner change and New chat. No second menu, example catalog, settings
+authority or effect approval path is introduced.
+
+Native audit navigation uses the server's owner-scoped filters, UTC boundaries,
+cursor history, grouped navigation events and detail return state through the
+normal `chrome_open`/`chrome_audit_page` surface. Agent settings use the same
+owner-scoped host reads and permission resolver as web: personal permissions and
+credential settings remain available independently of ownership, visibility is
+owner-only, and trust requires owner/admin authority. Existing command handlers
+remain authoritative. An unlinked ORCID identity explicitly hands off to the
+signed-in web flow because its start route requires a browser session.
+
+Android/iOS/macOS charts use the existing bundled Plotly library inside isolated
+native chart views. `scripts/build_native_chart.py` extracts the web chart options
+into a reproducible, CSP-hashed offline template, accepts only a base64 JSON
+component envelope, and supplies no native action bridge. Navigation and network
+are denied; charts requiring remote assets report an explicit web handoff. Native
+shells own bounded geometry, title, provenance, and authenticated export controls.
+Shared Inter/JetBrains assets retain the approved web font outlines and licenses.
+
+Authenticated downloads use exact-origin credential checks before local
+save/share. Windows retains its existing compatible client under the owner's
+explicit exclusion. Watch size/capability handoffs, browser-bound ORCID setup,
+remote-asset chart handoffs, and outstanding authenticated live checks are
+qualification gaps, not evidence of exact parity.
+
 The primary action is **Send**. Ordinary chat and requested public research enter the
 existing authenticated dispatcher immediately, with normal admission, provider,
 permission, PHI, egress and budget checks. There is no mandatory assignment-review

@@ -47,6 +47,10 @@ _VALUE_LIMITS = {"event_class": 64, "outcome": 32, "q": 256, "cursor": 512,
                  "from": 10, "to": 10}
 
 
+class _FilterError(ValueError):
+    """Invalid user filters, distinct from a failed repository query."""
+
+
 def _history(value) -> list[str]:
     """Bound untrusted page history; cursors never change owner scope."""
     if not isinstance(value, str) or len(value) > 16_384:
@@ -359,13 +363,12 @@ async def _record_detail_view(user_id, event_id) -> None:
 # Views
 # ---------------------------------------------------------------------------
 
-async def _render_list(orch, user_id, params) -> str:
-    """Render the filterable, cursor-paginated audit list body."""
+async def _read_list(orch, user_id, params):
+    """Read one owner-scoped page for both web and native surface rendering."""
     try:
         params = _list_params(params)
     except ValueError as exc:
-        return (notice_block("error", str(exc))
-                + _filter_bar(None, None, ""))
+        raise _FilterError(str(exc)) from exc
     event_class = _valid_or_none(params.get("event_class"), EVENT_CLASSES)
     outcome = _valid_or_none(params.get("outcome"), OUTCOMES)
     q = str(params.get("q") or "").strip()
@@ -381,9 +384,8 @@ async def _render_list(orch, user_id, params) -> str:
         to_ts = _date_bound(params.get("to"), end=True)
         if from_ts and to_ts and from_ts >= to_ts:
             raise ValueError("reversed dates")
-    except (ValueError, OverflowError):
-        return (notice_block("error", "Choose valid dates with From no later than Through.")
-                + _filter_bar(event_class, outcome, q, params))
+    except (ValueError, OverflowError) as exc:
+        raise _FilterError("Choose valid dates with From no later than Through.") from exc
     kwargs = {
         "limit": _PAGE_LIMIT,
         "cursor": cursor,
@@ -402,7 +404,7 @@ async def _render_list(orch, user_id, params) -> str:
         if not cursor:
             raise
         logger.warning("chrome audit: invalid cursor for user %s: %s", user_id, exc)
-        notices.append(notice_block("error", "Invalid page cursor - showing the first page."))
+        notices.append("Invalid page cursor - showing the first page.")
         cursor = None
         params.pop("cursor", None)
         params["history"] = "[]"
@@ -411,6 +413,24 @@ async def _render_list(orch, user_id, params) -> str:
             orch.audit_repo.list_for_user, user_id, **kwargs)
 
     await _record_list_view(user_id, event_class, outcome, q, cursor, len(items), from_ts, to_ts)
+
+    return params, event_class, outcome, q, items, next_cursor, notices
+
+
+async def _render_list(orch, user_id, params) -> str:
+    """Render the filterable, cursor-paginated audit list body."""
+    try:
+        params, event_class, outcome, q, items, next_cursor, notices = await _read_list(orch, user_id, params)
+    except _FilterError as exc:
+        try:
+            params = _list_params(params)
+        except ValueError:
+            params = {}
+        return (notice_block("error", str(exc)) + _filter_bar(
+            _valid_or_none(params.get("event_class"), EVENT_CLASSES),
+            _valid_or_none(params.get("outcome"), OUTCOMES), params.get("q", ""), params,
+        ))
+    notices = [notice_block("error", message) for message in notices]
 
     if items:
         groups = []
@@ -517,6 +537,54 @@ async def render(orch, user_id, roles, params) -> str:
             return_to = {}
         return await _render_detail(orch, user_id, event_id, return_to)
     return await _render_list(orch, user_id, params)
+
+
+def _entry_snapshot(dto):
+    """Copy public DTO fields into the reusable Projection view boundary."""
+    entry = dto.model_dump(mode="json")
+    for key in ("recorded_at", "started_at", "completed_at"):
+        entry[key] = _fmt_ts(getattr(dto, key))
+    entry["artifacts"] = entry.get("artifact_pointers", [])
+    return entry
+
+
+async def components(orch, user_id, roles, params):
+    """Deliver the same owner-scoped audit filters and details as native SDUI."""
+    from astralprojection.chrome.admin import build_audit_view
+    from webrender.chrome.surfaces import _sdui
+
+    params = params if isinstance(params, dict) else {}
+    if params.get("event_id"):
+        try:
+            return_to = _list_params(params.get("return_to"))
+        except ValueError:
+            return_to = {}
+        event_id = str(params["event_id"])
+        dto = await asyncio.to_thread(
+            orch.audit_repo.get_for_user, user_id, event_id,
+            availability_resolver=_availability_resolver(orch, user_id),
+        )
+        if dto is not None:
+            await _record_detail_view(user_id, event_id)
+        view = build_audit_view(selected=_entry_snapshot(dto) if dto is not None else {}, filters=return_to)
+        return [item.to_dict() for item in view.components]
+    try:
+        active, _, _, _, items, next_cursor, notices = await _read_list(orch, user_id, params)
+    except _FilterError as exc:
+        # Keep a usable filter form after refusal; no query or false empty
+        # success is represented as a completed audit read.
+        try:
+            active = _list_params(params)
+        except ValueError:
+            active = {}
+        view = build_audit_view(event_classes=EVENT_CLASSES, filters=active, loaded=False)
+        return [_sdui.alert(str(exc), "error"), *[item.to_dict() for item in view.components]]
+    view = build_audit_view(
+        [_entry_snapshot(dto) for dto in items], filters=active,
+        event_classes=EVENT_CLASSES, next_cursor=next_cursor,
+    )
+    return [*[_sdui.alert(message, "error") for message in notices],
+            *[item.to_dict() for item in view.components]]
 
 
 # ---------------------------------------------------------------------------

@@ -53,10 +53,10 @@ EXPECTED_PLANE_MIGRATION_SHA256_079 = (
     "2353261227ed72d030ab2426b1a7229c8a1302c669a241dc6b84e3e77e003cad"
 )
 EXPECTED_PROJECTION_COMMIT_088 = (
-    "416ce6ce97b0af4cf812ffc8c53b9e2718b2aa70"
+    "159588a6a8b407faa0dad64c7a2ea85c3f54ddae"
 )
-EXPECTED_PROJECTION_PROTOCOL_SHA256_079 = (
-    "550a61f01c2f2edbfbe1a2bf0e54ee6d2a964f59c37fa7dbfc9f5e23c9c80d4c"
+EXPECTED_PROJECTION_PROTOCOL_SHA256_088 = (
+    "160017483ed97b08b8dc0b33ec4d8a4de02fa41997506570c9bf8723d1f05801"
 )
 
 
@@ -383,7 +383,7 @@ def test_composition_pins_exact_plane_and_projection_088() -> None:
         EXPECTED_PROJECTION_COMMIT_088
     )
     assert manifest["compatibility"]["ui_protocol"]["sha256"] == (
-        EXPECTED_PROJECTION_PROTOCOL_SHA256_079
+        EXPECTED_PROJECTION_PROTOCOL_SHA256_088
     )
 
     assert _gitlink_commit(

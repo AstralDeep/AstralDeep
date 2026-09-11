@@ -2,6 +2,10 @@
 
 Status: local implementation started, 2026-09-10. No full integrated feature, live staging, merge, deployment or release is claimed.
 
+The owner's 2026-09-11 Android/Apple continuation and local native checks are
+recorded in [the native checkpoint](native-checkpoint-20260911.md). Windows
+redesign is excluded; remaining feature and release gates stay open.
+
 ## Source and environment
 
 - Deep base `2de5d867413ce2aec5b7448dca8eeaa42674a7e3`; local feature branch `codex/088-rewrite-integration` after refreshed all-origin-tree ownership preflight. Source 081–087 branches remain untouched.
