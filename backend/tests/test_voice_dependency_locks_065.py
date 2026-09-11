@@ -316,7 +316,7 @@ def test_contract_validator_dependencies_stay_out_of_product_manifests() -> None
 
 
 def test_feature_075_adds_no_runtime_model_development_or_lock_drift() -> None:
-    """Freeze every tracked Deep dependency/model authority at the 075 base."""
+    """Freeze the 075 closure except the reviewed 079 build-tool security patch."""
 
     base_tracked = _git_tracked_paths(
         "ls-tree", "-r", "--name-only", FEATURE_075_BASE_COMMIT
@@ -333,12 +333,19 @@ def test_feature_075_adds_no_runtime_model_development_or_lock_drift() -> None:
     assert base_observed == expected
     assert current_observed == expected
     for relative, expected_sha256 in FEATURE_075_DEPENDENCY_AUTHORITIES.items():
-        base_sha256 = hashlib.sha256(
-            _git_blob(FEATURE_075_BASE_COMMIT, relative)
-        ).hexdigest()
-        current_sha256 = hashlib.sha256((REPO_ROOT / relative).read_bytes()).hexdigest()
+        base_bytes = _git_blob(FEATURE_075_BASE_COMMIT, relative)
+        base_sha256 = hashlib.sha256(base_bytes).hexdigest()
         assert base_sha256 == expected_sha256, relative
-        assert current_sha256 == base_sha256, relative
+        expected_current = base_bytes
+        if relative in {"Dockerfile", "pyproject.toml"}:
+            # 0dfc768f04f2c658cad368eb7dc112f5bc5b3dfd changed only this
+            # isolated build backend to close the setuptools advisory. See
+            # specs/079-persistent-agents/verification/production-readiness.md.
+            # Keep every other byte frozen; no runtime/model drift is permitted.
+            assert base_bytes.count(b"setuptools==80.9.0") == 1, relative
+            expected_current = base_bytes.replace(
+                b"setuptools==80.9.0", b"setuptools==83.0.0", 1)
+        assert (REPO_ROOT / relative).read_bytes() == expected_current, relative
 
 
 def test_deep_dependency_authority_policy_is_scoped_and_complete() -> None:

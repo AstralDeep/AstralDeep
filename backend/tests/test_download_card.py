@@ -481,15 +481,16 @@ def test_execute_single_tool_dispatches_desktop_codegen(monkeypatch):
     class _TC:
         function = _Fn()
 
-    # execute_single_tool dispatches to the meta-tool before touching self beyond
-    # the dispatch, so a bare instance (no DB/agents) is enough to reach the branch.
+    # Keep the real meta-tool authority guard and bind an attended owner session.
     orch = orch_mod.Orchestrator.__new__(orch_mod.Orchestrator)
+    websocket = object()
+    orch.ui_sessions = {websocket: {"sub": "u1"}}
     tool_to_agent = {"offer_desktop_codegen": "__desktop_codegen__"}
 
     res = asyncio.run(orch.execute_single_tool(
-        websocket=None, tool_call=_TC(), tool_to_agent=tool_to_agent,
+        websocket=websocket, tool_call=_TC(), tool_to_agent=tool_to_agent,
         chat_id="c1", user_id="u1"))
     assert captured["tool"] == "offer_desktop_codegen"
     assert captured["args"] == {"language": "python", "code": "x"}
+    assert captured["user_id"] == "u1"
     assert res.result["status"] == "offered"
-

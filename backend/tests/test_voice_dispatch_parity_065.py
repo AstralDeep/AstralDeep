@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from orchestrator import memory_chat
@@ -194,8 +195,10 @@ async def test_keycloak_owner_llm_and_rfc8693_scope_match_typed_turn() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("chat_bound", [False, True])
 async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
     monkeypatch: pytest.MonkeyPatch,
+    chat_bound: bool,
 ) -> None:
     typed, voice = _sockets()
     runtime, delegation = _gate_runtime(typed, voice, allowed={"send_email"})
@@ -218,6 +221,10 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
 
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "false")
     monkeypatch.setenv("FF_HITL_HIGHRISK", "true")
+    chat_id = "voice-parity-chat" if chat_bound else None
+    runtime._ws_active_chat = {id(socket): chat_id for socket in (typed, voice)}
+    runtime._map_file_paths = lambda chat, args, **kwargs: args
+    runtime.audit_recorder = SimpleNamespace(record=AsyncMock())
     confirmed = [
         await Orchestrator._run_gate_stack(
             runtime,
@@ -225,16 +232,31 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
             AGENT_ID,
             "send_email",
             {"to": "outside@example.test", "body": "bounded"},
+            chat_id=chat_id,
             user_id=USER_ID,
         )
         for socket in (typed, voice)
     ]
     assert all(isinstance(outcome, GateRefusal) for outcome in confirmed)
     assert confirmed[0].response.error == confirmed[1].response.error
-    assert confirmed[0].response.error == {
-        "message": "This will send data off this system — confirm?",
-        "retryable": False,
-    }
+    if chat_bound:
+        assert confirmed[0].response.error is None
+        assert confirmed[0].response.result == confirmed[1].response.result
+        assert confirmed[0].response.result["_data"]["status"] == "confirmation_required"
+        assert confirmed[0].response.ui_components == confirmed[1].response.ui_components
+        assert confirmed[0].response.ui_components[0]["title"] == "Review action"
+        assert len(runtime._hitl_pending_calls) == 1
+        pending = next(iter(runtime._hitl_pending_calls.values()))
+        assert (pending.owner, pending.chat, pending.agent, pending.tool) == (
+            USER_ID, chat_id, AGENT_ID, "send_email")
+        assert pending.risks == ("egress",)
+    else:
+        assert confirmed[0].response.error == {
+            "message": "Confirmation requires an interactive signed-in conversation. "
+                       "Reissue the action there.",
+            "retryable": False,
+        }
+        assert not getattr(runtime, "_hitl_pending_calls", {})
     assert delegation.calls == []
 
 

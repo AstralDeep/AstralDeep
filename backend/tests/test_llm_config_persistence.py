@@ -325,19 +325,30 @@ async def test_partial_submission_stores_nothing_and_skips_probe(orch, monkeypat
 # ---------------------------------------------------------------------------
 
 async def test_blank_key_resolves_to_saved_key_at_surface(orch):
-    from orchestrator.projection_surfaces.llm import _resolve_api_key
+    from orchestrator.projection_surfaces.llm import (
+        SavedKeyEndpointChanged,
+        _resolve_api_key,
+    )
 
     uid = _uid()
     ws = _register(orch, uid)
     await _seed(orch, uid)
     try:
-        # Blank submission ⇒ the persisted key, flagged as reused.
-        key, used_saved = await _resolve_api_key(orch, ws, uid, {"api_key": ""})
+        # Blank submission at the same destination reuses the persisted key.
+        fields = {"provider": "custom", "base_url": "https://api.example.com/v1",
+                  "api_key": ""}
+        key, used_saved = await _resolve_api_key(orch, ws, uid, fields)
         assert (key, used_saved) == (SECRET, True)
+
+        for changed in ({"api_key": ""}, dict(fields, base_url="https://other.example/v1")):
+            with pytest.raises(SavedKeyEndpointChanged):
+                await _resolve_api_key(orch, ws, uid, changed)
+        assert (await orch._llm_store.get(uid)).api_key == SECRET
 
         # A typed key always wins.
         key, used_saved = await _resolve_api_key(
-            orch, ws, uid, {"api_key": "sk-brand-new"})
+            orch, ws, uid, dict(fields, base_url="https://other.example/v1",
+                                api_key="sk-brand-new"))
         assert (key, used_saved) == ("sk-brand-new", False)
     finally:
         await orch._llm_store.clear(uid)

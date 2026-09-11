@@ -179,6 +179,7 @@ async def test_chat_routes_exact_owner_command_to_control_service(monkeypatch, p
     tool = SimpleNamespace(function=SimpleNamespace(name="ongoing_agent", arguments='{"command":"list"}'))
     mapping = {"ongoing_agent": chat_tools.META_AGENT_ID}
     socket = object()
+    hub.ui_sessions = {socket: {"sub": "owner"}}
     if parallel:
         results = await hub.execute_parallel_tools(socket, [tool], mapping, chat_id="chat", user_id="owner")
         assert results[0].result == {"assignments": []}

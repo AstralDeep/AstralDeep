@@ -152,6 +152,38 @@ retained outside the candidate tree under `build/088/local-runtime/`; the prior
 candidate's live observations above do not themselves establish a pass of the
 fixes.
 
+The repeated mobile New chat check then exposed a separate renderer defect:
+ROTE correctly converted a one-column example grid into a container, but the web
+container renderer dropped its welcome placement metadata. The examples became
+ordinary work content and retired the heading/More slots. A later tablet update
+could not undo that work transition. Projection
+`97ef7ee2a6e00d172854f2f009aec943f2d0ab11` preserves a wrapper only for known
+welcome roles with absent legacy identities or consistently valid `wel_`
+identities. Ordinary containers remain transparent; invalid identities/roles and
+unsafe attributes are covered by denial/escaping tests. The existing late-work
+guard remains intact. Final checks passed 862 renderer/ROTE tests, 71 browser
+continuity tests and 38 provenance/resource tests (wheel build excluded), with
+6/6 changed executable Python lines and 2/2 branches covered. Ruff, ESLint and
+native chart drift checks passed. Deep's final composition digest is
+`55889928d459f916f1c9bce84b98d8d1c09b90abe35f71211ef6466d413ba17f`.
+
+The broader Linux backend attempt exposed stale fixtures alongside local test
+environment errors. Nine test files now initialize current owner/chat authority,
+exercise both early machine-scope denial and unconditional unattended-effect
+refusal, verify saved-key destination binding, construct Plane off the event loop,
+and check the accessible textarea and current approval-card contract. The 075
+dependency test retains its original hash authorities and permits only the exact
+previously reviewed 079 build-only setuptools substitution. All 199 tests in the
+affected modules passed; a subsequent stronger disabled-attribute assertion
+passed its eight-test module. Production guards were not relaxed. Final complete
+backend/module coverage must be collected after the containing candidate is
+frozen; its receipt remains outside this document to avoid circular identities.
+
+The unchanged Windows client also passed 1,079 portable Qt/Python tests with ten
+skips on macOS. This is compatibility evidence, not Windows-host live or release
+qualification. Android/Apple native binary inputs and the unsigned AAB remain
+unchanged by both web follow-ups.
+
 Native apps remain at their normal institutional sign-in screens until the user
 completes each client login/device approval. No authenticated native journey,
 second-owner isolation, revocation, microphone flow, representative migrated data

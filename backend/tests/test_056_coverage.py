@@ -343,6 +343,11 @@ def orch():
         Orchestrator.execute_parallel_tools,
         fake,
     )
+    fake._guard_machine_meta_tool = MethodType(
+        Orchestrator._guard_machine_meta_tool,
+        fake,
+    )
+    fake.ui_sessions = {}
     return fake
 
 
@@ -408,8 +413,10 @@ async def test_subtasks_dispatch_from_parallel_batch(orch, monkeypatch):
     monkeypatch.setattr(_st, "handle_meta_tool", _meta)
     tc = SimpleNamespace(function=SimpleNamespace(
         name="delegate_subtasks", arguments=json.dumps({"subtasks": []})))
+    websocket = MagicMock()
+    orch.ui_sessions[websocket] = {"sub": "u1"}
     results = await orch.execute_parallel_tools(
-        MagicMock(), [tc],
+        websocket, [tc],
         {"delegate_subtasks": "__subtasks__", "web_search": "web-research-1"},
         "c1", user_id="u1")
     assert results[0].result == "subtasks-ok"

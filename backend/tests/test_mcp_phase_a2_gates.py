@@ -11,6 +11,7 @@ Three gates that behaved differently over MCP than over the web/WS channel:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -242,8 +243,9 @@ async def test_mcp_refusal_names_signing_key_not_idp_scopes(orchestrator_factory
     monkeypatch.setenv("DELEGATION_REQUIRED", "true")
     monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
     monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
-    os.environ["OPENAI_API_KEY"] = "test-key"
-    orch = orchestrator_factory()
+    # Production startup composes Plane synchronously before serving requests.
+    # Keep the event-loop guard enabled while constructing that graph off-loop.
+    orch = await asyncio.to_thread(orchestrator_factory)
     orch.audit_recorder = MagicMock()
     orch.audit_recorder.record = AsyncMock()
     orch.send_ui_render = AsyncMock()
