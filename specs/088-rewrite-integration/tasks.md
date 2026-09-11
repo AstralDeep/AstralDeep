@@ -95,7 +95,13 @@ Independent test: REST/MCP/A2A/SDK/framework clients share admission and control
 - [ ] T052 [US6] Expose bounded owner outcomes/timing/usage and role-filtered diagnostics from existing telemetry repositories through work read models and shared Projection disclosures; distinguish unknown/estimated/uncertain from zero/success (FR-022).
 - [ ] T053 [US6] Qualify adopted runtime security/egress limits, provider process cleanup, admission accounting and framework features against every inventory row in specs/088-rewrite-integration/source-inventory.json (FR-010, FR-019, FR-020, FR-021, FR-022).
 
-## Phase 9: US7 — Native compatibility and later redesign (P2)
+## Phase 9: US7 — Native compatibility and current Android/Apple redesign (P2)
+
+The owner's 2026-09-11 follow-up advances T060/T061 for the implemented web
+experience and explicitly excludes Windows redesign T059 from this milestone.
+It authorizes qualified store publication and ready-for-review promotion after
+completion, with merges reserved to the owner. The unimplemented earlier-story
+APIs and full-feature qualification are not satisfied by client-shell work.
 
 Independent test: existing native workflows continue during web delivery; later redesign renders the same server surfaces and effects with actual client evidence.
 
@@ -104,7 +110,7 @@ Independent test: existing native workflows continue during web delivery; later 
 - [ ] T056 [P] [US7] Update Android shared contract/disposition consumption and drift fixtures under components/AstralProjection/android-client/; run lint/JUnit/Kover/build gates (FR-024).
 - [ ] T057 [P] [US7] Update Apple shared contract/disposition consumption and drift fixtures under components/AstralProjection/apple-clients/; run Swift/XCTest and affected build gates on macOS (FR-024).
 - [ ] T058 [US7] Verify live native compatibility against the exact web milestone and record platform-specific evidence in specs/088-rewrite-integration/verification.md; unavailable execution remains open (FR-024, SC-007).
-- [ ] T059 [P] [US7] Complete Windows redesigned navigation/composition/work/guidance/settings surfaces under components/AstralProjection/windows-client/ using server models; verify live keyboard/narrow/zoom and authority/effect flows (FR-024, FR-028).
+- [ ] T059 [P] [US7] Windows redesign is deferred by the owner's explicit 2026-09-11 exclusion. Retain existing compatible behavior; do not claim the Windows redesign complete (FR-024, FR-028).
 - [ ] T060 [P] [US7] Complete Android redesigned surfaces under components/AstralProjection/android-client/ using server models; verify live device/emulator layout, lifecycle and authority/effect flows (FR-024, FR-028).
 - [ ] T061 [P] [US7] Complete Apple redesigned surfaces under components/AstralProjection/apple-clients/ using server models; verify macOS/iOS/watchOS affected flows and layout live (FR-024, FR-028).
 
@@ -127,4 +133,4 @@ Parallel examples: US1 welcome tests and Projection source baselines; US2 auth a
 
 ## Delivery strategy
 
-First increment: calm welcome/shell over existing ordinary dispatch, with tests. Next: durable work/read models, identity/provider compatibility and common source/guidance contracts. Then integrate all remaining donor capabilities and qualify the complete web milestone with native compatibility. Finally complete native redesign and all evidence. An increment is not the full requested integration; task checkboxes and inventory evidence must remain truthful. Local work is authorized; product push/deploy/release are not implied.
+First increment: calm welcome/shell over existing ordinary dispatch, with tests. Next: durable work/read models, identity/provider compatibility and common source/guidance contracts. Then integrate all remaining donor capabilities and qualify the complete web milestone with native compatibility. The owner's 2026-09-11 follow-up advances Android/Apple parity for the implemented web experience and authorizes store preparation/publication and draft-to-ready transitions after qualification; the owner retains merge authority. Windows redesign remains excluded. An increment is not the full requested integration; task checkboxes and inventory evidence must remain truthful. The existing staging, evidence, signing, and protected publication gates still apply.
