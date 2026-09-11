@@ -223,9 +223,20 @@ expected the intentionally removed grounded badge. Projection test-only commit
 metadata and actions, and visible estimated/generated warnings. Local Android
 lint and instrumented Kotlin compilation passed, along with 13 targeted JVM
 tests. A local emulator could not start because its disk-space check failed;
-hosted instrumentation reruns on the corrected test revision. The Deep manifest
-pins this test revision; the installed candidate retains byte-identical runtime
-sources at its previously recorded Projection commit.
+hosted instrumentation passed on the corrected test revision, including the
+Android aggregate. A subsequent metadata-only Projection commit
+`416ce6ce97b0af4cf812ffc8c53b9e2718b2aa70` adds the exact transformation record
+for this imported test and updates the expected ledger counts. The changed-byte
+ledger and all 519 immutable source tuples pass the two targeted replay checks.
+The Deep manifest pins that metadata revision; the installed candidate retains
+byte-identical runtime sources at its previously recorded Projection commit.
+
+The broader Projection Python command on Windows passed 1187 tests and failed
+17 unchanged POSIX/Apple tooling cases: one filesystem executable-bit assertion
+and sixteen `select()` calls on Windows subprocess pipes. The failing scripts,
+tests and Gradle wrapper are unchanged from the prior Linux-CI-passing revision.
+The ledger checks pass independently; the hosted Linux suite qualifies this
+metadata repair. The Windows result is retained as a failed local run, not a pass.
 
 Both exact Deep CI cohorts passed locally in a source-free isolated Linux
 checkout with Python 3.11.16 and the hash-locked CI tools: component contracts
