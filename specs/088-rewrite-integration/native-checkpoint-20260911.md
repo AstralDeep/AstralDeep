@@ -106,17 +106,64 @@ candidate SHA. This document alone does not assert those subsequent checks pass.
 
 ## Runtime and release boundaries
 
-The isolated Mac baseline at `http://localhost:8001` passed 21 public endpoint,
-asset, authentication-redirect and denial checks. App and PostgreSQL are healthy;
-the voice worker authenticates control. Its fresh database has no copied user
-history or provider configuration. Original containers and volumes are preserved.
-User-performed institutional login and in-product provider setup were requested;
-no sign-in or key entry was performed by the agent. The baseline must be replaced
-with a recorded exact candidate before attributing current changes to it.
+The isolated Mac app at `http://localhost:8001` was rebuilt from Deep
+`14bc027952c51886e8b5157350c80726859065ea` and its exact component pins. The
+installed runtime passed 38 source, wheel, supporting-container and public
+checks, including 21 endpoint, asset, authentication-redirect and denial checks.
+Its image identity is
+`sha256:e3ef104ebacdde2a0887ba3cc301fc48402964ec49d495685bc5d0e00042e5e5`.
+App and PostgreSQL are healthy; the voice worker authenticates control. Original
+containers and volumes are preserved. The user completed institutional login and
+in-product provider setup; the agent entered no credentials and copied no
+authentication state between clients. A normal settings connection test then
+reported a successful model response in 431 ms.
+
+Authenticated local web observations against that candidate:
+
+| Flow | Actual result |
+| --- | --- |
+| Ordinary multiline Send | Start changed to work, input cleared, and a two-row synthetic Label/Count table rendered with Alpha = 2 and Beta = 5. The model titled the card "Document", not the requested "088 UI check". |
+| Background Send | Running-task feedback appeared without a foreground skeleton; the composer remained usable and the one-shot background choice reset. History and page reload restored the exact completed synthetic response. |
+| Server-owned dice example | The real dispatcher returned six legal dice values, 2/4/2/3/1/5, totaling 17. Audit showed matching `tool.roll_dice.start` and successful `tool.roll_dice.end` events. |
+| Audit | Failure filtering exposed real earlier provider-not-configured denials; detail/back preserved the filter. Reversed dates were rejected, Reset cleared the filters, and Next retrieved a second page. |
+| Agents | The owned-agent list and Dice Roller detail exposed personal permissions separately from owner visibility/trust. No permission, trust or visibility setting was changed. |
+| Canvas export | Server audit recorded a successful HTML export and HTTP 200. The browser download event timed out and no saved file was verified; this is not a completed download claim. |
+| Responsive layout | Desktop 1280×900, tablet 900×900 and phone 390×844 were visually inspected. Canvas/composer fit the viewport, and multiline draft text survived rail restoration and resizing. The temporary browser viewport override was reset. |
+
+The live review found two web defects: New chat retained an unsent draft and
+could replay its queued message into the next conversation; breakpoint changes
+could leave the hidden message drawer labeled expanded. Projection follow-up
+`a1fe35825f6c5799c9b1f5ff47ea3c9086969b1c` fixes both. New chat clears draft,
+staged attachments, autocomplete and one-shot background arming, cancels unsent
+chat queue entries and their expiry timers, and ignores removed-upload outcomes.
+Other queued actions, same-owner reconnect and accepted background work remain.
+Responsive controls now report the actual drawer visibility.
+
+The final follow-up passed 69 continuity browser tests, three targeted voice
+navigation tests, full configured ESLint, 44 protocol/resource/chart tests (one
+wheel-install test deselected), native chart generation `--check` and whitespace
+checks. A CSS-backed resize regression failed on the old source and passed after
+the fix. Independent review found no further queue/upload or initialization
+defect. Deep's updated pin passes composition verification (manifest digest
+`d5746fae315f4deb40747250ca0e567ddf88e8d905efefca801420582048473b`), the
+exact-pin regression and targeted Ruff. Native sources/assets and the AAB above
+are unchanged by this follow-up. Exact installed-candidate rerun receipts are
+retained outside the candidate tree under `build/088/local-runtime/`; the prior
+candidate's live observations above do not themselves establish a pass of the
+fixes.
+
+Native apps remain at their normal institutional sign-in screens until the user
+completes each client login/device approval. No authenticated native journey,
+second-owner isolation, revocation, microphone flow, representative migrated data
+or qualifying HTTPS staging run is established by these local web checks.
 
 The release audit found no canonical current eight-target reports or qualifying
-HTTPS staging inputs. Existing canonical backend/voice-worker/tooling coverage
-files date from August. The release parser still requires Windows compatibility
+HTTPS staging inputs. Fresh diagnostic tooling and voice-worker coverage was
+collected against Deep `14bc027952c51886e8b5157350c80726859065ea`; its command,
+source identities, report digests and unresolved backend failures are retained
+outside the candidate tree in `build/088/coverage/collection-status.json`. Those
+reports do not qualify a later candidate. The release parser still requires
+Windows compatibility
 evidence even though Windows redesign is excluded. The source inventory still
 contains 35 capability, 99 route, and 12 retained-capability entries pending;
 this native increment does not complete the remaining runtime, guidance,
