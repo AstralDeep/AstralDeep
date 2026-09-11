@@ -31,6 +31,7 @@ class _ShellParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.by_id: dict[str, dict[str, str | None]] = {}
+        self.tags_by_id: dict[str, str] = {}
         self.scripts: list[dict[str, str | None]] = []
 
     def handle_starttag(
@@ -41,6 +42,7 @@ class _ShellParser(HTMLParser):
         values = dict(attrs)
         if identifier := values.get("id"):
             self.by_id[identifier] = values
+            self.tags_by_id[identifier] = tag
         if tag == "script":
             self.scripts.append(values)
 
@@ -94,13 +96,17 @@ def test_shell_hosts_accessible_voice_controls_without_replacing_typed_chat() ->
     assert terminal_notice["aria-live"] == "assertive"
     assert terminal_notice["aria-atomic"] == "true"
     assert terminal_notice["hidden"] is None
-    assert parser.by_id["astral-input"]["type"] == "text"
-    assert parser.by_id["astral-input"].get("disabled") is None
+    assert parser.tags_by_id["astral-input"] == "textarea"
+    assert parser.by_id["astral-input"]["rows"] == "2"
+    assert parser.by_id["astral-input"]["aria-label"] == "Message"
+    assert "readonly" not in parser.by_id["astral-input"]
+    assert "disabled" not in parser.by_id["astral-input"]
     assert "astral-voice-audio" in parser.by_id
 
     shell = SHELL_PATH.read_text(encoding="utf-8")
-    assert shell.index('id="astral-voice-controls"') < shell.index(
-        'id="astral-input"'
+    # The 088 composer presents typed entry first, then its voice controls.
+    assert shell.index('id="astral-input"') < shell.index(
+        'id="astral-voice-controls"'
     )
 
 

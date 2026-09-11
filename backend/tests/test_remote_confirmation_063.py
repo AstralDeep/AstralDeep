@@ -726,32 +726,59 @@ def test_machine_turn_read_verbs_still_pass_this_gate():
     assert db.rows == {} and t.calls == []
 
 
-async def test_machine_turn_refused_even_with_full_scope_grant(real_orch):
+@pytest.mark.parametrize("bound_authority", [False, True])
+async def test_machine_turn_refused_even_with_full_scope_grant(real_orch, bound_authority):
     t = _fake()
     ws = _WS()
     real_orch.ui_sessions[ws] = {"machine_class": "scheduled_job"}
+    real_orch.tool_permissions.get_tool_scope.return_value = "tools:write"
+    if bound_authority:
+        real_orch.ui_sessions[ws].update(
+            sub=USER, _machine_authority_scopes=("tools:write",),
+            _machine_authority_agent="remote-compute-1")
     resp = await real_orch.execute_single_tool(
         ws, _tc("remove_path", {"machine_id": "m", "path": "/data"}),
         {"remove_path": "remote-compute-1"}, "chat-1", user_id=USER)
-    assert resp.error and "unattended_refused" in resp.error["message"]
-    # the scope gate PASSED first — the refusal is unconditional on grants
-    assert real_orch.tool_permissions.is_tool_allowed.called
+    if bound_authority:
+        assert resp.error and "unattended_refused" in resp.error["message"]
+        real_orch.tool_permissions.is_tool_allowed.assert_called_once()
+    else:
+        assert resp.error == {
+            "message": "Tool 'remove_path' is outside this unattended task's approved "
+                       "permissions. Approve a new schedule to change its authority.",
+            "retryable": False,
+        }
+        real_orch.tool_permissions.is_tool_allowed.assert_not_called()
     assert real_orch.proposal_storage.rows == {}
     assert t.calls == []
 
 
-async def test_machine_turn_submit_refused_even_with_full_scope_grant(real_orch):
+@pytest.mark.parametrize("bound_authority", [False, True])
+async def test_machine_turn_submit_refused_even_with_full_scope_grant(real_orch, bound_authority):
     # FR-044: unattended SUBMISSION stays refused through the REAL gate stack even
     # when the scope gate passes — the refusal does not depend on a scheduler flag,
     # and a non-destructive classification ("never") does not exempt the verb.
     t = _fake()
     ws = _WS()
     real_orch.ui_sessions[ws] = {"machine_class": "scheduled_job"}
+    real_orch.tool_permissions.get_tool_scope.return_value = "tools:write"
+    if bound_authority:
+        real_orch.ui_sessions[ws].update(
+            sub=USER, _machine_authority_scopes=("tools:write",),
+            _machine_authority_agent="remote-compute-1")
     resp = await real_orch.execute_single_tool(
         ws, _tc("submit_job", {"machine_id": "m", "script": "echo hi"}),
         {"submit_job": "remote-compute-1"}, "chat-1", user_id=USER)
-    assert resp.error and "unattended_refused" in resp.error["message"]
-    assert real_orch.tool_permissions.is_tool_allowed.called
+    if bound_authority:
+        assert resp.error and "unattended_refused" in resp.error["message"]
+        real_orch.tool_permissions.is_tool_allowed.assert_called_once()
+    else:
+        assert resp.error == {
+            "message": "Tool 'submit_job' is outside this unattended task's approved "
+                       "permissions. Approve a new schedule to change its authority.",
+            "retryable": False,
+        }
+        real_orch.tool_permissions.is_tool_allowed.assert_not_called()
     assert real_orch.proposal_storage.rows == {}
     assert t.calls == []
 
