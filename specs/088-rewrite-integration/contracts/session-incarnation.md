@@ -5,8 +5,11 @@ Storage, operation guards, authentication retention, atomic consent and the priv
 continuation-authority resolver and guarded read adapter have passed scoped local qualification. Deep pins
 the qualified `088.002` Plane revision. The explicit offline recovery API and
 [operator command](restored-session-retirement-tool.md) have passed scoped
-private-database and exact installed-package qualification. Worker integration,
-operational recovery, protected staging and release qualification remain pending. No new route, runner
+private-database and exact installed-package qualification. The optional worker
+lifecycle has passed scoped private PostgreSQL qualification, including atomic
+claim/renewal and coordination with reader authorization. Concrete research/model
+execution, multiworker availability, operational recovery, protected staging and
+release qualification remain pending. No new route, runner
 or release has been activated. This contract extends the request-refresh
 prerequisite; observing today's row is insufficient to identify yesterday's
 issued session when SID, timestamps and encrypted credentials can be repeated.
