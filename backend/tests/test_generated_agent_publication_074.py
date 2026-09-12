@@ -2255,37 +2255,43 @@ async def test_late_joiner_never_attaches_to_zero_waiter_cancelling_attempt(
 ) -> None:
     store = _FakeStore()
     store.stage_release.clear()
+    # Keep the durable intent in progress until the late reader has observed it.
+    # The shared fake's automatic timeout must not settle this test's old attempt.
+    stage_wait = store.stage_release.wait
+    monkeypatch.setattr(store.stage_release, "wait", lambda _timeout=None: stage_wait())
     service, _journal, _store, _runtime, _admission = _service(store=store)
     request = _request()
     cancelled = asyncio.create_task(service.publish(request))
-    assert await asyncio.to_thread(store.stage_entered.wait, 1)
-    old_attempt = next(iter(service._attempts.values()))
-    original_publish_attempt = service._publish_attempt
-    late_attempts: list[Any] = []
+    late = None
+    try:
+        assert await asyncio.to_thread(store.stage_entered.wait, 1)
+        old_attempt = next(iter(service._attempts.values()))
+        original_publish_attempt = service._publish_attempt
+        late_attempts: list[Any] = []
 
-    async def track_late_attempt(attempt: Any):
-        late_attempts.append(attempt)
-        return await original_publish_attempt(attempt)
+        async def track_late_attempt(attempt: Any):
+            late_attempts.append(attempt)
+            return await original_publish_attempt(attempt)
 
-    monkeypatch.setattr(service, "_publish_attempt", track_late_attempt)
+        monkeypatch.setattr(service, "_publish_attempt", track_late_attempt)
 
-    cancelled.cancel()
-    await asyncio.sleep(0)
-    assert old_attempt.accepting_waiters is False
-    late = asyncio.create_task(service.publish(request))
-    for _ in range(100):
-        if late_attempts or late.done():
-            break
-        await asyncio.sleep(0.001)
-    assert late_attempts and late_attempts[0] is not old_attempt
-    assert not late.cancelled()
+        cancelled.cancel()
+        await asyncio.sleep(0)
+        assert old_attempt.accepting_waiters is False
+        assert old_attempt.waiters == 0
+        late = asyncio.create_task(service.publish(request))
+        with pytest.raises(GeneratedAgentPublicationRecoveryPendingError):
+            await asyncio.wait_for(late, timeout=5)
+        assert late_attempts and late_attempts[0] is not old_attempt
+        assert not late.cancelled()
 
-    store.stage_release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await cancelled
-    with pytest.raises(GeneratedAgentPublicationRecoveryPendingError):
-        await late
-    await service.close()
+        store.stage_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+    finally:
+        store.stage_release.set()
+        await asyncio.gather(cancelled, *([late] if late is not None else []), return_exceptions=True)
+        await service.close()
 
 
 @pytest.mark.asyncio
