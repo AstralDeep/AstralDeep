@@ -77,7 +77,7 @@ def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
     """Deep consumes, but does not recreate, Plane's guarded schema lineage."""
 
     _require_embedded_plane_source(astralplane.__file__)
-    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "079.001"
+    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "088.001"
     assert CURRENT_DATA_PLANE_REVISION.migration_digest == MIGRATION_REGISTRY.digest
     migration_075 = getattr(plane_migrations, "PLANE_SCHEMA_075_MIGRATION", None)
     assert migration_075 is not None
@@ -90,6 +90,13 @@ def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
     assert migration_079.checksum == (
         "ff1d672518527884cb2cb09eec22aee3f5d2312f9e8dbaaa3d159ba1ce13d55b"
     )
+    migration_088 = getattr(plane_migrations, "PLANE_SCHEMA_088_MIGRATION", None)
+    assert migration_088 is not None
+    assert migration_088.source_revisions == ("079.001",)
+    assert migration_088.target_revision == "088.001"
+    assert migration_088.checksum == (
+        "dfbc50f68437b831eb01cee78fb1e8d92025cc48b9001638b353fd53efabc155"
+    )
     assert PLANE_SCHEMA_074_004_MIGRATION.target_revision == "074.004"
     assert PLANE_SCHEMA_074_004_MIGRATION.checksum == (
         "c46e2f8ca8060f7ed5ca48da8ac33d2f7078a1b141185d9c843ace66821f01df"
@@ -100,11 +107,14 @@ def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
     assert getattr(plane_migrations, "PLANE_SCHEMA_075_REGISTRY_DIGEST", None) == (
         "755faecd45a7d8ca9956f25a239bed476802b885efdce29a36dc3b66981f94df"
     )
-    assert MIGRATION_REGISTRY.digest == (
+    assert getattr(plane_migrations, "PLANE_SCHEMA_079_REGISTRY_DIGEST", None) == (
         "2353261227ed72d030ab2426b1a7229c8a1302c669a241dc6b84e3e77e003cad"
     )
+    assert MIGRATION_REGISTRY.digest == (
+        "b6eaa819e9bd471350e48e431686c1ed6922e206608f1b673e0544c14014552d"
+    )
     assert CURRENT_SCHEMA_VERIFIER_CHECKSUM == (
-        "1987a3e7b27787ef5c4dcc4552e2713b1627b82aaf0760d8ccb881e5a4f30017"
+        "35bd630d2be86b48988d2fdbe16da54faea293aca68e80d6363db8fb41ded1de"
     )
     assert LEGACY_BASELINE_SOURCE_BLOB == "39cdc1d328f17840305b88158a892f5fd09c96dd"
     assert {"voice_session", "voice_turn"} <= BASELINE_REQUIRED_TABLES
