@@ -130,11 +130,17 @@ CI reports the JavaScript command separately from Ruff and runs it on pull reque
 The package cache is keyed to `components/AstralProjection/tooling/web-ci/package-lock.json`; CI records both the Playwright
 version, container digest, and pinned Chromium revision, and never falls back to a system browser.
 Each platform emits its native coverage format and the final merge gate maps an immutable event-aware
-base-to-candidate diff to repository-owned Python XML, Projection's lock-pinned v2 Node/browser V8
+base-to-candidate diff to repository-owned Python XML, Projection's lock-pinned v3 Node/browser V8
 union converted and executable-syntax-filtered to canonical Istanbul statement JSON,
 counter-validated Android app/core Kover XML, and line-complete Apple app/core/Watch coverage. The
 JavaScript input must carry the exact `astralprojection-node-browser-union` producer and
-`node-browser-union` lane identity; a browser-only or legacy producer envelope fails closed.
+`node-browser-union` lane identity. Its four required, disjoint source inventories are Node
+release tooling (seven files), the real staging browser's `client.js`, the offline Node VM's
+`service-worker.js`/`offline-registration.js`, and Chromium's `canvas-export.js`/`canvas-export-host.js`.
+Node v3 resolves each actual V8 observation before combining matching executable-line hits;
+browser conversion remains v2. A missing lane, wrong inventory, or legacy union fails closed.
+Synthetic offline/export checks qualify their own source coverage and do not replace staging
+or provider-issued evidence.
 The protected collector rejects raw or unfiltered V8 ranges and forces text hunks for maintained
 paths, so comments and candidate `.gitattributes` cannot inflate or hide coverage.
 Every changed maintained language and the combined executable lines must each be at least 90%; a
@@ -247,8 +253,12 @@ docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web
     NODE_INTERIM=/tmp/astral-node-interim.json
     NODE_COVERAGE=/tmp/astral-node.json
     BROWSER_COVERAGE=/tmp/astral-browser-istanbul.json
+    OFFLINE_V8_DIRECTORY=/tmp/astral-offline-v8
+    OFFLINE_COVERAGE=/work/build/060/coverage/offline-node.json
+    EXPORT_COVERAGE=/work/build/060/coverage/export-browser.json
     test ! -e "$NODE_V8_DIRECTORY"
-    mkdir "$NODE_V8_DIRECTORY"
+    test ! -e "$OFFLINE_V8_DIRECTORY"
+    mkdir "$NODE_V8_DIRECTORY" "$OFFLINE_V8_DIRECTORY"
     test "$(corepack npm --version)" = "11.16.0"
     corepack npm ci --ignore-scripts
     corepack npm run check:package-manager
@@ -259,11 +269,13 @@ docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web
     corepack npm run test:coverage-conversion:node
     corepack npm run test:coverage-union
     corepack npm run test:coverage-conversion:browser
-    corepack npm run browser:release -- --base-url "$STAGING_URL" --candidate-sha "$SHA" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/coverage/web-v8.json --coverage-istanbul-output "$BROWSER_COVERAGE"
+    NODE_V8_COVERAGE="$OFFLINE_V8_DIRECTORY" node --test tests/offline-worker-088.test.mjs
+    corepack npm run coverage:node -- --node-v8-directory "$OFFLINE_V8_DIRECTORY" --repo-root ../.. --output "$OFFLINE_COVERAGE"
+    corepack npm run browser:release -- --base-url "$STAGING_URL" --candidate-sha "$SHA" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/coverage/web-v8.json --coverage-istanbul-output "$BROWSER_COVERAGE" --export-coverage-output "$EXPORT_COVERAGE"
     corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_INTERIM"
     unset NODE_V8_COVERAGE
     corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_COVERAGE"
-    corepack npm run coverage:union -- --node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" --repo-root ../.. --output /work/build/060/coverage/web-istanbul.json
+    corepack npm run coverage:union -- --node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" --offline-node "$OFFLINE_COVERAGE" --export-browser "$EXPORT_COVERAGE" --repo-root ../.. --output /work/build/060/coverage/web-istanbul.json
   '
 ```
 

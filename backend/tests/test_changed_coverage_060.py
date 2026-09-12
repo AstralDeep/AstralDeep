@@ -78,7 +78,7 @@ def _load_xccov_exporter() -> ModuleType:
 xccov_exporter = _load_xccov_exporter()
 
 
-def test_javascript_report_identity_matches_projection_v2_union() -> None:
+def test_javascript_report_identity_matches_projection_v3_union() -> None:
     assert collector.JAVASCRIPT_REPORT_KEYS == {
         "schema_version",
         "producer",
@@ -91,7 +91,7 @@ def test_javascript_report_identity_matches_projection_v2_union() -> None:
     assert collector.JAVASCRIPT_REPORT_IDENTITY == {
         "schema_version": 1,
         "producer": "astralprojection-node-browser-union",
-        "producer_version": 2,
+        "producer_version": 3,
         "v8_to_istanbul_version": "9.3.0",
         "espree_version": "11.2.0",
         "coverage_lane": "node-browser-union",
@@ -3152,3 +3152,71 @@ def test_cli_strict_mode_requires_the_exact_eleven_slot_matrix(
     assert document["error"]["code"] == "incomplete_report_matrix"
     assert "voice_worker" in document["error"]["message"]
     assert "watchos" in document["error"]["message"]
+
+
+@pytest.mark.parametrize("version", [1, 2, 4, "3", True])
+def test_javascript_union_requires_current_four_lane_producer(tmp_path: Path, version: object) -> None:
+    report = tmp_path / "obsolete-or-forged-union.json"
+    document = _javascript_envelope({"backend/webrender/static/client.js": {}})
+    document["producer_version"] = version
+    report.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector.parse_coverage_report(report, "javascript")
+    assert failure.value.code == "unparseable_report"
+    assert "producer_version" in failure.value.message
+
+
+@pytest.mark.parametrize("relative", [
+    "backend/webrender/static/offline-registration.js",
+    "backend/webrender/static/service-worker.js",
+    "backend/webrender/static/canvas-export.js",
+    "backend/webrender/static/canvas-export-host.js",
+    "tooling/web-ci/coverage-conversion.mjs",
+    "tooling/web-ci/coverage-conversion-cli.mjs",
+    "tooling/web-ci/coverage-union.mjs",
+    "tooling/web-ci/coverage-union-cli.mjs",
+    "tooling/web-ci/eslint.config.mjs",
+    "tooling/web-ci/product-isolation.mjs",
+    "tooling/web-ci/release-runner.mjs",
+])
+@pytest.mark.parametrize("observation", ["covered", "uncovered", "missing"])
+def test_strict_four_lane_javascript_changed_files_require_their_own_observations(
+    tmp_path: Path, relative: str, observation: str,
+) -> None:
+    repo, selection, reports, slots = _projection_strict_case(tmp_path)
+    source = repo / relative
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("const value = 1;\n", encoding="utf-8")
+    candidate = _commit(repo, "change a canonical JavaScript lane source")
+    selection = _selection(repo, selection.base_sha, candidate)
+    composed = f"components/AstralProjection/{relative}"
+    assert {slot for slot in collector.PRODUCER_BY_KEY
+            if collector._producer_applies_to_path(slot, composed)} == {"javascript"}
+
+    document = json.loads(slots["javascript"].read_text(encoding="utf-8"))
+    if observation != "missing":
+        document["coverage"][relative] = {
+            "path": relative,
+            "statementMap": {"0": {"start": {"line": 1, "column": 0},
+                                   "end": {"line": 1, "column": 16}}},
+            "s": {"0": int(observation == "covered")},
+        }
+    # Existing client.js remains the independent useful-report witness. Its
+    # covered line cannot substitute for the added candidate file's own line.
+    slots["javascript"].write_text(json.dumps(document), encoding="utf-8")
+    if observation == "missing":
+        with pytest.raises(collector.CoveragePolicyError) as failure:
+            _evaluate_projection_strict(repo, selection, reports, slots)
+        assert failure.value.code == "producer_unmapped_changed_file"
+        assert relative in failure.value.message
+        assert "javascript" in failure.value.message
+    else:
+        decision = _evaluate_projection_strict(repo, selection, reports, slots)
+        assert decision["status"] == ("pass" if observation == "covered" else "fail")
+        assert decision["languages"]["javascript"] == {
+            "covered_lines": int(observation == "covered"), "executable_lines": 1,
+            "percent": 100.0 if observation == "covered" else 0.0,
+        }
+        if observation == "uncovered":
+            assert any(item["code"] == "coverage_below_threshold" and item["scope"] == "javascript"
+                       for item in decision["failures"])

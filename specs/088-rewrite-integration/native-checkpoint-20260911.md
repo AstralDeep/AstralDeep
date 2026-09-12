@@ -467,3 +467,82 @@ App Store Connect requires sign-in. This does not change application identities
 or establish upload access. The preserved 61ead0d AAB remains unsigned and not
 upload-ready; the upload keystore and protected Apple/store publisher setup are
 still missing. See `build/088/handoff/store-access-20260912.json`.
+
+## Portable native canvas export checkpoint — 2026-09-12
+
+Projection `a67274b606351f1fcab3dfebd430e25ba2fc4e2d` now captures the
+displayed Android and iOS/macOS canvas: current disclosure state, effective
+columns, measured image dimensions and loaded image/chart pixels. Hidden
+metadata and remote image addresses do not become display content. Removed
+Apple image nodes release their retained memory; matching hidden/offscreen
+nodes keep their state, and late callbacks from replaced nodes are refused.
+Missing pixels, unsupported presentation or changed ownership fail visibly.
+
+Export retains the existing authenticated GET authorization/audit, followed by
+a separately authorized, bounded presentation POST. Deep calls Projection's
+strict display renderer without another ROTE pass or durable capture storage.
+Native clients finalize the returned presentation in a private, network-denied
+WebView using the same script-free HTML finalizer as web export. They recheck
+owner, conversation and revision before saving and never silently fall back to
+the older static HTML. Share retains its existing behavior. Watch's declared
+file-I/O omission remains a documented parity limit, and Windows has no redesign.
+
+The new UI protocol canonical digest is
+`e5f31514c04cde55cdf6567e04ccc1f95e8ee57e06f7f761bff3c8cb75b84707`.
+The exact Projection commit and digest are pinned together. This increment
+adds no product runtime dependency, primitive, schema revision or feature flag;
+the endpoint uses the existing `artifact_export` gate. Plane remains at
+`daedeed4690282da67cd0a1764668b8dc84c801f` / schema `088.001`.
+
+Local diagnostics on the frozen sources:
+
+- Projection: 1,464 Python tests passed; changed Python coverage versus
+  `origin/main` was 495/509 (97.25%). The final provenance refresh passed all
+  21 replay/protocol checks. The 519 original imports now comprise 180
+  transformations, including 16 removals, and 339 unchanged entries.
+- Shared export: 28 pinned, network-disabled Chromium tests passed. The two
+  portable JavaScript modules measured 86/87 and 80/80 executable lines.
+  Canonical JavaScript coverage now keeps four mandatory disjoint producer
+  lanes; missing staging-client observations still refuse qualification.
+- Deep: 113 export/auth/PostgreSQL tests passed against the final Projection
+  helper, including current owner/revision checks, capacity, cancellation,
+  timeout, malformed body and response refusal. Composition/ownership/local
+  component checks passed 177 tests. Four digest-locked wheels were built,
+  installed and verified in an isolated, network-disabled Python 3.11 container;
+  the installed portable presentation import and dependency check passed.
+- Android: 118 core and 336 app JVM tests plus 18 isolated device tests passed,
+  with lint, core coverage and build gates. A separate genuine JaCoCo diagnostic
+  matched original class identities across JVM and device executions. Its
+  export slice was 668/738 (90.51%); the whole PR was 1,626/2,197 (74.01%).
+  Canonical collector integration remains open; these are distinct results.
+- Apple: 213 Core tests and the final 198 iOS app plus six workspace UI tests
+  passed. The production GET/capture/POST/WebKit/private-file pipeline and
+  authorization/presentation denials run against a private loopback fixture.
+  The final iOS export slice measured 889/955 (93.09%); the whole PR measured
+  2,057/2,601 (79.08%). The full chart scroll was observed on the isolated
+  iPhone. A prior Mac run passed 209 app tests; final Mac qualification is
+  blocked by testmanagerd control-session timeout before any test starts.
+  That failed run is retained and is not relabeled as a pass.
+
+An independent, private upgrade rehearsal used exact Deep `a9aeb32` and Plane
+`daedeed` startup to upgrade a copied 079 database to 088, repeat startup and
+recover a separate predecessor clone. It compared 87 existing tables and
+1,545 rows, including conversations, messages, steps, commits and encrypted
+provider configuration. Only schema/reconciliation metadata changed. All 12
+copied durable files remained equal. No workers, providers or institutional
+sessions were started. This diagnostic snapshot is not a quiesced joint
+production backup or a final-candidate staging result.
+
+Receipts remain under each worktree's ignored `build/088/` directories:
+`portable-export-shared`, `android-portable-export-final`,
+`android-coverage-diagnostic`, `apple-capture`, `canonical-javascript`,
+`workspace-export` and `export-integration`. The upgrade receipt is in the main
+Deep checkout's `build/088/upgrade-recovery-a9aeb32/` directory. Private backup
+contents and user data are excluded from these tracked notes.
+
+These commits are local, and the running signed-in backend remains the earlier
+079-based image. Whole-PR native coverage, final Mac/live native checks,
+qualifying staging, protected publication and the unfinished 088 capability
+families remain open. PRs 195/15/8 remain drafts at their earlier remote heads.
+The preserved 61ead0d AAB is unsigned and cannot be uploaded as a release.
+No product push, store upload, PR promotion or release is claimed.

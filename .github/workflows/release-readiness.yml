@@ -642,8 +642,12 @@ jobs:
             NODE_INTERIM=/tmp/astral-node-interim.json
             NODE_COVERAGE=/tmp/astral-node.json
             BROWSER_COVERAGE=/tmp/astral-browser.json
+            OFFLINE_V8_DIRECTORY=/work/build/060/release-evidence/coverage/offline-node-v8
+            OFFLINE_COVERAGE=/work/build/060/release-evidence/coverage/offline-node.json
+            EXPORT_COVERAGE=/work/build/060/release-evidence/coverage/export-browser.json
             test ! -e "$NODE_V8_DIRECTORY"
-            mkdir "$NODE_V8_DIRECTORY"
+            test ! -e "$OFFLINE_V8_DIRECTORY"
+            mkdir "$NODE_V8_DIRECTORY" "$OFFLINE_V8_DIRECTORY"
             test "$(corepack npm --version)" = "11.16.0"
             corepack npm ci --ignore-scripts
             corepack npm run check:package-manager
@@ -654,11 +658,13 @@ jobs:
             corepack npm run test:coverage-conversion:node
             corepack npm run test:coverage-union
             corepack npm run test:coverage-conversion:browser
-            corepack npm run browser:release -- --base-url "${{ needs.stage-deploy.outputs.endpoint }}" --candidate-sha "${{ inputs.candidate_sha }}" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/release-evidence/coverage/web-v8.json --coverage-istanbul-output "$BROWSER_COVERAGE"
+            NODE_V8_COVERAGE="$OFFLINE_V8_DIRECTORY" node --test tests/offline-worker-088.test.mjs
+            corepack npm run coverage:node -- --node-v8-directory "$OFFLINE_V8_DIRECTORY" --repo-root ../.. --output "$OFFLINE_COVERAGE"
+            corepack npm run browser:release -- --base-url "${{ needs.stage-deploy.outputs.endpoint }}" --candidate-sha "${{ inputs.candidate_sha }}" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/release-evidence/coverage/web-v8.json --coverage-istanbul-output "$BROWSER_COVERAGE" --export-coverage-output "$EXPORT_COVERAGE"
             corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_INTERIM"
             unset NODE_V8_COVERAGE
             corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_COVERAGE"
-            corepack npm run coverage:union -- --node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" --repo-root ../.. --output /work/build/060/release-evidence/coverage/web-istanbul.json'
+            corepack npm run coverage:union -- --node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" --offline-node "$OFFLINE_COVERAGE" --export-browser "$EXPORT_COVERAGE" --repo-root ../.. --output /work/build/060/release-evidence/coverage/web-istanbul.json'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: evidence-web-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
