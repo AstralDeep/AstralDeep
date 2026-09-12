@@ -319,6 +319,8 @@ class RuntimeMetricsResponse(BaseModel):
 
 
 operation_router = APIRouter(prefix="/api", tags=["Operations"])
+from orchestrator.work_api import work_router as _work_read_router  # noqa: E402
+operation_router.include_router(_work_read_router)
 
 
 def _utc_json(value: datetime | None) -> str | None:
