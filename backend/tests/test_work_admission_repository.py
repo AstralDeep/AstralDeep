@@ -323,6 +323,8 @@ def test_in_memory_phase_and_lease_seams_are_explicit_and_fenced() -> None:
             ).operation_id
             == accepted.operation_id
         )
+        same_scope = coordinator.renew_execution_lease(claim.fence, transaction=transaction)
+        assert same_scope.lease_expires_at == clock.current + coordinator.slot_lease
     renewal = coordinator.renew_execution_lease(claim.fence)
     assert renewal.lease_expires_at == clock.current + timedelta(seconds=30)
     clock.advance(timedelta(seconds=30))
