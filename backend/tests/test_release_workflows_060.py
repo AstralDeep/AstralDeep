@@ -911,6 +911,7 @@ def _assert_release_policy_archive_inventory(workflow: str) -> None:
         "scripts/check_changed_coverage.py",
         "scripts/prepare_release_evidence.py",
         "scripts/apple_coverage_artifacts.py",
+        "scripts/native_xccov_domain.py",
         "scripts/merge_xccov_line_coverage.py",
         "scripts/export_xccov_line_coverage.py",
         "scripts/verify_composition.py",
@@ -931,6 +932,7 @@ def test_release_policy_archive_includes_exact_normalizer_policy_closure() -> No
     "policy_file",
     [
         "scripts/apple_coverage_artifacts.py",
+        "scripts/native_xccov_domain.py",
         "scripts/merge_xccov_line_coverage.py",
         "scripts/export_xccov_line_coverage.py",
         "scripts/verify_composition.py",
@@ -2279,6 +2281,7 @@ def test_apple_normalizer_executes_only_pinned_policy_and_requires_four_raw_ios_
     for filename in (
         "verify_composition.py",
         "apple_coverage_artifacts.py",
+        "native_xccov_domain.py",
         "merge_xccov_line_coverage.py",
         "export_xccov_line_coverage.py",
     ):
@@ -2308,3 +2311,59 @@ def test_apple_normalizer_executes_only_pinned_policy_and_requires_four_raw_ios_
     assert 'elif [[ "$PRODUCER_PLATFORM" == macos ]]; then' in text
     assert 'report="$final/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"' in text
     assert 'test ! -e "$report" && test ! -L "$report"' in text
+
+
+def _assert_ios_native_domains_are_protected_and_reconstructed(text):
+    assert (
+        "cmp -s protected-policy/scripts/native_xccov_domain.py components/AstralProjection/scripts/native_xccov_domain.py"
+        in text
+    )
+    policy_list = text.partition("for policy in ")[2].partition("; do")[0]
+    assert "protected-policy/scripts/native_xccov_domain.py" in policy_list
+    collect = (
+        "python3 -I protected-policy/scripts/apple_coverage_artifacts.py native-domain"
+    )
+    verify = "python3 -I protected-policy/scripts/apple_coverage_artifacts.py verify-native-domains"
+    assert text.count(collect) == text.count(verify) == 1
+    assert text.index("validate-observations") < text.index(collect)
+    assert text.index('test ! -e "$final"') < text.index(collect)
+    assert (
+        text.index(collect)
+        < text.index("python3 -I protected-policy/scripts/merge_xccov_line_coverage.py")
+        < text.index(verify)
+    )
+    assert (
+        '--native-domain "$final/coverage/native-domains/apple-ios-${lane}.json"'
+        in text
+    )
+    assert '--repo "$PWD" --platform ios --output "$raw" --report "$report"' in text
+    # Legacy platforms have neither an iOS witness nor a new tail acceptance.
+    assert (
+        'else\n          python3 -I protected-policy/scripts/export_xccov_line_coverage.py --repo "$PWD"'
+        in text
+    )
+
+
+def test_ios_native_mapping_policy_is_byte_bound_and_independently_reconstructed():
+    _assert_ios_native_domains_are_protected_and_reconstructed(
+        _workflow_text(APPLE_NORMALIZER)
+    )
+
+
+@pytest.mark.parametrize(
+    "remove",
+    [
+        "cmp -s protected-policy/scripts/native_xccov_domain.py components/AstralProjection/scripts/native_xccov_domain.py",
+        "python3 -I protected-policy/scripts/apple_coverage_artifacts.py verify-native-domains",
+        '--native-domain "$final/coverage/native-domains/apple-ios-${lane}.json"',
+    ],
+)
+def test_native_domain_workflow_guard_refuses_candidate_claim_or_omitted_recheck(
+    remove,
+):
+    text = _workflow_text(APPLE_NORMALIZER)
+    assert remove in text
+    with pytest.raises(AssertionError):
+        _assert_ios_native_domains_are_protected_and_reconstructed(
+            text.replace(remove, "", 1)
+        )

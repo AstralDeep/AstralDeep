@@ -10,6 +10,8 @@ every observation, and writes the exact mapping consumed by
 from __future__ import annotations
 
 import argparse
+import copy
+import importlib.util
 import json
 import os
 import queue
@@ -574,10 +576,10 @@ def _local_archive_repo_root(repo: Path) -> str:
     return _canonical_archive_repo_root(raw)
 
 
-def _read_source_line_count(
+def _read_source_bytes(
     repo: Path, relative_path: str, *, export_deadline: float | None = None
-) -> int:
-    """Count physical lines through one stable, regular, non-symlink descriptor."""
+) -> bytes:
+    """Read source through one stable, regular, non-symlink descriptor."""
 
     path = _validate_path(Path(relative_path), repo=repo, kind="source")
     try:
@@ -628,7 +630,28 @@ def _read_source_line_count(
     lines = content.count(b"\n") + int(bool(content) and not content.endswith(b"\n"))
     if lines <= 0 or lines > MAX_SOURCE_LINES:
         raise ExportError("invalid_source_size", "tracked source line count is out of bounds")
-    return lines
+    return content
+
+
+def _read_source_line_count(
+    repo: Path, relative_path: str, *, export_deadline: float | None = None
+) -> int:
+    """Count physical source lines without inferring their executable status."""
+    content = _read_source_bytes(repo, relative_path, export_deadline=export_deadline)
+    return content.count(b"\n") + int(not content.endswith(b"\n"))
+
+
+def _native_domain_policy() -> Any:
+    """Load only this policy's fixed sibling native-domain validator."""
+    path = Path(__file__).resolve().with_name("native_xccov_domain.py")
+    if not path.is_file() or path.is_symlink():
+        raise ExportError("native_domain_policy_unavailable", "native domain policy unavailable")
+    spec = importlib.util.spec_from_file_location("_xccov_native_domain", path)
+    if spec is None or spec.loader is None:
+        raise ExportError("native_domain_policy_unavailable", "native domain policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _integer(value: Any, *, label: str) -> int:
@@ -781,6 +804,7 @@ def export_xccov(
     output: Path,
     platform: str,
     archive_repo_root: str | Path | None = None,
+    native_domain: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Export one platform-filtered normalized xccov mapping."""
 
@@ -883,6 +907,27 @@ def export_xccov(
     ).encode("utf-8")
     if len(rendered) != rendered_size:
         raise ExportError("output_size_mismatch", "normalized coverage size is unstable")
+    if native_domain is not None:
+        policy = _native_domain_policy()
+        try:
+            policy.require(platform == "ios")
+            domain = policy.validate_domain(copy.deepcopy(native_domain))
+            policy.require(set(report) <= set(domain["sources"]))
+            for path, facts in domain["sources"].items():
+                actual = policy.source_facts(_read_source_bytes(repo, path, export_deadline=deadline))
+                policy.require(all(facts[key] == value for key, value in actual.items()))
+            # The binary maps some Core sources that an App-only raw lane may
+            # not observe. Preserve that complete mapping but record only the
+            # actual raw archive's selected source inventory as observations.
+            domain["observed_sources"] = sorted(report)
+            report = policy.native_report(report, {domain["lane"]: domain})
+        except policy.DomainError as exc:
+            raise ExportError("native_domain_mismatch", "native domain does not match observations") from exc
+        rendered = (
+            json.dumps(report, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+        ).encode("utf-8")
+        if len(rendered) > MAX_OUTPUT_BYTES:
+            raise ExportError("output_too_large", "normalized coverage exceeds its bound")
     _write_new_output(destination, rendered)
     return report
 
@@ -897,6 +942,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--platform", choices=sorted(PLATFORM_ROOTS), required=True)
+    parser.add_argument("--native-domain", type=Path)
     return parser
 
 
@@ -911,6 +957,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             output=args.output,
             platform=args.platform,
             archive_repo_root=args.archive_repo_root,
+            native_domain=(
+                _strict_json(_read_source_bytes(args.repo, str(args.native_domain)))
+                if args.native_domain is not None else None
+            ),
         )
     except (ExportError, OSError) as exc:
         code = exc.code if isinstance(exc, ExportError) else "filesystem_error"

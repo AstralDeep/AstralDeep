@@ -206,6 +206,7 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
 
     expected_scripts = {
         "apple_coverage_artifacts.py",
+        "native_xccov_domain.py",
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
         "check_doc_links.py",
@@ -231,6 +232,7 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
         "backend/tests/test_changed_coverage_060.py",
         "backend/tests/test_release_tooling_coverage_060.py",
         "backend/tests/test_apple_coverage_artifacts_088.py",
+        "backend/tests/test_native_xccov_domain_088.py",
         "backend/tests/test_merge_xccov_coverage_088.py",
         "backend/tests/test_documentation_060.py",
         "backend/tests/test_quickstart_commands.py",

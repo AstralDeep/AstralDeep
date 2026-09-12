@@ -28,6 +28,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 
@@ -807,17 +808,127 @@ def validate_observations(repo, platform, output):
     return observations
 
 
+def _native_policy(name):
+    """Load only an allowlisted sibling of this protected artifact helper."""
+    require(name in {"native_xccov_domain", "export_xccov_line_coverage", "merge_xccov_line_coverage"})
+    path = Path(__file__).resolve().with_name(name + ".py")
+    require(path.is_file() and not path.is_symlink())
+    spec = importlib.util.spec_from_file_location("_apple_native_" + name, path)
+    require(spec is not None and spec.loader is not None)
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    return policy
+
+
+def native_domain(repo, output, lane, archive_root):
+    """Independently derive an iOS lane domain from validated retained Products.
+
+    The raw candidate cannot supply a domain, choose another mapping object, or
+    substitute a different architecture. The tested-source/artifact closure and
+    native test identities are required before reading compiler geometry.
+    """
+    require(lane in {"core", "unit", "ui", "staging"})
+    state = validate(repo, "ios", output)
+    policy = _native_policy("native_xccov_domain")
+    exporter = _native_policy("export_xccov_line_coverage")
+    kind = "core_products" if lane == "core" else "products"
+    member = policy.BINARY_MEMBERS["core" if lane == "core" else "app"]
+    name = member.removeprefix("Products/")
+    require(name in state[kind] and stat.S_ISREG(state[kind][name]["mode"]))
+    archive_member = f"coverage/raw/apple-ios-{kind}.zip"
+    archive = output / archive_member
+    # validate() already checked every archive entry, test-host binding and
+    # exact Products/app subtree. Read just this fixed regular binary member.
+    with zipfile.ZipFile(archive) as bundle:
+        raw = bundle.read(member)
+    require(digest(raw) == state[kind][name]["sha256"])
+    result = output / "coverage/raw" / f"apple-ios-{lane}.xcresult"
+    within(repo, result)
+    require(result.is_dir() and not result.is_symlink())
+    deadline = time.monotonic() + 15 * 60
+    summary = xcresult_json(result, "summary", deadline=deadline)
+    tests = xcresult_json(result, "tests", deadline=deadline)
+    observation_cases(summary, tests, lane)
+    prefix = COMPONENT + "/"
+    tracked = {
+        path for path in state["sources"]
+        if path.endswith(".swift")
+        and path.removeprefix(prefix).startswith((policy.CORE_ROOT, policy.APP_ROOT))
+    }
+
+    def source_bytes(path):
+        require(path in state["sources"])
+        raw_source = exporter._read_source_bytes(repo, path, export_deadline=deadline)
+        require(digest(raw_source) == state["sources"][path]["sha256"])
+        return raw_source
+
+    with tempfile.TemporaryDirectory(prefix="apple-native-domain-", dir=output.parent) as directory:
+        binary = Path(directory) / "mapping-binary"
+        write_new(binary, raw)
+        domain = policy.collect_domain(
+            binary_path=binary, binary_bytes=raw,
+            binary_identity={
+                "member": member, "sha256": digest(raw),
+                "artifact_member": archive_member,
+                "artifact_sha256": state["build_archives"][kind],
+            },
+            archive_root=archive_root, prefix=prefix, lane=lane,
+            tracked=tracked, source_bytes=source_bytes,
+            run=lambda command, bound: exporter._bounded_command(
+                command, cwd=repo, max_stdout_bytes=bound, export_deadline=deadline,
+            ),
+            summary=summary, tests=tests,
+        )
+    # Recheck immutable archive/source identities after bounded native reads.
+    require(validate(repo, "ios", output) == state)
+    return domain
+
+
+def verify_native_domains(repo, output, report, archive_root):
+    """Reconstruct all native rows/domains before protected publication of evidence.
+
+    A structurally plausible self-asserted domain is not proof. Only exact
+    equality with fresh protected reads of raw xcresults and retained binaries
+    is accepted here. This still does not prove profile-to-executable UUIDs.
+    """
+    within(repo, report)
+    policy = _native_policy("native_xccov_domain")
+    actual = policy.parse_native_report(document(report))
+    require(set(actual["domains"]) == {"core", "unit", "ui", "staging"})
+    exporter = _native_policy("export_xccov_line_coverage")
+    merger = _native_policy("merge_xccov_line_coverage")
+    with tempfile.TemporaryDirectory(prefix="apple-native-recheck-", dir=output.parent) as directory:
+        inputs = {}
+        for lane in ("core", "unit", "ui", "staging"):
+            destination = Path(directory) / (lane + ".json")
+            exporter.export_xccov(
+                repo=repo, xcresult=output / "coverage/raw" / f"apple-ios-{lane}.xcresult",
+                output=destination, platform="ios", archive_repo_root=archive_root,
+                native_domain=native_domain(repo, output, lane, archive_root),
+            )
+            inputs[lane] = destination
+        regenerated = merger.merge_xccov_reports(
+            repo=repo, inputs=inputs, output=Path(directory) / "union.json",
+            platform="ios", profile="release",
+        )
+        require(actual == regenerated)
+
+
 def main(argv=None):
     """Run collection or protected validation with closed diagnostic failures."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "operation", choices=("prepare", "verify", "validate", "validate-observations")
+        "operation", choices=("prepare", "verify", "validate", "validate-observations", "native-domain", "verify-native-domains")
     )
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--platform", choices=("ios", "macos"), required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--derived-data", type=Path)
     parser.add_argument("--core-derived-data", type=Path)
+    parser.add_argument("--lane", choices=("core", "unit", "ui", "staging"))
+    parser.add_argument("--archive-repo-root")
+    parser.add_argument("--domain-output", type=Path)
+    parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.operation == "prepare":
@@ -829,6 +940,14 @@ def main(argv=None):
                 args.platform,
                 args.output,
             )
+        elif args.operation == "native-domain":
+            require(args.platform == "ios" and args.lane is not None and args.domain_output is not None)
+            within(args.repo, args.domain_output)
+            value = native_domain(args.repo, args.output, args.lane, args.archive_repo_root)
+            write_new(args.domain_output, json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        elif args.operation == "verify-native-domains":
+            require(args.platform == "ios" and args.report is not None)
+            verify_native_domains(args.repo, args.output, args.report, args.archive_repo_root)
         elif args.operation == "validate-observations":
             validate_observations(args.repo, args.platform, args.output)
         else:

@@ -968,3 +968,276 @@ def test_observation_query_cannot_change_an_earlier_lane(built, monkeypatch):
 
     monkeypatch.setattr(helper, "xcresult_json", mutate)
     assert helper.main(args(built, "validate-observations")) == 2
+
+
+def native_fixture(tmp_path):
+    """Synthetic retained inputs exercise policy orchestration, not native qualification."""
+    from backend.tests.test_native_xccov_domain_088 import _macho, _mapping, _metadata
+    from scripts import native_xccov_domain as domain
+
+    repo = tmp_path / "repo"
+    output = repo / "build/evidence"
+    output.mkdir(parents=True)
+    prefix = helper.COMPONENT + "/"
+    paths = {
+        "app": prefix + domain.APP_ROOT + "Example.swift",
+        "core": prefix + domain.CORE_ROOT + "Example.swift",
+    }
+    for path in paths.values():
+        write(repo / path, b"enum Example {\n let value = 1\n}\n")
+    git(repo / helper.COMPONENT, "init", "-q")
+    git(repo / helper.COMPONENT, "add", ".")
+    git(repo / helper.COMPONENT, "commit", "-qm", "sources")
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "candidate")
+    state = {
+        "sources": {
+            path: {"sha256": helper.digest((repo / path).read_bytes())}
+            for path in paths.values()
+        },
+        "build_archives": {},
+    }
+    for role in ("core", "app"):
+        kind = "core_products" if role == "core" else "products"
+        member = domain.BINARY_MEMBERS[role]
+        raw = _macho("core" if role == "core" else "ui")
+        archive = output / f"coverage/raw/apple-ios-{kind}.zip"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive, "x") as stream:
+            stream.writestr(member, raw)
+        state[kind] = {
+            member.removeprefix("Products/"): {
+                "mode": 0o100755,
+                "sha256": helper.digest(raw),
+            }
+        }
+        state["build_archives"][kind] = helper.digest(archive.read_bytes())
+    for lane in domain.LANES:
+        result = output / f"coverage/raw/apple-ios-{lane}.xcresult"
+        write(result / "fixture", lane.encode())
+    return repo, output, state, paths, _mapping, _metadata
+
+
+def test_native_domain_reconstructs_selected_retained_binary_and_exact_sources(
+    tmp_path, monkeypatch
+):
+    from scripts import export_xccov_line_coverage as exporter
+    from scripts import native_xccov_domain as domain
+
+    repo, output, state, paths, mapping, metadata = native_fixture(tmp_path)
+    validated = []
+
+    def validate(*args):
+        validated.append(args)
+        return state
+
+    monkeypatch.setattr(helper, "validate", validate)
+    monkeypatch.setattr(
+        helper,
+        "_native_policy",
+        lambda name: domain if name == "native_xccov_domain" else exporter,
+    )
+
+    def native_metadata(result, section, **kwargs):
+        summary, tests = observation(result.stem.removeprefix("apple-ios-"))
+        device = {
+            "deviceId": "fixture-device",
+            "architecture": "arm64",
+            "platform": "iOS Simulator",
+        }
+        summary["devicesAndConfigurations"] = [{"device": device}]
+        tests["devices"] = [device]
+        return summary if section == "summary" else tests
+
+    monkeypatch.setattr(helper, "xcresult_json", native_metadata)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[-1] == "-version":
+            return b"Xcode 26.6\nBuild version 17F113\n"
+        if command[-1] == "--version":
+            return b"Apple LLVM version 21.0.0\n"
+        lane = "core" if len(calls) <= 3 else "ui"
+        selected = [paths["core"]] if lane == "core" else list(paths.values())
+        value = mapping(
+            paths=tuple(path.removeprefix(helper.COMPONENT + "/") for path in selected),
+            prefix=helper.COMPONENT + "/",
+        )
+        return json.dumps(value).encode()
+
+    monkeypatch.setattr(exporter, "_bounded_command", run)
+    # The fixture LLVM root is the same explicit historical path passed here.
+    from backend.tests.test_native_xccov_domain_088 import ROOT
+
+    core = helper.native_domain(repo, output, "core", ROOT)
+    app = helper.native_domain(repo, output, "ui", ROOT)
+    assert set(core["sources"]) == {paths["core"]}
+    assert set(app["sources"]) == set(paths.values())
+    assert len(validated) == 4
+    assert all(
+        command[2:4] == ["export", "--empty-profile"]
+        for command in calls
+        if "export" in command
+    )
+    assert (
+        app["binary"]["sha256"]
+        == state["products"][domain.BINARY_MEMBERS["app"].removeprefix("Products/")][
+            "sha256"
+        ]
+    )
+    assert not list(output.parent.glob("apple-native-domain-*"))
+
+
+@pytest.mark.parametrize("forgery", [False, True])
+def test_protected_reconstruction_refuses_self_asserted_reduced_mapping_domain(
+    tmp_path, monkeypatch, forgery
+):
+    from scripts import native_xccov_domain as domain
+    from scripts import export_xccov_line_coverage as exporter
+    from scripts import merge_xccov_line_coverage as merger
+
+    repo, output, state, paths, _mapping, _metadata = native_fixture(tmp_path)
+    prefix = helper.COMPONENT + "/"
+
+    def witness(_repo, _output, lane, _archive_root):
+        selected = [paths["core"]] if lane == "core" else list(paths.values())
+        return domain.make_domain(
+            geometry={
+                path: {"native_last_line": 2, "geometry_sha256": "d" * 64}
+                for path in selected
+            },
+            source_bytes=lambda path: (repo / path).read_bytes(),
+            binary={
+                "member": domain.BINARY_MEMBERS["core" if lane == "core" else "app"],
+                "sha256": "a" * 64,
+                "artifact_sha256": "b" * 64,
+                "artifact_member": f"coverage/raw/apple-ios-{'core_products' if lane == 'core' else 'products'}.zip",
+            },
+            observed_sources=sorted(selected),
+            prefix=prefix,
+            lane=lane,
+        )
+
+    monkeypatch.setattr(helper, "native_domain", witness)
+    modules = {
+        "native_xccov_domain": domain,
+        "export_xccov_line_coverage": exporter,
+        "merge_xccov_line_coverage": merger,
+    }
+    monkeypatch.setattr(helper, "_native_policy", modules.__getitem__)
+    original_run = exporter._bounded_command
+
+    def run(command, **kwargs):
+        if command[0] == "git":
+            return original_run(command, **kwargs)
+        lane = Path(command[-1]).stem.removeprefix("apple-ios-")
+        selected = [paths["core"]] if lane == "core" else [paths["app"]]
+        if "--file-list" in command:
+            return ("\n".join(str(repo / path) for path in selected) + "\n").encode()
+        queried = command[command.index("--file") + 1]
+        return json.dumps(
+            {
+                queried: [
+                    {"line": 1, "isExecutable": False},
+                    {"line": 2, "isExecutable": True, "executionCount": 1},
+                ]
+            }
+        ).encode()
+
+    monkeypatch.setattr(exporter, "_bounded_command", run)
+    inputs = {}
+    for lane in domain.LANES:
+        inputs[lane] = output / (lane + ".json")
+        exporter.export_xccov(
+            repo=repo,
+            xcresult=output / f"coverage/raw/apple-ios-{lane}.xcresult",
+            output=inputs[lane],
+            platform="ios",
+            native_domain=witness(repo, output, lane, str(repo)),
+        )
+    report = output / "union.json"
+    actual = merger.merge_xccov_reports(
+        repo=repo, inputs=inputs, output=report, platform="ios", profile="release"
+    )
+    if forgery:
+        # Genuine source hash and syntactically valid binary/geometry digests
+        # cannot authenticate a reduced domain or missing executable row.
+        for value in actual["domains"].values():
+            for facts in value["sources"].values():
+                facts["native_last_line"] = 1
+                facts["geometry_sha256"] = "c" * 64
+        for rows in actual["coverage"].values():
+            rows.pop()
+        domain.parse_native_report(actual)  # shape-only consumer is not authority
+        report.write_text(json.dumps(actual))
+        with pytest.raises(helper.ArtifactError):
+            helper.verify_native_domains(repo, output, report, str(repo))
+    else:
+        helper.verify_native_domains(repo, output, report, str(repo))
+    assert not list(output.parent.glob("apple-native-recheck-*"))
+
+
+def test_native_policy_loads_fixed_siblings_and_refuses_other_imports():
+    assert (
+        helper._native_policy("native_xccov_domain").REPORT_FORMAT
+        == "astral.xccov-native/v1"
+    )
+    assert callable(helper._native_policy("export_xccov_line_coverage").export_xccov)
+    assert callable(
+        helper._native_policy("merge_xccov_line_coverage").merge_xccov_reports
+    )
+    with pytest.raises(helper.ArtifactError):
+        helper._native_policy("../../candidate")
+
+
+def test_native_cli_operations_are_ios_only_create_only_and_data_free(
+    tmp_path, monkeypatch, capsys
+):
+    repo = tmp_path / "repo"
+    output = repo / "build/evidence"
+    output.mkdir(parents=True)
+    value = {"fixture": True}
+    calls = []
+    monkeypatch.setattr(helper, "native_domain", lambda *args: value)
+    monkeypatch.setattr(
+        helper, "verify_native_domains", lambda *args: calls.append(args)
+    )
+    destination = output / "domain.json"
+    common = [
+        "--repo",
+        str(repo),
+        "--platform",
+        "ios",
+        "--output",
+        str(output),
+        "--archive-repo-root",
+        "/actual/source",
+    ]
+    command = [
+        "native-domain",
+        *common,
+        "--lane",
+        "ui",
+        "--domain-output",
+        str(destination),
+    ]
+    assert helper.main(command) == 0
+    assert json.loads(destination.read_text()) == value
+    before = destination.read_bytes()
+    assert helper.main(command) == 2
+    assert destination.read_bytes() == before
+    assert (
+        helper.main(["verify-native-domains", *common, "--report", str(destination)])
+        == 0
+    )
+    assert calls == [(repo, output, destination, "/actual/source")]
+    assert helper.main(["native-domain", *common]) == 2
+    assert helper.main(["verify-native-domains", *common]) == 2
+    changed = list(command)
+    changed[changed.index("ios")] = "macos"
+    assert helper.main(changed) == 2
+    assert set(capsys.readouterr().err.splitlines()) == {
+        "apple_coverage_artifact_invalid"
+    }

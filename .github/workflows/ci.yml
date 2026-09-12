@@ -59,6 +59,7 @@ jobs:
             backend/tests/test_changed_coverage_060.py
             backend/tests/test_release_tooling_coverage_060.py
             backend/tests/test_apple_coverage_artifacts_088.py
+            backend/tests/test_native_xccov_domain_088.py
             backend/tests/test_merge_xccov_coverage_088.py
             backend/tests/test_documentation_060.py
             backend/tests/test_quickstart_commands.py
