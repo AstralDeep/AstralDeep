@@ -399,7 +399,8 @@ async def begin_account_retirement(
                 "status": "reconciliation_required",
                 "code": "account_retirement_reconciliation_required",
                 "unresolved_action_count": exc.unresolved_action_count,
-                "detail": "Ongoing agents were stopped. Review their unresolved actions before completing account retirement.",
+                "retained_assignment_count": exc.retained_assignment_count,
+                "detail": "Work was stopped. Retained tasks or unresolved actions need reconciliation before account retirement.",
             },
         )
     except Exception as exc:

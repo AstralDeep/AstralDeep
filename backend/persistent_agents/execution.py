@@ -68,7 +68,7 @@ async def safe_text(text: str, urls: tuple[str, ...] = ()) -> None:
 
 class ActionExecutor:
     def __init__(self, runner, claim, operation_fence, websocket, *, interactive=False,
-                 interactive_receipt_id=None, remote_marker=None):
+                 interactive_receipt_id=None, remote_marker=None, approved_action_id=None):
         self.runner = runner
         self.orch = runner.orch
         self.service = runner.service
@@ -79,6 +79,7 @@ class ActionExecutor:
         self.interactive = interactive
         self.interactive_receipt_id = interactive_receipt_id
         self.remote_marker = remote_marker
+        self.approved_action_id = approved_action_id
         self.record = claim.assignment
         self.binding = AssignmentOperationBinding(
             str(operation_fence.operation_id), operation_fence.execution_generation,
@@ -214,8 +215,7 @@ class ActionExecutor:
 
         async def start():
             nonlocal permit_issued
-            def transaction(tx, repository):
-                self.orch.work_admission.assert_current_execution(self.operation_fence, transaction=tx)
+            def transaction(tx, repository, _current):
                 return repository.start_action(
                     tx, fence=self.claim.fence, action_id=action.action_id, attempt_id=attempt_id,
                     expected_request_digest=action.intent.request_digest,
@@ -224,7 +224,10 @@ class ActionExecutor:
                     interactive_receipt_id=self.interactive_receipt_id
                     if self.interactive else None,
                 )
-            permit = await self.store.transaction(transaction)
+            permit = await self.store.current_execution_transaction(
+                fence=self.claim.fence, binding=self.binding, action_id=action.action_id,
+                callback=transaction,
+            )
             permit_issued = True
             return permit
 
@@ -285,14 +288,31 @@ class ActionExecutor:
             receipt = AssignmentActionOutcome(
                 outcome=outcome, result_digest=digest(result), result=result, actual=actual,
             )
+            result_context = {}
+            if getattr(self.record, "execution_profile", "persistent") == "one_shot":
+                # An authentic old permit must settle even when a current claim,
+                # admission generation or fresh remote authority is no longer
+                # available. Only a fresh matching observation may retain content.
+                try:
+                    current_checks = await self.refresh(request if request["kind"] == "tool" else None)
+                    if (current_checks["permission_digest"] == action.intent.permission_digest
+                            and current_checks["precondition_digest"] == action.intent.precondition_digest):
+                        result_context = {"result_fence": self.claim.fence,
+                                          "result_binding": self.binding}
+                except Exception:  # noqa: BLE001 - settlement survives unavailable authority
+                    pass
             retained = await self.store.call(
                 "record_action_outcome", owner_id=self.record.owner_id,
                 assignment_id=self.record.assignment_id, action_id=action.action_id,
                 attempt_id=attempt_id, dispatch_token=permit.dispatch_token,
                 expected_request_digest=action.intent.request_digest, outcome=receipt,
+                **result_context,
             )
-            observed = thaw(retained.result)["result"]
+            retained_result = thaw(retained.result)
+            observed = retained_result["result"]
             observed_state = outcome
+            if retained_result.get("result_available") is False:
+                raise DispatchDenied("assignment_result_unavailable")
 
         context = PersistentDispatchContext(
             owner_id=self.record.owner_id, kind=request["kind"],

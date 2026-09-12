@@ -12,6 +12,7 @@ from persistent_agents.execution import ApprovalPending
 from persistent_agents.models import CreateAssignmentRequest
 from persistent_agents.runner import AssignmentRunner
 from persistent_agents.runtime_values import digest, thaw
+from persistent_agents.store import AssignmentStore
 from persistent_agents.tests.test_models import create_payload
 from persistent_agents.tests.test_service import service as shared_service
 
@@ -29,13 +30,15 @@ async def supervisor(service, monkeypatch):
     service.orch.ui_sessions = {}
     service.store.call = AsyncMock(return_value=record)
     service.store.repository = SimpleNamespace(finish_episode=Mock(return_value=record),
-                                               assert_current_claim=Mock(return_value=record))
+                                               assert_current_assignment_execution=Mock(return_value=record))
     async def transaction(callback):
         return callback("transaction", service.store.repository)
     service.store.transaction = AsyncMock(side_effect=transaction)
+    service.store.current_execution_transaction = AssignmentStore.current_execution_transaction.__get__(service.store)
     runner = AssignmentRunner(service.orch, service, config=RunnerConfig(concurrency=2))
     claim = SimpleNamespace(assignment=record, fence=SimpleNamespace(claim_generation=1))
     executor = SimpleNamespace(record=record, claim=claim, operation_fence=object(), binding=object(),
+        approved_action_id=None,
         refresh=AsyncMock(), action=AsyncMock(return_value={"text": "Release", "revision_digest": "a"*64}))
     executor.fork = lambda socket: executor
     monkeypatch.setattr("persistent_agents.runner.safe_text", AsyncMock())
@@ -307,12 +310,17 @@ async def test_finish_checkpoints_and_terminalizes_same_operation_in_one_transac
     assert finish.kwargs["completion"].expected_state_version == supervisor.record.state_version
     assert finish.kwargs["completion"].next_wake_at is not None
     assert supervisor.coordinator.terminalize.call_args.kwargs["transaction"] == "transaction"
-    assert supervisor.coordinator.assert_current_execution.call_args.kwargs["transaction"] == "transaction"
+    supervisor.coordinator.assert_current_execution.assert_not_called()
+    guard = supervisor.service.store.repository.assert_current_assignment_execution
+    assert guard.call_args.args == ("transaction",)
+    assert guard.call_args.kwargs == {"fence": supervisor.claim.fence,
+        "binding": supervisor.executor.binding, "action_id": None}
+    supervisor.executor.refresh.assert_awaited_once()
     current = replace(supervisor.record, state_version=2)
-    supervisor.service.store.repository.assert_current_claim.return_value = current
+    guard.return_value = current
     await supervisor.runner._finish(supervisor.executor, supervisor.record)
     assert supervisor.service.store.repository.finish_episode.call_args.kwargs["completion"].expected_state_version == 2
-    supervisor.service.store.repository.assert_current_claim.return_value = replace(current, checkpoint={"new": "payload"})
+    guard.return_value = replace(current, checkpoint={"new": "payload"})
     with pytest.raises(DispatchDenied, match="state_changed"):
         await supervisor.runner._finish(supervisor.executor, supervisor.record)
 
@@ -424,7 +432,8 @@ async def test_approved_executor_binds_attended_claim_and_retains_outcome(superv
     supervisor.service._interaction = Mock(return_value={"sub": "owner"})
     supervisor.service.get = AsyncMock(return_value=supervisor.record)
     supervisor.executor.execute = AsyncMock()
-    monkeypatch.setattr("persistent_agents.runner.ActionExecutor", lambda *a, **kw: supervisor.executor)
+    constructor = Mock(return_value=supervisor.executor)
+    monkeypatch.setattr("persistent_agents.runner.ActionExecutor", constructor)
     async def call(method, **kwargs):
         if method == "claim_for_approved_action":
             assert kwargs["action_id"] == action.action_id
@@ -434,12 +443,64 @@ async def test_approved_executor_binds_attended_claim_and_retains_outcome(superv
     supervisor.service.store.call.side_effect = call
     supervisor.runner._finish = AsyncMock()
     assert await supervisor.runner.execute_approved(action, object(), remote_marker="remote") == action
+    assert constructor.call_args.kwargs["approved_action_id"] == action.action_id
     assert supervisor.runner._finish.call_args.kwargs["reason"] == "approved_action_completed"
     supervisor.executor.execute.side_effect = DispatchDenied("assignment_refused")
     supervisor.runner._hold = AsyncMock()
     with pytest.raises(DispatchDenied):
         await supervisor.runner.execute_approved(action, object())
     supervisor.runner._hold.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_hold_skips_failed_remote_refresh_but_still_requires_local_guard(supervisor):
+    from persistent_agents.runner import _episode_lease
+
+    supervisor.executor.refresh.side_effect = DispatchDenied("assignment_authorization_required")
+    supervisor.runner._notify_activity = AsyncMock()
+    guard = supervisor.service.store.repository.assert_current_assignment_execution
+    guard.side_effect = DispatchDenied("assignment_authorization_unavailable")
+    with pytest.raises(DispatchDenied, match="assignment_authorization_unavailable"):
+        await supervisor.runner._hold(supervisor.executor, "assignment_authorization_required")
+    supervisor.executor.refresh.assert_not_awaited()
+    guard.assert_called_once()
+    supervisor.service.store.repository.finish_episode.assert_not_called()
+    supervisor.coordinator.terminalize.assert_not_called()
+    supervisor.runner._notify_activity.assert_not_awaited()
+    assert not _episode_lease(supervisor.executor).terminal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [
+    {"phase": "waiting"}, {"checkpoint": {}}, {"receipts": ({"receipt": "new"},)},
+    {"incorporations": ({"result": "new"},)}, {"completed": True},
+])
+async def test_authority_hold_cannot_publish_checkpoint_or_completion(supervisor, changes):
+    kwargs = {"phase": "waiting_authorization", "authority_hold": True, **changes}
+    with pytest.raises(DispatchDenied, match="assignment_hold_invalid"):
+        await supervisor.runner._finish(supervisor.executor, supervisor.record, **kwargs)
+    supervisor.executor.refresh.assert_not_awaited()
+    supervisor.service.store.transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_successful_finish_refreshes_before_guard_and_forwards_approved_action(supervisor):
+    events = []
+
+    async def refresh():
+        events.append("remote")
+
+    def guard(*args, **kwargs):
+        assert events == ["remote"]
+        assert kwargs["action_id"] == supervisor.executor.approved_action_id
+        events.append("local")
+        return supervisor.record
+
+    supervisor.executor.approved_action_id = str(uuid4())
+    supervisor.executor.refresh.side_effect = refresh
+    supervisor.service.store.repository.assert_current_assignment_execution.side_effect = guard
+    await supervisor.runner._finish(supervisor.executor, supervisor.record)
+    assert events == ["remote", "local"]
 
 
 @pytest.mark.asyncio

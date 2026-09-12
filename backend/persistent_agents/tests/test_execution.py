@@ -19,6 +19,7 @@ from persistent_agents.dispatch_context import (
 )
 from persistent_agents.execution import ActionExecutor, ApprovalPending, safe_text
 from persistent_agents.models import CreateAssignmentRequest
+from persistent_agents.store import AssignmentStore
 from persistent_agents.runtime_values import digest, thaw
 from persistent_agents.tests.test_dispatch import context
 from persistent_agents.tests.test_models import create_payload
@@ -44,7 +45,10 @@ async def executor(service, monkeypatch):
     service.orch._bind_machine_turn = Mock()
     service.validate_execution = AsyncMock(return_value={"permission_digest": "b"*64, "precondition_digest": "c"*64})
     store = service.store
-    store.repository = SimpleNamespace(start_action=Mock(return_value=SimpleNamespace(dispatch_token="private-permit")))
+    store.repository = SimpleNamespace(
+        start_action=Mock(return_value=SimpleNamespace(dispatch_token="private-permit")),
+        assert_current_assignment_execution=Mock(return_value=record),
+    )
     outcomes = []
     calls = []
     async def call(method, **kwargs):
@@ -65,6 +69,7 @@ async def executor(service, monkeypatch):
     async def transaction(callback):
         return callback("transaction", store.repository)
     store.transaction = AsyncMock(side_effect=transaction)
+    store.current_execution_transaction = AssignmentStore.current_execution_transaction.__get__(store)
     runner = SimpleNamespace(orch=service.orch, service=service)
     engine = ActionExecutor(runner, claim, operation, socket)
     engine.test_outcomes = outcomes

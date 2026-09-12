@@ -55,10 +55,11 @@ class AttachmentPurgeReadinessError(RuntimeError):
 
 
 class AccountRetirementNeedsReconciliation(RuntimeError):
-    """Assignments were fenced; unresolved effects prevent account erasure."""
+    """Work was fenced; retained tasks or effects prevent account erasure."""
 
-    def __init__(self, unresolved_action_count: int) -> None:
+    def __init__(self, unresolved_action_count: int, retained_assignment_count: int = 0) -> None:
         self.unresolved_action_count = unresolved_action_count
+        self.retained_assignment_count = retained_assignment_count
         super().__init__("account_retirement_reconciliation_required")
 
 
@@ -461,22 +462,26 @@ class AttachmentPurgeCoordinator:
     ) -> tuple[PurgeScheduleResult, datetime]:
         """Fence owner assignments before scheduling physical namespace cleanup.
 
-        An unresolved external effect is retained for explicit reconciliation.
-        Its stop commits even though this call cannot yet accept physical purge.
+        Unresolved actions, tasks and reservations are retained for explicit
+        reconciliation. Their stop commits before physical purge is refused.
         """
 
         observed_at = self._now()
         degraded_epoch: int | None = None
         unresolved_action_count = 0
+        retained_assignment_count = 0
         scheduled = None
         try:
             with self._runtime.transaction() as transaction:
                 catalog = getattr(self._runtime, "repositories", None)
                 assignments = getattr(catalog, "assignments", None)
-                if assignments is not None:
-                    retirement = assignments.retire_owner(transaction, owner_id=owner_id)
-                    unresolved_action_count = len(retirement.unresolved_action_ids)
-                if not unresolved_action_count:
+                retire = getattr(assignments, "retire_operations_for_owner", None)
+                if not callable(retire):
+                    raise AttachmentPurgeReadinessError("account_retirement_repository_unavailable")
+                retirement = retire(transaction, owner_id=owner_id)
+                unresolved_action_count = len(retirement.unresolved_action_ids)
+                retained_assignment_count = len(retirement.retained_assignment_ids)
+                if not (unresolved_action_count or retained_assignment_count):
                     with self._state_lock:
                         self._mark_incomplete_locked("purge_reconciliation_incomplete")
                         degraded_epoch = self._state_epoch
@@ -490,10 +495,10 @@ class AttachmentPurgeCoordinator:
             if degraded_epoch is not None and _is_definite_schedule_rollback(exc):
                 self._restore_after_definite_rollback(degraded_epoch)
             raise
-        if unresolved_action_count:
+        if unresolved_action_count or retained_assignment_count:
             # Raise only after transaction exit: rolling back would revive the
             # very work the owner has asked to retire.
-            raise AccountRetirementNeedsReconciliation(unresolved_action_count)
+            raise AccountRetirementNeedsReconciliation(unresolved_action_count, retained_assignment_count)
         return scheduled, observed_at
 
     def abandon_pending_materialization(

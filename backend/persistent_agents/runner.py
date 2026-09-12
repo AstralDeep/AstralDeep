@@ -253,7 +253,8 @@ class AssignmentRunner:
         )
         fence = await self._admit(claim, interactive=True)
         executor = ActionExecutor(self, claim, fence, interaction, interactive=True,
-                                  interactive_receipt_id=receipt, remote_marker=remote_marker)
+                                  interactive_receipt_id=receipt, remote_marker=remote_marker,
+                                  approved_action_id=action.action_id)
         await self.store.call("bind_operation", fence=claim.fence, binding=executor.binding)
         renewal = asyncio.create_task(self._renew(executor, asyncio.current_task()))
         try:
@@ -287,13 +288,26 @@ class AssignmentRunner:
         else:
             phase = "failed"
         await self._finish(executor, record, phase=phase, reason=code,
+                           authority_hold=True,
                            activity=AssignmentActivityRecord(
                                f"hold:{record.instruction_revision}:{code}", "attention",
                                "Ongoing agent needs attention", code,
                                notification_state="pending"))
 
     async def _finish(self, executor, record, *, phase="waiting", reason="cadence",
-                      checkpoint=None, activity=None, receipts=(), incorporations=(), completed=False):
+                      checkpoint=None, activity=None, receipts=(), incorporations=(), completed=False,
+                      authority_hold=False):
+        if authority_hold and (
+            phase not in {"waiting_authorization", "waiting_approval", "reconciliation",
+                          "budget_exhausted", "failed"}
+            or checkpoint is not None or receipts or incorporations or completed
+        ):
+            raise DispatchDenied("assignment_hold_invalid")
+        if not authority_hold:
+            # Revalidate remote policy before the transaction. Failure holds must
+            # not retry the same failed external check; their local guard below
+            # still refuses revoked authority and leaves recovery responsible.
+            await executor.refresh()
         checkpoint = thaw(record.checkpoint) if checkpoint is None else checkpoint
         next_wake = datetime.now(UTC) + timedelta(seconds=(
             0 if reason == "approved_action_completed" else record.definition.limits["cadence_seconds"]
@@ -307,9 +321,7 @@ class AssignmentRunner:
             completed=completed,
         )
 
-        def transaction(tx, repository):
-            self.orch.work_admission.assert_current_execution(executor.operation_fence, transaction=tx)
-            current = repository.assert_current_claim(tx, fence=executor.claim.fence)
+        def transaction(tx, repository, current):
             if (current.instruction_revision != record.instruction_revision
                     or current.control_epoch != record.control_epoch
                     or current.checkpoint != record.checkpoint or current.tasks != record.tasks):
@@ -332,7 +344,10 @@ class AssignmentRunner:
         # acknowledgement with renewal so that notification delivery cannot be
         # cancelled by an attempted renewal of the already-completed episode.
         async with lease.lock:
-            result = await self.store.transaction(transaction)
+            result = await self.store.current_execution_transaction(
+                fence=executor.claim.fence, binding=executor.binding,
+                action_id=executor.approved_action_id, callback=transaction,
+            )
             lease.terminal = True
         if activity is not None:
             await self._notify_activity(result)
