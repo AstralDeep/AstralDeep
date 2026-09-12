@@ -107,6 +107,38 @@ remain open. Local handoff SHA-256 values are research
 and transport
 `a073d1fa70eaeb021e367c4ee35ff75cfade89ff6370a1edfb1063e7141bdbad`.
 
+## Qualified Plane issuer candidate, 2026-09-12
+
+Separate local Plane `7551c5b9f7a771a8c3cf26f6d56f833c0a43d6e9` adds immutable
+session issuer/client metadata and issuer-attributed revocation records at schema
+`088.003`, migration digest
+`a3d3ac43bee48b0ca6832cca1e4a347db0a3f838af908b8545edb11e7e94272a` and catalog digest
+`aedb36a4c2ee25925158b5a3f04303b46c71b391a0fe6a4d25dbb3fd395c127b`.
+All nine historical migration edges remain unchanged. Legacy null/null session
+semantics remain explicit; URL/client/JWT trust belongs to the host.
+
+The initial complete Linux run recorded 2,868 passes, six stale-fixture failures
+and nine existing Windows skips, with 89.86% branch coverage. The corrected
+affected successor passed 219 tests with no failures/skips. A schema-neutral
+administrative queue-page addition then passed 179 Linux tests with no
+failures/skips, including 55/55 new executable lines; cumulative changed coverage
+is 98/99 (98.99%). Its captured maximum queue ID and ordered keyset ensure held
+failures and continuous equal/backdated enqueues cannot monopolize a retry cycle.
+Paging is read-only and supplies no claim or authorization.
+
+Root verified 24 final source files, 178 predecessor/successor artifacts, all 76
+wheel members and 71 packaged Python sources. Replaying raw Coverage.py matched
+all 71 native file reports. The fresh wheel SHA-256 is
+`56ff6d5a7e0e559510491fa7f52245042269531daa2a410b8cb39b342676b29c`.
+The original full failure and separately passing successors remain distinct.
+The paging handoff is
+`e68b7afcdb782ef5e49f531b529d4dac3910e98cef8db3a44e4b89f24e309f5a`.
+
+Deep still pins `11cfa6d`/`088.002`: the new component has not been integrated or
+applied to a live database. Host issuer routing, truthful retirement outcomes,
+coherent pin/installed-component checks and native broker activation remain
+separate work. No product push, staging, migration or release is inferred.
+
 Retained local handoff SHA-256 values are: Plane integration
 `ec604636925a2b452b3b6bed7aeacb7afa78e149355e52cbf904aad422b99770`,
 Deep pin `d2fcd9b82129458b1e0d0a8667405f6d0b38daa3cd0410b91029bbb4f10205d4`,
