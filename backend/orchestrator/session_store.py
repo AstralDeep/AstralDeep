@@ -551,6 +551,24 @@ class WebSessionStore:
             raise SessionRefreshUnavailable("session unavailable")
         return WebSessionReference(state)
 
+    def capture_incarnation_execution_reference(
+        self, *, owner_id: str, incarnation_id: str,
+    ) -> WebSessionReference:
+        """Resolve one issuance and capture its unchanged fence in one bounded read."""
+        if self._fernet is None or not _valid_incarnation(incarnation_id):
+            raise SessionRefreshUnavailable("encrypted issued session required")
+        with self._request_execution_transaction() as transaction:
+            record = self._sessions.repository.get_by_incarnation(
+                transaction, owner_id=owner_id, incarnation_id=incarnation_id)
+            if record is None or record.incarnation_id != incarnation_id:
+                raise SessionRefreshUnavailable("issued session unavailable")
+            state = self._sessions.repository.get_execution_state(
+                transaction, owner_id=owner_id, session_id=record.session_id)
+            if (state is None or state.credential.incarnation_id != incarnation_id
+                    or state.credential != SessionRepository.execution_fence(record)):
+                raise SessionRefreshUnavailable("issued session changed during capture")
+        return WebSessionReference(state)
+
     async def refresh_for_execution(self, reference: WebSessionReference, *, exchange):
         """Force one exact-generation refresh, with no conflict/adoption retries.
 
