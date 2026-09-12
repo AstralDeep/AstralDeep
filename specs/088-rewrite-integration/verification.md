@@ -259,6 +259,49 @@ with two fresh focused passes. Neither failure was hidden or weakened. T024/T025
 enhanced Deep wiring and full integrated acceptance remain open; the running app
 continues to use Plane 079.001 and does not consume the unfinished 088 foundation.
 
+## 2026-09-12: combined Android and Apple component actions
+
+Projection `eff1b3ad779b570c0fe4824f370407efc2a37047` integrates the
+Android and Apple consumers with the preceding server, navigation and Watch
+changes. Plane remains `718021ba019abcd3a04ffbd6b80b88e51395bda6`;
+the protocol and schema identities in the following checkpoint are unchanged.
+
+- Both consumers parse the same immutable component-action corpus, preserve
+  exact owner/session/chat/component context, and send Refine/Restore only on
+  the current established socket through ordinary operation correlation.
+  Neither decision enters the reconnect queue. CSV and private share links
+  retain bounded authenticated requests, explicit user delivery and cleanup.
+  Native footers use the web labels, ordering and typography. The Apple merge
+  preserves the independently qualified navigation test factories and behavior.
+- Frozen Android `fe6bfdf` passed 126 Core and 334 app JVM tests, normal
+  lint/build/coverage checks and 21 actual component/footer UI tests. An
+  integrated provenance presentation follow-up passed Kotlin formatting and
+  compilation; its final device run remains pending. Frozen Apple `8fd112d`
+  passed 224 Core tests plus eight model and ten actual iOS UI tests with zero
+  skips. These focused diagnostics do not replace the combined native-domain
+  or live-backend qualification.
+- Independent native review found no additional actionable issue. Root verified
+  both handoffs against committed source blobs, retained original failed
+  attempts, and resolved the Apple fixture overlap without dropping either
+  scenario family. Strict recursive Swift formatting, staged secret scanning
+  and all 21 protocol/source replay tests passed on the combined source. The
+  extraction ledger now has 185 exact transformations, 16 removals and 334
+  unchanged source entries; the original 519-entry extraction is unchanged.
+- The preceding server checkpoint passed 1,827 Projection tests with zero
+  skips, 329 integrated Deep/PostgreSQL tests and 1,089 portable Windows tests
+  with ten existing skips. Deep's diagnostic changed coverage is 182/182 lines.
+  A fresh isolated Linux Python 3.11 install qualified all four component
+  wheels and 186 packaged source/resource files against the exact preceding
+  pins. Native-only follow-up changes still require an exact new-pin package
+  comparison; previous measurements are retained under their original SHAs.
+- Fresh combined Android raw JVM/device coverage and unsigned AAB, Apple
+  Core/App/UI domain qualification, unsigned native archives and isolated Watch
+  qualification are being collected separately. Actual staging, protected
+  provider evidence, full remaining 088 stories, final live parity and store
+  readiness remain open. Saved feature checkouts and the signed-in backend are
+  still at their previously documented checkpoints. No product push, draft
+  promotion, signing or store submission occurred.
+
 ## 2026-09-12: component action delivery, native navigation and request wait bounds
 
 This local checkpoint composes Projection
