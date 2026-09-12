@@ -10,9 +10,10 @@ review submission are not inferred. The owner reports Android 1.4 / code 8 uploa
 and awaiting review. Prior code 7 and Apple 1.5 / build 61 records below are historical.
 
 The native sources were built from Projection `ba6e81cd69e710b222a8e33293ddbcef169e48b8`.
-The final pinned Projection `d0ef5cf399c52ae681b296c0b1f51f90b247799a` changes only
+The final pinned Projection `aef6c9f6641abfc49a6be18348851103d5f2e70c` changes only
 Apple CI quoting/Bash 3 argument handling, Android coverage CI cache selection,
-browser harness module loading, matching regression guards and provenance bookkeeping
+browser harness module loading/connection cleanup, complete emulator action command
+lines, matching regression guards and provenance bookkeeping
 after that checkpoint;
 all compiled/product sources remain identical. Signatures, profiles, architectures,
 Release configuration, and upload-time signature-only payload changes were independently
@@ -46,7 +47,14 @@ The retained diagnostic coverage union is 92.86% (recovery CLI 97.64%); this is 
 a single green hosted lane. The subsequent web export harness and Android coverage
 preparation corrections passed the previously failing browser case, all 99 related
 browser tests and 175 focused Python guards. Production/compiled sources remain
-unchanged; hosted Android preparation and fresh successor checks are still required.
+unchanged. The next hosted Android attempt passed preparation and booted the
+emulator, then exposed line-oriented action command parsing. Complete commands now
+execute as individual physical lines, covered through the real CLI argument parser;
+176 focused Python guards pass. The offline browser fixture also closes owned idle
+connections during teardown, with all five cases passing. A controlled socket
+reproduced the previous timeout signature after every assertion completed, while
+five natural runs passed; the original hosted timeout cause remains unconfirmed.
+Fresh hosted successor checks are still required.
 
 The owner requests ready-for-review PRs for this implemented checkpoint and reserves
 merging. Plane and Projection must merge before Deep. No unfinished B1 execution
