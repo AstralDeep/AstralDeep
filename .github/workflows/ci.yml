@@ -58,6 +58,8 @@ jobs:
           RELEASE_TOOL_TESTS=(
             backend/tests/test_changed_coverage_060.py
             backend/tests/test_release_tooling_coverage_060.py
+            backend/tests/test_apple_coverage_artifacts_088.py
+            backend/tests/test_merge_xccov_coverage_088.py
             backend/tests/test_documentation_060.py
             backend/tests/test_quickstart_commands.py
             backend/tests/test_python_ci_supply_chain_060.py

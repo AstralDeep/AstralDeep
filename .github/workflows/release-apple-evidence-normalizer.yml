@@ -59,8 +59,6 @@ jobs:
           ref: ${{ inputs.candidate_sha }}
           submodules: recursive
           persist-credentials: false
-      - name: Verify the exact initialized component composition
-        run: python3 -I scripts/verify_composition.py --root .
       - name: Select the protected policy Python runtime
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -92,10 +90,14 @@ jobs:
           [[ "$RELEASE_TRUSTED_BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]
           test ! -L protected-policy
           test "$(git -C protected-policy rev-parse HEAD)" = "$RELEASE_TRUSTED_BUILDER_SHA"
-          for policy in protected-policy/scripts/extract_release_artifact.py protected-policy/scripts/export_xccov_line_coverage.py protected-policy/scripts/validate_release_evidence.py protected-policy/specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json; do
+          for policy in protected-policy/scripts/extract_release_artifact.py protected-policy/scripts/export_xccov_line_coverage.py protected-policy/scripts/merge_xccov_line_coverage.py protected-policy/scripts/apple_coverage_artifacts.py protected-policy/scripts/verify_composition.py protected-policy/specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json protected-policy/scripts/validate_release_evidence.py protected-policy/specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json; do
             test -f "$policy"
             test ! -L "$policy"
           done
+          # The protected policy copy and Projection share one exact merger.
+          cmp -s protected-policy/scripts/merge_xccov_line_coverage.py components/AstralProjection/scripts/merge_xccov_line_coverage.py
+      - name: Verify composition using only protected policy and schema
+        run: python3 -I protected-policy/scripts/verify_composition.py --root . --schema protected-policy/specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json
       - name: Select and verify exact Xcode for xccov
         shell: bash
         run: |
@@ -183,7 +185,24 @@ jobs:
           test ! -L "$raw/${PRODUCER_PLATFORM}/${APP_ARCHIVE}"
           test -d "$raw/${PRODUCER_PLATFORM}-raw"
           test ! -L "$raw/${PRODUCER_PLATFORM}-raw"
-          test -d "$result" && test ! -L "$result"
+          if [[ "$PRODUCER_PLATFORM" == ios ]]; then
+            for lane in core unit ui staging; do
+              lane_result="$raw/coverage/raw/apple-ios-${lane}.xcresult"
+              test -d "$lane_result" && test ! -L "$lane_result"
+            done
+          else
+            test -d "$result" && test ! -L "$result"
+          fi
+          if [[ "$PRODUCER_PLATFORM" == ios ]]; then
+            # Required lanes must be distinct successful raw test observations.
+            # Artifact/source and lane validation do not prove xccov-to-binary
+            # UUID/profile linkage; that preexisting qualification gap remains.
+            python3 -I protected-policy/scripts/apple_coverage_artifacts.py validate-observations \
+              --repo "$PWD" --platform ios --output "$raw"
+          elif [[ "$PRODUCER_PLATFORM" == macos ]]; then
+            python3 -I protected-policy/scripts/apple_coverage_artifacts.py validate \
+              --repo "$PWD" --platform "$PRODUCER_PLATFORM" --output "$raw"
+          fi
           test ! -e "$final" && test ! -L "$final"
           mkdir -p "$final/${PRODUCER_PLATFORM}" "$final/${PRODUCER_PLATFORM}-raw" "$final/coverage"
           /bin/cp "$raw/${PRODUCER_PLATFORM}/${APP_ARCHIVE}" "$final/${PRODUCER_PLATFORM}/${APP_ARCHIVE}"
@@ -221,7 +240,26 @@ jobs:
           PY
           test ! -e "$report" && test ! -L "$report"
           git diff --exit-code -- . ':(exclude)build'
+          if [[ "$PRODUCER_PLATFORM" == ios ]]; then
+            # Four raw observations are independently normalized here. Candidate
+            # JSON cannot replace any lane, and staging remains mandatory.
+            mkdir -p "$final/coverage/lanes"
+            for lane in core unit ui staging; do
+              python3 -I protected-policy/scripts/export_xccov_line_coverage.py \
+                --repo "$PWD" --archive-repo-root "$ARCHIVE_REPO_ROOT" \
+                --xcresult "$raw/coverage/raw/apple-ios-${lane}.xcresult" \
+                --platform ios --output "$final/coverage/lanes/apple-ios-${lane}-xccov.json"
+            done
+            python3 -I protected-policy/scripts/merge_xccov_line_coverage.py \
+              --repo "$PWD" --platform ios --profile release \
+              --core-input "$final/coverage/lanes/apple-ios-core-xccov.json" \
+              --unit-input "$final/coverage/lanes/apple-ios-unit-xccov.json" \
+              --ui-input "$final/coverage/lanes/apple-ios-ui-xccov.json" \
+              --staging-input "$final/coverage/lanes/apple-ios-staging-xccov.json" \
+              --output "$report"
+          else
           python3 -I protected-policy/scripts/export_xccov_line_coverage.py --repo "$PWD" --archive-repo-root "$ARCHIVE_REPO_ROOT" --xcresult "$result" --platform "$PRODUCER_PLATFORM" --output "$report"
+          fi
       - name: Upload final protected Apple evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

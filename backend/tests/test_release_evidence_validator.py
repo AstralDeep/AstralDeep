@@ -1224,26 +1224,42 @@ def test_windows_producer_binding_rehashes_unsigned_product_source(
         )
 
 
-def test_apple_producer_binding_preserves_and_rehashes_raw_origin_chain(
-    validator: Any,
+def _apple_origin_chain(
     contract_examples: Any,
     tmp_path: Path,
-) -> None:
-    report = contract_examples._platform_evidence("ios")
-    report["workflow"]["job_id"] = "ios-raw-producer"
+    platform: str,
+    raw_result_paths: list[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    """Build a fully rehashed raw/final artifact chain for the selected platform."""
+    report = contract_examples._platform_evidence(platform)
+    report["workflow"]["job_id"] = f"{platform}-raw-producer"
     payloads = {
-        "ios.json": b"raw platform report bytes\n",
+        f"{platform}.json": b"raw platform report bytes\n",
         "artifacts/client.bin": b"tested app bytes",
         "raw/metrics.json": b"raw metric bytes",
-        "coverage/raw/apple-ios.xcresult/Data/coverage.data": b"xccov archive bytes",
     }
+    if raw_result_paths is None:
+        roots = (
+            [f"apple-ios-{lane}" for lane in ("core", "unit", "ui", "staging")]
+            if platform == "ios"
+            else [f"apple-{platform}"]
+        )
+        raw_result_paths = [
+            f"coverage/raw/{root}.xcresult/Data/coverage.data" for root in roots
+        ]
+    payloads.update(
+        {
+            name: f"xccov archive bytes {index}".encode()
+            for index, name in enumerate(raw_result_paths)
+        }
+    )
     report["artifact"]["sha256"] = hashlib.sha256(
         payloads["artifacts/client.bin"]
     ).hexdigest()
     report["checks"][0]["evidence_artifacts"][0]["sha256"] = hashlib.sha256(
         payloads["raw/metrics.json"]
     ).hexdigest()
-    payloads["ios.json"] = (
+    payloads[f"{platform}.json"] = (
         json.dumps(report, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
     )
 
@@ -1269,8 +1285,8 @@ def test_apple_producer_binding_preserves_and_rehashes_raw_origin_chain(
             "sha256": hashlib.sha256(content).hexdigest(),
         }
 
-    raw_name = "raw-apple-evidence-ios-12345-1"
-    final_name = "evidence-ios-12345-1"
+    raw_name = f"raw-apple-evidence-{platform}-12345-1"
+    final_name = f"evidence-{platform}-12345-1"
     source_artifacts = [
         member(path, content, artifact_id="701", artifact_name=raw_name)
         for path, content in payloads.items()
@@ -1280,13 +1296,13 @@ def test_apple_producer_binding_preserves_and_rehashes_raw_origin_chain(
         for key, value in payloads.items()
         if not key.startswith("coverage/raw/")
     }
-    final_payloads["coverage/apple-ios-xccov.json"] = b"{}\n"
+    final_payloads[f"coverage/apple-{platform}-xccov.json"] = b"{}\n"
     final_artifacts = [
         member(path, content, artifact_id="702", artifact_name=final_name)
         for path, content in final_payloads.items()
     ]
     manifest = contract_examples._trusted_workflow_provenance()
-    manifest["workflow"] = contract_examples._workflow("ios-producer")
+    manifest["workflow"] = contract_examples._workflow(f"{platform}-producer")
     manifest["runner"] = contract_examples._runner("macos")
     manifest["artifacts"] = final_artifacts
     manifest["source_provenance"] = {
@@ -1294,12 +1310,22 @@ def test_apple_producer_binding_preserves_and_rehashes_raw_origin_chain(
         "runner": copy.deepcopy(report["runner"]),
         "artifacts": source_artifacts,
     }
-    source_root = tmp_path / "ios"
+    source_root = tmp_path / platform
     for path, content in payloads.items():
         target = source_root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
 
+    return report, manifest, source_root
+
+
+@pytest.mark.parametrize("platform", ["ios", "macos", "watchos"])
+def test_apple_producer_binding_preserves_and_rehashes_raw_origin_chain(
+    validator: Any, contract_examples: Any, tmp_path: Path, platform: str
+) -> None:
+    report, manifest, source_root = _apple_origin_chain(
+        contract_examples, tmp_path, platform
+    )
     bound = validator.bind_report_to_producer(
         report,
         [manifest],
@@ -1326,6 +1352,114 @@ def test_apple_producer_binding_preserves_and_rehashes_raw_origin_chain(
 
     (source_root / "raw" / "extra.json").write_text("extra", encoding="utf-8")
     with pytest.raises(validator.ProvenanceError, match="members differ"):
+        validator.bind_report_to_producer(
+            report,
+            [manifest],
+            repository="AstralDeep/AstralDeep",
+            candidate_sha=contract_examples.GIT_SHA,
+            protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+            protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+            raw_apple_source_root=source_root,
+        )
+
+
+@pytest.mark.parametrize(
+    "lane_roots",
+    [
+        pytest.param(
+            [
+                f"apple-ios-{lane}"
+                for lane in ("core", "unit", "ui", "staging")
+                if lane != missing
+            ],
+            id=f"missing-{missing}",
+        )
+        for missing in ("core", "unit", "ui", "staging")
+    ]
+    + [
+        pytest.param(["apple-ios"], id="legacy-single-lane"),
+        pytest.param(
+            ["apple-ios-core", "apple-ios-unit", "apple-ios-ui", "apple-ios-retry"],
+            id="relabelled-staging",
+        ),
+    ]
+    + [
+        pytest.param(
+            [f"apple-ios-{lane}" for lane in ("core", "unit", "ui", "staging")]
+            + [extra],
+            id=f"extra-{extra}",
+        )
+        for extra in ("apple-ios-staging-retry", "apple-macos", "apple-ios")
+    ],
+)
+def test_ios_producer_refuses_incomplete_or_relabelled_lane_inventory(
+    validator: Any, contract_examples: Any, tmp_path: Path, lane_roots: list[str]
+) -> None:
+    report, manifest, source_root = _apple_origin_chain(
+        contract_examples,
+        tmp_path,
+        "ios",
+        [f"coverage/raw/{root}.xcresult/Data/coverage.data" for root in lane_roots],
+    )
+    with pytest.raises(validator.ProvenanceError, match="raw/final member boundary"):
+        validator.bind_report_to_producer(
+            report,
+            [manifest],
+            repository="AstralDeep/AstralDeep",
+            candidate_sha=contract_examples.GIT_SHA,
+            protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+            protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+            raw_apple_source_root=source_root,
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_member",
+    [
+        "coverage/raw/apple-ios-staging.xcresult",
+        "raw/apple-ios-staging.xcresult/Data/coverage.data",
+        "coverage/raw/retry/apple-ios-staging.xcresult/Data/coverage.data",
+        "coverage/raw/apple-ios-staging.xcresult/other.xcresult/Data/coverage.data",
+    ],
+)
+def test_ios_producer_refuses_malformed_raw_result_roots(
+    validator: Any, contract_examples: Any, tmp_path: Path, invalid_member: str
+) -> None:
+    members = [
+        f"coverage/raw/apple-ios-{lane}.xcresult/Data/coverage.data"
+        for lane in ("core", "unit", "ui")
+    ] + [invalid_member]
+    report, manifest, source_root = _apple_origin_chain(
+        contract_examples, tmp_path, "ios", members
+    )
+    with pytest.raises(validator.ProvenanceError, match="raw result root is invalid"):
+        validator.bind_report_to_producer(
+            report,
+            [manifest],
+            repository="AstralDeep/AstralDeep",
+            candidate_sha=contract_examples.GIT_SHA,
+            protected_builder_sha=contract_examples.OTHER_GIT_SHA,
+            protected_builder_identity="https://github.com/AstralDeep/AstralDeep",
+            raw_apple_source_root=source_root,
+        )
+
+
+@pytest.mark.parametrize("platform", ["macos", "watchos"])
+@pytest.mark.parametrize("replacement", [False, True])
+def test_single_lane_apple_platforms_refuse_ios_raw_results(
+    validator: Any,
+    contract_examples: Any,
+    tmp_path: Path,
+    platform: str,
+    replacement: bool,
+) -> None:
+    members = ["coverage/raw/apple-ios-unit.xcresult/Data/coverage.data"]
+    if not replacement:
+        members.append(f"coverage/raw/apple-{platform}.xcresult/Data/coverage.data")
+    report, manifest, source_root = _apple_origin_chain(
+        contract_examples, tmp_path, platform, members
+    )
+    with pytest.raises(validator.ProvenanceError, match="raw/final member boundary"):
         validator.bind_report_to_producer(
             report,
             [manifest],

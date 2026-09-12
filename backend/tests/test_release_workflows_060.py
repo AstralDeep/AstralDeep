@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -36,7 +37,9 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 SPEC_ROOT = REPO_ROOT / "specs" / "060-runtime-reliability-hardening"
 CONTRACT_ROOT = SPEC_ROOT / "contracts"
 SCRIPT_PATH = REPO_ROOT / "scripts" / "validate_release_evidence.py"
-CONTRACT_TEST_PATH = REPO_ROOT / "backend" / "tests" / "test_release_contract_schemas.py"
+CONTRACT_TEST_PATH = (
+    REPO_ROOT / "backend" / "tests" / "test_release_contract_schemas.py"
+)
 VALIDATOR_TEST_PATH = (
     REPO_ROOT / "backend" / "tests" / "test_release_evidence_validator.py"
 )
@@ -105,12 +108,10 @@ PRODUCER_JOBS = (
 
 # The one action new to this repository; the design doc pins the exact line.
 ATTEST_ACTION = (
-    "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
-    " # v4.1.1"
+    "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1"
 )
 SETUP_PYTHON_ACTION = (
-    "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
-    " # v6.3.0"
+    "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0"
 )
 
 
@@ -668,9 +669,19 @@ def test_delegated_component_consumers_verify_exact_initialized_gitlinks() -> No
     )
 
     apple = _workflow_job(_workflow_text(APPLE_NORMALIZER), "normalize")
-    _assert_immediate_exact_component_checkout(
-        apple,
-        checkout_name="Check out the exact candidate as normalization data",
+    checkout = apple.split(
+        "- name: Check out the exact candidate as normalization data", 1
+    )[1].split("\n      - ", 1)[0]
+    assert "submodules: recursive" in checkout
+    assert "persist-credentials: false" in checkout
+    assert "ref: ${{ inputs.candidate_sha }}" in checkout
+    assert "python3 -I scripts/" not in apple
+    verifier = "python3 -I protected-policy/scripts/verify_composition.py"
+    assert verifier in apple
+    assert apple.index("path: protected-policy") < apple.index(verifier)
+    assert (
+        "--schema protected-policy/specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json"
+        in apple
     )
 
 
@@ -882,9 +893,87 @@ def test_release_readiness_protected_coverage_includes_voice_worker_report() -> 
     assert "inputs.candidate_sha" not in policy_step
 
 
+def _assert_release_policy_archive_inventory(workflow: str) -> None:
+    """Require one pinned archive containing the full verdict/normalizer policy."""
+    decision = _workflow_job(workflow, "protected-decision")
+    policy_step = decision.partition("- name: Extract the pinned protected policy")[2]
+    policy_step = policy_step.partition(
+        "- name: Run the protected changed-code coverage gate"
+    )[0]
+    commands = re.findall(r"git archive[^\n]*", policy_step.replace("\\\n", " "))
+    assert len(commands) == 1
+    tokens = shlex.split(commands[0])
+    assert tokens[:3] == ["git", "archive", "$RELEASE_TRUSTED_BUILDER_SHA"]
+    assert tokens[-2:] == [">", "build/060/protected-policy.tar"]
+    assert tokens[3:-2] == [
+        "scripts/extract_release_artifact.py",
+        "scripts/validate_release_evidence.py",
+        "scripts/check_changed_coverage.py",
+        "scripts/prepare_release_evidence.py",
+        "scripts/apple_coverage_artifacts.py",
+        "scripts/merge_xccov_line_coverage.py",
+        "scripts/export_xccov_line_coverage.py",
+        "scripts/verify_composition.py",
+        "specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json",
+        "specs/060-runtime-reliability-hardening/contracts/windows-deployment-profile.schema.json",
+        "specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json",
+        "specs/060-runtime-reliability-hardening/contracts/release-trust.schema.json",
+    ]
+    assert "sha256sum build/060/protected-policy.tar" in policy_step
+    assert 'echo "PROTECTED_POLICY_SHA256=$PROTECTED_POLICY_SHA256"' in policy_step
+
+
+def test_release_policy_archive_includes_exact_normalizer_policy_closure() -> None:
+    _assert_release_policy_archive_inventory(_workflow_text(READINESS))
+
+
+@pytest.mark.parametrize(
+    "policy_file",
+    [
+        "scripts/apple_coverage_artifacts.py",
+        "scripts/merge_xccov_line_coverage.py",
+        "scripts/export_xccov_line_coverage.py",
+        "scripts/verify_composition.py",
+        "specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json",
+        "scripts/validate_release_evidence.py",
+    ],
+)
+def test_release_policy_inventory_guard_refuses_omitted_policy_bytes(
+    policy_file: str,
+) -> None:
+    workflow = _workflow_text(READINESS)
+    line = f"            {policy_file} \\\n"
+    assert line in workflow
+    with pytest.raises(AssertionError):
+        _assert_release_policy_archive_inventory(workflow.replace(line, "", 1))
+
+
+@pytest.mark.parametrize(
+    "original,replacement",
+    [
+        ('git archive "$RELEASE_TRUSTED_BUILDER_SHA"', 'git archive "$CANDIDATE_SHA"'),
+        (
+            "            scripts/apple_coverage_artifacts.py ",
+            "            scripts/apple_coverage_artifacts.py scripts/candidate_helper.py ",
+        ),
+        (
+            "            scripts/apple_coverage_artifacts.py ",
+            "            scripts/apple_coverage_artifacts.py scripts/apple_coverage_artifacts.py ",
+        ),
+    ],
+)
+def test_release_policy_inventory_guard_refuses_unbound_or_extra_bytes(
+    original: str, replacement: str
+) -> None:
+    workflow = _workflow_text(READINESS)
+    assert original in workflow
+    with pytest.raises(AssertionError):
+        _assert_release_policy_archive_inventory(workflow.replace(original, replacement, 1))
+
+
 def test_apple_coverage_workflows_use_per_file_normalized_exporters() -> None:
     apple_ci = _workflow_text(APPLE_CI)
-    assert apple_ci.count("python3 scripts/export_xccov_line_coverage.py") == 3
+    assert apple_ci.count("python3 scripts/export_xccov_line_coverage.py") == 4
     assert "xcrun xccov view --archive --json" not in apple_ci
     assert "--platform '${{ matrix.slug }}'" in apple_ci
     assert "--platform watchos" in apple_ci
@@ -895,20 +984,27 @@ def test_apple_coverage_workflows_use_per_file_normalized_exporters() -> None:
     normalizer = _workflow_text(APPLE_NORMALIZER)
     assert _job_ids(normalizer) == ["normalize"]
     assert "runs-on: macos-26" in normalizer
-    assert "XCODE_VERSION: \"26.6\"" in normalizer
-    assert "XCODE_BUILD: \"17F113\"" in normalizer
+    assert 'XCODE_VERSION: "26.6"' in normalizer
+    assert 'XCODE_BUILD: "17F113"' in normalizer
     assert "Build version ${XCODE_BUILD}" in normalizer
     assert SETUP_PYTHON_ACTION in normalizer
     assert 'python-version: "3.11"' in normalizer
-    assert "--archive-repo-root \"$ARCHIVE_REPO_ROOT\"" in normalizer
+    assert '--archive-repo-root "$ARCHIVE_REPO_ROOT"' in normalizer
     assert 'PYTHONNOUSERSITE: "1"' in normalizer
-    assert "python3 -I protected-policy/scripts/export_xccov_line_coverage.py" in normalizer
-    assert "python3 -I protected-policy/scripts/extract_release_artifact.py" in normalizer
+    assert (
+        "python3 -I protected-policy/scripts/export_xccov_line_coverage.py"
+        in normalizer
+    )
+    assert (
+        "python3 -I protected-policy/scripts/extract_release_artifact.py" in normalizer
+    )
     assert "python3 - <<'PY'" not in normalizer
     assert "python3 protected-policy/" not in normalizer
     assert "actions/download-artifact" not in normalizer
     assert "raw Apple artifact id is not unique in the current run" in normalizer
-    assert "test ! -e \"$raw/coverage/apple-${PRODUCER_PLATFORM}-xccov.json\"" in normalizer
+    assert (
+        'test ! -e "$raw/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"' in normalizer
+    )
     assert "GH_TOKEN: ${{ github.token }}" in _workflow_job(normalizer, "normalize")
     assert normalizer.index("env:\n          GH_TOKEN") > normalizer.index(
         "Fetch the exact current-run raw evidence artifact"
@@ -921,10 +1017,13 @@ def test_apple_coverage_workflows_use_per_file_normalized_exporters() -> None:
         assert "xcodebuild" in raw_job
         assert "raw-evidence-upload.outputs.artifact-id" in raw_job
         assert f"raw-apple-evidence-{platform}-" in raw_job
-        assert raw_job.index("Record the raw archive checkout root before candidate execution") < raw_job.index(
-            "xcodebuild"
+        assert raw_job.index(
+            "Record the raw archive checkout root before candidate execution"
+        ) < raw_job.index("xcodebuild")
+        assert (
+            "uses: ./.github/workflows/release-apple-evidence-normalizer.yml"
+            in final_job
         )
-        assert "uses: ./.github/workflows/release-apple-evidence-normalizer.yml" in final_job
         assert f"needs: {platform}-raw-producer" in final_job
         assert f"producer_job_id: {platform}-producer" in final_job
         assert "xcodebuild" not in final_job
@@ -1095,7 +1194,6 @@ def test_release_evidence_exception_registrar_is_environment_gated() -> None:
 # ---------------------------------------------------------------------------
 
 
-
 def test_release_windows_signing_identity_surface_matches_the_shipped_client() -> None:
     """The Fulcio SAN the ALREADY-SHIPPED v0.3.0 updater pins must not drift.
 
@@ -1145,6 +1243,7 @@ def test_release_windows_signing_identity_surface_matches_the_shipped_client() -
         '/.github/workflows/release-windows.yml"' in integrity
     ), "components/AstralProjection/windows-client/astral_client/integrity.py no longer pins this workflow"
     assert 'f"{signing_workflow}@refs/tags/{tag}"' in integrity
+
 
 @bridge_parked
 def test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority() -> None:
@@ -2069,3 +2168,143 @@ def test_windows_draft_provenance_binds_identical_digests_and_rejects_rebuild(
             signing_schema,
             root_schema=schema,
         )
+
+
+def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward() -> (
+    None
+):
+    readiness = _workflow_text(READINESS)
+    for platform in ("macos", "ios"):
+        job = _workflow_job(readiness, f"{platform}-raw-producer")
+        build = job.partition(
+            "- name: Build for testing and digest the exact tested app"
+        )[2].partition("      - name:")[0]
+        assert "-enableCodeCoverage YES" in build
+        assert build.index("-enableCodeCoverage YES") < build.index("build-for-testing")
+        assert build.index("build-for-testing") < build.index(
+            "scripts/apple_coverage_artifacts.py prepare"
+        )
+        assert build.index("scripts/apple_coverage_artifacts.py prepare") < build.index(
+            "ARTIFACT_SHA256="
+        )
+        assert (
+            "find " not in build and "head -n 1" not in build and "ditto" not in build
+        )
+        after = job.partition("scripts/apple_coverage_artifacts.py prepare")[2]
+        assert "build-for-testing" not in after
+        assert (
+            "test-without-building" in after
+            and "scripts/apple_coverage_artifacts.py verify" in after
+        )
+        assert "Retain raw Apple coverage attempts\n        if: always()" in after
+        assert "coverage/raw/" in after
+        assert 'test ! -e "$result" && test ! -L "$result"' in after
+        assert 'rm -rf "$result"' not in after
+        label = "iOS" if platform == "ios" else "macOS"
+        staging = job.partition(
+            f"- name: Produce {label} release evidence against staging"
+        )[2].partition("      - name:")[0]
+        for secret in (
+            "secrets.ASTRAL_RELEASE_USERNAME",
+            "secrets.ASTRAL_RELEASE_PASSWORD",
+        ):
+            assert secret in staging
+            assert secret not in job.replace(staging, "")
+        assert "PRODUCER_ONLY_TESTING: AstralAppUITests/ReleaseEvidenceUITests" in job
+        assert (
+            'test -f "build/060/release-evidence/${PRODUCER_PLATFORM}.json"' in staging
+        )
+    ios = _workflow_job(readiness, "ios-raw-producer")
+    assert "for lane in core unit; do" in ios
+    assert "-only-testing:AstralCoreTests test-without-building" in ios
+    assert "-only-testing:AstralAppTests test-without-building" in ios
+    for selector in (
+        "Accessibility060UITests",
+        "LLMFirstLoginUITests",
+        "VoiceConversationUITests",
+        "WorkspacePresentationUITests",
+        "WorkspaceActionsUITests",
+        "ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversationTwentyTimes",
+    ):
+        assert "-only-testing:AstralAppUITests/" + selector in ios
+    assert (
+        "apple-ios-ui.xcresult" in ios
+        and "apple-${PRODUCER_PLATFORM}-staging.xcresult" in ios
+    )
+
+
+def _assert_apple_normalizer_python_is_protected(text: str) -> None:
+    """All Python entry points use isolated pinned policy or the reviewed inline code."""
+    entries = re.findall(r"\bpython(?:3(?:\.\d+)?)?\s+(\S+)\s+(\S+)", text)
+    assert entries
+    for isolated, entry in entries:
+        assert isolated == "-I"
+        assert entry == "-" or (
+            entry.startswith("protected-policy/scripts/") and entry.endswith(".py")
+        )
+
+
+@pytest.mark.parametrize("command", [
+    "python3 -I scripts/verify_composition.py",
+    "python3 -I components/AstralProjection/scripts/export_xccov_line_coverage.py",
+    "python3 scripts/verify_composition.py --root .",
+    'python3 -I "$CANDIDATE_SCRIPT"',
+    "python3 -c 'import candidate'",
+])
+def test_normalizer_guard_rejects_candidate_and_nonisolated_script_execution(command: str) -> None:
+    text = _workflow_text(APPLE_NORMALIZER) + "\n        run: " + command + "\n"
+    with pytest.raises(AssertionError):
+        _assert_apple_normalizer_python_is_protected(text)
+
+
+def test_apple_normalizer_executes_only_pinned_policy_and_requires_four_raw_ios_lanes() -> (
+    None
+):
+    text = _workflow_text(APPLE_NORMALIZER)
+    _assert_apple_normalizer_python_is_protected(text)
+    assert "python3 -I scripts/" not in text and "python3 scripts/" not in text
+    assert "components/AstralProjection/scripts/merge_xccov_line_coverage.py" in text
+    assert (
+        "cmp -s protected-policy/scripts/merge_xccov_line_coverage.py components/AstralProjection/scripts/merge_xccov_line_coverage.py"
+        in text
+    )
+    policy = "protected-policy/specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json"
+    assert (
+        f"python3 -I protected-policy/scripts/verify_composition.py --root . --schema {policy}"
+        in text
+    )
+    assert text.index(
+        "Check out the owner-reviewed Apple normalization policy"
+    ) < text.index("Verify composition using only protected policy")
+    for filename in (
+        "verify_composition.py",
+        "apple_coverage_artifacts.py",
+        "merge_xccov_line_coverage.py",
+        "export_xccov_line_coverage.py",
+    ):
+        assert (
+            "protected-policy/scripts/" + filename
+            in text.partition("for policy in ")[2].partition("; do")[0]
+        )
+    assert "for lane in core unit ui staging; do" in text
+    assert "--platform ios --profile release" in text
+    for lane in ("core", "unit", "ui", "staging"):
+        assert (
+            f'--{lane}-input "$final/coverage/lanes/apple-ios-{lane}-xccov.json"'
+            in text
+        )
+    assert '"$raw/coverage/raw/apple-ios-${lane}.xcresult"' in text
+    assert (
+        "python3 -I protected-policy/scripts/apple_coverage_artifacts.py validate"
+        in text
+    )
+    lane_validation = (
+        "python3 -I protected-policy/scripts/apple_coverage_artifacts.py validate-observations"
+    )
+    assert lane_validation in text
+    assert text.index(lane_validation) < text.index(
+        "python3 -I protected-policy/scripts/export_xccov_line_coverage.py"
+    )
+    assert 'elif [[ "$PRODUCER_PLATFORM" == macos ]]; then' in text
+    assert 'report="$final/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"' in text
+    assert 'test ! -e "$report" && test ! -L "$report"' in text

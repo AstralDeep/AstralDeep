@@ -23,7 +23,9 @@ TOOLING_ROOT = REPO_ROOT / "tooling" / "python-ci"
 INPUT = TOOLING_ROOT / "requirements.in"
 LOCK = TOOLING_ROOT / "requirements.lock.txt"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-ANDROID_CANARY_TEST = REPO_ROOT / "backend" / "tests" / "test_android_next_major_canary.py"
+ANDROID_CANARY_TEST = (
+    REPO_ROOT / "backend" / "tests" / "test_android_next_major_canary.py"
+)
 ANDROID_CANARY_SCRIPT = REPO_ROOT / "scripts" / "run_android_next_major_canary.py"
 GITLEAKS_IGNORE = REPO_ROOT / ".gitleaksignore"
 REVIEWED_074_FINGERPRINTS = {
@@ -39,15 +41,10 @@ REVIEWED_079_FINGERPRINT = (
     "756b338f3054bb8f509a2b94f0ac7c8b9b1b8cc3:"
     "scripts/tests/test_verify_persistent_agents_079.py:generic-api-key:35"
 )
-WINDOWS_CANDIDATE = (
-    REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
-)
-WINDOWS_RELEASE_BRIDGE = (
-    REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
-)
+WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
+WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 LOCK_INSTALL = (
-    "python -m pip install --require-hashes -r "
-    "tooling/python-ci/requirements.lock.txt"
+    "python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt"
 )
 
 
@@ -208,6 +205,8 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
     assert not any("*" in omission for omission in omissions)
 
     expected_scripts = {
+        "apple_coverage_artifacts.py",
+        "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
         "check_doc_links.py",
         "export_xccov_line_coverage.py",
@@ -231,6 +230,8 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
     expected_test_paths = {
         "backend/tests/test_changed_coverage_060.py",
         "backend/tests/test_release_tooling_coverage_060.py",
+        "backend/tests/test_apple_coverage_artifacts_088.py",
+        "backend/tests/test_merge_xccov_coverage_088.py",
         "backend/tests/test_documentation_060.py",
         "backend/tests/test_quickstart_commands.py",
         "backend/tests/test_python_ci_supply_chain_060.py",
