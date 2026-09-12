@@ -45,6 +45,8 @@ def test_deep_resolves_every_projection_chrome_input(monkeypatch):
         "remote_enabled": True,
         "computer_enabled": True,
         "skills_enabled": True,
+        "export_enabled": False,
+        "share_enabled": False,
     }
 
 
@@ -63,6 +65,8 @@ def test_deep_chrome_availability_fails_closed(monkeypatch):
         "remote_enabled": False,
         "computer_enabled": False,
         "skills_enabled": False,
+        "export_enabled": False,
+        "share_enabled": False,
     }
 
 

@@ -7,6 +7,47 @@ repository; `Deep/` means AstralDeep. New files are explicitly identified as pro
 
 ## Experience and submission policy
 
+### Shared canvas actions and compact chrome
+
+`ChromeModel` version 2 adds the closed `workspace_action` topbar kind. Its exact
+flat fields are `key`, `kind`, `label`, `icon`, `operation`, and `context`:
+`export` / `Export page` / `download` / `export_canvas`, or
+`share` / `Share page` / `share` / `share_canvas`; both use `live_canvas`.
+No descriptor URL, surface, arbitrary payload or token is accepted. Unknown kinds
+and malformed or unknown workspace descriptors are ignored, without suppressing
+other controls. Windows retains its existing component export/share affordances
+and ignores this new topbar kind under the explicit legacy-layout scope.
+
+Watch carries forward the explicit [055 artifact capability disposition](../../055-uniform-artifacts/spec.md#edge-cases),
+recorded as `workspace_action.watch_disposition` in the Projection manifest. Deep
+does not deliver `chrome_menu` to the wrist; Projection omits canvas export/share
+capability attributes and component artifact chrome for the Watch profile, whose
+`supports_file_io` remains false. Export/Share therefore remain absent on Watch.
+This does not make Watch read-only: ordinary chat, primary actions and the bounded
+welcome examples retain their existing adaptation. The same owned chat can be
+opened on a supported phone, desktop or web client; preserve existing
+server-provided handoff guidance where present, without inventing a button or
+destination, transferring credentials or minting a share snapshot on omission.
+This declared limitation does not suppress the actions on Android, iOS or macOS.
+
+Deep resolves `artifact_export` and `artifact_sharing` independently and fails
+closed per unavailable capability. Projection defaults both inputs off. The
+canonical order is brand, status, Export, Share, optional Pulse, timeline, Settings;
+existing New chat and Recent controls follow status. The live-canvas context is
+the existing web predicate: outside timeline, a mounted dynamic renderer, and its
+matching server canvas capability. It adds no busy or positive-revision visibility
+condition. The web retains its current IDs, classes, hidden initial state and
+authenticated handlers. Descriptor presence grants no authority: native execution
+captures and rechecks owner, chat and current canvas revision as applicable around
+the existing authenticated export/share request and delivery.
+
+Below 700 logical pixels the action cluster wraps in canonical order only when
+needed, aligns to the trailing edge and has intrinsic height. The brand remains
+in a separate leading cluster. Every control remains reachable; there is no
+horizontal scrolling or hidden overflow control. Native clients retain their
+platform touch targets and apply the same wrap policy. Wider web layouts retain
+their existing single-row appearance.
+
 The default experience has one composer, recent work and a result area. The rewrite's
 logical grouping is retained, with less introductory text and fewer simultaneous
 controls. Use the existing self-hosted Inter typography, semantic theme roles and

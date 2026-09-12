@@ -411,3 +411,59 @@ chart check. The final Watch home shows recent chats; its saved-row interaction
 still awaits a manual tap because simulator automation cannot deliver that tap.
 The new shared Export/Share foundation and native consumers are being qualified
 separately and are not part of these committed native artifact claims.
+
+
+## Server-owned native workspace controls checkpoint — 2026-09-12
+
+Projection `5a06d37a915982d2d6dca3ad9ceb64ca3c242681` adds the exact
+server-defined Export/Share toolbar descriptors to Android and iOS/macOS.
+The actions wrap in canonical order below 700 logical pixels, preserve the
+visible canvas while work is in progress, and disappear with that canvas.
+Share sends one authenticated request, validates its returned same-origin link,
+and preserves the closed PHI denial. Export verifies the render revision and
+keeps temporary files and native save callbacks tied to the original account,
+conversation and presentation. Cancellation cannot clear or save a newer action.
+Watch retains the explicit 055 chrome-free/file-I/O omission. Windows consumes
+its existing compatible controls without a redesign.
+
+The matching UI protocol canonical digest is
+`84e4e70b3cfd10e3964e3da3b2f26fe78316b33fbbaccca7ec1f543f0183baf3`
+(file SHA-256 `994b5bea27c68e837bebe58acfbc3003b46b9c0326e5181096b613865b7d6bc7`).
+Deep pins that exact component and resolves export/share availability independently;
+default export-on/share-off behavior is retained. No schema or dependency changed.
+
+Android passed all wrapper gates: 118 core plus 314 app unit tests, no failures
+or skips, and core Kover 1,869/2,006 lines (93.17%). Eleven instrumented toolbar
+and existing chrome tests passed on isolated emulator 5584, including explicit
+48 dp targets and 320 dp wrapping. That emulator was stopped; the user's signed-in
+5554 app was not changed. Apple passed 205 Core tests, 187 Mac app tests, nine
+focused final Mac tests after test-only formatting, and a final iPhone rerun of
+nine app tests plus one toolbar UI test. Strict formatting passed 99 Swift files.
+The earlier iPhone cohort passed 13 tests before save-lifetime hardening.
+
+The shared foundation passed 177 Projection chrome tests, 55 Deep host tests,
+26 Windows compatibility tests and five actual-renderer browser tests, with
+100% changed executable Python coverage (21 Projection lines and eight Deep lines).
+The final combined protocol/resources/charts/chrome/Watch run passed 254 tests,
+including immutable extraction replay. The integrated Deep host/chrome follow-up
+passed 75 tests, the composition suite passed 121, and the local composition
+verifier reported no diagnostics after staging the matching gitlink. Provenance
+now contains 178 transformations
+(including 16 removals) and 341 unchanged entries out of the original 519.
+Source-fenced Android, Apple and shared receipts are in each repository's
+`build/088/` tree. These overlapping local diagnostics are not release evidence.
+
+Current native actions still receive the existing static server HTML; exact
+web document appearance requires the portable export implementation now isolated
+on `codex/088-native-export` worktrees. It must capture visible native state and
+loaded pixels and use the shared web finalizer. Authenticated live checks of the
+new actions remain open. No current-action build was installed into user sessions,
+no product branch pushed, no draft promoted and no store upload performed.
+
+A read-only store-access check found the signed-in Play Console account exposes
+only a different package, `edu.uky.ai.astral`; the intended
+`com.personalailabs.astraldeep` listing and its highest versionCode were unavailable.
+App Store Connect requires sign-in. This does not change application identities
+or establish upload access. The preserved 61ead0d AAB remains unsigned and not
+upload-ready; the upload keystore and protected Apple/store publisher setup are
+still missing. See `build/088/handoff/store-access-20260912.json`.

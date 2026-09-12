@@ -36,10 +36,22 @@ def projection_chrome_availability() -> dict[str, bool]:
         skills = bool(flags.is_enabled("user_skills"))
     except Exception:
         logger.warning("Unable to resolve agent chrome availability; hiding it", exc_info=True)
+    workspace = {}
+    for output, feature in (("export_enabled", "artifact_export"),
+                            ("share_enabled", "artifact_sharing")):
+        try:
+            from shared.feature_flags import flags
+
+            workspace[output] = bool(flags.is_enabled(feature))
+        except Exception:
+            # An unavailable capability cannot hide an unrelated menu/control.
+            workspace[output] = False
+            logger.warning("Unable to resolve %s chrome availability; hiding it", feature, exc_info=True)
     return {
         "pulse_enabled": pulse,
         "byo_enabled": byo,
         "remote_enabled": remote,
         "computer_enabled": computer,
         "skills_enabled": skills,
+        **workspace,
     }
