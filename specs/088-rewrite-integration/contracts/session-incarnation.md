@@ -98,6 +98,17 @@ current authenticated access in Deep, but precedes new intent expansion and
 admission checks as required by the existing retry contract. Admission refusal
 rolls back the assignment, receipt and allowance together.
 
+The unregistered interactive Work adapter freezes request transport inputs before
+normal IAM's first await. If ordinary cookie IAM resolves a session, retain that
+exact SID/incarnation privately before verifying its access token; a new admission
+must match it at the later original-receipt-miss capture. Neither a JWT wait nor
+receipt lookup may cause it to adopt a replacement incarnation. Ordinary Bearer
+IAM resolves no cookie row: when accompanied by a valid signed cookie, its first
+new-admission selection occurs once after receipt miss. Bare Bearer supplies no
+new durable execution session. Matching accepted receipts remain retrievable
+through current normal owner authentication without forcing a fresh session or
+reapplying today's source policy; recheck principal expiry after receipt waits.
+
 All guarded claim/action/result/publication boundaries compare the operation's
 original incarnation to the supplied fresh observation, then independently verify
 the exact current row. The operation's immutable authority expiry cannot exceed
