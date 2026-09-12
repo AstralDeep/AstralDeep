@@ -226,6 +226,8 @@ def _canonical_component(component: Any, position: int) -> dict[str, Any]:
     if not isinstance(component, Mapping):
         raise ConversationSnapshotInvalid("component is not an object")
     clean = _strip_reserved_presentation(component)
+    # Receiver-specific action presentation is never durable component state.
+    clean.pop("component_chrome", None)
     component_type = clean.get("type")
     if component_type not in _allowed_component_types():
         raise ConversationSnapshotInvalid("component type is not renderable")
@@ -509,7 +511,8 @@ def _content_parts(
 
 
 def augment_conversation_snapshot_for_target(
-    snapshot: Mapping[str, Any], profile: Any, *, target: str
+    snapshot: Mapping[str, Any], profile: Any, *, target: str,
+    canonical_canvas: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return a transport copy with presentation added only for web sockets.
 
@@ -518,7 +521,22 @@ def augment_conversation_snapshot_for_target(
     """
 
     candidate = _strip_reserved_presentation(snapshot)
+    from webrender.chrome.component_model import (
+        canonical_components_by_id,
+        stamp_canvas_component_chrome,
+        stamp_component_chrome,
+    )
+    from shared.feature_flags import flags
+
+    originals = (None if canonical_canvas is None
+                 else canonical_components_by_id(canonical_canvas))
     if target != "web":
+        canvas = candidate.get("canvas")
+        if canonical_canvas is not None and isinstance(canvas, dict):
+            canvas["components"] = stamp_canvas_component_chrome(
+                canonical_canvas, canvas.get("components") or [], profile,
+                enabled=flags.is_enabled,
+            )
         return candidate
     from webrender import render_component_fragment, render_one, render_workspace
 
@@ -528,13 +546,19 @@ def augment_conversation_snapshot_for_target(
         "share": 'data-astral-share="1"' in workspace_html,
     }
 
-    def augment(components: Sequence[Any]) -> list[dict[str, Any]]:
+    def augment(components: Sequence[Any], *, canvas: bool = False) -> list[dict[str, Any]]:
         output = []
         for position, raw in enumerate(components):
             component = _canonical_component(raw, position)
+            canonical = None
+            if canvas and originals is not None:
+                canonical = originals.get(component["component_id"]) or {}
+                component = stamp_component_chrome(
+                    canonical, component, profile, enabled=flags.is_enabled,
+                )
             component["_presentation"] = {
                 "target": "web",
-                "html": render_component_fragment(component, profile),
+                "html": render_component_fragment(component, profile, canonical=canonical),
                 "workspace": dict(workspace),
             }
             output.append(component)
@@ -581,7 +605,7 @@ def augment_conversation_snapshot_for_target(
                     augment_text(part)
     canvas = candidate.get("canvas")
     if isinstance(canvas, dict):
-        canvas["components"] = augment(canvas.get("components") or [])
+        canvas["components"] = augment(canvas.get("components") or [], canvas=True)
     return candidate
 
 

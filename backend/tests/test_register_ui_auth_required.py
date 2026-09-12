@@ -159,6 +159,22 @@ def _run_and_drain(coro):
     asyncio.run(_main())
 
 
+@pytest.mark.parametrize("same_owner", [False, True])
+def test_verified_registration_retires_only_the_previous_owners_rote_cache(same_owner, auth_audit):
+    async def validate(_token):
+        return {"sub": "previous" if same_owner else "replacement"}
+
+    fake = _make_fake(validate=validate)
+    socket = _FakeWS("reused")
+    fake.ui_sessions[socket] = {"sub": "previous"}
+    original = [{"type": "text", "component_id": "old-result", "content": "Previous owner result"}]
+    fake.rote.adapt(socket, original)
+    _run_and_drain(fake.handle_ui_message(socket, _register_msg(token="synthetic-valid-token")))
+    assert fake.ui_sessions[socket]["sub"] == ("previous" if same_owner else "replacement")
+    assert "rote_config" in _types(fake)
+    assert fake.rote.get_cached_components(socket) == (original if same_owner else None)
+
+
 # ---------------------------------------------------------------------------
 # EC-1 / FR-009: failure branch emits auth_required, not a dead-end Alert
 # ---------------------------------------------------------------------------

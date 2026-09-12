@@ -10416,6 +10416,11 @@ class Orchestrator:
                     # surface can tell a host-capable desktop from a phone.
                     user_data["_client_capabilities"] = [
                         str(c) for c in (getattr(msg, "capabilities", None) or []) if isinstance(c, str)]
+                    previous_owner = (self.ui_sessions.get(websocket) or {}).get("sub")
+                    if previous_owner != user_data.get("sub"):
+                        # A reused socket must not carry a former owner's raw
+                        # canvas into the new registration's viewport fallback.
+                        self.rote.cleanup(websocket)
                     self.ui_sessions[websocket] = user_data
                     # A structured v3 advertisement is validated against the
                     # packaged runtime contract and receives a server-owned host
@@ -11891,16 +11896,23 @@ class Orchestrator:
 
                 elif msg.action == "update_device":
                     # ROTE: viewport / capability change from the frontend
+                    registration = self.ui_sessions.get(websocket)
                     device_info = msg.payload.get("device") or {}
                     # Capture the pre-change profile so we can diff the canvas
                     # adaptation and push only what actually changed.
                     old_profile = self.rote.get_profile(websocket)
+                    canonical_cached = self.rote.get_cached_components(websocket) or []
                     new_profile, re_adapted, profile_changed = self.rote.update_device(websocket, device_info)
                     await self._safe_send(websocket, json.dumps({
                         "type": "rote_config",
                         "device_profile": new_profile.to_dict(),
                         "speech_server_available": self.speech_server_available(),
                     }))
+                    if (self.ui_sessions.get(websocket) is not registration
+                            or self._get_user_id(websocket) != user_id):
+                        # The config send yielded to a new registration. Its
+                        # workspace must never receive this captured old view.
+                        return
                     # A device change re-renders the FULL persisted workspace
                     # from server state. A single-slot _last_components replay
                     # would wipe all but the most recent fragment once partial
@@ -11932,6 +11944,11 @@ class Orchestrator:
                                 logger.exception("workspace re-adapt failed after device change")
                     # Legacy fallback for sockets with no persisted workspace.
                     if not handled_via_workspace and re_adapted is not None:
+                        from webrender.chrome.component_model import stamp_canvas_component_chrome
+                        re_adapted = stamp_canvas_component_chrome(
+                            canonical_cached, re_adapted, new_profile,
+                            enabled=flags.is_enabled,
+                        )
                         re_html = None
                         try:
                             from webrender import render_for_target, target_for_profile
@@ -13165,13 +13182,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     part["components"] = self.rote.adapt(
                         websocket, part["components"]
                     )
-        snapshot["canvas"]["components"] = self.rote.adapt(
-            websocket, snapshot["canvas"]["components"]
-        )
+        canonical_canvas = snapshot["canvas"]["components"]
+        snapshot["canvas"]["components"] = self.rote.adapt(websocket, canonical_canvas)
         profile = self.rote.get_profile(websocket)
         target = "native" if _is_native_device(profile) else "web"
         return augment_conversation_snapshot_for_target(
-            snapshot, profile, target=target
+            snapshot, profile, target=target, canonical_canvas=canonical_canvas
         )
 
     async def _conversation_snapshot_candidate(
@@ -23915,6 +23931,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             from shared.protocol import UIUpsert
             from webrender import render_component_fragment
+            from webrender.chrome.component_model import stamp_component_chrome
             from rote.adapter import ComponentAdapter
             from rote.capabilities import DeviceType
 
@@ -23926,8 +23943,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     adapted = al[0] if len(al) == 1 else {"type": "container", "content": al}
                     if isinstance(adapted, dict):
                         adapted["component_id"] = comp.get("component_id")
-                return adapted, render_component_fragment(
-                    adapted if isinstance(adapted, dict) else comp, profile)
+                adapted = stamp_component_chrome(
+                    comp, adapted if isinstance(adapted, dict) else comp, profile,
+                    enabled=flags.is_enabled,
+                )
+                return adapted, render_component_fragment(adapted, profile, canonical=comp)
 
             ops = viewport.targeted_ops(
                 components, lambda c: _render(c, old_profile),
@@ -23955,6 +23975,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from rote.capabilities import DeviceType
         from shared.protocol import UIUpsert
         from webrender import render_component_fragment
+        from webrender.chrome.component_model import stamp_component_chrome
 
         from orchestrator.conversation_publication import (
             current_conversation_publication,
@@ -23999,10 +24020,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         adapted = {"type": "container", "content": adapted_list}
                     if isinstance(adapted, dict):
                         adapted["component_id"] = cid
+                adapted = stamp_component_chrome(
+                    comp, adapted if isinstance(adapted, dict) else comp, profile,
+                    enabled=flags.is_enabled,
+                )
                 html = None
                 try:
-                    html = render_component_fragment(
-                        adapted if isinstance(adapted, dict) else comp, profile)
+                    html = render_component_fragment(adapted, profile, canonical=comp)
                 except Exception:
                     logger.exception("webrender: ui_upsert fragment render failed")
                 wire_ops.append({"op": "upsert", "component_id": cid,
@@ -24315,15 +24339,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ):
             target = "chat"
         adapted = self.rote.adapt(websocket, components)
+        profile = self.rote.get_profile(websocket)
+        if target == "canvas":
+            from webrender.chrome.component_model import stamp_canvas_component_chrome
+            adapted = stamp_canvas_component_chrome(
+                components, adapted, profile, enabled=flags.is_enabled,
+            )
         html = None
         try:
-            profile = self.rote.get_profile(websocket)
             if target == "canvas":
                 # Feature 028: canvas renders carry per-component identity
                 # wrappers so every top-level component is a ui_upsert morph
                 # target (contracts/ws-workspace-protocol.md).
                 from webrender import render_workspace
-                html = render_workspace(adapted, profile)
+                html = render_workspace(adapted, profile, canonical_components=components)
             else:
                 from webrender import render_for_target, target_for_profile
                 # Per-device renderer target — voice/aom native targets when
