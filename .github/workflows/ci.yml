@@ -72,6 +72,7 @@ jobs:
             backend/tests/test_release_evidence_bootstrap.py
             scripts/tests/test_component_build_surfaces_074.py
             scripts/tests/test_install_local_components.py
+            scripts/tests/test_retire_restored_sessions.py
             scripts/tests/test_verify_component_ownership.py
             scripts/tests/test_verify_composition.py
             scripts/tests/test_verify_migration_provenance.py
