@@ -3308,3 +3308,371 @@ def test_strict_four_lane_javascript_changed_files_require_their_own_observation
         if observation == "uncovered":
             assert any(item["code"] == "coverage_below_threshold" and item["scope"] == "javascript"
                        for item in decision["failures"])
+
+
+def _native_coverage_document(repo, paths, lane="ui"):
+    from scripts import native_xccov_domain as policy
+
+    domain = policy.make_domain(
+        geometry={
+            path: {
+                "native_last_line": 2,
+                "geometry_sha256": policy.sha256(path.encode()),
+            }
+            for path in paths
+        },
+        source_bytes=lambda path: (repo / path).read_bytes(),
+        binary={
+            "member": policy.BINARY_MEMBERS["app"],
+            "sha256": "a" * 64,
+            "artifact_member": f"coverage/native-binaries/apple-ios-{lane}.zip",
+            "artifact_sha256": "b" * 64,
+        },
+        observed_sources=sorted(paths),
+        prefix="components/AstralProjection/",
+        lane=lane,
+    )
+    return policy.native_report(
+        {
+            path: [
+                {"line": 1, "isExecutable": False},
+                {"line": 2, "isExecutable": True, "executionCount": 1},
+            ]
+            for path in paths
+        },
+        {lane: domain},
+    )
+
+
+def _native_changed_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "fixture@example.invalid")
+    _git(repo, "config", "user.name", "Fixture")
+    path = "components/AstralProjection/apple-clients/AstralApp/AstralApp/Example.swift"
+    source = repo / path
+    source.parent.mkdir(parents=True)
+    source.write_text("enum Example {\n let old = 1\n}\n")
+    base = _commit(repo, "base")
+    source.write_text(
+        "enum Example {\n let new = 2\n} // changed outside compiler domain\n"
+    )
+    candidate = _commit(repo, "candidate")
+    document = _native_coverage_document(repo, [path])
+    report = tmp_path / "native.json"
+    report.write_text(json.dumps(document))
+    return repo, path, base, candidate, report, document
+
+
+def test_ios_domain_uses_only_real_counters_and_binds_candidate_suffix(tmp_path):
+    repo, path, base, candidate, report, document = _native_changed_repo(tmp_path)
+    decision = collector.evaluate_changed_coverage(
+        repo,
+        _selection(repo, base, candidate),
+        {"apple": [report]},
+        producer_slots={"ios": report},
+    )
+    assert decision["status"] == "pass"
+    coverage = collector.parse_coverage_report(report, "apple")
+    assert coverage.covered == {(path, 2)}
+    assert (path, 3) not in coverage.observed
+    assert collector._missing_apple_lines(coverage, path, {2, 3}) == set()
+    # Without the explicit native mapping, the unchanged counter rows cannot
+    # explain the missing physical source suffix.
+    report.write_text(json.dumps(document["coverage"]))
+    with pytest.raises(collector.CoveragePolicyError, match="line") as error:
+        collector.evaluate_changed_coverage(
+            repo, _selection(repo, base, candidate), {"apple": [report]}
+        )
+    assert error.value.code == "unmapped_changed_line"
+
+
+@pytest.mark.parametrize("slot", ["macos", "watchos"])
+def test_ios_domain_cannot_be_renamed_into_another_explicit_partial_slot(
+    tmp_path, slot
+):
+    repo, _path, base, candidate, report, _document = _native_changed_repo(tmp_path)
+    with pytest.raises(collector.CoveragePolicyError) as error:
+        collector.evaluate_changed_coverage(
+            repo,
+            _selection(repo, base, candidate),
+            {"apple": [report]},
+            producer_slots={slot: report},
+        )
+    assert error.value.code == "producer_scope_mismatch"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "hash",
+        "length",
+        "absent",
+        "candidate_suffix",
+        "row_hole",
+        "row_bool",
+        "counter_bool",
+    ],
+)
+def test_native_domain_never_waives_source_identity_or_native_row_completeness(
+    tmp_path, mutation
+):
+    repo, path, base, candidate, report, document = _native_changed_repo(tmp_path)
+    facts = document["domains"]["ui"]["sources"][path]
+    if mutation == "hash":
+        facts["source_sha256"] = "c" * 64
+    elif mutation == "length":
+        facts["physical_lines"] += 1
+    elif mutation == "absent":
+        extra = path.replace("Example.swift", "Missing.swift")
+        document["domains"]["ui"]["sources"][extra] = dict(facts)
+        document["domains"]["ui"]["observed_sources"] = sorted([path, extra])
+        document["coverage"][extra] = document["coverage"][path]
+    elif mutation == "candidate_suffix":
+        (repo / path).write_text(
+            "enum Example {\n let new = 2\n}\n// another physical line\n"
+        )
+        candidate = _commit(repo, "changed after evidence")
+    elif mutation == "row_hole":
+        document["coverage"][path].pop(0)
+    elif mutation == "row_bool":
+        document["coverage"][path][0]["line"] = True
+    else:
+        document["coverage"][path][1]["executionCount"] = True
+    report.write_text(json.dumps(document))
+    with pytest.raises(collector.CoveragePolicyError):
+        collector.evaluate_changed_coverage(
+            repo, _selection(repo, base, candidate), {"apple": [report]}
+        )
+
+
+def test_native_domain_semantic_identity_binds_mapping_but_not_lane_rebranding(
+    tmp_path,
+):
+    import copy
+
+    repo, path, _base, _candidate, report, document = _native_changed_repo(tmp_path)
+    content = report.read_bytes()
+    original = collector._native_report_content(content, "apple")
+    relabelled = copy.deepcopy(document)
+    relabelled["domains"]["ui"]["binary"]["sha256"] = "e" * 64
+    assert (
+        collector._native_report_content(json.dumps(relabelled).encode(), "apple")
+        == original
+    )
+    changed = copy.deepcopy(document)
+    changed["domains"]["ui"]["sources"][path]["geometry_sha256"] = "f" * 64
+    assert (
+        collector._native_report_content(json.dumps(changed).encode(), "apple")
+        == original
+    )
+    first = collector.parse_coverage_report(report, "apple")
+    remapped = collector._apply_producer_source_aliases(first, "ios")
+    assert remapped.native_domains == first.native_domains
+    assert (
+        collector._producer_owned_coverage(first, "ios").native_domains
+        == first.native_domains
+    )
+    report.write_text(json.dumps(changed))
+    second = collector.parse_coverage_report(report, "apple")
+    assert collector._semantic_report_content(
+        first
+    ) != collector._semantic_report_content(second)
+    with pytest.raises(collector.CoveragePolicyError):
+        first.merge(second)
+
+
+def test_native_export_preserves_raw_app_inventory_and_cli_envelope(
+    tmp_path, monkeypatch
+):
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    raw = _local_archive_source(repo, sources["app"])
+    _install_fake_xcrun(
+        tmp_path, monkeypatch, file_list=[raw], files={raw: {raw: _xccov_lines()}}
+    )
+    document = _native_coverage_document(repo, [sources["app"], sources["core"]])
+    domain_path = repo / "build/domain.json"
+    domain_path.write_text(json.dumps(document["domains"]["ui"]))
+    output = repo / "build/native.json"
+    assert (
+        xccov_exporter.main(
+            [
+                "--repo",
+                str(repo),
+                "--xcresult",
+                str(bundle),
+                "--platform",
+                "ios",
+                "--native-domain",
+                str(domain_path),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    envelope = json.loads(output.read_text())
+    assert envelope["domains"]["ui"]["observed_sources"] == [sources["app"]]
+    assert set(envelope["domains"]["ui"]["sources"]) == {
+        sources["app"],
+        sources["core"],
+    }
+    assert envelope["coverage"][sources["app"]] == [
+        {"line": line, "isExecutable": True, "executionCount": 1} for line in (1, 2)
+    ]
+    assert sources["core"] not in envelope["coverage"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["short", "wrong_source", "wrong_platform", "missing_mapped_app", "output_bound"],
+)
+def test_native_export_refuses_unproven_domain_or_changed_native_prefix(
+    tmp_path, monkeypatch, mutation
+):
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    raw = _local_archive_source(repo, sources["app"])
+    rows = _xccov_lines()
+    if mutation == "short":
+        rows.pop()
+    _install_fake_xcrun(
+        tmp_path, monkeypatch, file_list=[raw], files={raw: {raw: rows}}
+    )
+    document = _native_coverage_document(repo, [sources["app"]])
+    domain = document["domains"]["ui"]
+    if mutation == "wrong_source":
+        domain["sources"][sources["app"]]["source_sha256"] = "c" * 64
+    elif mutation == "missing_mapped_app":
+        missing = sources["app"].replace("AppModel.swift", "Other.swift")
+        (repo / missing).write_bytes((repo / sources["app"]).read_bytes())
+        domain["sources"][missing] = dict(domain["sources"][sources["app"]])
+        domain["observed_sources"].append(missing)
+        domain["observed_sources"].sort()
+    elif mutation == "output_bound":
+        monkeypatch.setattr(xccov_exporter, "MAX_OUTPUT_BYTES", 500)
+    output = repo / "build/refused.json"
+    with pytest.raises(xccov_exporter.ExportError):
+        xccov_exporter.export_xccov(
+            repo=repo,
+            xcresult=bundle,
+            output=output,
+            platform="macos" if mutation == "wrong_platform" else "ios",
+            native_domain=domain,
+        )
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "unchanged",
+        "working_bytes",
+        "stale_checkout",
+        "different_source_report",
+        "missing_object",
+    ],
+)
+def test_native_candidate_binding_reads_only_exact_projection_gitlink(tmp_path, change):
+    repo, _bundle, paths = _apple_export_repo(tmp_path)
+    child = repo / "components/AstralProjection"
+    source = child / paths["app"].removeprefix("components/AstralProjection/")
+    document = _native_coverage_document(repo, [paths["app"]])
+    report = repo / "build/report.json"
+    report.write_text(json.dumps(document))
+    candidate = _git(repo, "rev-parse", "HEAD").strip()
+    if change in {"working_bytes", "stale_checkout", "different_source_report"}:
+        source.write_text("let different = 9\nlet same = 0\n")
+    if change == "stale_checkout":
+        _git(child, "config", "user.name", "Fixture")
+        _git(child, "config", "user.email", "fixture@example.invalid")
+        _commit(child, "unselected descendant")
+    if change == "different_source_report":
+        report.write_text(json.dumps(_native_coverage_document(repo, [paths["app"]])))
+    if change == "missing_object":
+        _git(
+            repo,
+            "update-index",
+            "--cacheinfo",
+            "160000",
+            "a" * 40,
+            "components/AstralProjection",
+        )
+        _git(repo, "commit", "-qm", "unavailable component object")
+        candidate = _git(repo, "rev-parse", "HEAD").strip()
+    reports = collector._unique_report_inputs({"apple": [report]}, None)
+    if change in {"different_source_report", "missing_object"}:
+        with pytest.raises(collector.CoveragePolicyError):
+            collector._validate_native_source_bindings(
+                repo, candidate, reports, source_prefix=""
+            )
+    else:
+        collector._validate_native_source_bindings(
+            repo, candidate, reports, source_prefix=""
+        )
+
+
+def test_native_source_prefix_binds_projection_git_blobs(tmp_path):
+    repo, _bundle, paths = _apple_export_repo(tmp_path)
+    child = repo / "components/AstralProjection"
+    report = repo / "build/report.json"
+    report.write_text(json.dumps(_native_coverage_document(repo, [paths["app"]])))
+    candidate = _git(child, "rev-parse", "HEAD").strip()
+    collector._validate_native_source_bindings(
+        child,
+        candidate,
+        collector._unique_report_inputs({"apple": [report]}, None),
+        source_prefix="components/AstralProjection",
+    )
+
+
+def test_stripped_native_envelope_cannot_make_copied_counts_a_new_platform_report(
+    tmp_path,
+):
+    repo, _path, base, candidate, report, document = _native_changed_repo(tmp_path)
+    bare = tmp_path / "renamed-macos.json"
+    bare.write_text(json.dumps(document["coverage"]))
+    with pytest.raises(collector.CoveragePolicyError) as error:
+        collector.evaluate_changed_coverage(
+            repo,
+            _selection(repo, base, candidate),
+            {"apple": [report, bare]},
+            producer_slots={"ios": report, "macos": bare},
+        )
+    assert error.value.code == "duplicate_report"
+
+
+@pytest.mark.parametrize("core_changed", [False, True])
+@pytest.mark.parametrize("witnessed", [False, True])
+def test_strict_apple_platform_and_core_completeness_use_the_native_domain(
+    tmp_path, core_changed, witnessed
+):
+    repo, app, _base, _candidate, report, _document = _native_changed_repo(tmp_path)
+    core = "components/AstralProjection/apple-clients/AstralCore/Sources/Example.swift"
+    (repo / core).parent.mkdir(parents=True)
+    (repo / core).write_text("enum Core {\n let value = 1\n}\n")
+    base = _commit(repo, "core base")
+    changed = core if core_changed else app
+    (repo / changed).write_text(
+        "enum Example {\n let value = 9\n} // compiler-unmapped suffix\n"
+    )
+    candidate = _commit(repo, "source change")
+    document = _native_coverage_document(repo, [app, core])
+    report.write_text(json.dumps(document if witnessed else document["coverage"]))
+
+    def call():
+        return collector.evaluate_changed_coverage(
+            repo,
+            _selection(repo, base, candidate),
+            {"apple": [report]},
+            producer_slots={"ios": report},
+            strict_producers=True,
+            required_producer_keys=["ios"],
+        )
+
+    if witnessed:
+        assert call()["status"] == "pass"
+    else:
+        with pytest.raises(collector.CoveragePolicyError) as error:
+            call()
+        assert error.value.code == "producer_unmapped_changed_line"

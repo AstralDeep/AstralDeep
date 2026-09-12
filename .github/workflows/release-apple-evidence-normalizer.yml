@@ -90,12 +90,13 @@ jobs:
           [[ "$RELEASE_TRUSTED_BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]
           test ! -L protected-policy
           test "$(git -C protected-policy rev-parse HEAD)" = "$RELEASE_TRUSTED_BUILDER_SHA"
-          for policy in protected-policy/scripts/extract_release_artifact.py protected-policy/scripts/export_xccov_line_coverage.py protected-policy/scripts/merge_xccov_line_coverage.py protected-policy/scripts/apple_coverage_artifacts.py protected-policy/scripts/verify_composition.py protected-policy/specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json protected-policy/scripts/validate_release_evidence.py protected-policy/specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json; do
+          for policy in protected-policy/scripts/extract_release_artifact.py protected-policy/scripts/export_xccov_line_coverage.py protected-policy/scripts/merge_xccov_line_coverage.py protected-policy/scripts/apple_coverage_artifacts.py protected-policy/scripts/native_xccov_domain.py protected-policy/scripts/verify_composition.py protected-policy/specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json protected-policy/scripts/validate_release_evidence.py protected-policy/specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json; do
             test -f "$policy"
             test ! -L "$policy"
           done
           # The protected policy copy and Projection share one exact merger.
           cmp -s protected-policy/scripts/merge_xccov_line_coverage.py components/AstralProjection/scripts/merge_xccov_line_coverage.py
+          cmp -s protected-policy/scripts/native_xccov_domain.py components/AstralProjection/scripts/native_xccov_domain.py
       - name: Verify composition using only protected policy and schema
         run: python3 -I protected-policy/scripts/verify_composition.py --root . --schema protected-policy/specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json
       - name: Select and verify exact Xcode for xccov
@@ -243,11 +244,16 @@ jobs:
           if [[ "$PRODUCER_PLATFORM" == ios ]]; then
             # Four raw observations are independently normalized here. Candidate
             # JSON cannot replace any lane, and staging remains mandatory.
-            mkdir -p "$final/coverage/lanes"
+            mkdir -p "$final/coverage/lanes" "$final/coverage/native-domains"
             for lane in core unit ui staging; do
+              python3 -I protected-policy/scripts/apple_coverage_artifacts.py native-domain \
+                --repo "$PWD" --platform ios --output "$raw" --lane "$lane" \
+                --archive-repo-root "$ARCHIVE_REPO_ROOT" \
+                --domain-output "$final/coverage/native-domains/apple-ios-${lane}.json"
               python3 -I protected-policy/scripts/export_xccov_line_coverage.py \
                 --repo "$PWD" --archive-repo-root "$ARCHIVE_REPO_ROOT" \
                 --xcresult "$raw/coverage/raw/apple-ios-${lane}.xcresult" \
+                --native-domain "$final/coverage/native-domains/apple-ios-${lane}.json" \
                 --platform ios --output "$final/coverage/lanes/apple-ios-${lane}-xccov.json"
             done
             python3 -I protected-policy/scripts/merge_xccov_line_coverage.py \
@@ -257,6 +263,9 @@ jobs:
               --ui-input "$final/coverage/lanes/apple-ios-ui-xccov.json" \
               --staging-input "$final/coverage/lanes/apple-ios-staging-xccov.json" \
               --output "$report"
+            python3 -I protected-policy/scripts/apple_coverage_artifacts.py verify-native-domains \
+              --repo "$PWD" --platform ios --output "$raw" --report "$report" \
+              --archive-repo-root "$ARCHIVE_REPO_ROOT"
           else
           python3 -I protected-policy/scripts/export_xccov_line_coverage.py --repo "$PWD" --archive-repo-root "$ARCHIVE_REPO_ROOT" --xcresult "$result" --platform "$PRODUCER_PLATFORM" --output "$report"
           fi

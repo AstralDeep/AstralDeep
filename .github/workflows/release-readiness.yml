@@ -1958,6 +1958,7 @@ jobs:
             scripts/check_changed_coverage.py \
             scripts/prepare_release_evidence.py \
             scripts/apple_coverage_artifacts.py \
+            scripts/native_xccov_domain.py \
             scripts/merge_xccov_line_coverage.py \
             scripts/export_xccov_line_coverage.py \
             scripts/verify_composition.py \

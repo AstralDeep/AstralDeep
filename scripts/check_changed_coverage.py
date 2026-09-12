@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -129,6 +130,7 @@ class CandidateSourceWitness:
 
     line_count: int
     executable_lines: frozenset[int] | None = None
+    sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,8 @@ class CoverageData:
     observed: set[tuple[str, int]] = field(default_factory=set)
     executable: set[tuple[str, int]] = field(default_factory=set)
     covered: set[tuple[str, int]] = field(default_factory=set)
+    native_domains: dict[str, dict[str, Any]] = field(default_factory=dict)
+    native_platform: str | None = None
 
     def add(self, path: str, line: int, covered: bool) -> None:
         if line <= 0:
@@ -183,6 +187,14 @@ class CoverageData:
         self.observed.update(other.observed)
         self.executable.update(other.executable)
         self.covered.update(other.covered)
+        for path, facts in other.native_domains.items():
+            if path in self.native_domains and self.native_domains[path] != facts:
+                raise CoveragePolicyError("native_domain_mismatch", "native source domains disagree")
+            self.native_domains[path] = facts
+        if other.native_platform is not None:
+            if self.native_platform not in {None, other.native_platform}:
+                raise CoveragePolicyError("native_domain_mismatch", "native platforms disagree")
+            self.native_platform = other.native_platform
 
 
 PROJECTION_PYTHON_ROOTS = (
@@ -793,6 +805,9 @@ def _semantic_report_content(coverage: CoverageData) -> bytes:
         "executable": sorted([path, line] for path, line in coverage.executable),
         "covered": sorted([path, line] for path, line in coverage.covered),
     }
+    if coverage.native_domains:
+        value["native_domains"] = coverage.native_domains
+        value["native_platform"] = coverage.native_platform
     return json.dumps(
         value,
         ensure_ascii=False,
@@ -880,6 +895,11 @@ def _native_report_content(content: bytes, target_key: str) -> bytes:
         }
     else:
         document = _strict_json(content)
+        if document.get("format") is not None:
+            # Domain facts are bound by the normalized semantic identity and
+            # exact report digest. This independent observation identity must
+            # still detect copied counts after an envelope is stripped/renamed.
+            document = document["coverage"]
         value = {
             "kind": "xccov",
             "sources": sorted(
@@ -923,6 +943,8 @@ def _apply_producer_source_aliases(
         observed=remap(coverage.observed),
         executable=remap(coverage.executable),
         covered=remap(coverage.covered),
+        native_domains={aliases.get(path, path): facts for path, facts in coverage.native_domains.items()},
+        native_platform=coverage.native_platform,
     )
 
 
@@ -1681,13 +1703,31 @@ def _parse_xccov(content: bytes, target: CoverageTarget) -> CoverageData:
         raise CoveragePolicyError(
             "unparseable_report", "xccov report must be an object"
         )
+    data = CoverageData()
+    if document.get("format") is not None:
+        # This validates diagnostic native report structure, not the binary.
+        # Protected normalization independently reconstructs these domains from
+        # retained tested artifacts; its existing attested manifest binds the
+        # exact final report bytes before release authority is considered.
+        policy = _native_domain_policy()
+        try:
+            envelope = policy.parse_native_report(document)
+            for domain in envelope["domains"].values():
+                for raw_path, facts in domain["sources"].items():
+                    path = _normalized_report_path(raw_path, target)
+                    policy.require(path is not None)
+                    policy.require(path not in data.native_domains or data.native_domains[path] == facts)
+                    data.native_domains[path] = facts
+            data.native_platform = "ios"
+            document = envelope["coverage"]
+        except policy.DomainError as exc:
+            raise CoveragePolicyError("unparseable_report", "native domain envelope is invalid") from exc
     if "targets" in document or "files" in document:
         raise CoveragePolicyError(
             "unsupported_xccov_report",
             "xccov summary JSON lacks per-line execution counts; export and "
             "map per-file observations with scripts/export_xccov_line_coverage.py",
         )
-    data = CoverageData()
     archive_entries = [
         (raw_path, observations)
         for raw_path, observations in document.items()
@@ -1712,6 +1752,67 @@ def _parse_xccov(content: bytes, target: CoverageTarget) -> CoverageData:
             "unparseable_report", "xccov archive has no maintained Swift sources"
         )
     return data
+
+
+def _native_domain_policy() -> Any:
+    """Load the fixed native-domain policy sibling, never a candidate import."""
+    path = Path(__file__).resolve().with_name("native_xccov_domain.py")
+    if not path.is_file() or path.is_symlink():
+        raise CoveragePolicyError("native_domain_policy_unavailable", "native domain policy unavailable")
+    spec = importlib.util.spec_from_file_location("_coverage_native_domain", path)
+    if spec is None or spec.loader is None:
+        raise CoveragePolicyError("native_domain_policy_unavailable", "native domain policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _missing_apple_lines(coverage: CoverageData, path: str, changed: set[int]) -> set[int]:
+    """Require native observations through the independently mapped source end.
+
+    No trailing row or hit is manufactured. Legacy reports retain physical-line
+    completeness; native domains must first pass exact candidate source binding.
+    """
+    observed = {line for source, line in coverage.observed if source == path}
+    missing = changed - observed
+    facts = coverage.native_domains.get(path)
+    if facts is not None and coverage.native_platform == "ios":
+        missing = {line for line in missing if not facts["native_last_line"] < line <= facts["physical_lines"]}
+    return missing
+
+
+def _validate_native_source_bindings(
+    repo: Path, candidate_sha: str, reports: Mapping[str, Sequence[BoundCoverageReport]], *, source_prefix: str
+) -> None:
+    """Match every domain source hash/length to the immutable candidate tree."""
+    records = [artifact.coverage for artifacts in reports.values() for artifact in artifacts if artifact.coverage.native_domains]
+    if not records:
+        return
+    blobs = _candidate_source_blobs(repo, candidate_sha, source_prefix=source_prefix)
+    paths = {path for coverage in records for path in coverage.native_domains}
+    missing = paths - set(blobs)
+    witnesses = _candidate_source_witnesses(repo, blobs, paths & set(blobs), required_python_paths=set())
+    component = "components/AstralProjection"
+    if missing and not source_prefix and all(path.startswith(component + "/") for path in missing):
+        # Deep's tree owns one immutable gitlink; child HEAD and working bytes
+        # cannot replace its exact source objects during report validation.
+        entry = _git(repo, ["ls-tree", "-z", "--full-tree", candidate_sha, "--", component])
+        match = re.fullmatch(rb"160000 commit ([0-9a-f]{40})\tcomponents/AstralProjection\x00", entry)
+        if match is None:
+            raise CoveragePolicyError("native_source_mismatch", "candidate Projection gitlink is unavailable")
+        child = repo / component
+        if child.is_symlink() or child.parent.is_symlink() or not child.is_dir():
+            raise CoveragePolicyError("native_source_mismatch", "candidate Projection checkout is unsafe")
+        child_blobs = _candidate_source_blobs(child, match.group(1).decode("ascii"), source_prefix=component)
+        witnesses.update(_candidate_source_witnesses(child, child_blobs, missing & set(child_blobs), required_python_paths=set()))
+        missing -= set(child_blobs)
+    if missing:
+        raise CoveragePolicyError("native_source_mismatch", "native domain source is absent from candidate")
+    for coverage in records:
+        for path, facts in coverage.native_domains.items():
+            witness = witnesses.get(path)
+            if witness is None or witness.sha256 != facts["source_sha256"] or witness.line_count != facts["physical_lines"]:
+                raise CoveragePolicyError("native_source_mismatch", "native domain source bytes differ from candidate")
 
 
 def _parse_coverage_content(
@@ -1901,6 +2002,8 @@ def _producer_owned_coverage(coverage: CoverageData, slot_key: str) -> CoverageD
         observed={item for item in coverage.observed if owned(item[0])},
         executable={item for item in coverage.executable if owned(item[0])},
         covered={item for item in coverage.covered if owned(item[0])},
+        native_domains={path: facts for path, facts in coverage.native_domains.items() if owned(path)},
+        native_platform=coverage.native_platform,
     )
 
 
@@ -2223,7 +2326,7 @@ def _candidate_source_witnesses(
             if target is not None and target.language == "python"
             else None
         )
-        witnesses[path] = CandidateSourceWitness(line_count, executable)
+        witnesses[path] = CandidateSourceWitness(line_count, executable, hashlib.sha256(content).hexdigest())
     unwitnessed = sorted(required - set(witnesses))
     if unwitnessed:
         raise CoveragePolicyError(
@@ -2306,6 +2409,8 @@ def _strict_producer_contributions(
         producer = PRODUCER_BY_KEY[slot_key]
         artifact = artifacts_by_path[Path(producer_slots[slot_key]).resolve()]
         artifacts_by_slot[slot_key] = artifact
+        if artifact.coverage.native_platform is not None and slot_key != artifact.coverage.native_platform:
+            raise CoveragePolicyError("producer_scope_mismatch", "native domain belongs to another platform slot")
         useful = {
             observation
             for observation in artifact.coverage.executable
@@ -2403,25 +2508,13 @@ def _strict_producer_contributions(
                 )
             complete_slots = []
             for slot_key in mapped_slots:
-                observed = {
-                    line
-                    for path, line in artifacts_by_slot[slot_key].coverage.observed
-                    if path == changed_path
-                }
-                if changed[changed_path] <= observed:
+                if not _missing_apple_lines(artifacts_by_slot[slot_key].coverage, changed_path, changed[changed_path]):
                     complete_slots.append(slot_key)
             if not complete_slots:
                 missing = sorted(
                     set.intersection(
                         *(
-                            changed[changed_path]
-                            - {
-                                line
-                                for path, line in artifacts_by_slot[
-                                    slot_key
-                                ].coverage.observed
-                                if path == changed_path
-                            }
+                            _missing_apple_lines(artifacts_by_slot[slot_key].coverage, changed_path, changed[changed_path])
                             for slot_key in mapped_slots
                         )
                     )
@@ -2463,10 +2556,7 @@ def _strict_producer_contributions(
                         f"{changed_path!r}:{missing[0]}",
                     )
             if target.key == "apple":
-                observed = {
-                    line for path, line in coverage.observed if path == changed_path
-                }
-                missing = sorted(changed[changed_path] - observed)
+                missing = sorted(_missing_apple_lines(coverage, changed_path, changed[changed_path]))
                 if missing:
                     raise CoveragePolicyError(
                         "producer_unmapped_changed_line",
@@ -2564,6 +2654,10 @@ def evaluate_changed_coverage(
             slot_key = slot_by_path.get(artifact.path.resolve())
             if slot_key is None:
                 continue
+            if artifact.coverage.native_platform is not None and slot_key != artifact.coverage.native_platform:
+                raise CoveragePolicyError(
+                    "producer_scope_mismatch", "native domain belongs to another platform slot"
+                )
             producer_summary[slot_key] = {
                 "path": str(artifact.path).replace("\\", "/"),
                 "sha256": artifact.sha256,
@@ -2580,6 +2674,7 @@ def evaluate_changed_coverage(
         selection.candidate_sha,
         source_prefix=source_prefix,
     )
+    _validate_native_source_bindings(repo, selection.candidate_sha, report_inputs, source_prefix=source_prefix)
     maintained: dict[str, CoverageTarget] = {}
     for path in sorted(changed):
         target = classify_path(path)
@@ -2648,14 +2743,7 @@ def evaluate_changed_coverage(
             )
         if target_key == "apple":
             for changed_file in changed_files:
-                missing_lines = sorted(
-                    changed[changed_file]
-                    - {
-                        line
-                        for observed_path, line in merged.observed
-                        if observed_path == changed_file
-                    }
-                )
+                missing_lines = sorted(_missing_apple_lines(merged, changed_file, changed[changed_file]))
                 if missing_lines:
                     raise CoveragePolicyError(
                         "unmapped_changed_line",

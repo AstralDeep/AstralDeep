@@ -745,6 +745,9 @@ def test_protected_merger_copy_matches_initialized_projection_exact_bytes():
             "component absent in standalone secret-free tooling; protected normalizer enforces byte parity"
         )
     assert Path(merger.__file__).read_bytes() == projection.read_bytes()
+    assert Path(merger.__file__).with_name("native_xccov_domain.py").read_bytes() == (
+        projection.with_name("native_xccov_domain.py").read_bytes()
+    )
 
 
 def test_isolated_import_uses_only_the_policy_sibling_exporter(tmp_path, monkeypatch):
@@ -780,3 +783,153 @@ def test_isolated_import_uses_only_the_policy_sibling_exporter(tmp_path, monkeyp
         output=repo / "build/isolated.json",
     )
     assert report[SOURCE] == _observations(1, 1)
+
+
+def _domain_report(repo, lane, coverage, all_sources):
+    from scripts import native_xccov_domain as policy
+
+    geometry = {
+        path: {"native_last_line": 2, "geometry_sha256": policy.sha256(path.encode())}
+        for path in all_sources
+    }
+    domain = policy.make_domain(
+        geometry=geometry,
+        source_bytes=lambda path: (repo / path).read_bytes(),
+        binary={
+            "member": policy.BINARY_MEMBERS["core" if lane == "core" else "app"],
+            "sha256": "a" * 64,
+            "artifact_member": f"coverage/native-binaries/apple-ios-{lane}.zip",
+            "artifact_sha256": "b" * 64,
+        },
+        observed_sources=sorted(coverage),
+        prefix="components/AstralProjection/",
+        lane=lane,
+    )
+    return policy.native_report(coverage, {lane: domain})
+
+
+def test_native_domains_preserve_distinct_lane_inventory_and_real_counts(tmp_path):
+    repo = _repo(tmp_path)
+    core = _core_source(repo)
+    (repo / SOURCE).write_text("enum Example {\n let value = 1\n}\n")
+    _commit(repo / "components/AstralProjection")
+    _commit(repo)
+    inputs = {}
+    for lane in ("core", "unit", "ui", "staging"):
+        paths = [core] if lane == "core" else [core, SOURCE]
+        coverage = {core if lane == "core" else SOURCE: _observations(1, 2)}
+        inputs[lane] = _report(
+            repo, lane + ".json", _domain_report(repo, lane, coverage, paths)
+        )
+    result = merge_xccov_reports(
+        repo=repo,
+        platform="ios",
+        profile="release",
+        inputs=inputs,
+        output=repo / "build/native.json",
+    )
+    assert set(result["domains"]) == {"core", "unit", "ui", "staging"}
+    assert result["domains"]["unit"]["observed_sources"] == [SOURCE]
+    assert set(result["domains"]["unit"]["sources"]) == {SOURCE, core}
+    assert result["coverage"] == {
+        core: _observations(1, 2),
+        SOURCE: _observations(3, 6),
+    }
+    assert all(len(rows) == 2 for rows in result["coverage"].values())
+    assert result["domains"]["unit"]["sources"][SOURCE]["physical_lines"] == 3
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["mixed", "lane", "source", "geometry", "truncated", "counter", "platform"],
+)
+def test_native_merge_refuses_conflicting_or_relabelled_lane_evidence(
+    tmp_path, mutation
+):
+    repo = _repo(tmp_path)
+    core = _core_source(repo)
+    documents = {
+        lane: _domain_report(
+            repo,
+            lane,
+            {core if lane == "core" else SOURCE: _observations()},
+            [core] if lane == "core" else [core, SOURCE],
+        )
+        for lane in ("core", "unit", "ui")
+    }
+    if mutation == "mixed":
+        documents["unit"] = documents["unit"]["coverage"]
+    elif mutation == "lane":
+        documents["unit"] = documents["ui"]
+    elif mutation == "source":
+        documents["ui"]["domains"]["ui"]["sources"][SOURCE]["source_sha256"] = "c" * 64
+    elif mutation == "geometry":
+        documents["ui"]["domains"]["ui"]["sources"][core]["geometry_sha256"] = "c" * 64
+    elif mutation == "truncated":
+        documents["ui"]["coverage"][SOURCE].pop()
+    elif mutation == "counter":
+        documents["ui"]["coverage"][SOURCE][0]["executionCount"] = True
+    elif mutation == "platform":
+        documents["ui"]["platform"] = "macos"
+    inputs = {
+        lane: _report(repo, lane + ".json", value) for lane, value in documents.items()
+    }
+    with pytest.raises((MergeError, ExportError)):
+        merge_xccov_reports(
+            repo=repo, platform="ios", inputs=inputs, output=repo / "build/refused.json"
+        )
+    assert not (repo / "build/refused.json").exists()
+
+
+def test_native_domain_cannot_enter_legacy_macos_profile(tmp_path):
+    repo = _repo(tmp_path)
+    inputs = {
+        lane: _report(
+            repo,
+            lane + ".json",
+            _domain_report(repo, lane, {SOURCE: _observations()}, [SOURCE]),
+        )
+        for lane in ("unit", "ui")
+    }
+    with pytest.raises(MergeError):
+        merge_xccov_reports(
+            repo=repo,
+            platform="macos",
+            inputs=inputs,
+            output=repo / "build/refused.json",
+        )
+
+
+@pytest.mark.parametrize("failure", ["policy_missing", "mapped_source_missing"])
+def test_native_merge_refuses_missing_policy_or_unreadable_mapped_source(
+    tmp_path, monkeypatch, failure
+):
+    repo = _repo(tmp_path)
+    core = _core_source(repo)
+    documents = {
+        lane: _domain_report(
+            repo,
+            lane,
+            {core if lane == "core" else SOURCE: _observations()},
+            [core] if lane == "core" else [core, SOURCE],
+        )
+        for lane in ("core", "unit", "ui")
+    }
+    if failure == "policy_missing":
+        monkeypatch.setitem(
+            merger._native_domain_policy.__globals__,
+            "__file__",
+            str(tmp_path / "missing-policy/exporter.py"),
+        )
+    else:
+        documents["unit"]["domains"]["unit"]["sources"][
+            core.replace("Core.swift", "Absent.swift")
+        ] = dict(documents["unit"]["domains"]["unit"]["sources"][core])
+    inputs = {
+        lane: _report(repo, lane + ".json", value) for lane, value in documents.items()
+    }
+    with pytest.raises(MergeError):
+        merge_xccov_reports(
+            repo=repo, platform="ios", inputs=inputs, output=repo / "build/refused.json"
+        )
+    assert not (repo / "build/refused.json").exists()

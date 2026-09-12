@@ -20,6 +20,8 @@ try:
         MAX_TOTAL_OBSERVATIONS,
         PLATFORM_ROOTS,
         ExportError,
+        _native_domain_policy,
+        _read_source_bytes,
         _read_source_line_count,
         _safe_repo_path,
         _tracked_swift_sources,
@@ -47,6 +49,8 @@ except ModuleNotFoundError:  # Also supports protected ``python -I`` execution.
         "MAX_TOTAL_OBSERVATIONS",
         "PLATFORM_ROOTS",
         "ExportError",
+        "_native_domain_policy",
+        "_read_source_bytes",
         "_read_source_line_count",
         "_safe_repo_path",
         "_tracked_swift_sources",
@@ -231,7 +235,7 @@ def merge_xccov_reports(
     output: Path,
     platform: str,
     profile: str = "ci",
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, Any]:
     """Validate and add normalized unit/UI observations for one Apple platform."""
 
     try:
@@ -257,6 +261,8 @@ def merge_xccov_reports(
         _raise_export_error(exc)
 
     documents: list[Mapping[str, Any]] = []
+    native_domains: dict[str, Any] = {}
+    native_policy = None
     seen_inputs: set[Path] = set()
     total_input_bytes = 0
     for producer in required:
@@ -276,6 +282,25 @@ def merge_xccov_reports(
                 "input_budget_exceeded", "coverage inputs exceed their byte bound"
             )
         document = _strict_document(content)
+        if document.get("format") is not None:
+            try:
+                native_policy = _native_domain_policy()
+            except ExportError as exc:
+                _raise_export_error(exc)
+            try:
+                native_policy.require(platform == "ios")
+                envelope = native_policy.parse_native_report(document)
+                native_policy.require(set(envelope["domains"]) == {producer})
+                domain = envelope["domains"][producer]
+                for path, facts in domain["sources"].items():
+                    actual = native_policy.source_facts(_read_source_bytes(repo, path))
+                    native_policy.require(all(facts[key] == value for key, value in actual.items()))
+                native_domains[producer] = domain
+                document = envelope["coverage"]
+            except native_policy.DomainError as exc:
+                raise MergeError("native_domain_mismatch", "native domain does not match lane/source") from exc
+            except ExportError as exc:
+                _raise_export_error(exc)
         if platform == "ios":
             expected_root = PLATFORM_ROOTS[platform][1 if producer == "core" else 0]
             if (
@@ -288,6 +313,9 @@ def merge_xccov_reports(
                     "coverage lane lacks its required source domain",
                 )
         documents.append(document)
+
+    if native_domains and set(native_domains) != set(required):
+        raise MergeError("native_domain_mismatch", "native and legacy coverage lanes cannot be mixed")
 
     merged: dict[str, list[dict[str, Any]]] = {}
     total_observations = 0
@@ -347,6 +375,12 @@ def merge_xccov_reports(
     if not merged:
         raise MergeError("empty_union", "coverage inputs contain no platform sources")
     ordered = {path: merged[path] for path in sorted(merged)}
+    if native_domains:
+        assert native_policy is not None
+        try:
+            ordered = native_policy.native_report(ordered, native_domains)
+        except native_policy.DomainError as exc:
+            raise MergeError("native_domain_mismatch", "native domains disagree across lanes") from exc
     rendered = (
         json.dumps(ordered, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         + "\n"
