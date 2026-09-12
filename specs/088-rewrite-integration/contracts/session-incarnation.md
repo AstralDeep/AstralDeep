@@ -1,9 +1,10 @@
 # Issued session identity for durable work
 
 Status: reviewed clarification of runtime sections 2–4 and FR-010/FR-026.
-Storage, operation guards, authentication retention and atomic consent have passed
-their scoped local qualification. Host continuation, complete restore tooling,
-protected staging and release qualification remain pending. No new route, runner
+Storage, operation guards, authentication retention, atomic consent and the private
+continuation-authority resolver and guarded read adapter have passed scoped local qualification. Deep pins
+the qualified `088.002` Plane revision. The worker integration, complete
+restore tooling, protected staging and release qualification remain pending. No new route, runner
 or release has been activated. This contract extends the request-refresh
 prerequisite; observing today's row is insufficient to identify yesterday's
 issued session when SID, timestamps and encrypted credentials can be repeated.
