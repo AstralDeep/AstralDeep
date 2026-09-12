@@ -141,10 +141,12 @@ class BoundedStreamReader:
         stream: OutputStream,
         pipe: BinaryIO,
         limits: ProcessSupervisionLimits = DEFAULT_PROCESS_SUPERVISION_LIMITS,
+        private_output: bool = False,
     ) -> None:
         self.stream = stream
         self._pipe = pipe
         self._limits = limits
+        self._private_output = private_output
         self._condition = threading.Condition(threading.RLock())
         self._lines: deque[tuple[bytes, int]] = deque()
         self._partial = bytearray()
@@ -248,13 +250,22 @@ class BoundedStreamReader:
                 chunk = self._pipe.read(self._limits.read_chunk_bytes)
                 if not chunk:
                     break
-                self._forward_chunk(chunk)
-                with self._condition:
-                    self._consume(chunk)
+                if self._private_output:
+                    with self._condition:
+                        self._total_bytes += len(chunk)
+                        self._dropped_bytes += len(chunk)
+                else:
+                    self._forward_chunk(chunk)
+                    with self._condition:
+                        self._consume(chunk)
         except (OSError, ValueError) as exc:
             with self._condition:
                 if not self._pipe_closed:
-                    self._read_error = f"{type(exc).__name__}: {exc}"
+                    self._read_error = (
+                        "private output read failed"
+                        if self._private_output
+                        else f"{type(exc).__name__}: {exc}"
+                    )
         finally:
             with self._condition:
                 if self._partial or self._partial_overlong:
@@ -267,6 +278,8 @@ class BoundedStreamReader:
     def wait_for_line(self, *, prefix: bytes, timeout: float) -> bytes:
         """Return the first currently retained line with ``prefix``."""
 
+        if self._private_output:
+            raise ValueError("private output cannot be read")
         deadline = time.monotonic() + timeout
         with self._condition:
             while True:
@@ -612,6 +625,7 @@ class ProcessSupervisor:
         argv: Sequence[str | os.PathLike[str]],
         cwd: str | os.PathLike[str] | None = None,
         env: Mapping[str, str] | None = None,
+        private_output: bool = False,
         **popen_kwargs: Any,
     ) -> SupervisedProcess:
         """Spawn one isolated process group with continuous bounded readers."""
@@ -670,11 +684,13 @@ class ProcessSupervisor:
                 stream=OutputStream.STDOUT,
                 pipe=process.stdout,
                 limits=self.limits,
+                private_output=private_output,
             ),
             stderr_reader=BoundedStreamReader(
                 stream=OutputStream.STDERR,
                 pipe=process.stderr,
                 limits=self.limits,
+                private_output=private_output,
             ),
             limits=self.limits,
         )

@@ -64,6 +64,10 @@ class ResponseTooLargeError(ExternalHttpError):
     """Upstream response exceeded the configured size cap."""
 
 
+class ContentEncodingError(ExternalHttpError):
+    """Upstream ignored a required identity content encoding."""
+
+
 def normalize_url(raw: str, *, preserve_trailing_slash: bool = False) -> str:
     """Normalize a user-supplied URL into a canonical form.
 
@@ -180,6 +184,8 @@ def request(
     allow_redirects: bool = False,
     extra_headers: Optional[Dict[str, str]] = None,
     allowed_private_hosts: Optional[Iterable[str]] = None,
+    require_identity_encoding: bool = False,
+    trust_environment: bool = True,
 ) -> requests.Response:
     """Make an HTTP request to a user-supplied external service.
 
@@ -205,12 +211,16 @@ def request(
         headers["Authorization"] = f"Bearer {api_key}"
     if extra_headers:
         headers.update(extra_headers)
+    if require_identity_encoding:
+        headers = {
+            key: value for key, value in headers.items()
+            if key.lower() != "accept-encoding"
+        }
+        headers["Accept-Encoding"] = "identity"
     if files is None and data is None and json_body is not None:
         headers["Content-Type"] = "application/json"
     try:
-        resp = requests.request(
-            method.upper(),
-            url,
+        options = dict(
             headers=headers,
             json=json_body,
             files=files,
@@ -220,6 +230,15 @@ def request(
             allow_redirects=allow_redirects,
             stream=True,
         )
+        if trust_environment:
+            resp = requests.request(method.upper(), url, **options)
+        else:
+            # No proxy/CA overrides or implicit ~/.netrc credentials. An empty
+            # child environment alone is insufficient: expanduser can resolve
+            # the user's home through passwd and overwrite an explicit Bearer.
+            with requests.Session() as session:
+                session.trust_env = False
+                resp = session.request(method.upper(), url, **options)
     except (requests.ConnectionError, requests.Timeout) as e:
         raise ServiceUnreachableError(f"Could not reach {url}: {e}") from e
     except requests.RequestException as e:
@@ -228,6 +247,10 @@ def request(
     chunks = []
     total = 0
     try:
+        if require_identity_encoding and resp.headers.get(
+            "Content-Encoding", "identity"
+        ).strip().lower() != "identity":
+            raise ContentEncodingError("Response content encoding is not identity")
         for chunk in resp.iter_content(chunk_size=64 * 1024):
             if not chunk:
                 continue

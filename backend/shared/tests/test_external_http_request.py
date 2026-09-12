@@ -7,6 +7,7 @@ import requests
 from shared.external_http import (
     AuthFailedError,
     BadRequestError,
+    ContentEncodingError,
     RateLimitedError,
     ResponseTooLargeError,
     ServiceUnreachableError,
@@ -139,3 +140,30 @@ def test_response_size_cap_enforced(rmock: HttpMock) -> None:
     rmock.add("GET", SAFE_URL, status=200, body=b"x" * 200_000)
     with pytest.raises(ResponseTooLargeError):
         ext_request("GET", SAFE_URL, api_key="x", max_response_bytes=50_000)
+
+
+def test_identity_encoding_is_enforced_before_decompression(rmock: HttpMock) -> None:
+    rmock.add("GET", SAFE_URL, body=b"compressed payload", headers={"Content-Encoding": "gzip"})
+    response = rmock.routes[0][2]
+    closed = []
+    response.close = lambda: closed.append(True)
+    response.iter_content = lambda **kwargs: pytest.fail("compressed response was decoded")
+    with pytest.raises(ContentEncodingError):
+        ext_request("GET", SAFE_URL, api_key="", require_identity_encoding=True,
+                    extra_headers={"accept-encoding": "gzip"})
+    assert closed == [True]
+    headers = rmock.calls[0]["headers"]
+    assert headers["Accept-Encoding"] == "identity"
+    assert "accept-encoding" not in headers
+
+
+@pytest.mark.parametrize("encoding", [None, "identity", " Identity "])
+def test_identity_encoding_accepts_only_plain_body(rmock: HttpMock, encoding) -> None:
+    headers = {} if encoding is None else {"Content-Encoding": encoding}
+    rmock.add("GET", SAFE_URL, body=b"plain", headers=headers)
+    assert ext_request("GET", SAFE_URL, api_key="", require_identity_encoding=True).content == b"plain"
+
+
+def test_default_content_encoding_behavior_remains_unchanged(rmock: HttpMock) -> None:
+    rmock.add("GET", SAFE_URL, body=b"already decoded", headers={"Content-Encoding": "gzip"})
+    assert ext_request("GET", SAFE_URL, api_key="").content == b"already decoded"
