@@ -984,6 +984,18 @@ class _NoCacheStaticFiles(StaticFiles):
             response.headers["Cache-Control"] = cache_control
         except Exception:
             pass
+        # Minimal Linux images need not know WOFF2's MIME type. These exact
+        # bundled fonts are public worker inputs and must match its MIME pins.
+        if path in {"fonts/inter-latin.woff2", "fonts/jetbrains-mono-latin.woff2"}:
+            response.headers["Content-Type"] = "font/woff2"
+        # 088: only this public, static-only worker may cover root navigation.
+        # Stable worker URLs must revalidate even when requested with ?v=;
+        # all authenticated shell/API/auth responses remain outside its cache.
+        if path == "service-worker.js" and response.status_code in (200, 304):
+            response.headers["Service-Worker-Allowed"] = "/"
+            response.headers["Cache-Control"] = "no-cache"
+            response.headers["Content-Security-Policy"] = "default-src 'none'; connect-src 'self'"
+            response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
 # 030: per-tool dispatch ceilings for long-running verbs (everything else
