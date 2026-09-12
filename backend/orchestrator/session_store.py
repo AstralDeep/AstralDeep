@@ -25,7 +25,7 @@ from dataclasses import replace
 from typing import Any, Dict, Optional
 
 from astralplane.repositories import RepositoryConflictError, RepositoryNotFoundError
-from astralplane.repositories.history import SessionRecord
+from astralplane.repositories.history import SessionRecord, SessionRepository
 from orchestrator.plane_repository_context import (
     PlaneRepositoryContext,
     repository_from,
@@ -392,7 +392,8 @@ class WebSessionStore:
         try:
             self._sessions.call(self._sessions.repository.compare_and_set_refresh,
                                 record=claimed,
-                                expected_last_refresh_at=record.last_refresh_at)
+                                expected_last_refresh_at=record.last_refresh_at,
+                                expected_credential=SessionRepository.execution_fence(record))
         except RepositoryConflictError:
             return None
         except RepositoryNotFoundError:
@@ -408,7 +409,8 @@ class WebSessionStore:
         try:
             self._sessions.call(self._sessions.repository.compare_and_set_refresh,
                                 record=replacement,
-                                expected_last_refresh_at=claimed.last_refresh_at)
+                                expected_last_refresh_at=claimed.last_refresh_at,
+                                expected_credential=SessionRepository.execution_fence(claimed))
         except (RepositoryConflictError, RepositoryNotFoundError):
             raise SessionRefreshUnavailable("session changed during refresh") from None
         if replacement.hard_expires_at <= int(time.time()):
