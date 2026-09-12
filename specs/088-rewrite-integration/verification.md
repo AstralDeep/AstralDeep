@@ -27,11 +27,12 @@ artifact records below remain historical and reproducible.
 
 ## Current issued-session integration checkpoint, 2026-09-12
 
-Local Deep `5ffe0672276bac765979227ef8bcff58263cf438` includes the exact
+Local Deep `97b878d` includes the exact
 Plane pin from `c84c9cd`, the atomic consent work from `cc20825`, and the private
 operation continuation resolver, guarded read adapter, explicit offline recovery
 command, transaction-based audit insertion, opt-in one-shot worker lifecycle and
-unregistered interactive Work acceptance. The pinned Plane commit is
+unregistered interactive Work acceptance, retained attributed page observations
+and an opt-in isolated HTTP transport. The pinned Plane commit is
 `11cfa6d0fe2d91388492f9004e5ebc09d00dd771`, schema `088.002`, migration digest
 `22d086ef60c5e73f124f3569268c4b48138871b1614ac538ab7f685a1b313afc`.
 Projection remains `eff1b3ad779b570c0fe4824f370407efc2a37047`; native source and
@@ -50,6 +51,8 @@ unsigned artifacts are unchanged by this backend increment.
 | Required transaction-based audit append | 13 focused PostgreSQL/hash-chain tests and 90 audit/module integration tests passed, zero failures/skips; changed executable lines 8/8 (100%). The new method uses the caller's transaction and ordinary serialization/HMAC, propagates failure and returns a provisional DTO. Supplied runtime identity is checked; transaction origin remains an explicit trusted-caller precondition. No retry or publisher is invoked. |
 | Opt-in one-shot lifecycle | The broad Linux Python 3.11 cohort recorded 643 passes and one timing-test failure. Its production source was unchanged when the test was corrected to acquire the authority lock within a bound instead of sampling during a legitimate renewal. The final immutable-source focused run passed 57 tests with zero failures/skips, covering 213/221 changed executable lines (96.38%). Root rehashed six final files, 40 artifacts and both real JUnit reports. An intermediate passing run whose borrowed component changed is retained but is not final evidence. |
 | Interactive Work acceptance prerequisite | Final frozen cohort: 999 passed, zero failures/errors/skips, including 78 owned submit cases; changed executable coverage 247/258 (95.74%). Host Python 3.11.15/macOS used the isolated Linux PostgreSQL instance and immutable four-component archives. Root rehashed five final sources, 18 artifacts, 11 prior receipts, 1,144 component files and seven symlinks, verified actual JUnit and replayed Coverage.py from preserved raw data with identical reported line/branch domains and hits. The owned database was removed after a zero-connection check. |
+| Attributed reader observation prerequisite | Linux Python 3.11.15: 621 passed, zero failures/skips; changed executable coverage 139/139 (100%). The separate scoped PostgreSQL cohort passed 83. Root rehashed seven files, 48 artifacts, 1,147 component files and seven symlinks, checked all 21 native coverage file domains/hits and replayed Coverage.py from raw data with identical reports. A final two-line comment clarification preserves the exact tested AST and source locations. The private database was removed. |
+| Isolated HTTP transport prerequisite | Frozen macOS and Linux Python 3.11.15 runs each passed 171 tests, zero failures/skips; each covers 292/307 changed executable lines (95.11%). Real local HTTP and subprocesses exercise bounded slow-drip reads, cancellation, delayed spawn, parent death with child reaping/socket closure, private output, malformed IPC, identity encoding and refusal of ambient netrc credentials. Both complete source fences pass; earlier cleanup failures and generated-bytecode fence failure remain retained. No caller is activated. |
 
 The resolver returns detached private claims, subject token, exact operation and
 bounded session observation. It uses the ordinary production token/role policy;
@@ -81,6 +84,28 @@ Bearer can retrieve an accepted owner receipt but cannot create new durable work
 This adapter supports only the explicit one-page public-reader research subset;
 no model, guidance expansion, transient source, effect, fanout, source-less chat,
 handler or route is enabled. Full T015/T027 remains open.
+
+The fixed reader now returns closed version-1 source facts, retaining attribution,
+actual extraction/completeness flags and a bounded UTF-8 excerpt. Deterministic
+passage selection binds the authentic action/result digest and returns explicit
+insufficient evidence for an empty selection. Scanning covers every character of
+the existing at-most-20,000-character extracted observation before the smaller
+retained excerpt, not omitted HTTP/extractor/visual-page tails. Generic reader UI,
+normalized bytes and revision digests remain equivalent after removing only the
+additive metadata. This prerequisite does not redefine broader research.
+
+The unused isolated transport freezes one private request before its first await,
+uses the approved egress helper in a supervised first-party child, disables
+ambient credentials and compressed decoding, and returns only bounded private
+bytes or closed errors. Its maximum local reservation is a 60-second attempt plus
+five seconds cleanup. Failed cleanup is explicit uncertainty; local termination
+does not establish remote cancellation. Existing callers retain their prior
+behavior. The reader and model paths have not adopted it, and provider selection,
+private transient input, authentic model usage and concrete episode activation
+remain open. Local handoff SHA-256 values are research
+`9d9654d043996d74834426fc1d4ae63a1e794e31d239a27eef8eff30ae63ff1c`
+and transport
+`a073d1fa70eaeb021e367c4ee35ff75cfade89ff6370a1edfb1063e7141bdbad`.
 
 Retained local handoff SHA-256 values are: Plane integration
 `ec604636925a2b452b3b6bed7aeacb7afa78e149355e52cbf904aad422b99770`,
