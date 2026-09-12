@@ -38,7 +38,7 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Dict, Optional
 
@@ -56,6 +56,53 @@ logger = logging.getLogger("LLMConfig.UserStore")
 _CACHE_TTL_SECONDS = 30.0
 
 _SYSTEM_CACHE_KEY = "__system__"
+
+
+class UserConfigCaptureUnavailable(ValueError):
+    """An opaque USER configuration cannot be captured or opened safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedUserLLMConfig:
+    """Exact encrypted USER row; never a cache hit or an authority assertion."""
+
+    _record: EncryptedLLMConfigRecord = field(repr=False)
+
+    @property
+    def owner_id(self) -> str:
+        """Return the exact owner selected by the repository read."""
+        return self._record.owner_id
+
+    def matches(self, record: EncryptedLLMConfigRecord | None) -> bool:
+        """Compare all raw fields with a caller's current, optionally locked row."""
+        return type(record) is EncryptedLLMConfigRecord and self._record == record
+
+
+def _capture_user_row(row, owner_id):
+    """Validate an immutable encrypted record without decrypting or discarding it."""
+    try:
+        if type(owner_id) is not str or not owner_id.strip() or len(owner_id.encode()) > 2048:
+            raise ValueError
+        if row is None:
+            return None
+        if (
+            type(row) is not EncryptedLLMConfigRecord or row.scope != "user"
+            or row.owner_id != owner_id or row.updated_by is not None
+        ):
+            raise ValueError
+        for value in (row.provider, row.base_url, row.model, row.api_key_ciphertext):
+            if value is not None and (type(value) is not str or len(value.encode()) > 32768):
+                raise ValueError
+        if any(type(value) is not str for value in (row.provider, row.base_url, row.model)):
+            raise ValueError
+        for value in (row.created_at, row.updated_at):
+            if type(value) is not datetime or value.utcoffset() is None:
+                raise ValueError
+        if row.updated_at < row.created_at:
+            raise ValueError
+        return CapturedUserLLMConfig(row)
+    except (TypeError, ValueError, UnicodeError, OverflowError):
+        raise UserConfigCaptureUnavailable("user_config_capture_unavailable") from None
 
 
 class LLMConfigCommitDeadlineExceeded(TimeoutError):
@@ -206,6 +253,45 @@ class UserLLMConfigStore:
         value = self._row_to_config(row, discard_scope="user", discard_id=user_id)
         self._cache_put(user_id, value)
         return value
+
+    def capture_user_sync(self, user_id: str) -> CapturedUserLLMConfig | None:
+        """Read one exact USER row without cache, key opening, deletion or audit.
+
+        This is selection only, not a lock held across awaits. Execution callers
+        must compare against Plane's locked current row in the permit transaction.
+        Plane caps each SQL lock/statement wait at 100/1000 ms (preserving stricter
+        settings). They do not bound pool checkout, connection establishment or
+        a nonresponsive network; this is not a universal physical-worker deadline.
+        """
+        try:
+            _capture_user_row(None, user_id)
+            with self._repository.transaction() as transaction:
+                sessions = self._repository.plane_runtime.repositories.history.sessions
+                sessions.bound_request_execution_waits(transaction)
+                row = self._repository.repository.get_user(transaction, owner_id=user_id)
+                return _capture_user_row(row, user_id)
+        except Exception:
+            # Repository/capability failures may contain SQL or private row data.
+            # Escape the transaction first, then expose only the closed refusal.
+            raise UserConfigCaptureUnavailable("user_config_capture_unavailable") from None
+
+    async def capture_user(self, user_id: str) -> CapturedUserLLMConfig | None:
+        """Perform the uncached selection off the event loop."""
+        return await asyncio.to_thread(self.capture_user_sync, user_id)
+
+    def open_captured_user_key(self, capture: CapturedUserLLMConfig) -> str:
+        """Open only this opaque selection; corrupt rows remain untouched.
+
+        The fixed profile consumer owns the returned ephemeral key. It must never
+        enter a durable payload, log or representation, and current-row guarding
+        remains the caller's responsibility before any network attempt.
+        """
+        try:
+            if type(capture) is not CapturedUserLLMConfig:
+                raise ValueError
+            return self._decrypt_key(capture._record.api_key_ciphertext)
+        except (InvalidToken, ValueError, TypeError, UnicodeError):
+            raise UserConfigCaptureUnavailable("user_config_capture_unavailable") from None
 
     def set_sync(self, user_id: str, *, provider: str, base_url: str,
                  model: str, api_key: str) -> PersistedLLMConfig:
