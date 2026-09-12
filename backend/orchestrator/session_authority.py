@@ -121,7 +121,8 @@ async def refresh_operation_execution_authority(
             if min(expiry, deadline) <= reference.state.observed_at:
                 _unavailable()
             candidate = await sessions.refresh_for_execution(
-                reference, exchange=web_auth._exchange_session_refresh)
+                reference, exchange=web_auth._exchange_session_refresh,
+                bound_exchange=web_auth._exchange_bound_session_refresh)
             payload = await auth.verify_user(await auth.verify_production_token(candidate.access_token))
             jwt_expiry = payload.get("exp")
             if (payload.get("sub") != owner_id or type(jwt_expiry) not in (int, float)
@@ -200,7 +201,8 @@ async def refresh_web_execution_authority(
             reference = await asyncio.to_thread(
                 store.capture_execution_reference, owner_id=owner, session_id=sid)
             candidate = await store.refresh_for_execution(
-                reference, exchange=web_auth._exchange_session_refresh)
+                reference, exchange=web_auth._exchange_session_refresh,
+                bound_exchange=web_auth._exchange_bound_session_refresh)
             # Reuse the actual IAM verifier without altering the original request's
             # delegation subject token/audit claims, including on a late refusal.
             verification_request = Request({**request.scope, "state": {}})

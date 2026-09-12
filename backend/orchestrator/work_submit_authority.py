@@ -145,7 +145,8 @@ async def refresh_work_submission_authority(
             if (context.cookie_session is not None and context.cookie_session != (
                     reference.state.credential.session_id, reference.state.credential.incarnation_id)):
                 _refuse()
-            candidate = await sessions.refresh_for_execution(reference, exchange=web_auth._exchange_session_refresh)
+            candidate = await sessions.refresh_for_execution(reference, exchange=web_auth._exchange_session_refresh,
+                bound_exchange=web_auth._exchange_bound_session_refresh)
             claims = await auth.verify_user(await auth.verify_production_token(candidate.access_token))
             expiry = _expiry(claims, context.owner_id)
             if candidate.credential.incarnation_id != reference.state.credential.incarnation_id:

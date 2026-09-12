@@ -6,6 +6,7 @@ ids), the retrier honoring the stored client_id, and Deep's use of Plane's
 nullable client-id revocation contract.
 """
 import asyncio
+from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 
@@ -161,8 +162,9 @@ def test_retrier_uses_stored_client_id(monkeypatch):
     class FakeStore:
         """Mirrors WebSessionStore's async facade (the retrier's contract)."""
 
-        async def apending_revocations(self, limit=20):
-            return [
+        @asynccontextmanager
+        async def revocation_pass(self):
+            yield [
                 {"id": 1, "user_id": "u", "refresh_token": "rt-native",
                  "attempts": 0, "enqueued_at": 0, "client_id": "astral-mobile"},
                 {"id": 2, "user_id": "u", "refresh_token": "rt-web",
