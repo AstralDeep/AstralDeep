@@ -643,3 +643,39 @@ def test_identity_check_never_selects_wrong_sid_or_invalid_id(issued):
     assert store.is_current_incarnation(owner, session_id=sid, incarnation_id=row["incarnation_id"])
     assert not store.is_current_incarnation(owner, session_id="wrong-sid", incarnation_id=row["incarnation_id"])
     assert not store.is_current_incarnation(owner, session_id=sid, incarnation_id="invalid")
+
+
+@pytest.mark.parametrize("method", ["session_reference", "is_current_incarnation"])
+def test_selected_incarnation_read_releases_pool_before_table_blocker(issued, runtime, method):
+    from concurrent.futures import ThreadPoolExecutor
+    from orchestrator.session_store import SessionRefreshUnavailable
+    store, sid, owner, row = issued
+    # This is the test-owned database only; no application pool is borrowed.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with runtime.transaction() as blocker:
+            blocker.execute("LOCK TABLE web_session IN ACCESS EXCLUSIVE MODE")
+            pending = executor.submit(getattr(store, method), owner,
+                                      session_id=sid, incarnation_id=row["incarnation_id"])
+            with pytest.raises(SessionRefreshUnavailable, match="session execution database unavailable"):
+                pending.result(timeout=3)
+            assert runtime._pool.snapshot.borrowed == 1
+            assert store._sessions.repository.get(blocker, owner_id=owner, session_id=sid).incarnation_id == row["incarnation_id"]
+    assert runtime._pool.snapshot.borrowed == 0
+
+
+@pytest.mark.parametrize("method", ["session_reference", "is_current_incarnation"])
+def test_selected_incarnation_read_has_statement_cap(issued, runtime, monkeypatch, method):
+    from concurrent.futures import ThreadPoolExecutor
+    from orchestrator.session_store import SessionRefreshUnavailable
+    store, sid, owner, row = issued
+
+    def slow_read(transaction, **kwargs):
+        transaction.fetch_one("SELECT pg_sleep(10)")
+        pytest.fail("selected session read exceeded its statement deadline")
+
+    monkeypatch.setattr(store._sessions.repository, "get_by_incarnation", slow_read)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with pytest.raises(SessionRefreshUnavailable, match="session execution database unavailable"):
+            executor.submit(getattr(store, method), owner, session_id=sid,
+                            incarnation_id=row["incarnation_id"]).result(timeout=3)
+    assert runtime._pool.snapshot.borrowed == 0

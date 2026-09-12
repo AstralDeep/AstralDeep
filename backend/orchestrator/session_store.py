@@ -409,7 +409,7 @@ class WebSessionStore:
         """Resolve an approving request's exact issued session, never its latest."""
         if not _valid_incarnation(incarnation_id) or self._fernet is None:
             raise SessionRefreshUnavailable("live encrypted session required")
-        with self._sessions.transaction() as transaction:
+        with self._request_execution_transaction() as transaction:
             record = self._sessions.repository.get_by_incarnation(
                 transaction, owner_id=owner_id, incarnation_id=incarnation_id)
         current = self._dec(record.refresh_token_ciphertext) if record is not None else ""
