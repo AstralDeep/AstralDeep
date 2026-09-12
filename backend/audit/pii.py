@@ -22,6 +22,7 @@ import hashlib
 import logging
 import os
 import re
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("Audit.PII")
@@ -59,6 +60,85 @@ def _load_secret_for_key_id(key_id: str) -> bytes:
 def get_active_key_id() -> str:
     """Return the active HMAC ``key_id`` for new audit rows."""
     return os.getenv("AUDIT_HMAC_KEY_ID", "k1")
+
+
+class PrivateBindingUnavailable(ValueError):
+    """The explicitly named private binding key or domain is unavailable."""
+
+
+_PRIVATE_KEY_ID = re.compile(r"[a-z][a-z0-9_]{0,31}")
+_PRIVATE_DOMAINS = frozenset({"config", "input", "result"})
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateBindingKey:
+    """One exact audit-family key, separated from legacy audit MACs.
+
+    Callers re-resolve the named key at current authority boundaries. This
+    immutable snapshot is not an authorization capability or a key registry.
+    """
+
+    key_id: str
+    _key: bytes = field(repr=False)
+
+    def sign(self, domain: str, payload: bytes) -> str:
+        """Return a versioned domain-separated hexadecimal private payload MAC."""
+        if (
+            type(domain) is not str or domain not in _PRIVATE_DOMAINS
+            or type(payload) is not bytes or len(payload) > 2 * 1024 * 1024
+        ):
+            raise PrivateBindingUnavailable("private_binding_unavailable")
+        return hmac.new(
+            self._key, b"astral.work.private/v1/" + domain.encode() + b"\x00" + payload,
+            hashlib.sha256,
+        ).hexdigest()
+
+    def verify(self, domain: str, payload: bytes, authentication: str) -> bool:
+        """Compare a well-formed MAC without exposing secret or payload bytes."""
+        expected = self.sign(domain, payload)
+        return (
+            type(authentication) is str
+            and re.fullmatch(r"[a-f0-9]{64}", authentication) is not None
+            and hmac.compare_digest(expected, authentication)
+        )
+
+
+def private_binding_key(key_id: Optional[str] = None) -> PrivateBindingKey:
+    """Resolve a strict opt-in key without active-key or development fallback.
+
+    Historical IDs require an explicit versioned key. Active and versioned
+    configuration for the same ID must agree. Canonical lowercase IDs make the
+    existing uppercase environment suffix mapping injective. The minimum byte
+    length is a structural guard, not an estimate of operator-provided entropy.
+    """
+    try:
+        active = get_active_key_id()
+        selected = active if key_id is None else key_id
+        if any(type(value) is not str or not _PRIVATE_KEY_ID.fullmatch(value)
+               for value in (active, selected)):
+            raise ValueError
+        specific = os.getenv(f"AUDIT_HMAC_SECRET_{selected.upper()}")
+        current = os.getenv("AUDIT_HMAC_SECRET") if selected == active else None
+        if specific is not None and current is not None and specific != current:
+            raise ValueError
+        secret = specific if specific is not None else current
+        if (
+            secret is None or secret != secret.strip()
+            or any(ord(char) < 32 or ord(char) == 127 for char in secret)
+            or secret in {"dev-audit-hmac-secret-change-me-in-prod", "change-me",
+                          _DEV_FALLBACK_SECRET.decode()}
+        ):
+            raise ValueError
+        raw = secret.encode("utf-8")
+        if not 32 <= len(raw) <= 4096:
+            raise ValueError
+        derived = hmac.new(
+            raw, b"astral.work.private/key/v1\x00" + selected.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        return PrivateBindingKey(selected, derived)
+    except (ValueError, UnicodeError, TypeError):
+        raise PrivateBindingUnavailable("private_binding_unavailable") from None
 
 
 # ---------------------------------------------------------------------------
