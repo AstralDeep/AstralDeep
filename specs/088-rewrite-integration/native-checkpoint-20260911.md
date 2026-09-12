@@ -80,7 +80,7 @@ in each repository's ignored `build/088/` directories.
 
 | Gate | Result and boundary |
 | --- | --- |
-| Android `ktlintCheck :app:lintDebug :core:test :app:testDebugUnitTest :core:koverVerify :app:assembleDebug :app:bundleRelease` | Passed on final native source; 113 core and 277 app tests, no failures or skips. Four real MockWebServer/virtual-clock deadline regressions changed from three failures to four passes. |
+| Android `ktlintCheck :app:lintDebug :core:test :app:testDebugUnitTest :core:koverVerify :app:koverVerify :app:assembleDebug :app:bundleRelease` | Passed on final native source; 113 core and 281 app tests, no failures or skips. Four real MockWebServer/virtual-clock deadline regressions changed from three failures to four passes. |
 | Apple Core | 189 passed. |
 | iOS unit/UI | 154 unit and two UI tests passed before the final terminal/replay-only batch; affected final unit cohort 35 passed. The UI test includes the observed canvas freeze. |
 | watchOS | Final 53 passed, one skip for missing live staging inputs. |
@@ -130,13 +130,71 @@ Android recovery/deadline batch was rebuilt and still requires final live checks
 Fresh Apple replacement builds likewise require authenticated checks against
 the new backend candidate. Prior observations are not final-candidate claims.
 
+## Subsequent authenticated repairs and T012
+
+Projection `2ec13a3806b31abc7eecc5e13de0c8d47cf5ebca` admits the validated
+start welcome while New chat is awaiting its acknowledgment; real work still
+retires welcome. Projection `40431505178ee697e28ab1cdb8f7edcd70b9f42d` reports
+Android viewport dimensions in logical pixels while retaining physical display
+metrics. Regression tests demonstrated each prior failure before passing.
+
+The Android APK with SHA-256
+`bed0841c175be044932b1bb4ef155d76c6f6d557eafa4e58b864c22d68aee1bf`
+retained user authentication and hydrated the real six-dice result totaling30.
+Stats now use one column at the phone's 411 logical pixels. New chat, More,
+Messages collapse and an actual saved HTML export passed. A subsequent background
+request preserved the dice canvas and committed the synthetic Alpha2/Beta5 result,
+but its native chart displayed a rendering error. **That live chart defect remains
+open**; standalone chart fixtures are not evidence that this case works.
+
+The exact installed Deep `e8d6a30763b5feba79d5c46cc70178543ecb9fee` image passed
+42 source/package/public checks. Its full diagnostic coverage run totaled11,169
+passed, five failed and four setup errors; changed executable coverage passed
+1006/1007 (99.90%). A test changed only unused base64 padding bits rather than the
+MAC, and verification harness database calls ran on the event loop. These fixtures
+and harness calls are repaired in Deep `4a77331`; the actual guarded verification
+suite then passed63 and identity module passed10, with changed driver coverage
+51/54 (94.44%). These overlay results do not relabel the original failed candidate
+reports. Fresh final-candidate qualification remains required.
+
+Unsigned iPhone builds lacked simulated application/keychain entitlements and
+could not persist login. A local ad-hoc simulator build with the existing observed
+team/application identities fixes the build setup without authentication source
+changes. Its Watch companion retained authentication through installation and
+process restart; conversation interaction remains unverified. The replacement
+iPhone still requires the user's normal institutional sign-in, and the final
+macOS candidate is waiting for the user's Keychain Allow prompt. No credentials
+were entered or copied by the agent.
+
+Projection `8a2ef8bfcc75643d1d1af5497285773ddb804611` implements T012's public-only
+offline document, manifest and worker. Seven exact public assets are anonymously
+fetched, size/hash/MIME checked, and checked again when read from cache. Only root
+navigation can fall back to the offline document; personalized shell/API/auth,
+queries, private headers and non-GET requests are excluded. Failed updates do not
+activate. Cleanup is limited to this worker's cache prefix. Deep explicitly serves
+the two bundled WOFF2 fonts as font/woff2 because minimal Linux images otherwise
+label them application/octet-stream, preventing the strict worker from installing.
+
+T012 verification:40 worker unit tests, four real Chromium tests,122 Projection
+protocol/resource/CI tests (one skip), and51 Linux Deep static/cache/shell security
+tests passed. Changed coverage is112/112 worker lines,8/8 registration lines,
+33/33 generator lines and7/7 Deep lines. Browser fixtures used an isolated synthetic
+origin; actual installed offline fallback must still be checked after rebuilding
+Deep with this Projection pin.
+
+Plane T024 is progressing in its separate review worktree and is not included in
+this Deep pin. Wait/wake receipts, profile-aware owner reads and finite terminal
+handling have focused PostgreSQL coverage; versioned decision/delete/reconcile,
+recovery terminal semantics and future-version purge handling remain. T025–T030
+and the dependent UI/guidance work are still substantive implementation tasks.
+
 ## Artifacts and release boundaries
 
 Current Android bundle:
 `/Users/sam/Desktop/Work/AstralProjection/android-client/app/build/outputs/bundle/release/app-release.aab`
 
-It is **unsigned**, versionCode **7**, versionName **1.4**, **35,226,576 bytes**,
-SHA-256 `a4acb4b1757b9b7aba35689325e141aaf7003e6c88b79dede913bbb2c20fb7c4`.
+It is **unsigned**, versionCode **7**, versionName **1.4**, **35,226,685 bytes**,
+SHA-256 `6a417647644fbb8e2953f1c34c3a81d13076f30fa73f0532375a14cbd4fcc530`.
 The Gradle task name does not establish signing; no signature entries exist.
 It is not uploadable until signed with the approved upload key and checked
 against Play's highest version code. The documented upload key is on Windows,
@@ -152,7 +210,7 @@ push, draft-to-ready transition, signing/distribution and publication gated.
 Missing infrastructure is not bootstrap approval. No policy, workflow, ruleset,
 signing secret or IAM registration has been weakened to bypass this boundary.
 
-Second-owner isolation, revocation, microphone flow, actual downloaded files,
+Second-owner isolation, revocation, microphone flow, remaining native downloads,
 representative migrated data and all-target authenticated staging remain open.
 Watch explicitly hands off forms, effect approval, chrome editing, chart
 interaction and downloads. Android public HTTPS downloads use the system browser
