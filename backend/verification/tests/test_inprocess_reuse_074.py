@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 import uuid
@@ -91,7 +92,8 @@ def test_two_sequential_default_run_ids_publish_with_fresh_retired_owners(
                 assert blobs.is_owner_absent(owner_id=owner_id)
                 probe_id = str(uuid.uuid4())
                 with pytest.raises(RepositoryConflictError, match="owner is retired"):
-                    materializations.begin_pending_materialization(
+                    await asyncio.to_thread(
+                        materializations.begin_pending_materialization,
                         attachment_id=probe_id,
                         owner_id=owner_id,
                         filename="retired-owner-probe.txt",
