@@ -1,5 +1,45 @@
 # Feature 088 verification record
 
+## September 12 uploaded clients and source-review checkpoint
+
+Apple accepted fresh iPhone/embedded-Watch and universal Mac version 1.6 / build 62
+uploads for the existing app `6789190465`, team `593LGH35GS`. Provider upload IDs
+are `0a3bb216-c0e5-4e1d-b7e5-f7e8cfc5f8da` and
+`5263220c-dcfb-4f9d-a9a1-1ef19a8ac0eb`. Processing completion, attachment, and public
+review submission are not inferred. The owner reports Android 1.4 / code 8 uploaded
+and awaiting review. Prior code 7 and Apple 1.5 / build 61 records below are historical.
+
+The native sources were built from Projection `ba6e81cd69e710b222a8e33293ddbcef169e48b8`.
+The final pinned Projection `61ffa5697cda84c41cb3a473f07947a18b2c648f` changes only
+Apple CI literal quoting and its provenance bookkeeping after that checkpoint;
+all compiled/product sources remain identical. Signatures, profiles, architectures,
+Release configuration, and upload-time signature-only payload changes were independently
+verified. Local exports: iOS SHA256
+`3686f059abb4214a52a68903c0b06d37b63f503d02a64a9c7cc2ec29699cf533`, Mac SHA256
+`8e303c8ffaf2ebc576fcecb7b6ef1da6491c358c9192e88a99481a83d6548d3a`.
+The native version/provenance cohort passed 45; Android's code 8 build passed 460
+JVM tests and its lint/coverage/build gates. These are scoped results, not full 088 acceptance.
+
+Deep now pins qualified Plane `4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9`, schema 088.003,
+migration digest `a3d3ac43bee48b0ca6832cca1e4a347db0a3f838af908b8545edb11e7e94272a`.
+The seven pin/fixture paths match the retained installed qualification exactly:
+auth 516, Work 155, consent/recovery 45, CLI 3, research-profile 203, config-lock 2,
+installed-schema 38, source-schema 40, installed migration 11, and tooling 293 passing
+with six unchanged PowerShell-only skips. The four offline-installed wheels and
+205 installed member identities were checked; prior failed attempts and corrected
+successor lanes remain retained. Fresh composition/installer guards passed 140
+checks before the final CI-only Projection repin; final-head checks are recorded
+in the PR and external handoff.
+
+The owner requests ready-for-review PRs for this implemented checkpoint and reserves
+merging. Plane and Projection must merge before Deep. No unfinished B1 execution
+source or unintegrated compatibility-test worktree is included. Institutional
+exact-candidate staging, canonical protected release evidence and the remaining 088
+implementation tasks are still open. Review-state promotion is not a full-feature,
+merge, backend-deployment or protected-release verdict. Earlier status sections
+below retain their original scope and dates.
+
+
 Status: scoped local implementation and qualification continue, 2026-09-12. No full integrated feature, live staging, merge, deployment or release is claimed.
 
 ## Android artifact for the owner's manual upload, 2026-09-12
