@@ -1,7 +1,8 @@
 """Partial T027 reads against the real Plane facade and isolated PostgreSQL.
 
-Synthetic operations are seeded through the public repository; they do not
-represent admitted product work or confer dispatch authority. Only the explicit
+Synthetic operations use database-issued interactive session incarnations and
+real database-clock observations through the public repositories. This read-only
+fixture does not qualify external IAM or enable dispatch. Only the explicit
 future-version fixture uses SQL, to reproduce storage written by a newer Plane.
 """
 from dataclasses import replace
@@ -11,12 +12,14 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from astralplane.repositories.assignment_models import (
     AssignmentDefinition,
     AssignmentOperationAuthority,
     AssignmentOperationSpec,
 )
+from astralplane.repositories.history import SessionExecutionObservation, SessionRecord
 
 from orchestrator.auth import get_web_or_bearer_user_payload
 from orchestrator.work_api import work_router
@@ -37,22 +40,41 @@ def records(plane):
                 "model_calls": 2, "tool_calls": 2, "tokens": 100, "elapsed_ms": 1000},
     )
     repository = plane.repositories.assignments
+    sessions = plane.repositories.history.sessions
+    cipher = Fernet(Fernet.generate_key())
     identities = []
     with plane.transaction() as transaction:
         for owner in ("owner", "owner", "other"):
             identity = str(uuid4())
-            repository.create_operation(
+            now = int(datetime.now(UTC).timestamp())
+            session = sessions.put(transaction, SessionRecord(
+                session_id=str(uuid4()), owner_id=owner,
+                access_token_ciphertext=cipher.encrypt(b"synthetic-access").decode(),
+                refresh_token_ciphertext=cipher.encrypt(b"synthetic-refresh").decode(),
+                interactive_anchor=now, hard_expires_at=now + 3600,
+                last_refresh_at=now, resumed=False, created_at=now,
+            ))
+            state = sessions.get_execution_state(
+                transaction, owner_id=owner, session_id=session.session_id)
+            assert state is not None and state.credential.incarnation_id == session.incarnation_id
+            observation = SessionExecutionObservation(
+                credential=state.credential, started_at=state.observed_at,
+                valid_until=state.observed_at + timedelta(seconds=15))
+            record = repository.create_operation(
                 transaction, owner_id=owner, assignment_id=identity,
                 origin_namespace="web", caller_key=identity, command_digest=digest(identity),
-                definition=definition,
+                definition=definition, authority=observation,
                 operation=AssignmentOperationSpec(
-                    kind="chat", deadline_at=datetime.now(UTC) + timedelta(minutes=5),
-                    source_retention="none",
+                    kind="chat", deadline_at=state.observed_at + timedelta(minutes=5),
+                    source_retention="none", version=2,
                     authority=AssignmentOperationAuthority(
-                        owner_id=owner, origin="interactive", reference_kind="session",
-                        reference_id="private fixture reference", expires_at=datetime.now(UTC) + timedelta(minutes=10)),
+                        owner_id=owner, origin="interactive", reference_kind="session_incarnation",
+                        reference_id=session.incarnation_id,
+                        expires_at=state.observed_at + timedelta(minutes=10)),
                 ),
             )
+            assert record.operation["version"] == 2
+            assert record.operation["authority"]["reference_id"] == session.incarnation_id
             identities.append(identity)
         grant = str(uuid4())
         plane.repositories.offline_grants.create_grant(
@@ -122,7 +144,7 @@ async def test_future_operation_payload_is_opaque_but_safe_outer_identity_is_rea
         # Fixture-only corruption/forward-version simulation in the isolated schema.
         tx.execute(
             "UPDATE persistent_assignment SET data=jsonb_set(data, '{operation}', %s::jsonb) WHERE id=%s",
-            ('{"version":2,"kind":{"private":"opaque"},"deadline_at":"private","authority":"private"}', ids[0]))
+            ('{"version":3,"kind":{"private":"opaque"},"deadline_at":"private","authority":"private"}', ids[0]))
     await service.store.transaction(future_record)
     result = await service.get("owner", {"sub": "owner"}, ids[0])
     assert result["id"] == ids[0] and result["schema_supported"] is False
