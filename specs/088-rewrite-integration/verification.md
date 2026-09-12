@@ -10,8 +10,10 @@ review submission are not inferred. The owner reports Android 1.4 / code 8 uploa
 and awaiting review. Prior code 7 and Apple 1.5 / build 61 records below are historical.
 
 The native sources were built from Projection `ba6e81cd69e710b222a8e33293ddbcef169e48b8`.
-The final pinned Projection `61ffa5697cda84c41cb3a473f07947a18b2c648f` changes only
-Apple CI literal quoting and its provenance bookkeeping after that checkpoint;
+The final pinned Projection `d0ef5cf399c52ae681b296c0b1f51f90b247799a` changes only
+Apple CI quoting/Bash 3 argument handling, Android coverage CI cache selection,
+browser harness module loading, matching regression guards and provenance bookkeeping
+after that checkpoint;
 all compiled/product sources remain identical. Signatures, profiles, architectures,
 Release configuration, and upload-time signature-only payload changes were independently
 verified. Local exports: iOS SHA256
@@ -30,6 +32,21 @@ with six unchanged PowerShell-only skips. The four offline-installed wheels and
 successor lanes remain retained. Fresh composition/installer guards passed 140
 checks before the final CI-only Projection repin; final-head checks are recorded
 in the PR and external handoff.
+
+The first refreshed hosted checks exposed two CI integration errors: Apple Bash 3
+rejected empty optional argument arrays before Xcode ran, and Deep's closed tooling
+inventory omitted the recovery CLI and its existing tests. Projection now preserves
+empty Mac and populated iOS arguments under Bash 3, with all 109 focused guards
+passing. Deep now includes the existing recovery tests in its measured tooling lane
+and records both paths in the inventory assertion; omissions, deselections and the
+90% coverage requirement remain unchanged. The focused inventory/recovery cohort
+passed 43 tests. A broader local archive run retained five failures from missing Git
+metadata; all five passed separately with identical source in a real Git checkout.
+The retained diagnostic coverage union is 92.86% (recovery CLI 97.64%); this is not
+a single green hosted lane. The subsequent web export harness and Android coverage
+preparation corrections passed the previously failing browser case, all 99 related
+browser tests and 175 focused Python guards. Production/compiled sources remain
+unchanged; hosted Android preparation and fresh successor checks are still required.
 
 The owner requests ready-for-review PRs for this implemented checkpoint and reserves
 merging. Plane and Projection must merge before Deep. No unfinished B1 execution
