@@ -2,12 +2,36 @@
 
 Status: scoped local implementation and qualification continue, 2026-09-12. No full integrated feature, live staging, merge, deployment or release is claimed.
 
+## Android artifact for the owner's manual upload, 2026-09-12
+
+The owner confirmed `com.personalailabs.astraldeep` and requested local signing
+with the supplied upload keystore/properties. The exact qualified Projection
+`eff1b3ad779b570c0fe4824f370407efc2a37047` unsigned bundle was signed without
+changing native sources or payloads. The output is
+`AstralDeep-1.4-code7-088-SIGNED.aab`, 35,711,507 bytes, SHA-256
+`776f2c4d60c2d79f75565aac859524f5af39b63f4a3cc53382886d23e6b07e06`.
+It has version 1.4/code 7, min API 26, target API 36 and debuggable=false.
+
+All 509 payload entries match the qualified unsigned input byte for byte and
+verify against the supplied upload certificate. Standard jarsigner verification,
+bundletool validation and manifest checks passed. The self-signed upload
+certificate is distinct from a public PKI trust chain; its fingerprint has not
+been compared with the inaccessible target Play listing. Two local bundletool
+classpath failures are retained before the passing corrected invocation; no
+product dependency changed. No fresh native compilation/test result is inferred.
+
+The owner will upload manually. Play's certificate/version acceptance, full 088,
+authenticated staging and PR readiness remain unqualified; no store submission
+or protected release occurred. Apple archives remain unsigned. Earlier unsigned
+artifact records below remain historical and reproducible.
+
 ## Current issued-session integration checkpoint, 2026-09-12
 
-Local Deep `a9a3187ff5d98a01323393958c73c99824baf1f9` includes the exact
+Local Deep `5ffe0672276bac765979227ef8bcff58263cf438` includes the exact
 Plane pin from `c84c9cd`, the atomic consent work from `cc20825`, and the private
 operation continuation resolver, guarded read adapter, explicit offline recovery
-command, transaction-based audit insertion and opt-in one-shot worker lifecycle. The pinned Plane commit is
+command, transaction-based audit insertion, opt-in one-shot worker lifecycle and
+unregistered interactive Work acceptance. The pinned Plane commit is
 `11cfa6d0fe2d91388492f9004e5ebc09d00dd771`, schema `088.002`, migration digest
 `22d086ef60c5e73f124f3569268c4b48138871b1614ac538ab7f685a1b313afc`.
 Projection remains `eff1b3ad779b570c0fe4824f370407efc2a37047`; native source and
@@ -25,6 +49,7 @@ unsigned artifacts are unchanged by this backend increment.
 | Installed recovery command and exact new pin | 201 tooling tests, three shipping CLI journeys across 12 actual invocations, and three installed Deep encrypted-grant tests passed with zero failures/skips. Fresh isolated offline Linux Python 3.11 checked all four wheels, 187 packaged members, RECORD and import origins. Only Plane changed. CLI unit/tooling coverage is 124/127 (97.64%); actual subprocess results are functional evidence, not manufactured subprocess coverage. Root verified six final files, the gitlink, 110 artifacts and four wheel digests/ZIP integrity. |
 | Required transaction-based audit append | 13 focused PostgreSQL/hash-chain tests and 90 audit/module integration tests passed, zero failures/skips; changed executable lines 8/8 (100%). The new method uses the caller's transaction and ordinary serialization/HMAC, propagates failure and returns a provisional DTO. Supplied runtime identity is checked; transaction origin remains an explicit trusted-caller precondition. No retry or publisher is invoked. |
 | Opt-in one-shot lifecycle | The broad Linux Python 3.11 cohort recorded 643 passes and one timing-test failure. Its production source was unchanged when the test was corrected to acquire the authority lock within a bound instead of sampling during a legitimate renewal. The final immutable-source focused run passed 57 tests with zero failures/skips, covering 213/221 changed executable lines (96.38%). Root rehashed six final files, 40 artifacts and both real JUnit reports. An intermediate passing run whose borrowed component changed is retained but is not final evidence. |
+| Interactive Work acceptance prerequisite | Final frozen cohort: 999 passed, zero failures/errors/skips, including 78 owned submit cases; changed executable coverage 247/258 (95.74%). Host Python 3.11.15/macOS used the isolated Linux PostgreSQL instance and immutable four-component archives. Root rehashed five final sources, 18 artifacts, 11 prior receipts, 1,144 component files and seven symlinks, verified actual JUnit and replayed Coverage.py from preserved raw data with identical reported line/branch domains and hits. The owned database was removed after a zero-connection check. |
 
 The resolver returns detached private claims, subject token, exact operation and
 bounded session observation. It uses the ordinary production token/role policy;
@@ -43,6 +68,20 @@ the same session observation. Cross-operation/process refresh collisions still
 fail closed; multiworker availability and the concrete research/model handler
 remain separate work. Full T026 is open.
 
+Work acceptance preserves the original bounded caller key and canonical body
+digest. Current normal owner authentication precedes original receipt lookup;
+accepted replay does not force refresh or reapply new source/limit policy. New
+admission refreshes its selected issued session, reuses existing source/PHI/tool
+policy and commits the operation, receipt and required HMAC audit in one bounded
+transaction with final session/principal/deadline checks. Cookie IAM retains its
+already resolved incarnation before JWT verification, so a later same-SID
+replacement cannot be adopted. Normal Bearer authentication resolves no cookie
+row; a Bearer-plus-cookie new admission selects once after receipt miss. Bare
+Bearer can retrieve an accepted owner receipt but cannot create new durable work.
+This adapter supports only the explicit one-page public-reader research subset;
+no model, guidance expansion, transient source, effect, fanout, source-less chat,
+handler or route is enabled. Full T015/T027 remains open.
+
 Retained local handoff SHA-256 values are: Plane integration
 `ec604636925a2b452b3b6bed7aeacb7afa78e149355e52cbf904aad422b99770`,
 Deep pin `d2fcd9b82129458b1e0d0a8667405f6d0b38daa3cd0410b91029bbb4f10205d4`,
@@ -58,8 +97,13 @@ installed operator/pin handoff
 `d5e30e5a3dc16b2da2dc830937c6a424e462f21edf34d3d9608ad5df54e1d518`,
 audit adapter handoff
 `8c23cf08216b1296da8d3993268e7def28dc713271dad12efca5a3777b6d6bfc`,
-and lifecycle handoff
-`e08bc6d6edccbcc98ce7521c85f47e7aeb42c275196a06f470535e6ecb294480`.
+lifecycle handoff
+`e08bc6d6edccbcc98ce7521c85f47e7aeb42c275196a06f470535e6ecb294480`,
+and Work acceptance handoff
+`c3cc57435a57961e30a2f07ec0079066d93e3b2e303a19c9d028ddbc19147b05`.
+The separately preserved Work coverage raw file is
+`a2b4c9182b95b507c0d28fe94caa8bdd39efeca593f62357b25eb82ce3443deb`;
+its native replay does not alter the original diagnostic reports.
 Lifecycle SQL qualification used a task-owned immutable Plane `ce948128` archive;
 the integrated `11cfa6d` adds the separately qualified offline recovery API. No
 new combined installed-worker or production activation result is inferred.
@@ -79,8 +123,9 @@ unconfirmed receipt does not establish rollback. The tool does not reopen traffi
 
 Complete operational recovery, native/BFF authority, the remaining 088 capabilities,
 exact-artifact authenticated staging and protected release evidence remain open.
-No live database upgrade, product push, draft promotion, signing or store
-submission occurred. Earlier sections below retain historical checkpoints and
+No live database upgrade, product push, draft promotion or store submission
+occurred. The separately requested local Android signing is recorded above and
+does not establish those gates. Earlier sections below retain historical checkpoints and
 their source-specific qualification limits.
 
 The owner's 2026-09-11 Android/Apple continuation and local native checks are
