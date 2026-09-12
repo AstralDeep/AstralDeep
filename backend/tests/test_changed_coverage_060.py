@@ -2765,6 +2765,94 @@ def test_cobertura_resolves_relative_filenames_against_declared_sources(
     assert parsed_tooling.covered == {("scripts/prod.py", 4)}
 
 
+@pytest.mark.parametrize("placeholder", [
+    '<sourcefile name="Comparisons.kt"/>',
+    '<sourcefile name="Comparisons.kt"> \n\t </sourcefile>',
+])
+def test_kover_empty_inline_source_contributes_no_coverage(
+    tmp_path: Path, placeholder: str,
+) -> None:
+    report = _kover(tmp_path / "inline.xml", "App.kt")
+    baseline = collector.parse_coverage_report(report, "android_app")
+    report.write_text(
+        report.read_text(encoding="utf-8").replace(
+            '</package>', f'{placeholder}</package>',
+        ),
+        encoding="utf-8",
+    )
+
+    parsed = collector.parse_coverage_report(report, "android_app")
+
+    assert parsed == baseline
+    assert len(parsed.files) == len(parsed.observed) == 1
+    assert len(parsed.executable) == len(parsed.covered) == 1
+
+
+@pytest.mark.parametrize("placeholder", [
+    '<sourcefile name="Comparisons.kt" extra="ignored"/>',
+    '<sourcefile name="Comparisons.kt">hidden observations</sourcefile>',
+    '<sourcefile name="Comparisons.kt"><unknown/></sourcefile>',
+    '<sourcefile name="Comparisons.kt"><sourcefile name="App.kt"/></sourcefile>',
+    '<sourcefile name="Comparisons.kt"><line nr="1" mi="0" ci="0"/></sourcefile>',
+    '<sourcefile name="Comparisons.kt"><line nr="1" mi="0" ci="1"/></sourcefile>',
+    '<sourcefile name="Comparisons.kt"><counter type="LINE" missed="0" covered="0"/></sourcefile>',
+    '<sourcefile name="Comparisons.kt"><counter type="INSTRUCTION" missed="0" covered="0"/></sourcefile>',
+])
+def test_kover_inline_placeholder_cannot_hide_nonempty_data(
+    tmp_path: Path, placeholder: str,
+) -> None:
+    report = _kover(tmp_path / "invalid-inline.xml", "App.kt")
+    report.write_text(
+        report.read_text(encoding="utf-8").replace(
+            '</package>', f'{placeholder}</package>',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector.parse_coverage_report(report, "android_app")
+
+    assert failure.value.code == "unparseable_report"
+
+
+def test_kover_empty_placeholder_cannot_map_a_changed_maintained_file(
+    git_repo: tuple[Path, str], tmp_path: Path,
+) -> None:
+    repo, _ = git_repo
+    relative = (
+        "components/AstralProjection/android-client/app/src/main/kotlin/"
+        "com/example/App.kt"
+    )
+    source = repo / relative
+    source.parent.mkdir(parents=True)
+    source.write_text("val value = 1\n", encoding="utf-8")
+    source.with_name("Peer.kt").write_text("val peer = 1\n", encoding="utf-8")
+    base = _commit(repo, "native source baseline")
+    source.write_text("val value = 2\n", encoding="utf-8")
+    candidate = _commit(repo, "native source changed")
+    selection = _selection(repo, base, candidate)
+    report = _kover(tmp_path / "native.xml", "App.kt")
+    passed = collector.evaluate_changed_coverage(
+        repo, selection, {"android_app": [report]},
+    )
+    assert passed["status"] == "pass"
+
+    _kover(report, "Peer.kt")
+    report.write_text(
+        report.read_text(encoding="utf-8").replace(
+            '</package>', '<sourcefile name="App.kt"/></package>',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector.evaluate_changed_coverage(
+            repo, selection, {"android_app": [report]},
+        )
+
+    assert failure.value.code == "unmapped_changed_file"
+    assert relative in failure.value.message
+
+
 @pytest.mark.parametrize(
     "contents",
     [

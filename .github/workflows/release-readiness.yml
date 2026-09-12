@@ -797,59 +797,154 @@ jobs:
           --allow-unreleased
           --verify-official-availability
           --output build/060/android-next-major-readiness.json
-      - name: Encode staging and canary inputs for instrumentation
+      - name: Build and retain one Android coverage variant
+        working-directory: components/AstralProjection/android-client
         run: |
           set -euo pipefail
-          echo "STAGING_B64=$(base64 -w0 build/060/stage/staging-outputs.json)" >> "$GITHUB_ENV"
-          echo "CANARY_B64=$(base64 -w0 build/060/android-next-major-readiness.json)" >> "$GITHUB_ENV"
+          ./gradlew -PastralCoverage=true :app:prepareCoverageInputs :core:koverXmlReport --no-daemon --stacktrace
+          python3 ../scripts/android_coverage.py prepare \
+            --root "$GITHUB_WORKSPACE/components/AstralProjection" \
+            --output "$GITHUB_WORKSPACE/build/060/android-coverage"
+          cp core/build/reports/kover/report.xml "$GITHUB_WORKSPACE/build/060/android-coverage/android-core.xml"
+      - name: Write private Android staging arguments
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+          import tempfile
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          values = {
+              "astralStagingUrl": os.environ["ASTRAL_STAGING_URL"],
+              "astralAccessToken": os.environ["ASTRAL_STAGING_ACCESS_TOKEN"],
+              "astralCandidateSha": os.environ["ASTRAL_RELEASE_CANDIDATE_SHA"],
+              "astralReleaseId": os.environ["ASTRAL_RELEASE_ID"],
+              "astralReleaseVersion": os.environ["ASTRAL_RELEASE_VERSION"],
+              "astralLifecycleAgentId": os.environ["ASTRAL_RELEASE_LIFECYCLE_AGENT_ID"],
+              "astralLifecycleStates": os.environ["ASTRAL_RELEASE_LIFECYCLE_STATES"],
+              "astralStagingEnvironmentB64": base64.b64encode((root / "build/060/stage/staging-outputs.json").read_bytes()).decode("ascii"),
+              "astralToolchainCanaryB64": base64.b64encode((root / "build/060/android-next-major-readiness.json").read_bytes()).decode("ascii"),
+              "astralRunnerImage": f"{os.environ.get('ImageOS', 'ubuntu')}-{os.environ.get('ImageVersion', 'hosted')}",
+              "astralRunnerName": os.environ["RUNNER_NAME"],
+              "astralRunnerArch": os.environ["RUNNER_ARCH"],
+              "astralRunnerEnvironment": "github_hosted",
+              "astralWorkflowName": os.environ["GITHUB_WORKFLOW"],
+              "astralRunId": os.environ["GITHUB_RUN_ID"],
+              "astralRunAttempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "astralJobId": os.environ["GITHUB_JOB"],
+          }
+          descriptor, path = tempfile.mkstemp(prefix="android-staging-arguments-", suffix=".json", dir=os.environ["RUNNER_TEMP"])
+          try:
+              with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                  json.dump(values, stream)
+              with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
+                  stream.write(f"ASTRAL_ANDROID_STAGING_ARGUMENTS={path}\n")
+          except BaseException:
+              os.unlink(path)
+              raise SystemExit("android_staging_arguments_write_failed") from None
+          PY
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Produce Android release evidence on the emulator
+      - name: Collect fixture and real staging observations from the same installed APKs
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
           api-level: 34
           arch: x86_64
+          emulator-port: 5584
           working-directory: components/AstralProjection/android-client
           script: |
-            gradle :app:connectedDebugAndroidTest --no-daemon --stacktrace \
-              -Pandroid.testInstrumentationRunnerArguments.class=com.personalailabs.astraldeep.app.ReleaseEvidenceInstrumentedTest \
-              -Pandroid.testInstrumentationRunnerArguments.astralStagingUrl="$ASTRAL_STAGING_URL" \
-              -Pandroid.testInstrumentationRunnerArguments.astralAccessToken="$ASTRAL_STAGING_ACCESS_TOKEN" \
-              -Pandroid.testInstrumentationRunnerArguments.astralCandidateSha="$ASTRAL_RELEASE_CANDIDATE_SHA" \
-              -Pandroid.testInstrumentationRunnerArguments.astralReleaseId="$ASTRAL_RELEASE_ID" \
-              -Pandroid.testInstrumentationRunnerArguments.astralReleaseVersion="$ASTRAL_RELEASE_VERSION" \
-              -Pandroid.testInstrumentationRunnerArguments.astralLifecycleAgentId="$ASTRAL_RELEASE_LIFECYCLE_AGENT_ID" \
-              -Pandroid.testInstrumentationRunnerArguments.astralLifecycleStates="$ASTRAL_RELEASE_LIFECYCLE_STATES" \
-              -Pandroid.testInstrumentationRunnerArguments.astralStagingEnvironmentB64="$STAGING_B64" \
-              -Pandroid.testInstrumentationRunnerArguments.astralToolchainCanaryB64="$CANARY_B64" \
-              -Pandroid.testInstrumentationRunnerArguments.astralRunnerImage="${ImageOS:-ubuntu}-${ImageVersion:-hosted}" \
-              -Pandroid.testInstrumentationRunnerArguments.astralRunnerName="$RUNNER_NAME" \
-              -Pandroid.testInstrumentationRunnerArguments.astralRunnerArch="$RUNNER_ARCH" \
-              -Pandroid.testInstrumentationRunnerArguments.astralRunnerEnvironment=github_hosted \
-              -Pandroid.testInstrumentationRunnerArguments.astralWorkflowName="$GITHUB_WORKFLOW" \
-              -Pandroid.testInstrumentationRunnerArguments.astralRunId="$GITHUB_RUN_ID" \
-              -Pandroid.testInstrumentationRunnerArguments.astralRunAttempt="$GITHUB_RUN_ATTEMPT" \
-              -Pandroid.testInstrumentationRunnerArguments.astralJobId="$GITHUB_JOB"
-            device_path="$(adb logcat -d | sed -n 's/.*release_evidence_output=\(\S*\).*/\1/p' | tail -n 1)"
-            test -n "$device_path" || { echo "instrumented producer logged no release_evidence_output" >&2; exit 1; }
-            mkdir -p ../build/060/release-evidence
-            adb pull "$device_path" ../build/060/release-evidence-device
-            cp -R ../build/060/release-evidence-device/. ../build/060/release-evidence/
-            test -f ../build/060/release-evidence/android.json
-      # The report references the exact tested APK bytes as
-      # bundle://android/app-debug.apk — place them at that member path.
-      - name: Bundle the tested APK bytes and Kover coverage inputs
-        working-directory: components/AstralProjection/android-client
+            python3 ../scripts/android_coverage.py device --root "$GITHUB_WORKSPACE/components/AstralProjection" --output "$GITHUB_WORKSPACE/build/060/android-coverage" --serial emulator-5584 --lane fixtures
+            adb -s emulator-5584 shell 'test ! -e /sdcard/Android/data/com.personalailabs.astraldeep/files/release-evidence'
+            python3 ../scripts/android_coverage.py device --root "$GITHUB_WORKSPACE/components/AstralProjection" --output "$GITHUB_WORKSPACE/build/060/android-coverage" --serial emulator-5584 --lane staging --arguments-file "$ASTRAL_ANDROID_STAGING_ARGUMENTS"
+            test ! -e "$GITHUB_WORKSPACE/build/060/release-evidence"
+            adb -s emulator-5584 pull /sdcard/Android/data/com.personalailabs.astraldeep/files/release-evidence "$GITHUB_WORKSPACE/build/060/release-evidence"
+            test -f "$GITHUB_WORKSPACE/build/060/release-evidence/android.json"
+      - name: Produce the native JVM and device coverage union without rebuilding
         run: |
           set -euo pipefail
-          mkdir -p ../build/060/release-evidence/android ../build/060/release-evidence/coverage
-          cp app/build/outputs/apk/debug/app-debug.apk ../build/060/release-evidence/android/app-debug.apk
-          gradle :app:koverXmlReport :core:koverXmlReport --no-daemon --stacktrace
-          cp app/build/reports/kover/report.xml ../build/060/release-evidence/coverage/android-app.xml
-          cp core/build/reports/kover/report.xml ../build/060/release-evidence/coverage/android-core.xml
+          python3 components/AstralProjection/scripts/android_coverage.py report \
+            --root "$GITHUB_WORKSPACE/components/AstralProjection" \
+            --output "$GITHUB_WORKSPACE/build/060/android-coverage" \
+            --lanes fixtures,staging
+      - name: Bind Android report members to the retained tested bytes
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          evidence = root / "build/060/release-evidence"
+          retained = root / "build/060/android-coverage"
+          def read(path):
+              if path.is_symlink() or not path.is_file() or path.stat().st_size > 8 * 1024 * 1024:
+                  raise SystemExit("android_evidence_invalid_file")
+              try:
+                  value = json.loads(path.read_text(encoding="utf-8"))
+              except (ValueError, UnicodeError):
+                  raise SystemExit("android_evidence_invalid_json") from None
+              if not isinstance(value, dict):
+                  raise SystemExit("android_evidence_invalid_json")
+              return value
+          def digest(path):
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit("android_evidence_invalid_file")
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+          report = read(evidence / "android.json")
+          manifest = read(retained / "manifest.json")
+          union = read(retained / "report.json")
+          artifact = report.get("artifact", {})
+          if not isinstance(artifact, dict) or not isinstance(manifest.get("artifacts"), dict):
+              raise SystemExit("android_evidence_binding_failed")
+          name = artifact.get("name", "")
+          apk = retained / "app-coverage.apk"
+          expected = digest(apk)
+          if (
+              report.get("candidate_sha") != os.environ["ASTRAL_RELEASE_CANDIDATE_SHA"]
+              or report.get("release_id") != os.environ["ASTRAL_RELEASE_ID"]
+              or report.get("release_version") != os.environ["ASTRAL_RELEASE_VERSION"]
+              or report.get("platform") != "android"
+              or not isinstance(name, str)
+              or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.apk", name) is None
+              or artifact.get("kind") != "android_apk"
+              or artifact.get("immutable_reference") != f"bundle://android/{name}"
+              or artifact.get("sha256") != expected
+              or manifest.get("artifacts", {}).get("app-coverage.apk") != expected
+              or union.get("lanes") != ["fixtures", "staging"]
+              or union.get("protected_staging_included") is not True
+              or union.get("manifest_sha256") != digest(retained / "manifest.json")
+              or union.get("report_sha256") != digest(retained / "report/report.xml")
+          ):
+              raise SystemExit("android_evidence_binding_failed")
+          (evidence / "android").mkdir()
+          with apk.open("rb") as source, (evidence / "android" / name).open("xb") as destination:
+              shutil.copyfileobj(source, destination)
+          if digest(evidence / "android" / name) != expected:
+              raise SystemExit("android_evidence_copy_changed")
+          (evidence / "coverage").mkdir()
+          shutil.copyfile(retained / "report/report.xml", evidence / "coverage/android-app.xml")
+          shutil.copyfile(retained / "android-core.xml", evidence / "coverage/android-core.xml")
+          PY
+      - name: Remove private Android staging arguments
+        if: ${{ always() && env.ASTRAL_ANDROID_STAGING_ARGUMENTS != '' }}
+        run: rm -f -- "$ASTRAL_ANDROID_STAGING_ARGUMENTS"
+      - name: Retain Android coverage attempts and raw execution diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-coverage-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/android-coverage/
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: evidence-android-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}

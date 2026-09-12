@@ -1397,6 +1397,14 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
                 raise CoveragePolicyError(
                     "unparseable_report", "Kover sourcefile lacks a name"
                 )
+            # JaCoCo can emit empty Kotlin inline-origin records. They carry
+            # no observations and must not count as mapped maintained files.
+            if (
+                source.attrib == {"name": name}
+                and len(source) == 0
+                and not (source.text or "").strip()
+            ):
+                continue
             relative = f"{package_name}/{name}" if package_name else name
             relative = f"{target.roots[0]}/{relative}"
             path = _normalized_report_path(relative, target)

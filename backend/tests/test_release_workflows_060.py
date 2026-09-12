@@ -410,8 +410,9 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
     assert "release_evidence_060.py" in windows
     assert "executable_sha256" in windows
     android = _workflow_job(workflow, "android-producer")
-    assert "connectedDebugAndroidTest" in android
-    assert "ReleaseEvidenceInstrumentedTest" in android
+    assert ":app:prepareCoverageInputs" in android
+    assert "--lane staging" in android
+    assert "--lanes fixtures,staging" in android
     for slug in ("macos", "ios"):
         assert "ReleaseEvidenceUITests" in _workflow_job(workflow, f"{slug}-raw-producer")
     watch = _workflow_job(workflow, "watchos-raw-producer")
@@ -445,6 +446,196 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
     assert "environment:" not in cleanup
     assert "runner_name_pattern='^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$'" in cleanup
     assert 'test "$RUNNER_NAME" = "$ASTRAL_STAGING_EXPECTED_RUNNER_NAME"' in cleanup
+
+
+def _android_producer_step(name: str) -> str:
+    body = _workflow_job(READINESS.read_text(encoding="utf-8"), "android-producer")
+    marker = f"      - name: {name}\n"
+    assert marker in body
+    return body.split(marker, 1)[1].split("\n      - ", 1)[0]
+
+
+def _android_producer_python(name: str) -> str:
+    body = _android_producer_step(name)
+    code = body.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    return "\n".join(line[10:] for line in code.splitlines()) + "\n"
+
+
+def test_android_coverage_producer_requires_build_once_and_both_device_lanes() -> None:
+    body = _workflow_job(READINESS.read_text(encoding="utf-8"), "android-producer")
+    assert body.count(":app:prepareCoverageInputs") == 1
+    assert body.count(":core:koverXmlReport") == 1
+    built, devices = body.split("Collect fixture and real staging observations", 1)
+    assert "./gradlew -PastralCoverage=true" in built
+    assert ":app:prepareCoverageInputs :core:koverXmlReport" in built
+    assert "android_coverage.py prepare" in built
+    assert "gradle" not in devices
+    assert "connectedDebugAndroidTest" not in body
+    assert "emulator-port: 5584" in devices
+    assert devices.index("--lane fixtures") < devices.index("--lane staging")
+    assert devices.index("--lane staging") < devices.index("--lanes fixtures,staging")
+    assert devices.count("--serial emulator-5584") == 2
+    assert "--arguments-file \"$ASTRAL_ANDROID_STAGING_ARGUMENTS\"" in devices
+    assert "../build/060" not in body
+    assert "adb logcat" not in body
+    assert "test ! -e /sdcard/Android/data/com.personalailabs.astraldeep/files/release-evidence" in devices
+    assert 'test ! -e "$GITHUB_WORKSPACE/build/060/release-evidence"' in devices
+    assert "path: build/060/release-evidence/" in devices
+    diagnostics = _android_producer_step("Retain Android coverage attempts and raw execution diagnostics")
+    assert "if: always()" in diagnostics
+    assert "path: build/060/android-coverage/" in diagnostics
+    assert "if-no-files-found: error" in diagnostics
+    assert "ASTRAL_STAGING_ACCESS_TOKEN: ${{ secrets.ASTRAL_STAGING_ACCESS_TOKEN }}" in body
+    assert "external ephemeral credential issuer integration is not implemented" in _workflow_job(READINESS.read_text(encoding="utf-8"), "stage-deploy")
+
+
+@pytest.mark.parametrize("fail_environment_append", [False, True])
+def test_android_staging_arguments_are_private_and_cleanup_is_owned(
+    tmp_path: Path, fail_environment_append: bool,
+) -> None:
+    stage = tmp_path / "build/060/stage"
+    stage.mkdir(parents=True)
+    (stage / "staging-outputs.json").write_text('{"environment_id":"synthetic"}')
+    (stage.parent / "android-next-major-readiness.json").write_text('{"status":"passed"}')
+    temporary = tmp_path / "runner-temp"
+    temporary.mkdir()
+    environment_file = temporary / "github-env"
+    private_value = "synthetic token with spaces and a newline\nsecond line"
+    environment = {
+        **os.environ,
+        "GITHUB_WORKSPACE": str(tmp_path),
+        "RUNNER_TEMP": str(temporary),
+        "GITHUB_ENV": str(environment_file),
+        "ASTRAL_STAGING_URL": "https://staging.invalid",
+        "ASTRAL_STAGING_ACCESS_TOKEN": private_value,
+        "ASTRAL_RELEASE_CANDIDATE_SHA": "a" * 40,
+        "ASTRAL_RELEASE_ID": "candidate-synthetic",
+        "ASTRAL_RELEASE_VERSION": "1.0.0",
+        "ASTRAL_RELEASE_LIFECYCLE_AGENT_ID": "synthetic-agent",
+        "ASTRAL_RELEASE_LIFECYCLE_STATES": "starting,online",
+        "RUNNER_NAME": "synthetic-runner", "RUNNER_ARCH": "X64",
+        "GITHUB_WORKFLOW": "release-readiness", "GITHUB_RUN_ID": "1",
+        "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": "android-producer",
+    }
+    code = _android_producer_python("Write private Android staging arguments")
+    if fail_environment_append:
+        environment_file.mkdir()
+        neighbor = temporary / "android-staging-arguments-unrelated.json"
+        neighbor.write_bytes(b"unrelated existing file")
+        result = subprocess.run([sys.executable, "-c", code], env=environment, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert result.stdout == ""
+        assert result.stderr.strip() == "android_staging_arguments_write_failed"
+        assert private_value not in result.stderr
+        assert sorted(temporary.glob("android-staging-arguments-*.json")) == [neighbor]
+        assert neighbor.read_bytes() == b"unrelated existing file"
+        return
+    paths = []
+    for _ in range(2):
+        result = subprocess.run([sys.executable, "-c", code], env=environment, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == result.stderr == ""
+        line = environment_file.read_text().splitlines()[-1]
+        key, path = line.split("=", 1)
+        assert key == "ASTRAL_ANDROID_STAGING_ARGUMENTS"
+        paths.append(Path(path))
+        assert paths[-1].stat().st_mode & 0o777 == 0o600
+        values = json.loads(paths[-1].read_text())
+        assert len(values) == 17
+        assert values["astralAccessToken"] == private_value
+        assert values["astralStagingUrl"] == "https://staging.invalid"
+        assert private_value not in environment_file.read_text()
+    assert paths[0] != paths[1]
+    original = paths[0].read_bytes()
+    cleanup = _android_producer_step("Remove private Android staging arguments")
+    assert "always() && env.ASTRAL_ANDROID_STAGING_ARGUMENTS != ''" in cleanup
+    command = cleanup.split("        run: ", 1)[1].strip()
+    subprocess.run(["bash", "-euc", command], env={**environment, "ASTRAL_ANDROID_STAGING_ARGUMENTS": str(paths[1])}, check=True)
+    assert not paths[1].exists()
+    assert paths[0].read_bytes() == original
+
+
+def _android_binding_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    evidence = tmp_path / "build/060/release-evidence"
+    retained = tmp_path / "build/060/android-coverage"
+    evidence.mkdir(parents=True)
+    (retained / "report").mkdir(parents=True)
+    apk = b"synthetic tested APK bytes"
+    (retained / "app-coverage.apk").write_bytes(apk)
+    (retained / "report/report.xml").write_bytes(b"synthetic app observations")
+    (retained / "android-core.xml").write_bytes(b"synthetic core observations")
+    digest = hashlib.sha256(apk).hexdigest()
+    report = {
+        "candidate_sha": "a" * 40, "release_id": "candidate-synthetic",
+        "release_version": "1.0.0", "platform": "android",
+        "artifact": {"name": "base.apk", "kind": "android_apk", "immutable_reference": "bundle://android/base.apk", "sha256": digest},
+    }
+    (evidence / "android.json").write_text(json.dumps(report))
+    (retained / "manifest.json").write_text(json.dumps({"artifacts": {"app-coverage.apk": digest}}))
+    union = {
+        "lanes": ["fixtures", "staging"], "protected_staging_included": True,
+        "manifest_sha256": hashlib.sha256((retained / "manifest.json").read_bytes()).hexdigest(),
+        "report_sha256": hashlib.sha256((retained / "report/report.xml").read_bytes()).hexdigest(),
+    }
+    (retained / "report.json").write_text(json.dumps(union))
+    return evidence, retained, {
+        **os.environ, "GITHUB_WORKSPACE": str(tmp_path),
+        "ASTRAL_RELEASE_CANDIDATE_SHA": "a" * 40,
+        "ASTRAL_RELEASE_ID": "candidate-synthetic", "ASTRAL_RELEASE_VERSION": "1.0.0",
+    }
+
+
+@pytest.mark.parametrize("mutation", [
+    None, "candidate", "release", "version", "platform", "kind", "traversal",
+    "nonstring_name", "reference", "apk", "manifest", "lanes", "staging",
+    "xml", "array_report", "array_artifact", "existing_destination",
+])
+def test_android_workflow_binds_exact_tested_artifact_and_real_staging(
+    tmp_path: Path, mutation: str | None,
+) -> None:
+    evidence, retained, environment = _android_binding_fixture(tmp_path)
+    report = json.loads((evidence / "android.json").read_text())
+    union = json.loads((retained / "report.json").read_text())
+    if mutation in {"candidate", "release", "version", "platform"}:
+        field = {"candidate": "candidate_sha", "release": "release_id", "version": "release_version", "platform": "platform"}[mutation]
+        report[field] = "incorrect"
+    elif mutation in {"kind", "traversal", "nonstring_name", "reference"}:
+        field, value = {"kind": ("kind", "source_tree"), "traversal": ("name", "../base.apk"), "nonstring_name": ("name", 123), "reference": ("immutable_reference", "bundle://other/base.apk")}[mutation]
+        report["artifact"][field] = value
+    elif mutation == "apk":
+        (retained / "app-coverage.apk").write_bytes(b"different APK bytes")
+    elif mutation == "manifest":
+        (retained / "manifest.json").write_text('{"artifacts":{"app-coverage.apk":"wrong"}}')
+    elif mutation == "lanes":
+        union["lanes"] = ["fixtures"]
+    elif mutation == "staging":
+        union["protected_staging_included"] = False
+    elif mutation == "xml":
+        (retained / "report/report.xml").write_bytes(b"changed report")
+    elif mutation == "array_report":
+        report = []
+    elif mutation == "array_artifact":
+        report["artifact"] = []
+    elif mutation == "existing_destination":
+        (evidence / "android").mkdir()
+        (evidence / "android/base.apk").write_bytes(b"existing artifact")
+    (evidence / "android.json").write_text(json.dumps(report))
+    (retained / "report.json").write_text(json.dumps(union))
+    code = _android_producer_python("Bind Android report members to the retained tested bytes")
+    result = subprocess.run([sys.executable, "-c", code], env=environment, capture_output=True, text=True)
+    if mutation is None:
+        assert result.returncode == 0, result.stderr
+        assert (evidence / "android/base.apk").read_bytes() == (retained / "app-coverage.apk").read_bytes()
+        assert not (evidence / "android/app-coverage.apk").exists()
+        assert (evidence / "coverage/android-app.xml").read_bytes() == (retained / "report/report.xml").read_bytes()
+        assert (evidence / "coverage/android-core.xml").read_bytes() == (retained / "android-core.xml").read_bytes()
+    else:
+        assert result.returncode != 0
+        assert not (evidence / "coverage").exists()
+        if mutation == "existing_destination":
+            assert (evidence / "android/base.apk").read_bytes() == b"existing artifact"
+        else:
+            assert not (evidence / "android").exists()
 
 
 @pytest.mark.parametrize("job_id", COMPONENT_CONSUMER_JOBS)

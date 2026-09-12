@@ -182,8 +182,24 @@ def _signed_headers(
     )
 
 
-def test_upgrade_challenge_interoperates_with_worker_and_unregisters() -> None:
-    client, pool, endpoint, _clock = _app()
+def test_upgrade_challenge_interoperates_with_worker_and_unregisters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registered_on_server = threading.Event()
+    cleaned = threading.Event()
+
+    async def disconnected(_receipt, _released) -> None:
+        cleaned.set()
+
+    client, pool, endpoint, _clock = _app(disconnect_hook=disconnected)
+    register_worker = pool.register_worker
+
+    async def register_and_signal(*args, **kwargs):
+        receipt = await register_worker(*args, **kwargs)
+        registered_on_server.set()
+        return receipt
+
+    monkeypatch.setattr(pool, "register_worker", register_and_signal)
     challenge = _request_challenge(client)
 
     with client.websocket_connect(
@@ -195,8 +211,12 @@ def test_upgrade_challenge_interoperates_with_worker_and_unregisters() -> None:
         assert registered["type"] == "worker_registered"
         assert registered["worker_identity"] == "voice-worker-a"
         assert registered["accepted_max_sessions"] == 2
+        # The client can receive the acknowledgement before the server's
+        # awaited send returns and registration commits on the portal loop.
+        assert registered_on_server.wait(timeout=5)
         assert endpoint.readiness().ready is True
 
+    assert cleaned.wait(timeout=5)
     assert pool.readiness().ready is False
     assert pool.readiness().worker_count == 0
 

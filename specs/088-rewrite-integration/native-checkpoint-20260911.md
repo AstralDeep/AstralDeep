@@ -546,3 +546,78 @@ qualifying staging, protected publication and the unfinished 088 capability
 families remain open. PRs 195/15/8 remain drafts at their earlier remote heads.
 The preserved 61ead0d AAB is unsigned and cannot be uploaded as a release.
 No product push, store upload, PR promotion or release is claimed.
+
+
+## Genuine native coverage and backend qualification — 2026-09-12
+
+This follow-up replaces the preceding coverage measurements only for the newly
+qualified cohorts. The original reports and failures remain retained. Projection
+`e75e2ffdbc7d5f8bd357dcb886601cfcf1aff415` contains the collector and Swift
+counter workaround, with the same UI protocol digest. Its integrated suite
+passed 1,530 Python tests; changed Python coverage was 795/829 (95.90%).
+Provenance now records 181 transformations, including 16 removals, and 338
+unchanged original imports. The moved Android workflow hash is also bound.
+
+Android now has an opt-in `coverage` variant using the pinned JaCoCo 0.8.14
+engine for JVM and device observations. It inherits debug app identity; ordinary
+debug/release runtime dependencies and independent core Kover remain unchanged.
+The tooling has a separate strict dependency lock and verification checksums.
+Exactly one JVM agent is required. The collector retains both APKs, original
+classes, source/tool hashes and every raw execution lane, and invokes the native
+AGP reporter without rewriting XML or combining XML counters. It refuses stale
+class IDs, changed source/APKs, incomplete source domains, skipped scenarios and
+reused attempts. Protected collection still requires the real staging scenario
+on the same installed APKs; the local fixture cohort does not substitute for it.
+
+Deep accepts only structurally empty external inline-source placeholders from
+these native reports; they contribute no source file, executable line or hit.
+Maintained sources still require mapped observations. Its Android producer now
+uses one build before both device lanes, a private temporary argument file,
+explicit output roots and the actually installed APK basename/digest. Candidate,
+release/version, staging, integrity and protected issuer guards remain enforced.
+
+The current Android fixture report covers all 43 maintained app sources and 587
+original classes, including instructionless classes. All 56 existing synthetic
+device tests passed. Whole-PR changed-line coverage is 1,857/2,197 (84.52%);
+the export slice remains 668/738 (90.51%). Whole-PR coverage is not yet qualified.
+
+Xcode's native iOS Core report reproducibly emitted an impossible counter after
+the `for ... where` loop in `ChatSummary.relativeTime`. A normal loop with an
+inner `if` preserves the exact thresholds and output while avoiding that
+compiler counter defect. Original and independent reproduction reports were
+preserved, and neither the counter parser nor its bounds were weakened. On the
+actual changed source, Core passed 213 tests on macOS and 213 on iOS; iOS app
+and UI passed 198 and 15 tests. The strict same-source iOS union measures
+894/959 (93.22%) for the export slice and 2,208/2,603 (84.83%) for the whole PR.
+No Mac or older-source observations enter the iOS union. The final Mac app
+runner timeout remains unresolved; a Core pass does not replace that result.
+
+Exact Deep `7500d6ce56516414169e5c685db87c4b405bbfcd` built successfully;
+all 1,157 baked backend Python files matched their source. An isolated
+production-default boot without secrets refused startup with exit 78. Its 17
+backend cohorts initially reported 11,455 passes and one failure: an existing
+WebSocket test read readiness on the client thread before the server completed
+registration after sending its acknowledgement. A controlled interleaving
+reproduced the failure and demonstrated the missing synchronization. The test
+now waits for completed registration and cleanup; the unchanged product code
+passed all 687 orchestrator module tests with that correction. The original
+failed full-run report remains intact. The frozen parser/workflow changes also
+passed the production-compatible Python 3.11 tooling cohort (884 passes, three
+skips, four existing CI deselections; 92% tooling coverage) and 146 workflow,
+evidence-producer and preparation tests with three existing skips.
+
+The current normal release AAB is `astraldeep-088-a67274b-UNSIGNED.aab`,
+35,643,778 bytes, version 1.4/code 7, package `com.personalailabs.astraldeep`,
+SHA-256 `3ae82fda71e55ade675f2fba6fef158e16af9e003d8a4772f23900e74cf6fe39`.
+It contains no signing entries or JaCoCo release DEX references. It is newer than
+the previous retained AAB, but remains unsigned and not upload-ready. The
+registered upload key, store app/version access, protected publisher and full
+release evidence remain necessary. No store upload or draft promotion occurred.
+
+Exact source and raw-report receipts are retained in the export worktrees under
+`build/088/android-coverage-variant`, `android-coverage-parser`,
+`android-coverage-producer`, `apple-capture`, and `worker-readiness-race`.
+The main checkout preserves the current AAB and receipt under `build/088/handoff`.
+These diagnostics do not complete 088's remaining execution, guidance,
+monitoring/scheduler or framework families, or its live and protected release
+gates.
