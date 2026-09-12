@@ -391,13 +391,20 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
     assert "NODE_V8_COVERAGE" in web
     assert "test:coverage-conversion:node" in web
     assert "test:coverage-union" in web
-    assert web.count("corepack npm run coverage:node") == 2
+    assert web.count("corepack npm run coverage:node") == 3
     assert "corepack npm run coverage:union" in web
     assert "--coverage-istanbul-output \"$BROWSER_COVERAGE\"" in web
     assert "--node \"$NODE_COVERAGE\"" in web
     assert "--browser \"$BROWSER_COVERAGE\"" in web
     assert "--repo-root ../.." in web
     assert "web-istanbul.json" in web
+    assert 'NODE_V8_COVERAGE="$OFFLINE_V8_DIRECTORY" node --test tests/offline-worker-088.test.mjs' in web
+    assert '--node-v8-directory "$OFFLINE_V8_DIRECTORY"' in web
+    assert '--export-coverage-output "$EXPORT_COVERAGE"' in web
+    assert '--offline-node "$OFFLINE_COVERAGE"' in web
+    assert '--export-browser "$EXPORT_COVERAGE"' in web
+    assert 'test ! -e "$OFFLINE_V8_DIRECTORY"' in web
+    assert web.index('tests/offline-worker-088.test.mjs') < web.index('corepack npm run coverage:union')
     windows = _workflow_job(workflow, "windows-producer")
     assert "windows-candidate" in windows
     assert "release_evidence_060.py" in windows

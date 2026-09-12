@@ -44,7 +44,7 @@ JAVASCRIPT_REPORT_KEYS = {
 JAVASCRIPT_REPORT_IDENTITY = {
     "schema_version": 1,
     "producer": "astralprojection-node-browser-union",
-    "producer_version": 2,
+    "producer_version": 3,
     "v8_to_istanbul_version": "9.3.0",
     "espree_version": "11.2.0",
     "coverage_lane": "node-browser-union",

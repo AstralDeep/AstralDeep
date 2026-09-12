@@ -83,6 +83,11 @@ def test_release_runner_is_container_only_and_fail_closed() -> None:
         "ASTRAL_RELEASE_STAGING_FILE",
         "coverage-istanbul-output",
         "ASTRAL_RELEASE_COVERAGE_ISTANBUL_OUTPUT",
+        "export-coverage-output",
+        "ASTRAL_EXPORT_COVERAGE_OUTPUT",
+        '"tests/offline-worker-088.spec.js"',
+        '"tests/native-export-088.spec.js"',
+        "release and coverage outputs must be distinct",
     ):
         assert required in source
     assert "playwright test" not in package["scripts"]["browser:release"]
@@ -245,8 +250,12 @@ def test_real_browser_release_lane_against_trusted_staging(tmp_path: Path) -> No
                 "NODE_INTERIM=/tmp/astral-node-interim.json\n"
                 "NODE_COVERAGE=/tmp/astral-node.json\n"
                 "BROWSER_COVERAGE=/tmp/astral-browser.json\n"
+                "OFFLINE_V8_DIRECTORY=/tmp/astral-offline-v8\n"
+                "OFFLINE_COVERAGE=/evidence/offline-node.json\n"
+                "EXPORT_COVERAGE=/evidence/export-browser.json\n"
                 'test ! -e "$NODE_V8_DIRECTORY"\n'
-                'mkdir "$NODE_V8_DIRECTORY"\n'
+                'test ! -e "$OFFLINE_V8_DIRECTORY"\n'
+                'mkdir "$NODE_V8_DIRECTORY" "$OFFLINE_V8_DIRECTORY"\n'
                 'test "$(corepack npm --version)" = "11.16.0"\n'
                 "corepack npm ci --ignore-scripts\n"
                 "corepack npm run check:package-manager\n"
@@ -257,12 +266,14 @@ def test_real_browser_release_lane_against_trusted_staging(tmp_path: Path) -> No
                 "corepack npm run test:coverage-conversion:node\n"
                 "corepack npm run test:coverage-union\n"
                 "corepack npm run test:coverage-conversion:browser\n"
+                'NODE_V8_COVERAGE="$OFFLINE_V8_DIRECTORY" node --test tests/offline-worker-088.test.mjs\n'
+                'corepack npm run coverage:node -- --node-v8-directory "$OFFLINE_V8_DIRECTORY" --repo-root ../.. --output "$OFFLINE_COVERAGE"\n'
                 "corepack npm run browser:release -- "
                 '--base-url "$STAGING_URL" '
                 '--candidate-sha "$ASTRAL_RELEASE_CANDIDATE_SHA" '
                 "--output /evidence/web.json "
                 "--coverage-output /evidence/web-v8.json "
-                '--coverage-istanbul-output "$BROWSER_COVERAGE"\n'
+                '--coverage-istanbul-output "$BROWSER_COVERAGE" --export-coverage-output "$EXPORT_COVERAGE"\n'
                 "corepack npm run coverage:node -- "
                 '--node-v8-directory "$NODE_V8_DIRECTORY" '
                 '--repo-root ../.. --output "$NODE_INTERIM"\n'
@@ -271,7 +282,7 @@ def test_real_browser_release_lane_against_trusted_staging(tmp_path: Path) -> No
                 '--node-v8-directory "$NODE_V8_DIRECTORY" '
                 '--repo-root ../.. --output "$NODE_COVERAGE"\n'
                 "corepack npm run coverage:union -- "
-                '--node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" '
+                '--node "$NODE_COVERAGE" --browser "$BROWSER_COVERAGE" --offline-node "$OFFLINE_COVERAGE" --export-browser "$EXPORT_COVERAGE" '
                 "--repo-root ../.. --output /evidence/web-istanbul.json"
             ),
         ],

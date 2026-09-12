@@ -61,6 +61,7 @@ from orchestrator.work_admission import (
     SafeOperationProjection,
 )
 from orchestrator.voice_api import router as _voice_control_router
+from orchestrator.workspace_export import workspace_export_router
 
 voice_router = _voice_control_router
 
@@ -2628,6 +2629,8 @@ async def cancel_async_task(
 # =============================================================================
 
 export_router = APIRouter(prefix="/api/export", tags=["Export"])
+
+export_router.include_router(workspace_export_router)
 
 
 class _ExportError(Exception):
