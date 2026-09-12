@@ -28,6 +28,15 @@ Port every rewrite capability through existing Deep/Plane/Projection boundaries,
 
 ## Constitution Check
 
+The September 12 follow-up requests that the existing PRs become ready for review
+once Apple version 1.6 is uploaded. Both iPhone/Watch and Mac uploads succeeded.
+Publish the current implemented, locally qualified checkpoint with its component
+pins and remaining limitations visible; the owner will merge the PRs. This
+supersedes the prior draft-only review-state instruction for this checkpoint. It
+does not complete unfinished 088 tasks, supply missing protected release evidence,
+or authorize this agent to merge or deploy the backend. The local release-evidence
+diagnostic remains fail closed and non-authorizing.
+
 Pre-design and post-design assessment: compatible with existing architecture and security policy. Completed contract/task analysis mapped all 36 requirements and 47 capability families, with no critical issue. Its one high inconsistency, accepted-retry receipt ordering, was corrected before implementation. The explicit web-first timing decision in FR-024 does not waive authorization, data protection, shared contracts or live evidence.
 
 | Gate | Design and evidence |
