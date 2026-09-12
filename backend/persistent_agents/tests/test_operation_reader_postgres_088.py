@@ -13,9 +13,12 @@ from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
+from unittest.mock import patch
 
 import pytest
 import astralplane
+import requests
+from agents.web_research import mcp_tools as page_tools
 from astralplane.repositories.assignment_models import (
     AssignmentActionIntent, AssignmentActionOutcome, AssignmentDefinition,
     AssignmentOperationAuthority, AssignmentOperationSpec,
@@ -91,7 +94,14 @@ async def operation(runtime, fixture, gate_orchestrator, monkeypatch, tmp_path):
         physical.append((agent, tool, dict(args)))
         if hooks.after:
             await hooks.after()
-        return MCPResponse(result={"_data": {"version": "Public release 088"}})
+        page = requests.Response()
+        page.url, page.status_code = args["url"], 200
+        page.headers["Content-Type"] = "text/plain; charset=utf-8"
+        page.encoding, page._content = "utf-8", b"Public release 088"
+        # Keep the actual fixed reader/extractor and its factual envelope. Only
+        # its external response is synthetic, as before for this dispatch fixture.
+        with patch.object(page_tools, "_fetch_url", return_value=page):
+            return MCPResponse(result=page_tools.fetch_page(url=args["url"]))
 
     orch._execute_via_websocket = transport
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "synthetic-operation-audit-key-088")
