@@ -407,24 +407,50 @@ class AssignmentService:
         except Exception:
             raise AssignmentError("assignment_transaction_unavailable", 503) from None
 
-    async def validate_execution(self, owner_id, claims, record, action=None):
+    async def validate_execution(self, owner_id, claims, record, action=None, *, authority=None):
         self._owner(owner_id, claims, human=False)
         if record.owner_id != owner_id:
             raise AssignmentError("assignment_not_found", 404)
+        one_shot = record.execution_profile == "one_shot"
+        if one_shot:
+            from orchestrator.session_authority import OperationExecutionAuthority
+            if (not isinstance(authority, OperationExecutionAuthority)
+                    or authority.plane_runtime is not self.store.plane_runtime
+                    or authority.claims != claims
+                    or authority.record.owner_id != owner_id
+                    or authority.record.assignment_id != record.assignment_id
+                    or authority.record.definition != record.definition
+                    or authority.record.instruction_revision != record.instruction_revision
+                    or authority.record.control_epoch != record.control_epoch
+                    or authority.record.operation != record.operation
+                    or record.operation.get("version") != 2
+                    or record.operation.get("source_retention") != "operation"):
+                raise AssignmentError("assignment_authorization_required", 403)
+            selected = record.operation.get("authority", {})
+            credential = authority.observation.credential
+            if (selected.get("origin") != "interactive"
+                    or selected.get("reference_kind") != "session_incarnation"
+                    or selected.get("owner_id") != owner_id
+                    or selected.get("reference_id") != credential.incarnation_id
+                    or credential.owner_id != owner_id or record.definition.offline_grant_id is not None):
+                raise AssignmentError("assignment_authorization_required", 403)
         source = SourceSelection.model_validate(thaw(record.definition.source))
         await self._source(source)
         scopes = await _thread(self._live_tools, owner_id, claims, record.definition.allowed_tools, source)
         if not set(scopes.values()) <= set(record.definition.consented_scopes):
             raise AssignmentError("assignment_scope_changed", 403)
         grant = record.definition.offline_grant_id
-        try:
-            valid_grant = bool(grant) and await _thread(self.orch.offline_grants.is_valid, grant, user_id=owner_id)
-        except Exception as exc:
-            raise AssignmentError("assignment_authorization_required", 403) from exc
-        if not valid_grant:
-            raise AssignmentError("assignment_authorization_required", 403)
+        if not one_shot:
+            try:
+                valid_grant = bool(grant) and await _thread(self.orch.offline_grants.is_valid, grant, user_id=owner_id)
+            except Exception as exc:
+                raise AssignmentError("assignment_authorization_required", 403) from exc
+            if not valid_grant:
+                raise AssignmentError("assignment_authorization_required", 403)
         permission = digest({"tools": scopes, "instruction_revision": record.instruction_revision,
-                             "control_epoch": record.control_epoch, "offline_grant_id": grant})
+                             "control_epoch": record.control_epoch,
+                             **({"operation_authority": thaw(record.operation["authority"])} if one_shot
+                                else {"offline_grant_id": grant})})
         precondition = digest({"source": thaw(record.definition.source)})
         if action is not None:
             request = thaw(action.intent.request if hasattr(action, "intent") else action.request)

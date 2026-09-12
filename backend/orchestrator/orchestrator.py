@@ -20787,11 +20787,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from persistent_agents.dispatch_context import current_dispatch
             persistent_dispatch = current_dispatch()
             if persistent_dispatch is not None:
+                persistent_dispatch.validate_final_tool_arguments(final_arguments)
                 original_invoke = physical_invoke
 
                 async def physical_invoke(capabilities):
                     return await persistent_dispatch.invoke_tool(
-                        lambda: original_invoke(capabilities)
+                        lambda: original_invoke(capabilities),
+                        final_arguments=final_arguments,
                     )
             return await self._execute_governed_attempt(
                 ui_websocket,

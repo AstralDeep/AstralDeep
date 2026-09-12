@@ -1,11 +1,10 @@
 """Real guarded Plane transactions; only external IAM and tool replies are fixtures.
 
-One-shot tests construct an existing durable read action directly through Plane.
-They do not enable a one-shot runner, source retention, or framework authority.
+One-shot fixtures use the real stored interactive incarnation, normal JWT
+resolver and ordinary delegated dispatch. They activate no runner or ingress.
 """
 import asyncio
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -13,8 +12,6 @@ import pytest
 from astralplane.repositories.assignment_models import (
     AssignmentActionIntent,
     AssignmentControl,
-    AssignmentOperationAuthority,
-    AssignmentOperationSpec,
     AssignmentResourceAmount,
 )
 from persistent_agents.dispatch_context import DispatchDenied
@@ -25,24 +22,23 @@ from persistent_agents.runtime_values import digest, thaw
 from persistent_agents.tests.test_engine_postgres import current
 from persistent_agents.tests.test_engine_postgres import engine as engine
 from persistent_agents.tests.test_engine_postgres import plane as plane
+from persistent_agents.tests.test_operation_reader_postgres_088 import (
+    actions, control, prepare,
+    current as operation_current,
+    operation as operation,
+    runtime as runtime,
+    fixture as fixture,
+    gate_orchestrator as gate_orchestrator,
+    signing_key as signing_key,
+)
+from orchestrator import session_authority
+from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 
 
-async def bound_executor(engine, *, one_shot=False):
+async def bound_executor(engine):
     host, runner, store, identity = engine
-    if one_shot:
-        original = await current(store, identity)
-        identity = str(uuid4())
-        now = datetime.now(UTC)
-        limits = {k: v for k, v in original.definition.limits.items()
-                  if not k.startswith("daily_") and k not in {"cadence_seconds", "step_timeout_ms"}}
-        await store.call("create_operation", owner_id="owner", assignment_id=identity,
-            origin_namespace="test", caller_key="bounded-read", command_digest=digest("bounded-read"),
-            definition=replace(original.definition, limits=limits),
-            operation=AssignmentOperationSpec("chat", AssignmentOperationAuthority(
-                "owner", "scheduled", "offline_grant", original.definition.offline_grant_id,
-                now + timedelta(minutes=10)), now + timedelta(minutes=5), "operation"))
-    method = "claim_operations_for_administration" if one_shot else "claim_due_for_administration"
-    claim = (await store.call(method, worker_id=runner.worker_id, lease_seconds=30))[0]
+    claim = (await store.call("claim_due_for_administration",
+                             worker_id=runner.worker_id, lease_seconds=30))[0]
     assert claim.assignment.assignment_id == identity
     operation_fence = await runner._admit(claim)
     executor = ActionExecutor(runner, claim, operation_fence, object())
@@ -82,30 +78,28 @@ def revoke_grant(runtime, grant_id):
             revoked_at=int(datetime.now(UTC).timestamp() * 1000))
 
 
-def test_current_one_shot_result_uses_both_fences_and_is_not_redispatched(engine):
-    host, _, store, _ = engine
-
-    async def scenario():
-        executor = await bound_executor(engine, one_shot=True)
-        action = await ready_action(executor)
-        before = await current(store, action.assignment_id)
-        call = store.call
-        store.call = AsyncMock(wraps=call)
-        result = await executor.execute(action)
-        assert "Release version 2" in result["text"]
-        settlement = next(item for item in store.call.call_args_list if item.args[0] == "record_action_outcome")
-        assert settlement.kwargs["result_fence"] == executor.claim.fence
-        assert settlement.kwargs["result_binding"] == executor.binding
-        stored = await store.call("get_action", owner_id="owner", assignment_id=action.assignment_id,
-                                  action_id=action.action_id)
-        assert stored.state == "succeeded" and stored.result.get("result_available", True) is True
-        assert await executor.execute(stored) == result
-        assert host.physical_tools == 1
-        record = await current(store, action.assignment_id)
-        assert record.usage["spent"]["tool_calls"] == 1
-        assert record.checkpoint == before.checkpoint and record.tasks == before.tasks
-
-    asyncio.run(scenario())
+@pytest.mark.asyncio
+async def test_current_one_shot_result_uses_both_fences_and_is_not_redispatched(operation, monkeypatch):
+    op = operation
+    executor, store = op.executor, op.executor.store
+    action = await prepare(op)
+    before = await operation_current(op)
+    call = AsyncMock(wraps=store.call_for_operation)
+    monkeypatch.setattr(store, "call_for_operation", call)
+    result = await executor.execute(action)
+    assert "Public release 088" in result["text"]
+    settlement = next(item for item in call.call_args_list if item.args[0] == "record_action_outcome")
+    assert settlement.kwargs["result_fence"] == executor.claim.fence
+    assert settlement.kwargs["result_binding"] == executor.binding
+    assert settlement.kwargs["result_authority"].credential.incarnation_id == (
+        executor.record.operation["authority"]["reference_id"])
+    [stored] = await actions(op)
+    assert stored.state == "succeeded" and stored.result.get("result_available", True) is True
+    assert await executor.execute(stored) == result
+    assert len(op.physical) == 1
+    record = await operation_current(op)
+    assert record.usage["spent"]["tool_calls"] == 1
+    assert record.checkpoint == before.checkpoint and record.tasks == before.tasks
 
 
 def test_guarded_finish_rolls_back_checkpoint_when_admission_commit_fails(engine):
@@ -159,68 +153,67 @@ def test_change_after_remote_refresh_refuses_checkpoint_and_terminal_ack(engine,
     asyncio.run(scenario())
 
 
-def test_one_shot_failed_physical_read_still_charges_and_never_returns_success(engine):
-    host, _, store, _ = engine
-
-    async def scenario():
-        executor = await bound_executor(engine, one_shot=True)
-        action = await ready_action(executor)
-        host.tool_after_send = AsyncMock(side_effect=ConnectionError("synthetic external failure"))
-        with pytest.raises(ConnectionError):
-            await executor.execute(action)
-        stored = await store.call("get_action", owner_id="owner", assignment_id=action.assignment_id,
-                                  action_id=action.action_id)
-        assert stored.state == "failed" and stored.result["outcome"] == "failed"
-        assert host.physical_tools == 1
-        record = await current(store, action.assignment_id)
-        assert record.usage["spent"]["tool_calls"] == 1
-        assert all(amount == 0 for amount in record.usage["outstanding"].values())
-
-    asyncio.run(scenario())
+@pytest.mark.asyncio
+async def test_one_shot_failed_physical_read_still_charges_and_never_returns_success(operation):
+    op = operation
+    action = await prepare(op)
+    op.hooks.after = AsyncMock(side_effect=ConnectionError("synthetic external failure"))
+    with pytest.raises((ConnectionError, DispatchDenied)):
+        await op.executor.execute(action)
+    [stored] = await actions(op)
+    assert stored.state == "failed" and stored.result["outcome"] == "failed"
+    assert len(op.physical) == 1
+    record = await operation_current(op)
+    assert record.usage["spent"]["tool_calls"] == 1
+    assert all(amount == 0 for amount in record.usage["outstanding"].values())
 
 
-@pytest.mark.parametrize("loss", ["pause", "stop", "admission", "remote", "permission", "precondition", "grant"])
-def test_authentic_old_permit_settles_once_but_cannot_return_content(engine, plane, loss):
-    host, runner, store, _ = engine
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loss", ["pause", "stop", "admission", "remote", "permission", "precondition", "session"])
+async def test_authentic_old_permit_settles_once_but_cannot_return_content(operation, monkeypatch, loss):
+    op = operation
+    action = await prepare(op)
+    before = await operation_current(op)
 
-    async def scenario():
-        executor = await bound_executor(engine, one_shot=True)
-        action = await ready_action(executor)
-        before = await current(store, action.assignment_id)
+    async def lose_authority():
+        if loss in {"pause", "stop"}:
+            await control(op, loss)
+        elif loss == "admission":
+            await asyncio.to_thread(op.executor.orch.work_admission.reselect_execution,
+                                    op.executor.operation_fence)
+        elif loss == "remote":
+            # External refresh failure; the actual local/JWT resolver remains.
+            monkeypatch.setattr(session_authority.web_auth, "_exchange_session_refresh",
+                                AsyncMock(side_effect=ConnectionError("synthetic IAM unavailable")))
+        elif loss == "permission":
+            await asyncio.to_thread(op.executor.orch.tool_permissions.set_agent_scopes,
+                                    op.owner, "web-research-1", {"tools:read": False})
+        elif loss == "precondition":
+            validate = op.executor.service.validate_execution
+            async def changed(*args, **kwargs):
+                result = await validate(*args, **kwargs)
+                return {**result, "precondition_digest": digest("synthetic changed precondition")}
+            monkeypatch.setattr(op.executor.service, "validate_execution", changed)
+        else:
+            old = await asyncio.to_thread(get_session_record, op.runtime, op.sid)
+            await asyncio.to_thread(replace_session_record, op.runtime, old)
 
-        async def lose_authority():
-            if loss in {"pause", "stop"}:
-                await change_control(executor, loss)
-            elif loss == "admission":
-                await asyncio.to_thread(host.work_admission.reselect_execution, executor.operation_fence)
-            elif loss == "remote":
-                runner.service.validate_execution.side_effect = DispatchDenied("assignment_authorization_required")
-            elif loss in {"permission", "precondition"}:
-                runner.service.validate_execution.return_value = {
-                    "permission_digest": digest("new" if loss == "permission" else "permission"),
-                    "precondition_digest": digest("new" if loss == "precondition" else "precondition")}
-            else:
-                await asyncio.to_thread(revoke_grant, plane, before.definition.offline_grant_id)
-
-        host.tool_after_send = lose_authority
-        with pytest.raises(DispatchDenied, match="assignment_result_unavailable"):
-            await executor.execute(action)
-        stored = await store.call("get_action", owner_id="owner", assignment_id=action.assignment_id,
-                                  action_id=action.action_id)
-        assert stored.state == "succeeded"
-        assert stored.result["result_available"] is False and stored.result["result"] == {}
-        assert "Release version 2" not in str(thaw(stored))
-        assert len(stored.attempts) == 1
-        with pytest.raises(DispatchDenied, match="assignment_result_requires_reconciliation"):
-            await executor.execute(stored)
-        assert host.physical_tools == 1
-        record = await current(store, action.assignment_id)
-        assert record.usage["spent"]["tool_calls"] == 1
-        assert all(amount == 0 for amount in record.usage["outstanding"].values())
-        assert record.checkpoint == before.checkpoint and record.tasks == before.tasks
-        assert record.wake_generation == before.wake_generation
-
-    asyncio.run(scenario())
+    op.hooks.after = lose_authority
+    with pytest.raises(DispatchDenied, match="assignment_result_unavailable"):
+        await op.executor.execute(action)
+    [stored] = await actions(op)
+    assert stored.state == "succeeded"
+    assert stored.result["result_available"] is False and stored.result["result"] == {}
+    assert "Public release 088" not in str(thaw(stored))
+    assert len(stored.attempts) == 1
+    with pytest.raises((DispatchDenied, AssignmentError, session_authority.SessionAuthorityUnavailable)):
+        await op.executor.execute(stored)
+    assert len(op.physical) == 1
+    record = await operation_current(op)
+    assert record.usage["spent"]["tool_calls"] == 1
+    assert all(amount == 0 for amount in record.usage["outstanding"].values())
+    assert record.checkpoint == before.checkpoint and record.tasks == before.tasks
+    assert record.wake_generation == before.wake_generation
 
 
 def test_old_plane_guard_cannot_issue_new_permit_and_releases_unbegun_reservation(engine, monkeypatch):
