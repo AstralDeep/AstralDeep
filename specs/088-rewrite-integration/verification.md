@@ -25,9 +25,58 @@ authenticated staging and PR readiness remain unqualified; no store submission
 or protected release occurred. Apple archives remain unsigned. Earlier unsigned
 artifact records below remain historical and reproducible.
 
+## Qualified host issuing identity and locked config read, 2026-09-12
+
+Local Deep `2e995d7` integrates host commit
+`8be1b1b1dcf1709a9b95a0d54e01734644f4657c`. Issuer-bound refresh uses only the
+stored configured realm/client, verifies the returned signed JWT owner, issuer,
+client, role and finite current expiry before persistence, and preserves original
+incarnation/generation checks. All current refresh consumers supply the explicit
+bound transport; legacy null/null rows retain their existing exchange behavior.
+Revocation uses the actual retired row's issuing pair, bounded status-only HTTP,
+explicit 2xx acknowledgement and finite queue pages. Bound transient/mismatched or
+unreadable queue rows remain pending, including beyond the legacy retry ceiling.
+
+Logout now distinguishes local retirement from confirmed, queued or unconfirmed
+remote revocation. An unreadable token or in-flight refresh marker is never sent
+as an OAuth credential or represented as successful revocation. The callback's
+legacy default web client and logout/kiosk legacy client selection are preserved.
+The source06 broad cohort passed 579; source07's final focused successor passed
+163 with zero failures/skips and 182/184 changed executable lines covered
+(98.91%). These are overlapping, distinct source-bound cohorts. Root independently
+verified eight sources, 79 artifacts, real JUnit and all five native coverage
+reports by replaying the final raw Coverage.py database. Original failed attempts
+remain retained. The owned private PostgreSQL database was removed after a
+zero-connection check. Handoff SHA-256:
+`06e98c17408bca4d55819e39707053ee99b5432dda0ba9b5017641ff2c002885`.
+
+Separate Plane `4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9` adds the schema-neutral
+`EncryptedLLMConfigRepository.get_user_for_update` on top of `7551c5b`. Its exact
+owner row remains locked through the caller's transaction; no missing-row gap
+lock or config incarnation is claimed. Existing setters/deletes retain their
+behavior. Callers must apply SQL wait bounds and compare the original raw selection
+after any wait before dependent permit writes. Linux Python 3.11 passed 57 checks
+with zero skips; local PostgreSQL passed 35 overlapping checks, including actual
+update/delete/recreate contention through commit/rollback. All four added executable
+lines are covered. Root verified five sources, 54 artifacts, 76 wheel members/71
+exact Python sources and replayed raw Linux coverage with all 71 reports equal.
+Fresh installed Mac 3.11/3.14 and offline Linux 3.11 API/source checks passed.
+Wheel SHA-256 `34a5ba6d90068f811d1ba0c3e6e9917381e132cf06f5ddd2a1d51e1d989d9972`;
+handoff `40c61830254c6bab12c35e28af856356776ff4775b677f2e329ebe0c9c8e41ac`.
+Schema 088.003 and its qualified migration/catalog digests are unchanged.
+
+The root still pins Plane `11cfa6d` pending coherent installed qualification.
+No issuing broker, native authentication route, provider call, Work ingress or
+runner is activated. Legacy administrative queue peeks can replace the same
+store's mutation fences and must not run concurrently with its drainer; no current
+production caller uses that peek. Retired unreadable/in-flight refresh credentials
+are not recoverable through this increment. Live services, user sessions, native
+payloads, product remotes and drafts are unchanged. Full 088 and protected release
+remain open; the signed Android artifact remains for the owner's manual upload.
+
 ## Current issued-session integration checkpoint, 2026-09-12
 
-Local Deep `97b878d` includes the exact
+Local Deep `2e995d7` includes the exact
 Plane pin from `c84c9cd`, the atomic consent work from `cc20825`, and the private
 operation continuation resolver, guarded read adapter, explicit offline recovery
 command, transaction-based audit insertion, opt-in one-shot worker lifecycle and
