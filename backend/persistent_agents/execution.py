@@ -29,6 +29,9 @@ from persistent_agents.dispatch_context import (
 )
 from persistent_agents.runtime_values import digest, extract_result, thaw
 from persistent_agents.privacy import content_text, privacy_text, redact_observation, reviewed_urls
+from persistent_agents.research_result import (
+    legacy_page_response, read_page_observation, retain_page_observation,
+)
 
 
 _RESULT_FAILURE_CODES = frozenset({
@@ -37,6 +40,7 @@ _RESULT_FAILURE_CODES = frozenset({
     "assignment_source_encoding_refused", "assignment_redaction_key_collision",
     "assignment_phi_refused", "assignment_phi_redaction_unavailable", "assignment_phi_redaction_invalid",
     "assignment_result_quarantined",
+    "assignment_source_observation_invalid",
 })
 _RESULT_FAILURE_ALIASES = {
     "phi_redaction_refused": "assignment_phi_refused",
@@ -392,19 +396,40 @@ class ActionExecutor:
                         text = strip_reasoning_markup(text)
                         result = {"text": text}
                     else:
-                        normalized = extract_result(response)
-                        # Scan the complete bounded observation before redaction
-                        # or truncation; an omitted tail cannot hide an injection.
+                        fixed_page = (request.get("agent_id") == "web-research-1"
+                                      and request.get("tool_name") == "fetch_page")
+                        normalized = extract_result(legacy_page_response(response) if fixed_page else response)
+                        page = (read_page_observation(response, requested_url=request["arguments"]["url"])
+                                if self.one_shot and fixed_page else None)
+                        # Scan the existing bounded reader observation (page text <=20,000)
+                        # before retained excerpts; upstream omitted tails are unavailable.
                         from orchestrator.mas_defense import scan_message
-                        original = canonical(normalized)
-                        if scan_message(original) or scan_message(content_text(normalized)):
+                        complete = {"legacy": normalized, "page": page} if page is not None else normalized
+                        original = canonical(complete)
+                        if scan_message(original) or scan_message(content_text(complete)):
                             raise DispatchDenied("assignment_result_quarantined")
-                        protected, redacted = await asyncio.to_thread(
-                            redact_observation, normalized, get_phi_gate())
-                        await safe_text(canonical(protected), reviewed_urls(self.record.definition.source))
-                        text = protected["text"] or canonical(protected["data"])
-                        result = {"text": text[:4096], "revision_digest": digest(protected),
-                                  "truncated": len(text) > 4096, "redacted": redacted}
+                        if page is not None:
+                            # Metadata is never redacted into a different source
+                            # identity. Only prose is transformed; unsafe actual
+                            # URL/time/profile facts must fail their normal gate.
+                            protected, redacted = await asyncio.to_thread(redact_observation,
+                                {"text": page["text"], "title": page["title"]}, get_phi_gate())
+                            protected = {**page, **protected}
+                            # Validated server timestamps/enums are structured
+                            # facts, not source prose (ISO dates match DOB rules).
+                            # Every source-controlled text/URL still meets PHI.
+                            await safe_text(canonical({key: protected[key] for key in
+                                ("requested_url", "final_url", "title", "text")}),
+                                reviewed_urls(self.record.definition.source))
+                            result = retain_page_observation(protected,
+                                source_action_id=action.action_id, redacted=redacted)
+                        else:
+                            protected, redacted = await asyncio.to_thread(
+                                redact_observation, normalized, get_phi_gate())
+                            await safe_text(canonical(protected), reviewed_urls(self.record.definition.source))
+                            text = protected["text"] or canonical(protected["data"])
+                            result = {"text": text[:4096], "revision_digest": digest(protected),
+                                      "truncated": len(text) > 4096, "redacted": redacted}
                     if len(canonical(result).encode("utf-8")) > 8192:
                         raise ValueError("assignment_result_limit")
                     await safe_text(result["text"], reviewed_urls(self.record.definition.source))

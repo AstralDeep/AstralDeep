@@ -719,7 +719,9 @@ def fetch_page(url: str = "", **kwargs) -> Dict[str, Any]:
             code,
         )
 
-    if _looks_like_html(resp):
+    retrieved_at = datetime.now(timezone.utc).isoformat()
+    is_html = _looks_like_html(resp)
+    if is_html:
         title, text = _extract_readable(resp.text)
     else:
         title, text = "", (resp.text or "").strip()
@@ -750,6 +752,25 @@ def fetch_page(url: str = "", **kwargs) -> Dict[str, Any]:
             "title": title,
             "truncated": truncated,
             "characters": len(text),
+            # Facts about this completed response and the named text extractor;
+            # never a claim that the entire visual page was represented. Missing
+            # transport metadata stays missing and the strict consumer refuses it.
+            "page_observation": {
+                "version": 1,
+                "requested_url": url,
+                "final_url": getattr(resp, "url", None),
+                "retrieved_at": retrieved_at,
+                "media_type": str((resp.headers or {}).get("Content-Type", ""))
+                    .split(";", 1)[0].strip().lower(),
+                "extraction_profile": "html_readable_v1" if is_html else "plain_text_v1",
+                "title": title,
+                "text": text,
+                "body_complete": getattr(resp, "status_code", None) == 200
+                    and not (resp.headers or {}).get("Content-Range"),
+                "extraction_complete": True,
+                "excerpt_complete": not truncated,
+                "redacted": False,
+            },
         },
     }
 
