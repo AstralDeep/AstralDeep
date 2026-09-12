@@ -4,22 +4,26 @@ Status: scoped local implementation and qualification continue, 2026-09-12. No f
 
 ## Current issued-session integration checkpoint, 2026-09-12
 
-Local Deep `238407db719ce4abbd842ee67b7ca3903464e8c3` includes the exact
+Local Deep `e29a17a49d145aa81ae517fe5740f6546149e1db` includes the exact
 Plane pin from `c84c9cd`, the atomic consent work from `cc20825`, and the private
-operation continuation resolver and guarded read adapter. The pinned Plane commit is
-`ce94812880c7e00ff2d605d483bf1303a3c4acf3`, schema `088.002`, migration digest
+operation continuation resolver, guarded read adapter, explicit offline recovery
+command and transaction-based audit insertion. The pinned Plane commit is
+`11cfa6d0fe2d91388492f9004e5ebc09d00dd771`, schema `088.002`, migration digest
 `22d086ef60c5e73f124f3569268c4b48138871b1614ac538ab7f685a1b313afc`.
 Projection remains `eff1b3ad779b570c0fe4824f370407efc2a37047`; native source and
 unsigned artifacts are unchanged by this backend increment.
 
 | Scoped check | Recorded result and limits |
 | --- | --- |
-| Combined Plane source | Linux Python 3.11: 2,726 passed, nine existing Windows skips; final focused operation checks: 71 passed. The integration tree matches all 201 qualified tracked entries and 69 packaged Python sources. |
+| Combined Plane before recovery API | Linux Python 3.11: 2,726 passed, nine existing Windows skips; final focused operation checks: 71 passed. The ce948128 integration tree matches all 201 qualified tracked entries and 69 packaged Python sources. |
 | Exact Deep pin | Composition verifier and installer `validate --require-gitlinks` passed; 169 tooling and 15 real PostgreSQL current-schema tests passed with no skips. Historical `088.001` assertions remain. |
 | Fresh installed components | Isolated Linux Python 3.11, network disabled: four locked wheels, all 186 packaged sources/resources, import origins, RECORD and `pip check` passed. Session compatibility probes use synthetic repositories and do not qualify institutional IAM or SQL execution. |
 | Combined foundation before resolver integration | 620 passed in 110.78 seconds against a disposable PostgreSQL database. All recorded sources remained unchanged and the database was removed. The cohort covers selected UI, auth, consent, scheduler, persistent service and Work read/control seams, not every backend module. |
 | Private continuation resolver | 331 passed with no skips, including 64 new operation cases; changed executable Python coverage 87/91 (95.60%). Real private PostgreSQL and synthetic signed JWT/JWKS/refresh transport cover original-incarnation selection, same-SID replacement, permission policy, deadlines, held locks, concurrent refresh and cancellation. Sources remained unchanged and the database was removed. |
 | Guarded operation reader | Persistent-agent and dispatch cohort: 510 passed, zero failures/skips; changed executable Python coverage 140/149 (93.96%). The final focused test delta passed 69 cases, zero failures/skips, at 141/149 (94.63%). All 229 production/dependency sources were identical across both runs; the eight final source/test files and 21 evidence artifacts were independently rehashed. Real private PostgreSQL, actual ordinary dispatcher gates and synthetic external transport cover same-incarnation checks, final mutable arguments, cached permission digests and authentic permit settlement after authority loss. |
+| Plane recovery API | Full Linux source run: 2,769 passed, nine existing Windows skips, one stale provenance-ledger failure. Only two ledger digest strings changed afterward; all four affected provenance checks then passed. The original full result remains retained. The exact installed wheel passed 44 PostgreSQL recovery checks; changed executable lines 60/60 (100%). Root verified eight final files, 83 artifacts and all 70 packaged Python sources. |
+| Installed recovery command and exact new pin | 201 tooling tests, three shipping CLI journeys across 12 actual invocations, and three installed Deep encrypted-grant tests passed with zero failures/skips. Fresh isolated offline Linux Python 3.11 checked all four wheels, 187 packaged members, RECORD and import origins. Only Plane changed. CLI unit/tooling coverage is 124/127 (97.64%); actual subprocess results are functional evidence, not manufactured subprocess coverage. Root verified six final files, the gitlink, 110 artifacts and four wheel digests/ZIP integrity. |
+| Required transaction-based audit append | 13 focused PostgreSQL/hash-chain tests and 90 audit/module integration tests passed, zero failures/skips; changed executable lines 8/8 (100%). The new method uses the caller's transaction and ordinary serialization/HMAC, propagates failure and returns a provisional DTO. Supplied runtime identity is checked; transaction origin remains an explicit trusted-caller precondition. No retry or publisher is invoked. |
 
 The resolver returns detached private claims, subject token, exact operation and
 bounded session observation. It uses the ordinary production token/role policy;
@@ -41,11 +45,27 @@ resolver handoff
 `ce3845b4ea16d212a7b627ee6b71c90addeaeda32870ced02d54985c0ba9de27`,
 and reader handoff
 `482c96f9be0563aaafd02c2618365a519921c69ffa0edeffee7ac6d8c55e1434`.
+The recovery API handoff is
+`10fd28e056c88bf4e1903779d8db916a6e9f6baf003abb3df73870c9c3c9c69b`,
+installed operator/pin handoff
+`d5e30e5a3dc16b2da2dc830937c6a424e462f21edf34d3d9608ad5df54e1d518`,
+and audit adapter handoff
+`8c23cf08216b1296da8d3993268e7def28dc713271dad12efca5a3777b6d6bfc`.
 Root independently checked the committed source identities, reports and scoped
 test metadata. Failed harness/fixture attempts remain retained; the passing
 cohorts overlap and must not be added into a feature-wide test count.
 
-Complete restore retirement, native/BFF authority, the remaining 088 capabilities,
+The [offline recovery command](contracts/restored-session-retirement-tool.md)
+requires independently closed writers, verified paired database/blob restore and
+discarded process caches before traffic resumes. Its explicit target and exact
+installed component checks were exercised only on private disposable databases;
+dummy qualification records do not attest real operator controls. Wrong-target
+receipts remain pending, successful repeats return zero, and a replayed snapshot
+requires retirement again. Grants, audit and liabilities stay intact; old
+authentic permits still settle once without stale output. A nonzero exit or
+unconfirmed receipt does not establish rollback. The tool does not reopen traffic.
+
+Complete operational recovery, native/BFF authority, the remaining 088 capabilities,
 exact-artifact authenticated staging and protected release evidence remain open.
 No live database upgrade, product push, draft promotion, signing or store
 submission occurred. Earlier sections below retain historical checkpoints and
