@@ -1,6 +1,55 @@
 # Feature 088 verification record
 
-Status: local implementation started, 2026-09-10. No full integrated feature, live staging, merge, deployment or release is claimed.
+Status: scoped local implementation and qualification continue, 2026-09-12. No full integrated feature, live staging, merge, deployment or release is claimed.
+
+## Current issued-session integration checkpoint, 2026-09-12
+
+Local Deep `238407db719ce4abbd842ee67b7ca3903464e8c3` includes the exact
+Plane pin from `c84c9cd`, the atomic consent work from `cc20825`, and the private
+operation continuation resolver and guarded read adapter. The pinned Plane commit is
+`ce94812880c7e00ff2d605d483bf1303a3c4acf3`, schema `088.002`, migration digest
+`22d086ef60c5e73f124f3569268c4b48138871b1614ac538ab7f685a1b313afc`.
+Projection remains `eff1b3ad779b570c0fe4824f370407efc2a37047`; native source and
+unsigned artifacts are unchanged by this backend increment.
+
+| Scoped check | Recorded result and limits |
+| --- | --- |
+| Combined Plane source | Linux Python 3.11: 2,726 passed, nine existing Windows skips; final focused operation checks: 71 passed. The integration tree matches all 201 qualified tracked entries and 69 packaged Python sources. |
+| Exact Deep pin | Composition verifier and installer `validate --require-gitlinks` passed; 169 tooling and 15 real PostgreSQL current-schema tests passed with no skips. Historical `088.001` assertions remain. |
+| Fresh installed components | Isolated Linux Python 3.11, network disabled: four locked wheels, all 186 packaged sources/resources, import origins, RECORD and `pip check` passed. Session compatibility probes use synthetic repositories and do not qualify institutional IAM or SQL execution. |
+| Combined foundation before resolver integration | 620 passed in 110.78 seconds against a disposable PostgreSQL database. All recorded sources remained unchanged and the database was removed. The cohort covers selected UI, auth, consent, scheduler, persistent service and Work read/control seams, not every backend module. |
+| Private continuation resolver | 331 passed with no skips, including 64 new operation cases; changed executable Python coverage 87/91 (95.60%). Real private PostgreSQL and synthetic signed JWT/JWKS/refresh transport cover original-incarnation selection, same-SID replacement, permission policy, deadlines, held locks, concurrent refresh and cancellation. Sources remained unchanged and the database was removed. |
+| Guarded operation reader | Persistent-agent and dispatch cohort: 510 passed, zero failures/skips; changed executable Python coverage 140/149 (93.96%). The final focused test delta passed 69 cases, zero failures/skips, at 141/149 (94.63%). All 229 production/dependency sources were identical across both runs; the eight final source/test files and 21 evidence artifacts were independently rehashed. Real private PostgreSQL, actual ordinary dispatcher gates and synthetic external transport cover same-incarnation checks, final mutable arguments, cached permission digests and authentic permit settlement after authority loss. |
+
+The resolver returns detached private claims, subject token, exact operation and
+bounded session observation. It uses the ordinary production token/role policy;
+its result alone authorizes no dispatch. Final Plane mutation guards remain
+required. The reader supplies private detached invocation context to the ordinary
+dispatcher, validates the reserved public request again after awaited gates, and
+settles authentic permits once even when current authority no longer permits
+result publication. It refuses v1, scheduled/framework, transient/model and effect
+execution. A cached result requires the current permission and precondition
+digests. No route or runner has been activated. The one-shot lifecycle is a
+separate pending increment; full T026 is open.
+
+Retained local handoff SHA-256 values are: Plane integration
+`ec604636925a2b452b3b6bed7aeacb7afa78e149355e52cbf904aad422b99770`,
+Deep pin `d2fcd9b82129458b1e0d0a8667405f6d0b38daa3cd0410b91029bbb4f10205d4`,
+Linux foundation receipt
+`b49a350f90a29a0c716dc36921836ce087015f93bca41811495d080a55146e63`,
+resolver handoff
+`ce3845b4ea16d212a7b627ee6b71c90addeaeda32870ced02d54985c0ba9de27`,
+and reader handoff
+`482c96f9be0563aaafd02c2618365a519921c69ffa0edeffee7ac6d8c55e1434`.
+Root independently checked the committed source identities, reports and scoped
+test metadata. Failed harness/fixture attempts remain retained; the passing
+cohorts overlap and must not be added into a feature-wide test count.
+
+Complete restore retirement, native/BFF authority, the remaining 088 capabilities,
+exact-artifact authenticated staging and protected release evidence remain open.
+No live database upgrade, product push, draft promotion, signing or store
+submission occurred. Earlier sections below retain historical checkpoints and
+their source-specific qualification limits.
 
 The owner's 2026-09-11 Android/Apple continuation and local native checks are
 recorded in [the native checkpoint](native-checkpoint-20260911.md). Windows
