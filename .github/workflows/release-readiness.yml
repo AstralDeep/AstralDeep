@@ -1019,11 +1019,11 @@ jobs:
           set -euo pipefail
           xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
             -destination "${DESTINATION}" -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO -derivedDataPath build/060/dd build-for-testing
-          APP="$(/usr/bin/find build/060/dd/Build/Products -maxdepth 2 -name '*.app' -print | sort | head -n 1)"
-          test -n "$APP"
-          mkdir -p "build/060/release-evidence/${PRODUCER_PLATFORM}"
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "build/060/release-evidence/${PRODUCER_PLATFORM}/AstralApp.app.zip"
+            CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
+            -derivedDataPath build/060/dd build-for-testing
+          python3 -I scripts/apple_coverage_artifacts.py prepare --repo "$PWD" \
+            --platform "${PRODUCER_PLATFORM}" --derived-data "$PWD/build/060/dd" \
+            --output "$PWD/build/060/release-evidence"
           DIGEST=$(shasum -a 256 "build/060/release-evidence/${PRODUCER_PLATFORM}/AstralApp.app.zip" | cut -d ' ' -f 1)
           echo "ARTIFACT_SHA256=$DIGEST" >> "$GITHUB_ENV"
       - name: Produce macOS release evidence against staging
@@ -1051,7 +1051,7 @@ jobs:
           export TEST_RUNNER_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" TEST_RUNNER_GITHUB_WORKFLOW="$GITHUB_WORKFLOW"
           export TEST_RUNNER_RUNNER_OS="$RUNNER_OS" TEST_RUNNER_RUNNER_ARCH="$RUNNER_ARCH" TEST_RUNNER_RUNNER_NAME="$RUNNER_NAME"
           result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}.xcresult"
-          rm -rf "$result"
+          test ! -e "$result" && test ! -L "$result"
           xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
             -destination "${DESTINATION}" -configuration Debug \
             CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
@@ -1060,6 +1060,19 @@ jobs:
             "-only-testing:${PRODUCER_ONLY_TESTING}" \
             test-without-building
           test -d "$result"
+          test -f "build/060/release-evidence/${PRODUCER_PLATFORM}.json"
+          python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
+            --platform "${PRODUCER_PLATFORM}" --derived-data "$PWD/build/060/dd" \
+            --output "$PWD/build/060/release-evidence"
+      - name: Retain raw Apple coverage attempts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-coverage-attempts-macos-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/release-evidence/coverage/raw/
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 14
       - id: raw-evidence-upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1068,7 +1081,7 @@ jobs:
             build/060/release-evidence/macos.json
             build/060/release-evidence/macos/
             build/060/release-evidence/macos-raw/
-            build/060/release-evidence/coverage/raw/apple-macos.xcresult/
+            build/060/release-evidence/coverage/raw/
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
@@ -1135,15 +1148,65 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          root="$PWD"
+          (cd components/AstralProjection/apple-clients/AstralCore && xcodebuild \
+            -scheme AstralCore -destination "${DESTINATION}" -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
+            -derivedDataPath "$root/build/060/core-dd" build-for-testing)
           xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
             -destination "${DESTINATION}" -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO -derivedDataPath build/060/dd build-for-testing
-          APP="$(/usr/bin/find build/060/dd/Build/Products -maxdepth 2 -name '*.app' -print | sort | head -n 1)"
-          test -n "$APP"
-          mkdir -p "build/060/release-evidence/${PRODUCER_PLATFORM}"
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "build/060/release-evidence/${PRODUCER_PLATFORM}/AstralApp.app.zip"
+            CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
+            -derivedDataPath build/060/dd build-for-testing
+          python3 -I scripts/apple_coverage_artifacts.py prepare --repo "$PWD" \
+            --platform "${PRODUCER_PLATFORM}" --derived-data "$PWD/build/060/dd" --core-derived-data "$PWD/build/060/core-dd" \
+            --output "$PWD/build/060/release-evidence"
           DIGEST=$(shasum -a 256 "build/060/release-evidence/${PRODUCER_PLATFORM}/AstralApp.app.zip" | cut -d ' ' -f 1)
           echo "ARTIFACT_SHA256=$DIGEST" >> "$GITHUB_ENV"
+      - name: Run actual iOS Core and app unit observations from prepared binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          for lane in core unit; do
+            result="$root/build/060/release-evidence/coverage/raw/apple-ios-${lane}.xcresult"
+            test ! -e "$result" && test ! -L "$result"
+            if [[ "$lane" == core ]]; then
+              (cd components/AstralProjection/apple-clients/AstralCore && xcodebuild \
+                -scheme AstralCore -destination "${DESTINATION}" -configuration Debug \
+                CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
+                -derivedDataPath "$root/build/060/core-dd" -resultBundlePath "$result" \
+                -only-testing:AstralCoreTests test-without-building)
+            else
+              xcodebuild -project "${APP_PROJECT}" -scheme AstralApp \
+                -destination "${DESTINATION}" -configuration Debug \
+                CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
+                -derivedDataPath build/060/dd -resultBundlePath "$result" \
+                -only-testing:AstralAppTests test-without-building
+            fi
+            python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
+              --platform ios --derived-data "$PWD/build/060/dd" \
+              --core-derived-data "$PWD/build/060/core-dd" --output "$PWD/build/060/release-evidence"
+          done
+      - name: Run complete synthetic iOS UI observations from the same prepared app
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$PWD/build/060/release-evidence/coverage/raw/apple-ios-ui.xcresult"
+          test ! -e "$result" && test ! -L "$result"
+          xcodebuild -project "${APP_PROJECT}" -scheme AstralApp \
+            -destination "${DESTINATION}" -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
+            -derivedDataPath build/060/dd -resultBundlePath "$result" \
+            -only-testing:AstralAppUITests/Accessibility060UITests \
+            -only-testing:AstralAppUITests/LLMFirstLoginUITests \
+            -only-testing:AstralAppUITests/VoiceConversationUITests \
+            -only-testing:AstralAppUITests/WorkspacePresentationUITests \
+            -only-testing:AstralAppUITests/WorkspaceActionsUITests \
+            -only-testing:AstralAppUITests/ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversationTwentyTimes \
+            test-without-building
+          python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
+            --platform ios --derived-data "$PWD/build/060/dd" \
+            --core-derived-data "$PWD/build/060/core-dd" --output "$PWD/build/060/release-evidence"
       - name: Produce iOS release evidence against staging
         shell: bash
         env:
@@ -1167,8 +1230,8 @@ jobs:
           export TEST_RUNNER_GITHUB_JOB="$GITHUB_JOB" TEST_RUNNER_GITHUB_RUN_ID="$GITHUB_RUN_ID"
           export TEST_RUNNER_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" TEST_RUNNER_GITHUB_WORKFLOW="$GITHUB_WORKFLOW"
           export TEST_RUNNER_RUNNER_OS="$RUNNER_OS" TEST_RUNNER_RUNNER_ARCH="$RUNNER_ARCH" TEST_RUNNER_RUNNER_NAME="$RUNNER_NAME"
-          result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}.xcresult"
-          rm -rf "$result"
+          result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}-staging.xcresult"
+          test ! -e "$result" && test ! -L "$result"
           xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
             -destination "${DESTINATION}" -configuration Debug \
             CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
@@ -1177,6 +1240,19 @@ jobs:
             "-only-testing:${PRODUCER_ONLY_TESTING}" \
             test-without-building
           test -d "$result"
+          test -f "build/060/release-evidence/${PRODUCER_PLATFORM}.json"
+          python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
+            --platform "${PRODUCER_PLATFORM}" --derived-data "$PWD/build/060/dd" --core-derived-data "$PWD/build/060/core-dd" \
+            --output "$PWD/build/060/release-evidence"
+      - name: Retain raw Apple coverage attempts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-coverage-attempts-ios-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/release-evidence/coverage/raw/
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 14
       - id: raw-evidence-upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1185,7 +1261,7 @@ jobs:
             build/060/release-evidence/ios.json
             build/060/release-evidence/ios/
             build/060/release-evidence/ios-raw/
-            build/060/release-evidence/coverage/raw/apple-ios.xcresult/
+            build/060/release-evidence/coverage/raw/
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
@@ -1881,6 +1957,11 @@ jobs:
             scripts/validate_release_evidence.py \
             scripts/check_changed_coverage.py \
             scripts/prepare_release_evidence.py \
+            scripts/apple_coverage_artifacts.py \
+            scripts/merge_xccov_line_coverage.py \
+            scripts/export_xccov_line_coverage.py \
+            scripts/verify_composition.py \
+            specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json \
             specs/060-runtime-reliability-hardening/contracts/windows-deployment-profile.schema.json \
             specs/060-runtime-reliability-hardening/contracts/release-evidence.schema.json \
             specs/060-runtime-reliability-hardening/contracts/release-trust.schema.json \

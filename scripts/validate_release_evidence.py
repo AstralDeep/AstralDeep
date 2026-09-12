@@ -1628,12 +1628,25 @@ def _apple_manifest_matches_report(
         raise ProvenanceError(f"{platform} raw/final artifact identities are not attempt-scoped")
 
     normalized_member = f"coverage/apple-{platform}-xccov.json"
-    raw_result_prefix = f"coverage/raw/apple-{platform}.xcresult/"
+    expected_raw_roots = (
+        {f"coverage/raw/apple-ios-{lane}.xcresult/" for lane in ("core", "unit", "ui", "staging")}
+        if platform == "ios"
+        else {f"coverage/raw/apple-{platform}.xcresult/"}
+    )
+    raw_roots = set()
+    for member in source_members:
+        parts = member.split("/")
+        result_parts = [index for index, part in enumerate(parts) if part.endswith(".xcresult")]
+        if not result_parts:
+            continue
+        if result_parts != [2] or len(parts) < 4 or parts[:2] != ["coverage", "raw"]:
+            raise ProvenanceError(f"{platform} raw result root is invalid")
+        raw_roots.add("/".join(parts[:3]) + "/")
     report_member = f"{platform}.json"
     if (
         normalized_member in source_members
         or normalized_member not in final_members
-        or not any(member.startswith(raw_result_prefix) for member in source_members)
+        or raw_roots != expected_raw_roots
         or any(member.startswith("coverage/raw/") for member in final_members)
         or source_members.get(report_member) != final_members.get(report_member)
         or report_member not in source_members
