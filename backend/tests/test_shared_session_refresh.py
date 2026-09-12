@@ -91,6 +91,60 @@ def test_deleted_session_cannot_be_resurrected_by_late_rotation(stores):
     assert sessions.get(sid) is None
 
 
+def test_replaced_session_with_reused_generation_rejects_late_refresh(stores, runtime):
+    """A new ciphertext family cannot inherit the old family's remote result."""
+    sessions, _, owner, sid = stores
+    replacement = None
+
+    async def exchange(refresh, access):
+        nonlocal replacement
+        assert (refresh, access) == ("refresh-initial", "access-initial")
+        claimed = get_session_record(runtime, sid)
+        replacement = replace(
+            claimed,
+            access_token_ciphertext=sessions._enc("replacement-access"),
+            refresh_token_ciphertext=sessions._enc("replacement-refresh"),
+        )
+        replace_session_record(runtime, replacement)
+        return {"access_token": "old-family-result", "refresh_token": "old-family-refresh"}
+
+    with pytest.raises(ss.SessionRefreshUnavailable, match="changed"):
+        asyncio.run(sessions.refresh_credential(sid, owner_id=owner, exchange=exchange))
+    assert get_session_record(runtime, sid) == replacement
+    assert web_session_store(runtime).get(sid)["access_token"] == "replacement-access"
+
+
+def test_replacement_between_read_and_claim_never_sends_old_refresh(
+    stores, runtime, monkeypatch,
+):
+    sessions, _, owner, sid = stores
+    repository = sessions._sessions.repository
+    original = repository.compare_and_set_refresh
+    replaced = False
+    seen = []
+
+    def replace_before_claim(transaction, record, **kwargs):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            current = get_session_record(runtime, sid)
+            replace_session_record(runtime, replace(
+                current,
+                access_token_ciphertext=sessions._enc("replacement-access"),
+                refresh_token_ciphertext=sessions._enc("replacement-refresh"),
+            ))
+        return original(transaction, record, **kwargs)
+
+    async def exchange(refresh, access):
+        seen.append((refresh, access))
+        return {"access_token": "current-access", "refresh_token": "current-refresh"}
+
+    monkeypatch.setattr(repository, "compare_and_set_refresh", replace_before_claim)
+    result = asyncio.run(sessions.refresh_credential(sid, owner_id=owner, exchange=exchange))
+    assert seen == [("replacement-refresh", "replacement-access")]
+    assert result["access_token"] == "current-access"
+
+
 def test_capture_links_siblings_to_one_session_and_rejects_unmatched_token(stores):
     sessions, grants, owner, sid = stores
     first = grants.capture(owner, "refresh-initial", agent_id="a")
