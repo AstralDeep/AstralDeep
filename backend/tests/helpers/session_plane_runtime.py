@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 
 from astralplane.repositories.history import SessionRecord
 from astralplane.repositories.revocations import RevocationQueueRecord
@@ -52,8 +53,9 @@ def replace_session_record(
                 transaction,
                 owner_id=current.owner_id,
                 session_id=current.session_id,
+                expected_incarnation_id=current.incarnation_id,
             )
-        return repository.put(transaction, record)
+        return repository.put(transaction, replace(record, incarnation_id=None))
 
 
 def revocation_records(

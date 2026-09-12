@@ -377,9 +377,11 @@ def test_refresh_session_success_rotates_tokens(
     )
     try:
         out = asyncio.run(web_auth._refresh_session(sid, sess))
-        assert out is sess
-        assert sess["access_token"] == "at-new"
-        assert sess["refresh_token"] == "rt-new"
+        assert out is not sess
+        assert out["incarnation_id"] == sess["incarnation_id"]
+        assert out["access_token"] == "at-new"
+        assert out["refresh_token"] == "rt-new"
+        assert sess["access_token"] == "at-old"
 
         # Durable row rotated too; anchor untouched (FR-007).
         fresh = web_session_store(plane_runtime)
@@ -423,9 +425,10 @@ def test_refresh_network_error_keeps_session(auth_env, monkeypatch, plane_runtim
     )
     try:
         out = asyncio.run(web_auth._refresh_session(sid, sess))
-        assert out is sess
-        assert sess["access_token"] == "at-keep"
-        assert sess["refresh_token"] == ""  # uncertain rotation is never replayed
+        assert out is not sess
+        assert out["incarnation_id"] == sess["incarnation_id"]
+        assert out["access_token"] == "at-keep"
+        assert out["refresh_token"] == ""  # uncertain rotation is never replayed
         assert sid in web_auth._SESSIONS
         assert get_session_record(plane_runtime, sid) is not None
     finally:

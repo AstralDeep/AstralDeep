@@ -2,9 +2,9 @@
 
 Only a private signed-cookie reference selects the session. This helper must be
 called after normal authentication; future write callers must retain their origin
-and CSRF gates. It does not establish a durable issued-session incarnation: the
-current assignment reference stores only a SID. Do not enable one-shot ingress or
-continuation on this prerequisite alone.
+and CSRF gates. Its version-2 credential fence retains the initially observed
+issued incarnation through refresh and normal IAM verification. It grants no
+work by itself; committing Plane operations must recheck that exact observation.
 """
 from __future__ import annotations
 

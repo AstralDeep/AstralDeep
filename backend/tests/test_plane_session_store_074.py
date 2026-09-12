@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from dataclasses import replace
+from uuid import uuid4
 
 import pytest
 from cryptography.fernet import Fernet
@@ -35,6 +36,7 @@ class _Sessions:
 
     def put(self, _transaction, record: SessionRecord) -> SessionRecord:
         previous = self.records.get(record.session_id)
+        record = replace(record, incarnation_id=(previous.incarnation_id if previous else str(uuid4())))
         if previous is not None and previous != record:
             raise AssertionError("test repository rejected changed replay")
         self.records[record.session_id] = record
@@ -60,6 +62,7 @@ class _Sessions:
     ):
         current = self.records[record.session_id]
         assert current.owner_id == record.owner_id
+        assert current.incarnation_id == record.incarnation_id
         assert current.last_refresh_at == expected_last_refresh_at
         self.records[record.session_id] = record
         return record
@@ -72,24 +75,27 @@ class _Sessions:
         session_id,
         expected_resumed,
         resumed,
+        expected_incarnation_id,
     ):
         current = self.records[session_id]
         assert current.owner_id == owner_id
+        assert current.incarnation_id == expected_incarnation_id
         assert current.resumed is expected_resumed
         updated = replace(current, resumed=resumed)
         self.records[session_id] = updated
         return updated
 
-    def delete(self, _transaction, *, owner_id, session_id):
+    def delete(self, _transaction, *, owner_id, session_id, expected_incarnation_id):
         current = self.records.get(session_id)
-        if current is None or current.owner_id != owner_id:
+        if current is None or current.owner_id != owner_id or current.incarnation_id != expected_incarnation_id:
             return False
         del self.records[session_id]
         return True
 
-    def delete_and_return(self, transaction, *, owner_id, session_id):
+    def delete_and_return(self, transaction, *, owner_id, session_id, expected_incarnation_id):
         current = self.records.get(session_id)
-        return current if self.delete(transaction, owner_id=owner_id, session_id=session_id) else None
+        return current if self.delete(transaction, owner_id=owner_id, session_id=session_id,
+                                      expected_incarnation_id=expected_incarnation_id) else None
 
     def delete_owner(self, _transaction, *, owner_id):
         keys = [key for key, value in self.records.items() if value.owner_id == owner_id]

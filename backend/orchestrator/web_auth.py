@@ -35,6 +35,7 @@ import logging
 import os
 import secrets
 import time
+import threading
 from typing import Any, Dict, Optional
 
 import httpx
@@ -52,6 +53,7 @@ web_auth_router = APIRouter()
 # the web_session table (session_store.WebSessionStore); rows are mirrored
 # here on read so the hot path stays dict-cheap.
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
+_SESSION_CACHE_LOCK = threading.RLock()
 # Pending logins: state -> {code_verifier, created_at, next}
 _PENDING: Dict[str, Dict[str, Any]] = {}
 # sid -> why the session died ('hard_cap'), so /auth/session can report the
@@ -274,15 +276,37 @@ def _record_death(sid: str, reason: str) -> None:
     _DEATH_REASONS[sid] = reason
 
 
+def _same_incarnation(first: dict | None, second: dict | None) -> bool:
+    return bool(first and second and first.get("incarnation_id")
+                and first.get("incarnation_id") == second.get("incarnation_id"))
+
+
+def _evict_session_observation(sid: str, observed: dict | None) -> bool:
+    """Atomically retire A's cache entry without evicting a later same-SID B."""
+    with _SESSION_CACHE_LOCK:
+        current = _SESSIONS.get(sid)
+        if current is observed or _same_incarnation(current, observed):
+            _SESSIONS.pop(sid, None)
+            return True
+        return False
+
+
+def _session_from_row(row: dict, previous: dict | None = None) -> dict:
+    """Return a detached issued-session observation with unchanged wire fields."""
+    return {
+        "sid": row["sid"], "incarnation_id": row["incarnation_id"],
+        "access_token": row["access_token"], "refresh_token": row["refresh_token"],
+        "sub": row["user_id"], "created_at": row["interactive_anchor"],
+        "resumed": previous.get("resumed", False) if _same_incarnation(previous, row) else True,
+    }
+
+
 def _session_by_sid(sid: str) -> Optional[Dict[str, Any]]:
     sess = _SESSIONS.get(sid)
     store = _get_store()
     if sess is not None and store is None:
         if (time.time() - sess.get("created_at", 0)) > HARD_MAX_SECONDS:
-            _SESSIONS.pop(sid, None)
-            store = _get_store()
-            if store is not None:
-                store.delete(sid)
+            _evict_session_observation(sid, sess)
             logger.info("web_auth: session %s exceeded 365-day cap — cleared", sid[:8])
             _record_death(sid, "hard_cap")
             return None
@@ -291,7 +315,7 @@ def _session_by_sid(sid: str) -> Optional[Dict[str, Any]]:
         return None
     row = store.get(sid)  # enforces the hard cap itself
     if row is None:
-        _SESSIONS.pop(sid, None)
+        _evict_session_observation(sid, sess)
         reason = None
         try:
             reason = store.pop_death_reason(sid)
@@ -300,20 +324,14 @@ def _session_by_sid(sid: str) -> Optional[Dict[str, Any]]:
         if reason:
             _record_death(sid, reason)
         return None
-    updated = {
-        "sid": sid,
-        "access_token": row["access_token"],
-        "refresh_token": row["refresh_token"],
-        "sub": row["user_id"],
-        "created_at": row["interactive_anchor"],
-        "resumed": sess.get("resumed", False) if sess is not None else True,
-    }
-    if sess is None:
-        sess = updated
-    else:
-        sess.update(updated)
-    _SESSIONS[sid] = sess
-    return sess
+    updated = _session_from_row(row, sess)
+    # Never mutate a dict already held by an awaiting HTTP request. A read of
+    # replacement B must not turn that request's original A into B in place.
+    with _SESSION_CACHE_LOCK:
+        current = _SESSIONS.get(sid)
+        if current is sess or _same_incarnation(current, updated):
+            _SESSIONS[sid] = updated
+    return updated
 
 
 def get_session(request: Request) -> Optional[Dict[str, Any]]:
@@ -383,7 +401,7 @@ async def _exchange_session_refresh(refresh_token: str, prior_access: str) -> di
             return json.loads(body)
 
 
-async def _refresh_session(sid: str, sess: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def _refresh_session(sid: str, sess: Dict[str, Any], *, on_retired=None) -> Optional[Dict[str, Any]]:
     """Silent refresh at Keycloak (D2). Returns the refreshed session or None.
 
     Never moves the interactive anchor. Explicit IdP refusal kills the session;
@@ -394,40 +412,70 @@ async def _refresh_session(sid: str, sess: Dict[str, Any]) -> Optional[Dict[str,
     store = _get_store()
     if not authority or store is None:
         return None
+    observed = dict(sess)
+    from orchestrator.session_store import _valid_incarnation
+    if not _valid_incarnation(observed.get("incarnation_id")):
+        return None
     try:
         row = await store.refresh_credential(
-            sid, owner_id=sess.get("sub", ""), exchange=_exchange_session_refresh)
+            sid, owner_id=observed.get("sub", ""), exchange=_exchange_session_refresh,
+            expected_incarnation_id=observed["incarnation_id"])
     except httpx.HTTPStatusError:
         # Keycloak refused the refresh token (revoked/expired) — dead session.
         logger.info("web_auth: refresh refused for session %s — clearing", sid[:8])
-        await _kill_session(sid, sess, audit_action="token_refresh_failed",
-                            description="Silent token refresh refused by the identity provider")
+        retired = await _kill_session(sid, observed, audit_action="token_refresh_failed",
+                                      description="Silent token refresh refused by the identity provider")
+        if retired and on_retired is not None:
+            await on_retired()
         return None
     except Exception:
-        # Existing access retains offline tolerance. The potentially consumed
-        # refresh token remains fenced in Plane and is never retried or returned.
-        sess["refresh_token"] = ""
+        # Unknown HTTP/claim outcomes retain offline tolerance only while the
+        # original issuance still exists. A known replacement cannot inherit A's
+        # returned access, and this read never adopts B or its credentials.
+        observed["refresh_token"] = ""
+        try:
+            current = await asyncio.to_thread(
+                store.is_current_incarnation, observed.get("sub", ""),
+                session_id=sid, incarnation_id=observed["incarnation_id"])
+        except Exception:
+            current = False
         logger.warning("web_auth: session refresh unavailable")
-        return sess
-    sess["access_token"] = row["access_token"]
-    sess["refresh_token"] = row["refresh_token"]
-    return sess
+        return observed if current else None
+    if not _same_incarnation(observed, row):
+        return None
+    observed["access_token"] = row["access_token"]
+    observed["refresh_token"] = row["refresh_token"]
+    return observed
 
 
 async def _kill_session(sid: str, sess: Dict[str, Any], *, audit_action: Optional[str] = None,
-                        description: str = "", outcome: str = "failure") -> None:
-    _SESSIONS.pop(sid, None)
+                        description: str = "", outcome: str = "failure") -> bool:
+    """Delete the original issued session; return no credential on stale cleanup."""
+    incarnation = sess.get("incarnation_id")
+    _evict_session_observation(sid, sess)
     store = _get_store()
+    # A process-only login has no durable issuance to retire. Losing access to
+    # a formerly durable store is uncertain, not permission to revoke its row.
+    retired = store is None and incarnation is None
+    if store is None and not retired:
+        sess["refresh_token"] = ""
     if store is not None:
+        # Clearing before the await also prevents an uncertain local deletion
+        # from revoking a credential now owned by a replacement incarnation.
+        sess["refresh_token"] = ""
         try:
-            deleted = await store.adelete(sid)
+            from orchestrator.session_store import _valid_incarnation
+            deleted = (await store.adelete(sid, expected_incarnation_id=incarnation)
+                       if _valid_incarnation(incarnation) else None)
             sess["refresh_token"] = "" if deleted is None else deleted["refresh_token"]
             if deleted is not None:
                 sess["access_token"] = deleted["access_token"]
+                retired = True
         except Exception:
             logger.debug("web_auth: store delete failed", exc_info=True)
     if audit_action:
         await _audit(audit_action, sess.get("sub", "anonymous"), description, outcome=outcome)
+    return retired
 
 
 async def _end_voice_session(request: Request, user_id: str, reason: str) -> None:
@@ -469,16 +517,20 @@ async def ensure_session(request: Request) -> Optional[Dict[str, Any]]:
     sid = sess.get("sid") or _unsign(request.cookies.get(COOKIE_NAME, "")) or ""
     exp = _token_expires_at(sess.get("access_token", ""))
     if exp is None or (exp - time.time()) < _REFRESH_WINDOW_SECONDS:
-        refreshed = await _refresh_session(sid, sess)
-        if refreshed is None:
+        async def on_retired():
+            # Existing voice cleanup is owner-wide. Only a successful exact
+            # retirement may trigger it; a stale or uncertain failure cannot.
             await _end_voice_session(request, sess.get("sub", ""), "auth_expired")
+
+        refreshed = await _refresh_session(sid, sess, on_retired=on_retired)
+        if refreshed is None:
             return None
         sess = refreshed
         # If the IdP was unreachable and the token is hard-expired (beyond
         # skew), the session can't serve this request.
         exp2 = _token_expires_at(sess.get("access_token", ""))
         if exp2 is not None and (time.time() - exp2) > _CLOCK_SKEW_SECONDS:
-            await _end_voice_session(request, sess.get("sub", ""), "auth_expired")
+            # An uncertain refresh outcome is not proof of session retirement.
             return None
     return sess
 
@@ -525,7 +577,9 @@ def session_resumed_flag(request: Request) -> bool:
         store = _get_store()
         if store is not None and sess.get("sid"):
             try:
-                store.mark_resumed(sess["sid"])
+                from orchestrator.session_store import _valid_incarnation
+                if _valid_incarnation(sess.get("incarnation_id")):
+                    store.mark_resumed(sess["sid"], expected_incarnation_id=sess["incarnation_id"])
             except Exception:
                 logger.debug("web_auth: mark_resumed failed", exc_info=True)
     return resumed
@@ -670,6 +724,9 @@ async def auth_callback(request: Request):
     # Bound and valid — NOW consume the one-shot entry (a replay of this exact
     # bound callback finds nothing and is refused above).
     _PENDING.pop(state, None)
+    # The cookie selects its prior issuance before remote work. A delayed
+    # callback must not resolve and retire a newer same-SID session afterward.
+    prior = await aget_session(request)
     authority, client_id, client_secret = _keycloak_config()
     data = {
         "grant_type": "authorization_code", "code": code,
@@ -691,15 +748,15 @@ async def auth_callback(request: Request):
 
     # D6 — user-switch revocation: a live session for someone else on this
     # browser is revoked (session + refresh token) before the new one starts.
-    prior = await aget_session(request)
     if prior and prior.get("sub") and prior["sub"] != sub:
         prior_sid = prior.get("sid", "")
         logger.info("web_auth: user switch %s -> %s — revoking prior session", prior["sub"], sub)
-        await _revoke_or_queue(prior.get("sub", ""), prior.get("refresh_token", ""))
-        await _kill_session(prior_sid, prior, audit_action="logout",
+        retired = await _kill_session(prior_sid, prior, audit_action="logout",
                             description="Prior session revoked by user switch on shared browser",
                             outcome="success")
-        await _end_voice_session(request, prior.get("sub", ""), "logout")
+        if retired:
+            await _revoke_or_queue(prior.get("sub", ""), prior.get("refresh_token", ""))
+            await _end_voice_session(request, prior.get("sub", ""), "logout")
 
     # FR-005: entry requires a Keycloak-issued 'user' or 'admin' role. An
     # authenticated account with neither gets an explicit no-access outcome —
@@ -745,7 +802,9 @@ async def auth_session(request: Request):
         store = _get_store()
         if store is not None and sess.get("sid"):
             try:
-                await store.amark_resumed(sess["sid"])
+                from orchestrator.session_store import _valid_incarnation
+                if _valid_incarnation(sess.get("incarnation_id")):
+                    await store.amark_resumed(sess["sid"], expected_incarnation_id=sess["incarnation_id"])
             except Exception:
                 logger.debug("web_auth: mark_resumed failed", exc_info=True)
     return JSONResponse({
@@ -772,10 +831,8 @@ async def auth_logout(request: Request):
         sid = _unsign(raw)
         if sid:
             sess = await _asession_by_sid(sid)
-            if sess is None:
-                _SESSIONS.pop(sid, None)
-            else:
-                await _kill_session(sid, sess)  # unconditional local sign-out
+            if sess is not None and not await _kill_session(sid, sess):
+                sess = None
     if sess:
         user_id = sess.get("sub", "")
         await _end_voice_session(request, user_id, "logout")
@@ -964,18 +1021,23 @@ def _attach_session(request: Request, payload: Dict[str, Any], resp: Response) -
     the new session id. Blocking (durable persist) — call it off the event loop.
     """
     sid = secrets.token_urlsafe(24)
-    _SESSIONS[sid] = {**payload, "created_at": time.time(), "sid": sid, "resumed": False}
+    previous = _SESSIONS.get(sid)
+    cached = {**payload, "created_at": time.time(), "sid": sid, "resumed": False}
     if not _is_mock():
         store = _get_store()
         if store is not None:
             try:
-                store.create(sid, user_id=payload.get("sub", "anonymous"),
+                row = store.create(sid, user_id=payload.get("sub", "anonymous"),
                              access_token=payload.get("access_token", ""),
                              refresh_token=payload.get("refresh_token", ""),
                              hard_max_seconds=HARD_MAX_SECONDS)
+                cached = {**_session_from_row(row), "resumed": False}
             except Exception:
                 logger.warning("web_auth: durable session persist failed — session is process-local",
                                exc_info=True)
+    with _SESSION_CACHE_LOCK:
+        if _SESSIONS.get(sid) is previous or _same_incarnation(_SESSIONS.get(sid), cached):
+            _SESSIONS[sid] = cached
     resp.set_cookie(COOKIE_NAME, _sign(sid), httponly=True, samesite="lax",
                     secure=_cookie_secure(request), max_age=HARD_MAX_SECONDS, path="/")
     return sid
@@ -1144,6 +1206,7 @@ async def kiosk_poll(request: Request):
     handle = _kiosk_flow_handle(request)
     if not handle:
         return JSONResponse({"status": "restart"})
+    prior = await aget_session(request)
     ip = request.client.host if request.client else "unknown"
     try:
         result = await device_login.poll(handle, ip)
@@ -1170,14 +1233,14 @@ async def kiosk_poll(request: Request):
 
     # A kiosk is a shared browser by definition — retire a live session that
     # belongs to somebody else before minting this one (mirrors /auth/callback).
-    prior = await aget_session(request)
     if prior and prior.get("sub") and prior["sub"] != sub:
-        await _revoke_or_queue(prior.get("sub", ""), prior.get("refresh_token", ""),
-                               client_id=_session_client_id(prior) or None)
-        await _kill_session(prior.get("sid", ""), prior, audit_action="logout",
+        retired = await _kill_session(prior.get("sid", ""), prior, audit_action="logout",
                             description="Prior session revoked by user switch at the kiosk",
                             outcome="success")
-        await _end_voice_session(request, prior.get("sub", ""), "logout")
+        if retired:
+            await _revoke_or_queue(prior.get("sub", ""), prior.get("refresh_token", ""),
+                                   client_id=_session_client_id(prior) or None)
+            await _end_voice_session(request, prior.get("sub", ""), "logout")
 
     await _audit("login_interactive", sub,
                  "Interactive login completed at a kiosk; new session established")

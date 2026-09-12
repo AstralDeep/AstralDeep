@@ -108,7 +108,7 @@ def _counting_refresh(monkeypatch, behavior="passthrough"):
     returned unchanged); behavior=None simulates a refused refresh."""
     calls = []
 
-    async def fake(sid, sess):
+    async def fake(sid, sess, **kwargs):
         calls.append(sid)
         return sess if behavior == "passthrough" else None
 
@@ -320,7 +320,7 @@ def test_auth_session_resumed_flip_writes_through_the_store(
     token = _fake_jwt({"sub": user, "exp": int(time.time()) + 3600})
     store.create(sid, user_id=user, access_token=token, refresh_token="rt",
                  hard_max_seconds=3600, resumed=False)
-    _seed_memory(sid, sub=user, access_token=token, resumed=False)
+    _seed_memory(sid, sub=user, access_token=token, resumed=False)["incarnation_id"] = store.get(sid)["incarnation_id"]
     _counting_refresh(monkeypatch)
     try:
         first = _json(asyncio.run(web_auth.auth_session(_cookie_req(sid))))
@@ -341,7 +341,7 @@ def test_session_resumed_flag_one_shot_and_persists(plane_runtime, store):
     token = _fake_jwt({"sub": user, "exp": int(time.time()) + 3600})
     store.create(sid, user_id=user, access_token=token, refresh_token="rt",
                  hard_max_seconds=3600, resumed=False)
-    _seed_memory(sid, sub=user, access_token=token, resumed=False)
+    _seed_memory(sid, sub=user, access_token=token, resumed=False)["incarnation_id"] = store.get(sid)["incarnation_id"]
     try:
         assert web_auth.session_resumed_flag(_cookie_req(sid)) is False
 
