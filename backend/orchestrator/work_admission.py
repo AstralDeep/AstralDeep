@@ -466,6 +466,7 @@ class WorkAdmissionRepository(Protocol):
         *,
         now: datetime | None,
         slot_lease: timedelta,
+        transaction: Any | None = None,
     ) -> SlotLeaseRenewal: ...
 
     def expire_execution_leases(
@@ -760,9 +761,12 @@ class WorkAdmissionCoordinator:
         """
         return self._repository.bind_chat(fence, chat_id, now=self._now())
 
-    def renew_execution_lease(self, fence: ExecutionFence) -> SlotLeaseRenewal:
+    def renew_execution_lease(
+        self, fence: ExecutionFence, *, transaction: Any | None = None,
+    ) -> SlotLeaseRenewal:
+        """Renew configured capacity within an optional caller-owned transaction."""
         return self._repository.renew_execution_lease(
-            fence, now=self._now(), slot_lease=self._slot_lease
+            fence, now=self._now(), slot_lease=self._slot_lease, transaction=transaction,
         )
 
     def expire_execution_leases(self) -> tuple[OperationRecord, ...]:
@@ -1863,7 +1867,10 @@ class InMemoryWorkAdmissionRepository:
         *,
         now: datetime | None,
         slot_lease: timedelta,
+        transaction: Any | None = None,
     ) -> SlotLeaseRenewal:
+        if transaction is not None and transaction is not self:
+            raise ValueError("in-memory admission cannot join an external transaction")
         current_time = self._now(now)
         with self._lock:
             record = self._operations.get(fence.operation_id)
@@ -2605,12 +2612,14 @@ class PlaneWorkAdmissionRepository:
         *,
         now: datetime | None,
         slot_lease: timedelta,
+        transaction: Any | None = None,
     ) -> SlotLeaseRenewal:
         renewal = self._invoke(
             self._plane_repository.renew_execution_lease,
             _to_plane_fence(fence),
             now=now,
             slot_lease=slot_lease,
+            transaction=transaction,
         )
         return SlotLeaseRenewal(
             operation_id=renewal.operation_id,

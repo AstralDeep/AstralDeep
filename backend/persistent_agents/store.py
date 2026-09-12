@@ -145,3 +145,58 @@ class AssignmentStore:
 
     def close(self):
         self.async_runtime.close()
+
+    async def operation_lifecycle_transaction(
+        self, *, authority, callback: Callable[[Any, Any, Any], _T], fence=None, binding=None,
+    ) -> _T:
+        """Guard one-shot lifecycle writes and recheck the same session after them.
+
+        Resolve remote authority before entry. SQL caps apply before the first
+        query; the synchronous callback uses this transaction only. A post-write
+        session check can roll back claim/lease retirement after its own fence is
+        intentionally gone. It never refreshes or adopts authority under locks.
+        """
+        from orchestrator.session_authority import OperationExecutionAuthority
+
+        if (not isinstance(authority, OperationExecutionAuthority)
+                or authority.plane_runtime is not self.plane_runtime
+                or (binding is not None and fence is None)):
+            raise AssignmentError("assignment_authorization_unavailable", 403)
+        sessions = self.plane_runtime.repositories.history.sessions
+
+        def synchronous(value):
+            if inspect.isawaitable(value):
+                if inspect.iscoroutine(value):
+                    value.close()
+                raise AssignmentError("assignment_transaction_callback_invalid", 500)
+            return value
+
+        def guarded(tx, repository):
+            if binding is not None:
+                current = synchronous(repository.assert_current_assignment_execution(
+                    tx, fence=fence, binding=binding, authority=authority.observation))
+            else:
+                # This public session guard itself locks owner before session;
+                # it supplies the bind/preclaim ordering before assignment rows.
+                synchronous(sessions.assert_current_execution(tx, observation=authority.observation))
+                if fence is not None:
+                    current = synchronous(repository.assert_current_claim(tx, fence=fence))
+                else:
+                    current = synchronous(repository.get_operation(
+                        tx, owner_id=authority.record.owner_id,
+                        assignment_id=authority.record.assignment_id)).assignment
+            original = authority.record
+            if (current.owner_id != original.owner_id
+                    or current.assignment_id != original.assignment_id
+                    or current.execution_profile != "one_shot"
+                    or current.instruction_revision != original.instruction_revision
+                    or current.control_epoch != original.control_epoch
+                    or current.definition != original.definition
+                    or current.operation != original.operation
+                    or (fence is None and current.state_version != original.state_version)):
+                raise AssignmentError("assignment_state_changed", 409)
+            result = synchronous(callback(tx, repository, current))
+            synchronous(sessions.assert_current_execution(tx, observation=authority.observation))
+            return result
+
+        return await self.transaction(guarded, bound_session_waits=True)

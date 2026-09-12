@@ -56,6 +56,33 @@ class ApprovalPending(RuntimeError):
     """The immutable action is persisted and requires attended owner review."""
 
 
+class _OperationAuthorityWindow:
+    """Own one optional authority lock, with an idempotent early permit release."""
+
+    def __init__(self, lock):
+        self.lock = lock
+        self.held = False
+
+    async def acquire(self):
+        """Acquire once; cancellation cannot release another window's lock."""
+        if self.lock is not None:
+            await self.lock.acquire()
+            self.held = True
+        return self
+
+    def release(self):
+        """Release only this window, including early release at permit issuance."""
+        if self.held:
+            self.held = False
+            self.lock.release()
+
+    async def __aenter__(self):
+        return await self.acquire()
+
+    async def __aexit__(self, *exc):
+        self.release()
+
+
 async def safe_text(text: str, urls: tuple[str, ...] = ()) -> None:
     """Every payload is checked before assignment storage or downstream use."""
     from orchestrator.mas_defense import scan_message
@@ -69,7 +96,7 @@ async def safe_text(text: str, urls: tuple[str, ...] = ()) -> None:
 class ActionExecutor:
     def __init__(self, runner, claim, operation_fence, websocket, *, interactive=False,
                  interactive_receipt_id=None, remote_marker=None, approved_action_id=None,
-                 operation_sessions=None):
+                 operation_sessions=None, operation_authority_lock=None):
         self.runner = runner
         self.orch = runner.orch
         self.service = runner.service
@@ -83,6 +110,9 @@ class ActionExecutor:
         self.approved_action_id = approved_action_id
         # Deliberately unregistered: existing runners supply no session resolver.
         self.operation_sessions = operation_sessions
+        if operation_authority_lock is not None and not isinstance(operation_authority_lock, asyncio.Lock):
+            raise TypeError("operation authority lock must be an asyncio lock")
+        self.operation_authority_lock = operation_authority_lock
         self.record = claim.assignment
         self.one_shot = self.record.execution_profile == "one_shot"
         self.binding = AssignmentOperationBinding(
@@ -157,6 +187,12 @@ class ActionExecutor:
             )
 
     async def action(self, key: str, request: dict[str, Any], *, task_id=None, event_id=None):
+        """Keep preparation and permit authorization coherent with optional renewal."""
+        async with _OperationAuthorityWindow(self.operation_authority_lock if self.one_shot else None) as window:
+            return await self._action(key, request, task_id=task_id, event_id=event_id,
+                                      authority_window=window if window.lock is not None else None)
+
+    async def _action(self, key, request, *, task_id=None, event_id=None, authority_window=None):
         if self.one_shot:
             self._operation_reader(request)
         await safe_text(canonical(request), reviewed_urls(self.record.definition.source))
@@ -184,7 +220,8 @@ class ActionExecutor:
                 # their original identity and disposition.
                 key = digest([key, "successor", existing.control_epoch])
                 continue
-            return await self.execute(existing)
+            return (await self._execute(existing, authority_window=authority_window)
+                    if authority_window is not None else await self.execute(existing))
         else:
             raise DispatchDenied("assignment_history_capacity_exhausted")
         checks = await self.refresh(request if request["kind"] == "tool" else None)
@@ -226,9 +263,15 @@ class ActionExecutor:
                 authority=checks["authority"].observation)
         else:
             action = await self.store.call("put_action", fence=self.claim.fence, intent=intent)
-        return await self.execute(action)
+        return (await self._execute(action, authority_window=authority_window)
+                if authority_window is not None else await self.execute(action))
 
     async def execute(self, action):
+        """Execute a stored action with an optional pre-permit authority window."""
+        async with _OperationAuthorityWindow(self.operation_authority_lock if self.one_shot else None) as window:
+            return await self._execute(action, authority_window=window)
+
+    async def _execute(self, action, *, authority_window=None):
         operation_checks = None
         if self.one_shot:
             request = thaw(action.intent.request)
@@ -307,6 +350,10 @@ class ActionExecutor:
                     current_permission_digest=checks["permission_digest"],
                     current_precondition_digest=checks["precondition_digest"])
                 permit_issued = True
+                if authority_window is not None:
+                    # Issuance commits the effect permit. Renewal may now run
+                    # while physical I/O continues; settlement has its own window.
+                    authority_window.release()
                 return permit
             def transaction(tx, repository, _current):
                 return repository.start_action(
@@ -383,11 +430,14 @@ class ActionExecutor:
             )
             result_context = {}
             cancelled = False
+            settlement_window = _OperationAuthorityWindow(
+                self.operation_authority_lock if self.one_shot else None)
             if getattr(self.record, "execution_profile", "persistent") == "one_shot":
                 # An authentic old permit must settle even when a current claim,
                 # admission generation or fresh remote authority is no longer
                 # available. Only a fresh matching observation may retain content.
                 try:
+                    await settlement_window.acquire()
                     current_checks = await self.refresh(request if request["kind"] == "tool" else None)
                     if (current_checks["permission_digest"] == action.intent.permission_digest
                             and current_checks["precondition_digest"] == action.intent.precondition_digest):
@@ -399,13 +449,16 @@ class ActionExecutor:
                 except asyncio.CancelledError:
                     cancelled = True
             settle = self.store.call_for_operation if self.one_shot else self.store.call
-            retained = await settle(
-                "record_action_outcome", owner_id=self.record.owner_id,
-                assignment_id=self.record.assignment_id, action_id=action.action_id,
-                attempt_id=attempt_id, dispatch_token=permit.dispatch_token,
-                expected_request_digest=action.intent.request_digest, outcome=receipt,
-                **result_context,
-            )
+            try:
+                retained = await settle(
+                    "record_action_outcome", owner_id=self.record.owner_id,
+                    assignment_id=self.record.assignment_id, action_id=action.action_id,
+                    attempt_id=attempt_id, dispatch_token=permit.dispatch_token,
+                    expected_request_digest=action.intent.request_digest, outcome=receipt,
+                    **result_context,
+                )
+            finally:
+                settlement_window.release()
             retained_result = thaw(retained.result)
             observed = retained_result["result"]
             observed_state = outcome

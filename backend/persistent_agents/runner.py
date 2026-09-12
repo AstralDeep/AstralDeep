@@ -9,24 +9,29 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 from astralplane.repositories.assignments import (
     AssignmentActivityRecord,
     AssignmentEpisodeCompletion,
+    AssignmentRecord,
     AssignmentSourceBatch,
     AssignmentSourceEvent,
     AssignmentTask,
     AssignmentTaskResult,
 )
 from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
+from orchestrator.session_authority import refresh_operation_execution_authority
 from orchestrator.work_admission import (
     AdmissionClass,
+    ExecutionFence,
     OperationOwner,
     OperationRequest,
     OperationState,
     OwnerScope,
+    StaleExecutionFenceError,
 )
 
 from persistent_agents.config import RunnerConfig
@@ -78,6 +83,26 @@ class _EpisodeLease:
     terminal: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class OneShotEpisodeResult:
+    """Trusted handler output plus the exact meaningful state it read."""
+
+    record: AssignmentRecord
+    completion: AssignmentEpisodeCompletion
+
+
+@dataclass(frozen=True, slots=True)
+class OneShotLifecycle:
+    """Explicit, unregistered capability; no default planner or episode exists."""
+
+    sessions: object
+    episode: Callable[[ActionExecutor], Awaitable[OneShotEpisodeResult]]
+
+    def __post_init__(self):
+        if self.sessions is None or not callable(self.episode):
+            raise ValueError("one-shot lifecycle requires sessions and an episode")
+
+
 def _episode_lease(executor):
     state = getattr(executor, "_episode_lease", None)
     if state is None:
@@ -86,7 +111,7 @@ def _episode_lease(executor):
 
 
 class AssignmentRunner:
-    def __init__(self, orchestrator, service, *, config=None):
+    def __init__(self, orchestrator, service, *, config=None, one_shot: OneShotLifecycle | None = None):
         self.orch = orchestrator
         self.service = service
         self.store = service.store
@@ -96,6 +121,11 @@ class AssignmentRunner:
         self._stopping = False
         self._loop = None
         self._active: dict[tuple[str, int], asyncio.Task] = {}
+        if one_shot is not None and not isinstance(one_shot, OneShotLifecycle):
+            raise TypeError("one_shot must be an explicit lifecycle capability")
+        self.one_shot = one_shot
+        self._operation_cursor = None
+        self._operation_first = True
 
     def start(self):
         if self._loop is not None:
@@ -136,6 +166,11 @@ class AssignmentRunner:
     async def tick(self):
         await asyncio.to_thread(self.orch.work_admission.expire_execution_leases)
         await self.store.call("recover_expired_for_administration", limit=100)
+        if self.one_shot is not None:
+            await self._recover_operations()
+            if self._operation_first:
+                await self._tick_operations()
+            self._operation_first = not self._operation_first
         available = self.config.concurrency - len(self._active)
         if available <= 0:
             return
@@ -147,12 +182,74 @@ class AssignmentRunner:
             # A claim acquired during shutdown expires through durable recovery.
             return
         for claim in claims:
-            # Controls can release a durable claim before its local coroutine
-            # finishes unwinding. Keep both generations supervised and counted.
-            identity = (claim.assignment.assignment_id, claim.fence.claim_generation)
-            task = asyncio.create_task(self.run_claim(claim), name="assignment-episode")
-            self._active[identity] = task
-            task.add_done_callback(lambda completed, key=identity: self._finished(key, completed))
+            self._start_claim(claim)
+        if self.one_shot is not None and self._operation_first:
+            await self._tick_operations()
+
+    def _start_claim(self, claim):
+        """Track every locally running claim generation against shared capacity."""
+        # Count both generations while a controlled old claim unwinds.
+        identity = (claim.assignment.assignment_id, claim.fence.claim_generation)
+        task = asyncio.create_task(self.run_claim(claim), name="assignment-episode")
+        self._active[identity] = task
+        task.add_done_callback(lambda completed, key=identity: self._finished(key, completed))
+
+    async def _operation_authority(self, record):
+        """Resolve the original incarnation through normal current IAM and owner policy."""
+        authority = await refresh_operation_execution_authority(
+            owner_id=record.owner_id, assignment_id=record.assignment_id,
+            sessions=self.one_shot.sessions, plane_runtime=self.store.plane_runtime)
+        self.service._owner(record.owner_id, authority.claims)
+        return authority
+
+    async def _tick_operations(self):
+        """Scan one bounded page, advancing past unavailable original sessions."""
+        if self._stopping or len(self._active) >= self.config.concurrency:
+            return
+        cursor = self._operation_cursor
+        page = await self.store.transaction(lambda tx, repo:
+            repo.discover_due_operations_for_administration(tx, limit=20,
+                after_due_at=cursor[0] if cursor else None, after_id=cursor[1] if cursor else None),
+            bound_session_waits=True)
+        if not page:
+            self._operation_cursor = None
+        for candidate in page:
+            if self._stopping or len(self._active) >= self.config.concurrency:
+                return
+            self._operation_cursor = (candidate.next_wake_at, candidate.assignment_id)
+            try:
+                authority = await self._operation_authority(candidate)
+                def claim_current(tx, repo, current):
+                    self.service._owner(current.owner_id, authority.claims)
+                    return repo.claim_operation_for_administration(tx, owner_id=current.owner_id,
+                        assignment_id=current.assignment_id,
+                        expected_state_version=authority.record.state_version,
+                        worker_id=self.worker_id, authority=authority.observation,
+                        lease_seconds=self.config.lease_seconds)
+
+                claim = await self.store.operation_lifecycle_transaction(
+                    authority=authority, callback=claim_current)
+                if claim is not None and not self._stopping:
+                    self._start_claim(claim)
+            except Exception:  # noqa: BLE001 - refusal advances discovery, never grants authority
+                logger.warning("one_shot_claim_unavailable")
+
+    async def _recover_operations(self):
+        """Recover factual liabilities and retire only their exact admission fence."""
+        def recover(tx, repository):
+            recovered = repository.recover_expired_operations_for_administration(tx, limit=100)
+            for binding in recovered.operation_bindings:
+                fence = ExecutionFence(uuid.UUID(binding["operation_id"]),
+                    binding["execution_generation"], uuid.UUID(binding["execution_lease_token"]))
+                try:
+                    self.orch.work_admission.terminalize(fence, state=OperationState.FAILED,
+                        terminal_code="assignment_interrupted", safe_summary=None,
+                        retry_after_ms=None, transaction=tx)
+                except StaleExecutionFenceError:
+                    # The old episode cannot retire a replacement generation.
+                    pass
+            return recovered
+        return await self.store.transaction(recover, bound_session_waits=True)
 
     def _finished(self, identity, task):
         if self._active.get(identity) is task:
@@ -163,10 +260,11 @@ class AssignmentRunner:
     async def _admit(self, claim, *, interactive=False):
         record = claim.assignment
         category = AdmissionClass.INTERACTIVE if interactive else AdmissionClass.BACKGROUND
+        namespace = "one_shot_assignment" if record.execution_profile == "one_shot" else "persistent_assignment"
         request = OperationRequest(
-            operation_kind="persistent_assignment", admission_class=category,
+            operation_kind=namespace, admission_class=category,
             owner=OperationOwner(OwnerScope.USER, record.owner_id, None),
-            submission_id=uuid.uuid4(), idempotency_namespace="persistent_assignment",
+            submission_id=uuid.uuid4(), idempotency_namespace=namespace,
             idempotency_key=f"{record.assignment_id}:{claim.fence.claim_generation}",
             normalized_input_digest=digest([record.assignment_id, record.instruction_revision,
                                             record.control_epoch, claim.fence.claim_generation]),
@@ -204,6 +302,10 @@ class AssignmentRunner:
             episode.cancel()
 
     async def run_claim(self, claim):
+        if claim.assignment.execution_profile == "one_shot":
+            if self.one_shot is None:
+                raise DispatchDenied("assignment_authorization_unavailable")
+            return await self._run_operation_claim(claim)
         record = claim.assignment
         socket = VirtualWebSocket(BackgroundTask(
             task_id=str(uuid.uuid4()), chat_id=record.definition.conversation_id or record.assignment_id,
@@ -235,6 +337,141 @@ class AssignmentRunner:
                 await asyncio.gather(renewal, return_exceptions=True)
             self.orch._unbind_machine_turn(socket)
             await socket.close()
+
+    async def _run_operation_claim(self, claim):
+        """Run only the explicitly supplied handler under two renewable leases."""
+        record = claim.assignment
+        socket = VirtualWebSocket(BackgroundTask(
+            task_id=str(uuid.uuid4()), chat_id=record.definition.conversation_id or record.assignment_id,
+            user_id=record.owner_id, kind="one_shot_assignment"))
+        renewal = None
+        executor = None
+        authority = None
+        try:
+            authority = await self._operation_authority(record)
+            fence = await self._admit(claim)
+            lease = _EpisodeLease()
+            executor = ActionExecutor(self, claim, fence, socket, operation_sessions=self.one_shot.sessions,
+                                      operation_authority_lock=lease.lock)
+            executor._episode_lease = lease
+
+            def bind(tx, repository, current):
+                self.service._owner(current.owner_id, authority.claims)
+                repository.bind_operation(tx, fence=claim.fence, binding=executor.binding)
+                return repository.assert_current_assignment_execution(tx, fence=claim.fence,
+                    binding=executor.binding, authority=authority.observation)
+
+            await self.store.operation_lifecycle_transaction(
+                authority=authority, fence=claim.fence, callback=bind)
+            renewal = asyncio.create_task(self._renew_operation(executor, asyncio.current_task()))
+            outcome = await self.one_shot.episode(executor)
+            if not isinstance(outcome, OneShotEpisodeResult):
+                raise DispatchDenied("assignment_completion_invalid")
+            await self._finish_operation(executor, outcome)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - no exception payload enters a durable checkpoint
+            if executor is not None and authority is not None:
+                try:
+                    # Do not retry a failed remote refresh. This original local
+                    # observation must still pass; otherwise recovery owns it.
+                    await self._hold_operation(executor, authority)
+                except Exception:  # noqa: BLE001 - retain claims/permits for factual recovery
+                    logger.warning("one_shot_hold_unavailable")
+        finally:
+            if renewal is not None:
+                renewal.cancel()
+                await asyncio.gather(renewal, return_exceptions=True)
+            self.orch._unbind_machine_turn(socket)
+            await socket.close()
+
+    async def _renew_operation(self, executor, episode):
+        """Renew both leases atomically using current original-session authority."""
+        lease = _episode_lease(executor)
+        interval = min(self.config.lease_seconds,
+                       self.orch.work_admission.slot_lease.total_seconds()) / 3
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                async with lease.lock:
+                    if lease.terminal:
+                        return
+                    authority = await self._operation_authority(executor.record)
+
+                    def renew(tx, repository, current):
+                        self.service._owner(current.owner_id, authority.claims)
+                        repository.renew_claim(tx, fence=executor.claim.fence,
+                                              lease_seconds=self.config.lease_seconds)
+                        return self.orch.work_admission.renew_execution_lease(
+                            executor.operation_fence, transaction=tx)
+
+                    await self.store.operation_lifecycle_transaction(authority=authority,
+                        fence=executor.claim.fence, binding=executor.binding, callback=renew)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - no more work after either lease/authority is lost
+            episode.cancel()
+
+    async def _hold_operation(self, executor, authority):
+        """Retain a data-free failed episode only while old authority stays current."""
+        def hold(tx, repository, current):
+            self.service._owner(current.owner_id, authority.claims)
+            completion = AssignmentEpisodeCompletion(expected_state_version=current.state_version,
+                checkpoint=current.checkpoint, completion_digest=digest([
+                    executor.claim.fence.claim_generation, "assignment_failed"]),
+                phase="failed", wake_reason="assignment_failed", safe_error_code="assignment_failed")
+            return self._complete_operation(tx, repository, executor, current, completion)
+
+        lease = _episode_lease(executor)
+        async with lease.lock:
+            if lease.terminal:
+                return
+            result = await self.store.operation_lifecycle_transaction(authority=authority,
+                fence=executor.claim.fence, binding=executor.binding, callback=hold)
+            lease.terminal = True
+            return result
+
+    def _complete_operation(self, tx, repository, executor, current, completion):
+        """Retire this physical episode atomically with its logical outcome."""
+        result = repository.finish_episode(tx, fence=executor.claim.fence,
+            completion=replace(completion, expected_state_version=current.state_version))
+        self.orch.work_admission.terminalize(executor.operation_fence,
+            state=OperationState.COMPLETED, terminal_code=None, safe_summary=None,
+            retry_after_ms=None, transaction=tx)
+        return result
+
+    async def _finish_operation(self, executor, outcome):
+        """Commit a bounded explicit outcome; never synthesize a recurring wake."""
+        record, completion = outcome.record, outcome.completion
+        if (not isinstance(record, AssignmentRecord)
+                or not isinstance(completion, AssignmentEpisodeCompletion)
+                or record.execution_profile != "one_shot"
+                or completion.expected_state_version != record.state_version
+                or completion.wake_reason == "cadence"
+                or (completion.phase == "waiting" and not completion.completed
+                    and completion.next_wake_at is None)):
+            raise DispatchDenied("assignment_completion_invalid")
+        lease = _episode_lease(executor)
+        async with lease.lock:
+            authority = await self._operation_authority(executor.record)
+
+            def finish(tx, repository, current):
+                self.service._owner(current.owner_id, authority.claims)
+                if (current.owner_id != record.owner_id or current.assignment_id != record.assignment_id
+                        or current.execution_profile != record.execution_profile
+                        or current.instruction_revision != record.instruction_revision
+                        or current.control_epoch != record.control_epoch
+                        or current.definition != record.definition or current.operation != record.operation
+                        or current.lifecycle != record.lifecycle or current.phase != record.phase
+                        or current.checkpoint != record.checkpoint or current.tasks != record.tasks
+                        or current.wake_generation != record.wake_generation):
+                    raise DispatchDenied("assignment_state_changed")
+                return self._complete_operation(tx, repository, executor, current, completion)
+
+            result = await self.store.operation_lifecycle_transaction(authority=authority,
+                fence=executor.claim.fence, binding=executor.binding, callback=finish)
+            lease.terminal = True
+        return result
 
     async def execute_approved(self, action, interaction, remote_marker=None):
         """Claim only the exact reviewed action on the owner's live connection."""
