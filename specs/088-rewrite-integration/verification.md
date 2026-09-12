@@ -4,10 +4,10 @@ Status: scoped local implementation and qualification continue, 2026-09-12. No f
 
 ## Current issued-session integration checkpoint, 2026-09-12
 
-Local Deep `e29a17a49d145aa81ae517fe5740f6546149e1db` includes the exact
+Local Deep `a9a3187ff5d98a01323393958c73c99824baf1f9` includes the exact
 Plane pin from `c84c9cd`, the atomic consent work from `cc20825`, and the private
 operation continuation resolver, guarded read adapter, explicit offline recovery
-command and transaction-based audit insertion. The pinned Plane commit is
+command, transaction-based audit insertion and opt-in one-shot worker lifecycle. The pinned Plane commit is
 `11cfa6d0fe2d91388492f9004e5ebc09d00dd771`, schema `088.002`, migration digest
 `22d086ef60c5e73f124f3569268c4b48138871b1614ac538ab7f685a1b313afc`.
 Projection remains `eff1b3ad779b570c0fe4824f370407efc2a37047`; native source and
@@ -24,6 +24,7 @@ unsigned artifacts are unchanged by this backend increment.
 | Plane recovery API | Full Linux source run: 2,769 passed, nine existing Windows skips, one stale provenance-ledger failure. Only two ledger digest strings changed afterward; all four affected provenance checks then passed. The original full result remains retained. The exact installed wheel passed 44 PostgreSQL recovery checks; changed executable lines 60/60 (100%). Root verified eight final files, 83 artifacts and all 70 packaged Python sources. |
 | Installed recovery command and exact new pin | 201 tooling tests, three shipping CLI journeys across 12 actual invocations, and three installed Deep encrypted-grant tests passed with zero failures/skips. Fresh isolated offline Linux Python 3.11 checked all four wheels, 187 packaged members, RECORD and import origins. Only Plane changed. CLI unit/tooling coverage is 124/127 (97.64%); actual subprocess results are functional evidence, not manufactured subprocess coverage. Root verified six final files, the gitlink, 110 artifacts and four wheel digests/ZIP integrity. |
 | Required transaction-based audit append | 13 focused PostgreSQL/hash-chain tests and 90 audit/module integration tests passed, zero failures/skips; changed executable lines 8/8 (100%). The new method uses the caller's transaction and ordinary serialization/HMAC, propagates failure and returns a provisional DTO. Supplied runtime identity is checked; transaction origin remains an explicit trusted-caller precondition. No retry or publisher is invoked. |
+| Opt-in one-shot lifecycle | The broad Linux Python 3.11 cohort recorded 643 passes and one timing-test failure. Its production source was unchanged when the test was corrected to acquire the authority lock within a bound instead of sampling during a legitimate renewal. The final immutable-source focused run passed 57 tests with zero failures/skips, covering 213/221 changed executable lines (96.38%). Root rehashed six final files, 40 artifacts and both real JUnit reports. An intermediate passing run whose borrowed component changed is retained but is not final evidence. |
 
 The resolver returns detached private claims, subject token, exact operation and
 bounded session observation. It uses the ordinary production token/role policy;
@@ -33,8 +34,14 @@ dispatcher, validates the reserved public request again after awaited gates, and
 settles authentic permits once even when current authority no longer permits
 result publication. It refuses v1, scheduled/framework, transient/model and effect
 execution. A cached result requires the current permission and precondition
-digests. No route or runner has been activated. The one-shot lifecycle is a
-separate pending increment; full T026 is open.
+digests. No route or runner has been activated. The optional lifecycle reuses the
+runner's concurrency and shutdown accounting, bounded discovery/recovery, exact
+session/assignment/admission claims and atomic renewal. Its per-episode authority
+lock spans refresh through committed permit issuance, then releases during the
+physical call so short admission leases can renew. Terminal settlement retains
+the same session observation. Cross-operation/process refresh collisions still
+fail closed; multiworker availability and the concrete research/model handler
+remain separate work. Full T026 is open.
 
 Retained local handoff SHA-256 values are: Plane integration
 `ec604636925a2b452b3b6bed7aeacb7afa78e149355e52cbf904aad422b99770`,
@@ -49,8 +56,13 @@ The recovery API handoff is
 `10fd28e056c88bf4e1903779d8db916a6e9f6baf003abb3df73870c9c3c9c69b`,
 installed operator/pin handoff
 `d5e30e5a3dc16b2da2dc830937c6a424e462f21edf34d3d9608ad5df54e1d518`,
-and audit adapter handoff
-`8c23cf08216b1296da8d3993268e7def28dc713271dad12efca5a3777b6d6bfc`.
+audit adapter handoff
+`8c23cf08216b1296da8d3993268e7def28dc713271dad12efca5a3777b6d6bfc`,
+and lifecycle handoff
+`e08bc6d6edccbcc98ce7521c85f47e7aeb42c275196a06f470535e6ecb294480`.
+Lifecycle SQL qualification used a task-owned immutable Plane `ce948128` archive;
+the integrated `11cfa6d` adds the separately qualified offline recovery API. No
+new combined installed-worker or production activation result is inferred.
 Root independently checked the committed source identities, reports and scoped
 test metadata. Failed harness/fixture attempts remain retained; the passing
 cohorts overlap and must not be added into a feature-wide test count.
