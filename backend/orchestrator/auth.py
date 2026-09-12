@@ -637,6 +637,13 @@ async def get_web_or_bearer_user_payload(
         session = None
     access_token = (session or {}).get("access_token", "")
     if access_token:
+        # Retain the already resolved cookie identity before JWT's await. Private
+        # durable-work callers must not adopt a later same-SID incarnation.
+        sid, incarnation = session.get("sid"), session.get("incarnation_id")
+        request.state._authenticated_cookie_session = (
+            sid if isinstance(sid, str) else None,
+            incarnation if isinstance(incarnation, str) else None,
+        )
         cookie_credentials = HTTPAuthorizationCredentials(
             scheme="Bearer", credentials=access_token
         )
