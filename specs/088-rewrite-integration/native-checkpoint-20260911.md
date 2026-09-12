@@ -324,3 +324,45 @@ T025 is qualified. T026 still requires transient-input reconstruction and
 one-shot execution; T027–T030 submission, controls, joined events/results and
 streaming remain incomplete. This checkpoint does not enable those features,
 migrate the running app, publish product branches, submit stores or promote PRs.
+
+
+## Native history and test isolation checkpoint
+
+Projection `61ead0d14daaceb167dbb9bf18cbe472b26646a5` renders canonical
+history previews, glyphs, timestamps, saved markers and titles in shared native
+rows. Strict unscoped history delivery updates chrome without replacing active
+canvas or turns. Watch preserves its server-adapted rows and same-owner HTTP
+read across socket reconnect; the established socket requests fresh history.
+The reconnect repair follows an actual empty-list observation on the signed-in
+Watch. macOS charts composite against the actual trusted host backdrop, including
+translucent transcript bubbles. All96 Apple app unit-test model constructions
+now explicitly inject memory storage. Production still uses its existing
+Keychain; code inspection found a potential test-interference path but did not
+prove that a real session was deleted.
+
+Android passed117 core and293 app tests, both coverage gates, ktlint/lint, debug
+and release bundle builds, and seven checks on a separate test emulator. Apple
+passed196 Core tests,178 Mac app tests,17 final Watch tests and prior27 iOS
+unit/UI tests plus the final history UI rerun. Twelve focused Mac chart/style
+checks include actual WebKit pixel comparisons. Projection protocol/resources
+passed66 with one source-history skip; chart generation and provenance checks
+passed. Provenance retains519 original source entries:174 transformations
+(including16 removals) and345 unchanged imports. These overlapping cohorts are
+local diagnostics; full exact-candidate qualification remains required.
+
+The Android instrumentation runner initially removed the app from the user's
+emulator during test cleanup. The final APK was restored without copying auth
+state; the user signed in again. Its real nine-row history and saved-result
+selection then passed. Tests now use a separate emulator. Updated iPhone/macOS
+history and saved metrics were observed; the saved macOS bar chart renders with
+the correct dark background. The final rebuilt Apple artifact checks, actual
+iPhone chart scrolling, final Watch interaction and remaining topbar Export/Share
+parity are separate pending work.
+
+Current AAB SHA-256 is
+`c1e91ac4b85b0855275bc1282d18d52221a964ae2e70acbc2b0a22c05e13fafa`,
+35,243,718 bytes, versionCode7/versionName1.4. It is unsigned, not upload-ready.
+Valid Apple signing identities exist; installed distribution provisioning
+profiles and protected publisher integration remain missing. Android's existing
+upload-keystore location is still needed. No product push, store action, PR
+promotion or running backend update occurred at this checkpoint.
