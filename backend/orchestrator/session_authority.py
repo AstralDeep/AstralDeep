@@ -1,19 +1,24 @@
-"""088 request-local web authority prerequisite; no route or runner activation.
+"""088 private session authority prerequisites; no route or runner activation.
 
-Only a private signed-cookie reference selects the session. This helper must be
-called after normal authentication; future write callers must retain their origin
-and CSRF gates. Its version-2 credential fence retains the initially observed
-issued incarnation through refresh and normal IAM verification. It grants no
-work by itself; committing Plane operations must recheck that exact observation.
+Web requests select a signed cookie; continuations retain the original operation's
+issued incarnation. Future write callers must retain normal authentication,
+origin and CSRF gates. Version-2 credential fences retain that original issuance
+through refresh and normal IAM verification. These observations grant no work by
+themselves; committing Plane operations must recheck them in their transactions.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
+from astralplane.repositories.assignment_models import AssignmentOperationRead, AssignmentRecord
 from astralplane.repositories.history import SessionExecutionObservation
 from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
@@ -29,8 +34,124 @@ class SessionAuthorityUnavailable(Exception):
     """Closed, data-free refusal; never evidence that an issued permit was unused."""
 
 
+@dataclass(frozen=True, slots=True)
+class OperationExecutionAuthority:
+    """Ephemeral verified dispatcher input; no standalone dispatch authority."""
+
+    record: AssignmentRecord = field(repr=False)
+    observation: SessionExecutionObservation = field(repr=False)
+    _claims_json: str = field(repr=False)
+    subject_token: str = field(repr=False)
+    plane_runtime: object = field(repr=False)
+
+    @property
+    def claims(self) -> dict:
+        """Detach every caller's claims, including nested role containers."""
+        return json.loads(self._claims_json)
+
+
 def _unavailable() -> None:
     raise SessionAuthorityUnavailable("session_authority_unavailable")
+
+
+def _uuid4(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = UUID(value)
+        return parsed.version == 4 and str(parsed) == value
+    except ValueError:
+        return False
+
+
+def _operation_context(value, owner_id, assignment_id):
+    if not isinstance(value, AssignmentOperationRead) or value.continuation_supported is not True:
+        _unavailable()
+    record = value.assignment
+    if (not isinstance(record, AssignmentRecord) or record.owner_id != owner_id
+            or record.assignment_id != assignment_id or record.lifecycle != "active"
+            or record.execution_profile != "one_shot" or not isinstance(record.operation, Mapping)):
+        _unavailable()
+    operation = record.operation
+    authority = operation.get("authority")
+    if (type(operation.get("version")) is not int or operation["version"] != 2
+            or not isinstance(authority, Mapping) or authority.get("owner_id") != owner_id
+            or authority.get("origin") != "interactive"
+            or authority.get("reference_kind") != "session_incarnation"
+            or not _uuid4(authority.get("reference_id"))):
+        _unavailable()
+    expiry = datetime.fromisoformat(authority["expires_at"])
+    deadline = datetime.fromisoformat(operation["deadline_at"])
+    if (expiry.utcoffset() is None or deadline.utcoffset() is None
+            or min(expiry, deadline) <= datetime.now(timezone.utc)):
+        _unavailable()
+    return record, authority["reference_id"], expiry, deadline
+
+
+async def refresh_operation_execution_authority(
+    *, owner_id: str, assignment_id: str, sessions: WebSessionStore, plane_runtime,
+) -> OperationExecutionAuthority:
+    """Refresh only an operation's original issued session, without activating work.
+
+    All remote calls occur outside bounded Plane transactions. The final session
+    checks bracket the operation reread, and neither that observation nor this
+    private result replaces the future mutation/permit transaction's own guards.
+    Cancellation propagates; an unknown refresh is never retried or adopted.
+    As in the web helper, request SQL bounds limit contention separately from
+    pool/network waits; the coroutine deadline is not physical thread termination.
+    """
+    try:
+        async with asyncio.timeout(_TIME_LIMIT_SECONDS):
+            if (os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}
+                    or not isinstance(owner_id, str) or not 1 <= len(owner_id) <= 256
+                    or not _uuid4(assignment_id) or not isinstance(sessions, WebSessionStore)
+                    or sessions._sessions.plane_runtime is not plane_runtime):
+                _unavailable()
+            assignments = plane_runtime.repositories.assignments
+
+            def read_original():
+                with sessions._request_execution_transaction() as transaction:
+                    return assignments.get_operation(transaction, owner_id=owner_id,
+                                                     assignment_id=assignment_id)
+
+            original, incarnation, expiry, deadline = _operation_context(
+                await asyncio.to_thread(read_original), owner_id, assignment_id)
+            reference = await asyncio.to_thread(sessions.capture_incarnation_execution_reference,
+                owner_id=owner_id, incarnation_id=incarnation)
+            if min(expiry, deadline) <= reference.state.observed_at:
+                _unavailable()
+            candidate = await sessions.refresh_for_execution(
+                reference, exchange=web_auth._exchange_session_refresh)
+            payload = await auth.verify_user(await auth.verify_production_token(candidate.access_token))
+            jwt_expiry = payload.get("exp")
+            if (payload.get("sub") != owner_id or type(jwt_expiry) not in (int, float)
+                    or not math.isfinite(jwt_expiry)):
+                _unavailable()
+            observation = SessionExecutionObservation(
+                credential=candidate.credential, started_at=candidate.started_at,
+                valid_until=min(candidate.started_at + timedelta(seconds=_TIME_LIMIT_SECONDS),
+                    datetime.fromtimestamp(candidate.credential.hard_expires_at, timezone.utc),
+                    datetime.fromtimestamp(jwt_expiry, timezone.utc), expiry, deadline))
+
+            def final_check():
+                with sessions._request_execution_transaction() as transaction:
+                    repository = plane_runtime.repositories.history.sessions
+                    repository.assert_current_execution(transaction, observation=observation)
+                    current, _, _, _ = _operation_context(assignments.get_operation(
+                        transaction, owner_id=owner_id, assignment_id=assignment_id), owner_id, assignment_id)
+                    # A timestamp alone is not an authority generation. Every
+                    # authority, version, lifecycle and other record value must
+                    # still belong to the original captured generation.
+                    if replace(current, updated_at=original.updated_at) != original:
+                        _unavailable()
+                    repository.assert_current_execution(transaction, observation=observation)
+
+            await asyncio.to_thread(final_check)
+            return OperationExecutionAuthority(original, observation,
+                json.dumps(payload, allow_nan=False, separators=(",", ":")),
+                candidate.access_token, plane_runtime)
+    except Exception:
+        raise SessionAuthorityUnavailable("session_authority_unavailable") from None
 
 
 def _cookie_reference(request: Request) -> str:

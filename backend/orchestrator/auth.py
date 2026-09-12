@@ -327,6 +327,16 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
             pass
         return fallback
     
+    payload = await verify_production_token(token)
+    try:
+        request.state.audit_claims = payload
+    except Exception:
+        pass
+    return payload
+
+
+async def verify_production_token(token: str) -> dict:
+    """Apply the ordinary production REST JWT policy without request side effects."""
     authority, client_id, _ = _get_keycloak_config()
     if not authority or not client_id:
         raise HTTPException(status_code=500, detail="Auth not configured")
@@ -359,13 +369,9 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
         if azp and not is_azp_allowed(azp):
              raise HTTPException(status_code=401, detail="Invalid client")
         _reject_non_first_party(payload)
-        try:
-            request.state.audit_claims = payload
-        except Exception:
-            pass
         return payload
-    except Exception as e:
-        logger.error(f"Token validation failed in auth wrapper: {e}")
+    except Exception:
+        logger.error("Token validation failed in auth wrapper")
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
@@ -665,20 +671,17 @@ async def require_user_id_or_web_session(
 
 
 def _extract_roles(user_data: dict) -> list:
-    logger.debug(f"Extracting roles from user_data: {json.dumps(user_data, indent=2)}")
     roles = user_data.get("realm_access", {}).get("roles", [])
+    if isinstance(roles, list):
+        roles = roles.copy()
     if "resource_access" in user_data:
         client_id = os.getenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-        logger.debug(f"Client ID: {client_id}")
         if client_id in user_data["resource_access"]:
             client_roles = user_data["resource_access"][client_id].get("roles", [])
             roles.extend(client_roles)
-            logger.debug(f"Client roles: {client_roles}")
         if "account" in user_data["resource_access"]:
             account_roles = user_data["resource_access"]["account"].get("roles", [])
             roles.extend(account_roles)
-            logger.debug(f"Account roles: {account_roles}")
-    logger.debug(f"Final extracted roles: {roles}")
     return roles
 
 async def verify_user(user_data: dict = Depends(get_current_user_payload)):
