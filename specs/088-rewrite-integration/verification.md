@@ -258,3 +258,69 @@ five-second advisory-lock timeout; the other was an intermittent empty claim
 with two fresh focused passes. Neither failure was hidden or weakened. T024/T025,
 enhanced Deep wiring and full integrated acceptance remain open; the running app
 continues to use Plane 079.001 and does not consume the unfinished 088 foundation.
+
+## 2026-09-12: component action delivery, native navigation and request wait bounds
+
+This local checkpoint composes Projection
+`d41b62fd13764aa4f4cbdf0e2e7b1345e573c3b2` and Plane
+`718021ba019abcd3a04ffbd6b80b88e51395bda6`. The additive component-action
+presentation contract has canonical digest
+`cf34f5eaf86a8802344f0a29a78a64a29738a67c511fe6da33058d0bad4d95fd`.
+Schema remains `088.001` with the existing migration digest. No new primitive,
+frame, action, runtime dependency, route or runner is enabled.
+
+- Projection builds one bounded refine/history/CSV/share inventory from original
+  component identity and type, current host flags, and receiver capabilities.
+  Deep stamps only outbound copies after ROTE on full canvas, snapshot, upsert,
+  targeted resize and legacy resize delivery. Same-socket owner changes retire
+  the raw cache; a resize resumed after registration changes cannot publish its
+  captured view. Native consumers are being implemented separately and remain
+  pending integration at this checkpoint. Windows retains its existing layout;
+  Watch and voice omit component actions.
+- Independent review replayed 16 immutable baseline web cases byte for byte.
+  The frozen cross-client parser corpus is SHA-256
+  `0fad08ce1881c4f6fe1d87aa684765e7f2e2764fb4da6b09bafd777eecb6a73d`.
+  Projection's complete Python suite passed 1,817 tests with one missing-source
+  replay skip; the explicit immutable-source replay then passed all 21 protocol
+  tests. The final focused model suite passed 80, including two additional null
+  and nonempty-text compatibility cases. These cohorts overlap.
+- The nine relevant Deep delivery, registration, component action, export,
+  history and viewport modules passed 137 tests on Linux Python 3.11 with
+  isolated PostgreSQL. Independent actual-handler/auth replay passed 31 cases.
+  The canonical changed-line checker passed in diagnostic partial mode:
+  Projection `6eab76d` to `d07b54a` covers 138/138 Python lines; Deep `88be198`
+  to `9eeb79e` covers 35/35. Ruff, diff and staged secret checks passed.
+- Apple navigation `b75c0d9` preserves the draft/result when Recent chats closes,
+  exposes Close during pending settings loads, rearms repeated Retry timers and
+  preserves mandatory-screen restrictions. The isolated iPhone regression first
+  reproduced three failures, then passed eight model and four actual UI cases.
+  Source and artifact hashes were independently checked. These are diagnostic
+  builds, not a replacement for final native-domain qualification.
+- Watch `00a7e84` advertises its existing history/loading renderers and preserves
+  passive key/value hints and detailed list text. Actual Deep history-builder
+  output passes through the real ROTE fixture and shared Watch decoder. SwiftCore
+  passed 218 tests and ROTE passed 594; the helper covers 68/70 executable lines.
+  Watch apphost and final live interaction remain unverified for this change.
+- Deep `d15c231` adds a request-local signed-cookie forced-refresh prerequisite
+  with ordinary IAM verification, exact persisted credential fences and a
+  database-clock authority limit. Plane's opt-in transaction-local limits bound
+  each lock wait to 100 ms and each statement to 1,000 ms while preserving stricter
+  settings and ordinary session defaults. Pool checkout and connection deadlines
+  are separate; async cancellation is not physical worker termination. No work
+  ingress or continuation uses this prerequisite yet.
+- Request/auth compatibility passed 192 tests; Plane's focused cohort passed
+  239, with changed Python coverage 147/147 and 3/3 respectively. Full Plane
+  recorded 2,605 passes, nine Windows-only skips and one stale provenance hash
+  failure. After the exact ledger repair, all 22 provenance/API/architecture
+  cases passed. The original failure remains retained. The final offline Python
+  3.11 wheel/install checks passed; all 69 packaged Python sources were checked
+  against the wheel, whose SHA-256 is
+  `86cc9c0996f5e3f26186b1c1d79d581676cd23e9580ecc29799538c9e7d3cec2`.
+
+The native component-action consumers, final exact native builds/coverage,
+authenticated staging, immutable issued-session incarnation binding and the
+remaining full 088 runtime/guidance/monitoring/framework work are still open.
+Existing native archives and the Android bundle are historical unsigned
+artifacts; they do not qualify the new shipping sources. The user-signed-in live
+backend/apps, product remote heads and draft PR states remain unchanged. No
+product push, PR promotion, signing, release or store submission was performed.
