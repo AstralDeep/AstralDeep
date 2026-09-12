@@ -28,6 +28,31 @@ def _authenticate(key_id: str, payload: bytes) -> bytes:
     return digest
 
 
+def _durable_event(event: AuditEventCreate) -> AuditEvent:
+    return AuditEvent(
+        event_id=str(uuid.uuid4()),
+        chain_id=event.actor_user_id,
+        auth_principal=event.auth_principal,
+        agent_id=event.agent_id,
+        event_class=event.event_class,
+        action_type=event.action_type,
+        description=event.description,
+        conversation_id=event.conversation_id,
+        correlation_id=event.correlation_id,
+        outcome=event.outcome,
+        outcome_detail=event.outcome_detail,
+        inputs_json=json.dumps(event.inputs_meta),
+        outputs_json=json.dumps(event.outputs_meta),
+        artifact_pointers_json=json.dumps(
+            [pointer.model_dump() for pointer in event.artifact_pointers]
+        ),
+        started_at=event.started_at,
+        completed_at=event.completed_at,
+        key_id=get_active_key_id(),
+        schema_version=2,
+    )
+
+
 def _record_to_dto(
     record: AuditRecord,
     availability_resolver=None,
@@ -113,34 +138,31 @@ class AuditRepository:
         )
 
     def insert(self, event: AuditEventCreate) -> AuditEventDTO:
-        durable_event = AuditEvent(
-            event_id=str(uuid.uuid4()),
-            chain_id=event.actor_user_id,
-            auth_principal=event.auth_principal,
-            agent_id=event.agent_id,
-            event_class=event.event_class,
-            action_type=event.action_type,
-            description=event.description,
-            conversation_id=event.conversation_id,
-            correlation_id=event.correlation_id,
-            outcome=event.outcome,
-            outcome_detail=event.outcome_detail,
-            inputs_json=json.dumps(event.inputs_meta),
-            outputs_json=json.dumps(event.outputs_meta),
-            artifact_pointers_json=json.dumps(
-                [pointer.model_dump() for pointer in event.artifact_pointers]
-            ),
-            started_at=event.started_at,
-            completed_at=event.completed_at,
-            key_id=get_active_key_id(),
-            schema_version=2,
-        )
+        durable_event = _durable_event(event)
         with self._audit.transaction() as transaction:
             record = self._audit.repository.append(
                 transaction,
                 durable_event,
                 _authenticate,
             )
+        return _record_to_dto(record)
+
+    def insert_in_transaction(
+        self, event: AuditEventCreate, *, transaction, plane_runtime,
+    ) -> AuditEventDTO:
+        """Append required audit inside the caller's same-runtime transaction.
+
+        The returned DTO is provisional until that transaction commits. Errors
+        propagate so the caller's dependent mutation can roll back; this method
+        neither retries nor publishes. The caller acquires product authority and
+        resource locks before audit, then rechecks its committing authority.
+        """
+        if (plane_runtime is not self._audit.plane_runtime or transaction is None
+                or not isinstance(event, AuditEventCreate)):
+            raise ValueError("audit transaction context unavailable")
+        record = self._audit.repository.append(
+            transaction, _durable_event(event), _authenticate,
+        )
         return _record_to_dto(record)
 
     def list_for_user(
