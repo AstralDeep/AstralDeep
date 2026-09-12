@@ -1,7 +1,7 @@
 # Apple native coverage domain checkpoint — 2026-09-12
 
 This local checkpoint follows `native-checkpoint-20260912.md`. Projection is
-pinned to `542c215557eadd754cf9696dcf2ee86213fa5501`; its Apple and Android
+pinned to `6eab76d706aeea5e64577d392a4622c6229605ad`; its Apple and Android
 shipping sources are unchanged from qualified `5074bdd`. This is diagnostic
 evidence tooling, not a release approval or completion of T060–T062.
 
@@ -34,7 +34,10 @@ fill either platform's evidence slot.
 
 Deep's first integration run retained one expected exact-byte parity failure
 against the old Projection pin; the component update closes that mismatch.
-The final integrated Deep candidate and checks are recorded outside the tree.
+The first exact combined-candidate cohort passed 1,330 tests with three existing
+skips and four standard exclusions; one stale expected component-pin assertion
+failed. Both expected pins were then updated to the qualified revisions. The
+final integrated Deep candidate and checks are recorded outside the tree.
 All 117 Swift source files and the complete prepared Products stayed unchanged
 through the fresh native run. Core observes 25 sources; app unit and UI each
 observe 43 sources. All three collectors, exporters, strict lane merge and
