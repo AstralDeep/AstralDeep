@@ -144,8 +144,8 @@ retained user authentication and hydrated the real six-dice result totaling30.
 Stats now use one column at the phone's 411 logical pixels. New chat, More,
 Messages collapse and an actual saved HTML export passed. A subsequent background
 request preserved the dice canvas and committed the synthetic Alpha2/Beta5 result,
-but its native chart displayed a rendering error. **That live chart defect remains
-open**; standalone chart fixtures are not evidence that this case works.
+but its native chart displayed a rendering error. The subsequent shared chart
+repair and actual saved-result verification below close that specific defect.
 
 The exact installed Deep `e8d6a30763b5feba79d5c46cc70178543ecb9fee` image passed
 42 source/package/public checks. Its full diagnostic coverage run totaled11,169
@@ -161,9 +161,10 @@ Unsigned iPhone builds lacked simulated application/keychain entitlements and
 could not persist login. A local ad-hoc simulator build with the existing observed
 team/application identities fixes the build setup without authentication source
 changes. Its Watch companion retained authentication through installation and
-process restart; conversation interaction remains unverified. The replacement
-iPhone still requires the user's normal institutional sign-in, and the final
-macOS candidate is waiting for the user's Keychain Allow prompt. No credentials
+process restart; conversation interaction remains unverified. The user completed the replacement
+iPhone institutional sign-in and macOS Keychain prompt. Android, iPhone, macOS
+and Watch retained their sign-in through process restart. iPhone and macOS New
+chat/More checks passed; Watch conversation interaction is still unverified. No credentials
 were entered or copied by the agent.
 
 Projection `8a2ef8bfcc75643d1d1af5497285773ddb804611` implements T012's public-only
@@ -179,22 +180,77 @@ T012 verification:40 worker unit tests, four real Chromium tests,122 Projection
 protocol/resource/CI tests (one skip), and51 Linux Deep static/cache/shell security
 tests passed. Changed coverage is112/112 worker lines,8/8 registration lines,
 33/33 generator lines and7/7 Deep lines. Browser fixtures used an isolated synthetic
-origin; actual installed offline fallback must still be checked after rebuilding
-Deep with this Projection pin.
+origin. Deep `e0a22dcd985c245761a53bbe7a8d5126153f1de5` subsequently passed
+53 source/package/public checks and six installed-worker assertions in isolated
+anonymous Chromium: exact public cache membership, offline root fallback, API
+and auth exclusion, narrow layout and online recovery. Authenticated shell
+registration was independently observed; this is not personalized offline data.
 
-Plane T024 is progressing in its separate review worktree and is not included in
-this Deep pin. Wait/wake receipts, profile-aware owner reads and finite terminal
-handling have focused PostgreSQL coverage; versioned decision/delete/reconcile,
-recovery terminal semantics and future-version purge handling remain. T025–T030
-and the dependent UI/guidance work are still substantive implementation tasks.
+Plane T024 is committed locally in the separate review worktree at
+`d39053ce202f99216d6a8f0d6f9b398751c7e65c` and is not included in this Deep pin.
+Wait/wake receipts, versioned controls, terminal recovery/reconciliation and
+conservative unknown-record retention passed 2,403 Linux/Python 3.11 PostgreSQL
+tests with nine Windows-only skips. Changed coverage is 169/173 versus the prior
+local increment and 654/684 versus main. The mixed-profile cleanup adapter
+requires explicit Deep adoption before pinning. T025 is in progress; T026–T030
+and the dependent UI/guidance work remain substantive implementation tasks.
+
+Projection `d178a848ff999f7ccfa3eb72b4f920cd33ac45f0` repairs native Plotly
+handling of ordinary sanitized objects while keeping prototype keys inert and
+external image sources blocked. The exact previously failing saved Alpha2/Beta5
+chart rendered successfully on authenticated Android; seven Android, fifteen
+Chromium and four Apple WKWebView regression tests passed. The following Apple live checkpoint includes this chart repair.
+
+Projection `a30f9fc5ba9cc9e84e78f5da2332612e40dc3fd3` adds the reviewed native
+style batch. Android restores canonical metric titles, web card/chart tokens,
+Inter weights, adaptive welcome placement and right-aligned composer controls.
+Idle voice stays quiet while explicit errors and terminal notices remain visible.
+Android and Apple Markdown links preserve labels but reject unsupported schemes;
+root-relative URLs resolve against the configured backend without credentials.
+Apple cards, metrics, charts, canvas spacing and New chat use measured web tokens.
+
+Final Android gates passed: ktlint, lint, 113 core and 287 app unit tests, both
+coverage gates, debug/test APKs and release bundle. Fourteen device tests passed,
+including light/dark pixel checks, adapted welcome layout, multiline/large-font
+composer behavior, read-only drafts and retained terminal notices. APK SHA-256:
+`e4658a265d04093532765fb42502931076876542565b0d4391d92199d6d70673`.
+Apple Core193, four style raster tests, four WebKit chart tests and three workspace
+UI tests passed. Clean iPhone/macOS/Watch ad-hoc builds passed. Projection's
+protocol/resources/chart regression cohort passed71 and chart generation did not
+drift. These cohorts overlap earlier reports and are not summed.
+
+Updated iPhone and macOS retained authentication; macOS required another user-
+completed Keychain prompt for the rebuilt binary. Both loaded saved metrics and
+passed Messages collapse plus New chat/More. Mac rendered Alpha2/Beta5 bars;
+its white WebKit page background is a newly confirmed parity defect under repair.
+iPhone chart heading loaded, but live scroll gestures did not move its viewport,
+so full live chart visibility is still unverified. Watch was updated, with its
+new live conversation journey pending. Automated synthetic checks are separate.
+
+The partial Work read facade adds owner-only list/detail/immediate poll through
+fresh auth and role validation, no-store responses, opaque future metadata and
+bounded off-loop reads. Review removed an inherited synchronous profile write
+from read authentication. Seventy-eight tests passed against an exact Plane d39053
+archive and real isolated PostgreSQL, with147/148 new lines covered. This is an
+explicit qualification overlay: Deep's Plane pin and installed runtime remain079.
+Admission, controls, joined activity/results, SSE, and immediate bearer-session
+revocation are not implemented by this slice; T027/T030 remain unchecked.
+
+The e0a22 backend cohorts totaled 11,200 passed, one timing fixture failure,
+15 skips and two declared integration deselections. All sixteen explicit module
+cohorts passed. Strict changed coverage was 1,064/1,068 (99.63%); tooling passed
+835 and voice passed372. The fixture repair in Deep `63c0caf` passed twenty
+repeated runs plus144 surrounding tests without changing production behavior.
+Those overlay results do not relabel the e0a22 report; final-source qualification
+and protected release evidence remain required.
 
 ## Artifacts and release boundaries
 
 Current Android bundle:
 `/Users/sam/Desktop/Work/AstralProjection/android-client/app/build/outputs/bundle/release/app-release.aab`
 
-It is **unsigned**, versionCode **7**, versionName **1.4**, **35,226,685 bytes**,
-SHA-256 `6a417647644fbb8e2953f1c34c3a81d13076f30fa73f0532375a14cbd4fcc530`.
+It is **unsigned**, versionCode **7**, versionName **1.4**, **35,236,402 bytes**,
+SHA-256 `17cfe98f82858fe172bdc26b0d9739627773418c6246204e04156e086134d6d8`.
 The Gradle task name does not establish signing; no signature entries exist.
 It is not uploadable until signed with the approved upload key and checked
 against Play's highest version code. The documented upload key is on Windows,
@@ -218,10 +274,10 @@ without app credentials. Exact requested behavior on every form factor is not
 established by the existing local evidence.
 
 The source inventory still includes 35 capability, 99 route and 12 retained
-capability entries pending. Runtime, guidance, monitoring, framework and offline
-stories remain. Plane PR8 contains remote T021–T023 groundwork but is unpinned;
-T024/T025 are real missing work, including event waits, versioned controls and
-transient-input reconstruction. A separate continuation worktree preserves the
+capability entries pending. Runtime, guidance, monitoring and framework
+stories remain. Offline T012 is locally implemented and verified. Plane PR8
+contains remote T021–T023 groundwork but is unpinned; qualified local T024 has
+not been pushed, and T025 transient-input reconstruction is in progress. A separate continuation worktree preserves the
 existing remote foundation; this native checkpoint does not install that work.
 
 Projection PR15, Deep PR195 and Plane PR8 remain draft. When fully qualified,
