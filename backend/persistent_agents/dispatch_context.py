@@ -59,6 +59,8 @@ class PersistentDispatchContext:
     start: Callable[[], Awaitable[Any]]
     observe: Callable[[Any, str, Any], Awaitable[None]]
     remote_marker: str | None = None
+    strict_final_arguments: bool = False
+    conversation_id: str | None = None
     _consumed: bool = field(default=False, init=False)
     _arguments_json: str = field(default="", init=False, repr=False)
 
@@ -74,6 +76,42 @@ class PersistentDispatchContext:
     def consumed(self) -> bool:
         return self._consumed
 
+    def validate_final_tool_arguments(self, arguments: dict[str, Any] | None) -> None:
+        """Bind the new reader's final public request before any physical permit.
+
+        Existing contexts retain their established behavior. These exact private
+        fields are injected by the ordinary gate stack for transport; arbitrary
+        underscore fields are not exempted from the canonical request binding.
+        """
+        if not self.strict_final_arguments:
+            return
+        if self.kind != "tool" or not isinstance(arguments, dict):
+            raise DispatchDenied("assignment_action_binding_changed")
+        if "_credentials" in arguments or "_credentials_encrypted" in arguments:
+            credentials = arguments.get("_credentials")
+            if (arguments.get("_credentials_encrypted") is not True
+                    or not isinstance(credentials, dict) or not credentials
+                    or any(not isinstance(key, str) or not key or key.startswith("_")
+                           or not isinstance(value, str) or not value
+                           for key, value in credentials.items())):
+                raise DispatchDenied("assignment_action_binding_changed")
+        public = {}
+        for key, value in arguments.items():
+            if key in {"_credentials", "_credentials_encrypted", "_session_llm_credentials",
+                       "_delegation_token", "_cap_job_id"}:
+                continue
+            if key == "user_id":
+                if value != self.owner_id:
+                    raise DispatchDenied("assignment_action_binding_changed")
+                continue
+            if key == "session_id":
+                if self.conversation_id is None or value != self.conversation_id:
+                    raise DispatchDenied("assignment_action_binding_changed")
+                continue
+            public[key] = value
+        if canonical(public) != self._arguments_json:
+            raise DispatchDenied("assignment_action_binding_changed")
+
     async def validate_tool(self, owner: str, agent: str, tool: str,
                             arguments: dict[str, Any]) -> None:
         arguments = dict(arguments)
@@ -86,10 +124,11 @@ class PersistentDispatchContext:
             raise DispatchDenied("assignment_action_binding_changed")
         await self.authorize()
 
-    async def invoke_tool(self, invoke: Callable[[], Awaitable[Any]]) -> Any:
+    async def invoke_tool(self, invoke: Callable[[], Awaitable[Any]], *,
+                          final_arguments: dict[str, Any] | None = None) -> Any:
         if self.kind != "tool":
             raise DispatchDenied("assignment_unreserved_tool_call")
-        return await self._invoke(invoke)
+        return await self._invoke(invoke, final_arguments=final_arguments)
 
     async def invoke_model(self, invoke: Callable[[], Awaitable[Any]],
                            kwargs: dict[str, Any]) -> Any:
@@ -105,16 +144,22 @@ class PersistentDispatchContext:
         kwargs["max_completion_tokens"] = self.max_output_tokens
         return await self._invoke(invoke)
 
-    async def _invoke(self, invoke: Callable[[], Awaitable[Any]]) -> Any:
+    async def _invoke(self, invoke: Callable[[], Awaitable[Any]], *,
+                      final_arguments: dict[str, Any] | None = None) -> Any:
         if self._consumed:
             raise DispatchDenied("assignment_attempt_already_started")
         # Set before awaiting: inherited concurrent/nested dispatches cannot race
         # this one-time capability. A refused attempt is recreated only from the
         # durable ledger, never by resetting an in-memory boolean.
         self._consumed = True
+        self.validate_final_tool_arguments(final_arguments)
         await self.authorize()
+        self.validate_final_tool_arguments(final_arguments)
         permit = await self.start()
         try:
+            # Both prior operations can wait. A changed request after issuance
+            # is never sent, but its authentic permit still settles once.
+            self.validate_final_tool_arguments(final_arguments)
             async with asyncio.timeout(self.timeout_seconds):
                 result = await invoke()
         except BaseException:

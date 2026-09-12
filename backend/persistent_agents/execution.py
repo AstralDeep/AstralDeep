@@ -68,7 +68,8 @@ async def safe_text(text: str, urls: tuple[str, ...] = ()) -> None:
 
 class ActionExecutor:
     def __init__(self, runner, claim, operation_fence, websocket, *, interactive=False,
-                 interactive_receipt_id=None, remote_marker=None, approved_action_id=None):
+                 interactive_receipt_id=None, remote_marker=None, approved_action_id=None,
+                 operation_sessions=None):
         self.runner = runner
         self.orch = runner.orch
         self.service = runner.service
@@ -80,7 +81,10 @@ class ActionExecutor:
         self.interactive_receipt_id = interactive_receipt_id
         self.remote_marker = remote_marker
         self.approved_action_id = approved_action_id
+        # Deliberately unregistered: existing runners supply no session resolver.
+        self.operation_sessions = operation_sessions
         self.record = claim.assignment
+        self.one_shot = self.record.execution_profile == "one_shot"
         self.binding = AssignmentOperationBinding(
             str(operation_fence.operation_id), operation_fence.execution_generation,
             str(operation_fence.execution_lease_token),
@@ -88,11 +92,47 @@ class ActionExecutor:
 
     def fork(self, websocket):
         """A child shares durable budgets, with its own live authority binding."""
-        if self.interactive:
+        if self.interactive or self.one_shot:
             raise DispatchDenied("assignment_foreground_fanout_denied")
         return ActionExecutor(self.runner, self.claim, self.operation_fence, websocket)
 
-    async def refresh(self, request=None):
+    def _operation_reader(self, request, action=None):
+        """Only the qualified durable read profile can enter this adapter."""
+        if (self.operation_sessions is None or self.interactive
+                or self.remote_marker is not None or self.approved_action_id is not None
+                or self.record.operation.get("version") != 2
+                or self.record.operation.get("source_retention") != "operation"
+                or not isinstance(request, dict) or request.get("kind") != "tool"
+                or set(request) != {"kind", "agent_id", "tool_name", "arguments"}
+                or not isinstance(request.get("arguments"), dict)
+                or any(not isinstance(key, str) or key.startswith("_") or key in {"session_id", "user_id"}
+                       for key in request["arguments"])
+                or self.orch.tool_permissions.get_tool_scope(
+                    request.get("agent_id"), request.get("tool_name")) not in {"tools:read", "tools:search"}
+                or (action is not None and (action.intent.boundary != "read_only"
+                    or action.intent.sensitivity != "ordinary" or action.intent.interactive_only
+                    or action.intent.transient_input is not None))):
+            raise DispatchDenied("assignment_operation_profile_unavailable")
+
+    async def refresh(self, request=None, *, authority=None):
+        if self.one_shot:
+            self._operation_reader(request)
+            if authority is None:
+                from orchestrator.session_authority import refresh_operation_execution_authority
+                authority = await refresh_operation_execution_authority(
+                    owner_id=self.claim.fence.owner_id, assignment_id=self.claim.fence.assignment_id,
+                    sessions=self.operation_sessions, plane_runtime=self.store.plane_runtime)
+            current = await self.store.call_for_operation("assert_current_assignment_execution",
+                fence=self.claim.fence, binding=self.binding, authority=authority.observation)
+            with turn_permission_memo():
+                checks = await self.service.validate_execution(
+                    current.owner_id, authority.claims, current,
+                    SimpleNamespace(request=request), authority=authority)
+            # Permission/source checks can await. Revalidate the same snapshot,
+            # never rotate the JWT after the ordinary delegation gate has run.
+            self.record = await self.store.call_for_operation("assert_current_assignment_execution",
+                fence=self.claim.fence, binding=self.binding, authority=authority.observation)
+            return {**checks, "authority": authority}
         self.record = await self.store.call("assert_current_claim", fence=self.claim.fence)
         await asyncio.to_thread(self.orch.work_admission.assert_current_execution,
                                 self.operation_fence)
@@ -117,6 +157,8 @@ class ActionExecutor:
             )
 
     async def action(self, key: str, request: dict[str, Any], *, task_id=None, event_id=None):
+        if self.one_shot:
+            self._operation_reader(request)
         await safe_text(canonical(request), reviewed_urls(self.record.definition.source))
         for _ in range(256):
             existing = await self.store.call(
@@ -147,7 +189,10 @@ class ActionExecutor:
             raise DispatchDenied("assignment_history_capacity_exhausted")
         checks = await self.refresh(request if request["kind"] == "tool" else None)
         limits = self.record.definition.limits
-        timeout_ms = limits["step_timeout_ms"]
+        timeout_ms = (min(120_000, limits["elapsed_ms"]
+            - self.record.usage.get("spent", {}).get("elapsed_ms", 0)
+            - self.record.usage.get("outstanding", {}).get("elapsed_ms", 0))
+            if self.one_shot else limits["step_timeout_ms"])
         model = request["kind"] == "model"
         if model:
             maximum = AssignmentResourceAmount(
@@ -175,10 +220,33 @@ class ActionExecutor:
             quote_digest=quote_digest, quote_expires_at=quote_expires,
             approval_expires_at=datetime.now(UTC) + timedelta(hours=1) if sensitive else None,
         )
-        action = await self.store.call("put_action", fence=self.claim.fence, intent=intent)
+        if self.one_shot:
+            action = await self.store.call_for_operation("put_action_for_execution",
+                fence=self.claim.fence, binding=self.binding, intent=intent,
+                authority=checks["authority"].observation)
+        else:
+            action = await self.store.call("put_action", fence=self.claim.fence, intent=intent)
         return await self.execute(action)
 
     async def execute(self, action):
+        operation_checks = None
+        if self.one_shot:
+            request = thaw(action.intent.request)
+            self._operation_reader(request, action)
+            operation_checks = await self.refresh(request)
+            current, actual = await self.store.read_current_action(
+                fence=self.claim.fence, binding=self.binding, action_id=action.action_id,
+                authority=operation_checks["authority"].observation)
+            if (actual.owner_id != self.claim.fence.owner_id
+                    or actual.assignment_id != self.claim.fence.assignment_id
+                    or actual.instruction_revision != self.claim.fence.instruction_revision
+                    or actual.control_epoch != self.claim.fence.control_epoch
+                    or actual.intent != action.intent):
+                raise DispatchDenied("assignment_action_binding_changed")
+            self.record, action = current, actual
+            if (operation_checks["permission_digest"] != action.intent.permission_digest
+                    or operation_checks["precondition_digest"] != action.intent.precondition_digest):
+                raise DispatchDenied("assignment_precondition_changed")
         if action.state == "succeeded":
             retained = thaw(action.result)
             if retained.get("result_available") is False:
@@ -191,12 +259,21 @@ class ActionExecutor:
         request = thaw(action.intent.request)
         if action.state in {"declined", "invalidated", "expired"}:
             raise DispatchDenied("assignment_approval_invalid")
+        if self.one_shot:
+            bound = self.service.tool_bound(f"{request['agent_id']}:{request['tool_name']}")
+            if (not 0 < action.intent.maximum.elapsed_ms <= 120_000
+                    or any(getattr(action.intent.maximum, name) != value for name, value in bound.items())):
+                raise DispatchDenied("assignment_tool_time_bound_exceeded")
         attempt_id = str(uuid.uuid4())
-        reserved = await self.store.call(
-            "reserve_action", fence=self.claim.fence, action_id=action.action_id,
+        reserve = self.store.call_for_operation if self.one_shot else self.store.call
+        reserved = await reserve(
+            "reserve_action_for_execution" if self.one_shot else "reserve_action",
+            fence=self.claim.fence, action_id=action.action_id,
             attempt_id=attempt_id, expected_request_digest=action.intent.request_digest,
             maximum=action.intent.maximum, quote_digest=action.intent.quote_digest,
             quote_expires_at=action.intent.quote_expires_at,
+            **({"binding": self.binding, "authority": operation_checks["authority"].observation}
+               if self.one_shot else {}),
         )
         if not reserved.created:
             raise DispatchDenied("assignment_attempt_already_reserved")
@@ -208,13 +285,29 @@ class ActionExecutor:
 
         async def authorize():
             nonlocal checks
-            checks = await self.refresh(request if request["kind"] == "tool" else None)
+            if self.one_shot and (self.orch.ui_sessions.get(invocation) is not private_session
+                    or private_session != expected_session):
+                raise DispatchDenied("assignment_authorization_required")
+            checks = await self.refresh(request if request["kind"] == "tool" else None,
+                **({"authority": operation_checks["authority"]} if self.one_shot else {}))
+            if self.one_shot and (self.orch.ui_sessions.get(invocation) is not private_session
+                    or private_session != expected_session):
+                raise DispatchDenied("assignment_authorization_required")
             if (checks["permission_digest"] != action.intent.permission_digest
                     or checks["precondition_digest"] != action.intent.precondition_digest):
                 raise DispatchDenied("assignment_precondition_changed")
 
         async def start():
             nonlocal permit_issued
+            if self.one_shot:
+                permit = await self.store.call_for_operation("start_action_for_execution",
+                    fence=self.claim.fence, binding=self.binding, authority=checks["authority"].observation,
+                    action_id=action.action_id, attempt_id=attempt_id,
+                    expected_request_digest=action.intent.request_digest,
+                    current_permission_digest=checks["permission_digest"],
+                    current_precondition_digest=checks["precondition_digest"])
+                permit_issued = True
+                return permit
             def transaction(tx, repository, _current):
                 return repository.start_action(
                     tx, fence=self.claim.fence, action_id=action.action_id, attempt_id=attempt_id,
@@ -289,6 +382,7 @@ class ActionExecutor:
                 outcome=outcome, result_digest=digest(result), result=result, actual=actual,
             )
             result_context = {}
+            cancelled = False
             if getattr(self.record, "execution_profile", "persistent") == "one_shot":
                 # An authentic old permit must settle even when a current claim,
                 # admission generation or fresh remote authority is no longer
@@ -298,10 +392,14 @@ class ActionExecutor:
                     if (current_checks["permission_digest"] == action.intent.permission_digest
                             and current_checks["precondition_digest"] == action.intent.precondition_digest):
                         result_context = {"result_fence": self.claim.fence,
-                                          "result_binding": self.binding}
+                                          "result_binding": self.binding,
+                                          "result_authority": current_checks["authority"].observation}
                 except Exception:  # noqa: BLE001 - settlement survives unavailable authority
                     pass
-            retained = await self.store.call(
+                except asyncio.CancelledError:
+                    cancelled = True
+            settle = self.store.call_for_operation if self.one_shot else self.store.call
+            retained = await settle(
                 "record_action_outcome", owner_id=self.record.owner_id,
                 assignment_id=self.record.assignment_id, action_id=action.action_id,
                 attempt_id=attempt_id, dispatch_token=permit.dispatch_token,
@@ -311,6 +409,8 @@ class ActionExecutor:
             retained_result = thaw(retained.result)
             observed = retained_result["result"]
             observed_state = outcome
+            if cancelled:
+                raise asyncio.CancelledError
             if retained_result.get("result_available") is False:
                 raise DispatchDenied("assignment_result_unavailable")
 
@@ -322,8 +422,22 @@ class ActionExecutor:
             max_input_bytes=65536, max_output_tokens=request.get("max_output_tokens", 1024),
             authorize=authorize, start=start, observe=observe,
             remote_marker=self.remote_marker,
+            strict_final_arguments=self.one_shot,
+            conversation_id=self.record.definition.conversation_id if self.one_shot else None,
         )
+        invocation = object() if self.one_shot else None
+        private_session = None
+        expected_session = None
         try:
+            if self.one_shot:
+                # One coherent verified generation precedes every ordinary gate.
+                # Final callbacks only recheck this same snapshot locally.
+                authority = operation_checks["authority"]
+                expected_session = authority.claims
+                expected_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
+                private_session = authority.claims
+                private_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
+                self.orch.ui_sessions[invocation] = private_session
             with bind_dispatch(context), turn_permission_memo():
                 if request["kind"] == "model":
                     message, _ = await self.orch._call_llm(
@@ -333,6 +447,17 @@ class ActionExecutor:
                     )
                     if message is None:
                         raise DispatchDenied("assignment_model_unconfigured")
+                elif self.one_shot:
+                    await context.validate_tool(self.record.owner_id, request["agent_id"],
+                                                request["tool_name"], request["arguments"])
+                    response = await self.orch.execute_authorized_tool(
+                        claims=authority.claims, user_id=self.record.owner_id,
+                        agent_id=request["agent_id"], tool_name=request["tool_name"],
+                        arguments=dict(request["arguments"]), channel="background",
+                        chat_id=self.record.definition.conversation_id, websocket=invocation,
+                        timeout=action.intent.maximum.elapsed_ms / 1000)
+                    if response is None or response.error:
+                        raise DispatchDenied("assignment_tool_refused")
                 else:
                     name = request["tool_name"]
                     arguments = dict(request["arguments"])
@@ -358,6 +483,8 @@ class ActionExecutor:
                 raise DispatchDenied("assignment_action_uncertain") from None
             raise
         finally:
+            if invocation is not None and self.orch.ui_sessions.get(invocation) is private_session:
+                self.orch.ui_sessions.pop(invocation, None)
             # Gate denials never received a physical permit, so their reserved
             # capacity can be released. Plane refuses release of begun work.
             if not permit_issued:

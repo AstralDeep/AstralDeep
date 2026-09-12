@@ -15,6 +15,14 @@ from .models import AssignmentError
 _T = TypeVar("_T")
 
 
+def _operation_result(value):
+    if inspect.isawaitable(value):
+        if inspect.iscoroutine(value):
+            value.close()
+        raise AssignmentError("assignment_repository_contract_unavailable", 503)
+    return value
+
+
 class AssignmentStore:
     def __init__(self, orchestrator=None, *, plane_runtime=None, plane_repositories=None,
                  async_runtime=None):
@@ -70,6 +78,42 @@ class AssignmentStore:
         if method is None or method_name.startswith("_"):
             raise AssignmentError("assignment_repository_contract_unavailable", 503)
         return await self.transaction(lambda transaction, _: method(transaction, **kwargs))
+
+    async def call_for_operation(self, method_name: str, **kwargs):
+        """Use the qualified named v2 boundaries with bounded database waits.
+
+        Settlement deliberately accepts absent current authority: an authentic
+        issued permit must still charge after its session or claim is retired.
+        """
+        if method_name not in {
+            "assert_current_assignment_execution", "put_action_for_execution",
+            "reserve_action_for_execution", "start_action_for_execution", "record_action_outcome",
+        }:
+            raise AssignmentError("assignment_repository_contract_unavailable", 503)
+        method = getattr(self.repository, method_name, None)
+        if not callable(method):
+            raise AssignmentError("assignment_repository_contract_unavailable", 503)
+
+        def invoke(transaction, _):
+            return _operation_result(method(transaction, **kwargs))
+
+        return await self.transaction(invoke, bound_session_waits=True)
+
+    async def read_current_action(self, *, fence, binding, action_id, authority):
+        """Reread actual retained content between both guards in one transaction."""
+        guard = getattr(self.repository, "assert_current_assignment_execution", None)
+        if not callable(guard):
+            raise AssignmentError("assignment_repository_contract_unavailable", 503)
+
+        def read(transaction, repository):
+            values = dict(fence=fence, binding=binding, action_id=action_id, authority=authority)
+            _operation_result(guard(transaction, **values))
+            action = _operation_result(repository.get_action(transaction, owner_id=fence.owner_id,
+                assignment_id=fence.assignment_id, action_id=action_id))
+            current = _operation_result(guard(transaction, **values))
+            return current, action
+
+        return await self.transaction(read, bound_session_waits=True)
 
     async def current_execution_transaction(
         self, *, fence, binding, callback: Callable[[Any, Any, Any], _T], action_id=None,
