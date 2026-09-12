@@ -21,10 +21,12 @@ import logging
 import os
 import secrets
 import time
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+from uuid import UUID
 
 from astralplane.repositories import RepositoryConflictError, RepositoryNotFoundError
 from astralplane.repositories.history import (
@@ -151,9 +153,19 @@ def _valid_token(value: object) -> bool:
             and value.isascii() and all(32 < ord(ch) < 127 for ch in value))
 
 
+def _valid_incarnation(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = UUID(value)
+        return parsed.version == 4 and str(parsed) == value
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class WebSessionReference:
-    """Private request-local observation, not a durable session incarnation."""
+    """Private request-local observation of one durable issued incarnation."""
 
     state: SessionExecutionState = field(repr=False)
 
@@ -220,6 +232,7 @@ class WebSessionStore:
         self._sessions = session_context
         self._revocations = revocation_context
         self._cache: Dict[str, Dict[str, Any]] = {}
+        self._cache_lock = threading.RLock()
         # Resolution and attempt mutations are owner-scoped in Plane.  The
         # trusted drainer first obtains these fences from pending_revocations;
         # keeping them detached here prevents queue ids becoming authority.
@@ -265,6 +278,7 @@ class WebSessionStore:
     def _from_record(self, record: SessionRecord) -> Dict[str, Any]:
         return {
             "sid": record.session_id,
+            "incarnation_id": record.incarnation_id,
             "user_id": record.owner_id,
             "access_token": self._dec(record.access_token_ciphertext),
             "refresh_token": self._dec(record.refresh_token_ciphertext),
@@ -275,11 +289,31 @@ class WebSessionStore:
             "created_at": record.created_at,
         }
 
+    def _evict_cached(self, sid: str, *, incarnation_id=None, observed=None) -> None:
+        """Retire only the cached observation selected before a database wait."""
+        with self._cache_lock:
+            current = self._cache.get(sid)
+            if current is observed or (
+                incarnation_id is not None and current is not None
+                and current.get("incarnation_id") == incarnation_id
+            ):
+                self._cache.pop(sid, None)
+
+    def _remember_row(self, row: dict, observed=None) -> None:
+        """Cache a read result only while it cannot replace a newer issuance."""
+        with self._cache_lock:
+            current = self._cache.get(row["sid"])
+            if current is observed or (
+                current is not None and current.get("incarnation_id") == row["incarnation_id"]
+            ):
+                self._cache[row["sid"]] = row
+
     # ── session CRUD ─────────────────────────────────────────────────────
     def create(self, sid: str, *, user_id: str, access_token: str,
                refresh_token: str, hard_max_seconds: int,
                resumed: bool = False) -> Dict[str, Any]:
         """Persist a new interactive session. Only this call sets the anchor."""
+        observed = self._cache.get(sid)
         now = int(time.time())
         row = {
             "sid": sid,
@@ -303,31 +337,34 @@ class WebSessionStore:
             resumed=row["resumed"],
             created_at=row["created_at"],
         )
-        self._sessions.call(self._sessions.repository.put, record=record)
-        self._cache[sid] = row
+        stored = self._sessions.call(self._sessions.repository.put, record=record)
+        row = self._from_record(stored)
+        self._remember_row(row, observed)
         return row
 
     def get(self, sid: str) -> Optional[Dict[str, Any]]:
         """Return the live session (cap-checked); expired sessions are deleted."""
         # Other workers rotate this exact credential family. A process cache
         # cannot decide token validity or whether a logout has deleted a row.
+        observed = self._cache.get(sid)
         with self._sessions.transaction() as transaction:
             record = self._sessions.repository.get_by_session_id_for_administration(
                 transaction, session_id=sid)
             if record is None:
-                self._cache.pop(sid, None)
+                self._evict_cached(sid, observed=observed)
                 return None
             row = self._from_record(record)
             if not row["access_token"] and not row["refresh_token"]:
                 self._sessions.repository.delete(
-                    transaction, owner_id=record.owner_id, session_id=record.session_id)
-                self._cache.pop(sid, None)
+                    transaction, owner_id=record.owner_id, session_id=record.session_id,
+                    expected_incarnation_id=record.incarnation_id)
+                self._evict_cached(sid, incarnation_id=record.incarnation_id)
                 return None
-        self._cache[sid] = row
+        self._remember_row(row, observed)
         if int(time.time()) >= row["hard_expires_at"]:
             # 016 hard cap: only interactive login can start a new session.
             logger.info("session_store: session %s hit the 365-day cap — cleared", sid[:8])
-            self.delete(sid)
+            self.delete(sid, expected_incarnation_id=record.incarnation_id)
             self._record_death(sid, "hard_cap")
             return None
         return row
@@ -357,10 +394,10 @@ class WebSessionStore:
                     transaction,
                     owner_id=record.owner_id,
                     session_id=record.session_id,
+                    expected_incarnation_id=record.incarnation_id,
                 )
-                self._cache.pop(record.session_id, None)
+                self._evict_cached(record.session_id, incarnation_id=record.incarnation_id)
                 return None
-        self._cache[record.session_id] = row
         return row["refresh_token"] or None
 
     def _record_death(self, sid: str, reason: str) -> None:
@@ -368,18 +405,34 @@ class WebSessionStore:
             self._death_reasons.clear()
         self._death_reasons[sid] = reason
 
-    def session_reference(self, owner_id: str, refresh_token: str) -> dict:
-        """Resolve a consented token to its exact live canonical session."""
-        if not _valid_token(refresh_token) or self._fernet is None:
+    def session_reference(self, owner_id: str, *, session_id: str, incarnation_id: str) -> dict:
+        """Resolve an approving request's exact issued session, never its latest."""
+        if not _valid_incarnation(incarnation_id) or self._fernet is None:
             raise SessionRefreshUnavailable("live encrypted session required")
         with self._sessions.transaction() as transaction:
-            record = self._sessions.repository.get_latest_live_for_owner(
-                transaction, owner_id=owner_id, observed_at=int(time.time()))
+            record = self._sessions.repository.get_by_incarnation(
+                transaction, owner_id=owner_id, incarnation_id=incarnation_id)
         current = self._dec(record.refresh_token_ciphertext) if record is not None else ""
-        if not _valid_token(current) or not secrets.compare_digest(current, refresh_token):
-            raise SessionRefreshUnavailable("refresh token does not match the live session")
-        return {"session_id": record.session_id, "created_at": record.created_at,
+        if (record is None or record.session_id != session_id
+                or record.hard_expires_at <= int(time.time()) or not _valid_token(current)):
+            raise SessionRefreshUnavailable("selected session is unavailable")
+        return {"session_id": record.session_id, "incarnation_id": record.incarnation_id,
+                "created_at": record.created_at,
                 "interactive_anchor": record.interactive_anchor}
+
+    def is_current_incarnation(self, owner_id: str, *, session_id: str, incarnation_id: str) -> bool:
+        """Check offline tolerance against the original issuance, without tokens.
+
+        This unlocked read is not execution authority. Durable mutations still
+        require their independently validated and transaction-fenced observation.
+        """
+        if not _valid_incarnation(incarnation_id):
+            return False
+        with self._request_execution_transaction() as transaction:
+            record = self._sessions.repository.get_by_incarnation(
+                transaction, owner_id=owner_id, incarnation_id=incarnation_id)
+        return bool(record is not None and record.session_id == session_id
+                    and record.hard_expires_at > int(time.time()))
 
     @contextmanager
     def _request_execution_transaction(self):
@@ -400,12 +453,17 @@ class WebSessionStore:
         scope = (self._request_execution_transaction() if request_execution
                  else self._sessions.transaction())
         with scope as transaction:
-            record = self._sessions.repository.get(
-                transaction, owner_id=owner_id, session_id=sid)
+            if reference is None:
+                record = self._sessions.repository.get(
+                    transaction, owner_id=owner_id, session_id=sid)
+            else:
+                record = self._sessions.repository.get_by_incarnation(
+                    transaction, owner_id=owner_id, incarnation_id=reference["incarnation_id"])
         if record is None or record.hard_expires_at <= int(time.time()):
             raise SessionRefreshUnavailable("session missing or expired")
         if reference is not None and (
-            record.created_at != reference["created_at"]
+            record.session_id != sid or record.incarnation_id != reference["incarnation_id"]
+            or record.created_at != reference["created_at"]
             or record.interactive_anchor != reference["interactive_anchor"]
         ):
             raise SessionRefreshUnavailable("session identity changed; re-consent required")
@@ -476,7 +534,7 @@ class WebSessionStore:
         if replacement.hard_expires_at <= int(time.time()):
             raise SessionRefreshUnavailable("session expired during refresh")
         row = self._from_record(replacement)
-        self._cache[claimed.session_id] = row
+        self._remember_row(row)
         return replacement
 
     def _settle_refresh(self, claimed, access, refresh, reference):
@@ -536,7 +594,8 @@ class WebSessionStore:
             self._sessions.repository.assert_current_execution(
                 transaction, observation=observation)
 
-    async def refresh_credential(self, sid, *, owner_id, exchange, reference=None):
+    async def refresh_credential(self, sid, *, owner_id, exchange, reference=None,
+                                 expected_incarnation_id=None):
         """Serialize consumers before HTTP and persist rotation before returning.
 
         Cancellation, a crash, or an ambiguous response keeps the authenticated
@@ -544,6 +603,24 @@ class WebSessionStore:
         """
         try:
             async with asyncio.timeout(REFRESH_WAIT_SECONDS):
+                if reference is not None:
+                    if (not isinstance(reference, dict)
+                            or set(reference) != {"session_id", "incarnation_id", "created_at", "interactive_anchor"}
+                            or reference["session_id"] != sid
+                            or not _valid_incarnation(reference["incarnation_id"])
+                            or any(type(reference[k]) is not int for k in ("created_at", "interactive_anchor"))):
+                        raise SessionRefreshUnavailable("issued session reference required")
+                    reference = dict(reference)
+                if expected_incarnation_id is not None and not _valid_incarnation(expected_incarnation_id):
+                    raise SessionRefreshUnavailable("issued session identity required")
+                initial = await asyncio.to_thread(self._refresh_record, sid, owner_id, reference)
+                if expected_incarnation_id is not None and initial.incarnation_id != expected_incarnation_id:
+                    raise SessionRefreshUnavailable("session identity changed")
+                # Freeze before the first claim/retry/HTTP await. A replacement
+                # with identical SID, time and ciphertext cannot be adopted.
+                reference = {"session_id": sid, "incarnation_id": initial.incarnation_id,
+                             "created_at": initial.created_at,
+                             "interactive_anchor": initial.interactive_anchor}
                 while True:
                     acquired = await asyncio.to_thread(
                         self._claim_refresh, sid, owner_id, reference)
@@ -564,16 +641,19 @@ class WebSessionStore:
         """Why get() last refused this sid ('hard_cap'), consumed on read."""
         return self._death_reasons.pop(sid, None)
 
-    def update_tokens(self, sid: str, *, access_token: str, refresh_token: str) -> None:
+    def update_tokens(self, sid: str, *, access_token: str, refresh_token: str,
+                      expected_incarnation_id: str | None = None) -> None:
         """Rotate tokens after a silent refresh. NEVER moves the anchor (016 FR-001)."""
+        observed = self._cache.get(sid)
         with self._sessions.transaction() as transaction:
             current = self._sessions.repository.get_by_session_id_for_administration(
                 transaction,
                 session_id=sid,
             )
             if current is None:
-                self._cache.pop(sid, None)
                 return
+            if expected_incarnation_id is not None and current.incarnation_id != expected_incarnation_id:
+                raise SessionRefreshUnavailable("session identity changed")
             if not self._dec(current.refresh_token_ciphertext):
                 raise SessionRefreshUnavailable("unsettled refresh cannot be overwritten")
             refreshed_at = max(int(time.time()), current.last_refresh_at + 1)
@@ -587,15 +667,19 @@ class WebSessionStore:
                 last_refresh_at=refreshed_at,
                 resumed=current.resumed,
                 created_at=current.created_at,
+                incarnation_id=current.incarnation_id,
             )
             stored = self._sessions.repository.compare_and_set_refresh(
                 transaction,
                 refreshed,
                 expected_last_refresh_at=current.last_refresh_at,
             )
-        self._cache[sid] = self._from_record(stored)
+        self._remember_row(self._from_record(stored), observed)
 
-    def mark_resumed(self, sid: str, resumed: bool = True) -> None:
+    def mark_resumed(self, sid: str, resumed: bool = True, *,
+                     expected_incarnation_id: str | None = None) -> None:
+        """Mark only the originally observed issuance as silently resumed."""
+        observed = self._cache.get(sid)
         target = bool(resumed)
         with self._sessions.transaction() as transaction:
             current = self._sessions.repository.get_by_session_id_for_administration(
@@ -603,7 +687,8 @@ class WebSessionStore:
                 session_id=sid,
             )
             if current is None:
-                self._cache.pop(sid, None)
+                return
+            if expected_incarnation_id is not None and current.incarnation_id != expected_incarnation_id:
                 return
             stored = (
                 current
@@ -614,31 +699,39 @@ class WebSessionStore:
                     session_id=current.session_id,
                     expected_resumed=current.resumed,
                     resumed=target,
+                    expected_incarnation_id=current.incarnation_id,
                 )
             )
-        self._cache[sid] = self._from_record(stored)
+        self._remember_row(self._from_record(stored), observed)
 
-    def delete(self, sid: str) -> Optional[Dict[str, Any]]:
+    def delete(self, sid: str, *, expected_incarnation_id: str | None = None) -> Optional[Dict[str, Any]]:
         """Delete and return the exact durable credential for revocation."""
-        self._cache.pop(sid, None)
+        observed = self._cache.get(sid)
         with self._sessions.transaction() as transaction:
             record = self._sessions.repository.get_by_session_id_for_administration(
                 transaction,
                 session_id=sid,
             )
             if record is None:
+                self._evict_cached(sid, observed=observed)
+                return None
+            if expected_incarnation_id is not None and record.incarnation_id != expected_incarnation_id:
+                self._evict_cached(sid, incarnation_id=expected_incarnation_id)
                 return None
             deleted = self._sessions.repository.delete_and_return(
                 transaction,
                 owner_id=record.owner_id,
                 session_id=record.session_id,
+                expected_incarnation_id=record.incarnation_id,
             )
+        self._evict_cached(sid, incarnation_id=record.incarnation_id)
         return None if deleted is None else self._from_record(deleted)
 
     def delete_for_user(self, user_id: str) -> int:
         """Delete every session of a user (user-switch revocation, 016 FR-008)."""
-        for sid in [s for s, r in self._cache.items() if r.get("user_id") == user_id]:
-            self._cache.pop(sid, None)
+        with self._cache_lock:
+            for sid in [s for s, r in self._cache.items() if r.get("user_id") == user_id]:
+                self._cache.pop(sid, None)
         return self._sessions.call(
             self._sessions.repository.delete_owner,
             owner_id=user_id,
@@ -647,8 +740,9 @@ class WebSessionStore:
     def purge_expired(self) -> int:
         """Opportunistic cleanup of hard-cap-expired rows."""
         now = int(time.time())
-        for sid in [s for s, r in self._cache.items() if now >= r.get("hard_expires_at", 0)]:
-            self._cache.pop(sid, None)
+        with self._cache_lock:
+            for sid in [s for s, r in self._cache.items() if now >= r.get("hard_expires_at", 0)]:
+                self._cache.pop(sid, None)
         return self._sessions.call(
             self._sessions.repository.delete_expired_for_administration,
             observed_at=now,
@@ -731,19 +825,24 @@ class WebSessionStore:
         """Async twin of :meth:`get`, run off the event loop."""
         return await asyncio.to_thread(self.get, sid)
 
-    async def aupdate_tokens(self, sid: str, *, access_token: str, refresh_token: str) -> None:
+    async def aupdate_tokens(self, sid: str, *, access_token: str, refresh_token: str,
+                            expected_incarnation_id: str | None = None) -> None:
         """Async twin of :meth:`update_tokens`, run off the event loop."""
         return await asyncio.to_thread(
-            self.update_tokens, sid, access_token=access_token, refresh_token=refresh_token
+            self.update_tokens, sid, access_token=access_token, refresh_token=refresh_token,
+            expected_incarnation_id=expected_incarnation_id,
         )
 
-    async def amark_resumed(self, sid: str, resumed: bool = True) -> None:
+    async def amark_resumed(self, sid: str, resumed: bool = True, *,
+                           expected_incarnation_id: str | None = None) -> None:
         """Async twin of :meth:`mark_resumed`, run off the event loop."""
-        return await asyncio.to_thread(self.mark_resumed, sid, resumed)
+        return await asyncio.to_thread(self.mark_resumed, sid, resumed,
+                                       expected_incarnation_id=expected_incarnation_id)
 
-    async def adelete(self, sid: str) -> Optional[Dict[str, Any]]:
+    async def adelete(self, sid: str, *, expected_incarnation_id: str | None = None) -> Optional[Dict[str, Any]]:
         """Async twin of :meth:`delete`, run off the event loop."""
-        return await asyncio.to_thread(self.delete, sid)
+        return await asyncio.to_thread(self.delete, sid,
+                                       expected_incarnation_id=expected_incarnation_id)
 
     async def adelete_for_user(self, user_id: str) -> int:
         """Async twin of :meth:`delete_for_user`, run off the event loop."""

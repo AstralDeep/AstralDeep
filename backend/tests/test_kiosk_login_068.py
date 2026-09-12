@@ -42,9 +42,9 @@ WEB_TOKEN = _jwt({"sub": "web-user", "azp": "astral-frontend"})
 
 def _refresh_store(access):
     """Client-selection unit seam; durable CAS is covered with real PostgreSQL."""
-    async def refresh(sid, *, owner_id, exchange):
+    async def refresh(sid, *, owner_id, exchange, expected_incarnation_id):
         payload = await exchange("r1", access)
-        return {"access_token": payload["access_token"],
+        return {"incarnation_id": expected_incarnation_id, "access_token": payload["access_token"],
                 "refresh_token": payload.get("refresh_token", "r1")}
     return SimpleNamespace(refresh_credential=refresh)
 
@@ -311,7 +311,7 @@ async def test_refresh_uses_the_issuing_client_and_withholds_the_web_secret(monk
     monkeypatch.setattr(wa.httpx, "AsyncClient", _Client)
     monkeypatch.setattr(wa, "_get_store", lambda: _refresh_store(KIOSK_TOKEN))
 
-    await wa._refresh_session("sid", {"access_token": KIOSK_TOKEN, "refresh_token": "r1"})
+    await wa._refresh_session("sid", {"access_token": KIOSK_TOKEN, "refresh_token": "r1", "incarnation_id": "11111111-1111-4111-8111-111111111111"})
 
     assert sent["client_id"] == "astral-kiosk"
     assert "client_secret" not in sent, "the confidential secret must not be sent for a public client"
@@ -350,7 +350,7 @@ async def test_refresh_still_sends_the_secret_for_the_web_client(monkeypatch):
     monkeypatch.setattr(wa.httpx, "AsyncClient", _Client)
     monkeypatch.setattr(wa, "_get_store", lambda: _refresh_store(WEB_TOKEN))
 
-    await wa._refresh_session("sid", {"access_token": WEB_TOKEN, "refresh_token": "r1"})
+    await wa._refresh_session("sid", {"access_token": WEB_TOKEN, "refresh_token": "r1", "incarnation_id": "11111111-1111-4111-8111-111111111111"})
 
     assert sent["client_id"] == "astral-frontend"
     assert sent["client_secret"] == "web-client-secret"

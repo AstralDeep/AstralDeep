@@ -210,7 +210,7 @@ def test_ciphertext_replacement_before_claim_does_not_adopt_generation(fixture, 
     original = get_session_record(runtime, sid)
     replacement = replace(original, access_token_ciphertext=store._enc("replacement-access"),
                           refresh_token_ciphertext=store._enc("replacement-refresh"))
-    replace_session_record(runtime, replacement)
+    replacement = replace_session_record(runtime, replacement)
     with pytest.raises(ss.SessionRefreshUnavailable):
         asyncio.run(store.refresh_for_execution(reference, exchange=web_auth._exchange_session_refresh))
     assert get_session_record(runtime, sid) == replacement and seen == []
@@ -226,7 +226,7 @@ def test_conflict_between_initial_read_and_claim_is_not_retried(fixture, runtime
         nonlocal replacement
         replacement = replace(get_session_record(runtime, sid),
                               refresh_token_ciphertext=store._enc("replacement"))
-        replace_session_record(runtime, replacement)
+        replacement = replace_session_record(runtime, replacement)
         return original(transaction, **kwargs)
 
     monkeypatch.setattr(repository, "assert_current_execution", replace_before_guard)
@@ -274,7 +274,7 @@ def test_remote_completion_cannot_resurrect_or_authorize_replaced_owner(fixture,
         else:
             replacement = replace(get_session_record(runtime, sid),
                                   refresh_token_ciphertext=store._enc("replacement-refresh"))
-            replace_session_record(runtime, replacement)
+            replacement = replace_session_record(runtime, replacement)
         return {"access_token": token(), "refresh_token": "old-family-result"}
 
     monkeypatch.setattr(web_auth, "_exchange_session_refresh", exchange)

@@ -67,6 +67,7 @@ def test_web_logout_ends_voice_once_after_local_session_fence(monkeypatch) -> No
 
     async def kill_session(sid, _session):
         events.append(("local_end", sid))
+        return True
 
     monkeypatch.setattr(web_auth, "_unsign", lambda _raw: "session-a")
     monkeypatch.setattr(web_auth, "_asession_by_sid", session_by_sid)
@@ -102,7 +103,8 @@ def test_web_auth_expiry_ends_identity_voice_session(monkeypatch) -> None:
             "access_token": "expired-access-token",
         }
 
-    async def refresh(_sid, _session):
+    async def refresh(_sid, _session, *, on_retired):
+        await on_retired()
         return None
 
     monkeypatch.setattr(web_auth, "_is_mock", lambda: False)

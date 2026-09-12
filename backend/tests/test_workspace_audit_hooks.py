@@ -339,9 +339,11 @@ def test_refresh_session_success_path_is_audit_silent(db, monkeypatch):
     sid = f"sid-{uuid.uuid4().hex[:8]}"
     store.create(sid, user_id=user_id, access_token="old-at", refresh_token="rt-old",
                  hard_max_seconds=3600)
+    sess["incarnation_id"] = store.get(sid)["incarnation_id"]
     try:
         out = asyncio.run(web_auth._refresh_session(sid, sess))
-        assert out is sess  # session survives, refreshed in place
+        assert out is not sess  # the original request observation stays immutable
+        assert out["incarnation_id"] == sess["incarnation_id"]
         assert out["access_token"] == "new-at"
         assert out["refresh_token"] == "new-rt"
         assert web_session_store(db).get(sid)["refresh_token"] == "new-rt"
@@ -381,6 +383,7 @@ def test_refresh_session_refusal_audits_token_refresh_failed_end_to_end(db, reco
     web_auth._SESSIONS[sid] = sess
     store.create(sid, user_id=user_id, access_token="old-at", refresh_token="rt-dead",
                  hard_max_seconds=3600)
+    sess["incarnation_id"] = store.get(sid)["incarnation_id"]
     try:
         out = asyncio.run(web_auth._refresh_session(sid, sess))
         assert out is None  # dead session: interactive login required
