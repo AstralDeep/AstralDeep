@@ -47,10 +47,10 @@ MODULE_NAMES = {
     "astral-primitives": "AstralPrimitives",
     "lets": "LETS",
 }
-EXPECTED_PLANE_COMMIT_088 = "8924bd4ba154a00184218c5b50c3de3bab9d13c4"
-EXPECTED_PLANE_SCHEMA_REVISION_079 = "079.001"
-EXPECTED_PLANE_MIGRATION_SHA256_079 = (
-    "2353261227ed72d030ab2426b1a7229c8a1302c669a241dc6b84e3e77e003cad"
+EXPECTED_PLANE_COMMIT_088 = "daedeed4690282da67cd0a1764668b8dc84c801f"
+EXPECTED_PLANE_SCHEMA_REVISION_088 = "088.001"
+EXPECTED_PLANE_MIGRATION_SHA256_088 = (
+    "b6eaa819e9bd471350e48e431686c1ed6922e206608f1b673e0544c14014552d"
 )
 EXPECTED_PROJECTION_COMMIT_088 = (
     "a30f9fc5ba9cc9e84e78f5da2332612e40dc3fd3"
@@ -374,10 +374,10 @@ def test_composition_pins_exact_plane_and_projection_088() -> None:
         EXPECTED_PLANE_COMMIT_088
     )
     assert manifest["compatibility"]["data_plane"]["schema_revision"] == (
-        EXPECTED_PLANE_SCHEMA_REVISION_079
+        EXPECTED_PLANE_SCHEMA_REVISION_088
     )
     assert manifest["compatibility"]["data_plane"]["migration_sha256"] == (
-        EXPECTED_PLANE_MIGRATION_SHA256_079
+        EXPECTED_PLANE_MIGRATION_SHA256_088
     )
     assert manifest["components"]["astral-projection"]["commit"] == (
         EXPECTED_PROJECTION_COMMIT_088

@@ -1,6 +1,7 @@
 """Bounded async access to the composition-owned assignment repository."""
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -55,6 +56,34 @@ class AssignmentStore:
         if method is None or method_name.startswith("_"):
             raise AssignmentError("assignment_repository_contract_unavailable", 503)
         return await self.transaction(lambda transaction, _: method(transaction, **kwargs))
+
+    async def current_execution_transaction(
+        self, *, fence, binding, callback: Callable[[Any, Any, Any], _T], action_id=None,
+    ) -> _T:
+        """Guard and mutate through one bounded, caller-owned Plane transaction.
+
+        Remote authorization must complete before this call. The callback is
+        synchronous repository work only; it may not open another pool or do I/O.
+        Older Plane pins cannot fall back to an inverted or incomplete guard.
+        """
+        guard = getattr(self.repository, "assert_current_assignment_execution", None)
+        if not callable(guard):
+            raise AssignmentError("assignment_repository_contract_unavailable", 503)
+
+        def guarded(transaction, repository):
+            current = guard(transaction, fence=fence, binding=binding, action_id=action_id)
+            if inspect.isawaitable(current):
+                if inspect.iscoroutine(current):
+                    current.close()
+                raise AssignmentError("assignment_repository_contract_unavailable", 503)
+            result = callback(transaction, repository, current)
+            if inspect.isawaitable(result):
+                if inspect.iscoroutine(result):
+                    result.close()
+                raise AssignmentError("assignment_transaction_callback_invalid", 500)
+            return result
+
+        return await self.transaction(guarded)
 
     def close(self):
         self.async_runtime.close()

@@ -50,6 +50,11 @@ class _Runtime:
         self.events = events
         self.depth = 0
         self.commit_response_error: BaseException | None = None
+        # This fixture has no durable assignments; explicitly provide today's
+        # retirement contract so a missing real repository can fail closed.
+        self.repositories = SimpleNamespace(assignments=SimpleNamespace(
+            retire_operations_for_owner=lambda _transaction, **_values: SimpleNamespace(
+                unresolved_action_ids=(), retained_assignment_ids=())))
 
     @contextmanager
     def transaction(self):

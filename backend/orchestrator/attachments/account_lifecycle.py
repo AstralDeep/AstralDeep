@@ -22,10 +22,11 @@ async def initiate_account_retirement(
     purge_coordinator: AttachmentPurgeCoordinator,
     user_id: str,
 ) -> AttachmentPurgeAcceptance:
-    """Fence assignments and accept cleanup when no effect needs reconciliation.
+    """Fence all work and accept cleanup only when no durable liability remains.
 
-    The coordinator commits stopped assignments before reporting a typed
-    reconciliation requirement; no account purge success is implied then.
+    The coordinator commits stopped persistent and one-shot assignments before
+    reporting retained tasks, reservations or actions that need reconciliation;
+    no account purge success is implied then.
     """
 
     return await purge_coordinator.aschedule_owner(owner_id=user_id)

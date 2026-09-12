@@ -14,10 +14,14 @@ identify this checkpoint's exact component source. Its containing Deep SHA and
 subsequent runtime receipts are recorded outside the candidate tree to avoid
 self-referential identities.
 
-Plane remains pinned at `8924bd4ba154a00184218c5b50c3de3bab9d13c4`, schema
-`079.001`. UI protocol SHA-256 remains
+The current composition pins Plane `daedeed4690282da67cd0a1764668b8dc84c801f`,
+schema `088.001`, migration digest
+`b6eaa819e9bd471350e48e431686c1ed6922e206608f1b673e0544c14014552d`.
+The still-running diagnostic backend uses the older `079.001` composition; this
+source pin does not imply that its database was migrated. UI protocol SHA-256 remains
 `160017483ed97b08b8dc0b33ec4d8a4de02fa41997506570c9bf8723d1f05801`.
-No new primitive, runtime dependency, authentication scheme or schema is included.
+No new primitive, runtime dependency or authentication scheme is included.
+The Plane revision owns the guarded schema upgrade described below.
 
 ## Implemented behavior
 
@@ -192,7 +196,7 @@ Wait/wake receipts, versioned controls, terminal recovery/reconciliation and
 conservative unknown-record retention passed 2,403 Linux/Python 3.11 PostgreSQL
 tests with nine Windows-only skips. Changed coverage is 169/173 versus the prior
 local increment and 654/684 versus main. The mixed-profile cleanup adapter
-requires explicit Deep adoption before pinning. T025 is in progress; T026–T030
+requires explicit Deep adoption before pinning. T025 is now qualified locally at `f0c2109feb73bafa4dce8dcfc8535395a83e10d2`: 2,467 Linux/PostgreSQL tests passed with nine Windows-only skips, 89.68% aggregate and 211/214 changed-line coverage versus d39053. Package/source equality and Python 3.11/3.14 imports passed. Deep must still supply keyed request/result attestations, source reconstruction and current authority. T026–T030
 and the dependent UI/guidance work remain substantive implementation tasks.
 
 Projection `d178a848ff999f7ccfa3eb72b4f920cd33ac45f0` repairs native Plotly
@@ -277,10 +281,46 @@ The source inventory still includes 35 capability, 99 route and 12 retained
 capability entries pending. Runtime, guidance, monitoring and framework
 stories remain. Offline T012 is locally implemented and verified. Plane PR8
 contains remote T021–T023 groundwork but is unpinned; qualified local T024 has
-not been pushed, and T025 transient-input reconstruction is in progress. A separate continuation worktree preserves the
+not been pushed, and T025 transient-input reconstruction is locally qualified but unpinned. A separate continuation worktree preserves the
 existing remote foundation; this native checkpoint does not install that work.
 
 Projection PR15, Deep PR195 and Plane PR8 remain draft. When fully qualified,
 the current native increment depends on Projection before Deep. A future Plane
 pin requires its own schema/runtime qualification before dependent Deep changes.
 The owner retains the merge decision. Primitives and LETS are unchanged.
+
+
+## Matched Plane and execution checkpoint
+
+Plane `daedeed4690282da67cd0a1764668b8dc84c801f` includes the T024/T025
+foundation and a shared assignment/admission transaction guard. It locks owner
+retirement, the selected grant, assignment and admission in the reviewed order,
+then samples current database time and validates authority. Deep's persistent
+action start and finish use that same bounded transaction. Exact approved-action
+identity is retained; fresh remote checks run before success publication. An
+authentic stale permit still settles accounting while result content remains
+unavailable. A revoked grant refuses a hold and leaves the existing recovery
+path responsible; no fabricated successful completion is recorded.
+
+Owner cleanup now retires both operation profiles and commits that retirement
+before returning a hold for retained assignments or unresolved actions. An older
+Plane without the mandatory facade fails closed. Deep's static composition
+verifier reads only the reviewed assignment/operation data-only literal modules,
+without executing candidate Python or accepting arbitrary imports.
+
+Qualification: Plane's final Linux/Python3.11 PostgreSQL suite passed2,503 with
+nine Windows-only skips, with39/39 changed guard lines covered. The Deep caller
+cohort passed426 without skips against the exact Plane bytes and event-loop
+guard;39/39 changed executable lines are covered. Owner cleanup passed680 in
+its original broader run with eight old-manifest setup errors; the matched
+composition rerun passed those eight and one adjacent case (nine total). The
+composition/install verifier cohort passed169, with15/15 changed verifier lines
+covered. Exact commands, source hashes, first failures and reruns are retained in
+`build/088/dual-fence-qualification`, `owner-retirement-qualification`, and
+`operation-schema-coverage`. These are local increment diagnostics, not the
+final candidate's full coverage or protected release decision.
+
+T025 is qualified. T026 still requires transient-input reconstruction and
+one-shot execution; T027–T030 submission, controls, joined events/results and
+streaming remain incomplete. This checkpoint does not enable those features,
+migrate the running app, publish product branches, submit stores or promote PRs.
