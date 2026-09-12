@@ -22,7 +22,8 @@ import os
 import secrets
 import time
 import threading
-from contextlib import contextmanager
+import unicodedata
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -148,6 +149,10 @@ class SessionRefreshUnavailable(SessionStoreError):
     """Refresh cannot safely continue; existing access may still be usable."""
 
 
+class SessionRevocationPageUnavailable(SessionStoreError):
+    """Reading a drainer page failed before any external revocation attempt."""
+
+
 def _valid_token(value: object) -> bool:
     return (isinstance(value, str) and 0 < len(value) <= _TOKEN_MAX_BYTES
             and value.isascii() and all(32 < ord(ch) < 127 for ch in value))
@@ -168,6 +173,44 @@ class WebSessionReference:
     """Private request-local observation of one durable issued incarnation."""
 
     state: SessionExecutionState = field(repr=False)
+
+
+def _binding_string(value, maximum):
+    return (isinstance(value, str) and 0 < len(value) <= maximum and value == value.strip()
+            and not any(unicodedata.category(char) in {"Cc", "Cs"} for char in value))
+
+
+@dataclass(frozen=True, slots=True)
+class SessionIssuingIdentity:
+    """Server-private immutable refresh destination, never a token-derived guess."""
+
+    owner_id: str = field(repr=False)
+    issuer: str = field(repr=False)
+    client_id: str = field(repr=False)
+
+    def __post_init__(self):
+        if (not _binding_string(self.owner_id, 256) or not _binding_string(self.issuer, 2048)
+                or not _binding_string(self.client_id, 256)):
+            raise SessionRefreshUnavailable("session issuing identity unavailable")
+
+
+def _issuing_identity(record):
+    issuer = getattr(record, "issuing_issuer", None)
+    client = getattr(record, "issuing_client_id", None)
+    if issuer is None and client is None:
+        return None
+    return SessionIssuingIdentity(record.owner_id, issuer, client)
+
+
+async def _exchange_claim(claimed, refresh, access, expected, exchange, bound_exchange):
+    identity = _issuing_identity(claimed)
+    if identity != expected:
+        raise SessionRefreshUnavailable("session issuing identity changed")
+    if identity is None:
+        return await exchange(refresh, access)
+    if not callable(bound_exchange):
+        raise SessionRefreshUnavailable("bound session refresh unavailable")
+    return await bound_exchange(refresh, identity)
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +280,9 @@ class WebSessionStore:
         # trusted drainer first obtains these fences from pending_revocations;
         # keeping them detached here prevents queue ids becoming authority.
         self._revocation_fences: Dict[int, tuple[str, int]] = {}
+        self._revocation_cursor = None
+        self._revocation_ceiling = None
+        self._revocation_drain_lock = asyncio.Lock()
         # sid -> why get() last returned None for it ('hard_cap'), so the
         # /auth/session contract can report reason:'hard_cap' (auth-session.md).
         self._death_reasons: Dict[str, str] = {}
@@ -276,6 +322,7 @@ class WebSessionStore:
             return ""
 
     def _from_record(self, record: SessionRecord) -> Dict[str, Any]:
+        identity = _issuing_identity(record)
         return {
             "sid": record.session_id,
             "incarnation_id": record.incarnation_id,
@@ -287,6 +334,8 @@ class WebSessionStore:
             "last_refresh_at": record.last_refresh_at,
             "resumed": record.resumed,
             "created_at": record.created_at,
+            "issuing_issuer": identity.issuer if identity is not None else None,
+            "issuing_client_id": identity.client_id if identity is not None else None,
         }
 
     def _evict_cached(self, sid: str, *, incarnation_id=None, observed=None) -> None:
@@ -311,8 +360,16 @@ class WebSessionStore:
     # ── session CRUD ─────────────────────────────────────────────────────
     def create(self, sid: str, *, user_id: str, access_token: str,
                refresh_token: str, hard_max_seconds: int,
-               resumed: bool = False) -> Dict[str, Any]:
+               resumed: bool = False, issuing_issuer: str | None = None,
+               issuing_client_id: str | None = None) -> Dict[str, Any]:
         """Persist a new interactive session. Only this call sets the anchor."""
+        identity = (None if issuing_issuer is None and issuing_client_id is None else
+                    SessionIssuingIdentity(user_id, issuing_issuer, issuing_client_id))
+        if identity is not None and not all(hasattr(SessionRecord, field) for field in
+                                            ("issuing_issuer", "issuing_client_id")):
+            raise SessionStoreError("session issuing storage unavailable")
+        binding = ({} if identity is None else
+                   {"issuing_issuer": identity.issuer, "issuing_client_id": identity.client_id})
         observed = self._cache.get(sid)
         now = int(time.time())
         row = {
@@ -336,8 +393,12 @@ class WebSessionStore:
             last_refresh_at=row["last_refresh_at"],
             resumed=row["resumed"],
             created_at=row["created_at"],
+            **binding,
         )
-        stored = self._sessions.call(self._sessions.repository.put, record=record)
+        with self._sessions.transaction() as transaction:
+            stored = self._sessions.repository.put(transaction, record=record)
+            if _issuing_identity(stored) != identity:
+                raise SessionStoreError("session issuing storage unavailable")
         row = self._from_record(stored)
         self._remember_row(row, observed)
         return row
@@ -469,11 +530,13 @@ class WebSessionStore:
             raise SessionRefreshUnavailable("session identity changed; re-consent required")
         return record
 
-    def _claim_refresh(self, sid, owner_id, reference, *, execution=None):
+    def _claim_refresh(self, sid, owner_id, reference, *, execution=None, expected_issuing=None):
         if self._fernet is None:
             raise SessionRefreshUnavailable("encrypted session required for refresh")
         record = self._refresh_record(sid, owner_id, reference,
                                       request_execution=execution is not None)
+        if _issuing_identity(record) != expected_issuing:
+            raise SessionRefreshUnavailable("session issuing identity changed")
         if execution is not None and SessionRepository.execution_fence(record) != execution.credential:
             raise SessionRefreshUnavailable("session changed before refresh")
         try:
@@ -569,7 +632,7 @@ class WebSessionStore:
                 raise SessionRefreshUnavailable("issued session changed during capture")
         return WebSessionReference(state)
 
-    async def refresh_for_execution(self, reference: WebSessionReference, *, exchange):
+    async def refresh_for_execution(self, reference: WebSessionReference, *, exchange, bound_exchange=None):
         """Force one exact-generation refresh, with no conflict/adoption retries.
 
         This candidate is not IAM authority. The host must verify its access token
@@ -582,6 +645,9 @@ class WebSessionStore:
         if not isinstance(state, SessionExecutionState):
             raise SessionRefreshUnavailable("typed session state required")
         credential = state.credential
+        identity = _issuing_identity(credential)
+        if identity is not None and not callable(bound_exchange):
+            raise SessionRefreshUnavailable("bound session refresh unavailable")
         execution = SessionExecutionObservation(
             credential=credential, started_at=state.observed_at,
             valid_until=min(state.observed_at + timedelta(seconds=15),
@@ -590,11 +656,11 @@ class WebSessionStore:
             async with asyncio.timeout(REFRESH_WAIT_SECONDS):
                 acquired = await asyncio.to_thread(
                     self._claim_refresh, credential.session_id, credential.owner_id, None,
-                    execution=execution)
+                    execution=execution, expected_issuing=identity)
                 if acquired is None:
                     raise SessionRefreshUnavailable("session refresh already changed or claimed")
                 claimed, refresh, access = acquired
-                payload = await exchange(refresh, access)
+                payload = await _exchange_claim(claimed, refresh, access, identity, exchange, bound_exchange)
                 if not _refresh_payload_valid(payload):
                     raise SessionRefreshUnavailable("malformed refresh response")
                 persisted = await asyncio.to_thread(
@@ -613,7 +679,7 @@ class WebSessionStore:
                 transaction, observation=observation)
 
     async def refresh_credential(self, sid, *, owner_id, exchange, reference=None,
-                                 expected_incarnation_id=None):
+                                 expected_incarnation_id=None, bound_exchange=None):
         """Serialize consumers before HTTP and persist rotation before returning.
 
         Cancellation, a crash, or an ambiguous response keeps the authenticated
@@ -634,6 +700,9 @@ class WebSessionStore:
                 initial = await asyncio.to_thread(self._refresh_record, sid, owner_id, reference)
                 if expected_incarnation_id is not None and initial.incarnation_id != expected_incarnation_id:
                     raise SessionRefreshUnavailable("session identity changed")
+                identity = _issuing_identity(initial)
+                if identity is not None and not callable(bound_exchange):
+                    raise SessionRefreshUnavailable("bound session refresh unavailable")
                 # Freeze before the first claim/retry/HTTP await. A replacement
                 # with identical SID, time and ciphertext cannot be adopted.
                 reference = {"session_id": sid, "incarnation_id": initial.incarnation_id,
@@ -641,12 +710,12 @@ class WebSessionStore:
                              "interactive_anchor": initial.interactive_anchor}
                 while True:
                     acquired = await asyncio.to_thread(
-                        self._claim_refresh, sid, owner_id, reference)
+                        self._claim_refresh, sid, owner_id, reference, expected_issuing=identity)
                     if acquired is not None:
                         break
                     await asyncio.sleep(.1)
                 claimed, refresh, access = acquired
-                payload = await exchange(refresh, access)
+                payload = await _exchange_claim(claimed, refresh, access, identity, exchange, bound_exchange)
                 if not _refresh_payload_valid(payload):
                     raise SessionRefreshUnavailable("malformed refresh response")
                 return await asyncio.to_thread(
@@ -675,17 +744,11 @@ class WebSessionStore:
             if not self._dec(current.refresh_token_ciphertext):
                 raise SessionRefreshUnavailable("unsettled refresh cannot be overwritten")
             refreshed_at = max(int(time.time()), current.last_refresh_at + 1)
-            refreshed = SessionRecord(
-                session_id=current.session_id,
-                owner_id=current.owner_id,
+            refreshed = replace(
+                current,
                 access_token_ciphertext=self._enc(access_token),
                 refresh_token_ciphertext=self._enc(refresh_token),
-                interactive_anchor=current.interactive_anchor,
-                hard_expires_at=current.hard_expires_at,
                 last_refresh_at=refreshed_at,
-                resumed=current.resumed,
-                created_at=current.created_at,
-                incarnation_id=current.incarnation_id,
             )
             stored = self._sessions.repository.compare_and_set_refresh(
                 transaction,
@@ -768,8 +831,18 @@ class WebSessionStore:
 
     # ── revocation queue (FR-013; client_id added by feature 044) ────────
     def enqueue_revocation(self, user_id: str, refresh_token: str,
-                           client_id: str | None = None) -> None:
+                           client_id: str | None = None, *, issuing_issuer: str | None = None) -> None:
         if not refresh_token:
+            return
+        identity = None if issuing_issuer is None else SessionIssuingIdentity(user_id, issuing_issuer, client_id)
+        if identity is not None:
+            with self._revocations.transaction() as transaction:
+                stored = self._revocations.repository.enqueue(
+                    transaction, owner_id=user_id, refresh_token_ciphertext=self._enc(refresh_token),
+                    enqueued_at=int(time.time()), client_id=identity.client_id, issuing_issuer=identity.issuer)
+                if (getattr(stored, "issuing_issuer", None) != identity.issuer
+                        or stored.client_id != identity.client_id or stored.owner_id != identity.owner_id):
+                    raise SessionStoreError("session issuing storage unavailable")
             return
         self._revocations.call(
             self._revocations.repository.enqueue,
@@ -784,6 +857,38 @@ class WebSessionStore:
             self._revocations.repository.pending_for_administration,
             limit=limit,
         )
+        rows, self._revocation_fences = self._pending_revocation_rows(records)
+        return rows
+
+    def _pending_revocation_page(self, cursor, ceiling):
+        page_query = getattr(self._revocations.repository, "page_for_administration", None)
+        if not callable(page_query):
+            raise SessionStoreError("revocation paging storage unavailable")
+        page = self._revocations.call(page_query, limit=20, after=cursor, ceiling=ceiling)
+        return page, self._pending_revocation_rows(page.records)
+
+    @asynccontextmanager
+    async def revocation_pass(self):
+        """One bounded page per pass, serialized only within this store.
+
+        No database transaction/lock survives the read into external HTTP. The
+        cursor and max-id ceiling are ephemeral, never shared between stores.
+        Legacy administrative peeks do not move the drainer's cycle position.
+        """
+        async with self._revocation_drain_lock:
+            try:
+                page, (rows, fences) = await asyncio.to_thread(
+                    self._pending_revocation_page, self._revocation_cursor, self._revocation_ceiling)
+            except Exception:
+                raise SessionRevocationPageUnavailable("revocation page unavailable") from None
+            # Cancellation of a thread await cannot stop its read; publish cursor
+            # state only here, never from a late/cancelled worker completion.
+            self._revocation_cursor = page.next_cursor
+            self._revocation_ceiling = page.ceiling if page.next_cursor is not None else None
+            self._revocation_fences = fences
+            yield rows
+
+    def _pending_revocation_rows(self, records):
         out = []
         fences: Dict[int, tuple[str, int]] = {}
         for record in records:
@@ -796,9 +901,9 @@ class WebSessionStore:
                 "enqueued_at": record.enqueued_at,
                 # NULL for pre-044 rows → retrier falls back to the web client id.
                 "client_id": record.client_id,
+                "issuing_issuer": getattr(record, "issuing_issuer", None),
             })
-        self._revocation_fences = fences
-        return out
+        return out, fences
 
     def resolve_revocation(self, queue_id: int) -> None:
         try:
@@ -831,12 +936,13 @@ class WebSessionStore:
     # ── async facade (event-loop-safe twins of the sync methods above) ────
     async def acreate(self, sid: str, *, user_id: str, access_token: str,
                       refresh_token: str, hard_max_seconds: int,
-                      resumed: bool = False) -> Dict[str, Any]:
+                      resumed: bool = False, issuing_issuer: str | None = None,
+                      issuing_client_id: str | None = None) -> Dict[str, Any]:
         """Async twin of :meth:`create`, run off the event loop."""
         return await asyncio.to_thread(
             self.create, sid, user_id=user_id, access_token=access_token,
             refresh_token=refresh_token, hard_max_seconds=hard_max_seconds,
-            resumed=resumed,
+            resumed=resumed, issuing_issuer=issuing_issuer, issuing_client_id=issuing_client_id,
         )
 
     async def aget(self, sid: str) -> Optional[Dict[str, Any]]:
@@ -871,9 +977,10 @@ class WebSessionStore:
         return await asyncio.to_thread(self.purge_expired)
 
     async def aenqueue_revocation(self, user_id: str, refresh_token: str,
-                                  client_id: str | None = None) -> None:
+                                  client_id: str | None = None, *, issuing_issuer: str | None = None) -> None:
         """Async twin of :meth:`enqueue_revocation`, run off the event loop."""
-        return await asyncio.to_thread(self.enqueue_revocation, user_id, refresh_token, client_id)
+        return await asyncio.to_thread(self.enqueue_revocation, user_id, refresh_token, client_id,
+                                       issuing_issuer=issuing_issuer)
 
     async def apending_revocations(self, limit: int = 20) -> list:
         """Async twin of :meth:`pending_revocations`, run off the event loop."""

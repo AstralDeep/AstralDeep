@@ -32,6 +32,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import secrets
 import time
@@ -297,6 +298,8 @@ def _session_from_row(row: dict, previous: dict | None = None) -> dict:
         "sid": row["sid"], "incarnation_id": row["incarnation_id"],
         "access_token": row["access_token"], "refresh_token": row["refresh_token"],
         "sub": row["user_id"], "created_at": row["interactive_anchor"],
+        "issuing_issuer": row.get("issuing_issuer"),
+        "issuing_client_id": row.get("issuing_client_id"),
         "resumed": previous.get("resumed", False) if _same_incarnation(previous, row) else True,
     }
 
@@ -383,9 +386,15 @@ async def _exchange_session_refresh(refresh_token: str, prior_access: str) -> di
     if not authority:
         raise SessionRefreshUnavailable("session refresh authority unavailable")
     effective = _session_client_id({"access_token": prior_access}) or web_client_id
+    return await _post_session_refresh(refresh_token, authority, effective,
+                                       client_secret if effective == web_client_id else "")
+
+
+async def _post_session_refresh(refresh_token, authority, client_id, client_secret):
+    from orchestrator.session_store import SessionRefreshUnavailable
     data = {"grant_type": "refresh_token", "refresh_token": refresh_token,
-            "client_id": effective}
-    if client_secret and effective == web_client_id:
+            "client_id": client_id}
+    if client_secret:
         data["client_secret"] = client_secret
     async with httpx.AsyncClient(timeout=10) as client:
         async with client.stream(
@@ -399,6 +408,53 @@ async def _exchange_session_refresh(refresh_token: str, prior_access: str) -> di
                 if len(body) > 65536:
                     raise SessionRefreshUnavailable("refresh response exceeds limit")
             return json.loads(body)
+
+
+def _bound_session_destination(issuer, client_id):
+    """Resolve an explicit stored destination without a token-derived fallback."""
+    from orchestrator.session_store import SessionRefreshUnavailable, _binding_string
+    from shared.auth_clients import allowed_azps
+    authority, web_client, secret = _keycloak_config()
+    if (_is_mock() or not _binding_string(issuer, 2048)
+            or not _binding_string(client_id, 256)
+            or issuer != authority or client_id not in allowed_azps()):
+        raise SessionRefreshUnavailable("bound session authority unavailable")
+    return authority, client_id, secret if client_id == web_client else ""
+
+
+async def _exchange_bound_session_refresh(refresh_token, identity):
+    """Verify the exact issuing identity before the rotated credential is stored."""
+    from orchestrator import auth
+    from orchestrator.session_store import (
+        SessionIssuingIdentity, SessionRefreshUnavailable, _valid_token,
+    )
+    if type(identity) is not SessionIssuingIdentity:
+        raise SessionRefreshUnavailable("bound session authority unavailable")
+    destination = _bound_session_destination(identity.issuer, identity.client_id)
+    # The store also caps the enclosing claim/exchange/settlement. This bound
+    # covers slow streaming and JWT/JWKS work when this transport is used alone.
+    async with asyncio.timeout(10):
+        try:
+            payload = await _post_session_refresh(refresh_token, *destination)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {400, 401}:
+                raise
+            raise SessionRefreshUnavailable("bound session exchange unavailable") from None
+        try:
+            if (not isinstance(payload, dict) or not _valid_token(payload.get("access_token"))
+                    or ("refresh_token" in payload and not _valid_token(payload["refresh_token"]))):
+                raise ValueError
+            claims = await auth.verify_production_token(payload["access_token"])
+            await auth.verify_user(claims)
+            expiry = claims.get("exp")
+            if (claims.get("iss") != identity.issuer or claims.get("azp") != identity.client_id
+                    or claims.get("sub") != identity.owner_id or type(expiry) not in (int, float)
+                    or not math.isfinite(expiry) or expiry <= time.time()
+                    or _bound_session_destination(identity.issuer, identity.client_id) != destination):
+                raise ValueError
+        except Exception:
+            raise SessionRefreshUnavailable("bound session response unavailable") from None
+    return payload
 
 
 async def _refresh_session(sid: str, sess: Dict[str, Any], *, on_retired=None) -> Optional[Dict[str, Any]]:
@@ -419,6 +475,7 @@ async def _refresh_session(sid: str, sess: Dict[str, Any], *, on_retired=None) -
     try:
         row = await store.refresh_credential(
             sid, owner_id=observed.get("sub", ""), exchange=_exchange_session_refresh,
+            bound_exchange=_exchange_bound_session_refresh,
             expected_incarnation_id=observed["incarnation_id"])
     except httpx.HTTPStatusError:
         # Keycloak refused the refresh token (revoked/expired) — dead session.
@@ -445,6 +502,8 @@ async def _refresh_session(sid: str, sess: Dict[str, Any], *, on_retired=None) -
         return None
     observed["access_token"] = row["access_token"]
     observed["refresh_token"] = row["refresh_token"]
+    observed["issuing_issuer"] = row.get("issuing_issuer")
+    observed["issuing_client_id"] = row.get("issuing_client_id")
     return observed
 
 
@@ -470,6 +529,8 @@ async def _kill_session(sid: str, sess: Dict[str, Any], *, audit_action: Optiona
             sess["refresh_token"] = "" if deleted is None else deleted["refresh_token"]
             if deleted is not None:
                 sess["access_token"] = deleted["access_token"]
+                sess["issuing_issuer"] = deleted.get("issuing_issuer")
+                sess["issuing_client_id"] = deleted.get("issuing_client_id")
                 retired = True
         except Exception:
             logger.debug("web_auth: store delete failed", exc_info=True)
@@ -755,7 +816,7 @@ async def auth_callback(request: Request):
                             description="Prior session revoked by user switch on shared browser",
                             outcome="success")
         if retired:
-            await _revoke_or_queue(prior.get("sub", ""), prior.get("refresh_token", ""))
+            await _revoke_session_or_queue(prior, legacy_default_client=True)
             await _end_voice_session(request, prior.get("sub", ""), "logout")
 
     # FR-005: entry requires a Keycloak-issued 'user' or 'admin' role. An
@@ -839,8 +900,7 @@ async def auth_logout(request: Request):
     if sess and not _is_mock():
         # Revoke as the issuing client — a session minted by a public
         # first-party client cannot be revoked as the confidential web client.
-        await _revoke_or_queue(user_id, sess.get("refresh_token", ""),
-                               client_id=_session_client_id(sess) or None)
+        revocation = await _revoke_session_or_queue(sess)
         try:
             from orchestrator.offline_grant import get_offline_grant_store
             revoked = await asyncio.to_thread(
@@ -852,7 +912,9 @@ async def auth_logout(request: Request):
         except Exception:
             logger.warning("web_auth: offline-grant revocation failed at sign-out", exc_info=True)
         await _destroy_machine_credentials(user_id, "sign-out")
-        await _audit("logout", user_id, "User signed out; session and refresh credential revoked")
+        remote = {"revoked": "confirmed", "queued": "queued"}.get(revocation, "unconfirmed")
+        await _audit("logout", user_id, "User signed out; local session retired; "
+                     f"remote refresh credential revocation {remote}")
     resp = RedirectResponse("/", status_code=303)
     resp.delete_cookie(COOKIE_NAME)
     if not _is_mock():
@@ -909,7 +971,8 @@ def _error_page(nxt: str, reason: str, status: int = 200) -> HTMLResponse:
 # Revocation (D5) — best-effort with offline-tolerant queue
 # ---------------------------------------------------------------------------
 
-async def _revoke_refresh_token(refresh_token: str, client_id: str | None = None) -> bool:
+async def _revoke_refresh_token(refresh_token: str, client_id: str | None = None,
+                                *, issuing_issuer: str | None = None) -> bool:
     """POST the refresh token to Keycloak's RFC 7009 revocation endpoint.
 
     ``client_id`` overrides the configured web client for tokens minted to a
@@ -917,44 +980,80 @@ async def _revoke_refresh_token(refresh_token: str, client_id: str | None = None
     revokes a token for its issuing client, and the native clients
     (astral-desktop / astral-mobile) are PUBLIC clients — no secret is sent
     for them."""
+    if issuing_issuer is not None:
+        from orchestrator.session_store import _valid_token
+        if not _valid_token(refresh_token):
+            return False
     if not refresh_token:
         return True
     authority, web_client_id, client_secret = _keycloak_config()
     if not authority:
         return False
     effective = (client_id or "").strip() or web_client_id
+    if issuing_issuer is not None:
+        try:
+            authority, effective, client_secret = _bound_session_destination(issuing_issuer, client_id)
+        except Exception:
+            return False
     data = {"token": refresh_token, "token_type_hint": "refresh_token", "client_id": effective}
     if client_secret and effective == web_client_id:
         data["client_secret"] = client_secret
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(f"{authority}/protocol/openid-connect/revoke", data=data)
+        async with asyncio.timeout(10 if issuing_issuer is not None else None):
+            async with httpx.AsyncClient(timeout=10) as client:
+                if issuing_issuer is not None:
+                    async with client.stream("POST", f"{authority}/protocol/openid-connect/revoke",
+                                             data=data, follow_redirects=False) as resp:
+                        # Revocation needs only the status. Never retain a remote
+                        # response body or treat a redirect as acknowledged.
+                        return 200 <= resp.status_code < 300
+                resp = await client.post(f"{authority}/protocol/openid-connect/revoke", data=data)
         return resp.status_code < 400
     except Exception:
         return False
 
 
 async def _revoke_or_queue(user_id: str, refresh_token: str,
-                           client_id: str | None = None) -> str:
+                           client_id: str | None = None, *, issuing_issuer: str | None = None) -> str:
     """Revoke now or queue for the background retrier.
 
-    Returns the outcome — ``"revoked" | "queued" | "failed" | "noop"`` — for
-    the 044 native-logout endpoint to report; the web logout path ignores it
-    (behavior unchanged)."""
+    Returns the closed outcome ``"revoked" | "queued" | "failed" | "noop"``.
+    Local retirement does not imply remote confirmation. Unreadable or
+    in-flight bound credentials cannot be recovered or queued here."""
+    if issuing_issuer is not None:
+        from orchestrator.session_store import _valid_token
+        if not _valid_token(refresh_token):
+            return "failed"
     if not refresh_token:
         return "noop"
-    if await _revoke_refresh_token(refresh_token, client_id=client_id):
+    binding = {} if issuing_issuer is None else {"issuing_issuer": issuing_issuer}
+    if await _revoke_refresh_token(refresh_token, client_id=client_id, **binding):
         return "revoked"
     store = _get_store()
     if store is not None:
         try:
-            await store.aenqueue_revocation(user_id, refresh_token, client_id=client_id)
+            await store.aenqueue_revocation(user_id, refresh_token, client_id=client_id, **binding)
             logger.info("web_auth: IdP unreachable — refresh-token revocation queued for %s", user_id)
             return "queued"
         except Exception:
             logger.warning("web_auth: revocation enqueue failed", exc_info=True)
     logger.warning("web_auth: could not revoke or queue refresh token for %s", user_id)
     return "failed"
+
+
+async def _revoke_session_or_queue(sess, *, legacy_default_client=False):
+    """Revoke only the issuing identity returned by exact-incarnation retirement."""
+    issuer, client = sess.get("issuing_issuer"), sess.get("issuing_client_id")
+    if issuer is None and client is None:
+        return await _revoke_or_queue(sess.get("sub", ""), sess.get("refresh_token", ""),
+            client_id=None if legacy_default_client else _session_client_id(sess) or None)
+    from orchestrator.session_store import SessionIssuingIdentity, SessionStoreError
+    try:
+        identity = SessionIssuingIdentity(sess.get("sub", ""), issuer, client)
+    except SessionStoreError:
+        return "failed"
+    return await _revoke_or_queue(identity.owner_id, sess.get("refresh_token", ""),
+                                  client_id=identity.client_id, issuing_issuer=identity.issuer)
 
 
 async def _destroy_machine_credentials(user_id: str, context: str) -> None:
@@ -986,21 +1085,32 @@ _MAX_REVOCATION_ATTEMPTS = 30
 async def process_revocation_queue_once() -> int:
     """Drain pending offline revocations (called by the orchestrator's
     background worker). Returns how many were resolved this pass."""
+    from orchestrator.session_store import SessionRevocationPageUnavailable
     store = _get_store()
     if store is None:
         return 0
-    resolved = 0
     try:
-        pending = await store.apending_revocations()
-    except Exception:
+        async with store.revocation_pass() as pending:
+            return await _process_revocation_page(store, pending)
+    except SessionRevocationPageUnavailable:
         logger.debug("web_auth: revocation queue read failed", exc_info=True)
         return 0
+
+
+async def _process_revocation_page(store, pending):
+    resolved = 0
     for item in pending:
+        issuer = item.get("issuing_issuer")
+        binding = {} if issuer is None else {"issuing_issuer": issuer}
         if await _revoke_refresh_token(item["refresh_token"],
-                                       client_id=item.get("client_id")):
+                                       client_id=item.get("client_id"), **binding):
             await store.aresolve_revocation(item["id"])
             resolved += 1
         elif item["attempts"] >= _MAX_REVOCATION_ATTEMPTS:
+            if issuer is not None:
+                # Missing realm/client, unreadable ciphertext or a failed HTTP
+                # attempt is not confirmation. Paging keeps later rows eligible.
+                continue
             logger.warning("web_auth: dropping revocation for %s after %d attempts "
                            "(token will die at its natural expiry)", item["user_id"], item["attempts"])
             await store.aresolve_revocation(item["id"])
@@ -1238,8 +1348,7 @@ async def kiosk_poll(request: Request):
                             description="Prior session revoked by user switch at the kiosk",
                             outcome="success")
         if retired:
-            await _revoke_or_queue(prior.get("sub", ""), prior.get("refresh_token", ""),
-                                   client_id=_session_client_id(prior) or None)
+            await _revoke_session_or_queue(prior)
             await _end_voice_session(request, prior.get("sub", ""), "logout")
 
     await _audit("login_interactive", sub,

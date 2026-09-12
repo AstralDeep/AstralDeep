@@ -416,10 +416,24 @@ class OfflineGrantStore:
                     except (ValueError, UnicodeError):
                         raise OfflineGrantError("refresh exchange response is malformed") from None
 
+        async def bound_exchange(refresh_token, identity):
+            from orchestrator.web_auth import _exchange_bound_session_refresh
+            current = await asyncio.to_thread(self._grant, user_id, grant_id)
+            if current is None or not current.active or current.expires_at <= _now_ms():
+                raise OfflineGrantError("offline grant revoked or expired")
+            try:
+                payload = await _exchange_bound_session_refresh(refresh_token, identity)
+            except Exception:
+                raise OfflineGrantError("session refresh unavailable; fresh sign-in may be required") from None
+            current = await asyncio.to_thread(self._grant, user_id, grant_id)
+            if current is None or not current.active or current.expires_at <= _now_ms():
+                raise OfflineGrantError("offline grant revoked or expired during refresh")
+            return payload
+
         try:
             row = await self._sessions().refresh_credential(
                 reference["session_id"], owner_id=user_id, exchange=exchange,
-                reference=reference)
+                reference=reference, bound_exchange=bound_exchange)
         except (SessionStoreError, aiohttp.ClientError, TimeoutError):
             raise OfflineGrantError("session refresh unavailable; fresh sign-in may be required") from None
         current = await asyncio.to_thread(self._grant, user_id, grant_id)

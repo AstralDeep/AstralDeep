@@ -42,7 +42,7 @@ WEB_TOKEN = _jwt({"sub": "web-user", "azp": "astral-frontend"})
 
 def _refresh_store(access):
     """Client-selection unit seam; durable CAS is covered with real PostgreSQL."""
-    async def refresh(sid, *, owner_id, exchange, expected_incarnation_id):
+    async def refresh(sid, *, owner_id, exchange, expected_incarnation_id, bound_exchange=None):
         payload = await exchange("r1", access)
         return {"incarnation_id": expected_incarnation_id, "access_token": payload["access_token"],
                 "refresh_token": payload.get("refresh_token", "r1")}
