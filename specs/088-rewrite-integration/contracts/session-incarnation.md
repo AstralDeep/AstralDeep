@@ -1,8 +1,10 @@
 # Issued session identity for durable work
 
-Status: reviewed clarification of runtime sections 2–4 and FR-010/FR-026;
-implementation and qualification remain pending. No new route, runner or release
-has been activated. This proposal extends the qualified request-refresh
+Status: reviewed clarification of runtime sections 2–4 and FR-010/FR-026.
+Storage, operation guards, authentication retention and atomic consent have passed
+their scoped local qualification. Host continuation, complete restore tooling,
+protected staging and release qualification remain pending. No new route, runner
+or release has been activated. This contract extends the request-refresh
 prerequisite; observing today's row is insufficient to identify yesterday's
 issued session when SID, timestamps and encrypted credentials can be repeated.
 
@@ -35,6 +37,10 @@ Every session refresh CAS includes the immutable incarnation even when its
 optional exact encrypted-state fence is absent. Existing generation, timestamp,
 owner and ciphertext checks remain additional conditions. A held remote refresh
 cannot write into a replacement session with reused timestamps and credentials.
+The original creation time, interactive anchor and hard expiry are immutable
+even when the optional encrypted-state fence is absent. Uncertain refresh may
+retain a still-valid old access token only after a bounded exact-incarnation read
+confirms the original issuance remains live; it cannot adopt replacement tokens.
 
 Read-then-mutate paths for resume markers, expired/decrypt-failed cleanup and
 logout deletion bind the original observed incarnation. The original value travels
@@ -109,6 +115,28 @@ incarnation again. A bearer-only or other caller without an already qualified
 selected-session reference receives the existing bounded authorization/re-consent
 disposition; it cannot borrow another session belonging to the owner. Existing
 accepted receipt replay precedes new grant capture and preserves its old binding.
+A revision whose initial counters mismatch may only replay that exact accepted
+receipt or return conflict. Future counters becoming current during an await must
+never turn a request without new consent into a successful mutation.
+
+Consent uses a distinct server-private `SessionConsentObservation`, never an
+execution observation. It retains the original database-clock start, exact v2
+credential fence and at most 15 seconds, also capped by the approving principal's
+expiry and the session hard expiry. Ordinary cookie/Bearer IAM and CSRF checks
+still run first. Preparation writes no grant and does not renew the observation.
+The encrypted prepared reference is checked against its original selection and
+the same application Plane runtime before use.
+
+Grant insertion and its dependent schedule or assignment mutation share one
+transaction with owner-before-session locking and SQL request bounds. Recheck
+the original consent after dependent row/receipt/approval waits before commit.
+Keep the original socket registration across awaits and recheck it around a
+schedule transaction. A changed registration cannot create work for the new
+connection. A failed or stale assignment mutation rolls back the candidate grant;
+an accepted receipt returns its original grant without creating another one.
+Never revoke a candidate grant as compensation for an unknown commit outcome:
+the accepted operation may already depend on it. Audit successful durable consent
+only after its dependent transaction returns a committed result.
 
 Legacy raw-token and version 1 references cannot prove original issuance. Refuse
 execution with the existing bounded re-consent disposition; do not convert them

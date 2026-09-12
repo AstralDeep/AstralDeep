@@ -1,4 +1,5 @@
 """Immutable attended approval; no caller arguments or replayed execution."""
+from tests.helpers.session_consent_088 import synthetic_consent
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -17,7 +18,7 @@ service = shared_service
 
 
 async def proposal(service, state="proposed"):
-    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
+    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     action = SimpleNamespace(action_id=str(uuid4()), state=state, intent=SimpleNamespace(
         request_digest="a" * 64, permission_digest="b" * 64, precondition_digest="c" * 64,
         request={"kind": "tool", "agent_id": "web-research-1", "tool_name": "fetch_page",

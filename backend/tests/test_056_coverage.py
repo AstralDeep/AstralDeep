@@ -212,6 +212,7 @@ def test_latest_refresh_token_for_reads_live_session(monkeypatch):
     monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
     record = SimpleNamespace(
         session_id="sid-1",
+        incarnation_id="00000000-0000-4000-8000-000000000001",
         owner_id="u1",
         access_token_ciphertext="at-abc",
         refresh_token_ciphertext="rt-abc",

@@ -24,6 +24,8 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from orchestrator import scheduling_chat  # noqa: E402
+from orchestrator.offline_grant import PreparedConsentGrant  # noqa: E402
+from tests.helpers.session_consent_088 import synthetic_consent  # noqa: E402
 
 
 @pytest.fixture
@@ -38,7 +40,14 @@ def orch():
     o.tool_permissions.get_enabled_scope_names = MagicMock(
         return_value=["tools:read", "tools:search"])
     o.send_ui_render = AsyncMock()
+    o.ui_sessions = {}
     return o
+
+
+def _socket(orch):
+    ws = MagicMock()
+    orch.ui_sessions[ws] = {"sub": "u1", "exp": time.time()+300}
+    return ws
 
 
 @pytest.fixture
@@ -47,22 +56,30 @@ def captured(monkeypatch, orch):
     seen = {}
 
     grants = MagicMock()
-    grants.capture = MagicMock(side_effect=lambda u, t, a: seen.update(
-        user=u, token=t, agent=a) or "grant-new-1")
+    selected = synthetic_consent("u1")
+    prepared = PreparedConsentGrant("u1", selected, "grant-new-1", b"fixture", None, object())
+    grants.prepare_capture = MagicMock(side_effect=lambda u, t, a: seen.update(
+        user=u, token=t, agent=a) or prepared)
     orch.offline_grants = grants
 
     sessions = MagicMock()
-    sessions.latest_refresh_token_for = MagicMock(return_value="refresh-abc")
+    sessions.latest_refresh_token_for = MagicMock(side_effect=AssertionError("owner-latest selection forbidden"))
     orch.web_sessions = sessions
+    selector = AsyncMock(return_value=selected)
+    monkeypatch.setattr("orchestrator.session_consent.select_consent_session", selector)
 
     store = MagicMock()
     store.create_job = MagicMock(side_effect=lambda *a, **k: seen.update(
-        job_kwargs=k) or {"id": "job-1"})
+        job_kwargs=k) or {"id": "job-1", "offline_grant_id":
+            k["prepared_consent"].grant_id if k.get("prepared_consent") else None})
     orch.scheduled_job_store = store
 
     monkeypatch.setattr(scheduling_chat, "_audit", AsyncMock())
     seen["grants"] = grants
     seen["sessions"] = sessions
+    seen["selected"] = selected
+    seen["prepared"] = prepared
+    seen["selector"] = selector
     return seen
 
 
@@ -88,15 +105,15 @@ def _validate(monkeypatch):
 async def test_approval_captures_consent_and_links_grant(orch, captured):
     pid = _proposal(orch)
     await scheduling_chat.handle_decision(
-        orch, MagicMock(), "u1",
+        orch, _socket(orch), "u1",
         {"proposal_id": pid, "decision": "approve"})
 
     # The session's refresh token was captured into an encrypted grant...
     assert captured["user"] == "u1"
-    assert captured["token"] == "refresh-abc"
+    assert captured["token"] is captured["selected"]
     assert captured["agent"] == "web-research-1"
     # ...and linked onto the job (previously hardcoded None).
-    assert captured["job_kwargs"]["offline_grant_id"] == "grant-new-1"
+    assert captured["job_kwargs"]["prepared_consent"].grant_id == "grant-new-1"
     # The consented scopes are the user's CURRENT enabled scopes, never wider.
     assert captured["job_kwargs"]["consented_scopes"] == ["tools:read", "tools:search"]
 
@@ -105,9 +122,9 @@ async def test_approval_captures_consent_and_links_grant(orch, captured):
 async def test_decline_captures_nothing(orch, captured):
     pid = _proposal(orch)
     await scheduling_chat.handle_decision(
-        orch, MagicMock(), "u1",
+        orch, _socket(orch), "u1",
         {"proposal_id": pid, "decision": "discard"})
-    captured["grants"].capture.assert_not_called()
+    captured["grants"].prepare_capture.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -121,16 +138,16 @@ async def test_agentless_job_captures_union_consent(orch, captured, monkeypatch)
                         lambda o, uid: ["tools:read", "tools:search", "tools:files"])
     audit = AsyncMock()
     monkeypatch.setattr(scheduling_chat, "_audit", audit)
-    ws = MagicMock()
+    ws = _socket(orch)
     pid = _proposal(orch, agent_id="")
     await scheduling_chat.handle_decision(
         orch, ws, "u1", {"proposal_id": pid, "decision": "approve"})
 
-    captured["grants"].capture.assert_called_once()
+    captured["grants"].prepare_capture.assert_called_once()
     assert captured["user"] == "u1"
-    assert captured["token"] == "refresh-abc"
+    assert captured["token"] is captured["selected"]
     assert captured["agent"] is None                     # user-wide grant
-    assert captured["job_kwargs"]["offline_grant_id"] == "grant-new-1"
+    assert captured["job_kwargs"]["prepared_consent"].grant_id == "grant-new-1"
     assert captured["job_kwargs"]["agent_id"] == ""      # attribution untouched
     assert captured["job_kwargs"]["consented_scopes"] == [
         "tools:read", "tools:search", "tools:files"]
@@ -172,7 +189,7 @@ async def test_agentless_consent_never_includes_unattended_mutating_scopes(
     monkeypatch.setattr(scheduling_chat, "_audit", audit)
     pid = _proposal(orch, agent_id="")
     await scheduling_chat.handle_decision(
-        orch, MagicMock(), "u1", {"proposal_id": pid, "decision": "approve"})
+        orch, _socket(orch), "u1", {"proposal_id": pid, "decision": "approve"})
 
     assert captured["job_kwargs"]["consented_scopes"] == ["tools:read", "tools:search"]
     by_type = {c.args[1]: c for c in audit.await_args_list}
@@ -194,8 +211,8 @@ async def test_agent_bound_scope_derivation_error_still_propagates(orch, capture
     pid = _proposal(orch, agent_id="web-research-1")
     with pytest.raises(RuntimeError):
         await scheduling_chat.handle_decision(
-            orch, MagicMock(), "u1", {"proposal_id": pid, "decision": "approve"})
-    captured["grants"].capture.assert_not_called()
+            orch, _socket(orch), "u1", {"proposal_id": pid, "decision": "approve"})
+    captured["grants"].prepare_capture.assert_not_called()
     assert "job_kwargs" not in captured
 
 
@@ -210,17 +227,17 @@ async def test_agentless_job_union_failure_fails_closed(orch, captured, monkeypa
     monkeypatch.setattr(tool_visibility, "enabled_scope_union", boom)
     pid = _proposal(orch, agent_id="")
     await scheduling_chat.handle_decision(
-        orch, MagicMock(), "u1", {"proposal_id": pid, "decision": "approve"})
+        orch, _socket(orch), "u1", {"proposal_id": pid, "decision": "approve"})
     assert captured["job_kwargs"]["consented_scopes"] == []
 
 
 @pytest.mark.asyncio
 async def test_agentless_no_session_alert_says_cannot_run_signed_out(orch, captured):
-    captured["sessions"].latest_refresh_token_for = MagicMock(return_value=None)
+    captured["selector"].return_value = None
     pid = _proposal(orch, agent_id="")
     await scheduling_chat.handle_decision(
-        orch, MagicMock(), "u1", {"proposal_id": pid, "decision": "approve"})
-    captured["grants"].capture.assert_not_called()
+        orch, _socket(orch), "u1", {"proposal_id": pid, "decision": "approve"})
+    captured["grants"].prepare_capture.assert_not_called()
     assert captured["job_kwargs"]["offline_grant_id"] is None
     text = str(orch.send_ui_render.await_args.args[1])
     assert "cannot run while you are signed out" in text
@@ -306,24 +323,111 @@ def test_union_fails_closed_on_error():
 async def test_no_live_session_creates_job_without_authority(orch, captured):
     """Fail-closed on the AUTHORITY, fail-open on the job: with no refresh
     token, the job exists but has no unattended grant (its first run skips)."""
-    captured["sessions"].latest_refresh_token_for = MagicMock(return_value=None)
+    captured["selector"].return_value = None
     pid = _proposal(orch)
     await scheduling_chat.handle_decision(
-        orch, MagicMock(), "u1",
+        orch, _socket(orch), "u1",
         {"proposal_id": pid, "decision": "approve"})
-    captured["grants"].capture.assert_not_called()
+    captured["grants"].prepare_capture.assert_not_called()
     assert captured["job_kwargs"]["offline_grant_id"] is None
 
 
 @pytest.mark.asyncio
 async def test_capture_failure_is_not_fatal(orch, captured):
-    captured["grants"].capture = MagicMock(
+    captured["grants"].prepare_capture = MagicMock(
         side_effect=RuntimeError("OFFLINE_GRANT_ENC_KEY not configured"))
     pid = _proposal(orch)
     await scheduling_chat.handle_decision(
-        orch, MagicMock(), "u1",
+        orch, _socket(orch), "u1",
         {"proposal_id": pid, "decision": "approve"})
     assert captured["job_kwargs"]["offline_grant_id"] is None  # no fake authority
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["selection", "scopes"])
+async def test_replaced_registration_cannot_supply_consent_or_receive_result(orch, captured, stage):
+    ws = _socket(orch)
+    pid = _proposal(orch)
+
+    def replace_registration():
+        orch.ui_sessions[ws] = {"sub": "other", "exp": time.time()+300}
+
+    if stage == "selection":
+        async def select(*args, **kwargs):
+            replace_registration()
+            return captured["selected"]
+        captured["selector"].side_effect = select
+    else:
+        def scopes(*args):
+            replace_registration()
+            return ["tools:read"]
+        orch.tool_permissions.get_enabled_scope_names.side_effect = scopes
+    await scheduling_chat.handle_decision(orch, ws, "u1", {"proposal_id":pid,"decision":"approve"})
+    captured["grants"].prepare_capture.assert_not_called()
+    orch.scheduled_job_store.create_job.assert_not_called()
+    orch.send_ui_render.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_foreign_selected_session_never_reaches_grant_store(orch, captured):
+    assert await scheduling_chat._capture_consent(
+        orch, "u1", None, [], selected_session=synthetic_consent("other")) is None
+    captured["grants"].prepare_capture.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_registration_replaced_during_consent_preparation_creates_nothing(orch, captured):
+    ws = _socket(orch)
+    pid = _proposal(orch)
+
+    def prepare(*args):
+        orch.ui_sessions[ws] = {"sub": "other", "exp": time.time()+300}
+        return captured["prepared"]
+
+    captured["grants"].prepare_capture.side_effect = prepare
+    await scheduling_chat.handle_decision(orch, ws, "u1", {"proposal_id":pid,"decision":"approve"})
+    orch.scheduled_job_store.create_job.assert_not_called()
+    orch.send_ui_render.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_expired_registration_without_selected_session_creates_nothing(orch, captured):
+    ws = _socket(orch)
+    pid = _proposal(orch)
+    captured["selector"].return_value = None
+    orch.ui_sessions[ws]["exp"] = time.time()-1
+    await scheduling_chat.handle_decision(orch, ws, "u1", {"proposal_id":pid,"decision":"approve"})
+    orch.scheduled_job_store.create_job.assert_not_called()
+    captured["grants"].prepare_capture.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_late_consent_refusal_does_not_retry_or_audit_success(orch, captured, monkeypatch):
+    from orchestrator.offline_grant import OfflineGrantError
+    audit = AsyncMock()
+    monkeypatch.setattr(scheduling_chat, "_audit", audit)
+    orch.scheduled_job_store.create_job.side_effect = OfflineGrantError("re-consent required")
+    ws = _socket(orch)
+    pid = _proposal(orch)
+    await scheduling_chat.handle_decision(orch, ws, "u1", {"proposal_id":pid,"decision":"approve"})
+    orch.scheduled_job_store.create_job.assert_called_once()
+    audit.assert_not_called()
+    assert "consent expired" in str(orch.send_ui_render.await_args)
+
+
+@pytest.mark.asyncio
+async def test_unknown_schedule_save_is_not_reported_as_expired_consent(orch, captured, monkeypatch):
+    from scheduler.store import ScheduleActionError
+    audit = AsyncMock()
+    monkeypatch.setattr(scheduling_chat, "_audit", audit)
+    orch.scheduled_job_store.create_job.side_effect = ScheduleActionError("schedule_write_unavailable")
+    ws = _socket(orch)
+    pid = _proposal(orch)
+    await scheduling_chat.handle_decision(orch, ws, "u1", {"proposal_id":pid,"decision":"approve"})
+    orch.scheduled_job_store.create_job.assert_called_once()
+    audit.assert_not_called()
+    assert "confirm the schedule was saved" in str(orch.send_ui_render.await_args)
+    assert "consent expired" not in str(orch.send_ui_render.await_args)
 
 
 @pytest.mark.asyncio

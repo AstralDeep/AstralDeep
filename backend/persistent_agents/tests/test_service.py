@@ -1,4 +1,5 @@
 """Service authorization with repository and current authority test doubles."""
+from tests.helpers.session_consent_088 import synthetic_consent
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -23,8 +24,22 @@ class MemoryStore:
         self.records = {}
         self.receipts = {}
         self.calls = []
+        self.plane_runtime = object()
+        owner = self
+
+        class Repository:
+            def __getattr__(self, method):
+                return lambda transaction, **kwargs: owner._call(method, **kwargs)
+
+        self.repository = Repository()
+
+    async def transaction(self, callback, *, bound_session_waits=False):
+        return callback(None, self.repository)
 
     async def call(self, method, **kwargs):
+        return self._call(method, **kwargs)
+
+    def _call(self, method, **kwargs):
         self.calls.append((method, kwargs))
         key = (kwargs["owner_id"], kwargs.get("assignment_id"))
         if method == "get_submission_receipt":
@@ -54,7 +69,10 @@ def service(monkeypatch):
     store = MemoryStore()
     permissions = SimpleNamespace(list_disabled_agents=Mock(return_value=[]),
                                   get_tool_scope=Mock(return_value="tools:read"))
-    grants = SimpleNamespace(capture=Mock(return_value="grant-1"), is_valid=Mock(return_value=True))
+    grants = SimpleNamespace(
+        prepare_capture=Mock(return_value=SimpleNamespace(grant_id="grant-1")),
+        capture_in_transaction=Mock(return_value="grant-1"), assert_current_capture=Mock(),
+        is_valid=Mock(return_value=True))
     orch = SimpleNamespace(tool_permissions=permissions, offline_grants=grants,
         web_sessions=SimpleNamespace(latest_refresh_token_for=Mock(return_value="never-print-token")),
         history=SimpleNamespace(get_chat=Mock(return_value={"id": "chat-1"})), ui_sessions={})
@@ -68,10 +86,11 @@ def service(monkeypatch):
 @pytest.mark.asyncio
 async def test_create_replay_no_duplicate_grant_and_owner_projection(service):
     model = CreateAssignmentRequest.model_validate(create_payload())
-    first = await service.create("owner", {"sub": "owner"}, model)
+    first = await service.create("owner", {"sub": "owner"}, model, selected_session=synthetic_consent("owner"))
+    # An accepted receipt replays without selecting today's consenting session.
     again = await service.create("owner", {"sub": "owner"}, model)
     assert first == again
-    assert service.orch.offline_grants.capture.call_count == 1
+    assert service.orch.offline_grants.capture_in_transaction.call_count == 1
     assert first.definition.offline_grant_id == "grant-1"
     assert first.definition.consented_scopes == ("tools:read",)
     assert first.definition.allowed_tools == ("web-research-1:fetch_page",)
@@ -85,11 +104,32 @@ async def test_create_replay_no_duplicate_grant_and_owner_projection(service):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["missing", "wire-dict", "foreign", "expired"])
+async def test_new_assignment_requires_the_original_private_consent_selection(service, kind):
+    from dataclasses import replace
+    from orchestrator.session_consent import ConsentSession
+    selection = synthetic_consent("other" if kind == "foreign" else "owner")
+    if kind == "missing":
+        selection = None
+    elif kind == "wire-dict":
+        selection = selection.reference("owner")
+    elif kind == "expired":
+        selection = ConsentSession(replace(selection.observation,
+            valid_until=selection.observation.started_at))
+    with pytest.raises(AssignmentError, match="authorization_required"):
+        await service.create("owner", {"sub":"owner"}, CreateAssignmentRequest.model_validate(create_payload()),
+                             selected_session=selection)
+    service.orch.offline_grants.capture_in_transaction.assert_not_called()
+    service.orch.web_sessions.latest_refresh_token_for.assert_not_called()
+    assert not service.store.records
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("claims", [{"sub": "someone"}, {"sub": "owner", "act": {"sub": "agent"}},
     {"sub": "owner", "machine_turn_class": "scheduled_job"}, {}])
 async def test_nonhuman_or_wrong_owner_refused(service, claims):
     with pytest.raises(AssignmentError):
-        await service.create("owner", claims, CreateAssignmentRequest.model_validate(create_payload()))
+        await service.create("owner", claims, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     assert not service.store.records
 
 
@@ -102,7 +142,7 @@ async def test_activation_failures_create_no_running_assignment(service, monkeyp
     elif reason == "phi":
         service.phi_gate.contains_phi.return_value = True
     elif reason == "grant":
-        service.orch.web_sessions.latest_refresh_token_for.return_value = None
+        service.orch.offline_grants.prepare_capture.side_effect = ValueError("selected session retired")
     elif reason == "source":
         monkeypatch.setattr("persistent_agents.service.eligible_tool_pairs", lambda *a, **kw: [])
     elif reason == "money":
@@ -112,23 +152,23 @@ async def test_activation_failures_create_no_running_assignment(service, monkeyp
         payload["conversation_id"] = "someone-elses-chat"
         service.orch.history.get_chat.return_value = None
     with pytest.raises(AssignmentError):
-        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload))
+        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload), selected_session=synthetic_consent("owner"))
     assert not service.store.records
 
 
 @pytest.mark.asyncio
 async def test_create_reused_submission_changed_body_conflicts(service):
     payload = create_payload()
-    await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload))
+    await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload), selected_session=synthetic_consent("owner"))
     payload["instructions"] = "Changed authority"
     with pytest.raises(AssignmentError, match="submission_conflict"):
-        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload))
+        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload), selected_session=synthetic_consent("owner"))
 
 
 @pytest.mark.asyncio
 async def test_live_execution_rechecks_grant_and_source_arguments(service):
     record = await service.create("owner", {"sub": "owner"},
-                                  CreateAssignmentRequest.model_validate(create_payload()))
+                                  CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     current = await service.validate_execution("owner", {"sub": "owner"}, record)
     assert len(current["permission_digest"]) == 64
     service.orch.offline_grants.is_valid.return_value = False
@@ -144,7 +184,7 @@ async def test_disabled_service_and_unsafe_reader_fail_closed(service):
     service.enabled = True
     service.orch.tool_permissions.get_tool_scope.return_value = "tools:write"
     with pytest.raises(AssignmentError, match="source_not_read_only"):
-        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
+        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
 
 
 @pytest.mark.asyncio
@@ -157,10 +197,10 @@ async def test_registered_reader_requires_trusted_bound(service, monkeypatch):
                         [("reader-1", SimpleNamespace(id="read"))])
     model = CreateAssignmentRequest.model_validate(payload)
     with pytest.raises(AssignmentError, match="tool_bound_unavailable"):
-        await service.create("owner", {"sub": "owner"}, model)
+        await service.create("owner", {"sub": "owner"}, model, selected_session=synthetic_consent("owner"))
     service.orch.persistent_tool_bounds = {"reader-1:read": {
         "model_calls": 0, "tool_calls": 1, "tokens": 0, "elapsed_ms": 10_000}}
-    assert (await service.create("owner", {"sub": "owner"}, model)).definition.source["profile"] == "registered_reader"
+    assert (await service.create("owner", {"sub": "owner"}, model, selected_session=synthetic_consent("owner"))).definition.source["profile"] == "registered_reader"
 
 
 @pytest.mark.asyncio
@@ -208,7 +248,7 @@ async def test_store_transaction_contract_and_bounded_errors():
 @pytest.mark.asyncio
 async def test_service_read_bounds_and_terminal_deletion(service):
     from dataclasses import replace
-    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
+    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     assert await service.activity("owner", {"sub": "owner"}, record.assignment_id) == ()
     assert await service.proposals("owner", {"sub": "owner"}, record.assignment_id) == ()
     assert await service.actions("owner", {"sub": "owner"}, record.assignment_id,
@@ -254,16 +294,17 @@ async def test_prerequisite_failure_never_activates_or_leaks_diagnostics(service
     elif seam == "permission":
         service.orch.tool_permissions.list_disabled_agents.side_effect = error
     elif seam == "grant_capture":
-        service.orch.offline_grants.capture.side_effect = error
+        service.orch.offline_grants.capture_in_transaction.side_effect = error
     elif seam == "grant_check":
-        service.orch.offline_grants.is_valid.return_value = False
+        from orchestrator.offline_grant import OfflineGrantError
+        service.orch.offline_grants.capture_in_transaction.side_effect = OfflineGrantError("consent expired")
     elif seam == "destination":
         payload["conversation_id"] = "chat-1"
         service.orch.history.get_chat.side_effect = error
     elif seam == "egress":
         monkeypatch.setattr("persistent_agents.service.validate_egress_url", Mock(side_effect=error))
     with pytest.raises(AssignmentError) as caught:
-        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload))
+        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload), selected_session=synthetic_consent("owner"))
     assert "PRIVATE" not in str(caught.value)
     assert not service.store.records
 
@@ -276,13 +317,13 @@ async def test_optional_trusted_quote_and_operator_delegation_posture(service, m
                          "lifetime": {"currency": "USD", "spend_micro_units": 100}, "max_depth": 1}
     monkeypatch.setattr(flags, "is_enabled", lambda name: False)
     with pytest.raises(AssignmentError, match="delegation_disabled"):
-        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload))
+        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload), selected_session=synthetic_consent("owner"))
     monkeypatch.setattr(flags, "is_enabled", lambda name: True)
     service.quote_provider = AsyncMock(return_value={})
     with pytest.raises(AssignmentError, match="cost_quote_unavailable"):
-        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload))
+        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload), selected_session=synthetic_consent("owner"))
     service.quote_provider = lambda *args: {"reviewed": "trusted-coverage"}
-    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload))
+    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(payload), selected_session=synthetic_consent("owner"))
     assert record.definition.cost_quote_coverage["reviewed"] == "trusted-coverage"
     assert public_record(record)["cost_status"] == "capped"
     service.enabled = None
@@ -292,7 +333,7 @@ async def test_optional_trusted_quote_and_operator_delegation_posture(service, m
 @pytest.mark.asyncio
 async def test_runtime_permission_scope_grant_and_model_request_errors(service):
     from dataclasses import replace
-    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
+    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     service.orch.offline_grants.is_valid.side_effect = RuntimeError("private")
     with pytest.raises(AssignmentError, match="authorization_required"):
         await service.validate_execution("owner", {"sub": "owner"}, record)
@@ -315,19 +356,34 @@ async def test_runtime_permission_scope_grant_and_model_request_errors(service):
 
 
 @pytest.mark.asyncio
-async def test_api_auth_owner_mutations_pagination_and_safe_errors(service):
+async def test_api_auth_owner_mutations_pagination_and_safe_errors(service, monkeypatch):
     from fastapi import FastAPI, HTTPException
     from httpx import ASGITransport, AsyncClient
     from orchestrator.auth import get_current_user_payload, require_user_id
     from persistent_agents.api import assignment_router
+    from orchestrator import web_auth
+    from types import SimpleNamespace
+    import time
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+    selected = synthetic_consent("owner")
+    state = SimpleNamespace(credential=selected.observation.credential,
+                            observed_at=selected.observation.started_at)
+    service.orch.web_sessions.capture_execution_reference = Mock(return_value=SimpleNamespace(state=state))
     app = FastAPI()
     app.state.orchestrator = SimpleNamespace(persistent_assignments=service)
     app.dependency_overrides[require_user_id] = lambda: "owner"
-    app.dependency_overrides[get_current_user_payload] = lambda: {"sub": "owner"}
+    app.dependency_overrides[get_current_user_payload] = lambda: {"sub": "owner", "exp": time.time()+300}
     app.include_router(assignment_router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
-        response = await client.post("/api/persistent-agents", json=create_payload())
+        body = create_payload()
+        response = await client.post("/api/persistent-agents", json=body)
+        assert response.status_code == 422
+        service.orch.offline_grants.capture_in_transaction.assert_not_called()
+        cookie = {"cookie": "astral_session="+web_auth._sign(selected.observation.credential.session_id)}
+        response = await client.post("/api/persistent-agents", json=body, headers=cookie)
         assert response.status_code == 201
+        assert (await client.post("/api/persistent-agents", json=body)).status_code == 201
+        assert service.orch.offline_grants.capture_in_transaction.call_count == 1
         assignment_id = response.json()["assignment"]["assignment_id"]
         base = f"/api/persistent-agents/{assignment_id}"
         for path in ("/api/persistent-agents?limit=1", base, base + "/activity", base + "/tasks",
@@ -368,7 +424,7 @@ async def test_owner_evidence_reads_paginate_and_hide_source_and_dispatch_capabi
     from orchestrator.auth import get_current_user_payload, require_user_id
     from persistent_agents.api import assignment_router
 
-    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
+    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     action = AssignmentActionRecord(str(uuid4()), record.assignment_id, "owner",
         AssignmentActionIntent("action-key", {"kind": "tool"}, "a" * 64, AssignmentResourceAmount(),
                                "b" * 64, "c" * 64, downstream_key="PRIVATE_KEY"), 1, 1, "succeeded",
@@ -420,7 +476,7 @@ async def test_api_revision_control_and_pending_approval_return_durable_identity
     from orchestrator.auth import get_current_user_payload, require_user_id
     from persistent_agents.api import assignment_router
     from persistent_agents.tests.test_controls import control_payload
-    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
+    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     result = AssignmentControlResult(record, True, (), ())
     service.revise = AsyncMock(return_value=result)
     service.control = AsyncMock(return_value=result)

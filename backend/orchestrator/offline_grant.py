@@ -13,8 +13,8 @@ Per run, the scheduler:
 
 The grant reference uses ``OFFLINE_GRANT_ENC_KEY``; the canonical credential
 remains encrypted under the existing web-session key. Tokens are never returned
-by an API or logged. Legacy copied grants convert only on an exact live-session
-match. Unknown refresh outcomes require fresh sign-in and renewed consent;
+by an API or logged. Legacy copied grants require renewed consent; current token
+equality cannot prove original issuance. Unknown refresh outcomes require fresh sign-in and renewed consent;
 potentially consumed tokens are never retried.
 """
 from __future__ import annotations
@@ -25,6 +25,7 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Optional
 
 import aiohttp
@@ -34,11 +35,12 @@ from orchestrator.plane_repository_context import (
     PlaneRepositoryContext,
     repository_from,
 )
+from orchestrator.session_consent import ConsentSession
 
 logger = logging.getLogger("orchestrator.offline_grant")
 
 _DAY_MS = 86_400_000
-_SESSION_REFERENCE_PREFIX = "\x00astral-offline-session/v1\x00"
+_SESSION_REFERENCE_PREFIX = "\x00astral-offline-session/v2\x00"
 _REFRESH_HTTP_SECONDS = 10
 _REFRESH_BODY_BYTES = 65536
 _GRANT_MINT_SECONDS = 20
@@ -55,6 +57,18 @@ class TokenEndpointUnconfigured(OfflineGrantError):
     attempted and the machine turn must fail closed with a reason that names
     the missing setting instead of blaming the user's consent.
     """
+
+
+@dataclass(frozen=True)
+class PreparedConsentGrant:
+    """Private immutable consent intent; database rechecks supply authority."""
+
+    owner_id: str
+    selected_session: ConsentSession = field(repr=False)
+    grant_id: str
+    encrypted_reference: bytes = field(repr=False)
+    agent_id: Optional[str]
+    plane_runtime: object = field(repr=False)
 
 
 def resolve_token_endpoint() -> str:
@@ -151,6 +165,15 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _reference_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate reference field")
+        result[key] = value
+    return result
+
+
 class OfflineGrantStore:
     """Persistence + crypto for offline grants. Token bytes never leave this class."""
 
@@ -176,41 +199,90 @@ class OfflineGrantStore:
             legacy_database=db,
         )
 
-    def capture(self, user_id: str, refresh_token: str, agent_id: Optional[str] = None) -> str:
-        """Encrypt a reference to the consented live session credential family.
+    def capture(self, user_id: str, selected_session: ConsentSession,
+                agent_id: Optional[str] = None) -> str:
+        """Encrypt the exact server-selected session approving this grant.
 
         Returns the new grant id. Raises OfflineGrantError if encryption is not
         configured (fail closed — never store plaintext).
         """
-        if not refresh_token:
-            raise OfflineGrantError("no refresh token available in the session (offline_access not granted)")
+        prepared = self.prepare_capture(user_id, selected_session, agent_id)
+        try:
+            with self._grants.transaction() as transaction:
+                self.capture_in_transaction(transaction, prepared,
+                    plane_runtime=self._grants.plane_runtime)
+                self.assert_current_capture(transaction, prepared,
+                    plane_runtime=self._grants.plane_runtime)
+        except Exception:
+            raise OfflineGrantError("live consenting session required; re-consent required") from None
+        return prepared.grant_id
+
+    def prepare_capture(self, user_id: str, selected_session: ConsentSession,
+                        agent_id: Optional[str] = None) -> PreparedConsentGrant:
+        """Resolve and encrypt consent outside the dependent write transaction."""
+        if not isinstance(selected_session, ConsentSession):
+            raise OfflineGrantError("live consenting session required; re-consent required")
         cipher = _fernet()
-        reference = self._session_reference(user_id, refresh_token)
-        token_enc = cipher.encrypt((_SESSION_REFERENCE_PREFIX + json.dumps(
-            reference, sort_keys=True, separators=(",", ":"))).encode())
-        grant_id = str(uuid.uuid4())
-        now = _now_ms()
-        expires = now + OFFLINE_GRANT_MAX_DAYS * _DAY_MS
-        self._grants.call(
-            self._grants.repository.create_grant,
-            grant_id=grant_id,
-            owner_id=user_id,
-            agent_id=agent_id,
-            encrypted_refresh_token=token_enc,
-            issued_at=now,
-            expires_at=expires,
-        )
-        return grant_id
+        reference = self._session_reference(user_id, selected_session)
+        encrypted = cipher.encrypt(self._reference_bytes(reference))
+        return PreparedConsentGrant(user_id, selected_session, str(uuid.uuid4()),
+                                    encrypted, agent_id, self._grants.plane_runtime)
+
+    @staticmethod
+    def _reference_bytes(reference):
+        return (_SESSION_REFERENCE_PREFIX + json.dumps(
+            reference, sort_keys=True, separators=(",", ":"))).encode()
+
+    def assert_current_capture(self, transaction, prepared, *, plane_runtime):
+        """Recheck original consent after every dependent write/lock wait.
+
+        The caller owns this transaction and must let a refusal roll it back.
+        Neither a prepared value nor a detached returned state is authority for
+        a later transaction. This method performs no remote work.
+        """
+        try:
+            if (not isinstance(prepared, PreparedConsentGrant)
+                    or prepared.plane_runtime is not self._grants.plane_runtime
+                    or plane_runtime is not prepared.plane_runtime):
+                raise ValueError
+            reference = prepared.selected_session.reference(prepared.owner_id)
+            identity = uuid.UUID(prepared.grant_id)
+            if (identity.version != 4 or str(identity) != prepared.grant_id
+                    or _fernet().decrypt(prepared.encrypted_reference) != self._reference_bytes(reference)):
+                raise ValueError
+            sessions = plane_runtime.repositories.history.sessions
+            sessions.bound_request_execution_waits(transaction)
+            return sessions.assert_current_consent(
+                transaction, observation=prepared.selected_session.observation)
+        except Exception:
+            raise OfflineGrantError("live consenting session required; re-consent required") from None
+
+    def capture_in_transaction(self, transaction, prepared, *, plane_runtime) -> str:
+        """Insert a grant atomically with its caller's dependent domain write."""
+        current = self.assert_current_capture(transaction, prepared, plane_runtime=plane_runtime)
+        now = int(current.observed_at.timestamp() * 1000)
+        self._grants.repository.create_grant(
+            transaction, grant_id=prepared.grant_id, owner_id=prepared.owner_id,
+            agent_id=prepared.agent_id, encrypted_refresh_token=prepared.encrypted_reference,
+            issued_at=now, expires_at=now + OFFLINE_GRANT_MAX_DAYS * _DAY_MS)
+        return prepared.grant_id
 
     def _sessions(self):
         from orchestrator.session_store import WebSessionStore
         return WebSessionStore(plane_runtime=self._grants.plane_runtime)
 
-    def _session_reference(self, user_id, refresh_token):
+    def _session_reference(self, user_id, selected_session):
         from orchestrator.session_store import SessionStoreError
         try:
-            return self._sessions().session_reference(user_id, refresh_token)
-        except SessionStoreError:
+            expected = selected_session.reference(user_id)
+            reference = self._sessions().session_reference(
+                user_id, session_id=expected["session_id"],
+                incarnation_id=expected["incarnation_id"])
+            if reference != expected:
+                raise ValueError("session reference changed")
+            selected_session.reference(user_id)
+            return reference
+        except (SessionStoreError, ValueError):
             raise OfflineGrantError("live session credential required; re-consent required") from None
 
     def _resolve_reference(self, grant):
@@ -219,25 +291,19 @@ class OfflineGrantStore:
         except Exception:
             raise OfflineGrantError("offline grant credential cannot be decrypted") from None
         if not plaintext.startswith(_SESSION_REFERENCE_PREFIX):
-            # A legacy copied token is never sent to the IdP. Convert only an
-            # exact current-session match, otherwise request fresh consent.
-            reference = self._session_reference(grant.owner_id, plaintext)
-            ciphertext = _fernet().encrypt((_SESSION_REFERENCE_PREFIX + json.dumps(
-                reference, sort_keys=True, separators=(",", ":"))).encode())
-            updated = self._grants.call(
-                self._grants.repository.replace_refresh_token_if_current,
-                owner_id=grant.owner_id, grant_id=grant.grant_id,
-                expected_encrypted_refresh_token=grant.encrypted_refresh_token,
-                encrypted_refresh_token=ciphertext, as_of=_now_ms())
-            if updated is None:
-                raise OfflineGrantError("offline grant changed; retry with current authority")
-            return reference
+            # Raw tokens and v1 SID/timestamp references cannot distinguish a
+            # retired issuance from today's identical replacement. Preserve the
+            # retained grant for inspection/revocation and refuse before OAuth.
+            raise OfflineGrantError("legacy offline grant requires re-consent")
         try:
-            reference = json.loads(plaintext[len(_SESSION_REFERENCE_PREFIX):])
+            reference = json.loads(plaintext[len(_SESSION_REFERENCE_PREFIX):], object_pairs_hook=_reference_object)
             if (not isinstance(reference, dict)
-                    or set(reference) != {"session_id", "created_at", "interactive_anchor"}
+                    or set(reference) != {"session_id", "incarnation_id", "created_at", "interactive_anchor"}
                     or not isinstance(reference["session_id"], str)
                     or not 1 <= len(reference["session_id"]) <= 1024
+                    or not isinstance(reference["incarnation_id"], str)
+                    or uuid.UUID(reference["incarnation_id"]).version != 4
+                    or str(uuid.UUID(reference["incarnation_id"])) != reference["incarnation_id"]
                     or any(type(reference[k]) is not int or reference[k] < 0
                            for k in ("created_at", "interactive_anchor"))):
                 raise ValueError

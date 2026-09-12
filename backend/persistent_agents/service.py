@@ -6,7 +6,7 @@ import contextvars
 import hashlib
 import inspect
 from collections.abc import Mapping
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from datetime import datetime
 from uuid import UUID
 
@@ -262,24 +262,26 @@ class AssignmentService:
             coverage = await _invoke(self.quote_provider, owner_id, claims, body)
             if not isinstance(coverage, Mapping) or not coverage:
                 raise AssignmentError("assignment_cost_quote_unavailable", 422)
+        return AssignmentDefinition(name=body.name, instructions=body.instructions,
+            source=source.model_dump(), allowed_tools=identities,
+            consented_scopes=tuple(sorted(set(scopes.values()))), offline_grant_id=None,
+            limits=limits, completion_condition=body.completion_condition,
+            conversation_id=body.conversation_id, cost_quote_coverage=coverage)
+
+    async def _prepare_consent(self, owner_id, selected_session):
+        """Prepare immutable encrypted consent without creating unattended authority."""
         try:
-            refresh = await _thread(self.orch.web_sessions.latest_refresh_token_for, owner_id)
-            if not refresh:
+            from orchestrator.session_consent import ConsentSession
+            if not isinstance(selected_session, ConsentSession):
                 raise AssignmentError("assignment_authorization_required", 422)
-            grant = await _thread(self.orch.offline_grants.capture, owner_id, refresh)
-            if not grant or not await _thread(self.orch.offline_grants.is_valid, grant, user_id=owner_id):
-                raise AssignmentError("assignment_authorization_required", 422)
+            selected_session.reference(owner_id)
+            return await _thread(self.orch.offline_grants.prepare_capture, owner_id, selected_session)
         except AssignmentError:
             raise
         except Exception as exc:
             raise AssignmentError("assignment_authorization_required", 422) from exc
-        return AssignmentDefinition(name=body.name, instructions=body.instructions,
-            source=source.model_dump(), allowed_tools=identities,
-            consented_scopes=tuple(sorted(set(scopes.values()))), offline_grant_id=grant,
-            limits=limits, completion_condition=body.completion_condition,
-            conversation_id=body.conversation_id, cost_quote_coverage=coverage)
 
-    async def create(self, owner_id, claims, body: CreateAssignmentRequest):
+    async def create(self, owner_id, claims, body: CreateAssignmentRequest, *, selected_session=None):
         self._owner(owner_id, claims)
         # Stable owner-derived UUID4 gives lost-ack retries a lookup before grant
         # capture. Plane independently compares the complete submission digest.
@@ -290,24 +292,42 @@ class AssignmentService:
         if receipt is not None:
             return receipt
         definition = await self._definition(owner_id, claims, body)
-        result = await self._mutation("create_assignment", "create", owner_id=owner_id,
+        prepared = await self._prepare_consent(owner_id, selected_session)
+        definition = replace(definition, offline_grant_id=prepared.grant_id)
+        result = await self._mutation("create_assignment", "create", prepared=prepared, owner_id=owner_id,
             assignment_id=assignment_id, submission_id=body.submission_id,
             submission_digest=submission_digest, definition=definition,
             max_owned_assignments=25, max_retained_assignments=256)
         await self._audit(claims, "create", result)
         return result
 
-    async def revise(self, owner_id, claims, assignment_id, body: ReviseAssignmentRequest):
-        record = await self.get(owner_id, claims, assignment_id)
+    async def revise(self, owner_id, claims, assignment_id, body: ReviseAssignmentRequest, *, selected_session=None):
+        self._owner(owner_id, claims)
+        self._resource_id(assignment_id)
+        record = await self.store.transaction(
+            lambda transaction, repository: repository.get_assignment(transaction,
+                owner_id=owner_id, assignment_id=assignment_id), bound_session_waits=True)
+        if record is None:
+            raise AssignmentError("assignment_not_found", 404)
         submission_digest = digest({"command": "revise", "assignment_id": assignment_id, **body.model_dump()})
         receipt = await self._receipt(owner_id, assignment_id, body.submission_id, submission_digest, "revise")
         if receipt is not None:
             return AssignmentControlResult(receipt, False)
-        # Let Plane replay an accepted revision before stale-CAS rejection.
+        # A mismatched observation can only replay an exact accepted request.
+        # Future CAS numbers may become current during an await; never let that
+        # transition turn this no-consent branch into a new mutation.
         stale = (record.instruction_revision != body.expected_instruction_revision
                  or record.control_epoch != body.expected_control_epoch)
-        replacement = record.definition if stale else await self._definition(owner_id, claims, body)
-        result = await self._mutation("apply_control", "revise", owner_id=owner_id, assignment_id=assignment_id,
+        if stale:
+            receipt = await self._receipt(owner_id, assignment_id, body.submission_id, submission_digest, "revise")
+            if receipt is not None:
+                return AssignmentControlResult(receipt, False)
+            raise AssignmentError("assignment_stale_control", 409)
+        replacement = await self._definition(owner_id, claims, body)
+        prepared = await self._prepare_consent(owner_id, selected_session)
+        replacement = replace(replacement, offline_grant_id=prepared.grant_id)
+        result = await self._mutation("apply_control", "revise", prepared=prepared,
+            owner_id=owner_id, assignment_id=assignment_id,
             expected_instruction_revision=body.expected_instruction_revision,
             expected_control_epoch=body.expected_control_epoch, submission_id=body.submission_id,
             submission_digest=submission_digest, control=AssignmentControl.REVISE, replacement=replacement)
@@ -336,12 +356,18 @@ class AssignmentService:
         return result
 
     async def _receipt(self, owner_id, assignment_id, submission_id, submission_digest, command):
-        return await self.store.call("get_submission_receipt", owner_id=owner_id, assignment_id=assignment_id,
-            submission_id=submission_id, submission_digest=submission_digest, command=command)
+        return await self.store.transaction(
+            lambda transaction, repository: repository.get_submission_receipt(transaction,
+                owner_id=owner_id, assignment_id=assignment_id, submission_id=submission_id,
+                submission_digest=submission_digest, command=command), bound_session_waits=True)
 
-    async def _mutation(self, method, command, **kwargs):
+    async def _mutation(self, method, command, *, prepared, **kwargs):
+        """Commit consent and its dependent mutation together, or replay a receipt."""
         try:
-            return await self.store.call(method, **kwargs)
+            return await self.store.transaction(
+                lambda transaction, repository: self._consented_mutation(
+                    transaction, repository, method, command, prepared, kwargs),
+                bound_session_waits=True)
         except AssignmentError as exc:
             if exc.status_code != 409:
                 raise
@@ -352,6 +378,34 @@ class AssignmentService:
             if receipt is None:
                 raise
             return receipt if method == "create_assignment" else AssignmentControlResult(receipt, False)
+
+    def _consented_mutation(self, transaction, repository, method, command, prepared, kwargs):
+        """Use only the caller's one Plane transaction; never compensate an unknown commit."""
+        from astralplane.errors import PlaneError
+        from orchestrator.offline_grant import OfflineGrantError
+        receipt = repository.get_submission_receipt(transaction,
+            owner_id=kwargs["owner_id"], assignment_id=kwargs["assignment_id"],
+            submission_id=kwargs["submission_id"], submission_digest=kwargs["submission_digest"],
+            command=command)
+        if receipt is not None:
+            return receipt if method == "create_assignment" else AssignmentControlResult(receipt, False)
+        grants = self.orch.offline_grants
+        try:
+            grants.capture_in_transaction(transaction, prepared, plane_runtime=self.store.plane_runtime)
+            result = getattr(repository, method)(transaction, **kwargs)
+            record = result if method == "create_assignment" else result.assignment
+            if record.definition.offline_grant_id != prepared.grant_id:
+                # A concurrent accepted receipt can carry a different grant.
+                # Roll back our unused candidate before the outside replay read.
+                raise AssignmentError("assignment_idempotency_conflict", 409)
+            grants.assert_current_capture(transaction, prepared, plane_runtime=self.store.plane_runtime)
+            return result
+        except OfflineGrantError as exc:
+            raise AssignmentError("assignment_authorization_required", 422) from exc
+        except (AssignmentError, PlaneError):
+            raise
+        except Exception:
+            raise AssignmentError("assignment_transaction_unavailable", 503) from None
 
     async def validate_execution(self, owner_id, claims, record, action=None):
         self._owner(owner_id, claims, human=False)

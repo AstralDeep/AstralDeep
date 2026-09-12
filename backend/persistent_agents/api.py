@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from orchestrator.auth import get_current_user_payload, require_user_id
+from orchestrator.session_consent import select_consent_session
 
 from .models import (
     ApprovalDecisionRequest,
@@ -87,7 +88,10 @@ async def list_assignments(request: Request, limit: int = Query(50, ge=1, le=100
 async def create_assignment(body: CreateAssignmentRequest, request: Request,
                             owner_id: str = _OWNER,
                             claims: dict = _CLAIMS):
-    record = await _service(request).create(owner_id, claims, body)
+    service = _service(request)
+    selected = await select_consent_session(
+        request, principal=claims, store=getattr(getattr(service, "orch", None), "web_sessions", None))
+    record = await service.create(owner_id, claims, body, selected_session=selected)
     return _json({"assignment": public_record(record)}, 201)
 
 
@@ -104,7 +108,11 @@ async def get_assignment(assignment_id: str, request: Request, owner_id: str = _
 async def revise_assignment(assignment_id: str, body: ReviseAssignmentRequest, request: Request,
                             owner_id: str = _OWNER,
                             claims: dict = _CLAIMS):
-    return _json(_control_result(await _service(request).revise(owner_id, claims, assignment_id, body)))
+    service = _service(request)
+    selected = await select_consent_session(
+        request, principal=claims, store=getattr(getattr(service, "orch", None), "web_sessions", None))
+    return _json(_control_result(await service.revise(
+        owner_id, claims, assignment_id, body, selected_session=selected)))
 
 
 @assignment_router.get("/{assignment_id}/activity")
