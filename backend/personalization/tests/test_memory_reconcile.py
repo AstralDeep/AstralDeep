@@ -236,7 +236,7 @@ async def test_phi_is_refused_before_any_llm():
 
 # ───────────────────────── real-DB supersession ──────────────────────────────
 
-def test_repo_supersede_excludes_from_recall():
+def test_repo_supersede_excludes_from_recall(monkeypatch):
     """The schema migration + supersede_memory round-trip over a real DB:
     a superseded row drops out of list_memory and carries superseded_by."""
     with isolated_plane_runtime("personalization_reconcile") as runtime:
@@ -253,10 +253,20 @@ def test_repo_supersede_excludes_from_recall():
             "Lives in Seattle",
         }
 
+        from personalization import repository as repository_module
+        clock = [repository_module._now_ms()]
+        monkeypatch.setattr(repository_module, "_now_ms", lambda: clock[0])
         assert repo.supersede_memory(user, first["id"], second["id"]) is True
         live = repo.list_memory(user)
         assert [memory["value"] for memory in live] == ["Lives in Seattle"]
-        # Second supersede of the same row is a no-op.
-        assert repo.supersede_memory(user, first["id"], second["id"]) is False
         row = repo.get_memory(user, first["id"])
         assert row is not None and str(row["superseded_by"]) == second["id"]
+        assert row["superseded_at"] == clock[0]
+        # Plane acknowledges an exact replay without changing the retired row.
+        assert repo.supersede_memory(user, first["id"], second["id"]) is True
+        assert repo.get_memory(user, first["id"]) == row
+        # A later attempted retirement cannot overwrite its original evidence.
+        clock[0] += 1
+        assert repo.supersede_memory(user, first["id"], second["id"]) is False
+        assert repo.get_memory(user, first["id"]) == row
+        assert [memory["value"] for memory in repo.list_memory(user)] == ["Lives in Seattle"]

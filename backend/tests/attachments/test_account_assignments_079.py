@@ -1,4 +1,5 @@
 """Real authenticated retirement route fences Plane assignments atomically."""
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
@@ -51,9 +52,12 @@ async def test_safe_retirement_purges_assignments_and_schedules_blob_cleanup_sam
             status = await client.get(f"/api/account/retirement/{cleanup_id}")
             assert status.status_code == 200 and status.json()["status"] != "purged"
         assert await store.call("get_assignment", owner_id="owner", assignment_id=identity) is None
-        with pytest.raises(RepositoryConflictError, match="owner_retired"), plane.transaction() as tx:
-            plane.repositories.assignments.create_assignment(tx, owner_id="owner", assignment_id=str(uuid4()),
-                submission_id=str(uuid4()), submission_digest=digest("new after retirement"), definition=record.definition)
+        def create_after_retirement():
+            with plane.transaction() as tx:
+                plane.repositories.assignments.create_assignment(tx, owner_id="owner", assignment_id=str(uuid4()),
+                    submission_id=str(uuid4()), submission_digest=digest("new after retirement"), definition=record.definition)
+        with pytest.raises(RepositoryConflictError, match="owner_retired"):
+            await asyncio.to_thread(create_after_retirement)
     finally:
         await coordinator.close()
 
@@ -83,8 +87,10 @@ async def test_uncertain_effect_retirement_commits_stop_without_claiming_account
         assert stopped.lifecycle == "stopped" and stopped.control_epoch > before.control_epoch
         retained = await store.call("list_actions", owner_id="owner", assignment_id=identity)
         assert any(action.state == "uncertain" for action in retained)
-        with plane.transaction() as tx:
-            assert not plane.repositories.purge.has_incomplete_for_administration(tx)
+        def has_incomplete_purge():
+            with plane.transaction() as tx:
+                return plane.repositories.purge.has_incomplete_for_administration(tx)
+        assert not await asyncio.to_thread(has_incomplete_purge)
     finally:
         await coordinator.close()
 

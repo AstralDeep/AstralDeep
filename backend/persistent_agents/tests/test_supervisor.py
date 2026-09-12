@@ -177,6 +177,88 @@ async def test_lost_lease_cancels_episode_before_another_action(supervisor, monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation_lease_lost", [False, True])
+async def test_active_renewal_checks_both_current_fences(supervisor, monkeypatch, operation_lease_lost):
+    ticks = 0
+
+    async def one_tick(_seconds):
+        nonlocal ticks
+        ticks += 1
+        if ticks > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr("persistent_agents.runner.asyncio.sleep", one_tick)
+    if operation_lease_lost:
+        supervisor.coordinator.renew_execution_lease.side_effect = DispatchDenied("operation_stale")
+    episode = Mock()
+    if operation_lease_lost:
+        await supervisor.runner._renew(supervisor.executor, episode)
+        episode.cancel.assert_called_once()
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await supervisor.runner._renew(supervisor.executor, episode)
+        episode.cancel.assert_not_called()
+    supervisor.service.store.call.assert_awaited_once_with(
+        "renew_claim", fence=supervisor.claim.fence, lease_seconds=supervisor.runner.config.lease_seconds,
+    )
+    supervisor.coordinator.renew_execution_lease.assert_called_once_with(supervisor.executor.operation_fence)
+
+
+@pytest.mark.asyncio
+async def test_renewal_waits_for_terminal_commit_acknowledgement(supervisor, monkeypatch):
+    committed = asyncio.Event()
+    acknowledge = asyncio.Event()
+    tick = asyncio.Event()
+    tick_reached = asyncio.Event()
+
+    async def transaction(callback):
+        result = callback("transaction", supervisor.service.store.repository)
+        committed.set()
+        await acknowledge.wait()
+        return result
+
+    async def renewal_tick(_seconds):
+        await tick.wait()
+        tick_reached.set()
+
+    supervisor.service.store.transaction.side_effect = transaction
+    supervisor.service.store.call.side_effect = DispatchDenied("assignment_stale")
+    monkeypatch.setattr("persistent_agents.runner.asyncio.sleep", renewal_tick)
+    episode = Mock()
+    finish = asyncio.create_task(supervisor.runner._finish(supervisor.executor, supervisor.record))
+    renewal = asyncio.create_task(supervisor.runner._renew(supervisor.executor, episode))
+    try:
+        await asyncio.wait_for(committed.wait(), 1)
+        tick.set()
+        await asyncio.wait_for(tick_reached.wait(), 1)
+        supervisor.service.store.call.assert_not_awaited()
+        episode.cancel.assert_not_called()
+        acknowledge.set()
+        assert await asyncio.wait_for(finish, 1) == supervisor.record
+        await asyncio.wait_for(renewal, 1)
+        supervisor.service.store.call.assert_not_awaited()
+        supervisor.coordinator.renew_execution_lease.assert_not_called()
+        episode.cancel.assert_not_called()
+    finally:
+        acknowledge.set()
+        finish.cancel()
+        renewal.cancel()
+        await asyncio.gather(finish, renewal, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_failed_terminal_commit_does_not_disable_lost_lease_cancellation(supervisor, monkeypatch):
+    supervisor.service.store.transaction.side_effect = RuntimeError("transaction rolled back")
+    with pytest.raises(RuntimeError, match="rolled back"):
+        await supervisor.runner._finish(supervisor.executor, supervisor.record)
+    monkeypatch.setattr("persistent_agents.runner.asyncio.sleep", AsyncMock())
+    supervisor.service.store.call.side_effect = DispatchDenied("assignment_stale")
+    episode = Mock()
+    await supervisor.runner._renew(supervisor.executor, episode)
+    episode.cancel.assert_called_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [None, ApprovalPending("assignment_approval_required"),
                                      DispatchDenied("assignment_budget_exhausted"), RuntimeError("private")])
 async def test_claim_cleans_up_virtual_session_and_releases_renewal(supervisor, monkeypatch, failure):

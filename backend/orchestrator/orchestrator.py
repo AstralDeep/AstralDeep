@@ -11432,11 +11432,42 @@ class Orchestrator:
                         ])
 
                 elif msg.action == "new_chat":
+                    new_chat_session = self.ui_sessions.get(websocket)
+                    new_chat_context = getattr(self, "_connection_contexts", {}).get(
+                        id(websocket))
+                    new_chat_generation = getattr(
+                        new_chat_context, "connection_generation", None)
+
+                    def new_chat_session_is_current():
+                        """Never finish an old request in a replacement session."""
+                        return (
+                            self.ui_sessions.get(websocket) is new_chat_session
+                            and self._get_user_id(websocket) == user_id
+                            and getattr(self, "_connection_contexts", {}).get(
+                                id(websocket)) is new_chat_context
+                            and getattr(new_chat_context, "connection_generation", None)
+                            == new_chat_generation
+                            and not getattr(new_chat_context, "closing", False)
+                        )
+
                     # Sync DB write off the event-loop thread (feature 052);
                     # first driven under LOOP_GUARD_ENFORCE by the Bug-A
                     # regression test.
-                    chat_id = await asyncio.to_thread(
-                        self.history.create_chat, user_id=user_id)
+                    try:
+                        chat_id = await asyncio.to_thread(
+                            self.history.create_chat, user_id=user_id)
+                    except Exception:
+                        if not new_chat_session_is_current():
+                            return
+                        raise
+                    if not new_chat_session_is_current():
+                        return
+                    # A fresh welcome has no conversation fence. Retire only
+                    # this socket's old view before rendering; durable work
+                    # and other sockets stay bound to their existing chats.
+                    getattr(self, "_conversation_scopes", {}).pop(id(websocket), None)
+                    getattr(self, "_ws_active_chat", {}).pop(id(websocket), None)
+                    getattr(self, "_ws_timeline_mode", {}).pop(id(websocket), None)
                     # 066 (FR-024): a fresh chat greets with the welcome
                     # examples exactly like a fresh session — same wel_
                     # purge-on-first-send rules, never persisted. Sent BEFORE
@@ -11447,14 +11478,20 @@ class Orchestrator:
                         from orchestrator.welcome import welcome_components
                         _tools_avail = await asyncio.to_thread(
                             self.compute_tools_available_for_user, user_id)
+                        if not new_chat_session_is_current():
+                            return
                         with perf_span("welcome.render", user=user_id):
                             await self.send_ui_render(
                                 websocket,
                                 welcome_components(tools_available=_tools_avail),
                                 speak=False)
+                        if not new_chat_session_is_current():
+                            return
                         self._ws_welcome[id(websocket)] = True
                     except Exception as _e:  # non-fatal — an empty canvas is fine
                         logger.debug(f"new-chat welcome render failed (non-fatal): {_e}")
+                    if not new_chat_session_is_current():
+                        return
                     if isinstance(msg, CorrelatedNewChat):
                         await self._safe_send(
                             websocket,

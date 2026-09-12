@@ -314,7 +314,7 @@ def test_restart_reuses_completed_children_and_source_actions(engine):
         retained = await current(store, identity)
         assert all(child["state"] == "completed" for child in retained.tasks)
         await asyncio.sleep(5.1)
-        host.work_admission.expire_execution_leases()
+        await asyncio.to_thread(host.work_admission.expire_execution_leases)
         await store.call("recover_expired_for_administration", limit=10)
         recovered = await current(store, identity)
         assert recovered.phase == "failed"
@@ -371,6 +371,93 @@ def test_heartbeat_between_snapshot_and_finish_does_not_lose_completed_join(engi
         assert record.checkpoint["last_finding"] == "Version 2 was released."
         assert host.physical_models == ["plan", "child", "child", "join"]
         assert all(child["incorporated_by"] for child in record.tasks)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_terminal_checkpoint_survives_renewal_during_notification(engine, monkeypatch, uncertain):
+    host, runner, store, identity = engine
+
+    async def scenario():
+        committed = asyncio.Event()
+        release_notification = asyncio.Event()
+        renewal_finished = asyncio.Event()
+        original_renew = runner._renew
+        original_notify = runner._notify_activity
+        host.notify_user = AsyncMock()
+
+        async def observed_renew(executor, episode):
+            try:
+                await original_renew(executor, episode)
+            finally:
+                renewal_finished.set()
+
+        async def delayed_notification(record):
+            committed.set()
+            await release_notification.wait()
+            await original_notify(record)
+
+        async def uncertain_model(socket, messages, **kwargs):
+            async def failed_transport():
+                raise ConnectionError("private provider diagnostic")
+            return await current_dispatch().invoke_model(failed_transport, {"messages": messages})
+
+        monkeypatch.setattr(runner, "_renew", observed_renew)
+        monkeypatch.setattr(runner, "_notify_activity", delayed_notification)
+        if uncertain:
+            monkeypatch.setattr(host, "_call_llm", uncertain_model)
+        task = asyncio.create_task(claim_and_run(runner, store))
+        try:
+            await asyncio.wait_for(committed.wait(), timeout=10)
+            record = await current(store, identity)
+            assert record.phase == ("reconciliation" if uncertain else "waiting")
+            actions = await store.call("list_actions", owner_id="owner", assignment_id=identity)
+            if uncertain:
+                assert any(action.state == "uncertain" for action in actions)
+            await asyncio.wait_for(renewal_finished.wait(), timeout=10)
+            assert not task.done(), "a committed checkpoint must survive its retired renewal"
+            release_notification.set()
+            await asyncio.wait_for(task, timeout=10)
+            host.notify_user.assert_awaited_once()
+            assert (await current(store, identity)).phase == record.phase
+            assert not host.ui_sessions
+        finally:
+            release_notification.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_lost_claim_before_terminal_commit_cancels_episode(engine, monkeypatch):
+    host, runner, store, identity = engine
+
+    async def scenario():
+        entered = asyncio.Event()
+        release_work = asyncio.Event()
+        effects = []
+
+        async def blocked_episode(executor):
+            entered.set()
+            await release_work.wait()
+            effects.append("must not execute after lease loss")
+
+        monkeypatch.setattr(runner, "episode", blocked_episode)
+        task = asyncio.create_task(claim_and_run(runner, store))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=10)
+            await control(store, identity, "pause")
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=10)
+            assert task.cancelled() and effects == []
+            assert (await current(store, identity)).lifecycle == "paused"
+            assert await store.call("list_actions", owner_id="owner", assignment_id=identity) == ()
+            assert not host.ui_sessions
+        finally:
+            release_work.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     asyncio.run(scenario())
 
 
@@ -487,7 +574,7 @@ def test_restart_after_source_receipt_before_source_batch_never_repeats_read(eng
         assert len(actions) == 1 and actions[0].state == "succeeded"
         assert not await store.call("list_events", owner_id="owner", assignment_id=identity, disposition="pending")
         await asyncio.sleep(5.1)
-        host.work_admission.expire_execution_leases()
+        await asyncio.to_thread(host.work_admission.expire_execution_leases)
         await store.call("recover_expired_for_administration", limit=10)
         recovered = await current(store, identity)
         assert recovered.phase == "failed"
@@ -578,7 +665,7 @@ def test_replacement_runner_delivers_committed_memory_to_every_model(engine, pla
 
         # A new host/service/runner has no memory of prior provider calls. Its
         # actual dispatched prompts must reconstruct evidence from PostgreSQL.
-        replacement_host = _Host(plane)
+        replacement_host = await asyncio.to_thread(_Host, plane)
         replacement_host.source_text = "Release version 2 published. Minor navigation spelling correction."
         replacement_host.join_text = "UNCHANGED"
         replacement_service = AssignmentService(replacement_host, store=store, enabled=True,

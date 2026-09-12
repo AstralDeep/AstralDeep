@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 from astralplane.repositories.assignments import (
@@ -70,6 +70,19 @@ _JOINER = (
     "Explain material uncertainties. If nothing relevant changed, return text "
     "UNCHANGED. Do not invent completed actions."
 )
+
+
+@dataclass
+class _EpisodeLease:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    terminal: bool = False
+
+
+def _episode_lease(executor):
+    state = getattr(executor, "_episode_lease", None)
+    if state is None:
+        state = executor._episode_lease = _EpisodeLease()
+    return state
 
 
 class AssignmentRunner:
@@ -174,13 +187,17 @@ class AssignmentRunner:
         return operation.fence
 
     async def _renew(self, executor, episode):
+        lease = _episode_lease(executor)
         try:
             while True:
                 await asyncio.sleep(self.config.lease_seconds / 3)
-                await self.store.call("renew_claim", fence=executor.claim.fence,
-                                      lease_seconds=self.config.lease_seconds)
-                await asyncio.to_thread(self.orch.work_admission.renew_execution_lease,
-                                        executor.operation_fence)
+                async with lease.lock:
+                    if lease.terminal:
+                        return
+                    await self.store.call("renew_claim", fence=executor.claim.fence,
+                                          lease_seconds=self.config.lease_seconds)
+                    await asyncio.to_thread(self.orch.work_admission.renew_execution_lease,
+                                            executor.operation_fence)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - any lost lease must cancel the episode
@@ -310,7 +327,13 @@ class AssignmentRunner:
                 transaction=tx,
             )
             return result
-        result = await self.store.transaction(transaction)
+        lease = _episode_lease(executor)
+        # A successful terminal transaction retires both leases. Serialize its
+        # acknowledgement with renewal so that notification delivery cannot be
+        # cancelled by an attempted renewal of the already-completed episode.
+        async with lease.lock:
+            result = await self.store.transaction(transaction)
+            lease.terminal = True
         if activity is not None:
             await self._notify_activity(result)
         return result
