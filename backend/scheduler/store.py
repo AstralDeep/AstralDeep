@@ -307,12 +307,13 @@ class ScheduledJobStore:
         target_chat_id: Optional[str],
         next_run_at: Optional[int],
         offline_grant_id: Optional[str],
+        prepared_consent=None,
+        offline_grants=None,
+        consent_current=None,
     ) -> Dict[str, Any]:
         job_id = str(uuid.uuid4())
         now = _now_ms()
-        job = self._plane.call(
-            self._plane.repository.create_job_definition,
-            job=PlaneScheduledJob(
+        definition = PlaneScheduledJob(
                 job_id=job_id,
                 owner_id=user_id,
                 name=name,
@@ -328,8 +329,45 @@ class ScheduledJobStore:
                 consented_scopes=tuple(consented_scopes),
                 target_chat_id=target_chat_id,
                 offline_grant_id=offline_grant_id,
-            ),
-        )
+            )
+        if prepared_consent is None and consent_current is None:
+            if offline_grants is not None:
+                raise ScheduleActionError("schedule_consent_unavailable")
+            job = self._plane.call(self._plane.repository.create_job_definition, job=definition)
+        else:
+            from orchestrator.offline_grant import OfflineGrantError, PreparedConsentGrant
+            if (not callable(consent_current)
+                    or (prepared_consent is None and offline_grants is not None)
+                    or (prepared_consent is not None and (
+                        not isinstance(prepared_consent, PreparedConsentGrant)
+                        or prepared_consent.owner_id != user_id
+                        or offline_grant_id is not None or offline_grants is None))):
+                raise ScheduleActionError("schedule_consent_unavailable")
+            # The original socket registration is checked again in the worker
+            # after every SQL wait; consent and job either commit together or
+            # both roll back. No cleanup revoke guesses a commit's outcome.
+            try:
+                with self._plane.transaction() as transaction:
+                    self._plane.plane_runtime.repositories.history.sessions.bound_request_execution_waits(transaction)
+                    if not consent_current():
+                        raise ScheduleActionError("schedule_consent_unavailable")
+                    grant = offline_grant_id
+                    if prepared_consent is not None:
+                        grant = offline_grants.capture_in_transaction(transaction, prepared_consent,
+                            plane_runtime=self._plane.plane_runtime)
+                    job = self._plane.repository.create_job_definition(
+                        transaction, job=replace(definition, offline_grant_id=grant))
+                    if prepared_consent is not None:
+                        offline_grants.assert_current_capture(transaction, prepared_consent,
+                            plane_runtime=self._plane.plane_runtime)
+                    if not consent_current():
+                        raise ScheduleActionError("schedule_consent_unavailable")
+            except (OfflineGrantError, ScheduleActionError):
+                raise
+            except Exception:
+                # A failed acknowledgement may follow a committed transaction.
+                # Preserve its grant and require observation before any retry.
+                raise ScheduleActionError("schedule_write_unavailable") from None
         return self._job_dict(job)
 
     def get_job(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]:

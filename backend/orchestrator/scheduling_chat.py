@@ -20,6 +20,7 @@ decision card updates over ``send_ui_render(target="chat")``.
 """
 import asyncio
 import logging
+import math
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -309,47 +310,31 @@ async def _consented_scopes_for(orch, user_id: str,
 
 
 async def _capture_consent(orch, user_id: str, agent_id: Optional[str],
-                          consented: List[str]) -> Optional[str]:
-    """Create the durable offline grant this job will act under (056 FR-011).
+                          consented: List[str], *, selected_session=None):
+    """Prepare the consent that will commit atomically with its job (056 FR-011).
 
     ``agent_id`` is ``None`` for an agent-less job: the grant is user-wide
     (``OfflineGrantStore.capture`` accepts that) and ``consented`` is the
     union across the user's enabled agents.
 
-    Reads the user's ``offline_access`` refresh token from their live encrypted
-    web session and hands it to :meth:`OfflineGrantStore.capture`, which
-    encrypts it at rest (fail-closed without ``OFFLINE_GRANT_ENC_KEY``) under a
-    hard 365-day cap. Returns the grant id, or ``None`` when no durable consent
-    could be created — the caller then creates the job WITHOUT unattended
-    authority rather than pretending it has some.
+    Resolve and encrypt the approving socket's exact server-selected session.
+    This preparation writes nothing. SchedulerStore rechecks the same consent
+    and socket registration around the single grant-plus-job transaction.
+    Absent qualified consent produces a job without unattended authority.
     """
     try:
-        sessions = orch.web_sessions
-        refresh_token = await asyncio.to_thread(
-            sessions.latest_refresh_token_for, user_id)
-        if not refresh_token:
-            logger.info("consent_capture: no live session refresh token for user=%s "
+        from orchestrator.session_consent import ConsentSession
+        if not isinstance(selected_session, ConsentSession):
+            logger.info("consent_capture: no selected live session for user=%s "
                         "— job created without unattended authority", user_id)
             return None
+        selected_session.reference(user_id)
         grants = orch.offline_grants
-        grant_id = await asyncio.to_thread(
-            grants.capture, user_id, refresh_token, agent_id)
-        logger.info("consent_capture: durable grant created user=%s agent=%s "
-                    "grant=%s scopes=%s", user_id, agent_id, grant_id, consented)
-        await _audit(user_id, "schedule.consent_captured",
-                     (f"Captured durable offline consent for agent '{agent_id}'"
-                      if agent_id else
-                      "Captured durable offline consent for an agent-less job"),
-                     correlation_id=grant_id,
-                     inputs_meta={"agent_id": agent_id,
-                                  "consented_scopes": consented,
-                                  "grant_id": grant_id,
-                                  "durable_days": 365})
-        return grant_id
-    except Exception as exc:
+        return await asyncio.to_thread(
+            grants.prepare_capture, user_id, selected_session, agent_id)
+    except Exception:
         # Fail-closed on the AUTHORITY (no grant), fail-open on the job.
-        logger.warning("consent_capture failed user=%s agent=%s: %s",
-                       user_id, agent_id, exc)
+        logger.warning("consent preparation unavailable user=%s agent=%s", user_id, agent_id)
         return None
 
 
@@ -363,8 +348,18 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     proposal_id = str(payload.get("proposal_id") or "")
     decision = str(payload.get("decision") or "")
     prop = _proposals(orch).get(proposal_id)
+    registration = getattr(orch, "ui_sessions", {}).get(websocket)
+
+    def current_registration():
+        if not (isinstance(registration, dict) and registration.get("sub") == user_id
+                and getattr(orch, "ui_sessions", {}).get(websocket) is registration):
+            return False
+        expiry = registration.get("exp")
+        return type(expiry) in (int, float) and math.isfinite(expiry) and expiry > time.time()
 
     async def _say(message: str, variant: str = "info"):
+        if not current_registration():
+            return
         await orch.send_ui_render(websocket, [Alert(message=message, variant=variant).to_dict()],
                                   target="chat")
 
@@ -386,6 +381,11 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         return
 
     args = prop["args"]
+    from orchestrator.session_consent import select_consent_session
+    selected = await select_consent_session(
+        websocket, principal=registration, store=getattr(orch, "web_sessions", None))
+    if not current_registration():
+        return
     try:
         # Re-validate at approval time (caps/cadence may have changed since
         # the proposal) and recompute the first run.
@@ -416,20 +416,47 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     # skipped_auth/missing_consent). A capture failure is NOT fatal — the job
     # is still created, it simply cannot run unattended (its first run records
     # an authority skip and pauses, which is the honest fail-closed outcome).
-    grant_id: Optional[str] = await _capture_consent(
-        orch, user_id, cleaned["agent_id"] or None, consented)
+    if not current_registration():
+        return
+    prepared = await _capture_consent(
+        orch, user_id, cleaned["agent_id"] or None, consented,
+        selected_session=selected)
+    if not current_registration():
+        return
 
     store = _scheduler_store(orch)
-    job = await asyncio.to_thread(
-        store.create_job,
-        user_id, name=cleaned["name"], instruction=cleaned["instruction"],
-        schedule_kind=cleaned["schedule_kind"], schedule_expr=cleaned["schedule_expr"],
-        timezone=cleaned["timezone"], consented_scopes=consented,
-        agent_id=cleaned["agent_id"], target_chat_id=prop.get("chat_id"),
-        next_run_at=next_run,
-        offline_grant_id=grant_id,  # 056: captured above, no longer always None
-    )
+    consent_kwargs = {"consent_current": current_registration}
+    if prepared is not None:
+        consent_kwargs.update(prepared_consent=prepared, offline_grants=orch.offline_grants)
+    from orchestrator.offline_grant import OfflineGrantError
+    from scheduler.store import ScheduleActionError
+    try:
+        job = await asyncio.to_thread(
+            store.create_job,
+            user_id, name=cleaned["name"], instruction=cleaned["instruction"],
+            schedule_kind=cleaned["schedule_kind"], schedule_expr=cleaned["schedule_expr"],
+            timezone=cleaned["timezone"], consented_scopes=consented,
+            agent_id=cleaned["agent_id"], target_chat_id=prop.get("chat_id"),
+            next_run_at=next_run, offline_grant_id=None, **consent_kwargs)
+    except OfflineGrantError:
+        await _say("Your sign-in changed or consent expired. Approve this schedule again.", "warning")
+        return
+    except ScheduleActionError as exc:
+        message = ("Your sign-in changed or consent expired. Approve this schedule again."
+                   if exc.code == "schedule_consent_unavailable" else
+                   "Couldn’t confirm the schedule was saved. Check your schedules before trying again.")
+        await _say(message, "warning")
+        return
+    grant_id = job.get("offline_grant_id")
     _proposals(orch).pop(proposal_id, None)
+    if grant_id:
+        agent_id = cleaned["agent_id"] or None
+        await _audit(user_id, "schedule.consent_captured",
+                     (f"Captured durable offline consent for agent '{agent_id}'"
+                      if agent_id else "Captured durable offline consent for an agent-less job"),
+                     correlation_id=grant_id,
+                     inputs_meta={"agent_id": agent_id, "consented_scopes": consented,
+                                  "grant_id": grant_id, "durable_days": 365})
     await _audit(user_id, "schedule.create",
                  f"Created scheduled job '{cleaned['name']}' from chat consent",
                  correlation_id=proposal_id, chat_id=prop.get("chat_id"),
@@ -446,6 +473,8 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     else:
         offline_hint = (" It cannot run while you are signed out yet — grant offline "
                         "access in Settings → Personalization → Schedule.")
+    if not current_registration():
+        return
     await orch.send_ui_render(websocket, [
         Alert(message=(f"Scheduled '{cleaned['name']}' — runs "
                        f"{human_cadence(cleaned['schedule_kind'], cleaned['schedule_expr'], cleaned['timezone'])}."

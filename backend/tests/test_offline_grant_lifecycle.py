@@ -22,6 +22,7 @@ from cryptography.fernet import Fernet
 from orchestrator import offline_grant as og
 from orchestrator import web_auth
 from orchestrator.offline_grant import OfflineGrantError, OfflineGrantStore
+from tests.helpers.session_consent_088 import consent_from_store, synthetic_consent
 from tests.helpers.session_plane_runtime import (
     isolated_plane_runtime,
     purge_revocations,
@@ -79,11 +80,16 @@ def _grant_record(plane_runtime, user_id, grant_id):
 def _capture(store, user_id, refresh_token, agent_id=None):
     """Capture consent from a real canonical session, as product callers do."""
     if refresh_token:
-        web_session_store(store._grants.plane_runtime).create(
-            "consent-" + uuid.uuid4().hex, user_id=user_id,
+        sessions = web_session_store(store._grants.plane_runtime)
+        sid = "consent-" + uuid.uuid4().hex
+        sessions.create(
+            sid, user_id=user_id,
             access_token="access-initial", refresh_token=refresh_token,
             hard_max_seconds=365 * 86400)
-    return store.capture(user_id, refresh_token, agent_id=agent_id)
+        selected = consent_from_store(sessions, user_id, sid)
+    else:
+        selected = None
+    return store.capture(user_id, selected, agent_id=agent_id)
 
 
 def _has_live_grant(plane_runtime, user_id):
@@ -215,7 +221,7 @@ def test_capture_fails_closed_without_key(plane_runtime, monkeypatch):
             OfflineGrantStore(
                 plane_runtime=plane_runtime,
                 plane_repositories=plane_runtime.repositories,
-            ).capture(user_id, "rt-should-never-store")
+            ).capture(user_id, synthetic_consent(user_id))
         assert _has_live_grant(plane_runtime, user_id) is False
     finally:
         _revoke_grants(plane_runtime, user_id)
@@ -225,7 +231,7 @@ def test_capture_rejects_empty_refresh_token(plane_runtime, grant_store):
     """025: a session without offline_access yields no refresh token — refuse."""
     user_id = f"u-{uuid.uuid4()}"
     try:
-        with pytest.raises(OfflineGrantError, match="no refresh token"):
+        with pytest.raises(OfflineGrantError, match="consenting session required"):
             _capture(grant_store, user_id, "")
         assert _has_live_grant(plane_runtime, user_id) is False
     finally:
@@ -407,7 +413,7 @@ def test_auth_logout_revokes_real_offline_grant(
         sid, user_id=user_id, access_token="at", refresh_token=session_refresh,
         hard_max_seconds=web_auth.HARD_MAX_SECONDS,
     )
-    grant_id = grant_store.capture(user_id, session_refresh)
+    grant_id = grant_store.capture(user_id, consent_from_store(session_store, user_id, sid))
     assert grant_store.is_valid(grant_id, user_id=user_id) is True
 
     req = _FakeRequest(cookies={web_auth.COOKIE_NAME: web_auth._sign(sid)})

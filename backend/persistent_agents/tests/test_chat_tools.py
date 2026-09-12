@@ -1,4 +1,5 @@
 """Only explicit authenticated owner text can trigger chat lifecycle controls."""
+from tests.helpers.session_consent_088 import synthetic_consent
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -11,7 +12,7 @@ service = shared_service
 
 
 async def setup(service, original="pause Release watch"):
-    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
+    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     socket = object()
     service.orch.ui_sessions[socket] = {"sub": "owner"}
     service.orch.persistent_assignments = service

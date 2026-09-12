@@ -1,4 +1,5 @@
 """Action receipts, actual-dispatch fences and shared usage bounds."""
+from tests.helpers.session_consent_088 import synthetic_consent
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -32,7 +33,7 @@ service = shared_service
 
 @pytest.fixture
 async def executor(service, monkeypatch):
-    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
+    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     monkeypatch.setattr("persistent_agents.execution.safe_text", AsyncMock())
     monkeypatch.setattr("persistent_agents.execution.get_phi_gate", lambda:
         PHIGate(analyzer=SimpleNamespace(analyze=Mock(return_value=[]))))

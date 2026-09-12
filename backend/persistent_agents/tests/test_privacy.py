@@ -1,5 +1,6 @@
 """Production detector contract and full-observation privacy boundaries."""
 
+from tests.helpers.session_consent_088 import synthetic_consent
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -110,9 +111,9 @@ def test_model_evidence_keeps_all_prose_and_flags_but_ledger_hashes_stay_in_plan
 async def test_creation_uses_public_classifier_view_without_changing_authorized_url(service):
     service.phi_gate = detector()
     result = await service.create("owner", {"sub": "owner"},
-        CreateAssignmentRequest.model_validate(create_payload()))
+        CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     assert result.definition.source["arguments"]["url"] == URL
-    service.orch.offline_grants.capture.assert_called_once()
+    service.orch.offline_grants.capture_in_transaction.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -126,8 +127,9 @@ async def test_private_definition_is_refused_before_grant_or_storage(service, fi
     else:
         body[field] = "John Smith"
     with pytest.raises(AssignmentError, match="sensitive_content_refused"):
-        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(body))
-    service.orch.offline_grants.capture.assert_not_called()
+        await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(body), selected_session=synthetic_consent("owner"))
+    service.orch.offline_grants.prepare_capture.assert_not_called()
+    service.orch.offline_grants.capture_in_transaction.assert_not_called()
     assert not service.store.records
 
 

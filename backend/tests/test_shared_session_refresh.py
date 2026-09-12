@@ -12,6 +12,7 @@ from cryptography.fernet import Fernet
 from orchestrator import offline_grant as og
 from orchestrator import session_store as ss
 from orchestrator import web_auth
+from tests.helpers.session_consent_088 import consent_from_store
 from tests.helpers.session_plane_runtime import (
     get_session_record, isolated_plane_runtime, replace_session_record, web_session_store,
 )
@@ -105,10 +106,10 @@ def test_replaced_session_with_reused_generation_rejects_late_refresh(stores, ru
             access_token_ciphertext=sessions._enc("replacement-access"),
             refresh_token_ciphertext=sessions._enc("replacement-refresh"),
         )
-        replace_session_record(runtime, replacement)
+        replacement = replace_session_record(runtime, replacement)
         return {"access_token": "old-family-result", "refresh_token": "old-family-refresh"}
 
-    with pytest.raises(ss.SessionRefreshUnavailable, match="changed"):
+    with pytest.raises(ss.SessionRefreshUnavailable, match="missing or expired"):
         asyncio.run(sessions.refresh_credential(sid, owner_id=owner, exchange=exchange))
     assert get_session_record(runtime, sid) == replacement
     assert web_session_store(runtime).get(sid)["access_token"] == "replacement-access"
@@ -140,15 +141,17 @@ def test_replacement_between_read_and_claim_never_sends_old_refresh(
         return {"access_token": "current-access", "refresh_token": "current-refresh"}
 
     monkeypatch.setattr(repository, "compare_and_set_refresh", replace_before_claim)
-    result = asyncio.run(sessions.refresh_credential(sid, owner_id=owner, exchange=exchange))
-    assert seen == [("replacement-refresh", "replacement-access")]
-    assert result["access_token"] == "current-access"
+    with pytest.raises(ss.SessionRefreshUnavailable, match="missing or expired"):
+        asyncio.run(sessions.refresh_credential(sid, owner_id=owner, exchange=exchange))
+    assert seen == []
+    assert sessions.get(sid)["access_token"] == "replacement-access"
+    assert sessions.get(sid)["refresh_token"] == "replacement-refresh"
 
 
 def test_capture_links_siblings_to_one_session_and_rejects_unmatched_token(stores):
     sessions, grants, owner, sid = stores
-    first = grants.capture(owner, "refresh-initial", agent_id="a")
-    second = grants.capture(owner, "refresh-initial", agent_id="b")
+    first = grants.capture(owner, consent_from_store(sessions, owner, sid), agent_id="a")
+    second = grants.capture(owner, consent_from_store(sessions, owner, sid), agent_id="b")
     assert first != second
     for grant_id in (first, second):
         record = grants._grant(owner, grant_id)
@@ -198,7 +201,7 @@ def _idp(monkeypatch, callback):
 
 def test_parallel_sibling_grants_survive_repeated_rotation_and_restart(stores, runtime, monkeypatch):
     sessions, grants, owner, sid = stores
-    grant_ids = [grants.capture(owner, "refresh-initial", agent_id=str(i)) for i in range(2)]
+    grant_ids = [grants.capture(owner, consent_from_store(sessions, owner, sid), agent_id=str(i)) for i in range(2)]
     seen = []
 
     async def exchange(data):
@@ -222,7 +225,7 @@ def test_parallel_sibling_grants_survive_repeated_rotation_and_restart(stores, r
 
 def test_revocation_during_rotation_persists_family_but_returns_no_access(stores, monkeypatch):
     sessions, grants, owner, sid = stores
-    grant_id = grants.capture(owner, "refresh-initial")
+    grant_id = grants.capture(owner, consent_from_store(sessions, owner, sid))
 
     async def exchange(data):
         await asyncio.to_thread(grants.revoke_for_user, owner)
@@ -258,7 +261,7 @@ def test_malformed_rotation_is_not_returned_or_replayed(stores, payload):
 )
 def test_http_response_is_bounded_and_malformed_body_is_sanitized(stores, monkeypatch, body):
     sessions, grants, owner, sid = stores
-    grant_id = grants.capture(owner, "refresh-initial")
+    grant_id = grants.capture(owner, consent_from_store(sessions, owner, sid))
 
     async def exchange(data):
         return body
@@ -286,7 +289,7 @@ def test_timeout_is_bounded_without_busy_polling(stores, monkeypatch):
     assert calls == ["refresh-initial"]
 
 
-def test_legacy_exact_match_converts_without_copying_or_reusing_old_token(stores, runtime, monkeypatch):
+def test_legacy_exact_token_match_requires_consent_without_rebinding(stores, runtime, monkeypatch):
     sessions, grants, owner, sid = stores
     grant_id = str(uuid.uuid4())
     with runtime.transaction() as tx:
@@ -295,14 +298,15 @@ def test_legacy_exact_match_converts_without_copying_or_reusing_old_token(stores
             encrypted_refresh_token=og._fernet().encrypt(b"refresh-initial"),
             issued_at=og._now_ms(), expires_at=og._now_ms() + 60000)
 
-    async def exchange(data):
-        assert data["refresh_token"] == "refresh-initial"
-        return {"access_token": "fresh", "refresh_token": "rotated"}
-
-    _idp(monkeypatch, exchange)
-    assert asyncio.run(grants.mint_access_token(grant_id, user_id=owner)) == "fresh"
+    before = grants._grant(owner, grant_id)
+    monkeypatch.setenv("KEYCLOAK_TOKEN_URL", "https://idp.test/token")
+    monkeypatch.setattr(og.aiohttp, "ClientSession", lambda **kw: pytest.fail("no HTTP"))
+    with pytest.raises(og.OfflineGrantError, match="re-consent"):
+        asyncio.run(grants.mint_access_token(grant_id, user_id=owner))
+    assert grants._grant(owner, grant_id) == before
     plaintext = og._fernet().decrypt(grants._grant(owner, grant_id).encrypted_refresh_token)
-    assert sid.encode() in plaintext and b"refresh-initial" not in plaintext
+    assert plaintext == b"refresh-initial"
+    assert sessions.get(sid)["refresh_token"] == "refresh-initial"
 
 
 def test_legacy_unmatched_token_never_contacts_idp(stores, runtime, monkeypatch):
@@ -321,7 +325,7 @@ def test_legacy_unmatched_token_never_contacts_idp(stores, runtime, monkeypatch)
 
 def test_session_identity_and_owner_are_checked_before_exchange(stores, runtime):
     sessions, grants, owner, sid = stores
-    reference = sessions.session_reference(owner, "refresh-initial")
+    reference = sessions.session_reference(owner, session_id=sid, incarnation_id=get_session_record(runtime, sid).incarnation_id)
 
     async def exchange(*args):
         pytest.fail("no HTTP")
@@ -381,7 +385,7 @@ def test_wrong_key_and_keyless_coordinator_refuse_before_http(stores, runtime):
     with pytest.raises(ss.SessionRefreshUnavailable, match="encrypted"):
         asyncio.run(sessions.refresh_credential(sid, owner_id=owner, exchange=exchange))
     with pytest.raises(ss.SessionRefreshUnavailable, match="encrypted"):
-        sessions.session_reference(owner, "refresh-initial")
+        sessions.session_reference(owner, session_id=sid, incarnation_id=get_session_record(runtime, sid).incarnation_id)
 
 
 @pytest.mark.parametrize("body", [b"not-fernet", og._SESSION_REFERENCE_PREFIX.encode() + b"{}",
@@ -401,7 +405,7 @@ def test_corrupted_grant_reference_is_sanitized(stores, runtime, monkeypatch, bo
         asyncio.run(grants.mint_access_token(gid, user_id=owner))
 
 
-def test_legacy_conversion_cannot_revive_a_revoked_grant(stores, runtime, monkeypatch):
+def test_revoked_legacy_grant_never_attempts_reference_conversion(stores, runtime, monkeypatch):
     _, grants, owner, _ = stores
     gid = str(uuid.uuid4())
     with runtime.transaction() as tx:
@@ -409,23 +413,17 @@ def test_legacy_conversion_cannot_revive_a_revoked_grant(stores, runtime, monkey
             tx, grant_id=gid, owner_id=owner, agent_id=None,
             encrypted_refresh_token=og._fernet().encrypt(b"refresh-initial"),
             issued_at=og._now_ms(), expires_at=og._now_ms() + 60000)
-    original = grants._session_reference
-
-    def revoke_then_reference(*args):
-        reference = original(*args)
-        grants.revoke_for_user(owner)
-        return reference
-
-    monkeypatch.setattr(grants, "_session_reference", revoke_then_reference)
+    grants.revoke_for_user(owner)
+    monkeypatch.setattr(grants, "_session_reference", lambda *args: pytest.fail("no conversion"))
     monkeypatch.setenv("KEYCLOAK_TOKEN_URL", "https://idp.test/token")
-    with pytest.raises(og.OfflineGrantError, match="changed"):
+    with pytest.raises(og.OfflineGrantError, match="revoked"):
         asyncio.run(grants.mint_access_token(gid, user_id=owner))
     assert not grants._grant(owner, gid).active
 
 
 def test_deleted_session_grant_is_unusable_even_if_grant_row_is_live(stores, monkeypatch):
     sessions, grants, owner, sid = stores
-    gid = grants.capture(owner, "refresh-initial")
+    gid = grants.capture(owner, consent_from_store(sessions, owner, sid))
     sessions.delete(sid)
     monkeypatch.setenv("KEYCLOAK_TOKEN_URL", "https://idp.test/token")
     with pytest.raises(og.OfflineGrantError, match="unavailable"):
@@ -453,7 +451,7 @@ def test_entire_grant_path_has_a_hard_time_bound(stores, monkeypatch):
 
 def test_browser_and_assignment_refresh_share_the_actual_canonical_family(stores, monkeypatch):
     sessions, grants, owner, sid = stores
-    gid = grants.capture(owner, "refresh-initial")
+    gid = grants.capture(owner, consent_from_store(sessions, owner, sid))
     seen = []
 
     async def exchange(data):
@@ -494,7 +492,8 @@ def test_browser_and_assignment_refresh_share_the_actual_canonical_family(stores
     monkeypatch.setattr(web_auth, "_keycloak_config", lambda: (
         "https://idp.test/realm", "astral-frontend", ""))
     session = {"sid": sid, "sub": owner, "access_token": "access-initial",
-               "refresh_token": "refresh-initial", "created_at": time.time()}
+               "refresh_token": "refresh-initial", "created_at": time.time(),
+               "incarnation_id": sessions.get(sid)["incarnation_id"]}
     monkeypatch.setattr(web_auth, "_SESSIONS", {sid: session})
 
     async def scenario():
@@ -520,7 +519,8 @@ def test_logout_uses_atomically_deleted_credential_not_the_process_cache(stores,
     asyncio.run(other.refresh_credential(sid, owner_id=owner, exchange=exchange))
     monkeypatch.setattr(web_auth, "_get_store", lambda: sessions)
     session = {"sub": owner, "access_token": stale["access_token"],
-               "refresh_token": stale["refresh_token"]}
+               "refresh_token": stale["refresh_token"],
+               "incarnation_id": stale["incarnation_id"]}
     asyncio.run(web_auth._kill_session(sid, session))
     assert session["refresh_token"] == "refresh-latest"
     assert sessions.get(sid) is None

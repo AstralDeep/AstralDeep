@@ -1,4 +1,5 @@
 """Supervisor lifecycle, admission, checkpoint fencing and bounded task joins."""
+from tests.helpers.session_consent_088 import synthetic_consent
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ service = shared_service
 
 @pytest.fixture
 async def supervisor(service, monkeypatch):
-    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()))
+    record = await service.create("owner", {"sub": "owner"}, CreateAssignmentRequest.model_validate(create_payload()), selected_session=synthetic_consent("owner"))
     coordinator = SimpleNamespace(expire_execution_leases=Mock(), submit=Mock(return_value=SimpleNamespace(
         accepted=True, operation_id=uuid4())), claim_operation=Mock(return_value=SimpleNamespace(fence=object())),
         cancel=Mock(), renew_execution_lease=Mock(), assert_current_execution=Mock(), terminalize=Mock())

@@ -24,6 +24,7 @@ class AssignmentStore:
             plane_repositories = source.plane_repositories
         if plane_runtime is None:
             raise AssignmentError("assignment_runtime_unavailable", 503)
+        self.plane_runtime = plane_runtime
         catalog = plane_repositories or plane_runtime.repositories
         self.repository = getattr(catalog, "assignments", None)
         if self.repository is None:
@@ -31,10 +32,17 @@ class AssignmentStore:
         self.async_runtime = async_runtime or AsyncPlaneRuntime(
             plane_runtime, maximum_concurrency=8, admission_timeout_seconds=2.0)
 
-    async def transaction(self, callback: Callable[[Any, Any], _T]) -> _T:
+    async def transaction(
+        self, callback: Callable[[Any, Any], _T], *, bound_session_waits: bool = False,
+    ) -> _T:
+        """Run repository work, optionally bounding SQL before any consent receipt read."""
+        def work(transaction):
+            if bound_session_waits:
+                self.plane_runtime.repositories.history.sessions.bound_request_execution_waits(transaction)
+            return callback(transaction, self.repository)
+
         try:
-            return await self.async_runtime.run_in_transaction(
-                lambda transaction: callback(transaction, self.repository))
+            return await self.async_runtime.run_in_transaction(work)
         except AssignmentError:
             raise
         except PlaneError as exc:
@@ -50,6 +58,12 @@ class AssignmentStore:
             else:
                 status = 503
             raise AssignmentError(code, status) from exc
+        except Exception:
+            if bound_session_waits:
+                # Driver lock/statement timeouts need not be PlaneError. Keep
+                # bounded request failures data-free at the HTTP boundary.
+                raise AssignmentError("assignment_transaction_unavailable", 503) from None
+            raise
 
     async def call(self, method_name: str, **kwargs):
         method = getattr(self.repository, method_name, None)

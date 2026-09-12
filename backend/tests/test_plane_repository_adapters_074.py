@@ -492,18 +492,25 @@ def test_credential_adapter_preserves_owner_scope(monkeypatch) -> None:
 
 
 def test_offline_grant_adapter_requires_owner_for_validity(monkeypatch) -> None:
+    from tests.helpers.session_consent_088 import synthetic_consent
+    from unittest.mock import Mock
+    from datetime import datetime, timezone
     key = Fernet.generate_key().decode()
     monkeypatch.setattr("orchestrator.offline_grant.OFFLINE_GRANT_ENC_KEY", key)
     repository = _OfflineGrants()
+    selected = synthetic_consent("alice")
+    sessions = SimpleNamespace(bound_request_execution_waits=Mock(),
+        assert_current_consent=Mock(return_value=SimpleNamespace(observed_at=datetime.now(timezone.utc))))
     store = OfflineGrantStore(
-        db=_Database(offline_grants=repository),
+        db=_Database(offline_grants=repository, history=SimpleNamespace(sessions=sessions)),
         plane_repository=repository,
     )
-    monkeypatch.setattr(store, "_session_reference", lambda owner, token: {
-        "session_id": "session-a", "created_at": 1, "interactive_anchor": 1,
-    })
+    monkeypatch.setattr(store, "_session_reference", lambda owner, selection: selection.reference(owner))
 
-    grant_id = store.capture("alice", "refresh", "agent-a")
+    grant_id = store.capture("alice", selected, "agent-a")
+    assert sessions.assert_current_consent.call_count == 2
+    assert all(call.kwargs["observation"] is selected.observation
+               for call in sessions.assert_current_consent.call_args_list)
     assert store.is_valid(grant_id, user_id="alice") is True
     assert store.is_valid(grant_id, user_id="bob") is False
     assert store.latest_valid_for("alice", "agent-a") == grant_id
