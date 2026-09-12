@@ -121,7 +121,7 @@ def test_signout_is_danger_logout():
 
 def test_to_dict_shape_and_version():
     d = menu_model_dict(["admin", "user"], pulse_enabled=True)
-    assert d["version"] == MODEL_VERSION == 1
+    assert d["version"] == MODEL_VERSION == 2
     assert set(d.keys()) == {"version", "topbar", "menu", "signout"}
     assert [c["key"] for c in d["topbar"]] == ["brand", "status", "pulse", "timeline", "settings"]
     assert [g["key"] for g in d["menu"]] == ["account", "help", "admin"]

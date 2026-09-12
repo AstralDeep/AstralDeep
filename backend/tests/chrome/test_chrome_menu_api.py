@@ -21,6 +21,10 @@ from webrender.chrome.menu_model import menu_model_dict
 @pytest.fixture(autouse=True)
 def _pulse_off(monkeypatch):
     monkeypatch.delenv("FF_PULSE_DIGEST", raising=False)
+    from shared.feature_flags import flags
+    original = flags.is_enabled
+    monkeypatch.setattr(flags, "is_enabled", lambda name: False if name in {
+        "artifact_export", "artifact_sharing"} else original(name))
 
 
 def _client(payload):
@@ -37,7 +41,7 @@ def test_native_menu_body_omits_admin_even_for_admins():
     r = c.get("/api/chrome/menu")
     assert r.status_code == 200
     body = r.json()
-    assert body["version"] == 1
+    assert body["version"] == 2
     assert [g["key"] for g in body["menu"]] == ["account", "help"]  # no admin group
     assert "admin_tools" not in json.dumps(body)
     assert [c_["key"] for c_ in body["topbar"]] == ["brand", "status", "timeline", "settings"]

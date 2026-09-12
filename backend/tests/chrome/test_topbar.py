@@ -86,7 +86,7 @@ def test_canvas_page_actions_live_in_the_topbar_hidden_by_default():
     only thing that reveals them; and they keep the class names the delegated
     click handlers dispatch on, so the move changed placement, not behavior."""
     for roles in (["user"], ["admin", "user"], None):
-        html = render_topbar(roles=roles)
+        html = render_topbar(roles=roles, export_enabled=True, share_enabled=True)
         for btn_id in ('id="astral-export-page-btn"', 'id="astral-share-page-btn"'):
             assert btn_id in html
             assert html.index(btn_id) < html.index('id="astral-settings"')
