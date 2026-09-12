@@ -222,16 +222,16 @@ class AssignmentService:
             except Exception as exc:
                 raise AssignmentError("assignment_source_unavailable", 422) from exc
 
-    async def _definition(self, owner_id, claims, body):
-        if body.consent is not True:
-            raise AssignmentError("assignment_consent_required", 422)
+    async def _definition_policy(self, owner_id, claims, *, name, instructions, source,
+                                 allowed_tools, completion_condition, conversation_id):
+        """Shared content/source/permission policy, without inventing offline consent."""
         try:
             protected_text = privacy_text(content_text({
-                "name": body.name, "instructions": body.instructions,
-                "arguments": body.source.arguments,
-                "linked_document_urls": body.source.linked_document_urls,
-                "completion_condition": body.completion_condition,
-            }), reviewed_urls(body.source.model_dump()))
+                "name": name, "instructions": instructions,
+                "arguments": source.arguments,
+                "linked_document_urls": source.linked_document_urls,
+                "completion_condition": completion_condition,
+            }), reviewed_urls(source.model_dump()))
             contains_phi = await _thread(self.phi_gate.contains_phi, protected_text)
         except ValueError as exc:
             raise AssignmentError("assignment_sensitive_content_refused", 422) from exc
@@ -239,17 +239,26 @@ class AssignmentService:
             raise AssignmentError("assignment_phi_gate_unavailable", 503) from exc
         if contains_phi:
             raise AssignmentError("assignment_sensitive_content_refused", 422)
-        source = body.source
         await self._source(source)
-        identities = tuple(tool.identity for tool in body.allowed_tools)
+        identities = tuple(tool.identity for tool in allowed_tools)
         scopes = await _thread(self._live_tools, owner_id, claims, identities, source)
-        if body.conversation_id is not None:
+        if conversation_id is not None:
             try:
-                owned_chat = await _thread(self.orch.history.get_chat, body.conversation_id, user_id=owner_id)
+                owned_chat = await _thread(self.orch.history.get_chat, conversation_id, user_id=owner_id)
             except Exception as exc:
                 raise AssignmentError("assignment_destination_unavailable", 503) from exc
             if owned_chat is None:
                 raise AssignmentError("assignment_destination_not_found", 404)
+        return scopes
+
+    async def _definition(self, owner_id, claims, body):
+        if body.consent is not True:
+            raise AssignmentError("assignment_consent_required", 422)
+        scopes = await self._definition_policy(owner_id, claims, name=body.name,
+            instructions=body.instructions, source=body.source, allowed_tools=body.allowed_tools,
+            completion_condition=body.completion_condition, conversation_id=body.conversation_id)
+        source = body.source
+        identities = tuple(tool.identity for tool in body.allowed_tools)
         limits = body.limits.to_plane()
         if body.limits.max_depth:
             from shared.feature_flags import flags
