@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -95,9 +96,14 @@ def test_signed_handoff_is_bound_to_agent_provider_and_astral_user():
 
 def test_tampered_and_expired_tokens_fail_closed():
     state, _assertion = _handoff()
+    body, signature = state.rsplit(".", 1)
+    mac = bytearray(base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4)))
+    mac[0] ^= 1
+    tampered_signature = base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
+    # Change an authenticated byte, not the final base64 character's padding bits.
     with pytest.raises(IdentityLinkError):
         decode_signed_payload(
-            state[:-1] + ("A" if state[-1] != "A" else "B"),
+            f"{body}.{tampered_signature}",
             SECRET,
             expected_type="identity-link-state",
             now=NOW,

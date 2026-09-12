@@ -87,7 +87,7 @@ class LoopbackAgent:
             method=obj.get("method", ""),
             params=obj.get("params", {}) or {},
         )
-        resp = self.server.process_request(req)  # REAL tool execution
+        resp = await _run_sync(self.server.process_request, req)  # REAL tool execution
         fut = self.orch.pending_requests.get(req.request_id)
         if fut is not None and not fut.done():
             fut.set_result(resp)
@@ -124,8 +124,21 @@ class InProcessDriver:
 
         from orchestrator.orchestrator import Orchestrator
 
-        self.orch = Orchestrator()
+        # Construction performs the same blocking Plane initialization used by
+        # product main before its event loop starts. Keep that work off-loop,
+        # but retain ownership until it finishes: cancelling to_thread alone
+        # would abandon a graph that the worker can still publish afterward.
+        construction = asyncio.create_task(
+            asyncio.to_thread(Orchestrator),
+            name="in-process-verification-construction",
+        )
+        error, cancellation = await _observe_task_through_cancellation(construction)
+        if error is not None:
+            raise error
+        self.orch = construction.result()
         try:
+            if cancellation is not None:
+                raise cancellation
             self._register_general_agent()
             self.orch.runtime_composition.start()
         except BaseException:
@@ -176,7 +189,7 @@ class InProcessDriver:
         self._execution_principals[scoped_id] = scoped
         return scoped
 
-    def _seed_llm_config(self, user_id: str) -> None:
+    async def _seed_llm_config(self, user_id: str) -> None:
         """Feature 054: the operator-default env path is gone — seed the
         harness principal's ``user_llm_config`` row so the first-run gate /
         availability pre-flight passes (in-process ephemeral DB only;
@@ -188,7 +201,8 @@ class InProcessDriver:
         if store is None:  # pragma: no cover — orchestrator predates 054
             return
         try:
-            store.set_sync(
+            await _run_sync(
+                store.set_sync,
                 user_id,
                 provider="custom",
                 base_url="http://verif.invalid/v1",
@@ -297,12 +311,12 @@ class InProcessDriver:
         }
 
     # ------------------------------------------------------------ sessions
-    def _register_session(self, principal: Principal, chat_id: Optional[str] = None) -> CaptureSocket:
+    async def _register_session(self, principal: Principal, chat_id: Optional[str] = None) -> CaptureSocket:
         principal = self._execution_principal(principal)
+        await self._seed_llm_config(principal.user_id)  # 054: pass the first-run gate
         ws = CaptureSocket(label=principal.user_id)
         self.orch.ui_sessions[ws] = principal.claims()
         self.orch.ui_clients.append(ws)
-        self._seed_llm_config(principal.user_id)  # 054: pass the first-run gate
         if chat_id is not None:
             self.orch._ws_active_chat[id(ws)] = chat_id
         return ws
@@ -315,15 +329,17 @@ class InProcessDriver:
         self.orch.ui_sessions.pop(ws, None)
         self.orch._ws_active_chat.pop(id(ws), None)
 
-    def grant_default_scopes(self, principal: Principal) -> None:
+    async def grant_default_scopes(self, principal: Principal) -> None:
         principal = self._execution_principal(principal)
-        self.orch.tool_permissions.set_agent_scopes(
+        await _run_sync(
+            self.orch.tool_permissions.set_agent_scopes,
             principal.user_id, self.agent_id, dict(READ_SCOPES)
         )
 
     async def set_scope(self, principal: Principal, agent_id: str, scope: str, enabled: bool) -> None:
         principal = self._execution_principal(principal)
-        self.orch.tool_permissions.set_agent_scopes(
+        await _run_sync(
+            self.orch.tool_permissions.set_agent_scopes,
             principal.user_id, agent_id or self.agent_id, {scope: enabled}
         )
 
@@ -331,10 +347,10 @@ class InProcessDriver:
     async def run_scenario(self, scenario: Scenario) -> CapturedEvidence:
         p = self._execution_principal(scenario.principal)
         persona = scenario.persona
-        self.grant_default_scopes(p)
+        await self.grant_default_scopes(p)
         att = await self.upload_as(p, persona.fixture)
-        chat_id = self.orch.history.create_chat(user_id=p.user_id)
-        ws = self._register_session(p, chat_id)
+        chat_id = await _run_sync(self.orch.history.create_chat, user_id=p.user_id)
+        ws = await self._register_session(p, chat_id)
         self.orch._call_llm = scripted_llm_for(persona, att["attachment_id"], att["path"])
         attachments = [
             {
@@ -349,8 +365,10 @@ class InProcessDriver:
             )
             messages = list(ws.outputs)
             components = flatten_components(messages)
-            workspace_state = self.orch.workspace.live_components(chat_id, p.user_id)
-            audit_rows, chain_ok = self._read_audit(p.user_id)
+            workspace_state = await _run_sync(
+                self.orch.workspace.live_components, chat_id, p.user_id
+            )
+            audit_rows, chain_ok = await _run_sync(self._read_audit, p.user_id)
             return CapturedEvidence(
                 evidence_id=f"{scenario.scenario_id}:ev",
                 scenario_id=scenario.scenario_id,
@@ -376,9 +394,9 @@ class InProcessDriver:
         """Send a turn as ``principal`` referencing ``attachment_id`` (may be
         foreign). Used to prove cross-user refusal (US2)."""
         principal = self._execution_principal(principal)
-        self.grant_default_scopes(principal)
-        chat_id = self.orch.history.create_chat(user_id=principal.user_id)
-        ws = self._register_session(principal, chat_id)
+        await self.grant_default_scopes(principal)
+        chat_id = await _run_sync(self.orch.history.create_chat, user_id=principal.user_id)
+        ws = await self._register_session(principal, chat_id)
         # Scripted LLM that never calls tools (we only care about the attach gate).
         import types as _types
 
@@ -397,7 +415,7 @@ class InProcessDriver:
                 user_id=principal.user_id, attachments=attachments,
             )
             messages = list(ws.outputs)
-            audit_rows, chain_ok = self._read_audit(principal.user_id)
+            audit_rows, chain_ok = await _run_sync(self._read_audit, principal.user_id)
             return CapturedEvidence(
                 evidence_id=f"xuser:{principal.user_id}:ev",
                 scenario_id=f"xuser:{principal.user_id}",
@@ -419,14 +437,16 @@ class InProcessDriver:
 
         a = self._execution_principal(make_principal(run_id, "xuserA"))
         b = self._execution_principal(make_principal(run_id, "xuserB"))
-        self.grant_default_scopes(a)
-        self.grant_default_scopes(b)
+        await self.grant_default_scopes(a)
+        await self.grant_default_scopes(b)
         persona = get_persona("everyday")
         att = await self.upload_as(a, persona.fixture)
         ev = await self.reference_attachment_as(b, att["attachment_id"], att["filename"])
         leaked = any(m in json.dumps(ev.messages) for m in persona.fixture.known_markers)
         # B's workspace must never contain A's components.
-        b_ws = self.orch.workspace.live_components((ev.extra or {}).get("chat_id", ""), b.user_id)
+        b_ws = await _run_sync(
+            self.orch.workspace.live_components, (ev.extra or {}).get("chat_id", ""), b.user_id
+        )
         ev.extra.update(
             {
                 "victim": a.user_id,
@@ -444,14 +464,15 @@ class InProcessDriver:
         from verification.personas import get_persona
 
         c = self._execution_principal(make_principal(run_id, "scopeC"))
-        self.orch.tool_permissions.set_agent_scopes(
+        await _run_sync(
+            self.orch.tool_permissions.set_agent_scopes,
             c.user_id, self.agent_id,
             {"tools:read": False, "tools:search": False, "tools:files": False},
         )
         persona = get_persona("everyday")
         att = await self.upload_as(c, persona.fixture)
-        chat_id = self.orch.history.create_chat(user_id=c.user_id)
-        ws = self._register_session(c, chat_id)
+        chat_id = await _run_sync(self.orch.history.create_chat, user_id=c.user_id)
+        ws = await self._register_session(c, chat_id)
         self.orch._call_llm = scripted_llm_for(persona, att["attachment_id"], att["path"])
         try:
             await self.orch.handle_chat_message(
@@ -459,7 +480,7 @@ class InProcessDriver:
                 attachments=[{"attachment_id": att["attachment_id"],
                               "filename": att["filename"], "category": att["category"]}],
             )
-            audit_rows, chain = self._read_audit(c.user_id)
+            audit_rows, chain = await _run_sync(self._read_audit, c.user_id)
             read_ok = any(
                 r.get("event_class") == "agent_tool_call" and r.get("outcome") == "success"
                 and str(r.get("action_type") or "").startswith("tool.read_")
@@ -518,22 +539,25 @@ class InProcessDriver:
         # correlation_id, and that column is UUID-typed.
         draft_id = str(_uuid.uuid4())
         draft_store = agentic_creation._draft_store(self.orch)
-        draft_store.create_draft_agent(
-            draft_id, owner.user_id, "ZZV Parser",
-            f"zzv_parser_{_uuid.uuid4().hex[:6]}", "Synthetic verification parser draft",
-            origin="auto_attachment",
-        )
         payload = {"draft_id": draft_id}
-        ws_owner = self._register_session(owner)
-        ws_other = self._register_session(other)
+        ws_owner = None
+        ws_other = None
         try:
+            await _run_sync(
+                draft_store.create_draft_agent,
+                draft_id, owner.user_id, "ZZV Parser",
+                f"zzv_parser_{_uuid.uuid4().hex[:6]}", "Synthetic verification parser draft",
+                origin="auto_attachment",
+            )
+            ws_owner = await self._register_session(owner)
+            ws_other = await self._register_session(other)
             r_owner = await agentic_creation._h_draft_approve(
                 self.orch, ws_owner, owner.user_id, ["user"], payload
             )
             r_other = await agentic_creation._h_draft_approve(
                 self.orch, ws_other, other.user_id, ["user"], payload
             )
-            audit_rows, chain = self._read_audit(owner.user_id)
+            audit_rows, chain = await _run_sync(self._read_audit, owner.user_id)
             rejected_audited = any(
                 r.get("action_type") == "lifecycle.rejected" for r in audit_rows
             )
@@ -549,12 +573,14 @@ class InProcessDriver:
                 },
             )
         finally:
-            self._drop_session(ws_owner)
-            self._drop_session(ws_other)
+            if ws_owner is not None:
+                self._drop_session(ws_owner)
+            if ws_other is not None:
+                self._drop_session(ws_other)
             # PlaneDraftStore is already bound to the orchestrator's composed
             # runtime/catalog. Cleanup failures propagate: this qualification
             # probe must not pass while leaving a synthetic draft behind.
-            draft_store.delete_draft_agent(draft_id)
+            await _run_sync(draft_store.delete_draft_agent, draft_id)
 
     def enrich_thin_client(self, ev: CapturedEvidence) -> CapturedEvidence:
         """Attach the objective client-surface measurement + a backend ROTE
@@ -628,7 +654,7 @@ class InProcessDriver:
                 name="in-process-verification-teardown",
             )
             self._teardown_task = task
-        error, cancellation = await _observe_close_through_cancellation(task)
+        error, cancellation = await _observe_task_through_cancellation(task)
         if error is not None:
             raise error
         if cancellation is not None:
@@ -713,7 +739,7 @@ async def _close_owned_orchestrator_graph(orchestrator: Any) -> None:
     unified_close = getattr(orchestrator, "_close_started_services", None)
     if callable(unified_close):
         task = asyncio.create_task(unified_close())
-        error, cancellation = await _observe_close_through_cancellation(task)
+        error, cancellation = await _observe_task_through_cancellation(task)
         if error is not None:
             raise error
         if cancellation is not None:
@@ -729,7 +755,7 @@ async def _close_owned_orchestrator_graph(orchestrator: Any) -> None:
         if not callable(close):
             continue
         task = asyncio.create_task(close())
-        error, observed_cancellation = await _observe_close_through_cancellation(task)
+        error, observed_cancellation = await _observe_task_through_cancellation(task)
         cancellation = cancellation or observed_cancellation
         if error is not None:
             errors.append(error)
@@ -749,9 +775,21 @@ def _assert_verification_purge_ready(plane_runtime: Any, purges: Any) -> None:
         purges.assert_globally_ready(transaction)
 
 
-async def _observe_close_through_cancellation(
+async def _run_sync(callback, *args, **kwargs):
+    """Settle blocking harness work before cancellation can begin graph teardown."""
+    task = asyncio.create_task(asyncio.to_thread(callback, *args, **kwargs))
+    error, cancellation = await _observe_task_through_cancellation(task)
+    if error is not None:
+        raise error
+    if cancellation is not None:
+        raise cancellation
+    return task.result()
+
+
+async def _observe_task_through_cancellation(
     task: asyncio.Task[Any],
 ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
+    """Join retained construction or cleanup before returning cancellation."""
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
