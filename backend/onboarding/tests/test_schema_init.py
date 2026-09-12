@@ -49,7 +49,7 @@ def _index_exists(database, name: str) -> bool:
 
 
 def test_plane_contract_owns_onboarding_tables() -> None:
-    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "088.002"
+    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "088.003"
     assert CURRENT_DATA_PLANE_REVISION.migration_digest == MIGRATION_REGISTRY.digest
     assert {
         "onboarding_state",
