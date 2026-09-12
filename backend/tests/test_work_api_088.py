@@ -202,6 +202,8 @@ async def test_original_auth_path_rechecks_credential_and_roles(host, monkeypatc
     from jose import JWTError
     from orchestrator import auth, web_auth
     orch, read, repo = host
+    # Broad suite collection may enable the development mock in other modules.
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.setattr(auth, "_get_keycloak_config", lambda: ("https://iam.example/realms/test", "astral-frontend", ""))

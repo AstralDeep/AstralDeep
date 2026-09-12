@@ -366,3 +366,48 @@ Valid Apple signing identities exist; installed distribution provisioning
 profiles and protected publisher integration remain missing. Android's existing
 upload-keystore location is still needed. No product push, store action, PR
 promotion or running backend update occurred at this checkpoint.
+
+## Work controls and complete baseline qualification follow-up
+
+The owner-authenticated Work API now supports pause, cancel and settled terminal
+deletion. Pause/cancel use canonical command receipts and the observed state
+revision; retries cannot repeat the transition. Cancellation preserves issued
+effect liabilities. Deletion refuses active, retained or unresolved work and
+returns 404 for absent, foreign or repeated deletion. Cookie writes require the
+exact public origin and JSON; bearer writes retain fresh institutional IAM and
+role verification. Query credentials are refused for writes. Resume, submission,
+the one-shot runner, joined results/events and SSE are still incomplete, so
+T027/T030 remain open.
+
+The five-file controls batch passed 86 isolated PostgreSQL/auth/API tests with
+the development mock initially enabled, then explicitly disabled inside the
+real credential tests. Changed production coverage is 113/113; all three Work
+modules cover 258/258 statements. Ruff and diff checks pass, and the integrated
+source hashes match `build/088/work-controls-qualification/handoff.json`.
+
+An immutable image of Deep `eaf8994bc17a1f9c43e2b180d8ed4cb0e946eef4`,
+with its exact four component pins, completed all 17 backend CI cohorts:
+11,260 passed, seven failed, 15 skipped and two deselected. Tooling passed 835
+tests (three skipped, four CI deselected); voice passed 372 (two skipped).
+Strict changed-Python coverage was 1,278/1,283 (99.61%). The seven failures were
+five current-schema assertions still expecting 079 and two auth fixtures
+setting `MOCK_AUTH` instead of the actual `USE_MOCK_AUTH` variable. Four schema
+test files now bind current 088 metadata while preserving historical 079
+lineage, with 15 focused tests passing. The controls batch includes the minimal
+auth fixture correction and retains real 200/403/401 credential behavior.
+Original failed candidate reports remain unchanged; these focused follow-ups
+are not a passing rerun of a new final candidate.
+
+The full diagnostic handoff is under
+`build/088/coverage/eaf8994bc17a1f9c43e2b180d8ed4cb0e946eef4/`.
+All 1,149 baked backend Python source hashes were checked. The live app and
+database container identities, start times, networks and mounts remained
+unchanged. Canonical release collection refused missing provider/staging inputs;
+none of these results authorizes release or PR promotion.
+
+The final normal macOS 61ead0d build has since passed user-approved Keychain
+sign-in, nine-row history, exact saved-result selection and the dark Alpha/Beta
+chart check. The final Watch home shows recent chats; its saved-row interaction
+still awaits a manual tap because simulator automation cannot deliver that tap.
+The new shared Export/Share foundation and native consumers are being qualified
+separately and are not part of these committed native artifact claims.
