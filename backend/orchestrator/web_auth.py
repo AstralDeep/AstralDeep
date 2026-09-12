@@ -358,6 +358,31 @@ def _session_client_id(sess: Dict[str, Any]) -> str:
     return str(_jwt_payload(sess.get("access_token", "")).get("azp", "") or "").strip()
 
 
+async def _exchange_session_refresh(refresh_token: str, prior_access: str) -> dict:
+    """The existing bounded Keycloak exchange, without session fallback policy."""
+    authority, web_client_id, client_secret = _keycloak_config()
+    from orchestrator.session_store import SessionRefreshUnavailable
+    if not authority:
+        raise SessionRefreshUnavailable("session refresh authority unavailable")
+    effective = _session_client_id({"access_token": prior_access}) or web_client_id
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token,
+            "client_id": effective}
+    if client_secret and effective == web_client_id:
+        data["client_secret"] = client_secret
+    async with httpx.AsyncClient(timeout=10) as client:
+        async with client.stream(
+            "POST", f"{authority}/protocol/openid-connect/token", data=data,
+            follow_redirects=False,
+        ) as resp:
+            resp.raise_for_status()
+            body = bytearray()
+            async for chunk in resp.aiter_bytes(chunk_size=8192):
+                body.extend(chunk)
+                if len(body) > 65536:
+                    raise SessionRefreshUnavailable("refresh response exceeds limit")
+            return json.loads(body)
+
+
 async def _refresh_session(sid: str, sess: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Silent refresh at Keycloak (D2). Returns the refreshed session or None.
 
@@ -365,33 +390,13 @@ async def _refresh_session(sid: str, sess: Dict[str, Any]) -> Optional[Dict[str,
     unknown outcomes retain usable access while the durable refresh claim stays
     fenced. Successful tokens are returned only after canonical settlement.
     """
-    authority, web_client_id, client_secret = _keycloak_config()
+    authority, _, _ = _keycloak_config()
     store = _get_store()
     if not authority or store is None:
         return None
-    from orchestrator.session_store import SessionRefreshUnavailable
-
-    async def exchange(refresh_token, prior_access):
-        effective = _session_client_id({"access_token": prior_access}) or web_client_id
-        data = {"grant_type": "refresh_token", "refresh_token": refresh_token,
-                "client_id": effective}
-        if client_secret and effective == web_client_id:
-            data["client_secret"] = client_secret
-        async with httpx.AsyncClient(timeout=10) as client:
-            async with client.stream(
-                "POST", f"{authority}/protocol/openid-connect/token", data=data,
-                follow_redirects=False,
-            ) as resp:
-                resp.raise_for_status()
-                body = bytearray()
-                async for chunk in resp.aiter_bytes(chunk_size=8192):
-                    body.extend(chunk)
-                    if len(body) > 65536:
-                        raise SessionRefreshUnavailable("refresh response exceeds limit")
-                return json.loads(body)
     try:
         row = await store.refresh_credential(
-            sid, owner_id=sess.get("sub", ""), exchange=exchange)
+            sid, owner_id=sess.get("sub", ""), exchange=_exchange_session_refresh)
     except httpx.HTTPStatusError:
         # Keycloak refused the refresh token (revoked/expired) — dead session.
         logger.info("web_auth: refresh refused for session %s — clearing", sid[:8])

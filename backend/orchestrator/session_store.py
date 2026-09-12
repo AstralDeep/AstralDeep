@@ -21,11 +21,19 @@ import logging
 import os
 import secrets
 import time
-from dataclasses import replace
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from astralplane.repositories import RepositoryConflictError, RepositoryNotFoundError
-from astralplane.repositories.history import SessionRecord, SessionRepository
+from astralplane.repositories.history import (
+    SessionCredentialFence,
+    SessionExecutionObservation,
+    SessionExecutionState,
+    SessionRecord,
+    SessionRepository,
+)
 from orchestrator.plane_repository_context import (
     PlaneRepositoryContext,
     repository_from,
@@ -141,6 +149,27 @@ class SessionRefreshUnavailable(SessionStoreError):
 def _valid_token(value: object) -> bool:
     return (isinstance(value, str) and 0 < len(value) <= _TOKEN_MAX_BYTES
             and value.isascii() and all(32 < ord(ch) < 127 for ch in value))
+
+
+@dataclass(frozen=True, slots=True)
+class WebSessionReference:
+    """Private request-local observation, not a durable session incarnation."""
+
+    state: SessionExecutionState = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshedSessionCredential:
+    """Persisted rotation awaiting normal IAM verification; authorizes no work."""
+
+    credential: SessionCredentialFence = field(repr=False)
+    started_at: datetime
+    access_token: str = field(repr=False)
+
+
+def _refresh_payload_valid(payload: object) -> bool:
+    return (isinstance(payload, dict) and _valid_token(payload.get("access_token"))
+            and ("refresh_token" not in payload or _valid_token(payload["refresh_token"])))
 
 
 class WebSessionStore:
@@ -352,9 +381,27 @@ class WebSessionStore:
         return {"session_id": record.session_id, "created_at": record.created_at,
                 "interactive_anchor": record.interactive_anchor}
 
-    def _refresh_record(self, sid, owner_id, reference):
-        record = self._sessions.call(self._sessions.repository.get,
-                                     owner_id=owner_id, session_id=sid)
+    @contextmanager
+    def _request_execution_transaction(self):
+        """Use Plane's request-only SQL caps; unwind failed SQL before refusal.
+
+        Async cancellation cannot stop a running database thread. These local
+        SQL caps release ordinary lock/query waits independently of that await;
+        pool checkout and connection establishment retain their existing bounds.
+        """
+        try:
+            with self._sessions.transaction() as transaction:
+                self._sessions.repository.bound_request_execution_waits(transaction)
+                yield transaction
+        except Exception:
+            raise SessionRefreshUnavailable("session execution database unavailable") from None
+
+    def _refresh_record(self, sid, owner_id, reference, *, request_execution=False):
+        scope = (self._request_execution_transaction() if request_execution
+                 else self._sessions.transaction())
+        with scope as transaction:
+            record = self._sessions.repository.get(
+                transaction, owner_id=owner_id, session_id=sid)
         if record is None or record.hard_expires_at <= int(time.time()):
             raise SessionRefreshUnavailable("session missing or expired")
         if reference is not None and (
@@ -364,10 +411,13 @@ class WebSessionStore:
             raise SessionRefreshUnavailable("session identity changed; re-consent required")
         return record
 
-    def _claim_refresh(self, sid, owner_id, reference):
+    def _claim_refresh(self, sid, owner_id, reference, *, execution=None):
         if self._fernet is None:
             raise SessionRefreshUnavailable("encrypted session required for refresh")
-        record = self._refresh_record(sid, owner_id, reference)
+        record = self._refresh_record(sid, owner_id, reference,
+                                      request_execution=execution is not None)
+        if execution is not None and SessionRepository.execution_fence(record) != execution.credential:
+            raise SessionRefreshUnavailable("session changed before refresh")
         try:
             plaintext = self._fernet.decrypt(
                 record.refresh_token_ciphertext.encode()).decode()
@@ -390,34 +440,101 @@ class WebSessionStore:
         claimed = replace(record, refresh_token_ciphertext=self._enc(marker),
                           last_refresh_at=max(int(time.time()), record.last_refresh_at + 1))
         try:
-            self._sessions.call(self._sessions.repository.compare_and_set_refresh,
-                                record=claimed,
-                                expected_last_refresh_at=record.last_refresh_at,
-                                expected_credential=SessionRepository.execution_fence(record))
+            scope = (self._request_execution_transaction() if execution is not None
+                     else self._sessions.transaction())
+            with scope as transaction:
+                if execution is not None:
+                    self._sessions.repository.assert_current_execution(
+                        transaction, observation=execution)
+                self._sessions.repository.compare_and_set_refresh(
+                    transaction, record=claimed,
+                    expected_last_refresh_at=record.last_refresh_at,
+                    expected_credential=SessionRepository.execution_fence(record))
         except RepositoryConflictError:
             return None
         except RepositoryNotFoundError:
             raise SessionRefreshUnavailable("session was revoked") from None
         return claimed, plaintext, self._dec(record.access_token_ciphertext)
 
-    def _settle_refresh(self, claimed, access, refresh, reference):
-        self._refresh_record(claimed.session_id, claimed.owner_id, reference)
+    def _settle_refresh_record(self, claimed, access, refresh, reference, *, request_execution=False):
+        self._refresh_record(claimed.session_id, claimed.owner_id, reference,
+                             request_execution=request_execution)
         replacement = replace(
             claimed, access_token_ciphertext=self._enc(access),
             refresh_token_ciphertext=self._enc(refresh),
             last_refresh_at=max(int(time.time()), claimed.last_refresh_at + 1))
         try:
-            self._sessions.call(self._sessions.repository.compare_and_set_refresh,
-                                record=replacement,
-                                expected_last_refresh_at=claimed.last_refresh_at,
-                                expected_credential=SessionRepository.execution_fence(claimed))
+            scope = (self._request_execution_transaction() if request_execution
+                     else self._sessions.transaction())
+            with scope as transaction:
+                replacement = self._sessions.repository.compare_and_set_refresh(
+                    transaction, record=replacement,
+                    expected_last_refresh_at=claimed.last_refresh_at,
+                    expected_credential=SessionRepository.execution_fence(claimed))
         except (RepositoryConflictError, RepositoryNotFoundError):
             raise SessionRefreshUnavailable("session changed during refresh") from None
         if replacement.hard_expires_at <= int(time.time()):
             raise SessionRefreshUnavailable("session expired during refresh")
         row = self._from_record(replacement)
         self._cache[claimed.session_id] = row
-        return row
+        return replacement
+
+    def _settle_refresh(self, claimed, access, refresh, reference):
+        return self._from_record(self._settle_refresh_record(claimed, access, refresh, reference))
+
+    def capture_execution_reference(self, *, owner_id: str, session_id: str) -> WebSessionReference:
+        """Read exact owner/SID and DB time; never resolve a latest-owner session."""
+        if self._fernet is None:
+            raise SessionRefreshUnavailable("encrypted session required for execution")
+        with self._request_execution_transaction() as transaction:
+            state = self._sessions.repository.get_execution_state(
+                transaction, owner_id=owner_id, session_id=session_id)
+        if state is None:
+            raise SessionRefreshUnavailable("session unavailable")
+        return WebSessionReference(state)
+
+    async def refresh_for_execution(self, reference: WebSessionReference, *, exchange):
+        """Force one exact-generation refresh, with no conflict/adoption retries.
+
+        This candidate is not IAM authority. The host must verify its access token
+        normally and check a bounded Plane observation before using it. An unknown
+        remote outcome retains the existing durable claim and is never replayed.
+        """
+        if not isinstance(reference, WebSessionReference):
+            raise SessionRefreshUnavailable("typed session reference required")
+        state = reference.state
+        if not isinstance(state, SessionExecutionState):
+            raise SessionRefreshUnavailable("typed session state required")
+        credential = state.credential
+        execution = SessionExecutionObservation(
+            credential=credential, started_at=state.observed_at,
+            valid_until=min(state.observed_at + timedelta(seconds=15),
+                            datetime.fromtimestamp(credential.hard_expires_at, timezone.utc)))
+        try:
+            async with asyncio.timeout(REFRESH_WAIT_SECONDS):
+                acquired = await asyncio.to_thread(
+                    self._claim_refresh, credential.session_id, credential.owner_id, None,
+                    execution=execution)
+                if acquired is None:
+                    raise SessionRefreshUnavailable("session refresh already changed or claimed")
+                claimed, refresh, access = acquired
+                payload = await exchange(refresh, access)
+                if not _refresh_payload_valid(payload):
+                    raise SessionRefreshUnavailable("malformed refresh response")
+                persisted = await asyncio.to_thread(
+                    self._settle_refresh_record, claimed, payload["access_token"],
+                    payload.get("refresh_token", refresh), None, request_execution=True)
+                return RefreshedSessionCredential(
+                    SessionRepository.execution_fence(persisted), state.observed_at,
+                    payload["access_token"])
+        except TimeoutError:
+            raise SessionRefreshUnavailable("refresh time limit exceeded") from None
+
+    def assert_execution_observation(self, observation: SessionExecutionObservation) -> None:
+        """Validate after IAM; the mutation transaction must independently recheck."""
+        with self._request_execution_transaction() as transaction:
+            self._sessions.repository.assert_current_execution(
+                transaction, observation=observation)
 
     async def refresh_credential(self, sid, *, owner_id, exchange, reference=None):
         """Serialize consumers before HTTP and persist rotation before returning.
@@ -435,10 +552,7 @@ class WebSessionStore:
                     await asyncio.sleep(.1)
                 claimed, refresh, access = acquired
                 payload = await exchange(refresh, access)
-                if (not isinstance(payload, dict)
-                        or not _valid_token(payload.get("access_token"))
-                        or ("refresh_token" in payload
-                            and not _valid_token(payload["refresh_token"]))):
+                if not _refresh_payload_valid(payload):
                     raise SessionRefreshUnavailable("malformed refresh response")
                 return await asyncio.to_thread(
                     self._settle_refresh, claimed, payload["access_token"],
