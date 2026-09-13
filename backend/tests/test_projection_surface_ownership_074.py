@@ -30,6 +30,7 @@ HOST_SURFACES = frozenset(
         "theme",
         "tour",
         "workspace_timeline",
+        "work",
     }
 )
 PROJECTION_OWNED_ROOTS = (

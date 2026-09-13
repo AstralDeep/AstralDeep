@@ -79,6 +79,7 @@ from orchestrator.voice_control_binding import (
 import uuid as _uuid
 
 if TYPE_CHECKING:
+    from orchestrator.work_surface_authority import WorkSurfaceRead
     from scheduler.store import ScheduledAttempt, ScheduledJobStore
 
 from shared.protocol import (
@@ -299,6 +300,13 @@ class _ConnectionIngressFrame:
     deadline_at_monotonic: float | None
     deadline_at_utc: datetime | None
     local_final_verified: bool = False
+    work_read: "WorkSurfaceRead | None" = field(default=None, repr=False)
+
+    def close_work_read(self) -> None:
+        """Release private read authority on every terminal or discarded path."""
+        if self.work_read is not None:
+            self.work_read.close()
+            self.work_read = None
 
 
 @dataclass
@@ -420,6 +428,7 @@ class ConnectionContext:
     claim_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     registered: bool = False
     closing: bool = False
+    work_registrations_pending: int = 0
 
 debug_mode = os.getenv("DEBUG", "false").lower() == "true"
 log_level = logging.INFO if debug_mode else logging.WARNING
@@ -7445,7 +7454,7 @@ class Orchestrator:
                             "The provider could not be reached. Check the network and try again."
                         ),
                         "deadline_exceeded": (
-                            "The save could not be completed in time. Try again."
+                            "The Work view could not be loaded in time. Try again." if frame.action == "chrome_open" and frame.surface == "work" else "The save could not be completed in time. Try again."
                         ),
                     }.get(code, "The operation could not be completed.")
                 ),
@@ -7639,6 +7648,20 @@ class Orchestrator:
         ):
             return None
         surface = surface_value
+        is_work_read = is_ui_event and action == "chrome_open" and surface == "work"
+        if is_work_read:
+            if payload.get("surface") != "work":
+                return None
+            from orchestrator.projection_surfaces.work import _params
+            from persistent_agents.models import AssignmentError
+
+            allowed = {"surface", "params", "submission_id", "request_generation", "connection_generation"}
+            try:
+                if set(payload) - allowed:
+                    return None
+                _params(payload.get("params", {}))
+            except AssignmentError:
+                return None
         if action in _LLM_CREDENTIAL_SAVE_ACTIONS and surface is None:
             surface = "llm_settings"
         payload_chat, chat_matches = self._matching_frame_value(
@@ -7682,7 +7705,9 @@ class Orchestrator:
             chat_value = self._ws_active_chat.get(id(context.websocket))
         if chat_value is not None and self._canonical_uuid4(chat_value) is None:
             return None
-        chat_id = str(chat_value) if chat_value is not None else None
+        # Work is an owner-scoped read. Ordinary clients may still attach the
+        # current chat transport hint; it grants no conversation scope here.
+        chat_id = str(chat_value) if chat_value is not None and not is_work_read else None
         # Keep idempotency material non-secret.  Generic UI payloads can carry
         # chat text, PHI, credentials, or model input; none of those values may
         # be persisted even as a dictionary-attackable digest.  Submission and
@@ -7755,7 +7780,7 @@ class Orchestrator:
             submission_id=submission_id,
             request_generation=request_generation,
             normalized_digest=hashlib.sha256(normalized).hexdigest(),
-            read_only=action in _READ_ONLY_UI_ACTIONS,
+            read_only=is_work_read or action in _READ_ONLY_UI_ACTIONS,
             operation_kind=(
                 "llm_credential_save"
                 if is_credential_save
@@ -7836,6 +7861,28 @@ class Orchestrator:
                 retry_after_ms=1000,
             )
             return
+        if frame.action == "chrome_open" and frame.surface == "work":
+            from orchestrator.work_surface_authority import WorkSurfaceRead
+            from persistent_agents.models import AssignmentError
+
+            try:
+                frame.work_read = WorkSurfaceRead(
+                    self, context.websocket, self._get_user_id(context.websocket),
+                    request_generation=str(frame.request_generation), context=context,
+                )
+                # This exact issuance is captured before the batch can wait for
+                # admission. Dispatch must not select a later registration.
+                await frame.work_read.capture_session()
+                frame.work_read.assert_current()
+            except asyncio.CancelledError:
+                frame.close_work_read()
+                raise
+            except (AssignmentError, TimeoutError):
+                frame.close_work_read()
+                await self._send_connection_admission_refusal(
+                    context, frame, code="operation_failed", retryable=False,
+                )
+                return
         context.submission_digests[
             frame.submission_id
         ] = frame.normalized_digest
@@ -8068,14 +8115,18 @@ class Orchestrator:
             batch = verified_batch
             if not batch:
                 continue
-            results = await self._call_work_admission(
-                self._submit_connection_batch,
-                context,
-                batch,
-            )
+            try:
+                results = await self._call_work_admission(
+                    self._submit_connection_batch, context, batch,
+                )
+            except BaseException:
+                for frame in batch:
+                    frame.close_work_read()
+                raise
             scheduled: list[tuple[_ConnectionOperation, Any]] = []
             for frame, owner, result, projection in results:
                 if isinstance(result, Exception):
+                    frame.close_work_read()
                     context.submission_digests.pop(frame.submission_id, None)
                     logger.error(
                         "Connection admission failed",
@@ -8093,6 +8144,7 @@ class Orchestrator:
                     )
                     continue
                 if not result.accepted:
+                    frame.close_work_read()
                     await self._send_connection_admission_refusal(
                         context,
                         frame,
@@ -8111,6 +8163,7 @@ class Orchestrator:
                     else None
                 )
                 if existing is not None:
+                    frame.close_work_read()
                     existing.subscribers[id(context)] = (context, frame)
                     context.operations[result.operation_id] = existing
                     await self._send_operation_projection(
@@ -8175,6 +8228,7 @@ class Orchestrator:
                         if registry.get(result.operation_id) is work:
                             registry.pop(result.operation_id, None)
                         work.auth_claims.clear()
+                        frame.close_work_read()
                         self._scrub_terminal_voice_operation(context, work)
                     continue
                 try:
@@ -8208,6 +8262,7 @@ class Orchestrator:
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
                     work.auth_claims.clear()
+                    frame.close_work_read()
                     await self._send_connection_admission_refusal(
                         context,
                         frame,
@@ -8233,6 +8288,7 @@ class Orchestrator:
                     context.closing
                     and owner.owner_scope is OwnerScope.CONNECTION
                 ):
+                    frame.close_work_read()
                     terminal = await self._call_work_admission(
                         self.work_admission.cancel,
                         owner=owner,
@@ -8319,6 +8375,7 @@ class Orchestrator:
                     # here as well so no surviving successor can deadlock.
                     completion = accepted_work.lane_complete
                     accepted_work.auth_claims.clear()
+                    accepted_work.frame.close_work_read()
                     if completion is not None:
                         context.pending_reads.discard(completion)
                         if not completion.done():
@@ -8898,7 +8955,11 @@ class Orchestrator:
             # deadlock a small pool when a later writer occupies the only slot
             # while waiting for an earlier reader that has not yet claimed.
             if work.predecessors:
-                await asyncio.gather(*work.predecessors)
+                # Retiring a read must not cancel the earlier mutation's shared
+                # lane future. That mutation retains its own execution lifetime.
+                predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
+                                if work.frame.work_read is not None else work.predecessors)
+                await asyncio.gather(*predecessors)
             if (
                 context.closing
                 and work.owner.owner_scope is OwnerScope.CONNECTION
@@ -8938,6 +8999,7 @@ class Orchestrator:
                 "operation_kind": work.frame.operation_kind,
                 "connection_generation": context.connection_generation,
                 "request_generation": work.frame.request_generation,
+                "work_read": work.frame.work_read,
             }
             token = _CONNECTION_OPERATION_CONTEXT.set(
                 connection_operation_context
@@ -9066,7 +9128,10 @@ class Orchestrator:
                 )
 
         try:
-            if work.frame.operation_kind == "llm_credential_save":
+            if work.frame.work_read is not None:
+                async with asyncio.timeout_at(work.frame.work_read.deadline):
+                    await _execute()
+            elif work.frame.operation_kind == "llm_credential_save":
                 deadline = work.frame.deadline_at_monotonic
                 if deadline is None:
                     raise RuntimeError(
@@ -9091,7 +9156,8 @@ class Orchestrator:
                 work,
                 state=OperationState.RETRYABLE,
                 terminal_code="deadline_exceeded",
-                safe_summary="Credential save timed out",
+                safe_summary=("Work read timed out" if work.frame.work_read is not None
+                              else "Credential save timed out"),
             )
         except asyncio.CancelledError:
             terminal_operation = await self._terminalize_connection_operation(
@@ -9186,6 +9252,7 @@ class Orchestrator:
                 runtime_websocket.scrub()
                 work.runtime_websocket = None
             work.auth_claims.clear()
+            work.frame.close_work_read()
             if work.frame.parsed.get("type") == "voice_local_final":
                 self._scrub_terminal_voice_operation(context, work)
             if work.lane_complete is not None:
@@ -9237,6 +9304,8 @@ class Orchestrator:
             await self.handle_ui_message(context.websocket, raw)
         except Exception:
             logger.exception("UI registration frame failed")
+        finally:
+            context.work_registrations_pending -= 1
 
     async def _route_ui_frame(
         self,
@@ -9245,8 +9314,29 @@ class Orchestrator:
     ) -> bool:
         parsed = self._parsed_ui_frame(raw)
         control = self._ui_control_kind(parsed)
+        payload = (parsed or {}).get("payload")
+        work_candidate = (
+            (parsed or {}).get("type") == "ui_event"
+            and (parsed or {}).get("action") == "chrome_open"
+            and isinstance(payload, dict) and payload.get("surface") == "work"
+        )
+        action = (parsed or {}).get("action")
+        if control in {"register_ui", "close"} or (
+            (parsed or {}).get("type") == "ui_event"
+            and (action in {"chrome_close", "load_chat", "new_chat"}
+                 or (action == "chrome_open" and not work_candidate))
+        ):
+            from orchestrator.work_surface_authority import invalidate
+
+            invalidate(self, context.websocket)
+        if work_candidate and not context.registered:
+            await self._send_frame_refusal(
+                context.websocket, parsed, code="operation_failed", retryable=False,
+            )
+            return True
         if control == "register_ui":
             if context.registered:
+                context.work_registrations_pending += 1
                 self._track_connection_task(
                     context,
                     self._run_ui_registration(context, raw),
@@ -9263,6 +9353,7 @@ class Orchestrator:
                     code="registration_timeout",
                 )
                 return False
+            context.work_registrations_pending += 1
             registration_task = self._track_connection_task(
                 context,
                 self._run_ui_registration(context, raw),
@@ -9418,8 +9509,15 @@ class Orchestrator:
             return
         drain_started = time.monotonic()
         context.closing = True
+        from orchestrator.work_surface_authority import invalidate
+
+        invalidate(self, context.websocket)
         context.preregistration.clear()
+        for frame in context.ingress:
+            frame.close_work_read()
         context.ingress.clear()
+        for work in context.operations.values():
+            work.frame.close_work_read()
         await self._notify_interactive_capacity()
 
         connection_work = tuple(
@@ -10548,28 +10646,29 @@ class Orchestrator:
                     # neither needs nor receives this frame — Constitution XII).
                     try:
                         _dt = getattr(rote_profile.device_type, "value", str(rote_profile.device_type))
-                        # Feature 051: iOS/macOS are chrome-model natives too
-                        # (the watch stays chrome-free by design).
-                        if _dt in ("windows", "android", "ios", "macos"):
+                        # Wrist receives only the explicit shared Work projection;
+                        # it does not join the general native chrome surface set.
+                        if _dt in ("windows", "android", "ios", "macos") or (
+                            _dt == "watch" and isinstance(user_data.get("_client_capabilities"), list)
+                            and "work_read_v1" in user_data["_client_capabilities"]
+                        ):
                             from orchestrator.chrome_availability import (
-                                projection_chrome_availability,
+                                projection_native_chrome_availability,
                             )
                             from shared.protocol import ChromeMenu
-                            from webrender.chrome.menu_model import menu_model_dict
+                            from webrender.chrome.menu_model import menu_model_dict, project_watch_menu_model
                             _roles = list((user_data.get("realm_access") or {}).get("roles") or [])
                             for _c in (user_data.get("resource_access") or {}).values():
                                 _roles.extend((_c or {}).get("roles") or [])
                             # Native clients: ADMIN TOOLS is web-only, and
                             # "Take the tour" is web-only (feature 043).
-                            await self._safe_send(
-                                websocket,
-                                ChromeMenu(model=menu_model_dict(
-                                    _roles,
-                                    include_admin=False,
-                                    include_tour=False,
-                                    **projection_chrome_availability(),
-                                )).to_json(),
+                            _menu = menu_model_dict(
+                                _roles, include_admin=False, include_tour=False,
+                                **projection_native_chrome_availability(user_data),
                             )
+                            if _dt == "watch":
+                                _menu = project_watch_menu_model(_menu)
+                            await self._safe_send(websocket, ChromeMenu(model=_menu).to_json())
                     except Exception as _e:  # pragma: no cover — non-fatal push
                         logger.debug(f"chrome_menu push failed (non-fatal): {_e}")
 
@@ -10925,6 +11024,17 @@ class Orchestrator:
                             logger.warning("llm gate re-gate failed", exc_info=True)
 
             elif isinstance(msg, UIEvent):
+                work_read = (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("work_read")
+                if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
+                    if _CONNECTION_OPERATION_CONTEXT.get() is not None:
+                        from orchestrator.work_surface_authority import WorkSurfaceRead
+                        from persistent_agents.models import AssignmentError
+
+                        if type(work_read) is not WorkSurfaceRead:
+                            raise AssignmentError("work_read_unavailable", 503)
+                        work_read.assert_request(
+                            self, websocket, work_read.owner_id, msg.request_generation,
+                        )
                 # The _registered_events gate guarantees register_ui has already
                 # resolved before any ui_event runs. So an unauthenticated socket
                 # here means register_ui FAILED — and that path already sent the
@@ -12212,8 +12322,13 @@ class Orchestrator:
                     # actions outside its namespace — those were previously a
                     # silent fall-through; log them so typos are diagnosable.
                     from orchestrator.chrome_events import handle_chrome_event
+                    work_arguments = {}
+                    if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
+                        work_arguments = {"request_generation": msg.request_generation,
+                                          "work_read": work_read}
                     handled = await handle_chrome_event(
-                        self, websocket, str(msg.action or ""), msg.payload or {}, user_id
+                        self, websocket, str(msg.action or ""), msg.payload or {}, user_id,
+                        **work_arguments,
                     )
                     if not handled:
                         logger.warning("Unhandled ui_event action: %r", msg.action)

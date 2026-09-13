@@ -123,7 +123,7 @@ class WorkService:
 
         await self.store.transaction(read, bound_session_waits=True)
 
-    async def _read(self, method, owner_id, *, include_result=False, **kwargs):
+    async def _read(self, method, owner_id, *, include_result=False, include_operation=False, **kwargs):
         def transaction(tx, repository):
             callback = getattr(repository, method, None)
             if not callable(callback):
@@ -135,9 +135,10 @@ class WorkService:
                 public = _public(value, owner_id)
                 if include_result:
                     from orchestrator.work_result import project_research_result
-                    return {"id": public["id"], "revision": public["revision"],
+                    result = {"id": public["id"], "revision": public["revision"],
                             "result": project_research_result(tx, repository,
                                 owner_id=owner_id, read=value)}
+                    return {"operation": public, "result": result} if include_operation else result
                 return public
             return [_public(record, owner_id) for record in value]
         try:
@@ -154,6 +155,16 @@ class WorkService:
         self._owner(owner_id, claims)
         return await self._read("get_operation", owner_id, include_result=True,
                                 assignment_id=_identity(identity))
+
+    async def result_view(self, owner_id, claims, identity):
+        """Read presentation metadata and its result from the same operation row.
+
+        This host-only read does not widen the HTTP metadata or result envelopes.
+        Delivery must still recheck the original caller after this transaction.
+        """
+        self._owner(owner_id, claims)
+        return await self._read("get_operation", owner_id, include_result=True,
+                                include_operation=True, assignment_id=_identity(identity))
 
     async def list(self, owner_id, claims, *, limit=50, after_id=None):
         self._owner(owner_id, claims)

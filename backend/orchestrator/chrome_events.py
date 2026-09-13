@@ -423,11 +423,23 @@ async def _llm_gate_refusal(orch, websocket, action: str, user_id: str, *, paylo
 
 
 async def handle_chrome_event(orch, websocket, action: str, payload: dict,
-                              user_id: str) -> bool:
+                              user_id: str, *, request_generation=None, work_read=None) -> bool:
     """Dispatch one chrome/creation ui_event. Returns True if handled."""
     if not _is_chrome_action(action):
         return False
     payload = payload or {}
+    if action in {"chrome_open", "chrome_close"}:
+        from orchestrator.work_surface_authority import invalidate
+        if work_read is None:
+            invalidate(orch, websocket)
+        if action == "chrome_open" and isinstance(payload, dict) and payload.get("surface") == "work":
+            from orchestrator.projection_surfaces import get_surface
+            delivered = await get_surface("work").deliver(orch, websocket, user_id,
+                payload.get("params", {}), request_generation, work_read=work_read)
+            if work_read is not None and not delivered:
+                from persistent_agents.models import AssignmentError
+                raise AssignmentError("work_read_unavailable", 503)
+            return True
     # New work and approvals keep the normal setup gate. Owner Schedule reads
     # and pause/stop/revoke remain operable when personal LLM setup is absent.
     if await _llm_gate_refusal(orch, websocket, action, user_id, payload=payload):

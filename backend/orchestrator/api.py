@@ -2459,11 +2459,15 @@ async def get_chrome_menu(payload: dict = Depends(get_current_user_payload)):
     from webrender.chrome.menu_model import menu_model_dict
     # Native clients consume this — ADMIN TOOLS is web-only (include_admin=False)
     # and "Take the tour" is web-only (include_tour=False, feature 043).
+    availability = projection_chrome_availability()
+    # Legacy REST callers negotiate no Work read-response correlation. Updated
+    # natives receive it on their capability-bound registered WebSocket instead.
+    availability["work_enabled"] = False
     return menu_model_dict(
         _roles_from_payload(payload),
         include_admin=False,
         include_tour=False,
-        **projection_chrome_availability(),
+        **availability,
     )
 
 
