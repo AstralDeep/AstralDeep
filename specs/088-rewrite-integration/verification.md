@@ -1,5 +1,76 @@
 # Feature 088 verification record
 
+## Installed declarative lifecycle and safe retry — 2026-09-13 UTC
+
+Deep now pins and installs Plane `e1dfd7144b08a302a60b5a3874677231645ff2fd`
+and Projection `bfa4bb6e922bf1e55d31fc1c514d165258a07b4c`. Plane schema
+`088.004` has migration digest
+`99e50e8f0aa6d4086bfe3e56701b951ebbb5bed9628631253f8dce2d935464e3`.
+Its declarative definitions are immutable, owner-scoped metadata with a separate
+selected-definition pointer and receipt-based create/revise/activate/archive/
+clone/delete lifecycle. Kind constraints exclude these revisions from every
+legacy executable publication/runtime pointer. The Deep facade uses the current
+human transaction boundary, required atomic audit, revision checks, and current
+provider/policy checks for activation. Accepted command receipts remain replayable
+without repeating mutation or acquiring new execution authority. Legacy generated
+revision entry points reject declarative targets before generation or spending.
+Activation selects metadata; public registration, selection in Work execution and
+shared editor integration remain unfinished. These are not executable agents yet.
+
+The exact installed components passed **194 tests in 202.59 seconds**: all new
+declarative definition/lifecycle cases, the two HTTP retry cases, and the preceding
+pure explicit-note cases. External IAM/source/model replies were synthetic; the
+normal HTTP/runtime/transaction paths and PostgreSQL were real. A frozen copy of
+1,312 tracked/explicit Deep inputs and the installed component sources remained
+unchanged, with no external network attempts. Changed executable coverage for
+declarative authoring is **302/312 (96.79%)**, generated-entry guards **13/13**,
+and registry guards **2/2**. Raw Coverage.py replay reproduces every file and total.
+The pure note files in this run precede the revision-boundary correction below,
+and do not establish persistence or actual erasure. Root separately verified the
+Plane handoff's 17 source and 135 artifact hashes; its final storage/migration
+cohort passed279 with301/312 changed coverage. The earlier Linux-only legacy
+authoring cohort passed46; macOS's existing renameat2 limitation remains separately
+documented and was not hidden or disabled.
+
+Explicit notes now have an independently qualified pure encryption/expansion layer.
+The existing Fernet and private-binding keys are injected; values stay ephemeral,
+metadata is authenticated, selections bind exact owner/head revisions, and bounded
+expansion never substitutes newer notes or grants execution authority. Root review
+found that the last representable live revision would leave no successor for an
+erasure tombstone. A retained failing test precedes the correction: live revisions
+now reserve the last integer for Forget/expiry. The separate final successor passed
+**141 tests**, with note coverage143/143 and expansion70/72, raw replay35 files equal,
+and Ruff/secret/diff checks passing. Root verified its four sources and22 artifacts.
+This is pure note handling only; Plane persistence, current-caller service, actual
+erasure, reference invalidation and shared UI are still being integrated. Evidence
+is retained under `explicit-notes-01` and `explicit-notes-02`.
+
+The known-usage failed model selection completed the same task after genuine
+lease recovery and finite backoff, with two fresh charged source/model actions,
+240 tokens consumed and no retained content or outstanding charges. A synthetic
+HTTP503 left its authentic issued attempt uncertain and retained the129024-token
+liability, with no automatic retry or duplicate send. The separate original retry
+run passed2 in46.58 seconds after fixture-only corrections. This does not establish
+general provider-outage classification or justify treating unknown usage as zero.
+
+The static composition verifier initially refused the new migration module. It now
+recognizes only the reviewed declarative module's exact literal tuple and optional
+`typing.Final` syntax, without executing imports or annotation expressions.
+Negative tests reject aliases, rebinding, arbitrary imports/expressions and code.
+The initial new-format regression failed as expected; final component/installer/
+schema checks passed **218 in15.95 seconds**, with verifier changed coverage3/3
+and the new test file32/32. A prior coverage invocation used an incorrect selector
+and collected no coverage; the corrected raw measurement is retained separately.
+Offline wheel provenance verification and comparison of210 installed entries pass;
+only pip's rewritten RECORD files are outside exact wheel-byte comparison. The
+canonical UI contract digest is unchanged. Evidence lives in
+`declarative-installed-01`, `component-install-04`, `declarative-agent-01` and
+`work-retry-01` under `.git/088-completion-qualification/`.
+
+Product commits remain local and unpushed. Existing submitted store builds do not
+contain these changes. Full088 guidance, monitoring, framework, native/staging and
+protected release gates remain open; this checkpoint does not authorize production.
+
 ## Public nonretained research and actual Watch navigation — 2026-09-13 UTC
 
 HTTP Work acceptance now supports an explicit optional `source_retention` value

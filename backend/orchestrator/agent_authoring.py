@@ -223,6 +223,17 @@ def _draft_store(orch):
         raise RuntimeError("Plane draft persistence is unavailable")
     return store
 
+def _executable_revision_target(orch, user_id: str, agent_id: str) -> bool:
+    """Read the existing kind before any executable drafting or generation.
+
+    Agent kinds are immutable. An owned declarative revision must stay on its
+    distinct metadata path, even if an old draft points at that same identity.
+    """
+    record = orch.user_agent_registry.get(agent_id)
+    return bool(record is not None and record.owner_id == user_id
+                and record.deleted_at is None and record.agent_kind == "executable")
+
+
 def get_session(orch, user_id: str, draft_id: str) -> Optional[Dict[str, Any]]:
     """The authoring session ``draft_id`` IF it belongs to ``user_id`` and is a
     BYO session. Cross-user reads return None (FR-016 owner isolation) — a
@@ -232,6 +243,9 @@ def get_session(orch, user_id: str, draft_id: str) -> Optional[Dict[str, Any]]:
         return None
     row = _draft_store(orch).get_owned_draft_agent(user_id, str(draft_id))
     if not row or row.get("origin") != BYO_ORIGIN:
+        return None
+    if row.get("revises_agent_id") and not _executable_revision_target(
+            orch, user_id, row["revises_agent_id"]):
         return None
     return dict(row)
 
@@ -610,6 +624,10 @@ async def start_session(orch, *, user_id: str, agent_name: str, description: str
     ``approve_agent``), so it must be true of the row from the moment the row can
     be picked up (SC-002)."""
     from orchestrator.agent_lifecycle import BYO_ORIGIN
+    if revises_agent_id is not None and not await asyncio.to_thread(
+            _executable_revision_target, orch, user_id, revises_agent_id):
+        from orchestrator.user_agents import PersonalAgentNotFoundError
+        raise PersonalAgentNotFoundError("executable revision target is unavailable")
     draft = await orch.lifecycle_manager.create_draft(
         user_id=user_id, agent_name=agent_name, description=description,
         tools_spec=None,
@@ -1464,6 +1482,8 @@ async def revise(orch, user_id: str, agent_id: str) -> Dict[str, Any]:
     from orchestrator import user_agents as ua
     if not byo_enabled():
         return {"status": "disabled"}
+    if not await asyncio.to_thread(_executable_revision_target, orch, user_id, agent_id):
+        return {"status": "unavailable"}
     row = await asyncio.to_thread(
         ua.get_user_agent,
         orch.user_agent_registry,
@@ -1605,6 +1625,10 @@ async def author_and_deliver(
         if isinstance(tool, dict) and tool.get("name") and tool.get("scope"):
             tool_scopes.setdefault(str(tool["name"]), str(tool["scope"]))
     requested_agent_id = agent_id
+    if requested_agent_id is not None and not await asyncio.to_thread(
+            _executable_revision_target, orch, user_id, requested_agent_id):
+        from orchestrator.user_agents import PersonalAgentNotFoundError
+        raise PersonalAgentNotFoundError("executable revision target is unavailable")
     durable_plan = dict(plan or {})
     durable_tools = [
         {

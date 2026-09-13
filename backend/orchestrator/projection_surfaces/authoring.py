@@ -35,14 +35,21 @@ feature inert when the flag is off (FR-009).
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
+import hashlib
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Literal, Tuple
 import uuid
+
+from pydantic import Field, field_validator, model_validator
 
 from orchestrator import agent_authoring as aa
 from orchestrator import agent_quick_create as qc
 from orchestrator import user_skills as us
+from persistent_agents.models import (
+    AssignmentError, AssignmentLimits, MAX_INSTRUCTION_CHARS, MAX_TOOLS, StrictModel, ToolReference,
+)
 from webrender.chrome import esc, notice_block
 
 logger = logging.getLogger("Orchestrator.Chrome.Authoring")
@@ -83,6 +90,459 @@ _PHASE_HELP = {
     "generate": "Analyze passed. Generating sends the agent's code to your desktop "
                 "host, which runs it and connects it back.",
 }
+
+
+# Declarative definitions are a distinct, inert authoring contract. These types
+# are deliberately absent from HANDLERS; existing generated desktop-agent flows
+# keep their runtime/Analyze gates. A parsed draft never grants execution.
+MAX_DECLARATIVE_DEFINITION_BYTES = 64 * 1024
+
+
+class DeclarativeAgentError(AssignmentError):
+    """A stable content-free lifecycle refusal, safe for a future host adapter."""
+
+    def __init__(self, code="declarative_definition_invalid", status_code=422):
+        super().__init__(code, status_code)
+
+
+class _DeclarativeMemory(StrictModel):
+    mode: Literal["none"]
+
+
+class _DeclarativeTrigger(StrictModel):
+    kind: Literal["manual"]
+
+
+class _DeclarativeApprovals(StrictModel):
+    policy: Literal["normal"]
+
+
+class _DeclarativeDefinition(StrictModel):
+    version: Literal[1]
+    purpose: str = Field(min_length=1, max_length=120)
+    instructions: str = Field(min_length=1, max_length=MAX_INSTRUCTION_CHARS)
+    capabilities: list[ToolReference] = Field(max_length=MAX_TOOLS)
+    memory: _DeclarativeMemory
+    triggers: list[_DeclarativeTrigger] = Field(min_length=1, max_length=1)
+    limits: AssignmentLimits
+    approvals: _DeclarativeApprovals
+
+    @field_validator("purpose", "instructions")
+    @classmethod
+    def meaningful_text(cls, value):
+        if not value.strip() or any(ord(char) < 32 and char not in "\n\t" for char in value):
+            raise ValueError("invalid declarative text")
+        return value
+
+    @model_validator(mode="after")
+    def unique_capabilities(self):
+        identities = [tool.identity for tool in self.capabilities]
+        if len(identities) != len(set(identities)):
+            raise ValueError("duplicate declarative capability")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class DeclarativeAgentDefinition:
+    """One detached versioned draft; neither a policy verdict nor a grant.
+
+    Requested limits are normalized through the existing assignment model and
+    retained explicitly. Unknown tools may remain inert drafts; activation must
+    separately resolve current capability, policy and execution support.
+    """
+
+    _canonical_json: str = field(repr=False)
+
+    @classmethod
+    def parse(cls, value):
+        """Validate the closed draft representation without external effects."""
+        try:
+            if type(value) is not dict or type(value.get("version")) is not int:
+                raise ValueError
+            raw = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, allow_nan=False)
+            if len(raw.encode("utf-8")) > MAX_DECLARATIVE_DEFINITION_BYTES:
+                raise ValueError
+            model = _DeclarativeDefinition.model_validate(json.loads(raw))
+            canonical = json.dumps(model.model_dump(), sort_keys=True, separators=(",", ":"),
+                                   ensure_ascii=False, allow_nan=False)
+            if len(canonical.encode("utf-8")) > MAX_DECLARATIVE_DEFINITION_BYTES:
+                raise ValueError
+            return cls(canonical)
+        except (TypeError, ValueError, UnicodeError, RecursionError):
+            raise DeclarativeAgentError() from None
+
+    def to_dict(self):
+        """Return a fresh draft copy, never mutable aliases into its snapshot."""
+        return json.loads(self._canonical_json)
+
+    @property
+    def digest(self):
+        return hashlib.sha256(self._canonical_json.encode("utf-8")).hexdigest()
+
+    @property
+    def fixed_research_shape(self):
+        """Recognize only the capability shape; this is not activation readiness."""
+        return self.to_dict()["capabilities"] == [
+            {"agent_id": "web-research-1", "tool_name": "fetch_page"},
+        ]
+
+
+class DeclarativeAgentRequest(StrictModel):
+    """Closed metadata intent; the current human supplies its owner separately."""
+
+    version: Literal[1] = 1
+    command: Literal["create", "revise", "activate", "archive", "clone", "delete"]
+    command_id: str
+    agent_id: str
+    expected_revision: int | None = Field(default=None, ge=0, le=2**63 - 1)
+    revision_id: str | None = None
+    parent_revision_id: str | None = None
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    definition: dict[str, Any] | None = None
+    source_agent_id: str | None = None
+    source_revision_id: str | None = None
+
+    @field_validator("command_id", "agent_id", "revision_id", "parent_revision_id",
+                     "source_agent_id", "source_revision_id")
+    @classmethod
+    def exact_identity(cls, value):
+        from persistent_agents.models import validate_id
+        return None if value is None else validate_id(value)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _DeclarativeActivation:
+    config: object
+    selection: object
+    key: object
+    assignments: object
+    sessions: object
+    runner: object
+
+
+class DeclarativeAgentService:
+    """Private current-human metadata lifecycle; no UI, route or execution start.
+
+    Metadata activation selects a validated immutable definition. It does not
+    connect that definition to Work, grant unattended consent, register an agent
+    transport, or start any task. Those consumers require separate qualification.
+    """
+
+    def __init__(self, orchestrator):
+        from audit.repository import AuditRepository
+        from orchestrator.user_agents import UserAgentRegistry
+        self.orch = orchestrator
+        self.registry = getattr(orchestrator, "user_agent_registry", None)
+        self.audit = getattr(orchestrator, "audit_repo", None)
+        if type(self.registry) is not UserAgentRegistry or type(self.audit) is not AuditRepository:
+            raise DeclarativeAgentError("declarative_unavailable", 503)
+        self.context = self.registry._agents
+        self.runtime = self.context.plane_runtime
+        self.repositories = self.runtime.repositories
+        self.agent_repository = self.context.repository
+        self.audit_context = self.audit._audit
+
+    def _current(self, caller):
+        from orchestrator.human_request_authority import CurrentHumanCaller
+        if type(caller) is not CurrentHumanCaller:
+            raise DeclarativeAgentError("declarative_authentication_required", 401)
+        plane = getattr(getattr(self.orch, "runtime_composition", None), "plane", None)
+        if (not aa.byo_enabled() or caller.plane_runtime is not self.runtime
+                or caller.repositories is not self.repositories or caller.audit_repo is not self.audit
+                or getattr(self.orch, "user_agent_registry", None) is not self.registry
+                or self.registry._agents is not self.context
+                or self.context.plane_runtime is not self.runtime
+                or self.context.repository is not self.agent_repository
+                or self.agent_repository is not self.repositories.agents
+                or self.runtime.repositories is not self.repositories
+                or getattr(plane, "runtime", None) is not self.runtime
+                or getattr(plane, "repositories", None) is not self.repositories
+                or getattr(self.orch, "audit_repo", None) is not self.audit
+                or self.audit._audit is not self.audit_context
+                or self.audit_context.plane_runtime is not self.runtime
+                or self.audit_context.repository is not self.repositories.audit):
+            raise DeclarativeAgentError("declarative_unavailable", 503)
+
+    @staticmethod
+    def _plane(operation, *args, **kwargs):
+        from astralplane.repositories import (
+            RepositoryConflictError, RepositoryDataError, RepositoryNotFoundError,
+            RepositoryValidationError,
+        )
+        try:
+            return operation(*args, **kwargs)
+        except RepositoryNotFoundError:
+            raise DeclarativeAgentError("declarative_not_found", 404) from None
+        except RepositoryConflictError:
+            raise DeclarativeAgentError("declarative_conflict", 409) from None
+        except RepositoryValidationError:
+            raise DeclarativeAgentError("declarative_command_invalid", 422) from None
+        except RepositoryDataError:
+            raise DeclarativeAgentError("declarative_unavailable", 503) from None
+
+    async def _transaction(self, caller, operation):
+        self._current(caller)
+
+        def guarded(tx, repositories):
+            self._current(caller)
+            if repositories is not self.repositories:
+                raise DeclarativeAgentError("declarative_unavailable", 503)
+            result = operation(tx, repositories.agents)
+            self._current(caller)
+            return result
+
+        return await caller.transaction(guarded, expected_orchestrator=self.orch)
+
+    @staticmethod
+    def _request(caller, body):
+        from astralplane.repositories.agents import DeclarativeAgentCommand
+        try:
+            if type(body) is not DeclarativeAgentRequest or type(body.version) is not int:
+                raise ValueError
+            # Revalidate a detached body before the first await, including model
+            # instances constructed outside Pydantic's ordinary validation path.
+            data = json.loads(json.dumps(body.model_dump(warnings="none"), allow_nan=False))
+            request = DeclarativeAgentRequest.model_validate(data)
+            data = request.model_dump(exclude_none=True)
+            if request.command in {"create", "revise"}:
+                data["definition"] = DeclarativeAgentDefinition.parse(request.definition).to_dict()
+            return DeclarativeAgentCommand(owner_id=caller.owner_id, **data)
+        except (TypeError, ValueError, UnicodeError, RecursionError):
+            raise DeclarativeAgentError("declarative_command_invalid", 422) from None
+
+    @staticmethod
+    def _stored_definition(revision):
+        from astralplane.repositories.agents import AgentRevisionRecord
+        from persistent_agents.runtime_values import thaw
+        if (type(revision) is not AgentRevisionRecord or revision.revision_kind != "declarative"
+                or revision.definition_version != 1):
+            raise DeclarativeAgentError("declarative_unavailable", 503)
+        parsed = DeclarativeAgentDefinition.parse(thaw(revision.definition_json))
+        if parsed.digest != revision.definition_digest:
+            raise DeclarativeAgentError("declarative_unavailable", 503)
+        return parsed
+
+    @staticmethod
+    async def _privacy(definition, display_name):
+        from personalization.phi_gate import get_phi_gate
+        from persistent_agents.privacy import content_text, privacy_text
+        data = definition.to_dict()
+        # Only authored strings are privacy material. Numeric resource ceilings
+        # are validated policy, not a putative patient/account number.
+        content = {key: data[key] for key in ("purpose", "instructions", "capabilities")}
+        content["display_name"] = display_name
+        try:
+            text = privacy_text(content_text(content))
+            gate = get_phi_gate()
+            refused = await asyncio.to_thread(gate.contains_phi, text)
+        except Exception:
+            raise DeclarativeAgentError("declarative_privacy_unavailable", 503) from None
+        if refused:
+            raise DeclarativeAgentError("declarative_sensitive_content_refused", 422)
+
+    async def command(self, *, caller, body: DeclarativeAgentRequest):
+        """Apply one owner command with current-caller and same-tx audit guards."""
+        from persistent_agents.runtime_values import thaw
+        self._current(caller)
+        caller.require_write()
+        command = self._request(caller, body)
+        prepared = await self._transaction(caller, lambda tx, repository: self._plane(
+            repository.prepare_declarative_command, tx, command=command))
+        activation = None
+        if not prepared.replayed:
+            try:
+                if command.command in {"create", "revise"}:
+                    definition = DeclarativeAgentDefinition.parse(thaw(command.definition))
+                elif command.command in {"clone", "activate"}:
+                    definition = self._stored_definition(prepared.revision)
+                else:
+                    definition = None
+                if definition is not None:
+                    await self._privacy(definition, command.display_name)
+                if command.command == "activate":
+                    activation = await self._prepare_activation(caller, definition)
+            except AssignmentError:
+                # Another request may have accepted this exact immutable intent
+                # while preflight awaited mutable policy. Recover only its
+                # receipt under the original caller; never retry a mutation.
+                latest = await self._transaction(caller, lambda tx, repository: self._plane(
+                    repository.prepare_declarative_command, tx, command=command))
+                if not latest.replayed:
+                    raise
+                prepared = latest
+
+        def accept(tx, repository):
+            current = self._plane(repository.prepare_declarative_command, tx, command=command)
+            # A concurrently accepted command is a read-only receipt, regardless
+            # of its current activation configuration or supervisor availability.
+            if current.replayed:
+                return self._plane(repository.apply_declarative_command, tx, preparation=current)
+            if (command.command in {"revise", "clone", "activate"}
+                    and current.revision != prepared.revision):
+                raise DeclarativeAgentError("declarative_conflict", 409)
+            if command.command == "activate":
+                self._lock_activation(tx, caller, activation)
+            result = self._plane(repository.apply_declarative_command, tx, preparation=current)
+            if not result.replayed:
+                self._audit(tx, caller, result)
+            if command.command == "activate":
+                self._activation_policy(tx, caller)
+                self._activation_current(caller, activation)
+            return result
+
+        result = await self._transaction(caller, accept)
+        await caller.verify_delivery()
+        self._current(caller)
+        return result
+
+    def _audit(self, tx, caller, result):
+        from audit.schemas import AuditEventCreate, AuditEventDTO
+        from datetime import datetime, timezone
+        from orchestrator.work_submit import _sync
+        now = datetime.now(timezone.utc)
+        receipt = result.receipt
+        event = AuditEventCreate(actor_user_id=caller.owner_id, auth_principal=caller.owner_id,
+            event_class="settings", action_type="declarative_agent_" + receipt.command,
+            description="Declarative agent metadata command", correlation_id=receipt.agent_id,
+            outcome="success", outputs_meta={"agent_id": receipt.agent_id,
+                "command_id": receipt.command_id, "state_revision": receipt.result_state_revision,
+                "definition_revision_id": receipt.result_definition_revision_id},
+            started_at=now, completed_at=now)
+        try:
+            saved = _sync(self.audit.insert_in_transaction(
+                event, transaction=tx, plane_runtime=self.runtime))
+            if type(saved) is not AuditEventDTO:
+                raise ValueError
+        except Exception:
+            raise DeclarativeAgentError("declarative_audit_unavailable", 503) from None
+        self._current(caller)
+
+    def _activation_composition(self, caller, prepared):
+        from llm_config.user_store import UserLLMConfigStore
+        from orchestrator.session_store import WebSessionStore
+        from persistent_agents.runner import AssignmentRunner
+        from persistent_agents.service import AssignmentService
+        self._current(caller)
+        if (type(prepared) is not _DeclarativeActivation
+                or type(prepared.config) is not UserLLMConfigStore
+                or getattr(self.orch, "_llm_store", None) is not prepared.config
+                or prepared.config._repository.plane_runtime is not self.runtime
+                or prepared.config._repository.repository is not self.repositories.encrypted_llm_config
+                or type(prepared.assignments) is not AssignmentService
+                or getattr(self.orch, "persistent_assignments", None) is not prepared.assignments
+                or prepared.assignments.orch is not self.orch
+                or type(prepared.sessions) is not WebSessionStore
+                or getattr(self.orch, "web_sessions", None) is not prepared.sessions
+                or type(prepared.runner) is not AssignmentRunner
+                or getattr(self.orch, "persistent_assignment_runner", None) is not prepared.runner
+                or not prepared.runner.fixed_research_ready(
+                    service=prepared.assignments, sessions=prepared.sessions)):
+            raise DeclarativeAgentError("declarative_profile_unavailable", 503)
+        prepared.assignments._owner(caller.owner_id, caller.claims)
+        loop = prepared.runner._loop
+        if not isinstance(loop, asyncio.Task) or loop.done() or loop.cancelling():
+            raise DeclarativeAgentError("declarative_profile_unavailable", 503)
+
+    async def _prepare_activation(self, caller, definition):
+        from audit.pii import private_binding_key
+        from llm_config import research_profile as profile
+        if not definition.fixed_research_shape:
+            raise DeclarativeAgentError("declarative_profile_unavailable", 503)
+        initial = _DeclarativeActivation(getattr(self.orch, "_llm_store", None), None, None,
+            getattr(self.orch, "persistent_assignments", None),
+            getattr(self.orch, "web_sessions", None),
+            getattr(self.orch, "persistent_assignment_runner", None))
+        self._activation_composition(caller, initial)
+        limits = definition.to_dict()["limits"]
+        minimum = initial.assignments.tool_bound("web-research-1:fetch_page")
+        minimum = {**minimum, "model_calls": minimum["model_calls"] + 1,
+                   "tokens": minimum["tokens"] + profile.RESERVED_TOKENS,
+                   "elapsed_ms": minimum["elapsed_ms"] + profile.RESERVED_MILLISECONDS}
+        if any(limits[period][name] < amount
+               for period in ("daily", "lifetime") for name, amount in minimum.items()):
+            raise DeclarativeAgentError("declarative_budget_insufficient", 422)
+        if limits["step_timeout_ms"] < profile.RESERVED_MILLISECONDS:
+            raise DeclarativeAgentError("declarative_budget_insufficient", 422)
+        if any(limits[period]["spend_micro_units"] is not None for period in ("daily", "lifetime")):
+            raise DeclarativeAgentError("declarative_cost_bound_unavailable", 422)
+        try:
+            key = private_binding_key()
+            selection = profile.select_config(await initial.config.capture_user(caller.owner_id),
+                                              store=initial.config, binding_key=key)
+        except Exception:
+            raise DeclarativeAgentError("declarative_profile_unavailable", 503) from None
+        prepared = _DeclarativeActivation(initial.config, selection, key,
+                                         initial.assignments, initial.sessions, initial.runner)
+        self._activation_current(caller, prepared)
+        return prepared
+
+    def _activation_current(self, caller, prepared):
+        from audit.pii import private_binding_key
+        self._activation_composition(caller, prepared)
+        try:
+            if prepared.selection.owner_id != caller.owner_id:
+                raise ValueError
+            current = private_binding_key(prepared.key.key_id)
+            marker = b"declarative-agent-activation/v1"
+            if not prepared.key.verify("config", marker, current.sign("config", marker)):
+                raise ValueError
+        except Exception:
+            raise DeclarativeAgentError("declarative_profile_unavailable", 503) from None
+
+    def _lock_activation(self, tx, caller, prepared):
+        """Lock config after every selected agent/revision, before final policy."""
+        self._activation_current(caller, prepared)
+        try:
+            row = self.repositories.encrypted_llm_config.get_user_for_update(
+                tx, owner_id=caller.owner_id)
+            if not prepared.selection.matches(row):
+                raise ValueError
+        except Exception:
+            raise DeclarativeAgentError("declarative_profile_unavailable", 503) from None
+        self._activation_current(caller, prepared)
+
+    def _activation_policy(self, tx, caller):
+        from orchestrator.tool_permissions import FixedReaderPolicyError
+        try:
+            self.orch.tool_permissions.assert_fixed_reader_current(tx,
+                owner_id=caller.owner_id, plane_runtime=self.runtime,
+                orchestrator=self.orch, identity_claims=caller.claims)
+        except FixedReaderPolicyError as error:
+            raise DeclarativeAgentError("declarative_permission_refused",
+                403 if error.code == "assignment_scope_revoked" else 503) from None
+
+    async def history(self, *, caller, agent_id, limit=50, before_revision_number=None):
+        """Return only actual owned definition revisions with a bounded cursor."""
+        from persistent_agents.models import validate_id
+        try:
+            validate_id(agent_id)
+            if (type(limit) is not int or not 1 <= limit <= 100
+                    or (before_revision_number is not None
+                        and (type(before_revision_number) is not int
+                             or not 1 <= before_revision_number <= 2**63 - 1))):
+                raise ValueError
+        except (TypeError, ValueError, AttributeError):
+            raise DeclarativeAgentError("declarative_command_invalid", 422) from None
+
+        def read(tx, repository):
+            repository.lock_declarative_owner(tx, owner_id=caller.owner_id)
+            agent = self._plane(repository.get_agent, tx,
+                                owner_id=caller.owner_id, agent_id=agent_id)
+            if agent is None or agent.agent_kind != "declarative":
+                raise DeclarativeAgentError("declarative_not_found", 404)
+            revisions = self._plane(repository.list_revisions, tx, owner_id=caller.owner_id,
+                agent_id=agent_id, limit=limit, before_revision_number=before_revision_number)
+            for revision in revisions:
+                if revision.owner_id != caller.owner_id or revision.agent_id != agent_id:
+                    raise DeclarativeAgentError("declarative_unavailable", 503)
+                self._stored_definition(revision)
+            return agent, revisions
+
+        result = await self._transaction(caller, read)
+        await caller.verify_delivery()
+        self._current(caller)
+        return result
 
 
 # ---------------------------------------------------------------------------

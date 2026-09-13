@@ -663,7 +663,7 @@ def _plane_schema_literal_import(
     """Read one reviewed local literal module; never execute or resolve imports.
 
     Historical registries remain entirely local to migrations.py. The caller
-    names only the reviewed assignment and operation data-only sibling modules. Aliasing,
+    names only the reviewed data-only sibling modules. Aliasing,
     rebinding, executable module statements, and filesystem indirection are
     refused instead of extending the general literal expression vocabulary.
     """
@@ -705,6 +705,20 @@ def _plane_schema_literal_import(
     if (declarations and isinstance(declarations[0], ast.Expr)
             and isinstance(declarations[0].value, ast.Constant) and isinstance(declarations[0].value.value, str)):
         declarations = declarations[1:]
+    # 088.004's exact declaration uses typing.Final. Recognize its syntax only;
+    # never import typing/candidate modules or evaluate an annotation expression.
+    if (stem == "declarative_agent" and len(declarations) == 2
+            and isinstance(declarations[0], ast.ImportFrom)
+            and declarations[0].module == "typing" and declarations[0].level == 0
+            and len(declarations[0].names) == 1
+            and declarations[0].names[0].name == "Final"
+            and declarations[0].names[0].asname is None
+            and isinstance(declarations[1], ast.AnnAssign)
+            and declarations[1].simple == 1
+            and isinstance(declarations[1].annotation, ast.Name)
+            and declarations[1].annotation.id == "Final"):
+        declaration = declarations[1]
+        declarations = [ast.Assign(targets=[declaration.target], value=declaration.value)]
     if (len(declarations) != 1 or not isinstance(declarations[0], ast.Assign)
             or len(declarations[0].targets) != 1 or not isinstance(declarations[0].targets[0], ast.Name)
             or declarations[0].targets[0].id != symbol or not isinstance(declarations[0].value, ast.Tuple)):
@@ -726,6 +740,7 @@ def _plane_migration_digest(component_root: Path) -> str:
     for stem, symbol in (
         ("assignment", "ASSIGNMENT_SCHEMA_STATEMENTS"),
         ("operation", "OPERATION_SCHEMA_STATEMENTS"),
+        ("declarative_agent", "DECLARATIVE_AGENT_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))
