@@ -1,5 +1,82 @@
 # Feature 088 verification record
 
+## Installed Work continuation commands and shared client reads — 2026-09-13 UTC
+
+Resume, manual-owner wait/wake and payload-free action reconciliation now use the
+mounted `/api/work/v1/operations` routes and the same original IAM/body/commit
+boundary as existing controls. Resume and a new wake retain both current caller
+and original issued-session authority, current fixed research capability, exact
+USER configuration and last policy checks. An accepted retry acknowledges its
+stored receipt without obtaining fresh execution permission or repeating audit.
+Wait is a safe owner hold; reconciliation records an authenticated owner's bounded
+factual decision, not independently verified provider evidence or recovered text.
+Neither reconciliation nor receipt replay dispatches or silently resumes work.
+Mutations and required audit share one rollback boundary. Mutable body objects are
+revalidated and copied before awaits, preserving the original command identity.
+
+Deep now pins and locally installs Projection
+`89d3331ace7bf284c89a204dcdd5b3b3ddee323e` and Plane
+`54da550076531c5c33ae416403436e1d83d2d572`. Schema remains `088.003` with migration
+digest `a3d3ac43bee48b0ca6832cca1e4a347db0a3f838af908b8545edb11e7e94272a`.
+The canonical UI protocol digest is
+`c00ef1a5630260b3e4e84493f03bba910a7d80b1a24dc9950b9add24074bf8fe`.
+All four component wheels were built offline through the committed installer;
+installation, complete recorded package-file/digest verification and fail-closed
+composition verification passed. Projection wheel SHA-256 is
+`6d775a04c1482b8857ff9b5fe9de68b4573b0e661d3e8261cbfffc0f8e8775a3`;
+Plane wheel SHA-256 is
+`afd4ac89cbca5c910072def54c3e07194e15da03693c1de2963a8d1a0ec07323`.
+
+The installed Python 3.11.15/PostgreSQL cohort passed **252 tests, zero failures
+or skips**, in 423.34 seconds. It explicitly ran `test_work_resume_postgres_088`,
+`test_work_continuations_088`, `test_work_continuations_postgres_088`,
+`test_work_control_audit_postgres_088`, `test_work_wake_088`,
+`test_work_wake_postgres_088`, `test_work_resume_http_postgres_088`,
+`test_work_continuation_http_postgres_088`, `test_work_wake_http_postgres_088`,
+`test_work_write_http_postgres_088`, `test_work_api_088` and
+`test_work_read_delivery_postgres_088`, all under `backend/tests/`.
+Every one of the 2,192 captured backend/installed Python sources remained unchanged.
+Changed executable coverage is HTTP **15/15**, continuation **80/80**, audit
+**18/18**, resume **84/86** and wake **95/96**, with no exclusions. Regenerating the
+JSON from the original native Coverage.py data reproduced every file measurement
+and total exactly. All 169 component installer/composition/schema verifier tests
+passed after updating the previously stale exact-pin fixture. Ruff, diff and
+scoped secret checks passed; earlier fixture/harness failures remain preserved.
+The new HTTP routes have actual missing-route REDs followed by passing successors.
+
+Separate Plane source qualification on the same commit passed **59 populated
+PostgreSQL migration/recovery tests and 55 unit tests**, without skips. These
+include representative two-owner 066 data/blobs/audit, populated 079 assignments,
+separate authentic 088.001 issued/uncertain liabilities, repeat/rollback/forward
+retry and explicit restored-session retirement with once-only settlement. Root
+verified all 217 archived inputs against Git and all 266 evidence hashes. This is
+not a production backup or final T019 qualification after later schema tasks.
+The offline provider cohort separately passed **402 tests**, with networking
+refused and no attempts; two stale test frames now use the actual private ingress
+frame, preserving the existing deadline/disconnect assertions. Provider production
+code is unchanged. Exact donor local-model framing/accounting and live-provider
+qualification remain open.
+
+The pinned Projection checkpoint adds owner/connection/request-correlated Work
+reads and literal result rendering across shared clients. Its separately scoped
+web, Windows, Android and Apple checks are retained in the source-bound local
+handoffs. Final Apple boundary tests/builds passed, but actual iOS/Mac interaction
+runs used the preceding Core revision. Watch Home navigation coverage is 23/40;
+default Core WebSocket changed-line coverage is 15/17. These gaps remain open and
+are not replaced by model/rendering fixtures or tests on another Apple platform.
+Windows retains its existing layout, as requested.
+
+Evidence is retained locally under `.git/088-completion-qualification/`:
+`work-continuations-installed-01/`, `component-install-03/`, the separately frozen
+continuation/wake/provider handoffs, and the Plane/Projection companion records.
+The 14 completed root-owned test databases were removed after verifying zero
+connections; the active shared qualification container remains for unfinished
+work. No credentials or production data entered these records. Tests use real
+local IAM/session/dispatch/audit seams with synthetic external responses, not
+institutional live staging. Full T015/T016/T018/T019/T026–T030, guidance, monitoring,
+frameworks, native successor builds, staging and protected release remain open.
+Product commits remain local/unpushed and submitted store builds are unchanged.
+
 ## Nonretained source recovery and unresolved continuation holds — 2026-09-13 UTC
 
 The existing private one-shot research handler now accepts retention-none work

@@ -12,7 +12,7 @@ from astralplane.repositories.assignment_models import AssignmentRecord
 from audit.repository import AuditRepository
 from audit.schemas import AuditEventCreate, AuditEventDTO
 from orchestrator.work_submit import _sync
-from persistent_agents.models import AssignmentError
+from persistent_agents.models import AssignmentError, validate_id
 
 
 class WorkControlAudit:
@@ -45,12 +45,34 @@ class WorkControlAudit:
                 or self.audit._audit.repository is not self.runtime.repositories.audit):
             raise AssignmentError("work_control_unavailable", 503)
 
-    def append(self, transaction, *, owner_id, command, record):
-        """Append a provisional audit record after mutation, before commit."""
+    def append(self, transaction, *, owner_id, command, record,
+               submission_id=None, action_id=None, decision=None):
+        """Append provisional identifiers before commit, never arbitrary evidence.
+
+        Wait/reconcile use their locked preparation record before the final
+        mutation. Its revisions describe the observed decision, not a new state.
+        Their submission/action IDs identify an authenticated owner attestation;
+        they do not prove an external effect or contain a recovered response.
+        """
         self.assert_current()
-        if (command not in {"pause", "stop", "delete", "resume", "wake"}
+        if (command not in {"pause", "stop", "delete", "resume", "wake", "wait", "reconcile"}
                 or type(record) is not AssignmentRecord or record.owner_id != owner_id):
             raise AssignmentError("work_control_unavailable", 503)
+        metadata = {}
+        try:
+            if command in {"wait", "reconcile"}:
+                metadata["submission_id"] = validate_id(submission_id)
+                if command == "reconcile":
+                    metadata["action_id"] = validate_id(action_id)
+                    if decision not in {"confirmed_applied", "confirmed_not_applied"}:
+                        raise ValueError
+                    metadata["decision"] = decision
+                elif action_id is not None or decision is not None:
+                    raise ValueError
+            elif any(value is not None for value in (submission_id, action_id, decision)):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise AssignmentError("work_control_unavailable", 503) from None
         now = datetime.now(UTC)
         event = AuditEventCreate(
             actor_user_id=owner_id, auth_principal=owner_id,
@@ -60,6 +82,7 @@ class WorkControlAudit:
                 "assignment_id": record.assignment_id,
                 "instruction_revision": record.instruction_revision,
                 "control_epoch": record.control_epoch,
+                **metadata,
             }, started_at=now, completed_at=now,
         )
         result = _sync(self.audit.insert_in_transaction(

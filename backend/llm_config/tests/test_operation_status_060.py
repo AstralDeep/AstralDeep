@@ -25,6 +25,7 @@ from orchestrator import llm_gate
 from orchestrator.orchestrator import (
     ConnectionContext,
     Orchestrator,
+    _ConnectionIngressFrame,
     _ConnectionOperation,
 )
 from orchestrator.work_admission import (
@@ -649,7 +650,13 @@ async def test_disconnect_detaches_viewer_but_does_not_cancel_user_save() -> Non
 
     task = asyncio.create_task(_survivor())
     work = _ConnectionOperation(
-        frame=SimpleNamespace(action="chrome_llm_save", surface="llm_settings"),
+        frame=_ConnectionIngressFrame(
+            raw="{}", parsed={}, action="chrome_llm_save", surface="llm_settings",
+            chat_id=None, submission_id=uuid.uuid4(), request_generation=uuid.uuid4(),
+            normalized_digest="ab" * 32, read_only=False,
+            operation_kind="llm_credential_save", deadline_at_monotonic=None,
+            deadline_at_utc=None,
+        ),
         owner=owner,
         operation_id=accepted.operation_id,
         task=task,
@@ -657,6 +664,7 @@ async def test_disconnect_detaches_viewer_but_does_not_cancel_user_save() -> Non
     context.operations[accepted.operation_id] = work
     context.tracked_tasks.add(task)
     context.operation_tasks.add(task)
+    assert work.frame.work_read is None
 
     await orch._drain_connection_context(context)
 
@@ -931,7 +939,7 @@ async def test_whole_attempt_deadline_is_retryable_and_has_no_late_success() -> 
     owner, accepted, _projection = orch._submit_connection_batch(
         context,
         [
-            SimpleNamespace(
+            _ConnectionIngressFrame(
                 raw="{}",
                 parsed={"payload": {}},
                 action="chrome_llm_save",
@@ -948,13 +956,16 @@ async def test_whole_attempt_deadline_is_retryable_and_has_no_late_success() -> 
         ],
     )[0][1:4]
     work = _ConnectionOperation(
-        frame=SimpleNamespace(
+        frame=_ConnectionIngressFrame(
             raw="{}",
             parsed={"payload": {}},
             action="chrome_llm_save",
             surface="llm_settings",
             chat_id=None,
+            submission_id=uuid.uuid4(),
             request_generation=uuid.uuid4(),
+            normalized_digest="ab" * 32,
+            read_only=False,
             deadline_at_monotonic=time.monotonic() + 0.02,
             deadline_at_utc=datetime.now(UTC) + timedelta(seconds=0.02),
             operation_kind="llm_credential_save",
@@ -962,6 +973,7 @@ async def test_whole_attempt_deadline_is_retryable_and_has_no_late_success() -> 
         owner=owner,
         operation_id=accepted.operation_id,
     )
+    assert work.frame.work_read is None
 
     await orch._run_connection_operation(context, work)
     await asyncio.sleep(0.03)
