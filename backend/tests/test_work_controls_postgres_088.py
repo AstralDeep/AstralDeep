@@ -20,13 +20,23 @@ from astralplane.repositories.work_admission import (
     WorkAdmissionRepository,
 )
 
+from audit.repository import AuditRepository
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
 from persistent_agents.models import AssignmentError
 from persistent_agents.runtime_values import digest
-from tests.test_work_service_postgres_088 import records as records
+from tests import test_work_service_postgres_088 as read_fixtures
 from persistent_agents.tests.test_engine_postgres import plane as plane
 
 OWNER = {"sub": "owner"}
+read_records = read_fixtures.records
+
+
+@pytest.fixture
+def records(read_records, monkeypatch):
+    runtime, reads, _identities, _legacy = read_records
+    monkeypatch.setenv("AUDIT_HMAC_SECRET", "synthetic-work-controls-contract-key")
+    reads.assignments.orch.audit_repo = AuditRepository(plane_runtime=runtime)
+    return read_records
 
 
 def command(revision, submission=None):

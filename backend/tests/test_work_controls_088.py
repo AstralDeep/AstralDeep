@@ -22,6 +22,12 @@ def controls(host, monkeypatch):
     repo.apply_control = Mock(return_value=SimpleNamespace(applied=True))
     repo.delete_for_owner = Mock(return_value=True)
     orch.persistent_assignments._audit = AsyncMock()
+    # HTTP/command-shaping unit boundary only. The dedicated PostgreSQL suite
+    # exercises the actual audit repository and mutation rollback together.
+    orch.atomic_audit = Mock()
+    monkeypatch.setattr("orchestrator.work_control_audit.WorkControlAudit.append", orch.atomic_audit)
+    monkeypatch.setattr("orchestrator.work_control_audit.WorkControlAudit.assert_store_current", Mock())
+    orch.persistent_assignments.store.async_runtime = object()
     monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
     monkeypatch.delenv("BACKEND_PUBLIC_URL", raising=False)
     app = FastAPI()
@@ -64,7 +70,9 @@ async def test_exact_write_routes_pass_only_server_owner_and_versioned_command(c
     assert values["expected_instruction_revision"] == 2 and values["expected_control_epoch"] == 3
     assert values["control"] == ("stop" if command == "cancel" else "pause")
     assert values["submission_id"] == payload["submission_id"]
-    orch.persistent_assignments._audit.assert_awaited_once()
+    orch.atomic_audit.assert_called_once()
+    assert orch.atomic_audit.call_args.kwargs["command"] == values["control"]
+    orch.persistent_assignments._audit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -76,13 +84,16 @@ async def test_delete_and_duplicate_receipt_do_not_invent_effect_or_audit(contro
         replay = await client.post(path + "/pause", json=body(), headers={"Origin": "http://test"})
         assert replay.json()["applied"] is False
         repo.apply_control.assert_not_called()
+        orch.atomic_audit.assert_not_called()
         orch.persistent_assignments._audit.assert_not_awaited()
         deleted = await client.request("DELETE", path, json={"expected_revision": 7},
                                        headers={"Authorization": "Bearer fixture"})
         assert deleted.status_code == 200 and deleted.json() == {"id": read.assignment.assignment_id, "deleted": True}
         assert repo.delete_for_owner.call_args.kwargs["expected_control_epoch"] == 3
         assert repo.delete_for_owner.call_args.kwargs["expected_state_version"] == 7
-        orch.persistent_assignments._audit.assert_awaited_once()
+        orch.atomic_audit.assert_called_once()
+        assert orch.atomic_audit.call_args.kwargs["command"] == "delete"
+        orch.persistent_assignments._audit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

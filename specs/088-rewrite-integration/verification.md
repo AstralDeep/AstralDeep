@@ -1,5 +1,47 @@
 # Feature 088 verification record
 
+## Atomic Work controls and separate continuation authority — 2026-09-13 UTC
+
+Pause, cancel and settled terminal deletion now append required audit in the same
+bounded Plane transaction as the mutation and its existing receipt. An audit
+failure rolls back the whole command; accepted replay does not append again.
+The adapter binds the exact store, assignment repository, asynchronous transaction
+adapter/catalog and audit repository, checking these before resource reads and
+after append. This closes a reviewed wrong-runtime adapter substitution gap.
+Only identifiers and revisions enter the audit. Lost commit acknowledgement is
+not a reason to retry mutation internally; the original command receipt remains
+the caller's safe replay path. Deletion retains its documented repeated-ID 404.
+
+The final installed-component control/native compatibility cohort passed **106
+tests in 154.93 seconds**. It covers actual audit-chain verification, concurrent
+duplicates, pre/post-append failures, rollback, coroutine refusal, replaced
+composition, real audit-lock timeout and a second actual Plane runtime. The initial
+two red tests reproduced the missing atomic audit. A broader intermediate run had
+99 passes and four test failures: one lock fixture omitted required correlation
+metadata, and three historical native assertions still expected HTTP submission
+to be unregistered. Their corrected expectations preserve the native bare-bearer
+authority denial and now explicitly refuse the compatibility host's incomplete
+registered HTTP composition. Runtime code was unchanged by these fixture repairs.
+
+A separate private `OperationControlAuthority` now observes supported paused
+resume or active event-wake state through the original issued session. It exposes
+no dispatch token and cannot substitute for execution authority. The shared
+refresh engine keeps the existing execution resolver active-only, preserves full
+record/incarnation checks across waits, and caps observations by both requesting
+and refreshed JWT lifetimes plus work/session deadlines. Its cohort passed **193
+tests**, followed by **two targeted test-only successor cases**, including a second
+pause that changes generation while the lifecycle stays paused. No combined
+194-case run is claimed. Service/HTTP activation, requesting-cookie lineage at
+commit and current continuation capability remain separate work.
+
+The final root startup and actual registered research end-to-end cohort also
+passed **16 tests in 102.07 seconds** after these shared-helper changes. Measured
+production hashes are bound to their qualifying coverage inputs; the four changed
+production modules have **115/116 executable lines covered (99.14%)**, each above
+90%. Ruff, diff and secret checks pass. Private receipts retain source closures,
+concurrent unrelated test changes, actual commands and earlier failures. No schema,
+dependency, store submission or product push was introduced. Full 088 remains open.
+
 ## Fixed research HTTP, supervisor and retained result integration — 2026-09-13 UTC
 
 The versioned Work router now registers fixed research submission and an explicit

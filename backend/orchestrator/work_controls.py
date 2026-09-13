@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pydantic import Field, field_validator
 
+from orchestrator.work_control_audit import WorkControlAudit
 from orchestrator.work_service import _identity, _public
 from persistent_agents.models import AssignmentError, StrictModel, validate_id
 from persistent_agents.runtime_values import digest
@@ -53,6 +54,7 @@ class WorkControlService:
     def __init__(self, assignments):
         self.assignments = assignments
         self.store = assignments.store
+        self.audit = WorkControlAudit(assignments)
 
     async def control(self, owner_id, claims, identity, command, body: WorkControlRequest):
         """Pause or cancel once; exact replay acknowledges current safe state."""
@@ -82,11 +84,12 @@ class WorkControlService:
                 submission_id=body.submission_id, submission_digest=signature,
                 control=plane_command)
             updated = _owned_operation(tx, repository, owner_id, identity)
+            if result.applied:
+                self.audit.append(tx, owner_id=owner_id, command=plane_command,
+                                  record=updated.assignment)
             return {"operation": _public(updated, owner_id), "applied": result.applied}, updated.assignment
 
-        result, record = await self._transaction(transaction)
-        if result["applied"]:
-            await self.assignments._audit(claims, plane_command, record)
+        result, _record = await self._transaction(transaction)
         return result
 
     async def delete(self, owner_id, claims, identity, body: WorkDeleteRequest):
@@ -106,15 +109,23 @@ class WorkControlService:
                 expected_state_version=body.expected_revision)
             if deleted is not True:
                 raise AssignmentError("work_not_found", 404)
+            self.audit.append(tx, owner_id=owner_id, command="delete", record=read.assignment)
             return read.assignment
 
-        record = await self._transaction(transaction)
-        await self.assignments._audit(claims, "delete", record)
+        await self._transaction(transaction)
         return {"id": identity, "deleted": True}
 
     async def _transaction(self, callback):
+        def current(transaction, repository):
+            self.audit.assert_store_current()
+            if repository is not self.audit.repository:
+                raise AssignmentError("work_control_unavailable", 503)
+            result = callback(transaction, repository)
+            self.audit.assert_store_current()
+            return result
+
         try:
-            return await self.store.transaction(callback)
+            return await self.store.transaction(current, bound_session_waits=True)
         except AssignmentError as exc:
             if exc.status_code == 404:
                 raise AssignmentError("work_not_found", 404) from exc

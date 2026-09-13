@@ -50,6 +50,17 @@ class OperationExecutionAuthority:
         return json.loads(self._claims_json)
 
 
+@dataclass(frozen=True, slots=True)
+class _OperationRefresh:
+    """Private verified material; only the selecting adapter grants its type."""
+
+    record: AssignmentRecord = field(repr=False)
+    observation: SessionExecutionObservation = field(repr=False)
+    claims_json: str = field(repr=False)
+    subject_token: str = field(repr=False)
+    plane_runtime: object = field(repr=False)
+
+
 def _unavailable() -> None:
     raise SessionAuthorityUnavailable("session_authority_unavailable")
 
@@ -64,12 +75,13 @@ def _uuid4(value) -> bool:
         return False
 
 
-def _operation_context(value, owner_id, assignment_id):
+def _operation_reference(value, owner_id, assignment_id):
+    """Validate immutable v2 identity; callers separately restrict lifecycle."""
     if not isinstance(value, AssignmentOperationRead) or value.continuation_supported is not True:
         _unavailable()
     record = value.assignment
     if (not isinstance(record, AssignmentRecord) or record.owner_id != owner_id
-            or record.assignment_id != assignment_id or record.lifecycle != "active"
+            or record.assignment_id != assignment_id
             or record.execution_profile != "one_shot" or not isinstance(record.operation, Mapping)):
         _unavailable()
     operation = record.operation
@@ -88,17 +100,27 @@ def _operation_context(value, owner_id, assignment_id):
     return record, authority["reference_id"], expiry, deadline
 
 
-async def refresh_operation_execution_authority(
-    *, owner_id: str, assignment_id: str, sessions: WebSessionStore, plane_runtime,
-) -> OperationExecutionAuthority:
-    """Refresh only an operation's original issued session, without activating work.
+def _operation_context(value, owner_id, assignment_id):
+    selected = _operation_reference(value, owner_id, assignment_id)
+    if selected[0].lifecycle != "active":
+        _unavailable()
+    return selected
 
-    All remote calls occur outside bounded Plane transactions. The final session
-    checks bracket the operation reread, and neither that observation nor this
-    private result replaces the future mutation/permit transaction's own guards.
-    Cancellation propagates; an unknown refresh is never retried or adopted.
-    As in the web helper, request SQL bounds limit contention separately from
-    pool/network waits; the coroutine deadline is not physical thread termination.
+
+def _same_operation(current, original):
+    return replace(current, updated_at=original.updated_at) == original
+
+
+async def _refresh_operation_session(
+    *, owner_id: str, assignment_id: str, sessions: WebSessionStore, plane_runtime,
+    operation_context, expected_record=None, request_expires_at=None, request_check=None,
+) -> _OperationRefresh:
+    """Share exact original refresh and post-wait checks across private adapters.
+
+    The adapter supplies its closed lifecycle policy, never request-provided
+    callbacks. Optional request checks can only narrow the existing observation.
+    This material is not an execution or control authority until wrapped by that
+    adapter. All remote calls remain outside bounded Plane transactions.
     """
     try:
         async with asyncio.timeout(_TIME_LIMIT_SECONDS):
@@ -114,10 +136,16 @@ async def refresh_operation_execution_authority(
                     return assignments.get_operation(transaction, owner_id=owner_id,
                                                      assignment_id=assignment_id)
 
-            original, incarnation, expiry, deadline = _operation_context(
+            original, incarnation, expiry, deadline = operation_context(
                 await asyncio.to_thread(read_original), owner_id, assignment_id)
+            if expected_record is not None and not _same_operation(original, expected_record):
+                _unavailable()
+            if request_expires_at is not None:
+                expiry = min(expiry, request_expires_at)
             reference = await asyncio.to_thread(sessions.capture_incarnation_execution_reference,
                 owner_id=owner_id, incarnation_id=incarnation)
+            if request_check is not None:
+                request_check(reference.state.observed_at)
             if min(expiry, deadline) <= reference.state.observed_at:
                 _unavailable()
             candidate = await sessions.refresh_for_execution(
@@ -138,21 +166,41 @@ async def refresh_operation_execution_authority(
                 with sessions._request_execution_transaction() as transaction:
                     repository = plane_runtime.repositories.history.sessions
                     repository.assert_current_execution(transaction, observation=observation)
-                    current, _, _, _ = _operation_context(assignments.get_operation(
+                    current, _, _, _ = operation_context(assignments.get_operation(
                         transaction, owner_id=owner_id, assignment_id=assignment_id), owner_id, assignment_id)
                     # A timestamp alone is not an authority generation. Every
                     # authority, version, lifecycle and other record value must
                     # still belong to the original captured generation.
-                    if replace(current, updated_at=original.updated_at) != original:
+                    if not _same_operation(current, original):
                         _unavailable()
-                    repository.assert_current_execution(transaction, observation=observation)
+                    state = repository.assert_current_execution(transaction, observation=observation)
+                    if request_check is not None:
+                        request_check(state.observed_at)
 
             await asyncio.to_thread(final_check)
-            return OperationExecutionAuthority(original, observation,
+            return _OperationRefresh(original, observation,
                 json.dumps(payload, allow_nan=False, separators=(",", ":")),
                 candidate.access_token, plane_runtime)
     except Exception:
         raise SessionAuthorityUnavailable("session_authority_unavailable") from None
+
+
+async def refresh_operation_execution_authority(
+    *, owner_id: str, assignment_id: str, sessions: WebSessionStore, plane_runtime,
+) -> OperationExecutionAuthority:
+    """Refresh an active operation's original session without activating work.
+
+    The active-only policy is unchanged. Final session checks bracket the exact
+    operation reread; the caller must still recheck in its mutation/permit
+    transaction. Cancellation propagates and unknown refresh is never retried.
+    SQL caps bound contention separately from pool/network waits; the coroutine
+    deadline does not guarantee physical termination of a worker thread.
+    """
+    result = await _refresh_operation_session(owner_id=owner_id,
+        assignment_id=assignment_id, sessions=sessions, plane_runtime=plane_runtime,
+        operation_context=_operation_context)
+    return OperationExecutionAuthority(result.record, result.observation,
+        result.claims_json, result.subject_token, result.plane_runtime)
 
 
 def _cookie_reference(request: Request) -> str:
