@@ -741,6 +741,7 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("assignment", "ASSIGNMENT_SCHEMA_STATEMENTS"),
         ("operation", "OPERATION_SCHEMA_STATEMENTS"),
         ("declarative_agent", "DECLARATIVE_AGENT_SCHEMA_STATEMENTS"),
+        ("guidance", "GUIDANCE_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))
