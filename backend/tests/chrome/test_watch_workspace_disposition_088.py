@@ -23,8 +23,8 @@ def register_chrome_branch():
     source = Path(__file__).resolve().parents[2] / "orchestrator" / "orchestrator.py"
     tree = ast.parse(source.read_text())
     gates = [node for node in ast.walk(tree) if isinstance(node, ast.If)
-             and isinstance(node.test, ast.Compare)
-             and isinstance(node.test.left, ast.Name) and node.test.left.id == "_dt"
+             and any(isinstance(test, ast.Compare) and isinstance(test.left, ast.Name)
+                     and test.left.id == "_dt" for test in ast.walk(node.test))
              and any(isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
                      and child.func.id == "ChromeMenu" for child in ast.walk(node))]
     assert len(gates) == 1, "registration must have one shared native chrome delivery gate"

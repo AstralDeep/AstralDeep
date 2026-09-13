@@ -1865,6 +1865,20 @@ class ChromeRender(Message):
     region: str = "modal"  # "modal" | "topbar"
     html: str = ""
     mode: str = "replace"  # reserved; only "replace" in 027
+    # Work reads are independently correlated, never conversation generations.
+    surface_key: Optional[str] = None
+    request_generation: Optional[str] = None
+
+    def to_json(self) -> str:
+        data = asdict(self)
+        if self.surface_key is not None or self.request_generation is not None:
+            if self.surface_key != "work" or self.region != "modal":
+                raise ProtocolValidationError("correlated chrome render must be Work modal")
+            _require_uuid4(self.request_generation, "request_generation")
+        else:
+            data.pop("surface_key")
+            data.pop("request_generation")
+        return json.dumps(data)
 
 @dataclass
 class ChromeMenu(Message):
@@ -1900,6 +1914,17 @@ class ChromeSurface(Message):
     admin_only: bool = False
     components: List[Dict[str, Any]] = field(default_factory=list)
     mode: str = "replace"          # reserved; only "replace" today
+    request_generation: Optional[str] = None
+
+    def to_json(self) -> str:
+        data = asdict(self)
+        if self.surface_key == "work":
+            _require_uuid4(self.request_generation, "request_generation")
+        elif self.request_generation is not None:
+            raise ProtocolValidationError("correlated chrome surface must be Work")
+        else:
+            data.pop("request_generation")
+        return json.dumps(data)
 
 
 # --- Feature 060: canonical reliability protocol ----------------------

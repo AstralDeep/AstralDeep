@@ -67,3 +67,32 @@ def test_workspace_controls_never_make_unauthenticated_menu_public():
     app.include_router(chrome_router)
     response = TestClient(app).get("/api/chrome/menu")
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize("capabilities,expected", [
+    (["work_read_v1"], True), ([], False), (["render"], False),
+    ("work_read_v1", False), (None, False),
+])
+def test_work_menu_requires_current_native_negotiation(monkeypatch, capabilities, expected):
+    from orchestrator.chrome_availability import projection_native_chrome_availability
+    monkeypatch.setattr(flags, "is_enabled", lambda _: True)
+    availability = projection_native_chrome_availability({"_client_capabilities": capabilities})
+    assert availability["work_enabled"] is expected
+    assert availability["export_enabled"] and availability["share_enabled"]
+
+
+def test_work_menu_flag_refusal_is_independent_and_legacy_rest_hides_work(monkeypatch):
+    from orchestrator.chrome_availability import projection_native_chrome_availability
+    monkeypatch.setattr(flags, "is_enabled", lambda _: True)
+    assert projection_native_chrome_availability(None)["work_enabled"] is False
+    app = FastAPI()
+    app.include_router(chrome_router)
+    app.dependency_overrides[get_current_user_payload] = lambda: {"realm_access": {"roles": ["user"]}}
+    assert all(item["key"] != "work" for item in TestClient(app).get("/api/chrome/menu").json()["topbar"])
+    def resolve(key):
+        if key == "persistent_agents":
+            raise KeyError("unavailable")
+        return True
+    monkeypatch.setattr(flags, "is_enabled", resolve)
+    availability = projection_native_chrome_availability({"_client_capabilities": ["work_read_v1"]})
+    assert availability["work_enabled"] is False and availability["export_enabled"] is True

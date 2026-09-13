@@ -1,5 +1,51 @@
 # Feature 088 verification record
 
+## Correlated Work reads and owner wait storage — 2026-09-13 UTC
+
+Work list/detail/result now has a shared Projection surface adapter, with optional
+Work-only request correlation on native and web chrome frames. Real WebSocket
+ingress captures the original registration, JWT and signed-cookie issuance before
+admission waits. Its private read observation travels through the existing bounded
+read lane and rechecks current identity, transport, request, feature and component
+bindings before delivery. A single 15-second deadline includes admission and
+predecessor waits; expiry cannot cancel an earlier mutation's shared lane future.
+Navigation, re-registration, failed admission, completion and disconnect retire
+the observation. Work never acquires conversation execution scope or needs model
+configuration merely to read. Native menu availability requires the negotiated
+Work capability; Watch receives only the shared supported Work control.
+
+The source-bound real-PostgreSQL/ingress cohort passed **167 tests**, with two
+unchanged generic load probes explicitly deselected. One earlier whole-suite run
+was interrupted after the unrelated ten-thousand registry-interleaving probe
+remained CPU-bound for nine minutes; that run is not a passing gate. A Work-only
+timeout-copy successor passed **10 tests**, and the final two malformed-envelope
+denials passed separately. No aggregate all-green run is implied. Actual coverage
+replay covers **81/89** changed orchestrator lines and **141/143** guard lines;
+Work service and protocol changes are fully covered, the adapter covers **71/74**,
+and chrome event changes cover **11/11**. The root availability/ownership/manifest
+cohort also passed **23 tests**. Ruff, diff and scoped secret checks passed.
+Root verified the ingress source closures, all 129 predecessor artifact hashes
+and all 32 successor artifact hashes. Earlier failures remain in private evidence.
+These checks use installed Plane and the exact primary Projection source overlay,
+with synthetic external IAM replies; successor component installation and live
+client qualification remain required before deployment.
+
+Plane local `fc16597eee1c142403ab79503588fafef9955041` separately adds atomic
+owner-directed event waiting on top of the original-authority reconciliation
+checkpoint. It preserves issued/unknown liabilities and checkpoints, invalidates
+only unstarted actions and never schedules continuation. Its frozen seven-module
+PostgreSQL cohort passed **560 tests**, including 68 new cases, with **67/67**
+changed executable lines covered. Root verified four source hashes and 56
+artifact hashes, reviewed lock order/receipt/audit rollback, and independently
+ran architecture/provenance/contract checks: **136 passed, two explicit missing-
+input skips**; the immutable-source replay then passed with its supplied source
+repository. This Plane revision is not yet pinned or installed by Deep.
+
+HTTP continuation/caller commit guards, nonretained research recovery, all native
+Work view qualification and the other unchecked 088 tasks remain open. These are
+local unpushed checkpoints; existing store submissions do not include them. No
+schema revision, migration digest, primitive or runtime dependency changed here.
+
 ## Retained research continuation identity — 2026-09-13 UTC
 
 Research source/model action keys now bind instruction revision and control epoch

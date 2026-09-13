@@ -38,7 +38,8 @@ def projection_chrome_availability() -> dict[str, bool]:
         logger.warning("Unable to resolve agent chrome availability; hiding it", exc_info=True)
     workspace = {}
     for output, feature in (("export_enabled", "artifact_export"),
-                            ("share_enabled", "artifact_sharing")):
+                            ("share_enabled", "artifact_sharing"),
+                            ("work_enabled", "persistent_agents")):
         try:
             from shared.feature_flags import flags
 
@@ -55,3 +56,16 @@ def projection_chrome_availability() -> dict[str, bool]:
         "skills_enabled": skills,
         **workspace,
     }
+
+
+def projection_native_chrome_availability(claims: dict) -> dict[str, bool]:
+    """Resolve native Work support from the current registered capability hint.
+
+    This affects presentation only. The Work host separately authenticates the
+    original JWT and current caller and never treats capability as permission.
+    """
+    values = projection_chrome_availability()
+    capabilities = claims.get("_client_capabilities", []) if isinstance(claims, dict) else []
+    values["work_enabled"] = bool(values.get("work_enabled", False) and isinstance(capabilities, list)
+                                  and "work_read_v1" in capabilities)
+    return values
