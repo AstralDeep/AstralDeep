@@ -149,11 +149,11 @@ class AssignmentStore:
     async def operation_lifecycle_transaction(
         self, *, authority, callback: Callable[[Any, Any, Any], _T], fence=None, binding=None,
     ) -> _T:
-        """Guard one-shot lifecycle writes and recheck the same session after them.
+        """Guard one-shot writes and recheck original session and guidance afterward.
 
         Resolve remote authority before entry. SQL caps apply before the first
         query; the synchronous callback uses this transaction only. A post-write
-        session check can roll back claim/lease retirement after its own fence is
+        check can roll back claim/lease retirement after its execution fence is
         intentionally gone. It never refreshes or adopts authority under locks.
         """
         from orchestrator.session_authority import OperationExecutionAuthority
@@ -197,6 +197,17 @@ class AssignmentStore:
                 raise AssignmentError("assignment_state_changed", 409)
             result = synchronous(callback(tx, repository, current))
             synchronous(sessions.assert_current_execution(tx, observation=authority.observation))
+            # Completion intentionally retires the old claim. Use the committed
+            # candidate's counters for the last DB-time selected-guidance check;
+            # even the final session query may have waited across note expiry.
+            after = synchronous(repository.get_operation(
+                tx, owner_id=current.owner_id,
+                assignment_id=current.assignment_id)).assignment
+            synchronous(repository.assert_guidance_current(
+                tx, owner_id=after.owner_id, assignment_id=after.assignment_id,
+                expected_instruction_revision=after.instruction_revision,
+                expected_control_epoch=after.control_epoch,
+                expected_state_version=after.state_version))
             return result
 
         return await self.transaction(guarded, bound_session_waits=True)
