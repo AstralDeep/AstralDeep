@@ -99,6 +99,30 @@ class WorkService:
         # dispatch-context policy; a second facade must not drift from it.
         self.assignments._owner(owner_id, claims)
 
+    async def assert_read_session(self, owner_id, claims, identity):
+        """Recheck the original cookie issuance without cached session lookup.
+
+        This bounded read is the delivery liveness observation, not execution or
+        consent authority. A later retirement can linearize after this read.
+        """
+        self._owner(owner_id, claims)
+        principal_expiry = claims["exp"]
+
+        def read(transaction, _repository):
+            sessions = self.store.plane_runtime.repositories.history.sessions
+            state = sessions.get_execution_state(
+                transaction, owner_id=owner_id, session_id=identity[0])
+            if state is None:
+                raise AssignmentError("work_authentication_required", 401)
+            credential = state.credential
+            if (credential.owner_id != owner_id
+                    or (credential.session_id, credential.incarnation_id) != identity
+                    or not credential.interactive_anchor <= state.observed_at.timestamp()
+                    < min(credential.hard_expires_at, principal_expiry)):
+                raise AssignmentError("work_authentication_required", 401)
+
+        await self.store.transaction(read, bound_session_waits=True)
+
     async def _read(self, method, owner_id, **kwargs):
         def transaction(tx, repository):
             callback = getattr(repository, method, None)

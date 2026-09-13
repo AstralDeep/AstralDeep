@@ -21,7 +21,6 @@ from astralplane.repositories.assignment_models import (
 )
 from astralplane.repositories.history import SessionExecutionObservation, SessionRecord
 
-from orchestrator.auth import get_web_or_bearer_user_payload
 from orchestrator.work_api import work_router
 from orchestrator.work_service import WorkService
 from persistent_agents.models import AssignmentError
@@ -155,7 +154,8 @@ async def test_future_operation_payload_is_opaque_but_safe_outer_identity_is_rea
 
 
 @pytest.mark.asyncio
-async def test_http_reads_never_perform_synchronous_profile_persistence(records):
+async def test_http_reads_never_perform_synchronous_profile_persistence(records, monkeypatch):
+    from tests.test_work_api_088 import override_read_auth
     plane, service, ids, _ = records
     profile_calls = []
     def save_profile(claims):
@@ -167,8 +167,7 @@ async def test_http_reads_never_perform_synchronous_profile_persistence(records)
     app = FastAPI()
     app.state.orchestrator = orch
     app.include_router(work_router, prefix="/api")
-    app.dependency_overrides[get_web_or_bearer_user_payload] = lambda: {
-        "sub": "owner", "realm_access": {"roles": ["user"]}}
+    override_read_auth(app, monkeypatch)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         for suffix in ("", "/" + ids[0], "/" + ids[0] + "/poll"):
             response = await client.get("/api/work/v1/operations" + suffix)
