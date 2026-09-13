@@ -1,4 +1,7 @@
 """Fresh human authentication, cookie-write origin checks and bounded commands."""
+from datetime import datetime, timedelta, timezone
+import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -9,8 +12,10 @@ from fastapi import FastAPI
 from pydantic import ValidationError
 
 from orchestrator.auth import get_web_or_bearer_user_payload
-from orchestrator.work_api import _origin, work_router
+from orchestrator.work_api import _origin, _write_owner, work_router
+from orchestrator.work_control_authority import WorkCallerAuthority
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
+from orchestrator.work_submit_authority import AuthenticatedWorkRequest
 from persistent_agents.models import AssignmentError
 from tests.test_work_api_088 import host as host
 
@@ -35,6 +40,40 @@ def controls(host, monkeypatch):
     app.include_router(work_router, prefix="/api")
     app.dependency_overrides[get_web_or_bearer_user_payload] = lambda: {
         "sub": "owner", "realm_access": {"roles": ["user"]}}
+
+    # This module tests HTTP/command shape with mocked storage. Mock the new
+    # private auth boundary explicitly; real signed IAM/session/commit races are
+    # covered by test_work_write_http_postgres_088 and the PG control cohorts.
+    def local(caller, assignments):
+        assignments._owner(caller.context.owner_id, caller.context.claims)
+
+    monkeypatch.setattr(WorkCallerAuthority, "_assert_local", local)
+    monkeypatch.setattr(WorkCallerAuthority, "assert_current",
+                        lambda caller, tx, *, assignments: local(caller, assignments))
+    monkeypatch.setattr(WorkCallerAuthority, "verify_delivery", AsyncMock())
+
+    def caller_for(claims=None):
+        if claims is None:
+            claims = {"sub": "owner", "realm_access": {"roles": ["user"]}}
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
+        context = AuthenticatedWorkRequest(claims.get("sub"), expiry, json.dumps(claims),
+            None, None, orch.persistent_assignments.store.plane_runtime)
+        return WorkCallerAuthority(context, None, SimpleNamespace(assignments=orch.persistent_assignments),
+            "fixture.access.token", time.monotonic() + 15, datetime.now(timezone.utc) + timedelta(seconds=15))
+
+    async def authenticate(request, *, assignments, sessions):
+        from orchestrator import auth
+        override = app.dependency_overrides.get(get_web_or_bearer_user_payload)
+        claims = override() if override else await auth.get_web_or_bearer_user_payload(
+            request, await auth.security(request))
+        claims = await auth.verify_user(claims)
+        await _write_owner(request, claims.get("sub"))
+        caller = caller_for(claims)
+        caller._assert_local(assignments)
+        return caller
+
+    monkeypatch.setattr("orchestrator.work_api.authenticate_work_control_request", authenticate)
+    orch.control_caller = caller_for
     return app, orch, read, repo
 
 
@@ -179,21 +218,22 @@ async def test_flag_off_extra_authority_unknown_commands_and_private_errors_fail
 async def test_service_missing_contract_malformed_record_and_delete_race_are_bounded(controls):
     _, orch, read, repo = controls
     service = WorkControlService(orch.persistent_assignments)
-    args = ("owner", {"sub": "owner"}, read.assignment.assignment_id)
+    caller = orch.control_caller()
+    args = ("owner", caller.context.claims, read.assignment.assignment_id)
     with pytest.raises(AssignmentError, match="work_control_invalid"):
-        await service.control(*args, "resume", WorkControlRequest(**body()))
+        await service.control(*args, "resume", WorkControlRequest(**body()), caller=caller)
     repo.apply_control = None
     with pytest.raises(AssignmentError, match="work_repository_unavailable"):
-        await service.control(*args, "pause", WorkControlRequest(**body()))
+        await service.control(*args, "pause", WorkControlRequest(**body()), caller=caller)
     repo.delete_for_owner.return_value = False
     with pytest.raises(AssignmentError, match="work_not_found"):
-        await service.delete(*args, WorkDeleteRequest(expected_revision=7))
+        await service.delete(*args, WorkDeleteRequest(expected_revision=7), caller=caller)
     repo.get_operation.side_effect = AttributeError("private future envelope")
     with pytest.raises(AssignmentError, match="work_control_unavailable"):
-        await service.delete(*args, WorkDeleteRequest(expected_revision=7))
+        await service.delete(*args, WorkDeleteRequest(expected_revision=7), caller=caller)
     repo.get_operation.side_effect = AssignmentError("assignment_not_found", 404)
     with pytest.raises(AssignmentError, match="work_not_found"):
-        await service.delete(*args, WorkDeleteRequest(expected_revision=7))
+        await service.delete(*args, WorkDeleteRequest(expected_revision=7), caller=caller)
 
 
 @pytest.mark.asyncio

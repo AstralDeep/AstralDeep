@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from functools import wraps
-import re
 from uuid import UUID
 
 from audit.repository import AuditRepository
@@ -23,10 +22,12 @@ from orchestrator.work_submit_authority import authenticate_work_submission_requ
 from persistent_agents.models import AssignmentError
 from persistent_agents.runner import AssignmentRunner
 from persistent_agents.service import AssignmentService
-from starlette.requests import ClientDisconnect
+from orchestrator.work_write_boundary import (
+    BODY_SECONDS as _BODY_SECONDS,
+    read_work_body,
+    work_content_length as _content_length,
+)
 
-_MAX_BODY = 16384
-_BODY_SECONDS = 15
 _ERRORS = {
     "work_submit_invalid",
     "work_submit_unavailable",
@@ -170,53 +171,9 @@ class _Composition:
             _unavailable()
 
 
-def _content_length(request):
-    """Reject ambiguous or excessive framing before consuming a raw stream."""
-    lengths = request.headers.getlist("content-length")
-    if len(lengths) > 1 or (
-        lengths and re.fullmatch(r"[0-9]{1,10}", lengths[0]) is None
-    ):
-        raise AssignmentError("work_body_invalid", 400)
-    length = int(lengths[0]) if lengths else None
-    if length is not None and length > _MAX_BODY:
-        raise AssignmentError("work_body_too_large", 413)
-    if request.headers.getlist("content-encoding") not in ([], ["identity"]):
-        raise AssignmentError("work_body_invalid", 415)
-    return length
-
-
 async def _body(request, expected):
-    """Bound bytes and elapsed receive time; never retain partial input on failure."""
-    data = bytearray()
-    try:
-        async with asyncio.timeout(_BODY_SECONDS):
-            while True:
-                message = await request.receive()
-                # Starlette's stream skips empty frames internally. Yield for
-                # every raw frame so empty input cannot starve the deadline.
-                await asyncio.sleep(0)
-                if message.get("type") == "http.disconnect":
-                    raise ClientDisconnect
-                chunk = message.get("body", b"")
-                more = message.get("more_body", False)
-                if (
-                    message.get("type") != "http.request"
-                    or type(chunk) is not bytes
-                    or type(more) is not bool
-                ):
-                    raise AssignmentError("work_body_invalid", 400)
-                if len(data) + len(chunk) > _MAX_BODY:
-                    raise AssignmentError("work_body_too_large", 413)
-                data.extend(chunk)
-                if not more:
-                    break
-    except ClientDisconnect:
-        raise AssignmentError("work_disconnected", 400) from None
-    except TimeoutError:
-        raise AssignmentError("work_body_timeout", 408) from None
-    if expected is not None and len(data) != expected:
-        raise AssignmentError("work_body_invalid", 400)
-    return bytes(data)
+    """Retain the admission-specific time bound over shared raw framing."""
+    return await read_work_body(request, expected, seconds=_BODY_SECONDS)
 
 
 class WorkAdmissionRoute(APIRoute):

@@ -6,7 +6,7 @@ import json
 from typing import Literal
 
 from astralplane.repositories.assignment_models import AssignmentRecord
-from astralplane.repositories.history import SessionExecutionObservation
+from astralplane.repositories.history import SessionCredentialFence, SessionExecutionObservation
 
 from orchestrator import session_authority
 from orchestrator.session_store import WebSessionStore
@@ -26,6 +26,8 @@ class OperationControlAuthority:
     observation: SessionExecutionObservation = field(repr=False)
     _claims_json: str = field(repr=False)
     plane_runtime: object = field(repr=False)
+    request_context: AuthenticatedWorkRequest | None = field(default=None, repr=False)
+    request_credential: SessionCredentialFence | None = field(default=None, repr=False)
 
     @property
     def claims(self) -> dict:
@@ -36,6 +38,7 @@ class OperationControlAuthority:
 async def refresh_operation_control_authority(
     *, context: AuthenticatedWorkRequest, original: AssignmentRecord,
     command: Literal["resume", "wake"], sessions: WebSessionStore,
+    expected_request_credential: SessionCredentialFence | None = None,
 ) -> OperationControlAuthority:
     """Observe a paused resume or active event wake using its original session.
 
@@ -59,6 +62,15 @@ async def refresh_operation_control_authority(
             session_authority._unavailable()
         runtime = context.plane_runtime
         context.assert_current(runtime)
+        if expected_request_credential is not None:
+            credential = expected_request_credential
+            if (type(credential) is not SessionCredentialFence
+                    or credential.owner_id != context.owner_id
+                    or credential.session_id != context.session_id
+                    or credential.incarnation_id != original.operation["authority"]["reference_id"]
+                    or (context.cookie_session is not None and context.cookie_session != (
+                        credential.session_id, credential.incarnation_id))):
+                session_authority._unavailable()
 
         def selected(value, owner_id, assignment_id):
             record, incarnation, expiry, deadline = session_authority._operation_reference(
@@ -75,9 +87,10 @@ async def refresh_operation_control_authority(
             owner_id=original.owner_id, assignment_id=original.assignment_id,
             sessions=sessions, plane_runtime=runtime, operation_context=selected,
             expected_record=original, request_expires_at=context.principal_expires_at,
-            request_check=lambda now: context.assert_current(runtime, now=now))
+            request_check=lambda now: context.assert_current(runtime, now=now),
+            expected_session_credential=expected_request_credential)
         context.assert_current(runtime)
         return OperationControlAuthority(result.record, command, result.observation,
-            result.claims_json, runtime)
+            result.claims_json, runtime, context, expected_request_credential)
     except Exception:
         raise session_authority.SessionAuthorityUnavailable("session_authority_unavailable") from None

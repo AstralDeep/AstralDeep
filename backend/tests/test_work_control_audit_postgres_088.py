@@ -10,6 +10,9 @@ from uuid import uuid4
 import pytest
 from astralplane.async_runtime import AsyncPlaneRuntime
 
+from tests.helpers.work_control_caller import current_control_caller
+from tests.test_request_session_authority_088 import signing_key as signing_key
+
 from audit.repository import AuditRepository
 from audit.schemas import AuditEventCreate
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
@@ -22,7 +25,7 @@ secondary_plane = engine_fixtures.plane
 
 
 @pytest.fixture
-def audited(records, monkeypatch):
+async def audited(records, monkeypatch, signing_key):
     runtime, reads, identities, _legacy = records
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "synthetic-work-control-audit-key")
     audit = AuditRepository(plane_runtime=runtime)
@@ -30,8 +33,9 @@ def audited(records, monkeypatch):
     # A secondary asynchronous audit sink must not be required or duplicated.
     legacy = AsyncMock()
     monkeypatch.setattr(reads.assignments, "_audit", legacy)
-    return SimpleNamespace(runtime=runtime, reads=reads, identity=identities[0],
-                           service=WorkControlService(reads.assignments), audit=audit, legacy=legacy)
+    async with current_control_caller(reads.assignments, monkeypatch, signing_key) as caller:
+        yield SimpleNamespace(runtime=runtime, reads=reads, identity=identities[0],
+            service=WorkControlService(reads.assignments), audit=audit, legacy=legacy, caller=caller)
 
 
 def request(revision):
@@ -42,9 +46,9 @@ def request(revision):
 async def test_pause_and_replay_have_one_atomic_audit_record(audited):
     value = audited
     body = request(1)
-    response = await value.service.control("owner", {"sub": "owner"}, value.identity, "pause", body)
+    response = await value.service.control("owner", value.caller.context.claims, value.identity, "pause", body, caller=value.caller)
     assert response["applied"] is True
-    replay = await value.service.control("owner", {"sub": "owner"}, value.identity, "pause", body)
+    replay = await value.service.control("owner", value.caller.context.claims, value.identity, "pause", body, caller=value.caller)
     assert replay["applied"] is False
     events, cursor = await asyncio.to_thread(value.audit.list_for_user, "owner")
     assert cursor is None and len(events) == 1
@@ -65,7 +69,7 @@ async def test_audit_failure_rolls_back_pause_and_command_receipt(audited, monke
 
     monkeypatch.setattr(value.audit, "insert_in_transaction", unavailable)
     with pytest.raises(AssignmentError) as failure:
-        await value.service.control("owner", {"sub": "owner"}, value.identity, "pause", body)
+        await value.service.control("owner", value.caller.context.claims, value.identity, "pause", body, caller=value.caller)
     assert failure.value.status_code == 503
     current = await value.reads.get("owner", {"sub": "owner"}, value.identity)
     assert current["revision"] == 1 and current["lifecycle"] == "active"
@@ -78,11 +82,11 @@ async def test_pause_cancel_delete_preserve_chain_and_do_not_copy_work_content(a
     value = audited
     revision = 1
     for command in ("pause", "cancel"):
-        result = await value.service.control("owner", {"sub": "owner"}, value.identity,
-                                             command, request(revision))
+        result = await value.service.control("owner", value.caller.context.claims, value.identity,
+                                             command, request(revision), caller=value.caller)
         revision = result["operation"]["revision"]
-    deleted = await value.service.delete("owner", {"sub": "owner"}, value.identity,
-                                         WorkDeleteRequest(expected_revision=revision))
+    deleted = await value.service.delete("owner", value.caller.context.claims, value.identity,
+                                         WorkDeleteRequest(expected_revision=revision), caller=value.caller)
     assert deleted == {"id": value.identity, "deleted": True}
     events, _ = await asyncio.to_thread(value.audit.list_for_user, "owner")
     assert {row.action_type for row in events} == {"assignment_pause", "assignment_stop", "assignment_delete"}
@@ -99,7 +103,7 @@ async def test_required_audit_failure_preserves_state_receipt_and_chain(audited,
     value = audited
     revision = 1
     if command == "delete":
-        stopped = await value.service.control("owner", {"sub": "owner"}, value.identity, "cancel", request(1))
+        stopped = await value.service.control("owner", value.caller.context.claims, value.identity, "cancel", request(1), caller=value.caller)
         revision = stopped["operation"]["revision"]
     before = await value.reads.get("owner", {"sub": "owner"}, value.identity)
     prior, _ = await asyncio.to_thread(value.audit.list_for_user, "owner")
@@ -124,10 +128,10 @@ async def test_required_audit_failure_preserves_state_receipt_and_chain(audited,
     monkeypatch.setattr(value.audit, "insert_in_transaction", refused)
     with pytest.raises(AssignmentError) as denied:
         if command == "delete":
-            await value.service.delete("owner", {"sub": "owner"}, value.identity,
-                                       WorkDeleteRequest(expected_revision=revision))
+            await value.service.delete("owner", value.caller.context.claims, value.identity,
+                                       WorkDeleteRequest(expected_revision=revision), caller=value.caller)
         else:
-            await value.service.control("owner", {"sub": "owner"}, value.identity, command, body)
+            await value.service.control("owner", value.caller.context.claims, value.identity, command, body, caller=value.caller)
     assert denied.value.status_code == 503 and "private" not in str(denied.value)
     assert await value.reads.get("owner", {"sub": "owner"}, value.identity) == before
     assert (await asyncio.to_thread(value.audit.list_for_user, "owner"))[0] == prior
@@ -135,8 +139,8 @@ async def test_required_audit_failure_preserves_state_receipt_and_chain(audited,
     monkeypatch.setattr(value.audit, "insert_in_transaction", original)
     if command != "delete":
         # A rolled-back command did not leave a success receipt behind.
-        assert (await value.service.control("owner", {"sub": "owner"}, value.identity,
-                                            command, body))["applied"] is True
+        assert (await value.service.control("owner", value.caller.context.claims, value.identity,
+                                            command, body, caller=value.caller))["applied"] is True
     assert await asyncio.to_thread(value.audit.verify_chain, "owner") is None
 
 
@@ -162,7 +166,7 @@ async def test_exact_audit_composition_is_required_at_commit(audited, monkeypatc
 
         monkeypatch.setattr(value.audit, "insert_in_transaction", replace_after_append)
     with pytest.raises(AssignmentError) as denied:
-        await value.service.control("owner", {"sub": "owner"}, value.identity, "pause", request(1))
+        await value.service.control("owner", value.caller.context.claims, value.identity, "pause", request(1), caller=value.caller)
     assert denied.value.status_code == 503
     assert (await value.reads.get("owner", {"sub": "owner"}, value.identity))["revision"] == 1
 
@@ -182,11 +186,14 @@ async def test_accepted_replay_needs_no_new_audit_and_lost_ack_can_only_acknowle
 
     monkeypatch.setattr(value.reads.store, "transaction", lost_ack)
     with pytest.raises(AssignmentError):
-        await value.service.control("owner", {"sub": "owner"}, value.identity, "pause", body)
+        await value.service.control("owner", value.caller.context.claims, value.identity, "pause", body, caller=value.caller)
     assert calls == 1
     monkeypatch.setattr(value.reads.store, "transaction", original)
-    monkeypatch.setattr(value.reads.assignments.orch, "audit_repo", None)
-    replay = await value.service.control("owner", {"sub": "owner"}, value.identity, "pause", body)
+    def no_new_audit(*_args, **_kwargs):
+        raise AssertionError("accepted replay must not append another audit event")
+
+    monkeypatch.setattr(value.audit, "insert_in_transaction", no_new_audit)
+    replay = await value.service.control("owner", value.caller.context.claims, value.identity, "pause", body, caller=value.caller)
     assert replay["applied"] is False and replay["operation"]["revision"] == 2
     assert len((await asyncio.to_thread(value.audit.list_for_user, "owner"))[0]) == 1
 
@@ -195,8 +202,8 @@ async def test_accepted_replay_needs_no_new_audit_and_lost_ack_can_only_acknowle
 async def test_concurrent_duplicate_commits_only_one_control_and_audit(audited):
     value = audited
     body = request(1)
-    replies = await asyncio.gather(*(value.service.control("owner", {"sub": "owner"},
-        value.identity, "pause", body) for _ in range(2)))
+    replies = await asyncio.gather(*(value.service.control("owner", value.caller.context.claims,
+        value.identity, "pause", body, caller=value.caller) for _ in range(2)))
     assert sorted(reply["applied"] for reply in replies) == [False, True]
     assert len((await asyncio.to_thread(value.audit.list_for_user, "owner"))[0]) == 1
     assert await asyncio.to_thread(value.audit.verify_chain, "owner") is None
@@ -224,7 +231,7 @@ async def test_audit_lock_contention_is_bounded_and_rolls_back_the_control(audit
         assert await asyncio.to_thread(entered.wait, 3)
         async with asyncio.timeout(3):
             with pytest.raises(AssignmentError) as denied:
-                await value.service.control("owner", {"sub": "owner"}, value.identity, "pause", request(1))
+                await value.service.control("owner", value.caller.context.claims, value.identity, "pause", request(1), caller=value.caller)
         assert denied.value.status_code == 503
     finally:
         release.set()
@@ -273,7 +280,7 @@ async def test_replaced_real_transaction_adapter_is_refused_before_resource_read
     monkeypatch.setattr(store, "async_runtime", wrong)
     try:
         with pytest.raises(AssignmentError) as denied:
-            await value.service.control("owner", {"sub": "owner"}, value.identity, "pause", request(1))
+            await value.service.control("owner", value.caller.context.claims, value.identity, "pause", request(1), caller=value.caller)
         assert denied.value.status_code == 503 and observed == []
     finally:
         store.async_runtime = original
