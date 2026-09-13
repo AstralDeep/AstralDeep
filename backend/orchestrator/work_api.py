@@ -1,4 +1,5 @@
 """Fresh owner-authenticated Work reads and bounded lifecycle controls."""
+import asyncio
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import wraps
@@ -16,7 +17,9 @@ from fastapi.routing import APIRoute
 from orchestrator import auth
 from orchestrator.auth import get_web_or_bearer_user_payload, verify_user
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
+from orchestrator.work_control_authority import WorkCallerAuthority, authenticate_work_control_request
 from orchestrator.work_service import WorkService
+from orchestrator.work_write_boundary import cache_work_write_body, freeze_work_request
 from persistent_agents.models import AssignmentError
 
 _CLAIMS = Depends(get_web_or_bearer_user_payload)
@@ -127,14 +130,20 @@ class WorkReadRoute(APIRoute):
         @wraps(handler)
         async def safe(request):
             original = request
-            if request.method == "GET":
-                # Freeze credential selection before normal IAM's first await.
-                # Incoming middleware state cannot substitute a private token.
-                scope = dict(request.scope)
-                scope.update(headers=[(bytes(key), bytes(value)) for key, value in scope["headers"]],
-                             query_string=bytes(scope.get("query_string", b"")), state={})
-                request = Request(scope, receive=request.receive)
             try:
+                if request.method == "GET":
+                    # Incoming middleware state cannot substitute a private token.
+                    request = freeze_work_request(request)
+                elif request.method in {"POST", "DELETE"}:
+                    request = freeze_work_request(request)
+                    assignments = _service(request).assignments
+                    caller = await authenticate_work_control_request(request, assignments=assignments,
+                        sessions=getattr(assignments.orch, "web_sessions", None))
+                    async with asyncio.timeout_at(caller._deadline):
+                        await cache_work_write_body(request)
+                        request.state._work_control_caller = caller
+                        request.state.audit_claims = caller.context.claims
+                        return await handler(request)
                 return await handler(request)
             except AssignmentError as exc:
                 known = {
@@ -148,11 +157,14 @@ class WorkReadRoute(APIRoute):
                     "assignment_idempotency_conflict", "assignment_not_active",
                     "assignment_not_terminal", "assignment_action_uncertain",
                     "assignment_version_unsupported", "assignment_owner_retired",
+                    "work_body_invalid", "work_body_too_large", "work_body_timeout", "work_disconnected",
                 }
                 unavailable = "work_read_unavailable" if request.method == "GET" else "work_control_unavailable"
                 return _json({"error": exc.code if exc.code in known else unavailable}, exc.status_code)
             except RequestValidationError:
                 return _json({"error": "work_query_invalid" if request.method == "GET" else "work_control_invalid"}, 422)
+            except TimeoutError:
+                return _json({"error": "work_control_unavailable"}, 503)
             except HTTPException as exc:
                 headers = {key: value for key, value in (exc.headers or {}).items()
                            if key.lower() in {"location", "www-authenticate"}}
@@ -228,23 +240,31 @@ async def result_work(identity: str, request: Request, owner_id: str = _OWNER, c
 
 
 @work_router.post("/{identity}/pause")
-async def pause_work(identity: str, body: WorkControlRequest, request: Request,
-                     owner_id: str = _WRITE_OWNER, claims: dict = _CLAIMS):
+async def pause_work(identity: str, body: WorkControlRequest, request: Request):
     """Pause future execution without discarding already issued effects."""
+    caller = _write_caller(request)
     return _json(await WorkControlService(_service(request).assignments).control(
-        owner_id, claims, identity, "pause", body))
+        caller.context.owner_id, caller.context.claims, identity, "pause", body, caller=caller))
 
 
 @work_router.post("/{identity}/cancel")
-async def cancel_work(identity: str, body: WorkControlRequest, request: Request,
-                      owner_id: str = _WRITE_OWNER, claims: dict = _CLAIMS):
+async def cancel_work(identity: str, body: WorkControlRequest, request: Request):
     """Stop future execution; issued or uncertain effects still require settlement."""
+    caller = _write_caller(request)
     return _json(await WorkControlService(_service(request).assignments).control(
-        owner_id, claims, identity, "cancel", body))
+        caller.context.owner_id, caller.context.claims, identity, "cancel", body, caller=caller))
 
 
 @work_router.delete("/{identity}")
-async def delete_work(identity: str, body: WorkDeleteRequest, request: Request,
-                      owner_id: str = _WRITE_OWNER, claims: dict = _CLAIMS):
+async def delete_work(identity: str, body: WorkDeleteRequest, request: Request):
     """Delete only settled terminal work. Repeated/absent/foreign IDs return 404."""
-    return _json(await WorkControlService(_service(request).assignments).delete(owner_id, claims, identity, body))
+    caller = _write_caller(request)
+    return _json(await WorkControlService(_service(request).assignments).delete(
+        caller.context.owner_id, caller.context.claims, identity, body, caller=caller))
+
+
+def _write_caller(request):
+    caller = getattr(request.state, "_work_control_caller", None)
+    if type(caller) is not WorkCallerAuthority:
+        raise AssignmentError("work_authentication_required", 401)
+    return caller

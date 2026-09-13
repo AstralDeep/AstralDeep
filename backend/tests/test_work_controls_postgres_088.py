@@ -20,6 +20,9 @@ from astralplane.repositories.work_admission import (
     WorkAdmissionRepository,
 )
 
+from tests.helpers.work_control_caller import current_control_caller
+from tests.test_request_session_authority_088 import signing_key as signing_key
+
 from audit.repository import AuditRepository
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
 from persistent_agents.models import AssignmentError
@@ -32,11 +35,13 @@ read_records = read_fixtures.records
 
 
 @pytest.fixture
-def records(read_records, monkeypatch):
+async def records(read_records, monkeypatch, signing_key):
     runtime, reads, _identities, _legacy = read_records
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "synthetic-work-controls-contract-key")
     reads.assignments.orch.audit_repo = AuditRepository(plane_runtime=runtime)
-    return read_records
+    async with current_control_caller(reads.assignments, monkeypatch, signing_key) as caller:
+        reads.control_caller = caller
+        yield read_records
 
 
 def command(revision, submission=None):
@@ -49,30 +54,30 @@ async def test_owner_controls_replay_stale_and_terminal_delete_contract(records)
     service = WorkControlService(reads.assignments)
     identity = ids[0]
     request = command(1)
-    paused = await service.control("owner", OWNER, identity, "pause", request)
+    paused = await service.control("owner", reads.control_caller.context.claims, identity, "pause", request, caller=reads.control_caller)
     assert paused["applied"] is True and paused["operation"]["disposition"] == "paused"
-    duplicate = await service.control("owner", OWNER, identity, "pause", request)
+    duplicate = await service.control("owner", reads.control_caller.context.claims, identity, "pause", request, caller=reads.control_caller)
     assert duplicate == {**paused, "applied": False}
     for changed in (command(1), command(paused["operation"]["revision"], request.submission_id)):
         with pytest.raises(AssignmentError) as error:
-            await service.control("owner", OWNER, identity, "pause", changed)
+            await service.control("owner", reads.control_caller.context.claims, identity, "pause", changed, caller=reads.control_caller)
         assert error.value.status_code == 409
     with pytest.raises(AssignmentError, match="assignment_idempotency_conflict"):
-        await service.control("owner", OWNER, identity, "cancel", request)
+        await service.control("owner", reads.control_caller.context.claims, identity, "cancel", request, caller=reads.control_caller)
     with pytest.raises(AssignmentError, match="assignment_not_terminal"):
-        await service.delete("owner", OWNER, identity, WorkDeleteRequest(expected_revision=paused["operation"]["revision"]))
+        await service.delete("owner", reads.control_caller.context.claims, identity, WorkDeleteRequest(expected_revision=paused["operation"]["revision"]), caller=reads.control_caller)
     cancellation = command(paused["operation"]["revision"])
-    cancelled = await service.control("owner", OWNER, identity, "cancel", cancellation)
+    cancelled = await service.control("owner", reads.control_caller.context.claims, identity, "cancel", cancellation, caller=reads.control_caller)
     assert cancelled["operation"]["disposition"] == "cancelled"
-    assert (await service.control("owner", OWNER, identity, "cancel", cancellation))["applied"] is False
-    old_pause = await service.control("owner", OWNER, identity, "pause", request)
+    assert (await service.control("owner", reads.control_caller.context.claims, identity, "cancel", cancellation, caller=reads.control_caller))["applied"] is False
+    old_pause = await service.control("owner", reads.control_caller.context.claims, identity, "pause", request, caller=reads.control_caller)
     assert old_pause == {**cancelled, "applied": False}
     with pytest.raises(AssignmentError, match="assignment_revision_conflict"):
-        await service.delete("owner", OWNER, identity, WorkDeleteRequest(expected_revision=1))
+        await service.delete("owner", reads.control_caller.context.claims, identity, WorkDeleteRequest(expected_revision=1), caller=reads.control_caller)
     delete = WorkDeleteRequest(expected_revision=cancelled["operation"]["revision"])
-    assert await service.delete("owner", OWNER, identity, delete) == {"id": identity, "deleted": True}
+    assert await service.delete("owner", reads.control_caller.context.claims, identity, delete, caller=reads.control_caller) == {"id": identity, "deleted": True}
     with pytest.raises(AssignmentError, match="work_not_found") as missing:
-        await service.delete("owner", OWNER, identity, delete)
+        await service.delete("owner", reads.control_caller.context.claims, identity, delete, caller=reads.control_caller)
     assert missing.value.status_code == 404
     # Original submission identity survives deletion: retry cannot create a new effect.
     with pytest.raises(AssignmentError, match="assignment_operation_deleted"):
@@ -88,9 +93,9 @@ async def test_foreign_legacy_absent_and_invalid_ids_share_404_without_mutation(
     for identity in (ids[2], legacy, str(uuid4()), "not-an-id"):
         with pytest.raises(AssignmentError) as failure:
             if method == "delete":
-                await service.delete("owner", OWNER, identity, WorkDeleteRequest(expected_revision=1))
+                await service.delete("owner", reads.control_caller.context.claims, identity, WorkDeleteRequest(expected_revision=1), caller=reads.control_caller)
             else:
-                await service.control("owner", OWNER, identity, method, command(1))
+                await service.control("owner", reads.control_caller.context.claims, identity, method, command(1), caller=reads.control_caller)
         assert (failure.value.code, failure.value.status_code) == ("work_not_found", 404)
     assert (await reads.get("other", {"sub": "other"}, ids[2]))["revision"] == 1
     assert (await reads.get("owner", OWNER, ids[0]))["revision"] == 1
@@ -101,8 +106,8 @@ async def test_concurrent_pause_cancel_has_one_linearized_control(records):
     _, reads, ids, _ = records
     service = WorkControlService(reads.assignments)
     results = await asyncio.gather(
-        service.control("owner", OWNER, ids[0], "pause", command(1)),
-        service.control("owner", OWNER, ids[0], "cancel", command(1)), return_exceptions=True)
+        service.control("owner", reads.control_caller.context.claims, ids[0], "pause", command(1), caller=reads.control_caller),
+        service.control("owner", reads.control_caller.context.claims, ids[0], "cancel", command(1), caller=reads.control_caller), return_exceptions=True)
     assert sum(isinstance(value, dict) and value["applied"] is True for value in results) == 1
     errors = [value for value in results if isinstance(value, AssignmentError)]
     assert len(errors) == 1 and errors[0].status_code == 409
@@ -114,7 +119,7 @@ async def test_concurrent_exact_retry_changes_control_only_once(records):
     _, reads, ids, _ = records
     service = WorkControlService(reads.assignments)
     request = command(1)
-    results = await asyncio.gather(*(service.control("owner", OWNER, ids[0], "pause", request) for _ in range(2)))
+    results = await asyncio.gather(*(service.control("owner", reads.control_caller.context.claims, ids[0], "pause", request, caller=reads.control_caller) for _ in range(2)))
     assert sorted(value["applied"] for value in results) == [False, True]
     assert (await reads.get("owner", OWNER, ids[0]))["revision"] == 2
 
@@ -137,15 +142,15 @@ async def test_unknown_operation_can_cancel_without_interpreting_or_rewriting_pa
     await reads.store.transaction(future)
     before = await reads.store.call("get_operation", owner_id="owner", assignment_id=ids[0])
     with pytest.raises(AssignmentError, match="assignment_version_unsupported"):
-        await service.control("owner", OWNER, ids[0], "pause", command(1))
+        await service.control("owner", reads.control_caller.context.claims, ids[0], "pause", command(1), caller=reads.control_caller)
     request = command(1)
-    cancelled = await service.control("owner", OWNER, ids[0], "cancel", request)
+    cancelled = await service.control("owner", reads.control_caller.context.claims, ids[0], "cancel", request, caller=reads.control_caller)
     assert cancelled["operation"]["disposition"] == "cancelled"
     assert cancelled["operation"]["schema_supported"] is False and "private" not in str(cancelled)
     after = await reads.store.call("get_operation", owner_id="owner", assignment_id=ids[0])
     assert after.assignment.operation == before.assignment.operation
     assert after.assignment.checkpoint == before.assignment.checkpoint
-    assert (await service.control("owner", OWNER, ids[0], "cancel", request))["applied"] is False
+    assert (await service.control("owner", reads.control_caller.context.claims, ids[0], "cancel", request, caller=reads.control_caller))["applied"] is False
 
 
 async def issued_fixture(reads, identity):
@@ -217,10 +222,10 @@ async def test_cancel_preserves_issued_effect_and_delete_requires_actual_settlem
     service = WorkControlService(reads.assignments)
     action, attempt, permit = await issued_fixture(reads, ids[0])
     revision = (await reads.get("owner", OWNER, ids[0]))["revision"]
-    cancelled = await service.control("owner", OWNER, ids[0], "cancel", command(revision))
+    cancelled = await service.control("owner", reads.control_caller.context.claims, ids[0], "cancel", command(revision), caller=reads.control_caller)
     assert cancelled["operation"]["usage"]["outstanding"]["tool_calls"] == 1
     with pytest.raises(AssignmentError, match="assignment_action_uncertain"):
-        await service.delete("owner", OWNER, ids[0], WorkDeleteRequest(expected_revision=cancelled["operation"]["revision"]))
+        await service.delete("owner", reads.control_caller.context.claims, ids[0], WorkDeleteRequest(expected_revision=cancelled["operation"]["revision"]), caller=reads.control_caller)
     retained = await reads.store.call("get_action", owner_id="owner", assignment_id=ids[0], action_id=action.action_id)
     assert retained.state == "started" and retained.ever_started
     await reads.store.call("record_action_outcome", owner_id="owner", assignment_id=ids[0],
@@ -229,7 +234,7 @@ async def test_cancel_preserves_issued_effect_and_delete_requires_actual_settlem
         outcome=AssignmentActionOutcome("succeeded", digest({}), {}, actual=AssignmentResourceAmount(tool_calls=1, elapsed_ms=10)))
     settled = await reads.get("owner", OWNER, ids[0])
     assert settled["usage"]["spent"]["tool_calls"] == 1
-    assert (await service.delete("owner", OWNER, ids[0], WorkDeleteRequest(expected_revision=settled["revision"])))["deleted"] is True
+    assert (await service.delete("owner", reads.control_caller.context.claims, ids[0], WorkDeleteRequest(expected_revision=settled["revision"]), caller=reads.control_caller))["deleted"] is True
 
 
 @pytest.mark.asyncio
@@ -243,10 +248,10 @@ async def test_opaque_action_and_retired_owner_cannot_be_erased_or_resumed(recor
                    ('{"version":2,"private":"opaque"}', action.action_id))
     await reads.store.transaction(future)
     before = await reads.get("owner", OWNER, ids[0])
-    cancelled = await service.control("owner", OWNER, ids[0], "cancel", command(before["revision"]))
+    cancelled = await service.control("owner", reads.control_caller.context.claims, ids[0], "cancel", command(before["revision"]), caller=reads.control_caller)
     with pytest.raises(AssignmentError, match="assignment_action_uncertain"):
-        await service.delete("owner", OWNER, ids[0], WorkDeleteRequest(expected_revision=cancelled["operation"]["revision"]))
+        await service.delete("owner", reads.control_caller.context.claims, ids[0], WorkDeleteRequest(expected_revision=cancelled["operation"]["revision"]), caller=reads.control_caller)
     retirement = await reads.store.call("retire_operations_for_owner", owner_id="owner")
     assert ids[0] in retirement.retained_assignment_ids
     with pytest.raises(AssignmentError, match="work_control_invalid"):
-        await service.control("owner", OWNER, ids[0], "resume", command(cancelled["operation"]["revision"]))
+        await service.control("owner", reads.control_caller.context.claims, ids[0], "resume", command(cancelled["operation"]["revision"]), caller=reads.control_caller)

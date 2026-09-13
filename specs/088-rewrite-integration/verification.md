@@ -1,5 +1,41 @@
 # Feature 088 verification record
 
+## Current caller fences for Work writes — 2026-09-13 UTC
+
+Pause, cancel and terminal deletion now require the private caller captured by
+normal IAM. The route freezes transport before authentication, captures any
+selected cookie issuance before receiving the body, and validates bounded,
+duplicate-free JSON before model parsing. One original 15-second attempt bounds
+the write. Exact caller, runtime, session and audit bindings are checked before
+and after the mutation/audit transaction and before private response delivery.
+Bare Bearer safe controls retain normal human IAM and the original token expiry;
+they do not invent a persisted session. A committed but undelivered command keeps
+its receipt, and an exact retry adds no mutation or audit.
+
+The original-session control resolver also binds its request context and exact
+pre-refresh credential. When execution session A is caller B, only that exact
+capture/refresh CAS can advance B's credential fence; unrelated refresh or
+replacement cannot be adopted. B's original observation start, JWT and shorter
+deadline remain in force. Independent A and B remain independently checked.
+
+The final integrated 13-module PostgreSQL/IAM/HTTP/read cohort passed **405 tests,
+zero failures or skips** in 325.50 seconds. The separate existing admission cohort
+passed **149 tests**. Root verified all 17 changed source/test identities before
+and after the integrated run and the guard handoff's 140 artifact hashes. Changed
+executable coverage is **151/157** for the caller guard, **88/89** for the shared
+body boundary, **27/28** for the HTTP adapter, and **16/16**, **8/8**, **7/7**,
+**4/4**, **2/2** for controls, IAM extraction, continuation proof, shared refresh
+and admission extraction. The latter two extraction reports retain the separate
+matching admission evidence; this is not an invented aggregate test run. Actual
+RED witnesses for replacement during body receive, expiry after audit, ambiguous
+JSON and late continuation capability retirement remain in private evidence.
+
+These are local diagnostic checks using installed Plane `c0d9644` and the primary
+Projection source overlay, with synthetic external IAM replies. New resume,
+owner wait/reconciliation, the unresolved-effect hold repair and nonretained
+research remain separate work in progress. No component pin, migration, schema,
+runtime dependency, store build, production deployment or product push is claimed.
+
 ## Correlated Work reads and owner wait storage — 2026-09-13 UTC
 
 Work list/detail/result now has a shared Projection surface adapter, with optional

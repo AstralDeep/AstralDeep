@@ -14,12 +14,12 @@ import math
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from astralplane.repositories.assignment_models import AssignmentOperationRead, AssignmentRecord
-from astralplane.repositories.history import SessionExecutionObservation
+from astralplane.repositories.history import SessionCredentialFence, SessionExecutionObservation
 from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
 
@@ -114,6 +114,7 @@ def _same_operation(current, original):
 async def _refresh_operation_session(
     *, owner_id: str, assignment_id: str, sessions: WebSessionStore, plane_runtime,
     operation_context, expected_record=None, request_expires_at=None, request_check=None,
+    expected_session_credential: SessionCredentialFence | None = None,
 ) -> _OperationRefresh:
     """Share exact original refresh and post-wait checks across private adapters.
 
@@ -144,6 +145,13 @@ async def _refresh_operation_session(
                 expiry = min(expiry, request_expires_at)
             reference = await asyncio.to_thread(sessions.capture_incarnation_execution_reference,
                 owner_id=owner_id, incarnation_id=incarnation)
+            if expected_session_credential is not None and (
+                    type(expected_session_credential) is not SessionCredentialFence
+                    or json.dumps(asdict(reference.state.credential), sort_keys=True, allow_nan=False)
+                    != json.dumps(asdict(expected_session_credential), sort_keys=True, allow_nan=False)):
+                # A caller may advance its own selected fence only through this
+                # exact capture/CAS. Another refresh cannot be adopted by SID.
+                _unavailable()
             if request_check is not None:
                 request_check(reference.state.observed_at)
             if min(expiry, deadline) <= reference.state.observed_at:

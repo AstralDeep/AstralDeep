@@ -9,6 +9,7 @@ from __future__ import annotations
 from pydantic import Field, field_validator
 
 from orchestrator.work_control_audit import WorkControlAudit
+from orchestrator.work_control_authority import WorkCallerAuthority
 from orchestrator.work_service import _identity, _public
 from persistent_agents.models import AssignmentError, StrictModel, validate_id
 from persistent_agents.runtime_values import digest
@@ -56,8 +57,15 @@ class WorkControlService:
         self.store = assignments.store
         self.audit = WorkControlAudit(assignments)
 
-    async def control(self, owner_id, claims, identity, command, body: WorkControlRequest):
+    def _caller(self, caller, owner_id, claims):
+        if (type(caller) is not WorkCallerAuthority or caller.context.owner_id != owner_id
+                or caller.context.claims != claims):
+            raise AssignmentError("work_authentication_required", 401)
+        caller._assert_local(self.assignments)
+
+    async def control(self, owner_id, claims, identity, command, body: WorkControlRequest, *, caller=None):
         """Pause or cancel once; exact replay acknowledges current safe state."""
+        self._caller(caller, owner_id, claims)
         self.assignments._owner(owner_id, claims)
         identity = _identity(identity)
         if command not in {"cancel", "pause"}:
@@ -89,15 +97,17 @@ class WorkControlService:
                                   record=updated.assignment)
             return {"operation": _public(updated, owner_id), "applied": result.applied}, updated.assignment
 
-        result, _record = await self._transaction(transaction)
+        result, _record = await self._transaction(transaction, caller)
+        await caller.verify_delivery()
         return result
 
-    async def delete(self, owner_id, claims, identity, body: WorkDeleteRequest):
+    async def delete(self, owner_id, claims, identity, body: WorkDeleteRequest, *, caller=None):
         """Delete settled terminal work; absent/foreign/repeated IDs remain 404.
 
         Plane retains the original submission identity against effect replay but
         has no delete-command receipt. This method does not invent such a receipt.
         """
+        self._caller(caller, owner_id, claims)
         self.assignments._owner(owner_id, claims)
         identity = _identity(identity)
 
@@ -112,16 +122,19 @@ class WorkControlService:
             self.audit.append(tx, owner_id=owner_id, command="delete", record=read.assignment)
             return read.assignment
 
-        await self._transaction(transaction)
+        await self._transaction(transaction, caller)
+        await caller.verify_delivery()
         return {"id": identity, "deleted": True}
 
-    async def _transaction(self, callback):
+    async def _transaction(self, callback, caller):
         def current(transaction, repository):
             self.audit.assert_store_current()
             if repository is not self.audit.repository:
                 raise AssignmentError("work_control_unavailable", 503)
+            caller.assert_current(transaction, assignments=self.assignments)
             result = callback(transaction, repository)
             self.audit.assert_store_current()
+            caller.assert_current(transaction, assignments=self.assignments)
             return result
 
         try:

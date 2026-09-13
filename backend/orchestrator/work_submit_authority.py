@@ -18,6 +18,7 @@ from fastapi import HTTPException, Request
 
 from orchestrator import auth, web_auth
 from orchestrator.session_store import WebSessionStore
+from orchestrator.work_write_boundary import freeze_work_request
 from persistent_agents.models import AssignmentError
 
 _SID = re.compile(r"[A-Za-z0-9_-]{1,256}\Z")
@@ -87,23 +88,17 @@ class WorkSubmissionAuthority:
         return json.loads(self._claims_json)
 
 
-async def authenticate_work_submission_request(
-    request: Request, *, sessions: WebSessionStore, plane_runtime,
-) -> AuthenticatedWorkRequest:
-    """Freeze transport inputs before normal IAM's first await; register nothing."""
+async def _authenticate_work_request(
+    request: Request, *, sessions: WebSessionStore, plane_runtime, methods,
+) -> tuple[AuthenticatedWorkRequest, str | None]:
+    """Reuse ordinary IAM once on frozen transport for closed Work write adapters."""
     try:
-        if (not isinstance(request, Request) or request.method != "POST"
+        if (not isinstance(request, Request) or request.method not in methods
                 or not isinstance(sessions, WebSessionStore)
                 or sessions._sessions.plane_runtime is not plane_runtime
                 or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
             _refuse()
-        scope = dict(request.scope)
-        scope.update(headers=[(bytes(key), bytes(value)) for key, value in request.scope["headers"]],
-                     query_string=bytes(request.scope.get("query_string", b"")), state={})
-        for key in ("server", "client"):
-            if scope.get(key) is not None:
-                scope[key] = tuple(scope[key])
-        snapshot = Request(scope)
+        snapshot = freeze_work_request(request)
         sid = _signed_selection(snapshot)
         credentials = await auth.security(snapshot)
         claims = await auth.verify_user(await auth.get_web_or_bearer_user_payload(snapshot, credentials))
@@ -114,7 +109,7 @@ async def authenticate_work_submission_request(
             json.dumps(claims, allow_nan=False, separators=(",", ":")), sid,
             getattr(snapshot.state, "_authenticated_cookie_session", None), plane_runtime)
         context.assert_current(plane_runtime)
-        return context
+        return context, getattr(snapshot.state, "delegation_subject_token", None)
     except AssignmentError:
         raise
     except HTTPException as exc:
@@ -122,6 +117,15 @@ async def authenticate_work_submission_request(
                 exc.status_code if exc.status_code in (401, 403) else 503)
     except Exception:
         _refuse("work_authentication_required", 401)
+
+
+async def authenticate_work_submission_request(
+    request: Request, *, sessions: WebSessionStore, plane_runtime,
+) -> AuthenticatedWorkRequest:
+    """Freeze a POST before normal IAM; accepted retry needs no new session."""
+    context, _token = await _authenticate_work_request(
+        request, sessions=sessions, plane_runtime=plane_runtime, methods=("POST",))
+    return context
 
 
 async def refresh_work_submission_authority(
