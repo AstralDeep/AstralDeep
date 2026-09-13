@@ -1,5 +1,46 @@
 # Feature 088 verification record
 
+## Nonretained source recovery and unresolved continuation holds — 2026-09-13 UTC
+
+The existing private one-shot research handler now accepts retention-none work
+through its normal original-session and dispatch gates. Each fresh source read
+has a new charged action identity and an attempt-local keyed proof. Source text,
+model prompt, provider key and selection stay ephemeral; unavailable receipts and
+closed metadata-only completion cannot reconstruct discarded output. New input or
+lease generation retires old proofs. Authentic settlement still charges issued
+calls after cancellation or authority loss, and model completion checks the exact
+model action in addition to both execution fences.
+
+The paired Plane commit `89e9113ac595ff9c3f6a8c64883b5440479eb367` preserves actual
+ledger liabilities across pause/resume and refuses new claims or named preparation,
+reservation and permit writes while unknown/stale issued work remains. Known
+live siblings with the exact current claim remain compatible; repeated permits
+still refuse. Shared execution assertions and authentic settlement are unchanged.
+Actual dispatch witnesses reproduced both a pause/resume extra provider call and
+a distinct-key read under the same held claim; the corrected component refuses
+both before physical dispatch. Reconciliation conservatively charges the original
+call once, after which qualified new work can consume only remaining allowance.
+
+The Plane affected cohort passed **668 tests**, and its overlapping final focused
+successor passed **43**, with **25/27 changed executable lines** covered. Deep's
+initial broad cohort recorded **322 passes and two test expectation/spy failures**;
+the corrected **106-test successor passed without skips** and includes the new
+model completion guard and physical hold regressions. This is not a single broad
+all-green run. Every changed executable Deep file is at least 90% covered against
+its exact measured source: execution **84/84**, recovery **81/85**, input **18/20**,
+episode **29/30**, runner **2/2**; the service edit changes no executable line.
+Root reviewed the critical source and separately verified **12 owned source
+identities and 314 artifact hashes** across the two frozen handoffs. Earlier
+failures and the two corrected fixture assumptions remain retained diagnostic
+records. Ruff, scoped Gitleaks and diff checks passed.
+
+The broad Deep run used installed Plane `c0d9644`; the final successor used the
+qualified Plane source above. No component installation or composition pin changes
+are included here. External JWT/JWKS, page and model replies are synthetic over
+real PostgreSQL and normal host dispatch/audit. Public retention-none admission,
+provider retry classification, remaining Work commands/native integration and full
+088/staging/release qualification remain open. Submitted store builds are unchanged.
+
 ## Current caller fences for Work writes — 2026-09-13 UTC
 
 Pause, cancel and terminal deletion now require the private caller captured by

@@ -433,7 +433,7 @@ class AssignmentService:
                     or authority.record.control_epoch != record.control_epoch
                     or authority.record.operation != record.operation
                     or record.operation.get("version") != 2
-                    or record.operation.get("source_retention") != "operation"):
+                    or record.operation.get("source_retention") not in {"operation", "none"}):
                 raise AssignmentError("assignment_authorization_required", 403)
             selected = record.operation.get("authority", {})
             credential = authority.observation.credential

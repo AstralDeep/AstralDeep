@@ -507,7 +507,7 @@ class AssignmentRunner:
 
     async def _finish_operation(self, executor, outcome):
         """Commit a bounded explicit outcome; never synthesize a recurring wake."""
-        from persistent_agents.research_episode import ResearchCompletion
+        from persistent_agents.research_episode import EphemeralResearchCompletion, ResearchCompletion
 
         record, completion = outcome.record, outcome.completion
         if (not isinstance(record, AssignmentRecord)
@@ -529,7 +529,7 @@ class AssignmentRunner:
             or bool(completion.incorporations)
             or bool(completion.event_receipts)
         )
-        if (proof is not None and type(proof) is not ResearchCompletion) or (
+        if (proof is not None and type(proof) not in {ResearchCompletion, EphemeralResearchCompletion}) or (
             proof is None and (research_output or completion.result_reference is not None
                                or "research_result" in completion.checkpoint)
         ):

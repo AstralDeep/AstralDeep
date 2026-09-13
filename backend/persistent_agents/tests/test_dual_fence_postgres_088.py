@@ -84,11 +84,12 @@ async def test_current_one_shot_result_uses_both_fences_and_is_not_redispatched(
     executor, store = op.executor, op.executor.store
     action = await prepare(op)
     before = await operation_current(op)
-    call = AsyncMock(wraps=store.call_for_operation)
-    monkeypatch.setattr(store, "call_for_operation", call)
+    repository = store.plane_runtime.repositories.assignments
+    call = Mock(wraps=repository.record_action_outcome)
+    monkeypatch.setattr(repository, "record_action_outcome", call)
     result = await executor.execute(action)
     assert "Public release 088" in result["text"]
-    settlement = next(item for item in call.call_args_list if item.args[0] == "record_action_outcome")
+    [settlement] = call.call_args_list
     assert settlement.kwargs["result_fence"] == executor.claim.fence
     assert settlement.kwargs["result_binding"] == executor.binding
     assert settlement.kwargs["result_authority"].credential.incarnation_id == (

@@ -1,9 +1,9 @@
 """Unregistered finite one-page USER research episode and private result proof.
 
-Only exact attributed excerpts can enter this profile's checkpoint. The result
-proof is reconstructed from guarded source/model receipts and checked again in
-the transaction that retires both execution leases. It grants no Save or publish
-authority and is never serialized as an operation field.
+Retained operations can checkpoint exact attributed excerpts. Non-retained
+operations checkpoint only closed source metadata, authenticated by a live
+attempt-local proof. Both are checked again in the transaction retiring the
+execution leases. Neither grants Save or publication authority.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def source_request(record):
         not isinstance(source, dict)
         or record.execution_profile != "one_shot"
         or record.operation.get("kind") != "research"
-        or record.operation.get("source_retention") != "operation"
+        or record.operation.get("source_retention") not in {"operation", "none"}
         or source.get("profile") != "public_page"
         or source.get("agent_id") != "web-research-1"
         or source.get("tool_name") != "fetch_page"
@@ -133,20 +133,62 @@ class ResearchCompletion:
             raise DispatchDenied("assignment_research_result_invalid")
 
 
-async def run_research_episode(executor):
-    """One retained public-page read and one fixed model action, never recurrence.
+@dataclass(frozen=True, slots=True)
+class EphemeralResearchCompletion(ResearchCompletion):
+    """Live model selection proof permits only closed metadata incorporation."""
 
-    Automatic retries and non-retained/provider breadth remain separate profiles;
-    unsupported work is refused before any source action. Existing successful
-    action identities can be reused only through their current governed checks.
+    _selection_json: str = field(repr=False)
+
+    def rebuild(self, executor, tx, repository, current, checks):
+        import json
+
+        repository.assert_current_assignment_execution(tx, fence=executor.claim.fence,
+            binding=executor.binding, authority=checks["model"]["authority"].observation,
+            action_id=self.model_action_id)
+        source = repository.get_action(tx, owner_id=current.owner_id,
+            assignment_id=current.assignment_id, action_id=self.private.source_action_id)
+        model = repository.get_action(tx, owner_id=current.owner_id,
+            assignment_id=current.assignment_id, action_id=self.model_action_id)
+        _matching_checks(source, checks["source"])
+        _matching_checks(model, checks["model"])
+        self.private._ephemeral.identity(current, source)
+        self.private.ephemeral_result(model, json.loads(self._selection_json))
+        metadata = self.private._ephemeral.metadata()
+        # Replace only this closed source checkpoint. Never copy any previous
+        # text checkpoint into a non-retained completion.
+        if canonical(thaw(current.checkpoint)) not in {"{}", '{"schema_version":1}'}:
+            raise DispatchDenied("assignment_research_result_invalid")
+        checkpoint = {"schema_version": 1, "research_source": metadata}
+        return AssignmentEpisodeCompletion(expected_state_version=current.state_version,
+            checkpoint=checkpoint,
+            completion_digest=digest(["ephemeral-research-result-v1", metadata, model.action_id]),
+            phase="waiting", wake_reason="research_completed", completed=True,
+            terminal_outcome="completed", result_reference=model.action_id)
+
+
+async def run_research_episode(executor):
+    """One public-page read and one fixed model action, never recurrence.
+
+    Retained sources reuse current governed action identities. A non-retained
+    episode acquires fresh, charged text and never reconstructs discarded input.
+    Provider retry classification and breadth remain separate, unsupported work.
     """
     from persistent_agents.runner import OneShotEpisodeResult
 
     request = source_request(executor.record)
     source_key, model_key = research_action_keys(executor.record)
-    observation = await executor.action(source_key, request)
-    source_id = observation["source_action_id"]
-    await executor.research_selection(model_key, source_action_id=source_id)
+    ephemeral = None
+    if executor.record.operation.get("source_retention") == "none":
+        from persistent_agents.research_recovery import model_key as ephemeral_model_key
+        ephemeral = await executor.acquire_research_source()
+        source_id = ephemeral.source_action_id
+        model_key = ephemeral_model_key(executor.record, ephemeral)
+        selection = await executor.research_selection(model_key, source_action_id=source_id,
+                                                      ephemeral=ephemeral)
+    else:
+        observation = await executor.action(source_key, request)
+        source_id = observation["source_action_id"]
+        await executor.research_selection(model_key, source_action_id=source_id)
     async with _OperationAuthorityWindow(executor.operation_authority_lock):
         checks = await executor.refresh(request)
         current, source = await executor.store.read_current_action(
@@ -171,8 +213,10 @@ async def run_research_episode(executor):
             source,
             config_store=executor.orch._llm_store,
             key_id=model.intent.transient_input.binding_key_id,
+            ephemeral=ephemeral,
         )
-        proof = ResearchCompletion(private, model.action_id)
+        proof = (ResearchCompletion(private, model.action_id) if ephemeral is None else
+                 EphemeralResearchCompletion(private, model.action_id, canonical(selection)))
         refreshed = await proof.refresh(executor)
 
         def prepare(tx, repository, guarded):
@@ -181,10 +225,11 @@ async def run_research_episode(executor):
         record, completion = await executor._research_transaction(
             private, refreshed["model"]["authority"], prepare, action_id=model.action_id
         )
-        await safe_text(
-            "\n".join(
-                passage["text"]
-                for passage in completion.checkpoint["research_result"]["passages"]
+        if ephemeral is None:
+            await safe_text(
+                "\n".join(
+                    passage["text"]
+                    for passage in completion.checkpoint["research_result"]["passages"]
+                )
             )
-        )
         return OneShotEpisodeResult(record, completion, research=proof)
