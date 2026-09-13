@@ -12,6 +12,7 @@ in-modal error notice and structured-logs the exception — never a silent
 drop. Admin-only surfaces/actions re-check the role server-side here
 regardless of what the menu rendered (FR-014).
 """
+import asyncio
 import json
 import contextvars
 import logging
@@ -119,7 +120,20 @@ def _roles(orch, websocket) -> list:
 
 async def _push_modal(orch, websocket, html: str):
     from shared.protocol import ChromeRender
+    await _verify_human_delivery(orch, websocket)
     await orch._safe_send(websocket, ChromeRender(region="modal", html=html).to_json())
+
+
+async def _verify_human_delivery(orch, websocket):
+    from orchestrator.human_request_authority import current_human_caller
+    from persistent_agents.models import AssignmentError
+    caller = current_human_caller(expected_orchestrator=orch)
+    if caller is not None:
+        pending = caller._binding.socket_request
+        if pending is None or pending.websocket is not websocket:
+            raise AssignmentError("human_authentication_required", 401)
+        await caller.verify_delivery()
+        caller._assert_local(orch)
 
 
 # --- Feature 043: device-target-aware surface delivery -----------------------
@@ -161,6 +175,7 @@ def _notice_components(notice_html: str) -> list:
 
 async def _push_surface(orch, websocket, surface_key, title, admin_only, components):
     from shared.protocol import ChromeSurface
+    await _verify_human_delivery(orch, websocket)
     await orch._safe_send(websocket, ChromeSurface(
         region="modal", surface_key=surface_key, title=title,
         admin_only=bool(admin_only), components=list(components or []),
@@ -424,6 +439,32 @@ async def _llm_gate_refusal(orch, websocket, action: str, user_id: str, *, paylo
 
 async def handle_chrome_event(orch, websocket, action: str, payload: dict,
                               user_id: str, *, request_generation=None, work_read=None) -> bool:
+    from orchestrator.human_request_authority import _socket_method, bind_human_caller
+    from persistent_agents.models import AssignmentError
+    method = _socket_method({"type": "ui_event", "action": action, "payload": payload})
+    if method is None:
+        if isinstance(action, str) and action.startswith(("chrome_user_skill_", "chrome_declarative_")):
+            raise AssignmentError("human_authentication_required", 401)
+        return await _handle_chrome_event(orch, websocket, action, payload, user_id,
+            request_generation=request_generation, work_read=work_read)
+    from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+    pending = (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("human_request")
+    if (pending is None or pending.websocket is not websocket or pending.boundary.orchestrator is not orch
+            or pending.purpose != "metadata" or pending.method != method or pending.message.get("action") != action
+            or (pending.message.get("payload") or {}) != payload):
+        raise AssignmentError("human_authentication_required", 401)
+    try:
+        async with asyncio.timeout_at(pending.deadline):
+            caller = await pending.authenticate()
+            with bind_human_caller(caller):
+                return await _handle_chrome_event(orch, websocket, action, payload, caller.owner_id,
+                    request_generation=request_generation, work_read=work_read)
+    except TimeoutError:
+        raise AssignmentError("human_request_timeout", 408) from None
+
+
+async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
+                              user_id: str, *, request_generation=None, work_read=None) -> bool:
     """Dispatch one chrome/creation ui_event. Returns True if handled."""
     if not _is_chrome_action(action):
         return False
@@ -444,7 +485,13 @@ async def handle_chrome_event(orch, websocket, action: str, payload: dict,
     # and pause/stop/revoke remain operable when personal LLM setup is absent.
     if await _llm_gate_refusal(orch, websocket, action, user_id, payload=payload):
         return True
-    roles = _roles(orch, websocket)
+    from orchestrator.human_request_authority import current_human_caller
+    human_caller = current_human_caller(expected_orchestrator=orch)
+    if human_caller is None:
+        roles = _roles(orch, websocket)
+    else:
+        from orchestrator.auth import _extract_roles
+        roles = _extract_roles(human_caller.claims)
     # Resolved before the handler runs so an exception's error notice carries
     # the acting surface key (feature 044 — native key-matched reducers).
     err_surface = ""
@@ -501,6 +548,9 @@ async def handle_chrome_event(orch, websocket, action: str, payload: dict,
         return True
 
     except Exception:
+        from orchestrator.human_request_authority import current_human_caller
+        if current_human_caller(expected_orchestrator=orch) is not None:
+            raise
         logger.exception("chrome: action %s failed", action)
         try:
             await _push_error_notice(orch, websocket, "Something went wrong",

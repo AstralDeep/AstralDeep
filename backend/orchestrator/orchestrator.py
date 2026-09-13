@@ -287,8 +287,8 @@ _ACTIVE_REQUEST_TEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
 class _ConnectionIngressFrame:
     """One parsed, post-registration frame awaiting durable admission."""
 
-    raw: str
-    parsed: dict[str, Any]
+    raw: str = field(repr=False)
+    parsed: dict[str, Any] = field(repr=False)
     action: str
     surface: str | None
     chat_id: str | None
@@ -301,12 +301,16 @@ class _ConnectionIngressFrame:
     deadline_at_utc: datetime | None
     local_final_verified: bool = False
     work_read: "WorkSurfaceRead | None" = field(default=None, repr=False)
+    human_request: object = field(default=None, repr=False)
 
     def close_work_read(self) -> None:
-        """Release private read authority on every terminal or discarded path."""
+        """Release private request authority on every terminal or discarded path."""
         if self.work_read is not None:
             self.work_read.close()
             self.work_read = None
+        if self.human_request is not None:
+            self.human_request.close()
+            self.human_request = None
 
 
 @dataclass
@@ -1107,6 +1111,12 @@ def _unbind_orchestrator_process_consumers(orchestrator) -> None:
     )
 
     errors: list[BaseException] = []
+    boundary = getattr(orchestrator, "human_request_boundary", None)
+    if boundary is not None:
+        try:
+            boundary.close()
+        except BaseException as exc:
+            errors.append(exc)
     for callback, attribute in (
         (unbind_offline_grant_store, "offline_grants"),
         (unbind_session_store, "web_sessions"),
@@ -1665,6 +1675,9 @@ class Orchestrator:
         self._owned_audit_recorder = self.audit_recorder
         self.audit_recorder.set_publisher(make_publish_callable(self))
         set_recorder(self.audit_recorder)
+
+        from orchestrator.human_request_authority import HumanRequestBoundary
+        self.human_request_boundary = HumanRequestBoundary(self)
 
         # Feature 004 — component feedback & tool-improvement loop
         from feedback.repository import FeedbackRepository
@@ -7808,6 +7821,7 @@ class Orchestrator:
         context: ConnectionContext,
         raw: str,
         parsed: dict[str, Any] | None,
+        *, human_lookup_eligible: bool = True,
     ) -> None:
         if context.closing:
             await self._send_frame_refusal(
@@ -7883,6 +7897,33 @@ class Orchestrator:
                     context, frame, code="operation_failed", retryable=False,
                 )
                 return
+        from orchestrator.human_request_authority import capture_human_socket_request
+        from persistent_agents.models import AssignmentError
+
+        try:
+            if frame.action != "chat_message" or human_lookup_eligible:
+                frame.human_request = capture_human_socket_request(
+                    getattr(self, "human_request_boundary", None), websocket=context.websocket,
+                    context=context, message=frame.parsed,
+                    purpose="skill_lookup" if frame.action == "chat_message" else "metadata",
+                )
+            if frame.human_request is not None:
+                # Retain the original issued caller before any admission/lane wait.
+                await frame.human_request.capture_session()
+                if frame.human_request.purpose == "metadata":
+                    frame.read_only = frame.human_request.method == "WS_READ"
+        except asyncio.CancelledError:
+            frame.close_work_read()
+            raise
+        except (AssignmentError, TimeoutError):
+            frame.close_work_read()
+            if frame.action != "chat_message":
+                await self._send_connection_admission_refusal(
+                    context, frame, code="operation_failed", retryable=False,
+                )
+                return
+            # The required internal skill lookup will explicitly refuse. A
+            # missing capture never grants later-registration or owner fallback.
         context.submission_digests[
             frame.submission_id
         ] = frame.normalized_digest
@@ -8958,7 +8999,9 @@ class Orchestrator:
                 # Retiring a read must not cancel the earlier mutation's shared
                 # lane future. That mutation retains its own execution lifetime.
                 predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
-                                if work.frame.work_read is not None else work.predecessors)
+                                if (work.frame.work_read is not None or (work.frame.human_request is not None
+                                    and work.frame.human_request.purpose == "metadata"))
+                                else work.predecessors)
                 await asyncio.gather(*predecessors)
             if (
                 context.closing
@@ -9000,6 +9043,7 @@ class Orchestrator:
                 "connection_generation": context.connection_generation,
                 "request_generation": work.frame.request_generation,
                 "work_read": work.frame.work_read,
+                "human_request": work.frame.human_request,
             }
             token = _CONNECTION_OPERATION_CONTEXT.set(
                 connection_operation_context
@@ -9094,6 +9138,10 @@ class Orchestrator:
                     runtime_websocket.scrub()
                     work.runtime_websocket = None
                 work.auth_claims.clear()
+                if work.frame.human_request is not None:
+                    # A task inheriting the private context cannot extend the
+                    # metadata handler lifetime through terminal delivery waits.
+                    work.frame.human_request.close()
                 _CONNECTION_OPERATION_CONTEXT.reset(token)
             voice_rejection = connection_operation_context.get(
                 "voice_rejection"
@@ -9131,6 +9179,9 @@ class Orchestrator:
             if work.frame.work_read is not None:
                 async with asyncio.timeout_at(work.frame.work_read.deadline):
                     await _execute()
+            elif work.frame.human_request is not None and work.frame.human_request.purpose == "metadata":
+                async with asyncio.timeout_at(work.frame.human_request.deadline):
+                    await _execute()
             elif work.frame.operation_kind == "llm_credential_save":
                 deadline = work.frame.deadline_at_monotonic
                 if deadline is None:
@@ -9157,6 +9208,7 @@ class Orchestrator:
                 state=OperationState.RETRYABLE,
                 terminal_code="deadline_exceeded",
                 safe_summary=("Work read timed out" if work.frame.work_read is not None
+                              else "Metadata request timed out" if work.frame.human_request is not None
                               else "Credential save timed out"),
             )
         except asyncio.CancelledError:
@@ -9200,10 +9252,13 @@ class Orchestrator:
                     context, work.frame, work, projection
                 )
         except Exception:
-            logger.exception(
-                "Connection operation failed operation_id=%s",
-                work.operation_id,
-            )
+            if work.frame.human_request is not None:
+                logger.warning("Metadata request failed operation_id=%s", work.operation_id)
+            else:
+                logger.exception(
+                    "Connection operation failed operation_id=%s",
+                    work.operation_id,
+                )
             terminal_operation = await self._terminalize_connection_operation(
                 context,
                 work,
@@ -9329,7 +9384,8 @@ class Orchestrator:
             from orchestrator.work_surface_authority import invalidate
 
             invalidate(self, context.websocket)
-        if work_candidate and not context.registered:
+        from orchestrator.human_request_authority import _socket_method
+        if (work_candidate or _socket_method(parsed) is not None) and not context.registered:
             await self._send_frame_refusal(
                 context.websocket, parsed, code="operation_failed", retryable=False,
             )
@@ -9406,6 +9462,7 @@ class Orchestrator:
                         context,
                         queued_raw,
                         self._parsed_ui_frame(queued_raw),
+                        human_lookup_eligible=False,
                     )
             elif registration_task.done():
                 # Invalid auth deliberately sets the legacy event so old
@@ -11024,6 +11081,9 @@ class Orchestrator:
                             logger.warning("llm gate re-gate failed", exc_info=True)
 
             elif isinstance(msg, UIEvent):
+                human_request = (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("human_request")
+                human_caller = (await human_request.authenticate()
+                                if human_request is not None and human_request.purpose == "metadata" else None)
                 work_read = (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("work_read")
                 if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
                     if _CONNECTION_OPERATION_CONTEXT.get() is not None:
@@ -11053,12 +11113,14 @@ class Orchestrator:
                     return
 
                 user_id = self._get_user_id(websocket)
+                if human_caller is not None:
+                    user_id = human_caller.owner_id
 
                 # Audit: record the WS UI action in the user's audit log
                 try:
                     from audit.hooks import record_ws_action
-                    _audit_payload = msg.payload or {}
-                    _action_chat_id = msg.session_id or _audit_payload.get(
+                    _audit_payload = {} if human_caller is not None else (msg.payload or {})
+                    _action_chat_id = None if human_caller is not None else msg.session_id or _audit_payload.get(
                         "chat_id"
                     )
                     _voice_audit_origin = _audit_payload.get("voice_origin")
@@ -11091,7 +11153,8 @@ class Orchestrator:
                             ),
                         }
                     asyncio.create_task(record_ws_action(
-                        claims=self.ui_sessions.get(websocket),
+                        claims=(human_caller.claims if human_caller is not None
+                                else self.ui_sessions.get(websocket)),
                         action=str(msg.action or ""),
                         chat_id=_action_chat_id,
                         payload=_audit_payload,
@@ -12354,6 +12417,10 @@ class Orchestrator:
             # generic UI error (which would later fabricate completion).
             from llm_config.ws_handlers import LLMConfigOperationFailure
             if isinstance(e, LLMConfigOperationFailure):
+                raise
+            if (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("human_request") is not None:
+                # The operation wrapper owns a closed terminal; no private
+                # metadata request or exception text enters generic diagnostics.
                 raise
             import traceback
             logger.error(f"Error handling UI message: {e}\n{traceback.format_exc()}")
@@ -25845,6 +25912,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             voice_close_error = exc
                             logger.warning("conversational_voice_shutdown_failed")
                     audit_close_error: BaseException | None = None
+                    human_close_error: BaseException | None = None
+                    human_boundary = getattr(self, "human_request_boundary", None)
+                    if human_boundary is not None:
+                        try:
+                            human_boundary.close()
+                        except BaseException as exc:
+                            human_close_error = exc
                     audit_recorder = getattr(
                         self,
                         "_owned_audit_recorder",
@@ -25884,6 +25958,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         error
                         for error in (
                             voice_close_error,
+                            human_close_error,
                             audit_close_error,
                             publication_close_error,
                             process_unbind_error,
