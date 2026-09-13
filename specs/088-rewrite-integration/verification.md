@@ -1,5 +1,57 @@
 # Feature 088 verification record
 
+## Public nonretained research and actual Watch navigation — 2026-09-13 UTC
+
+HTTP Work acceptance now supports an explicit optional `source_retention` value
+of `operation` or `none`. Omission preserves the prior behavior and canonical
+receipt bytes. The explicit value is part of the immutable command; changing it
+on the same caller key conflicts. No schema or primitive contract changes are
+needed, and the existing original-session, USER provider, scope and budget gates
+remain in use. Nonretained work uses the already implemented ephemeral reader and
+model path; completed results return an honest unavailable-content disposition.
+
+The new actual HTTP → supervisor → ordinary dispatch → PostgreSQL → result
+regression first refused the new field with 422. After the narrow admission
+change, the final two-case successor passed in **22.99 seconds**. It exercises
+one charged reader and model call, completed metadata, unavailable result text,
+raw durable assignment/action privacy, exact accepted replay with no new call,
+retention-change conflict, and seven invalid types/values plus an unknown payload
+field refusing before refresh or dispatch. The wider same-production-byte cohort
+passed **78 tests** with one test-only detached-record serialization mistake; the
+corrected focused successor passed. Earlier wrong test-column and serialization
+failures remain retained, not classified as product regressions. Coverage.py
+identifies **1/1 changed executable lines** (multiline expressions share its
+statement locations), with no exclusions and exact raw report replay. Both scoped
+source hashes stayed unchanged. Ruff/diff/scoped secret checks passed. The runs
+use synthetic external IAM/source/model replies with actual local runtime and
+storage; they are not live provider or institutional staging qualification.
+
+Projection local `bfa4bb6e922bf1e55d31fc1c514d165258a07b4c` adds only test/project/
+provenance changes. A simulator-only harness compiled the unchanged production
+Watch Home and model; **two actual XCUI journeys passed in 50.094 seconds** through
+List entry, real ten-second timeout/Retry, detail, Back/onDisappear and fresh
+re-entry with late-response refusal over loopback WebSocket. That one raw UI run
+covers **40/40 changed Watch Home lines**, superseding the previous 23/40 gap.
+The original unsigned Watch build and **26 identity/provenance guards** passed;
+Python changed coverage is **43/43** and **2/2**. Root reviewed source/project diffs
+and screenshots and verified all eight source and 1,213 artifact hashes. The
+ledger now reflects 24 earlier task-owned transformed-file hashes plus the missing
+registration entry, preserving every donor identity. Test targets cannot join
+shipping dependencies, signing or archives. Shipping Swift/store build numbers
+are unchanged; the owned simulator was deleted and 891.8 MB logical scratch removed
+while raw results and exact tested products were retained.
+
+Core WebSocket default changed coverage remains **15/17**. A separate bounded real
+interrupted-send diagnostic reached actual partial receipt/abort/reconnect and no
+replay, but URLSession had already accepted the send; its intended failure-return
+assertion failed and the catch was not reached. The diagnostic is retained and its
+sole test source restored. No production test hook or coverage waiver was added.
+Evidence remains in `work-retention-http-*`, `watch-navigation-01` and
+`core-work-send-failure-01` below `.git/088-completion-qualification/`.
+Automatic retry classification, remaining Work/guidance/monitoring/frameworks,
+full native qualification, new signed builds and protected staging/release remain
+open. No store submission or production deployment changes in this checkpoint.
+
 ## Current human metadata boundary and retained-capability test isolation — 2026-09-13 UTC
 
 `human_request_authority.py` now supplies an application-owned bounded adapter over
