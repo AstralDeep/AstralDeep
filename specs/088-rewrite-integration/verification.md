@@ -1484,3 +1484,36 @@ Existing native archives and the Android bundle are historical unsigned
 artifacts; they do not qualify the new shipping sources. The user-signed-in live
 backend/apps, product remote heads and draft PR states remain unchanged. No
 product push, PR promotion, signing, release or store submission was performed.
+
+
+### 2026-09-13: stable guidance and lifecycle expiry, local checkpoint
+
+The new pure selected-guidance helper separates the acceptance envelope from
+source acquisition: its named-key MAC covers the original owner/instruction,
+exact selected agent/skill definitions and authenticated encrypted-note references.
+Real source/config/request bytes belong to the separate runtime proof. No-selection
+requests retain their existing bytes; actual complete requests refuse over-budget
+input without truncation. This helper does not grant current authority or activate
+selected Work acceptance/execution.
+
+The stable successor passed 326 tests (85 new and 241 existing neighbors), with
+185/185 production and 275/276 new-test statements covered. Root verified both
+source hashes, 52 retained artifacts and all five raw coverage reports. The
+source-dependent predecessor, its two regression failures and a corrected test
+escaping assumption remain diagnostic evidence; they are not the current proof.
+
+A separate real PostgreSQL lifecycle regression bound a note before claim, then
+crossed actual note expiry after renew/terminalize or during the final session
+check. All four cases failed before the fix. The store now checks guidance with
+post-write counters after that final session observation, preserving rollback even
+when completion has retired the old execution fence. The focused five and final
+62 lifecycle tests passed. Changed production statements are 2/2 and the new test
+87/87; root replayed both raw reports and verified 2,233 frozen inputs. The tests
+prove real assignment/admission rollback and current-note completion; they do not
+claim a real lock-contention witness or selected Work ingress/model execution.
+
+Both cohorts use installed Plane aca6595 / schema 088.005 and Projection 347b0c6.
+External IAM responses are synthetic; no provider/staging call was made. Completed
+private test databases were removed after zero-connection checks. Ruff and scoped
+Gitleaks pass. T036 acceptance, execution and publication, native live backend
+qualification, full 088, replacement signed builds and release gates remain open.
