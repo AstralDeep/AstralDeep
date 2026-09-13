@@ -17,8 +17,25 @@ from persistent_agents.research_input import ResearchInput, fixed_reader_source,
 from persistent_agents.research_result import build_page_result
 from persistent_agents.runtime_values import canonical, digest, thaw
 
+# Legacy keys identify already completed results only. Continuation never uses
+# them: a new control epoch cannot adopt an old action or spend its receipt again.
 SOURCE_KEY = "research-source-v1"
 MODEL_KEY = "research-selection-v1"
+
+
+def research_action_keys(record):
+    """Stable v2 keys within one revision/epoch, independent of physical claims.
+
+    Plane already scopes each key to the owner and assignment. Canonical arrays
+    separate source/model domains and integer pairs without concatenation aliases.
+    The full digest fits the fixed model adapter's existing 64-character key bound.
+    This is an action identity successor, not a wire or transient-input version.
+    """
+    for value in (record.instruction_revision, record.control_epoch):
+        if type(value) is not int or not 1 <= value <= 2**53 - 1:
+            raise DispatchDenied("assignment_operation_profile_unavailable")
+    return tuple(digest([domain, record.instruction_revision, record.control_epoch])
+                 for domain in ("research-source-v2", "research-selection-v2"))
 
 
 def source_request(record):
@@ -126,9 +143,10 @@ async def run_research_episode(executor):
     from persistent_agents.runner import OneShotEpisodeResult
 
     request = source_request(executor.record)
-    observation = await executor.action(SOURCE_KEY, request)
+    source_key, model_key = research_action_keys(executor.record)
+    observation = await executor.action(source_key, request)
     source_id = observation["source_action_id"]
-    await executor.research_selection(MODEL_KEY, source_action_id=source_id)
+    await executor.research_selection(model_key, source_action_id=source_id)
     async with _OperationAuthorityWindow(executor.operation_authority_lock):
         checks = await executor.refresh(request)
         current, source = await executor.store.read_current_action(
@@ -142,7 +160,7 @@ async def run_research_episode(executor):
                 tx,
                 owner_id=current.owner_id,
                 assignment_id=current.assignment_id,
-                action_key="research-v1-" + MODEL_KEY,
+                action_key="research-v1-" + model_key,
             ),
             bound_session_waits=True,
         )

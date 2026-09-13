@@ -38,7 +38,7 @@ from llm_config import research_profile as profile
 from persistent_agents.dispatch_context import DispatchDenied
 from persistent_agents.models import validate_id
 from persistent_agents.research_input import _source_identity, route
-from persistent_agents.research_episode import MODEL_KEY, source_request
+from persistent_agents.research_episode import MODEL_KEY, research_action_keys, source_request
 from persistent_agents.research_result import build_page_result
 from persistent_agents.runtime_values import canonical, digest, thaw
 
@@ -130,7 +130,7 @@ def _settled(action):
     return result, attempt
 
 
-def _model_source(record, model):
+def _model_source(record, model, expected_key):
     _action(record, model)
     transient = model.intent.transient_input
     _require(type(transient) is AssignmentTransientInput)
@@ -147,7 +147,7 @@ def _model_source(record, model):
              and re.fullmatch(r"[a-z][a-z0-9_]{0,31}", transient.binding_key_id) is not None)
     _require(thaw(model.intent.request) == route()
              and type(model.intent.request["max_output_tokens"]) is int
-             and model.intent.action_key == "research-v1-" + MODEL_KEY
+             and model.intent.action_key == expected_key
              and model.intent.request_digest == transient.payload_binding
              and model.intent.boundary == "unreplayable"
              and type(model.intent.maximum) is AssignmentResourceAmount
@@ -157,8 +157,10 @@ def _model_source(record, model):
     return transient, reference.resource_id
 
 
-def _page(record, model, source, transient):
+def _page(record, model, source, transient, source_key):
     _action(record, source)
+    if source_key is not None:
+        _require(source.intent.action_key == source_key)
     _require(thaw(source.intent.request) == source_request(record)
              and source.intent.request_digest == digest(thaw(source.intent.request)))
     _source_identity(record, source)
@@ -230,22 +232,38 @@ def project_research_result(transaction, repository, *, owner_id, read):
         source_request(record)
         # This unlocked inspection only discovers IDs. It cannot prove a result.
         # Match execution's sorted lock order, then require exact locked equality.
+        source_key, model_key = research_action_keys(record)
+        current_key = "research-v1-" + model_key
+        selected_key = current_key
         peek = repository.get_action_by_key(transaction, owner_id=owner_id,
-            assignment_id=record.assignment_id, action_key="research-v1-" + MODEL_KEY)
-        _, source_id = _model_source(record, peek)
+            assignment_id=record.assignment_id, action_key=current_key)
+        legacy = peek is None
+        if legacy:
+            # Compatibility is read-only and only for completed records. An
+            # invalid current-key receipt never selects a legacy alternate.
+            selected_key = "research-v1-" + MODEL_KEY
+            source_key = None
+            peek = repository.get_action_by_key(transaction, owner_id=owner_id,
+                assignment_id=record.assignment_id, action_key=selected_key)
+        _, source_id = _model_source(record, peek, selected_key)
         _require(peek.action_id == read.result_reference and source_id != peek.action_id)
         locked = {identity: repository.get_action(transaction, owner_id=owner_id,
             assignment_id=record.assignment_id, action_id=identity)
             for identity in sorted((source_id, peek.action_id))}
         model, source = locked[peek.action_id], locked[source_id]
         _require(type(model) is AssignmentActionRecord and _same(model, peek))
-        transient, locked_source_id = _model_source(record, model)
+        transient, locked_source_id = _model_source(record, model, selected_key)
         _require(locked_source_id == source_id)
-        page = _page(record, model, source, transient)
+        page = _page(record, model, source, transient, source_key)
         for action in (source, model):
             actual = repository.get_action(transaction, owner_id=owner_id,
                 assignment_id=record.assignment_id, action_id=action.action_id)
             _require(type(actual) is AssignmentActionRecord and _same(actual, action))
+        if legacy:
+            # A later current-key observation cannot be hidden by the earlier
+            # absence read, even if the legacy receipt itself stayed unchanged.
+            _require(repository.get_action_by_key(transaction, owner_id=owner_id,
+                assignment_id=record.assignment_id, action_key=current_key) is None)
         final = repository.get_operation(transaction, owner_id=owner_id,
             assignment_id=record.assignment_id)
         _require(type(final) is AssignmentOperationRead and _same(final, current))
