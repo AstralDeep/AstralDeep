@@ -682,6 +682,8 @@ class UserAgentRegistry:
                 raise UserAgentOwnershipConflict(
                     "agent id is already bound to a different owner"
                 )
+            if record.agent_kind != "executable":
+                raise StaleRuntimeGenerationError("authoring requires an executable agent")
             if revises_agent_id is not None:
                 return record
             lifecycle_matches = (
