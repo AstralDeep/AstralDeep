@@ -49,6 +49,7 @@ from orchestrator.auth import (
     get_current_user_payload,
     require_user_id,
     require_user_id_or_web_session,
+    security,
     verify_admin,
 )
 from shared.feature_flags import flags
@@ -824,40 +825,75 @@ async def send_message(
     request: Request,
     chat_id: str,
     body: ChatMessageRequest,
-    user_id: str = Depends(require_user_id),
+    credentials=Depends(security),
 ):
     orch = _get_orchestrator(request)
+    from orchestrator import user_skills
+    from orchestrator.human_request_authority import authenticate_current_human_request
+    from orchestrator.turn_guidance_authority import (
+        bind_http_guidance, capture_turn_guidance_from_human, use_turn_guidance,
+    )
+    from persistent_agents.models import AssignmentError
 
-    # Ensure chat exists
-    if not await asyncio.to_thread(orch.history.get_chat, chat_id, user_id=user_id):
-        await asyncio.to_thread(orch.history.create_chat, chat_id, user_id=user_id)
-
-    # Try to dispatch the message for processing via the orchestrator.
-    # If a WebSocket client is connected for this user, results stream to them.
-    # If not, results are still saved to history.
-    dispatched = False
+    origin = None
     try:
-        for ws in orch.ui_clients:
-            if ws in orch.ui_sessions:
-                ws_user_id = orch.ui_sessions[ws].get("sub", "legacy")
-                if ws_user_id == user_id:
-                    asyncio.create_task(
-                        orch.handle_chat_message(ws, body.message, chat_id, body.display_message, user_id=user_id)
-                    )
-                    dispatched = True
-                    break
+        caller = None
+        if user_skills.enabled():
+            caller = await authenticate_current_human_request(request,
+                boundary=getattr(orch, "human_request_boundary", None))
+            origin = await capture_turn_guidance_from_human(caller, expected_orchestrator=orch)
+            claims = caller.claims
+        else:
+            claims = await get_current_user_payload(request, credentials)
+        # Preserve ordinary profile persistence using these already verified claims.
+        user_id = await require_user_id(request, claims)
+        message, display_message = body.message, body.display_message
+        if not await asyncio.to_thread(orch.history.get_chat, chat_id, user_id=user_id):
+            await asyncio.to_thread(orch.history.create_chat, chat_id, user_id=user_id)
+        if caller is not None:
+            await caller.verify_delivery()
+        # This socket selects delivery only; it never supplies the HTTP origin.
+        websocket = next((ws for ws in orch.ui_clients
+                          if orch.ui_sessions.get(ws, {}).get("sub") == user_id), None)
 
-        if not dispatched:
-            asyncio.create_task(
-                orch.handle_chat_message(None, body.message, chat_id, body.display_message, user_id=user_id)
-            )
-    except Exception as e:
-        logger.warning(f"Could not dispatch chat message for async processing: {e}")
+        async def dispatch():
+            try:
+                if origin is None:
+                    await orch.handle_chat_message(websocket, message, chat_id, display_message, user_id=user_id)
+                else:
+                    binding = bind_http_guidance(origin, expected_orchestrator=orch,
+                                                  websocket=websocket, chat_id=chat_id)
+                    with use_turn_guidance(binding, expected_orchestrator=orch):
+                        await orch.handle_chat_message(websocket, message, chat_id, display_message, user_id=user_id)
+            finally:
+                if origin is not None:
+                    origin.close()
+
+        def settled(task):
+            # Also releases custody when a queued task is cancelled before entry.
+            if origin is not None:
+                origin.close()
+            if not task.cancelled() and task.exception() is not None:
+                logger.warning("Chat message processing failed")
+
+        pending = dispatch()
+        try:
+            task = asyncio.create_task(pending)
+        except BaseException:
+            pending.close()
+            raise
+        task.add_done_callback(settled)
+    except BaseException as exc:
+        if origin is not None:
+            origin.close()
+        if isinstance(exc, AssignmentError):
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+        raise
 
     return ChatMessageResponse(
         chat_id=chat_id,
         status="accepted",
-        message="Message received. Results will stream via WebSocket." if dispatched
+        message="Message received. Results will stream via WebSocket." if websocket is not None
                else "Message received. No WebSocket client connected — results will be saved to history.",
     )
 
@@ -2463,6 +2499,7 @@ async def get_chrome_menu(payload: dict = Depends(get_current_user_payload)):
     # Legacy REST callers negotiate no Work read-response correlation. Updated
     # natives receive it on their capability-bound registered WebSocket instead.
     availability["work_enabled"] = False
+    availability["notes_enabled"] = False
     return menu_model_dict(
         _roles_from_payload(payload),
         include_admin=False,
@@ -2480,20 +2517,27 @@ async def get_chrome_menu(payload: dict = Depends(get_current_user_payload)):
         "Pure metadata: name + description; nothing here invokes anything."
     ),
 )
-async def get_chrome_commands(request: Request, payload: dict = Depends(get_current_user_payload)):
-    from orchestrator import slash_commands
-    items = [{"name": "/" + c["name"], "desc": c["description"], "mine": False}
-             for c in slash_commands.command_list()]
+async def get_chrome_commands(request: Request):
+    from orchestrator import slash_commands, user_skills
+    from orchestrator.human_request_authority import authenticate_current_human_request
+    orch = _get_orchestrator(request)
+    from persistent_agents.models import AssignmentError
     try:
-        from orchestrator import user_skills
-        store = user_skills.store_for(_get_orchestrator(request))
-        user_id = str((payload or {}).get("sub") or "")
-        if store is not None and user_id:
-            for command, skill in sorted(store.command_map(user_id).items()):
-                items.append({"name": "/" + command, "desc": skill.name, "mine": True})
-    except Exception:
-        logger.debug("user_skills: command listing skipped", exc_info=True)
-    return {"commands": items}
+        caller = await authenticate_current_human_request(
+            request, boundary=getattr(orch, "human_request_boundary", None))
+        items = [{"name": "/" + c["name"], "desc": c["description"], "mine": False}
+                 for c in slash_commands.command_list()]
+        store = user_skills.store_for(orch)
+        if store is not None:
+            skills = await store.list(caller=caller)
+            for skill in sorted(skills, key=lambda value: value.command):
+                if skill.enabled and skill.command:
+                    items.append({"name": "/" + skill.command, "desc": skill.name, "mine": True})
+        else:
+            await caller.verify_delivery()
+        return {"commands": items}
+    except AssignmentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
 
 
 # =============================================================================

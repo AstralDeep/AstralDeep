@@ -12,7 +12,9 @@ from fastapi.testclient import TestClient
 
 from orchestrator.api import chrome_router
 from orchestrator.auth import get_current_user_payload
-from orchestrator.chrome_availability import projection_chrome_availability
+from orchestrator.chrome_availability import (
+    projection_chrome_availability, projection_native_chrome_availability,
+)
 from shared.protocol import ChromeMenu
 from webrender.chrome import render_topbar
 from webrender.chrome.menu_model import menu_model_dict
@@ -68,18 +70,18 @@ def test_unauthenticated_401():
     assert r.status_code == 401
 
 
-def test_rest_body_equals_ws_frame_model():
-    """REST and the chrome_menu WS frame serialize the SAME model."""
+def test_rest_body_equals_unnegotiated_native_model():
+    """Legacy REST agrees with native chrome without private-view capabilities."""
     for roles in (["user"], ["admin", "user"]):
         c = _client({"realm_access": {"roles": roles}})
         rest = c.get("/api/chrome/menu").json()
-        # Both native channels omit admin AND tour (web-only) — mirroring the
-        # actual WS emission (orchestrator.py register_ui path, feature 043).
+        # Both native channels omit admin/tour. Work and private notes require
+        # a registered current socket capable of correlating the response.
         frame = json.loads(ChromeMenu(model=menu_model_dict(
             roles,
             include_admin=False,
             include_tour=False,
-            **projection_chrome_availability(),
+            **projection_native_chrome_availability({}),
         )).to_json())
         assert frame["type"] == "chrome_menu"
         assert frame["model"] == rest

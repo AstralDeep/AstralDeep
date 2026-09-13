@@ -266,6 +266,10 @@ class BackgroundTask:
             # The durable terminal transition already revoked this token. Keep
             # no stale private capability in the compatibility projection.
             self._execution_fence = None
+            guidance = getattr(self, "_guidance_origin", None)
+            if guidance is not None:
+                guidance.close()
+                self._guidance_origin = None
         elif execution_fence is not _FENCE_UNSET:
             self._execution_fence = execution_fence
 
