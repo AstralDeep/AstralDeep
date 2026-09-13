@@ -1,5 +1,52 @@
 # Feature 088 verification record
 
+## Current human metadata boundary and retained-capability test isolation — 2026-09-13 UTC
+
+`human_request_authority.py` now supplies an application-owned bounded adapter over
+our existing Plane runtime and normal IAM, independently of the Work feature flag.
+It captures the original human identity, request method, composition and optional
+issued session. GET authentication cannot authorize mutation, even if the original
+request is subsequently changed to POST. Private synchronous repository callbacks
+retain caller checks before and after their transaction; delivery verifies the
+original JWT and exact session again. No route or service startup is registered by
+this checkpoint, and this guard supplies no tool, grant or operation authority.
+Work controls reuse the same issuance capture helper. A real session deletion
+during IAM initially returned 503; the regression now returns 401 without refresh.
+
+The final Python 3.11.15/installed Plane `54da550` PostgreSQL caller/control cohort
+passed **57 tests** in 126.78 seconds, without skips, warnings or external network
+attempts. It includes actual session replacement, mutation rollback, audit lock
+wait/expiry and cancelled-waiter capacity/rollback cases. Cancellation does not
+physically cancel the worker transaction; its slot remains occupied until completion
+and original expiry still prevents commit. The preceding caller/control/admission
+cohort passed **131 tests** before the session-error mapping fix. These are separate
+runs, not a combined final-suite count. Changed executable coverage for final bytes
+is caller **172/183**, shared capture/admission **22/22** and controls **3/3**, without
+exclusions. Replaying the original Coverage.py data reproduces all measurements.
+All four scoped production/test source hashes remained identical. A separate,
+unexecuted declarative lifecycle test was created concurrently; the full backend
+closure was therefore not unchanged and is not claimed as such.
+
+The test-only retained-capability subset maps all 12 inventoried families to
+existing behavior suites and checks imports/registration of the retained agents.
+It also confines existing in-process dispatch crypto tests to a temporary test key.
+The original five dispatch-test bodies are unchanged; an added test exercises real
+key creation and loading without reading the installed agent key. Final focused
+checks passed **21 tests**, with changed executable coverage **56/56** and **27/27**.
+The preceding broader cohort passed **291 tests** on its earlier fixture bytes;
+there is no claimed unified 292-test run. Root verified two source hashes and all
+78 handed-off artifact hashes. Prior fixture/import setup failures and the earlier
+read of an unchanged pre-existing local agent key remain documented in the private
+handoff; no key values entered evidence. All 12 integrated retained-capability
+inventory statuses remain pending: import and synthetic example tests do not
+establish live capability acceptance.
+
+Local evidence: `.git/088-completion-qualification/human-caller-capture-red-01/`,
+`human-caller-green-03/`, `human-caller-green-04/` and `t018-retained-audit-01/`.
+The shared guard is qualified for subsequent declarative service integration; the
+remaining feature, full native successors, live staging and protected release
+requirements remain open. No submitted store build changes at this checkpoint.
+
 ## Installed Work continuation commands and shared client reads — 2026-09-13 UTC
 
 Resume, manual-owner wait/wake and payload-free action reconciliation now use the

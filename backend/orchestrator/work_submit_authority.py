@@ -13,11 +13,11 @@ import math
 import os
 import re
 
-from astralplane.repositories.history import SessionExecutionObservation
+from astralplane.repositories.history import SessionConsentObservation, SessionExecutionObservation
 from fastapi import HTTPException, Request
 
 from orchestrator import auth, web_auth
-from orchestrator.session_store import WebSessionStore
+from orchestrator.session_store import SessionRefreshUnavailable, WebSessionStore
 from orchestrator.work_write_boundary import freeze_work_request
 from persistent_agents.models import AssignmentError
 
@@ -89,11 +89,12 @@ class WorkSubmissionAuthority:
 
 
 async def _authenticate_work_request(
-    request: Request, *, sessions: WebSessionStore, plane_runtime, methods,
+    request: Request, *, sessions: WebSessionStore, plane_runtime, methods, read_only=False,
 ) -> tuple[AuthenticatedWorkRequest, str | None]:
     """Reuse ordinary IAM once on frozen transport for closed Work write adapters."""
     try:
         if (not isinstance(request, Request) or request.method not in methods
+                or (read_only and methods != ("GET",))
                 or not isinstance(sessions, WebSessionStore)
                 or sessions._sessions.plane_runtime is not plane_runtime
                 or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
@@ -103,8 +104,12 @@ async def _authenticate_work_request(
         credentials = await auth.security(snapshot)
         claims = await auth.verify_user(await auth.get_web_or_bearer_user_payload(snapshot, credentials))
         expiry = _expiry(claims)
-        from orchestrator.work_api import _write_owner
-        await _write_owner(snapshot, claims["sub"])
+        if read_only:
+            if "token" in snapshot.query_params:
+                _refuse("work_query_token_refused", 403)
+        else:
+            from orchestrator.work_api import _write_owner
+            await _write_owner(snapshot, claims["sub"])
         context = AuthenticatedWorkRequest(claims["sub"], expiry,
             json.dumps(claims, allow_nan=False, separators=(",", ":")), sid,
             getattr(snapshot.state, "_authenticated_cookie_session", None), plane_runtime)
@@ -117,6 +122,34 @@ async def _authenticate_work_request(
                 exc.status_code if exc.status_code in (401, 403) else 503)
     except Exception:
         _refuse("work_authentication_required", 401)
+
+
+async def capture_human_caller(snapshot, *, context, sessions, until):
+    """Capture one original caller issuance after ordinary IAM, without refresh.
+
+    Shared by Work controls and independent metadata requests. A supplied but
+    unselected cookie cannot downgrade into a bare-Bearer command.
+    """
+    supplied = [part.strip().split("=", 1)[0] for header in snapshot.headers.getlist("cookie")
+                for part in header.split(";")]
+    if web_auth.COOKIE_NAME in supplied and context.session_id is None:
+        _refuse("work_authentication_required", 401)
+    if context.session_id is None:
+        return None
+    try:
+        reference = await asyncio.to_thread(sessions.capture_execution_reference,
+            owner_id=context.owner_id, session_id=context.session_id)
+    except SessionRefreshUnavailable:
+        _refuse("work_authentication_required", 401)
+    state = reference.state
+    credential = state.credential
+    if (credential.owner_id != context.owner_id or credential.session_id != context.session_id
+            or (context.cookie_session is not None and context.cookie_session != (
+                credential.session_id, credential.incarnation_id))):
+        _refuse("work_authentication_required", 401)
+    return SessionConsentObservation(credential, state.observed_at,
+        min(state.observed_at + timedelta(seconds=15), until, context.principal_expires_at,
+            datetime.fromtimestamp(credential.hard_expires_at, timezone.utc)))
 
 
 async def authenticate_work_submission_request(

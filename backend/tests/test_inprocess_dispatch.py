@@ -21,6 +21,43 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
+@pytest.fixture(autouse=True)
+def isolated_agent_key(monkeypatch, tmp_path):
+    """Exercise real crypto with an ephemeral key, never an installed agent key."""
+    from shared import base_agent
+
+    path = tmp_path / "agent-key.pem"
+    monkeypatch.setenv("AGENT_KEY_PATH", str(path))
+    accesses = []
+    save, load = base_agent.save_private_key, base_agent.load_private_key
+
+    def save_selected(key, selected):
+        assert Path(selected) == path
+        accesses.append("save")
+        return save(key, selected)
+
+    def load_selected(selected):
+        assert Path(selected) == path
+        accesses.append("load")
+        return load(selected)
+
+    monkeypatch.setattr(base_agent, "save_private_key", save_selected)
+    monkeypatch.setattr(base_agent, "load_private_key", load_selected)
+    yield path, accesses
+    path.unlink(missing_ok=True)
+
+
+def test_agent_crypto_loads_only_the_test_selected_key(isolated_agent_key):
+    from agents.dice_roller.dice_roller_agent import DiceRollerAgent
+
+    path, accesses = isolated_agent_key
+    first = DiceRollerAgent(port=8003)
+    second = DiceRollerAgent(port=8003)
+    assert accesses == ["save", "load"]
+    assert path.is_file()
+    assert first._public_key_jwk == second._public_key_jwk
+
+
 def test_built_in_dirs_exclude_etf_tracker():
     from orchestrator.local_agents import BUILT_IN_AGENT_DIRS, discover_built_in_agent_dirs
 
