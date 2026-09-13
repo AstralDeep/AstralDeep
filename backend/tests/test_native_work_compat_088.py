@@ -2,8 +2,9 @@
 
 The institutional issuer URL and native client IDs match the pinned client
 configuration. Keys, credentials and all IdP replies are synthetic: this is not
-institutional staging or an interactive sign-in. Work submission remains the
-unregistered service; these fixtures do not introduce a route or session broker.
+institutional staging or an interactive sign-in. Submission authority is exercised
+through the common service; this compatibility host has no complete research
+runner/configuration composition and cannot activate registered HTTP submission.
 """
 
 import asyncio
@@ -91,6 +92,7 @@ async def client(service, fixture, runtime, monkeypatch, tmp_path):
     app.include_router(auth.auth_router)
     app.state.orchestrator = service.assignments.orch
     app.state.orchestrator.persistent_assignments = service.assignments
+    app.state.orchestrator.audit_repo = service.audit
     recorder = Recorder(service.audit, retry_queue=tmp_path / "audit-retry.jsonl")
     monkeypatch.setattr(hooks, "get_recorder", lambda: recorder)
     grants = offline_grant.OfflineGrantStore(plane_runtime=runtime)
@@ -303,12 +305,15 @@ async def test_native_bearer_refuses_new_admission_but_replays_after_session_ret
         f"{WORK}/{original.record.assignment_id}", headers=bearer(fixture, client_id)
     )
     assert detail.status_code == 200
-    # The fixture calls an explicitly unregistered adapter. Native HTTP ingress
-    # must remain absent; no test-only submit route is mounted to imply otherwise.
-    unregistered = await client.post(
+    # The real router now registers fixed research. This compatibility host has
+    # no runner/configuration composition; it must refuse before new work rather
+    # than borrowing another owner's server session or accepting a partial host.
+    unavailable = await client.post(
         WORK, headers=bearer(fixture, client_id), content=body
     )
-    assert unregistered.status_code == 405
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"error": "work_submit_unavailable"}
+    assert totals(runtime, fixture[1]) == (1, 1, 1) and len(fixture[-1]) == 1
     foreign = await context(
         fixture,
         runtime,

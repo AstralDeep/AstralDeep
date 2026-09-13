@@ -31,6 +31,15 @@ responses stay payload-free. Missing historical verification keys refuse result
 content; clearing provider settings does not erase a valid completed public result.
 Resume/event/approval/reconciliation and shared Work views remain separate work.
 
+Existing pause/cancel/delete commands require a coherent same-runtime application
+audit repository. Their mutation and required audit now commit together, with
+bounded SQL lock waits; a refused command leaves no new receipt or state change.
+Retry pause/cancel using the same command and observed revision after an unknown
+response. A matching existing receipt acknowledges the earlier command without
+new execution or audit. Terminal deletion remains non-replayable and returns 404
+when already absent. The new private continuation observation alone does not
+activate resume/wake or grant dispatch.
+
 - Existing Keycloak owner signs in; native PKCE remains functional. One ordinary Send starts chat/public research with existing provider, tool, PHI, egress and budget gates.
 - Owner A drafts, logs out, owner B logs in in the same tab: no A data/selection/history flash. Test same-owner reconnect, both bootstrap completion orders and genuine outage recovery.
 - Duplicate submission, reconnect and restart yield one logical task and no duplicated effect. Cancel/pause/resume and uncertainty reconciliation use current authorized bindings.
