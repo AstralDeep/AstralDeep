@@ -6,9 +6,9 @@ nor require the original execution session, provider configuration or instructio
 expansion. The named result MAC authenticates the stored selection and opaque
 input binding; it does not reconstruct the private input MAC or provider prompt.
 
-Equality rereads detect ledger changes under READ COMMITTED. They are bounded
-read validation, not an atomic snapshot or a held owner/retirement lock. Only
-already settled, immutable action bindings are interpreted. A missing historical
+Selected metadata reads hold owner/assignment locks against retirement. Equality
+rereads also validate action integrity under READ COMMITTED. Only already
+settled, immutable action bindings are interpreted. A missing historical
 verification key makes the result unavailable, without adopting the active key.
 Plane's individual action reads lock their rows; the caller must bound SQL waits
 on the supplied transaction, with no external work while these locks are held.
@@ -17,6 +17,7 @@ on the supplied transaction, with no external work while these locks are held.
 from __future__ import annotations
 
 import re
+from dataclasses import asdict
 
 from astralplane.repositories import (
     RepositoryConflictError,
@@ -37,7 +38,7 @@ from audit.pii import private_binding_key
 from llm_config import research_profile as profile
 from persistent_agents.dispatch_context import DispatchDenied
 from persistent_agents.models import validate_id
-from persistent_agents.research_input import _source_identity, route
+from persistent_agents.research_input import _source_identity, receipt_payload, route
 from persistent_agents.research_episode import MODEL_KEY, research_action_keys, source_request
 from persistent_agents.research_result import build_page_result
 from persistent_agents.runtime_values import canonical, digest, thaw
@@ -130,18 +131,24 @@ def _settled(action):
     return result, attempt
 
 
-def _model_source(record, model, expected_key):
+def _model_source(record, model, expected_key, selected):
     _action(record, model)
     transient = model.intent.transient_input
     _require(type(transient) is AssignmentTransientInput)
     _require(type(transient.version) is int and transient.version == 1
              and transient.source_retention == "operation"
              and transient.reconstruction_kind == "model_messages"
-             and len(transient.references) == 1)
+             and len(transient.references) == 1 + (len(selected.references) if selected else 0))
     reference = transient.references[0]
     _require(type(reference) is AssignmentInputReference and reference.kind == "source"
              and type(reference.revision) is int and reference.revision == 1)
     _identity(reference.resource_id)
+    expected_references = (reference,) + (() if selected is None else tuple(
+        AssignmentInputReference(ref.kind, ref.resource_id, ref.revision)
+        for ref in selected.references))
+    _require(transient.references == expected_references)
+    if selected is not None and selected.envelope is not None:
+        _require(transient.binding_key_id == selected.envelope.binding_key_id)
     _digest(transient.payload_binding)
     _require(type(transient.binding_key_id) is str
              and re.fullmatch(r"[a-z][a-z0-9_]{0,31}", transient.binding_key_id) is not None)
@@ -157,7 +164,7 @@ def _model_source(record, model, expected_key):
     return transient, reference.resource_id
 
 
-def _page(record, model, source, transient, source_key):
+def _page(record, model, source, transient, source_key, selected):
     _action(record, source)
     if source_key is not None:
         _require(source.intent.action_key == source_key)
@@ -177,18 +184,22 @@ def _page(record, model, source, transient, source_key):
     })
     selection = result["result"]
     _require(type(selection) is dict and type(selection.get("version")) is int)
-    _require(selection == {
+    expected = {
         "version": 1, "profile": profile.PROFILE,
         "passage_ids": selection.get("passage_ids"),
         "source_action_id": source.action_id,
         "source_result_digest": retained["result_digest"],
-    })
+    }
+    metadata = None
+    if selected is not None and selected.envelope is not None:
+        metadata = thaw(asdict(selected.envelope))
+        expected.update(version=3, selected_input=metadata)
+    _require(selection == expected)
     key = private_binding_key(transient.binding_key_id)
-    _require(key.verify("result", canonical({
-        "profile": profile.PROFILE, "payload_binding": transient.payload_binding,
-        "action_id": model.action_id, "attempt_id": attempt["attempt_id"],
-        "outcome": "succeeded", "result": selection, "actual": result["actual"],
-    }).encode("utf-8"), result["result_digest"]))
+    _require(key.verify("result", receipt_payload(payload_binding=transient.payload_binding,
+        action_id=model.action_id, attempt_id=attempt["attempt_id"],
+        outcome="succeeded", result=selection, actual=result["actual"],
+        selected_input=metadata), result["result_digest"]))
     page = build_page_result(observation, selection["passage_ids"],
         source_action_id=source.action_id, source_result_digest=retained["result_digest"])
     _require(canonical(page) == canonical(thaw(record.checkpoint).get("research_result")))
@@ -230,6 +241,15 @@ def project_research_result(transaction, repository, *, owner_id, read):
                  and read.result_reference == operation.get("result_reference"))
         _identity(read.result_reference)
         source_request(record)
+        # Metadata only: a completed receipt never reopens guidance values or
+        # demands that an intentionally forgotten/archived head still exists.
+        selected = repository.get_selected_input(transaction, owner_id=owner_id,
+            assignment_id=record.assignment_id)
+        if selected is not None:
+            _require(selected.owner_id == owner_id
+                     and selected.assignment_id == record.assignment_id
+                     and selected.instruction_revision == record.instruction_revision
+                     and selected.envelope is not None)
         # This unlocked inspection only discovers IDs. It cannot prove a result.
         # Match execution's sorted lock order, then require exact locked equality.
         source_key, model_key = research_action_keys(record)
@@ -239,22 +259,23 @@ def project_research_result(transaction, repository, *, owner_id, read):
             assignment_id=record.assignment_id, action_key=current_key)
         legacy = peek is None
         if legacy:
+            _require(selected is None or selected.envelope is None)
             # Compatibility is read-only and only for completed records. An
             # invalid current-key receipt never selects a legacy alternate.
             selected_key = "research-v1-" + MODEL_KEY
             source_key = None
             peek = repository.get_action_by_key(transaction, owner_id=owner_id,
                 assignment_id=record.assignment_id, action_key=selected_key)
-        _, source_id = _model_source(record, peek, selected_key)
+        _, source_id = _model_source(record, peek, selected_key, selected)
         _require(peek.action_id == read.result_reference and source_id != peek.action_id)
         locked = {identity: repository.get_action(transaction, owner_id=owner_id,
             assignment_id=record.assignment_id, action_id=identity)
             for identity in sorted((source_id, peek.action_id))}
         model, source = locked[peek.action_id], locked[source_id]
         _require(type(model) is AssignmentActionRecord and _same(model, peek))
-        transient, locked_source_id = _model_source(record, model, selected_key)
+        transient, locked_source_id = _model_source(record, model, selected_key, selected)
         _require(locked_source_id == source_id)
-        page = _page(record, model, source, transient, source_key)
+        page = _page(record, model, source, transient, source_key, selected)
         for action in (source, model):
             actual = repository.get_action(transaction, owner_id=owner_id,
                 assignment_id=record.assignment_id, action_id=action.action_id)
@@ -267,6 +288,8 @@ def project_research_result(transaction, repository, *, owner_id, read):
         final = repository.get_operation(transaction, owner_id=owner_id,
             assignment_id=record.assignment_id)
         _require(type(final) is AssignmentOperationRead and _same(final, current))
+        _require(_same(selected, repository.get_selected_input(transaction, owner_id=owner_id,
+            assignment_id=record.assignment_id)))
         return _envelope(content=page)
     except (ValueError, TypeError, AttributeError, KeyError, OverflowError,
             RepositoryConflictError, RepositoryDataError, RepositoryNotFoundError, DispatchDenied):

@@ -119,6 +119,8 @@ class ActionExecutor:
         self.operation_authority_lock = operation_authority_lock
         # Opaque generation only; source text never lives in executor/session state.
         self._research_generation = None
+        # Original selection and opened guidance are private episode input only.
+        self._research_guidance = None
         self.record = claim.assignment
         self.one_shot = self.record.execution_profile == "one_shot"
         self.binding = AssignmentOperationBinding(
@@ -190,6 +192,8 @@ class ActionExecutor:
                 fence=self.claim.fence, binding=self.binding, authority=authority.observation)
             if _research is not None:
                 _research.assert_record(self.record)
+            if self._research_guidance is None:
+                await self._capture_research_guidance(authority)
             return {**checks, "authority": authority}
         self.record = await self.store.call("assert_current_claim", fence=self.claim.fence)
         await asyncio.to_thread(self.orch.work_admission.assert_current_execution,
@@ -389,10 +393,13 @@ class ActionExecutor:
             **({"binding": self.binding, "authority": operation_checks["authority"].observation}
                if self.one_shot else {}),
         )
-        if ephemeral is not None:
+        if ephemeral is not None or (
+            self.one_shot and self._research_guidance.captured is not None
+        ):
             def reserve_ephemeral(tx, repository, current):
-                from persistent_agents.research_recovery import assert_ready
-                assert_ready(current)
+                if ephemeral is not None:
+                    from persistent_agents.research_recovery import assert_ready
+                    assert_ready(current)
                 return repository.reserve_action_for_execution(tx, **reserve_values)
             reserved = await self._reader_policy_transaction(operation_checks["authority"],
                 action.action_id, reserve_ephemeral)
@@ -695,6 +702,41 @@ class ActionExecutor:
                     reason_code="assignment_dispatch_finished",
                 )
 
+    async def _capture_research_guidance(self, authority):
+        """Capture once before any source action; later checks never adopt heads."""
+        from persistent_agents.research_input import ResearchGuidance
+
+        captured = None
+        def capture(tx, repository, current):
+            nonlocal captured
+            now = self.store.plane_runtime.repositories.history.sessions.assert_current_execution(
+                tx, observation=authority.observation).observed_at
+            captured = ResearchGuidance.capture(tx, repository, current, orchestrator=self.orch,
+                runtime=self.store.plane_runtime, now=now, service=self.service,
+                sessions=self.operation_sessions)
+            captured.assert_current(tx, repository, current,
+                authority_valid_until=authority.observation.valid_until)
+            return captured
+        def final_check():
+            if type(captured) is not ResearchGuidance:
+                raise DispatchDenied("assignment_research_binding_changed")
+            captured.assert_local()
+        self._research_guidance = await self.store.operation_lifecycle_transaction(
+            authority=authority, fence=self.claim.fence, binding=self.binding, callback=capture,
+            final_check=final_check)
+
+    def _assert_research_guidance(self, tx, repository, current, authority):
+        from persistent_agents.research_input import ResearchGuidance
+        if type(self._research_guidance) is not ResearchGuidance:
+            raise DispatchDenied("assignment_research_binding_changed")
+        self._research_guidance.assert_current(tx, repository, current,
+            authority_valid_until=authority.observation.valid_until)
+
+    def _final_research_guidance(self, tx, repository, authority):
+        current = repository.get_operation(tx, owner_id=self.record.owner_id,
+            assignment_id=self.record.assignment_id).assignment
+        self._assert_research_guidance(tx, repository, current, authority)
+
     async def _reader_policy_transaction(self, authority, action_id, callback):
         """Fence current fixed-reader policy at cache, permit and result boundaries."""
         def guarded(tx, repository, current):
@@ -707,12 +749,22 @@ class ActionExecutor:
             except DispatchDenied:
                 raise AssignmentError("assignment_operation_profile_unavailable", 403) from None
             self._assert_fixed_reader_policy(tx, authority)
-            return callback(tx, repository, current)
+            self._assert_research_guidance(tx, repository, current, authority)
+            result = callback(tx, repository, current)
+            self._final_research_guidance(tx, repository, authority)
+            return result
         return await self.store.operation_lifecycle_transaction(authority=authority,
-            fence=self.claim.fence, binding=self.binding, callback=guarded)
+            fence=self.claim.fence, binding=self.binding, callback=guarded,
+            final_check=self._research_guidance.assert_local)
 
     async def _research_transaction(self, private, authority, callback, *, action_id):
         """Compose only current public Plane guards and locked config in one tx."""
+        if (private._guidance is not self._research_guidance
+                and (private._guidance is not None or self._research_guidance is None
+                     or self._research_guidance.captured is not None)):
+            raise DispatchDenied("assignment_research_binding_changed")
+        def final_check():
+            private.assert_local(orchestrator=self.orch, runtime=self.store.plane_runtime)
         def guarded(tx, repository, current):
             repository.assert_current_assignment_execution(tx, fence=self.claim.fence,
                 binding=self.binding, authority=authority.observation, action_id=private.source_action_id)
@@ -725,12 +777,17 @@ class ActionExecutor:
             config = self.store.plane_runtime.repositories.encrypted_llm_config.get_user_for_update(
                 tx, owner_id=private.owner_id)
             private.assert_current(current, source, config)
+            final_check()
             if private._ephemeral is not None:
                 private._ephemeral.assert_executor(self)
             self._assert_fixed_reader_policy(tx, authority)
-            return callback(tx, repository, current)
+            self._assert_research_guidance(tx, repository, current, authority)
+            result = callback(tx, repository, current)
+            self._final_research_guidance(tx, repository, authority)
+            return result
         return await self.store.operation_lifecycle_transaction(authority=authority,
-            fence=self.claim.fence, binding=self.binding, callback=guarded)
+            fence=self.claim.fence, binding=self.binding, callback=guarded,
+            final_check=final_check)
 
     def _assert_fixed_reader_policy(self, tx, authority):
         """Take the opt-in policy fence only after every waiting action/config lock."""
@@ -792,7 +849,7 @@ class ActionExecutor:
                     raise DispatchDenied("assignment_research_binding_changed")
                 key_id = transient.binding_key_id
             private = await ResearchInput.capture(current, source, config_store=self.orch._llm_store,
-                                                   key_id=key_id, ephemeral=ephemeral)
+                key_id=key_id, ephemeral=ephemeral, guidance=self._research_guidance)
             await safe_text(canonical(private.body()["messages"]), reviewed_urls(current.definition.source))
             checks = await self.refresh(route(), authority=initial["authority"], _research=private)
             maximum = AssignmentResourceAmount(model_calls=1, tokens=profile.RESERVED_TOKENS,
@@ -845,13 +902,16 @@ class ActionExecutor:
             fence=self.claim.fence, binding=self.binding, authority=operation_checks["authority"].observation,
             action_id=action.action_id, attempt_id=attempt_id, expected_request_digest=private.payload_binding,
             maximum=action.intent.maximum, quote_digest=None, quote_expires_at=None)
-        if private._ephemeral is not None:
-            def reserve_ephemeral(tx, repository, current):
+        def reserve_research(tx, repository, current):
+            if private._ephemeral is not None:
                 from persistent_agents.research_recovery import assert_ready
                 assert_ready(current)
-                return repository.reserve_action_for_execution(tx, **reserve_values)
+            return repository.reserve_action_for_execution(tx, **reserve_values)
+        if private._ephemeral is not None or (
+            private._guidance is not None and private._guidance.captured is not None
+        ):
             reservation = await self._research_transaction(private, operation_checks["authority"],
-                reserve_ephemeral, action_id=action.action_id)
+                reserve_research, action_id=action.action_id)
         else:
             reservation = await self.store.call_for_operation("reserve_action_for_execution", **reserve_values)
         if not reservation.created:

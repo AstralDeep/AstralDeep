@@ -1517,3 +1517,79 @@ External IAM responses are synthetic; no provider/staging call was made. Complet
 private test databases were removed after zero-connection checks. Ruff and scoped
 Gitleaks pass. T036 acceptance, execution and publication, native live backend
 qualification, full 088, replacement signed builds and release gates remain open.
+
+### 2026-09-13: installed selected Work acceptance and execution checkpoint
+
+Deep pins Plane `a33521146c67e2c2e64336cccfb3cb18f287f68f` and Projection
+`d098f9df15f42e96facf757a2d5de71f4bec1272`. Guarded Plane schema 088.006 has
+migration digest `4f5783e676a12a4009959da2056c2c769418f8c101d67f533223a608158ed73a`.
+It adds immutable typed selected agent/skill/note metadata and original-cutoff
+checks without retaining guidance plaintext. All four locked wheels and 217
+installed entries match; only pip-rewritten RECORD entries are excluded. Plane's
+final 246-test and overlapping 170-test cohorts pass. Root verified 19 owned
+sources, all 78 production inputs, 363 artifacts and both raw coverage reports;
+changed production coverage is 205/207. The 50 actual two-starter upgrade trials
+passed on unchanged schema bytes within an earlier mixed diagnostic run whose
+two stale fixture failures were subsequently corrected; that earlier run is not
+reported as all green.
+
+Work accepts a closed, optional version-1 selection containing exact active agent,
+skill and note revisions. Receipt replay precedes mutable expansion or refresh;
+new acceptance binds the opaque envelope and references with task, receipt and
+audit in one transaction. Original session expiry, note expiry and current local
+key/service/policy checks follow the last database wait. Legacy 005 headers cannot
+be silently adopted as absent input. The neutral capture boundary grants no
+execution authority and never substitutes a newer selected head.
+
+The frozen acceptance cohort passed 179 tests. Root verified four owned sources,
+1,558 artifacts, 1,398 before/after input hashes and all four raw coverage maps;
+changed acceptance/boundary coverage is 124/124 and 75/80. A separate root cohort
+using actual installed components passed 99 selected acceptance, lifecycle and
+mounted-route cases in 252.47 seconds, with 1,398 unchanged inputs and four raw
+maps independently replayed. External IAM and model responses remain synthetic.
+
+Execution captures the original selection before the first source action,
+reconstructs it for legitimate finite retries, and binds the complete actual
+source/configuration/request through separate version-3 input and result MAC
+domains. Both retention modes preserve their existing storage posture. Exact
+current selection, original authority and local configuration checks guard
+prepare/reservation/permit/result/completion. Already issued calls settle factual
+usage once after Forget or key/service retirement while withholding their output.
+Passive completed-result reads authenticate historical metadata without reopening
+forgotten notes; absent selection preserves legacy request and receipt bytes.
+
+The installed execution cohort passed 27 focused cases. The broader legacy cohort
+passed 177 with one retained test-fixture failure: a synchronous nested retirement
+writer waited on the result reader's newly held owner/assignment locks. The
+corrected fixture and a real independent-writer contention successor passed two
+cases, preserving refusal assertions and proving read-then-retire serialization.
+The final result-module documentation correction has identical executable AST and
+source locations. Root verified six current sources, 32,020 artifacts and three
+raw reports (14 file maps); changed production coverage is 90/96, 42/45, 7/7 and
+23/23, with new/existing test changes 509/517 and 44/45. Earlier reserve-order
+regression and timeout diagnostics remain retained; absent-selection behavior was
+restored without weakening the original assertion.
+
+The store's last database guard now checks the original observation cutoff even
+without selected input, then runs an optional synchronous, non-I/O identity check.
+Four real pre-fix cutoff regressions failed; the final lifecycle cohort passed 72
+cases with 4/4 changed production statements covered. The registered API's six
+closed selection refusals first failed and then passed within its full 77-case
+cohort. The static migration reader recognizes only the reviewed 006 literal tuple
+and its exact literal-string strip syntax; it never executes candidate Python.
+All 225 component/parser/installer checks pass, with 4/4 changed verifier statements
+covered. Scoped Ruff, whitespace and repository-configured Gitleaks pass. The
+initial default-only scan flagged the pre-existing public LETS OpenAPI digest;
+its exact existing repository allowlist resolves that false positive.
+
+These are local implementation/qualification results, not full T036 or full 088
+completion. Exact Save/publication/download, native selection forms and server
+session custody, remaining donor/runtime/framework work, authenticated all-client
+staging, replacement signed store builds and protected release gates remain open.
+The approved native custody design reuses the existing code/device exchange,
+logout and session-refresh routes, preserves original public issuer/client binding,
+and returns only a durable signed cookie plus access token; it is separate ongoing
+work. Original store submissions contain earlier code. No production clearance,
+product push, PR promotion or new store submission is claimed. Completed test
+databases were removed; the shared task-owned qualification container remains for
+active Save and native custody tests.

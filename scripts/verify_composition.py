@@ -723,7 +723,17 @@ def _plane_schema_literal_import(
             or len(declarations[0].targets) != 1 or not isinstance(declarations[0].targets[0], ast.Name)
             or declarations[0].targets[0].id != symbol or not isinstance(declarations[0].value, ast.Tuple)):
         raise CompositionError(f"Plane {stem} schema must contain only the reviewed literal tuple")
-    items = declarations[0].value.elts
+    items = list(declarations[0].value.elts)
+    # 088.006 writes multiline SQL as literal_string.strip(). Normalize only
+    # that exact syntax in its reviewed module; never execute candidate calls
+    # or broaden other imported schemas' literal grammar.
+    for index, item in enumerate(items):
+        if (stem == "selected_input" and isinstance(item, ast.Call)
+                and not item.args and not item.keywords
+                and isinstance(item.func, ast.Attribute) and item.func.attr == "strip"
+                and isinstance(item.func.value, ast.Constant)
+                and type(item.func.value.value) is str):
+            items[index] = ast.Constant(value=item.func.value.value.strip())
     if (not 1 <= len(items) <= _MAX_LITERAL_SEQUENCE_ITEMS or any(
             not isinstance(item, ast.Constant) or not isinstance(item.value, str) or not item.value
             for item in items)):
@@ -742,6 +752,7 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("operation", "OPERATION_SCHEMA_STATEMENTS"),
         ("declarative_agent", "DECLARATIVE_AGENT_SCHEMA_STATEMENTS"),
         ("guidance", "GUIDANCE_SCHEMA_STATEMENTS"),
+        ("selected_input", "SELECTED_INPUT_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))

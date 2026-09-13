@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hmac
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from astralplane.repositories.assignment_models import (
     AssignmentActionOutcome,
@@ -41,6 +41,112 @@ def route() -> dict:
 
 def _deny():
     raise DispatchDenied("assignment_research_binding_changed")
+
+
+_SELECTED_INPUT_DOMAIN = b"astral.research.selected-input/v3\x00"
+_SELECTED_RESULT_DOMAIN = b"astral.research.selected-result/v3\x00"
+
+
+def receipt_payload(*, payload_binding, action_id, attempt_id, outcome, result, actual,
+                    selected_input=None):
+    """Versioned factual receipt bytes; the legacy representation is unchanged."""
+    values = dict(profile=profile.PROFILE, payload_binding=payload_binding,
+                  action_id=action_id, attempt_id=attempt_id, outcome=outcome,
+                  result=thaw(result), actual=thaw(actual))
+    if selected_input is None:
+        return canonical(values).encode("utf-8")
+    values["selected_input"] = selected_input
+    return _SELECTED_RESULT_DOMAIN + canonical(values).encode("utf-8")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ResearchGuidance:
+    """Original persisted selection plus private, exact current-row expansion.
+
+    Capture only under the existing operation lifecycle transaction. This is
+    input identity, never authority; every use still requires its ordinary
+    session, assignment, admission, source, configuration and policy checks.
+    """
+
+    _record_json: str
+    snapshot: object
+    captured: object
+    _key: PrivateBindingKey | None
+    _service: object
+    _sessions: object
+
+    @classmethod
+    def capture(cls, tx, repository, record, *, orchestrator, runtime, now, service, sessions):
+        from personalization.selected_guidance_boundary import SelectedGuidanceBoundary
+
+        snapshot = repository.get_selected_input(tx, owner_id=record.owner_id,
+                                                assignment_id=record.assignment_id)
+        captured = key = None
+        if snapshot is not None:
+            envelope = snapshot.envelope
+            if envelope is None:
+                # Old metadata cannot silently become an authenticated expansion.
+                _deny()
+            else:
+                key = private_binding_key(envelope.binding_key_id)
+                boundary = SelectedGuidanceBoundary(orchestrator, plane_runtime=runtime,
+                    include_notes=any(ref.kind == "note" for ref in envelope.references))
+                captured = boundary.capture(tx, owner_id=record.owner_id,
+                    instruction=record.definition.instructions,
+                    agent=None if envelope.agent is None else
+                        (envelope.agent.agent_id, envelope.agent.revision_id),
+                    references=envelope.references, binding_key=key, now=now)
+                if canonical(asdict(captured.prepared.envelope)) != canonical(asdict(envelope)):
+                    _deny()
+        return cls(_record_identity(record), snapshot, captured, key, service, sessions)
+
+    def metadata(self):
+        """Detach only immutable IDs, versions and opaque authentication."""
+        return None if self.captured is None else thaw(asdict(self.snapshot.envelope))
+
+    def assert_record(self, record):
+        if _record_identity(record) != self._record_json:
+            _deny()
+
+    def assert_local(self):
+        if self.captured is not None:
+            boundary = self.captured._boundary
+            boundary.assert_current()
+            orch = boundary.orch
+            if (self._service.orch is not orch
+                    or self._service.store.plane_runtime is not boundary.runtime
+                    or getattr(orch, "persistent_assignments", None) is not self._service
+                    or getattr(orch, "web_sessions", None) is not self._sessions):
+                _deny()
+            if private_binding_key(self._key.key_id) != self._key:
+                _deny()
+            if self.captured.agent_revision is not None:
+                from orchestrator.agent_authoring import byo_enabled
+                from orchestrator.projection_surfaces.authoring import DeclarativeAgentService
+                parsed = DeclarativeAgentService._stored_definition(self.captured.agent_revision)
+                limits = parsed.to_dict()["limits"]
+                requested = json.loads(self._record_json)["definition"]["limits"]
+                if (not byo_enabled() or not parsed.fixed_research_shape
+                        or any(requested[name] > limits[period][name]
+                            for period in ("daily", "lifetime")
+                            for name in ("model_calls", "tool_calls", "tokens", "elapsed_ms"))
+                        or requested["max_retries"] > limits["max_retries"]
+                        or limits["step_timeout_ms"] < max(profile.RESERVED_MILLISECONDS,
+                            self._service.tool_bound("web-research-1:fetch_page")["elapsed_ms"])
+                        or any(limits[period]["spend_micro_units"] is not None
+                               for period in ("daily", "lifetime"))):
+                    _deny()
+
+    def assert_current(self, tx, repository, record, *, authority_valid_until):
+        """Compare the original header and final DB-time current-head facts."""
+        self.assert_local()
+        repository.assert_selected_input_current(tx, owner_id=record.owner_id,
+            assignment_id=record.assignment_id,
+            expected_instruction_revision=record.instruction_revision,
+            expected_control_epoch=record.control_epoch,
+            expected_state_version=record.state_version, expected=self.snapshot,
+            authority_valid_until=authority_valid_until)
+        self.assert_local()
 
 
 def fixed_reader_source(record) -> dict:
@@ -158,11 +264,17 @@ class ResearchInput:
     _key: PrivateBindingKey = field(repr=False)
     _request: ResearchRequest = field(repr=False)
     _ephemeral: object = field(default=None, repr=False)
+    _guidance: ResearchGuidance | None = field(default=None, repr=False)
+    _config_binding: tuple | None = field(default=None, repr=False)
 
     @classmethod
-    async def capture(cls, record, source, *, config_store, key_id=None, ephemeral=None):
+    async def capture(cls, record, source, *, config_store, key_id=None, ephemeral=None,
+                      guidance=None):
         """Freeze source and exact uncached USER selection without storing prompts."""
         try:
+            context = config_store._repository
+            config_binding = (config_store, context, context.plane_runtime,
+                              context.repository, config_store._fernet)
             record_json = _record_identity(record)
             if record.operation.get("source_retention") == "none":
                 from persistent_agents.research_recovery import EphemeralResearchSource
@@ -173,6 +285,17 @@ class ResearchInput:
                 if ephemeral is not None:
                     _deny()
                 source_json, observation = _source_identity(record, source)
+            selected_input = None
+            if guidance is not None:
+                if type(guidance) is not ResearchGuidance:
+                    _deny()
+                guidance.assert_record(record)
+                guidance.assert_local()
+                selected_input = guidance.metadata()
+                if selected_input is not None:
+                    if key_id is not None and key_id != selected_input["binding_key_id"]:
+                        _deny()
+                    key_id = selected_input["binding_key_id"]
             key = private_binding_key(key_id)
             config = profile.select_config(
                 await config_store.capture_user(record.owner_id),
@@ -181,18 +304,24 @@ class ResearchInput:
             )
             if config.owner_id != record.owner_id:
                 _deny()
-            request = profile.build_request(record.definition.instructions, observation)
+            request = (profile.build_request(record.definition.instructions, observation)
+                       if selected_input is None else guidance.captured.compose(
+                           observation=observation,
+                           approved_request_bytes=profile.MAX_REQUEST_BYTES).request)
+            values = {
+                "profile": profile.PROFILE,
+                "record": record_json,
+                "source": source_json,
+                "config_revision": config.revision,
+                "body": request.body.decode("utf-8"),
+            }
+            prefix = b""
+            if selected_input is not None:
+                values["selected_input"] = selected_input
+                prefix = _SELECTED_INPUT_DOMAIN
             binding = key.sign(
                 "input",
-                canonical(
-                    {
-                        "profile": profile.PROFILE,
-                        "record": record_json,
-                        "source": source_json,
-                        "config_revision": config.revision,
-                        "body": request.body.decode("utf-8"),
-                    }
-                ).encode("utf-8"),
+                prefix + canonical(values).encode("utf-8"),
             )
             return cls(
                 record.owner_id,
@@ -205,6 +334,8 @@ class ResearchInput:
                 key,
                 request,
                 ephemeral,
+                guidance,
+                config_binding,
             )
         except (ValueError, TypeError, KeyError, AttributeError, PermissionError):
             _deny()
@@ -233,13 +364,17 @@ class ResearchInput:
                 AssignmentInputReference(
                     kind="source", resource_id=self.source_action_id, revision=1
                 ),
-            ),
+            ) + (() if self._guidance is None or self._guidance.captured is None else tuple(
+                AssignmentInputReference(ref.kind, ref.resource_id, ref.revision)
+                for ref in self._guidance.snapshot.references)),
         )
 
     def assert_record(self, record) -> None:
         """Refuse a different owner/instruction/control/original session selection."""
         if _record_identity(record) != self._record_json:
             _deny()
+        if self._guidance is not None:
+            self._guidance.assert_record(record)
 
     def assert_current(self, record, source, config_row) -> None:
         """Compare already guarded/locked current rows and re-resolve the exact key."""
@@ -251,6 +386,8 @@ class ResearchInput:
             or private_binding_key(self.key_id) != self._key
         ):
             _deny()
+        if self._guidance is not None:
+            self._guidance.assert_local()
 
     def assert_body(self, owner_id, body) -> None:
         """Bind exact final kwargs before and after every awaited dispatch gate."""
@@ -259,6 +396,20 @@ class ResearchInput:
             or canonical(body).encode("utf-8") != self._request.body
         ):
             _deny()
+
+    def assert_local(self, *, orchestrator, runtime):
+        """Final pure key/config/selection check after the last database wait."""
+        if self._config_binding is None:
+            _deny()
+        store, context, original_runtime, repository, cipher = self._config_binding
+        if (orchestrator._llm_store is not store or store._repository is not context
+                or context.plane_runtime is not original_runtime or original_runtime is not runtime
+                or context.repository is not repository
+                or runtime.repositories.encrypted_llm_config is not repository
+                or store._fernet is not cipher or private_binding_key(self.key_id) != self._key):
+            _deny()
+        if self._guidance is not None:
+            self._guidance.assert_local()
 
     def assert_action(self, action) -> None:
         """Bind a stored route-only intent; generic/cached model actions never pass."""
@@ -286,29 +437,24 @@ class ResearchInput:
             source_action_id=self.source_action_id,
             source_result_digest=source["result_digest"],
         )
-        return {
+        result = {
             "version": 1,
             "profile": profile.PROFILE,
             "passage_ids": list(selected),
             "source_action_id": self.source_action_id,
             "source_result_digest": source["result_digest"],
         }
+        if self._guidance is not None and self._guidance.captured is not None:
+            result.update(version=3, selected_input=self._guidance.metadata())
+        return result
 
     def receipt_digest(self, *, action_id, attempt_id, outcome, result, actual) -> str:
         """Sign a factual attempt receipt even if current key authority is retired."""
         return self._key.sign(
             "result",
-            canonical(
-                {
-                    "profile": profile.PROFILE,
-                    "payload_binding": self.payload_binding,
-                    "action_id": action_id,
-                    "attempt_id": attempt_id,
-                    "outcome": outcome,
-                    "result": thaw(result),
-                    "actual": thaw(actual),
-                }
-            ).encode("utf-8"),
+            receipt_payload(payload_binding=self.payload_binding, action_id=action_id,
+                attempt_id=attempt_id, outcome=outcome, result=result, actual=actual,
+                selected_input=None if self._guidance is None else self._guidance.metadata()),
         )
 
     def retained_result(self, action) -> dict:
