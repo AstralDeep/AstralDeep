@@ -1,5 +1,73 @@
 # Feature 088 verification record
 
+## Installed owner guidance storage and encrypted notes — 2026-09-13 UTC
+
+Deep pins Plane `f8699a512b3dbfef756e12c0e78cf29d09418fc2` and Projection
+`28d3923fdc8a0b2d109806970df01f39873cb723`. Guarded Plane schema `088.005`
+has migration digest `8b1bd520cf0ecc249ef39d35930d71a591f49d5d04f254eabe1e3aefac729ed2`
+and expected catalog digest `b278966bf3a42458c72c1c859014c523a8da00d8acd0ee18a4e8ecb9f783835a`.
+Skill heads, immutable revisions, import markers (including empty catalogs),
+current encrypted notes and minimum erasure tombstones now share owner locks and
+exact revision checks. Guidance mutations invalidate bound unfinished references;
+selected dispatch integration remains a separate T036 gate. Current note values
+are not retained as value history. Logical erasure does not erase prior database
+backups, WAL or replicas; recovery procedures preserve that distinction.
+
+The final Plane cohort passed249 with no skips and changed coverage748/780
+(95.90%). Root verified19 source files,76 production files,170 artifacts and
+exact raw eight-file coverage replay. Actual failing PostgreSQL witnesses caught
+nullable legacy proof constraints and missing stored timestamp validation; the
+successor repairs both and pins the new trigger's search path. Earlier startup
+checks passed all50 two-starter trials; the current baseline recognizes005.
+Earlier broader failures and their corrected focused successors remain recorded,
+not relabeled as one all-green full repository suite.
+
+The installed encrypted-note service and maintenance helper passed141 tests in
+102.39 seconds, with304/315 service lines,30/30 request-test lines and415/416
+PostgreSQL-test lines covered. Current-human IAM/session boundaries, real
+PostgreSQL, application encryption and required atomic hash-chain audit execute;
+JWT replies and the local privacy analyzer result are synthetic. No external
+provider traffic occurred. Values are owner-bound ephemeral reads; final delivery
+verification rejects changed heads, Forget, expiry and differing displayed values.
+Actual regressions establish DB-clock expiry after decryption even with a lagging
+host clock, and bounded privacy-worker capacity after awaiting requests cancel.
+Correction/toggle use exact CAS, unreadable ciphertext can be forgotten, replay
+adds no second erasure audit, and failed audit rolls back storage. The bounded
+expiry helper skips busy owners fairly and is cancellation-owned by the existing
+application task tracker; its actual shutdown test joins before Plane closes.
+Public route and complete startup-hook integration remain work in progress.
+
+The source-frozen service handoff is SHA-256
+`cc70a626d7343139b69c26bb98ff13b371a1c398d073e193fe1ff49fe5d72108`;
+root verified all three current sources and raw coverage replay. Its49 successor
+artifacts preserve earlier138-pass/one frozen-test-instance failure, corrected139
+installed pass, and separate two-case maintenance qualification. Earlier service
+cohorts01–06 preserve the real expiry/cancellation regressions. Four completed
+private databases from07–10 were dropped after zero-connection checks.
+
+Projection's pure shared notes builder passed332 chrome tests (42 new cases),
+with99/99 production and108/108 new-test coverage and exact raw replay. Every
+layout retains the same bounded list/search, category, value, expiry choices,
+enable/disable and separate Forget review. Forms carry exact identity/revision;
+private values are escaped display/form content, not action metadata or authority.
+This does not establish native interaction parity: correlated owner/navigation
+delivery, capability negotiation and live client workflows remain unfinished.
+
+The offline static verifier admits only the guidance module's bare literal tuple;
+aliases, rebinding, executable expressions/imports and expanded annotation syntax
+remain refused. The final component/parser/installer cohort passed235, with24/24
+new grammar-test lines covered. Initial234 passes/two failures exposed stale pin
+constants and the expected HEAD-versus-index clean-checkout precondition; constants
+were updated and the unchanged clean-checkout test is run after this local commit.
+Four exact wheel installs and214 installed entries match (excluding pip's rewritten
+RECORD files). UI protocol vocabulary/digest and third-party dependencies are unchanged.
+Evidence is retained in `component-install-05`, `component-install-06` and
+`explicit-note-service-07` through `explicit-note-service-10`.
+
+Product checkpoints remain local/unpushed. Current store submissions contain the
+earlier builds. Full088 runtime, shared UI, native/staging and protected release
+gates remain open; this checkpoint does not clear production deployment.
+
 ## Original human WebSocket metadata boundary — 2026-09-13 UTC
 
 Registered metadata and original chat skill-read requests now capture their actual
