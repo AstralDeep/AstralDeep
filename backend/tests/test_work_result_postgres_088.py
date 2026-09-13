@@ -437,7 +437,8 @@ async def test_discovery_is_rechecked_and_action_locks_follow_execution_order(co
     monkeypatch.setattr(repository, "get_action_by_key", discovery)
     monkeypatch.setattr(repository, "get_action", action)
     assert (await project(op))["available"] is True
-    assert calls[0][:2] == ("peek", "research-v1-research-selection-v1")
+    from persistent_agents.research_episode import research_action_keys
+    assert calls[0][:2] == ("peek", "research-v1-" + research_action_keys(op.completed)[1])
     assert [call[1] for call in calls[1:3]] == sorted((op.source.action_id, op.model.action_id))
     assert len(calls) == 5 and all(call[2] is calls[0][2] for call in calls)
 

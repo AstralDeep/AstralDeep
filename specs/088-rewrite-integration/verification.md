@@ -1,5 +1,33 @@
 # Feature 088 verification record
 
+## Retained research continuation identity — 2026-09-13 UTC
+
+Research source/model action keys now bind instruction revision and control epoch
+with distinct full-digest domains. A resumed epoch reacquires and charges its own
+source/model actions; physical claim recovery within the same epoch reuses the
+existing receipts. Retained-result projection verifies those exact keys. Read-only
+legacy completion compatibility applies only when the current key is absent and
+never masks invalid current evidence.
+
+The seven-file frozen cohort passed **177 tests**, covering real PostgreSQL pause,
+resume, expired-lease recovery, unresolved issued-model liability and result
+generation checks. All **26/26 changed executable production lines** are covered;
+raw coverage replay, Ruff, diff and secret checks passed. Root independently
+verified all seven source hashes and 68 retained artifact digests. Earlier red
+witnesses and fixture failures remain recorded. Independent Work UI edits during
+the run are excluded from this qualification. Institutional IAM/source/model
+replies are synthetic; no live staging is claimed.
+
+Plane's separate original-session reconciliation successor passed **492 tests**,
+including 74 new PostgreSQL cases and **83/83 changed executable lines** covered.
+Root verified its four frozen files and 87 artifact digests. It permits factual
+settlement without renewed execution authority; continuation still requires the
+current original issued session, owner, deadlines and no remaining liabilities.
+Its read/lock-only preparation supports required host audit in the same enclosing
+transaction, which must roll back if final settlement fails. Plane's successor
+is not yet pinned or installed in Deep. Neither checkpoint activates HTTP resume,
+owner wait, nonretained reacquisition, broader retries or full 088 release.
+
 ## Atomic Work controls and separate continuation authority — 2026-09-13 UTC
 
 Pause, cancel and settled terminal deletion now append required audit in the same

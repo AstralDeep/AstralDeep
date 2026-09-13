@@ -346,7 +346,8 @@ async def test_supported_dispatch_reaches_existing_source_boundary_once(capabili
     source = AsyncMock(side_effect=DispatchDenied("assignment_fixture_source_unavailable"))
     monkeypatch.setattr(ActionExecutor, "action", source)
     await op.runner.run_claim(queued)
-    source.assert_awaited_once_with("research-source-v1", {
+    from persistent_agents.research_episode import research_action_keys
+    source.assert_awaited_once_with(research_action_keys(record)[0], {
         "kind": "tool", "agent_id": "web-research-1", "tool_name": "fetch_page",
         "arguments": {"url": "https://example.test/page"},
     })
