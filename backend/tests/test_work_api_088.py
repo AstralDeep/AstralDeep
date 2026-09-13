@@ -1,18 +1,35 @@
 """Owner-only operation reads; no admission, control or opaque payload surface."""
 from datetime import UTC, datetime
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from orchestrator.auth import get_web_or_bearer_user_payload
 from orchestrator.work_api import work_router
 from orchestrator.work_service import WorkService
 from persistent_agents.models import AssignmentError
 from persistent_agents.service import AssignmentService
+
+
+def read_claims(roles=("user",)):
+    return {"sub": "owner", "exp": int(time.time()) + 3600,
+            "realm_access": {"roles": list(roles)}}
+
+
+def override_read_auth(app, monkeypatch, roles=("user",)):
+    """A normal-auth boundary double includes its private token handoff."""
+    claims = read_claims(roles)
+    async def authenticate(request: Request):
+        request.state.delegation_subject_token = "fixture.access.token"
+        return claims
+    app.dependency_overrides[get_web_or_bearer_user_payload] = authenticate
+    monkeypatch.setattr("orchestrator.auth.verify_production_token", AsyncMock(return_value=claims))
+    return authenticate
 
 
 def operation(owner="owner", *, supported=True):
@@ -39,9 +56,14 @@ def operation(owner="owner", *, supported=True):
 def host():
     read = operation()
     repository = SimpleNamespace(get_operation=Mock(return_value=read), list_operations=Mock(return_value=(read,)))
-    async def transaction(callback):
+    async def transaction(callback, **kwargs):
         return callback(object(), repository)
-    store = SimpleNamespace(repository=repository, transaction=AsyncMock(side_effect=transaction))
+    state = SimpleNamespace(observed_at=datetime.now(UTC), credential=SimpleNamespace(
+        owner_id="owner", session_id="fixture-sid", incarnation_id="fixture-incarnation",
+        interactive_anchor=0, hard_expires_at=int(time.time()) + 3600))
+    runtime = SimpleNamespace(repositories=SimpleNamespace(history=SimpleNamespace(
+        sessions=SimpleNamespace(get_execution_state=Mock(return_value=state)))))
+    store = SimpleNamespace(repository=repository, transaction=AsyncMock(side_effect=transaction), plane_runtime=runtime)
     orch = SimpleNamespace()
     backing = AssignmentService(orch, store=store, enabled=True, phi_gate=object())
     orch.persistent_assignments = backing
@@ -151,18 +173,19 @@ async def test_page_is_bounded_and_cursor_is_the_last_visible_uuid(host):
 
 
 @pytest.mark.asyncio
-async def test_http_poll_reauthenticates_every_request_and_exposes_no_mutations(host):
+async def test_http_poll_reauthenticates_every_request_and_exposes_no_mutations(host, monkeypatch):
     orch, read, repo = host
     app = FastAPI()
     app.state.orchestrator = orch
     app.include_router(work_router, prefix="/api")
+    normal = override_read_auth(app, monkeypatch)
     calls = []
-    async def authenticate():
+    async def authenticate(request: Request):
         from fastapi import HTTPException
         calls.append(True)
         if len(calls) > 1:
             raise HTTPException(401, "private token expired")
-        return {"sub": "owner", "realm_access": {"roles": ["user"]}}
+        return await normal(request)
     app.dependency_overrides[get_web_or_bearer_user_payload] = authenticate
     path = f"/api/work/v1/operations/{read.assignment.assignment_id}/poll?after_revision=7"
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -176,14 +199,13 @@ async def test_http_poll_reauthenticates_every_request_and_exposes_no_mutations(
 
 
 @pytest.mark.asyncio
-async def test_http_rejects_noncanonical_integer_queries_and_registers_exact_prefix(host):
+async def test_http_rejects_noncanonical_integer_queries_and_registers_exact_prefix(host, monkeypatch):
     from orchestrator.api import operation_router
     orch, read, _ = host
     app = FastAPI()
     app.state.orchestrator = orch
     app.include_router(operation_router)
-    app.dependency_overrides[get_web_or_bearer_user_payload] = lambda: {
-        "sub": "owner", "realm_access": {"roles": ["user"]}}
+    override_read_auth(app, monkeypatch)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         assert (await client.get("/api/work/v1/operations")).status_code == 200
         detail = await client.get(f"/api/work/v1/operations/{read.assignment.assignment_id}")
@@ -208,9 +230,10 @@ async def test_original_auth_path_rechecks_credential_and_roles(host, monkeypatc
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.setattr(auth, "_get_keycloak_config", lambda: ("https://iam.example/realms/test", "astral-frontend", ""))
     monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))
-    session = AsyncMock(return_value={"access_token": "fixture.access.token"})
+    session = AsyncMock(return_value={"access_token": "fixture.access.token",
+        "sid": "fixture-sid", "incarnation_id": "fixture-incarnation"})
     monkeypatch.setattr(web_auth, "ensure_session", session)
-    decode = Mock(return_value={"sub": "owner", "realm_access": {"roles": ["user"]}})
+    decode = Mock(return_value=read_claims())
     monkeypatch.setattr("jose.jwt.decode", decode)
     app = FastAPI()
     app.state.orchestrator = orch
@@ -225,7 +248,7 @@ async def test_original_auth_path_rechecks_credential_and_roles(host, monkeypatc
         decode.side_effect = JWTError("fixture credential expired")
         expired = await client.get(path, headers=headers)
         assert expired.status_code == 401 and "fixture" not in expired.text
-        assert decode.call_count == 3 and repo.get_operation.call_count == 1
+        assert decode.call_count == 4 and repo.get_operation.call_count == 1
         assert session.call_count == (3 if transport == "cookie" else 0)
 
 
@@ -244,8 +267,7 @@ async def test_signed_out_cookie_invalid_and_missing_service_are_safe(host, monk
         redirect = await client.get("/api/work/v1/operations", headers={"Accept": "text/html"})
         assert redirect.status_code == 302 and redirect.headers["location"].startswith("/auth/login?next=")
         assert redirect.headers["cache-control"] == "no-store"
-        app.dependency_overrides[get_web_or_bearer_user_payload] = lambda: {
-            "sub": "owner", "realm_access": {"roles": ["admin"]}}
+        override_read_auth(app, monkeypatch, roles=("admin",))
         del app.state.orchestrator
         response = await client.get("/api/work/v1/operations")
         assert response.status_code == 503 and response.json() == {"error": "work_read_unavailable"}
@@ -291,10 +313,16 @@ async def test_projection_failure_never_returns_partial_page_or_private_data(hos
 async def test_revoked_cookie_cannot_reuse_the_previous_poll_identity(host, monkeypatch):
     from orchestrator import auth, web_auth
     orch, read, repo = host
-    session = AsyncMock(side_effect=[{"access_token": "fixture.access.token"}, None])
+    session = AsyncMock(side_effect=[{"access_token": "fixture.access.token",
+        "sid": "fixture-sid", "incarnation_id": "fixture-incarnation"}, None])
     monkeypatch.setattr(web_auth, "ensure_session", session)
-    validate = AsyncMock(return_value={"sub": "owner", "realm_access": {"roles": ["user"]}})
+    claims = read_claims()
+    async def verify(request, credentials):
+        request.state.delegation_subject_token = credentials.credentials
+        return claims
+    validate = AsyncMock(side_effect=verify)
     monkeypatch.setattr(auth, "get_current_user_payload", validate)
+    monkeypatch.setattr(auth, "verify_production_token", AsyncMock(return_value=claims))
     app = FastAPI()
     app.state.orchestrator = orch
     app.include_router(work_router, prefix="/api")

@@ -1,6 +1,37 @@
 # Feature 088 verification record
 
 
+## Work delivery and fixed-profile admission qualification — 2026-09-13 UTC
+
+The final installed-component cohort passed **238 tests in 404.95 seconds** across
+all seven Work modules and native Work compatibility. The three measured production
+files stayed byte-identical during the run; concurrent runner/startup/new-route work
+is listed separately in the private source closure and is not qualified by this
+cohort. Changed-code coverage is **139/140 (99.29%)**: Work API 57/58, Work service
+12/12, Work submission 70/70. Ruff and diff checks pass. Exact inputs, source hashes,
+XML, coverage, initial failing witnesses and successor results remain in the private
+`work-installed-01`, `work-read-delivery-01` and `work-research-preflight` records.
+
+Work GET delivery now verifies the original JWT and cookie issuance after the
+operation read, refuses logout/replacement/current-client-policy loss, and caps the
+final database observation by both the original JWT expiry and the session hard
+limit. It preserves current normal JWT policy and never refreshes/adopts a new
+credential for delivery. This is bounded delivery liveness, not a new atomic
+blob-owner-retirement or online JWT-introspection guarantee.
+
+The explicit `FixedResearchPreflight` checks whole source/model ceilings, the exact
+supported singleton read scope and uncached encrypted USER configuration. It locks
+that exact row before the final current tool-policy fence and atomic acceptance/
+audit, rechecking the original named private binding key after audit. Original
+accepted receipt replay remains ahead of all mutable new-admission checks. The
+source-only internal default remains compatible; no provider call occurs during
+preflight. A committed revoke while acceptance waits for configuration now refuses.
+
+This checkpoint does not register HTTP submission or the finite handler. Those
+successor integration changes, result projection, complete T027/T030, broader
+research/retries/guidance and full 088 remain open. The completed native store
+submissions remain separate from this local unpushed backend work.
+
 ## September 13 local repair integration and store review
 
 The owner reports adding the repaired Mac app for review. Xcode's actual

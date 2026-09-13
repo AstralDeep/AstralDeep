@@ -1,7 +1,11 @@
 """Fresh owner-authenticated Work reads and bounded lifecycle controls."""
+from copy import deepcopy
+from dataclasses import dataclass, field
 from functools import wraps
+import math
 import os
 import re
+import time
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -9,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
+from orchestrator import auth
 from orchestrator.auth import get_web_or_bearer_user_payload, verify_user
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
 from orchestrator.work_service import WorkService
@@ -71,17 +76,71 @@ def _json(value, status=200, headers=None):
     return JSONResponse(value, status_code=status, headers={**(headers or {}), "Cache-Control": "no-store"})
 
 
+def _read_expiry(claims):
+    value = claims.get("exp") if isinstance(claims, dict) else None
+    try:
+        live = type(value) in (int, float) and math.isfinite(value) and time.time() < value
+    except OverflowError:
+        live = False
+    if not live:
+        raise HTTPException(401, "Not authenticated")
+    return value
+
+
+@dataclass(frozen=True, repr=False)
+class _ReadDelivery:
+    """Request-private original IAM identity; never refreshed or serialized."""
+
+    owner_id: str
+    expires_at: float
+    token: str = field(repr=False)
+    cookie_session: tuple[str, str] | None = field(repr=False)
+
+    @classmethod
+    def capture(cls, request, owner_id, claims):
+        token = getattr(request.state, "delegation_subject_token", None)
+        cookie = getattr(request.state, "_authenticated_cookie_session", None)
+        if (not isinstance(token, str) or not token or claims.get("sub") != owner_id
+                or (cookie is not None and (type(cookie) is not tuple or len(cookie) != 2
+                    or any(not isinstance(value, str) or not value for value in cookie)))):
+            raise HTTPException(401, "Not authenticated")
+        return cls(owner_id, _read_expiry(claims), token, cookie)
+
+    async def verify(self, service):
+        if time.time() >= self.expires_at:
+            raise HTTPException(401, "Not authenticated")
+        # Reuse the exact normal production JWT/issuer/client/role policy, with
+        # the original token. Calling ensure_session here could adopt a refresh.
+        claims = await verify_user(await auth.verify_production_token(self.token))
+        if claims.get("sub") != self.owner_id or _read_expiry(claims) != self.expires_at:
+            raise HTTPException(401, "Not authenticated")
+        if self.cookie_session is not None:
+            await service.assert_read_session(self.owner_id, claims, self.cookie_session)
+        service._owner(self.owner_id, claims)
+        if time.time() >= self.expires_at:
+            raise HTTPException(401, "Not authenticated")
+
+
 class WorkReadRoute(APIRoute):
     def get_route_handler(self):
         handler = super().get_route_handler()
         @wraps(handler)
         async def safe(request):
+            original = request
+            if request.method == "GET":
+                # Freeze credential selection before normal IAM's first await.
+                # Incoming middleware state cannot substitute a private token.
+                scope = dict(request.scope)
+                scope.update(headers=[(bytes(key), bytes(value)) for key, value in scope["headers"]],
+                             query_string=bytes(scope.get("query_string", b"")), state={})
+                request = Request(scope, receive=request.receive)
             try:
                 return await handler(request)
             except AssignmentError as exc:
                 known = {
                     "work_not_found", "work_query_invalid", "work_repository_unavailable",
                     "work_read_unavailable", "assignment_feature_disabled",
+                    "work_authentication_required",
                     "assignment_owner_required", "assignment_human_required",
                     "work_control_invalid", "work_control_unavailable", "work_origin_refused",
                     "work_query_token_refused", "work_json_required",
@@ -98,6 +157,13 @@ class WorkReadRoute(APIRoute):
                 headers = {key: value for key, value in (exc.headers or {}).items()
                            if key.lower() in {"location", "www-authenticate"}}
                 return _json({"error": "work_authentication_required"}, exc.status_code, headers)
+            finally:
+                if request is not original:
+                    # Existing HTTP audit middleware owns the outer request.
+                    # Preserve only verified attribution, never the private token.
+                    claims = getattr(request.state, "audit_claims", None)
+                    if isinstance(claims, dict):
+                        original.state.audit_claims = deepcopy(claims)
         return safe
 
 
@@ -125,15 +191,25 @@ def _query_integer(value, maximum=2**63 - 1):
     return parsed
 
 
+async def _read(request, owner_id, claims, method, **kwargs):
+    service = _service(request)
+    delivery = _ReadDelivery.capture(request, owner_id, claims)
+    value = await getattr(service, method)(owner_id, claims, **kwargs)
+    await delivery.verify(service)
+    if _service(request).assignments is not service.assignments:
+        raise AssignmentError("work_read_unavailable", 503)
+    return value
+
+
 @work_router.get("")
 async def list_work(request: Request, limit: str = Query("50"), after_id: str | None = None,
                     owner_id: str = _OWNER, claims: dict = _CLAIMS):
-    return _json(await _service(request).list(owner_id, claims, limit=_query_integer(limit, 100), after_id=after_id))
+    return _json(await _read(request, owner_id, claims, "list", limit=_query_integer(limit, 100), after_id=after_id))
 
 
 @work_router.get("/{identity}")
 async def get_work(identity: str, request: Request, owner_id: str = _OWNER, claims: dict = _CLAIMS):
-    return _json({"operation": await _service(request).get(owner_id, claims, identity)})
+    return _json({"operation": await _read(request, owner_id, claims, "get", identity=identity)})
 
 
 @work_router.get("/{identity}/poll")
@@ -142,7 +218,7 @@ async def poll_work(identity: str, request: Request, after_revision: str | None 
     # An immediate poll is a fresh HTTP request through the same institutional
     # bearer/cookie dependency. Never retain an identity for later deliveries.
     revision = None if after_revision is None else _query_integer(after_revision)
-    return _json(await _service(request).poll(owner_id, claims, identity, after_revision=revision))
+    return _json(await _read(request, owner_id, claims, "poll", identity=identity, after_revision=revision))
 
 
 @work_router.post("/{identity}/pause")

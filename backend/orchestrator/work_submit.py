@@ -2,9 +2,12 @@
 
 Receipt identity is the original owner/namespace/key and immutable command, not
 today's source policy or refreshed credentials. New work commits with its audit.
+The optional fixed research preflight additionally qualifies model availability
+and whole-episode ceilings; omitting it preserves the source-only acceptance API.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import inspect
@@ -94,10 +97,105 @@ class WorkSubmissionResult:
     created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _ResearchAdmission:
+    selection: object = field(repr=False)
+    key: object = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FixedResearchPreflight:
+    """Opt-in admission availability check, never a reusable execution permit.
+
+    Keep the exact USER row locked through acceptance and audit. The model path
+    independently captures and guards its own configuration/input at dispatch;
+    no selection, provider key or prompt is added to the operation or receipt.
+    """
+
+    config_store: object = field(repr=False)
+
+    def __post_init__(self):
+        from llm_config.user_store import UserLLMConfigStore
+        if type(self.config_store) is not UserLLMConfigStore:
+            raise TypeError("fixed research requires the USER configuration store")
+
+    async def prepare(self, *, owner_id, runtime, definition, source_bound):
+        """Check complete declared ceilings and capture uncached private config."""
+        from audit.pii import private_binding_key
+        from llm_config import research_profile as profile
+        source = definition.source
+        if (not isinstance(source, Mapping) or source.get("profile") != "public_page"
+                or source.get("agent_id") != "web-research-1" or source.get("tool_name") != "fetch_page"
+                or source.get("linked_document_urls")
+                or definition.allowed_tools != ("web-research-1:fetch_page",)
+                or definition.consented_scopes != ("tools:read",)):
+            raise AssignmentError("work_research_profile_unavailable", 503)
+        minimum = {**source_bound}
+        minimum["model_calls"] += 1
+        minimum["tokens"] += profile.RESERVED_TOKENS
+        minimum["elapsed_ms"] += profile.RESERVED_MILLISECONDS
+        if any(definition.limits[name] < amount for name, amount in minimum.items()):
+            raise AssignmentError("work_research_budget_insufficient", 422)
+        try:
+            if self.config_store._repository.plane_runtime is not runtime:
+                raise ValueError
+            key = private_binding_key()
+            selection = profile.select_config(
+                await self.config_store.capture_user(owner_id),
+                store=self.config_store, binding_key=key,
+            )
+            return _ResearchAdmission(selection, key)
+        except Exception:
+            raise AssignmentError("work_research_profile_unavailable", 503) from None
+
+    @staticmethod
+    def assert_key(prepared):
+        """Require the original named key to remain resolvable and unchanged."""
+        from audit.pii import private_binding_key
+        try:
+            current = private_binding_key(prepared.key.key_id)
+            marker = b"fixed-research-admission/v1"
+            if not prepared.key.verify("config", marker, current.sign("config", marker)):
+                raise ValueError
+        except Exception:
+            raise AssignmentError("work_research_profile_unavailable", 503) from None
+
+    def assert_current(self, transaction, *, runtime, owner_id, prepared):
+        """Lock the captured USER row after owner/session and before new insert."""
+        try:
+            if (type(prepared) is not _ResearchAdmission
+                    or self.config_store._repository.plane_runtime is not runtime
+                    or prepared.selection.owner_id != owner_id):
+                raise ValueError
+            row = runtime.repositories.encrypted_llm_config.get_user_for_update(
+                transaction, owner_id=owner_id)
+            if not prepared.selection.matches(row):
+                raise ValueError
+            self.assert_key(prepared)
+        except Exception:
+            raise AssignmentError("work_research_profile_unavailable", 503) from None
+
+    @staticmethod
+    def assert_policy(transaction, *, runtime, orchestrator, owner_id, claims):
+        """Take the fixed policy fence last; later work cannot write policy rows."""
+        from orchestrator.tool_permissions import FixedReaderPolicyError
+        try:
+            orchestrator.tool_permissions.assert_fixed_reader_current(transaction,
+                owner_id=owner_id, plane_runtime=runtime,
+                orchestrator=orchestrator, identity_claims=claims)
+        except FixedReaderPolicyError as error:
+            raise AssignmentError(error.code,
+                403 if error.code == "assignment_scope_revoked" else 503) from None
+
+
 class WorkSubmitService:
-    def __init__(self, assignments, audit, sessions):
+    def __init__(self, assignments, audit, sessions, *, research_preflight=None):
+        """Keep source-only acceptance unless this exact capability is supplied."""
+        if research_preflight is not None and type(research_preflight) is not FixedResearchPreflight:
+            raise TypeError("research_preflight must be FixedResearchPreflight")
         self.assignments, self.audit, self.sessions = assignments, audit, sessions
         self.store = assignments.store
+        self.research_preflight = research_preflight
 
     def _current(self, context, *, now=None):
         if type(context) is not AuthenticatedWorkRequest:
@@ -153,6 +251,10 @@ class WorkSubmitService:
         try:
             authority = await refresh_work_submission_authority(context, sessions=self.sessions)
             definition = await self._definition(context, authority, body)
+            preflight = self.research_preflight
+            prepared = None if preflight is None else await preflight.prepare(
+                owner_id=context.owner_id, runtime=self.store.plane_runtime, definition=definition,
+                source_bound=self.assignments.tool_bound("web-research-1:fetch_page"))
             state = authority.observation
             hard_expiry = datetime.fromtimestamp(state.credential.hard_expires_at, timezone.utc)
             if not state.started_at < deadline <= min(hard_expiry, state.started_at + timedelta(days=1)):
@@ -177,6 +279,12 @@ class WorkSubmitService:
                 if replay is not None:
                     self._current(context)
                     return WorkSubmissionResult(replay, False)
+                if preflight is not None:
+                    preflight.assert_current(transaction, runtime=self.store.plane_runtime,
+                                             owner_id=context.owner_id, prepared=prepared)
+                    preflight.assert_policy(transaction, runtime=self.store.plane_runtime,
+                        orchestrator=self.assignments.orch, owner_id=context.owner_id,
+                        claims=authority.claims)
                 create = getattr(repository, "create_operation", None)
                 append = getattr(self.audit, "insert_in_transaction", None)
                 if not callable(create) or not callable(append):
@@ -199,6 +307,8 @@ class WorkSubmitService:
                 self._current(context, now=current.observed_at)
                 if current.observed_at >= deadline:
                     raise AssignmentError("work_authority_unavailable", 403)
+                if preflight is not None:
+                    preflight.assert_key(prepared)
                 return WorkSubmissionResult(record, True)
 
             result = await self.store.transaction(accept, bound_session_waits=True)
