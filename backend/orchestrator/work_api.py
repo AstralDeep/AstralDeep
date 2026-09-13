@@ -18,7 +18,10 @@ from orchestrator import auth
 from orchestrator.auth import get_web_or_bearer_user_payload, verify_user
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
 from orchestrator.work_control_authority import WorkCallerAuthority, authenticate_work_control_request
+from orchestrator.work_continuations import WorkContinuationService, WorkOwnerWaitRequest, WorkReconcileRequest
+from orchestrator.work_resume import WorkResumeService
 from orchestrator.work_service import WorkService
+from orchestrator.work_wake import WorkOwnerWakeRequest, WorkWakeService
 from orchestrator.work_write_boundary import cache_work_write_body, freeze_work_request
 from persistent_agents.models import AssignmentError
 
@@ -157,6 +160,11 @@ class WorkReadRoute(APIRoute):
                     "assignment_idempotency_conflict", "assignment_not_active",
                     "assignment_not_terminal", "assignment_action_uncertain",
                     "assignment_version_unsupported", "assignment_owner_retired",
+                    "work_authority_unavailable", "work_research_profile_unavailable",
+                    "work_research_budget_insufficient", "assignment_scope_changed",
+                    "assignment_scope_revoked", "assignment_not_waiting",
+                    "assignment_event_key_conflict", "assignment_event_revision_conflict",
+                    "assignment_history_capacity_exhausted",
                     "work_body_invalid", "work_body_too_large", "work_body_timeout", "work_disconnected",
                 }
                 unavailable = "work_read_unavailable" if request.method == "GET" else "work_control_unavailable"
@@ -261,6 +269,34 @@ async def delete_work(identity: str, body: WorkDeleteRequest, request: Request):
     caller = _write_caller(request)
     return _json(await WorkControlService(_service(request).assignments).delete(
         caller.context.owner_id, caller.context.claims, identity, body, caller=caller))
+
+
+@work_router.post("/{identity}/resume")
+async def resume_work(identity: str, body: WorkControlRequest, request: Request):
+    """Resume only with the original issued session and current research policy."""
+    return _json(await WorkResumeService(_service(request).assignments).resume(
+        identity, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/wait")
+async def wait_work(identity: str, body: WorkOwnerWaitRequest, request: Request):
+    """Hold for a manual owner event without granting future execution."""
+    return _json(await WorkContinuationService(_service(request).assignments).wait(
+        identity, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/actions/{action_id}/reconcile")
+async def reconcile_work(identity: str, action_id: str, body: WorkReconcileRequest, request: Request):
+    """Record an owner's factual decision without recovering output or waking."""
+    return _json(await WorkContinuationService(_service(request).assignments).reconcile(
+        identity, action_id, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/wake")
+async def wake_work(identity: str, body: WorkOwnerWakeRequest, request: Request):
+    """Acknowledge a manual owner event with current continuation checks."""
+    return _json(await WorkWakeService(_service(request).assignments).wake(
+        identity, body, caller=_write_caller(request)))
 
 
 def _write_caller(request):
