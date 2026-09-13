@@ -18,10 +18,12 @@ from astralplane.repositories.history import (
 from audit.repository import AuditRepository
 from fastapi import Request
 
-from orchestrator import auth, web_auth
+from orchestrator import auth
 from orchestrator.session_store import SessionRefreshUnavailable, WebSessionStore
 from orchestrator.work_continuation_authority import OperationControlAuthority
-from orchestrator.work_submit_authority import AuthenticatedWorkRequest, _authenticate_work_request, _expiry
+from orchestrator.work_submit_authority import (
+    AuthenticatedWorkRequest, _authenticate_work_request, _expiry, capture_human_caller,
+)
 from orchestrator.work_write_boundary import freeze_work_request
 from persistent_agents.models import AssignmentError
 from persistent_agents.service import AssignmentService
@@ -225,23 +227,7 @@ async def authenticate_work_control_request(
                 snapshot, sessions=sessions, plane_runtime=binding.runtime, methods=("POST", "DELETE"))
             if not isinstance(token, str) or not token:
                 _unauthenticated()
-            supplied = [part.strip().split("=", 1)[0] for header in snapshot.headers.getlist("cookie")
-                        for part in header.split(";")]
-            if web_auth.COOKIE_NAME in supplied and context.session_id is None:
-                _unauthenticated()
-            caller = None
-            if context.session_id is not None:
-                reference = await asyncio.to_thread(sessions.capture_execution_reference,
-                    owner_id=context.owner_id, session_id=context.session_id)
-                state = reference.state
-                credential = state.credential
-                if (credential.owner_id != context.owner_id or credential.session_id != context.session_id
-                        or (context.cookie_session is not None and context.cookie_session != (
-                            credential.session_id, credential.incarnation_id))):
-                    _unauthenticated()
-                caller = SessionConsentObservation(credential, state.observed_at,
-                    min(state.observed_at + timedelta(seconds=15), until, context.principal_expires_at,
-                        datetime.fromtimestamp(credential.hard_expires_at, timezone.utc)))
+            caller = await capture_human_caller(snapshot, context=context, sessions=sessions, until=until)
             guard = WorkCallerAuthority(context, caller, binding, token, deadline, until)
             await binding.store.transaction(
                 lambda tx, _: guard.assert_current(tx, assignments=assignments), bound_session_waits=True)
