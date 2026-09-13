@@ -148,6 +148,7 @@ class AssignmentStore:
 
     async def operation_lifecycle_transaction(
         self, *, authority, callback: Callable[[Any, Any, Any], _T], fence=None, binding=None,
+        final_check: Callable[[], None] | None = None,
     ) -> _T:
         """Guard one-shot writes and recheck original session and guidance afterward.
 
@@ -155,6 +156,8 @@ class AssignmentStore:
         query; the synchronous callback uses this transaction only. A post-write
         check can roll back claim/lease retirement after its execution fence is
         intentionally gone. It never refreshes or adopts authority under locks.
+        The optional final check validates local captured identities only; it
+        must not wait or perform I/O and must return None or raise.
         """
         from orchestrator.session_authority import OperationExecutionAuthority
 
@@ -162,6 +165,8 @@ class AssignmentStore:
                 or authority.plane_runtime is not self.plane_runtime
                 or (binding is not None and fence is None)):
             raise AssignmentError("assignment_authorization_unavailable", 403)
+        if final_check is not None and not callable(final_check):
+            raise AssignmentError("assignment_transaction_callback_invalid", 500)
         sessions = self.plane_runtime.repositories.history.sessions
 
         def synchronous(value):
@@ -197,7 +202,7 @@ class AssignmentStore:
                 raise AssignmentError("assignment_state_changed", 409)
             result = synchronous(callback(tx, repository, current))
             synchronous(sessions.assert_current_execution(tx, observation=authority.observation))
-            # Completion intentionally retires the old claim. Use the committed
+            # Completion intentionally retires the old claim. Use the updated
             # candidate's counters for the last DB-time selected-guidance check;
             # even the final session query may have waited across note expiry.
             after = synchronous(repository.get_operation(
@@ -207,7 +212,10 @@ class AssignmentStore:
                 tx, owner_id=after.owner_id, assignment_id=after.assignment_id,
                 expected_instruction_revision=after.instruction_revision,
                 expected_control_epoch=after.control_epoch,
-                expected_state_version=after.state_version))
+                expected_state_version=after.state_version,
+                authority_valid_until=authority.observation.valid_until))
+            if final_check is not None and synchronous(final_check()) is not None:
+                raise AssignmentError("assignment_transaction_callback_invalid", 500)
             return result
 
         return await self.transaction(guarded, bound_session_waits=True)

@@ -8,6 +8,7 @@ No read test obtains an execution permit or opens provider configuration.
 import asyncio
 from dataclasses import replace
 import json
+import threading
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -328,7 +329,9 @@ async def test_unknown_and_nonretained_operations_never_reuse_checkpoint(complet
 async def test_actual_committed_retirement_between_reads_suppresses_content(completed, monkeypatch):
     op = completed
     repository = op.runtime.repositories.assignments
-    original = repository.get_action
+    # Retire after unlocked discovery but before the first metadata owner/row
+    # lock. A synchronous second writer after that lock would wait on this test.
+    original = repository.get_selected_input
     retired = False
     def read(tx, **kwargs):
         nonlocal retired
@@ -340,9 +343,58 @@ async def test_actual_committed_retirement_between_reads_suppresses_content(comp
                     expected_control_epoch=op.completed.control_epoch,
                     expected_state_version=op.completed.state_version)
         return original(tx, **kwargs)
-    monkeypatch.setattr(repository, "get_action", read)
+    monkeypatch.setattr(repository, "get_selected_input", read)
     unavailable(await project(op))
     assert retired
+
+
+async def test_independent_retirement_waits_for_result_reader_then_commits(completed, monkeypatch):
+    op = completed
+    repository = op.runtime.repositories.assignments
+    original = repository.get_selected_input
+    entered, release, requesting = threading.Event(), threading.Event(), threading.Event()
+    details = {}
+    def locked(tx, **kwargs):
+        value = original(tx, **kwargs)
+        if not entered.is_set():
+            details["reader"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+            entered.set()
+            assert release.wait(5), "test did not release its bounded read gate"
+        return value
+    monkeypatch.setattr(repository, "get_selected_input", locked)
+    def retire():
+        with op.runtime.transaction() as tx:
+            details["writer"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+            requesting.set()
+            assert repository.delete_for_owner(tx, owner_id=op.owner,
+                assignment_id=op.completed.assignment_id,
+                expected_control_epoch=op.completed.control_epoch,
+                expected_state_version=op.completed.state_version)
+        details["committed"] = True
+    def blocked():
+        with op.runtime.transaction() as tx:
+            return tx.fetch_one("SELECT %s=ANY(pg_blocking_pids(%s)) AS waiting",
+                (details["reader"], details["writer"]))["waiting"]
+    reading = asyncio.create_task(project(op))
+    writer = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        writer = asyncio.create_task(asyncio.to_thread(retire))
+        assert await asyncio.to_thread(requesting.wait, 5)
+        async with asyncio.timeout(3):
+            while not await asyncio.to_thread(blocked):
+                await asyncio.sleep(0.001)
+        assert not details.get("committed", False)
+        release.set()
+        value = await reading
+        assert value["available"] is True
+        await writer
+        assert details["committed"] is True
+        unavailable(await project(op))
+    finally:
+        release.set()
+        tasks = (reading,) if writer is None else (reading, writer)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def test_availability_requires_boolean_true(completed):

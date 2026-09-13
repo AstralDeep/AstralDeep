@@ -7,13 +7,15 @@ and whole-episode ceilings; omitting it preserves the source-only acceptance API
 """
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import inspect
 import json
 import re
-from uuid import uuid4
+import unicodedata
+from uuid import UUID, uuid4
 
 from astralplane.repositories.assignment_models import (
     AssignmentDefinition, AssignmentOperationAuthority, AssignmentOperationSpec, AssignmentRecord,
@@ -43,6 +45,46 @@ def _pairs(pairs):
     return result
 
 
+def _selected_ids(value):
+    """Closed identifiers only. Exact wire ordering stays in the receipt digest."""
+    if (type(value) is not dict or set(value) != {"version", "agent", "skills", "notes"}
+            or type(value["version"]) is not int or value["version"] != 1):
+        _invalid()
+    agent = value["agent"]
+    if agent is not None:
+        if (type(agent) is not dict or set(agent) != {"agent_id", "revision_id"}
+                or type(agent["agent_id"]) is not str
+                or not 1 <= len(agent["agent_id"]) <= 255
+                or agent["agent_id"] != agent["agent_id"].strip()
+                or any(unicodedata.category(char) in {"Cc", "Cs"} for char in agent["agent_id"])):
+            _invalid()
+        _selected_uuid(agent["revision_id"])
+    for kind, field_name, maximum in (("skills", "skill_id", 20), ("notes", "note_id", 8)):
+        entries = value[kind]
+        if type(entries) is not list or len(entries) > maximum:
+            _invalid()
+        seen = set()
+        for entry in entries:
+            if (type(entry) is not dict or set(entry) != {field_name, "revision"}
+                    or type(entry["revision"]) is not int or not 1 <= entry["revision"] <= 2**53 - 1):
+                _invalid()
+            identity = _selected_uuid(entry[field_name])
+            if identity in seen:
+                _invalid()
+            seen.add(identity)
+    if agent is None and not value["skills"] and not value["notes"]:
+        _invalid()
+
+
+def _selected_uuid(value):
+    if type(value) is not str:
+        _invalid()
+    parsed = UUID(value)
+    if parsed.version != 4 or str(parsed) != value:
+        _invalid()
+    return value
+
+
 def _parse(raw):
     """Bound structure/digest only; never reapply mutable source/limit policy here."""
     try:
@@ -50,7 +92,8 @@ def _parse(raw):
             _invalid()
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs,
                            parse_constant=lambda _: _invalid())
-        if (not isinstance(value, dict) or set(value) not in (_FIELDS, _FIELDS | {"source_retention"})
+        if (not isinstance(value, dict) or not _FIELDS <= set(value)
+                or set(value) - _FIELDS - {"source_retention", "selection"}
                 or type(value.get("source_retention", "operation")) is not str
                 or value.get("source_retention", "operation") not in {"operation", "none"}
                 or type(value["version"]) is not int or value["version"] != 1
@@ -60,6 +103,8 @@ def _parse(raw):
                 or not isinstance(value["deadline_at"], str)
                 or _DEADLINE.fullmatch(value["deadline_at"]) is None):
             _invalid()
+        if "selection" in value:
+            _selected_ids(value["selection"])
         deadline = datetime.fromisoformat(value["deadline_at"].replace("Z", "+00:00"))
         return value, deadline, digest({"command": "work.submit", "body": value})
     except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
@@ -103,6 +148,13 @@ class WorkSubmissionResult:
 class _ResearchAdmission:
     selection: object = field(repr=False)
     key: object = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _SelectedAdmission:
+    envelope: object
+    boundary: object
+    agent_revision: object = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +306,107 @@ class WorkSubmitService:
             allowed_tools=(source.identity,), consented_scopes=tuple(sorted(set(scopes.values()))),
             offline_grant_id=None, limits=limits, conversation_id=conversation)
 
+    def _selection_current(self, context, prepared, selected):
+        """Exact application composition and named-key identity, never caller DTO authority."""
+        self._current(context)
+        orch, runtime = self.assignments.orch, self.store.plane_runtime
+        plane = getattr(getattr(orch, "runtime_composition", None), "plane", None)
+        if (self.research_preflight is None or type(prepared) is not _ResearchAdmission
+                or type(selected) is not _SelectedAdmission
+                or getattr(plane, "runtime", None) is not runtime
+                or getattr(plane, "repositories", None) is not runtime.repositories
+                or getattr(orch, "persistent_assignments", None) is not self.assignments
+                or getattr(orch, "web_sessions", None) is not self.sessions
+                or getattr(orch, "audit_repo", None) is not self.audit
+                or getattr(orch, "_llm_store", None) is not self.research_preflight.config_store):
+            raise AssignmentError("work_selection_unavailable", 503)
+        self.research_preflight.assert_key(prepared)
+        selected.boundary.assert_current()
+
+    def _agent_selection_policy(self, revision, definition):
+        from llm_config import research_profile
+        from orchestrator.agent_authoring import byo_enabled
+        from orchestrator.projection_surfaces.authoring import DeclarativeAgentService
+        parsed = DeclarativeAgentService._stored_definition(revision)
+        limits = parsed.to_dict()["limits"]
+        if not byo_enabled() or not parsed.fixed_research_shape:
+            raise AssignmentError("work_selected_agent_unavailable", 503)
+        if (any(definition.limits[name] > limits[period][name]
+                for period in ("daily", "lifetime")
+                for name in ("model_calls", "tool_calls", "tokens", "elapsed_ms"))
+                or definition.limits["max_retries"] > limits["max_retries"]
+                or limits["step_timeout_ms"] < max(research_profile.RESERVED_MILLISECONDS,
+                    self.assignments.tool_bound("web-research-1:fetch_page")["elapsed_ms"])
+                or any(limits[period]["spend_micro_units"] is not None for period in ("daily", "lifetime"))):
+            raise AssignmentError("work_selected_agent_budget_refused", 422)
+
+    def _read_selection(self, tx, context, selection, definition, prepared, selected, now):
+        from astralplane.repositories.guidance_models import GuidanceReference
+        reference = selection["agent"]
+        references = tuple(GuidanceReference(kind, ref[field_name], ref["revision"])
+            for kind, field_name, key in (("skill", "skill_id", "skills"), ("note", "note_id", "notes"))
+            for ref in selection[key])
+        result = selected.boundary.capture(tx, owner_id=context.owner_id,
+            instruction=definition.instructions,
+            agent=None if reference is None else (reference["agent_id"], reference["revision_id"]),
+            references=references, binding_key=prepared.key, now=now)
+        if result.agent_revision is not None:
+            self._agent_selection_policy(result.agent_revision, definition)
+        return result
+
+    async def _prepare_selection(self, context, observation, selection, definition, prepared):
+        from personalization.selected_guidance_boundary import SelectedGuidanceBoundary
+        selected = _SelectedAdmission(None, SelectedGuidanceBoundary(self.assignments.orch,
+            plane_runtime=self.store.plane_runtime, include_notes=bool(selection["notes"])))
+        self._selection_current(context, prepared, selected)
+
+        def capture(tx, repository):
+            self._selection_current(context, prepared, selected)
+            repos = self.store.plane_runtime.repositories
+            current = repos.history.sessions.assert_current_execution(tx, observation=observation)
+            self._current(context, now=current.observed_at)
+            repos.preferences.skills.lock_owner(tx, owner_id=context.owner_id)
+            result = self._read_selection(tx, context, selection, definition, prepared, selected, current.observed_at)
+            self._selection_current(context, prepared, selected)
+            return result
+
+        expanded = await self.store.transaction(capture, bound_session_waits=True)
+        self._selection_current(context, prepared, selected)
+        # Local privacy analysis is outside SQL; never persist the expansion.
+        from persistent_agents.privacy import privacy_text
+        try:
+            sensitive = await asyncio.to_thread(self.assignments.phi_gate.contains_phi, privacy_text(expanded.prepared.text))
+        except ValueError:
+            raise AssignmentError("assignment_sensitive_content_refused", 422) from None
+        except Exception:
+            raise AssignmentError("assignment_phi_gate_unavailable", 503) from None
+        if sensitive:
+            raise AssignmentError("assignment_sensitive_content_refused", 422)
+        self._selection_current(context, prepared, selected)
+        return replace(selected, envelope=expanded.prepared.envelope, agent_revision=expanded.agent_revision)
+
+    def _bind_selection(self, tx, repository, record, context, selection, definition, prepared, selected, observation):
+        from astralplane.repositories.selected_input_models import SelectedInputEnvelope, SelectedAgentReference
+        self._selection_current(context, prepared, selected)
+        expected = selected.envelope
+        envelope = SelectedInputEnvelope(expected.references,
+            None if expected.agent is None else SelectedAgentReference(**asdict(expected.agent)),
+            expected.binding_key_id, expected.combined_binding,
+            expected.expansion_version, expected.version)
+        # create_operation already acquired the new assignment's locks. Bind
+        # precedes selected-head reads and config, never another assignment lock.
+        record = repository.bind_selected_input(tx, owner_id=context.owner_id,
+            assignment_id=record.assignment_id, expected_instruction_revision=record.instruction_revision,
+            expected_control_epoch=record.control_epoch, expected_state_version=record.state_version,
+            envelope=envelope)
+        now = self.store.plane_runtime.repositories.history.sessions.assert_current_execution(
+            tx, observation=observation).observed_at
+        actual = self._read_selection(tx, context, selection, definition, prepared, selected, now)
+        if asdict(actual.prepared.envelope) != asdict(expected):
+            raise AssignmentError("work_selection_changed", 409)
+        snapshot = repository.get_selected_input(tx, owner_id=context.owner_id, assignment_id=record.assignment_id)
+        return record, snapshot
+
     async def submit(self, context: AuthenticatedWorkRequest, raw_body: bytes) -> WorkSubmissionResult:
         body, deadline, signature = _parse(raw_body)
         accepted = await self._accepted(context, body, signature)
@@ -272,6 +425,8 @@ class WorkSubmitService:
             if not state.started_at < deadline <= min(hard_expiry, state.started_at + timedelta(days=1)):
                 _invalid()
             observation = replace(state, valid_until=min(state.valid_until, deadline))
+            selected = (None if "selection" not in body else await self._prepare_selection(
+                context, observation, body["selection"], definition, prepared))
             operation = AssignmentOperationSpec("research", AssignmentOperationAuthority(
                 context.owner_id, "interactive", "session_incarnation", state.credential.incarnation_id,
                 deadline), deadline, body.get("source_retention", "operation"))
@@ -292,7 +447,7 @@ class WorkSubmitService:
                     self._current(context)
                     return WorkSubmissionResult(replay, False)
                 self._check_new_admission()
-                if preflight is not None:
+                if preflight is not None and selected is None:
                     preflight.assert_current(transaction, runtime=self.store.plane_runtime,
                                              owner_id=context.owner_id, prepared=prepared)
                     preflight.assert_policy(transaction, runtime=self.store.plane_runtime,
@@ -308,10 +463,24 @@ class WorkSubmitService:
                 if (not isinstance(record, AssignmentRecord) or record.assignment_id != identity
                         or record.owner_id != context.owner_id or record.execution_profile != "one_shot"):
                     raise AssignmentError("work_repository_unavailable", 503)
+                selected_snapshot = None
+                if selected is not None:
+                    record, selected_snapshot = self._bind_selection(transaction, repository,
+                        record, context, body["selection"], definition, prepared, selected, observation)
+                    preflight.assert_current(transaction, runtime=self.store.plane_runtime,
+                                             owner_id=context.owner_id, prepared=prepared)
+                    preflight.assert_policy(transaction, runtime=self.store.plane_runtime,
+                        orchestrator=self.assignments.orch, owner_id=context.owner_id,
+                        claims=authority.claims)
+                inputs_meta = {"operation_id": identity, "kind": "research", "version": 2}
+                if selected is not None:
+                    inputs_meta["selection"] = {"version": 1, "skills": len(body["selection"]["skills"]),
+                        "notes": len(body["selection"]["notes"]),
+                        "agent_selected": body["selection"]["agent"] is not None}
                 event = AuditEventCreate(actor_user_id=context.owner_id, auth_principal=context.owner_id,
                     event_class="conversation", action_type="work.accept", description="Work accepted",
                     conversation_id=definition.conversation_id, correlation_id=identity, outcome="success",
-                    inputs_meta={"operation_id": identity, "kind": "research", "version": 2},
+                    inputs_meta=inputs_meta,
                     outputs_meta={}, started_at=current.observed_at, completed_at=current.observed_at)
                 audited = _sync(append(event, transaction=transaction, plane_runtime=self.store.plane_runtime))
                 if not isinstance(audited, AuditEventDTO):
@@ -323,6 +492,22 @@ class WorkSubmitService:
                 if preflight is not None:
                     preflight.assert_key(prepared)
                 self._check_new_admission()
+                if selected is not None:
+                    self._selection_current(context, prepared, selected)
+                    if selected.agent_revision is not None:
+                        self._agent_selection_policy(selected.agent_revision, definition)
+                    # Last database wait/clock. The following local checks are
+                    # synchronous and do not acquire another SQL/network guard.
+                    record = repository.assert_selected_input_current(transaction,
+                        owner_id=context.owner_id, assignment_id=identity,
+                        expected_instruction_revision=record.instruction_revision,
+                        expected_control_epoch=record.control_epoch,
+                        expected_state_version=record.state_version, expected=selected_snapshot,
+                        authority_valid_until=observation.valid_until)
+                    self._selection_current(context, prepared, selected)
+                    if selected.agent_revision is not None:
+                        self._agent_selection_policy(selected.agent_revision, definition)
+                    self._check_new_admission()
                 return WorkSubmissionResult(record, True)
 
             result = await self.store.transaction(accept, bound_session_waits=True)

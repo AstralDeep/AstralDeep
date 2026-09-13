@@ -419,6 +419,33 @@ async def test_error_details_are_closed_and_verified_attribution_survives(
     assert "delegation_subject_token" not in result.state
 
 
+@pytest.mark.parametrize(
+    "code,status",
+    [
+        ("work_selection_not_found", 404),
+        ("work_selection_changed", 409),
+        ("work_selection_unavailable", 503),
+        ("work_selected_agent_unavailable", 503),
+        ("work_selected_agent_budget_refused", 422),
+        ("assignment_guidance_changed", 409),
+    ],
+)
+async def test_selected_refusals_keep_closed_codes_at_registered_route(
+    api, monkeypatch, code, status
+):
+    """The real route preserves actionable refusals without accepting work."""
+    async def refused(*args, **kwargs):
+        raise AssignmentError(code, status)
+
+    monkeypatch.setattr("orchestrator.work_submit.WorkSubmitService.submit", refused)
+    result = await submit(api)
+    assert result.status == status and result.value == {"error": code}
+    assert result.headers[b"cache-control"] == b"no-store"
+    assert result.state["audit_claims"]["sub"] == api.fixture[1]
+    assert "delegation_subject_token" not in result.state
+    no_acceptance(api.runtime, api.fixture[1])
+
+
 async def test_composition_replacement_during_body_wait_refuses(api):
     async def replace(_):
         api.app.state.orchestrator = object()

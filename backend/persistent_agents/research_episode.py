@@ -104,10 +104,14 @@ class ResearchCompletion:
             source_result_digest=retained["result_digest"],
         )
         checkpoint = {**thaw(current.checkpoint), "research_result": page}
+        completion_input = ["research-result-v1", page, model.action_id]
+        if selection["version"] == 3:
+            completion_input = ["research-result-v3", page, model.action_id,
+                                selection["selected_input"]]
         return AssignmentEpisodeCompletion(
             expected_state_version=current.state_version,
             checkpoint=checkpoint,
-            completion_digest=digest(["research-result-v1", page, model.action_id]),
+            completion_digest=digest(completion_input),
             phase="waiting",
             wake_reason="research_completed",
             completed=True,
@@ -159,9 +163,14 @@ class EphemeralResearchCompletion(ResearchCompletion):
         if canonical(thaw(current.checkpoint)) not in {"{}", '{"schema_version":1}'}:
             raise DispatchDenied("assignment_research_result_invalid")
         checkpoint = {"schema_version": 1, "research_source": metadata}
+        completion_input = ["ephemeral-research-result-v1", metadata, model.action_id]
+        selection = json.loads(self._selection_json)
+        if selection["version"] == 3:
+            completion_input = ["ephemeral-research-result-v3", metadata, model.action_id,
+                                selection["selected_input"]]
         return AssignmentEpisodeCompletion(expected_state_version=current.state_version,
             checkpoint=checkpoint,
-            completion_digest=digest(["ephemeral-research-result-v1", metadata, model.action_id]),
+            completion_digest=digest(completion_input),
             phase="waiting", wake_reason="research_completed", completed=True,
             terminal_outcome="completed", result_reference=model.action_id)
 
@@ -214,6 +223,7 @@ async def run_research_episode(executor):
             config_store=executor.orch._llm_store,
             key_id=model.intent.transient_input.binding_key_id,
             ephemeral=ephemeral,
+            guidance=executor._research_guidance,
         )
         proof = (ResearchCompletion(private, model.action_id) if ephemeral is None else
                  EphemeralResearchCompletion(private, model.action_id, canonical(selection)))
