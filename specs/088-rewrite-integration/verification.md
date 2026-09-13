@@ -1,5 +1,41 @@
 # Feature 088 verification record
 
+## Original human WebSocket metadata boundary — 2026-09-13 UTC
+
+Registered metadata and original chat skill-read requests now capture their actual
+socket, original registered token, selected cookie issuance, request identities,
+message and policy before queue/admission waits. Normal institutional IAM verifies
+the original token; no replacement registration or same-ID session is adopted.
+Metadata handlers use one private current-human context and the existing bounded
+Plane adapter, with current-role and delivery checks. Read transport cannot mutate.
+The capture retires on handler exit before terminal I/O and on discarded frames;
+long chat execution is not limited to the short guidance-read lifetime. Private
+authored content is excluded from outer metadata audit payloads and diagnostic
+frame representations. The application constructs and closes the shared adapter.
+
+The frozen five-file handoff is SHA-256
+`9ef715347eeffb478bce3d228fd7e27fb104b6265fadcaf36c6c54a441095f51`.
+Root reviewed the complete production patch and verified all five source and
+57 artifact hashes. The actual PostgreSQL/IAM/queue cohort passed43; an expanded
+run passed129 with one wrong test expectation about the pre-admission error
+envelope. The corrected successor and ordinary chrome/connection neighbors passed
+67 with two unrelated stress cases deselected. An earlier full stress attempt was
+interrupted during the unchanged 10,000-interleavings CPU test after67 passing
+progress indications; it is retained as incomplete, not reported as passing.
+Changed executable coverage is313/319 (98.12%): human219/222, chrome41/41,
+orchestrator53/56. Independent raw Coverage.py replay matches all three source
+files and totals in both contributing runs. All task-owned databases from these
+runs were removed after zero-connection checks. No external provider call occurred.
+
+These are shared authority mechanics, not full consumer or release completion.
+Background virtual sockets, voice and scheduled work still need their own
+admission-bound guidance-read handoff before the common skill cutover is complete.
+Required guidance failures must propagate through actual chat completion rather
+than become a successful terminal operation. Metadata-only LLM-gate exemptions,
+the declarative/skill/note editors, final native builds and staging remain open.
+No schema, dependency or component pin changed in this checkpoint; no product
+push, PR promotion, deployment or store submission was performed.
+
 ## Installed declarative lifecycle and safe retry — 2026-09-13 UTC
 
 Deep now pins and installs Plane `e1dfd7144b08a302a60b5a3874677231645ff2fd`
