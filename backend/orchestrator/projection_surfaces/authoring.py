@@ -613,19 +613,54 @@ async def _list_context(orch, user_id: str) -> Dict[str, Any]:
         "runs": runs,
         "host_online": presence["online"],
         "host_label": presence["label"],
-        "skills": _skills(orch, user_id),
+        "skills": await _skills(orch, user_id),
     }
 
 
-def _skills(orch, user_id: str) -> List[us.Skill]:
+def _skill_caller(orch, user_id):
+    from orchestrator.human_request_authority import current_human_caller
+    caller = current_human_caller(expected_orchestrator=orch)
+    if caller is None or caller.owner_id != user_id:
+        raise AssignmentError("skill_authentication_required", 401)
+    return caller
+
+
+async def _skills(orch, user_id: str) -> List[us.Skill]:
     store = us.store_for(orch)
     if store is None:
         return []
+    return list(await store.list(caller=_skill_caller(orch, user_id)))
+
+
+def _skill_identity(skill=None):
+    """One rendered command identity; the client retries that same payload."""
+    return {"skill_id": skill.skill_id if skill else str(uuid.uuid4()),
+            "command_id": str(uuid.uuid4()),
+            "expected_revision": skill.revision if skill else 0}
+
+
+def _skill_request_identity(payload, fields=None):
+    from persistent_agents.models import validate_id
     try:
-        return store.list(user_id)
-    except Exception:  # noqa: BLE001 — a broken file never hides the surface
-        logger.debug("user_skills: list failed", exc_info=True)
-        return []
+        if type(payload) is not dict:
+            raise ValueError
+        fields = fields or {}
+        result = {}
+        for key in ("skill_id", "command_id", "expected_revision"):
+            if key in payload and key in fields and str(payload[key]) != fields[key]:
+                raise ValueError
+            result[key] = payload.get(key, fields.get(key))
+        for key in ("skill_id", "command_id"):
+            result[key] = validate_id(result[key])
+        revision = result["expected_revision"]
+        if type(revision) is str and revision.isascii() and revision.isdecimal() and str(int(revision)) == revision:
+            revision = int(revision)
+        if type(revision) is not int or not 0 <= revision <= 2**53 - 2:
+            raise ValueError
+        result["expected_revision"] = revision
+        return result
+    except (TypeError, ValueError, AttributeError):
+        raise AssignmentError("skill_invalid", 422) from None
 
 
 def _commands_attr(skills: List[us.Skill]) -> str:
@@ -816,6 +851,7 @@ def _run_card(run: qc.QuickRun, host_label: str) -> str:
 
 def _skill_row(skill: us.Skill) -> str:
     pid = _payload({"slug": skill.slug})
+    deletion = _payload(_skill_identity(skill))
     where = "every chat" if skill.always else ", ".join(skill.applies_to)
     cmd = (f'<code class="text-xs text-astral-primary">/{esc(skill.command)}</code>'
            if skill.command else "")
@@ -823,7 +859,7 @@ def _skill_row(skill: us.Skill) -> str:
              '<span class="text-[10px] px-2 py-0.5 rounded-full border bg-white/5 '
              'text-astral-muted border-white/10">off</span>')
     toggle_label = "Disable" if skill.enabled else "Enable"
-    toggle = _payload({"slug": skill.slug, "enabled": not skill.enabled})
+    toggle = _payload({**_skill_identity(skill), "enabled": not skill.enabled})
     return (
         f'<div class="bg-white/5 border border-white/10 rounded-lg p-3">'
         f'<div class="flex items-center gap-2 flex-wrap">'
@@ -837,7 +873,7 @@ def _skill_row(skill: us.Skill) -> str:
         f'<button type="button" class="{_BTN}" data-ui-action="chrome_user_skill_toggle" '
         f"data-ui-payload='{toggle}'>{toggle_label}</button>"
         f'<button type="button" class="{_BTN_DANGER}" data-ui-action="chrome_user_skill_delete" '
-        f"data-ui-payload='{pid}'>Delete</button>"
+        f"data-ui-payload='{deletion}'>Delete</button>"
         f"</div></div>"
     )
 
@@ -845,7 +881,10 @@ def _skill_row(skill: us.Skill) -> str:
 def _skill_form(skill: us.Skill | None) -> str:
     editing = skill is not None
     title = "Edit skill" if editing else "Add a skill"
-    slug = f'<input type="hidden" name="skill_slug" value="{esc(skill.slug)}">' if editing else ""
+    metadata = {**_skill_identity(skill), "skill_slug": skill.slug if editing else "",
+                "skill_enabled": "true" if skill is None or skill.enabled else "false"}
+    slug = "".join(f'<input type="hidden" name="{key}" value="{esc(str(value))}">'
+                   for key, value in metadata.items())
     applies = "" if (skill is None or skill.always) else ", ".join(skill.applies_to)
     return (
         f'<div class="bg-white/5 border border-white/10 rounded-lg p-4" data-ui-form>'
@@ -1267,8 +1306,8 @@ def _skill_components(skill: us.Skill, _sdui) -> Dict[str, Any]:
     content.append(_sdui.text(skill.instructions[:280] + ("…" if len(skill.instructions) > 280 else "")))
     content.append(_sdui.button("Edit", "chrome_user_skill_edit", {"slug": skill.slug}))
     content.append(_sdui.button("Disable" if skill.enabled else "Enable", "chrome_user_skill_toggle",
-                                {"slug": skill.slug, "enabled": not skill.enabled}))
-    content.append(_sdui.button("Delete", "chrome_user_skill_delete", {"slug": skill.slug}))
+                                {**_skill_identity(skill), "enabled": not skill.enabled}))
+    content.append(_sdui.button("Delete", "chrome_user_skill_delete", _skill_identity(skill)))
     return _sdui.card(skill.name, content)
 
 
@@ -1291,7 +1330,8 @@ def _skill_form_components(skill: us.Skill | None, _sdui) -> List[Dict[str, Any]
                       "name); a /command makes it a shortcut you can type.", "caption"),
            _sdui.form(fields, submit_action="chrome_user_skill_save",
                       submit_label="Save" if editing else "Add skill",
-                      submit_payload={"skill_slug": skill.slug} if editing else None)]
+                      submit_payload={**_skill_identity(skill), "skill_slug": skill.slug if editing else "",
+                                      "skill_enabled": "true" if skill is None or skill.enabled else "false"})]
     if editing:
         out.append(_sdui.button("Cancel", "chrome_author_list"))
     return out
@@ -1669,30 +1709,23 @@ def _skills_refused() -> Tuple[str, Dict[str, Any], str]:
 
 
 async def _h_skill_save(orch, websocket, user_id, roles, payload):
-    """``chrome_user_skill_save {skill_slug?, fields: {skill_name, skill_command,
-    skill_applies, skill_instructions}}`` — create or replace one skill."""
-    _ = websocket, roles
+    """Apply the rendered exact revision command through the common facade."""
     store = us.store_for(orch)
     if store is None:
         return _skills_refused()
+    caller = _skill_caller(orch, user_id)
     fields = _fields(payload)
-    slug = str((payload or {}).get("skill_slug") or fields.get("skill_slug") or "")
-    from orchestrator import slash_commands
-    try:
-        skill = await asyncio.to_thread(
-            store.save, user_id,
-            name=fields.get("skill_name") or "",
-            instructions=fields.get("skill_instructions") or "",
-            applies_to=fields.get("skill_applies") or "",
-            command=fields.get("skill_command") or "",
-            enabled=True if not slug else (store.get(user_id, slug) or us.Skill("", "", "", ())).enabled,
-            slug=slug,
-            reserved_commands=slash_commands.reserved_names())
-    except us.SkillValidationError as exc:
-        params = {"skill_slug": slug} if slug else {}
-        return (SURFACE_KEY, params, notice_block("error", str(exc)))
-    hint = f" Type /{skill.command} in chat to use it." if skill.command else ""
-    return (SURFACE_KEY, {}, notice_block("success", f"Saved “{skill.name}”.{hint}"))
+    identity = _skill_request_identity(payload, fields)
+    slug = (payload or {}).get("skill_slug", fields.get("skill_slug", ""))
+    value = (payload or {}).get("skill_enabled", fields.get("skill_enabled"))
+    if value not in ("true", "false"):
+        raise AssignmentError("skill_invalid", 422)
+    await store.save(caller=caller, **identity, name=fields.get("skill_name", ""),
+        instructions=fields.get("skill_instructions", ""), applies_to=fields.get("skill_applies", ""),
+        command=fields.get("skill_command", ""), enabled=value == "true", slug=slug)
+    # Receipt replay may follow a later edit/delete; do not echo old input as a
+    # statement about the current head. The surface rereads current values.
+    return (SURFACE_KEY, {}, notice_block("success", "Skill saved."))
 
 
 async def _h_skill_edit(orch, websocket, user_id, roles, payload):
@@ -1704,33 +1737,20 @@ async def _h_skill_edit(orch, websocket, user_id, roles, payload):
 
 
 async def _h_skill_toggle(orch, websocket, user_id, roles, payload):
-    """``chrome_user_skill_toggle {slug, enabled}``."""
-    _ = websocket, roles
     store = us.store_for(orch)
     if store is None:
         return _skills_refused()
-    slug = str((payload or {}).get("slug") or "")
-    enabled = bool((payload or {}).get("enabled"))
-    try:
-        skill = await asyncio.to_thread(store.set_enabled, user_id, slug, enabled)
-    except us.SkillValidationError as exc:
-        return (SURFACE_KEY, {}, notice_block("error", str(exc)))
-    if skill is None:
-        return (SURFACE_KEY, {}, notice_block("error", "That skill no longer exists."))
-    return (SURFACE_KEY, {}, notice_block(
-        "success", f"“{skill.name}” is now {'on' if enabled else 'off'}."))
+    caller = _skill_caller(orch, user_id)
+    identity = _skill_request_identity(payload)
+    await store.set_enabled(caller=caller, **identity, enabled=payload.get("enabled"))
+    return (SURFACE_KEY, {}, notice_block("success", "Skill setting saved."))
 
 
 async def _h_skill_delete(orch, websocket, user_id, roles, payload):
-    """``chrome_user_skill_delete {slug}``."""
-    _ = websocket, roles
     store = us.store_for(orch)
     if store is None:
         return _skills_refused()
-    slug = str((payload or {}).get("slug") or "")
-    deleted = await asyncio.to_thread(store.delete, user_id, slug)
-    if not deleted:
-        return (SURFACE_KEY, {}, notice_block("error", "That skill no longer exists."))
+    await store.delete(caller=_skill_caller(orch, user_id), **_skill_request_identity(payload))
     return (SURFACE_KEY, {}, notice_block("success", "Skill deleted."))
 
 

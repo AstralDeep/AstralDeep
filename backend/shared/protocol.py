@@ -1865,15 +1865,15 @@ class ChromeRender(Message):
     region: str = "modal"  # "modal" | "topbar"
     html: str = ""
     mode: str = "replace"  # reserved; only "replace" in 027
-    # Work reads are independently correlated, never conversation generations.
+    # Owner surfaces are independently correlated, never conversation generations.
     surface_key: Optional[str] = None
     request_generation: Optional[str] = None
 
     def to_json(self) -> str:
         data = asdict(self)
         if self.surface_key is not None or self.request_generation is not None:
-            if self.surface_key != "work" or self.region != "modal":
-                raise ProtocolValidationError("correlated chrome render must be Work modal")
+            if self.surface_key not in {"work", "guidance"} or self.region != "modal":
+                raise ProtocolValidationError("correlated chrome render must be an owner modal")
             _require_uuid4(self.request_generation, "request_generation")
         else:
             data.pop("surface_key")
@@ -1918,10 +1918,10 @@ class ChromeSurface(Message):
 
     def to_json(self) -> str:
         data = asdict(self)
-        if self.surface_key == "work":
+        if self.surface_key in {"work", "guidance"}:
             _require_uuid4(self.request_generation, "request_generation")
         elif self.request_generation is not None:
-            raise ProtocolValidationError("correlated chrome surface must be Work")
+            raise ProtocolValidationError("correlated chrome surface must be an owner surface")
         else:
             data.pop("request_generation")
         return json.dumps(data)

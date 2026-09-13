@@ -252,6 +252,9 @@ async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
     ChromeSurface (ROTE-adapted astralprims components). Admin-gated and
     gracefully-degrading on either path (Constitution X/XII, FR-014).
     """
+    if surface_key == "guidance":
+        from persistent_agents.models import AssignmentError
+        raise AssignmentError("explicit_note_navigation_unavailable", 503)
     # Feature 076: a surface may need to know WHICH of the owner's sockets is
     # asking (the My computers surface offers the consent switch only to the
     # desktop that can host). Exposed as a context variable for the duration of
@@ -438,15 +441,16 @@ async def _llm_gate_refusal(orch, websocket, action: str, user_id: str, *, paylo
 
 
 async def handle_chrome_event(orch, websocket, action: str, payload: dict,
-                              user_id: str, *, request_generation=None, work_read=None) -> bool:
+                              user_id: str, *, request_generation=None, work_read=None,
+                              guidance_navigation=None) -> bool:
     from orchestrator.human_request_authority import _socket_method, bind_human_caller
     from persistent_agents.models import AssignmentError
     method = _socket_method({"type": "ui_event", "action": action, "payload": payload})
     if method is None:
-        if isinstance(action, str) and action.startswith(("chrome_user_skill_", "chrome_declarative_")):
+        if isinstance(action, str) and action.startswith(("chrome_user_skill_", "chrome_declarative_", "chrome_note_")):
             raise AssignmentError("human_authentication_required", 401)
         return await _handle_chrome_event(orch, websocket, action, payload, user_id,
-            request_generation=request_generation, work_read=work_read)
+            request_generation=request_generation, work_read=work_read, guidance_navigation=guidance_navigation)
     from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
     pending = (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("human_request")
     if (pending is None or pending.websocket is not websocket or pending.boundary.orchestrator is not orch
@@ -458,17 +462,23 @@ async def handle_chrome_event(orch, websocket, action: str, payload: dict,
             caller = await pending.authenticate()
             with bind_human_caller(caller):
                 return await _handle_chrome_event(orch, websocket, action, payload, caller.owner_id,
-                    request_generation=request_generation, work_read=work_read)
+                    request_generation=request_generation, work_read=work_read, guidance_navigation=guidance_navigation)
     except TimeoutError:
         raise AssignmentError("human_request_timeout", 408) from None
 
 
 async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
-                              user_id: str, *, request_generation=None, work_read=None) -> bool:
+                              user_id: str, *, request_generation=None, work_read=None,
+                              guidance_navigation=None) -> bool:
     """Dispatch one chrome/creation ui_event. Returns True if handled."""
     if not _is_chrome_action(action):
         return False
     payload = payload or {}
+    if (action.startswith("chrome_note_") or (action == "chrome_open"
+            and isinstance(payload, dict) and payload.get("surface") == "guidance")):
+        from orchestrator.projection_surfaces import get_surface
+        return await get_surface("guidance").deliver(orch, websocket, user_id, action,
+            payload, request_generation, guidance_navigation=guidance_navigation)
     if action in {"chrome_open", "chrome_close"}:
         from orchestrator.work_surface_authority import invalidate
         if work_read is None:

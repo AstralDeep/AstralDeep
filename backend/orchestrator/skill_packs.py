@@ -26,26 +26,18 @@ MAX_USER_SKILL_CHARS = 1200
 
 def build_skill_digest(knowledge_index, agent_ids: Iterable[str],
                        max_chars: int = MAX_DIGEST_CHARS,
-                       max_packs: int = MAX_PACKS, *, orch=None,
-                       owner: str | None = None) -> str:
+                       max_packs: int = MAX_PACKS, *, user_skills=()) -> str:
     """Return a bounded skill-pack digest for ``agent_ids`` (the agents in play).
 
-    Feature 077: when ``orch``/``owner`` are given, the owner's enabled skills
+    When an authenticated ``user_skills`` snapshot is supplied, enabled skills
     lead the digest — *always* skills on every turn, agent-scoped ones when
     that agent is in play — under their own bound. Then the authored /
     synthesized packs as before. Returns ``""`` when nothing relevant exists or
     on any error (fail-open).
     """
     try:
-        user_sections: list = []
-        if orch is not None and owner:
-            try:
-                from orchestrator import user_skills
-                user_sections = user_skills.digest_lines(
-                    orch, owner, agent_ids, max_chars=MAX_USER_SKILL_CHARS)
-            except Exception:
-                logger.debug("skill_packs.fallback: user skills skipped", exc_info=True)
-                user_sections = []
+        from orchestrator.user_skills import digest_lines
+        user_sections = digest_lines(user_skills, agent_ids, max_chars=MAX_USER_SKILL_CHARS)
         packs = []
         for aid in sorted(set(agent_ids)):
             try:

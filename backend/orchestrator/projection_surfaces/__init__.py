@@ -20,6 +20,7 @@ SURFACE_MODULES = {
     "llm": "orchestrator.projection_surfaces.llm",
     "llm_system": "orchestrator.projection_surfaces.llm_system",
     "personalization": "orchestrator.projection_surfaces.personalization",
+    "guidance": "orchestrator.projection_surfaces.guidance",
     "audit": "orchestrator.projection_surfaces.audit",
     "theme": "orchestrator.projection_surfaces.theme",
     "tour": "orchestrator.projection_surfaces.tour",

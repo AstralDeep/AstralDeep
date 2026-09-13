@@ -18,8 +18,10 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -33,6 +35,10 @@ from orchestrator import user_skills as us  # noqa: E402
 from orchestrator.projection_surfaces import authoring  # noqa: E402
 from tests.test_byo_authoring_flow import OWNER, make_orch  # noqa: E402
 from tests.helpers.draft_store_double import InMemoryDraftStore  # noqa: E402
+from tests.test_work_control_authority_088 import (  # noqa: E402
+    bound as bound, fixture as fixture, runtime as runtime, service as service,
+    signing_key as signing_key, incoming,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +51,41 @@ def _flags_on(monkeypatch):
 @pytest.fixture()
 def db():
     return InMemoryDraftStore()
+
+
+@pytest.fixture
+def skill_authority(bound, fixture):
+    """Real current caller/catalog; only the legacy agent pipeline is doubled.
+
+    These are handler/render tests, not socket-ingress qualification. Normal
+    JWT verification, issued-session checks, owner isolation, materialization
+    and revision mutations use the actual installed Plane repositories.
+    """
+    from orchestrator.human_request_authority import (
+        HumanRequestBoundary, authenticate_current_human_request, bind_human_caller,
+    )
+
+    @asynccontextmanager
+    async def select(orch, *, method="POST", other_owner=None):
+        original = bound[0].orch
+        orch.runtime_composition = original.runtime_composition
+        orch.audit_repo = original.audit_repo
+        orch.web_sessions = original.web_sessions
+        boundary = HumanRequestBoundary(orch)
+        orch.human_request_boundary = boundary
+        credentials = fixture
+        if other_owner is not None:
+            credentials = (*fixture[:3], lambda: fixture[3](sub=other_owner), fixture[4])
+        request = incoming(bound, credentials, method=method, cookie=other_owner is None)
+        request.scope["app"] = SimpleNamespace(state=SimpleNamespace(orchestrator=orch))
+        try:
+            caller = await authenticate_current_human_request(request, boundary=boundary)
+            with bind_human_caller(caller):
+                yield caller
+        finally:
+            boundary.close()
+
+    return SimpleNamespace(owner=fixture[1], select=select)
 
 
 class _LLM:
@@ -89,36 +130,38 @@ async def _settle(run: qc.QuickRun, timeout=5.0):
 
 # ── 1. the express lane ──────────────────────────────────────────────────────
 
-async def test_one_description_becomes_a_delivered_agent(db, tmp_path):
+async def test_one_description_becomes_a_delivered_agent(db, tmp_path, skill_authority):
     llm = _LLM(questions=[])
     orch = _orch(db, llm, tmp_path)
-    pushes = []
+    owner = skill_authority.owner
+    async with skill_authority.select(orch):
+        pushes = []
 
-    async def refresh(o, ws, user, roles, run):
-        pushes.append(run.current)
+        async def refresh(o, ws, user, roles, run):
+            pushes.append(run.current)
 
-    run, message = await qc.start(orch, object(), OWNER, ["user"],
-                                  description="sort my inbox into folders every morning",
-                                  refresh=refresh)
-    assert run is not None and "Creating" in message
-    assert run.agent_name == "Sort Inbox Folders Morning"   # derived, never empty
-    await _settle(run)
-    assert run.state == qc.DONE, run.message
-    assert all(run.steps[s] == "done" for s in qc.STEPS)
-    assert run.agent_id and orch.deliver_agent_bundle.await_count == 1
-    # every phase went through the real machine: the session sits at generate
-    row = await asyncio.to_thread(aa.get_session, orch, OWNER, run.draft_id)
-    assert aa.phase_of(row) == "generate" and aa.analyze_record(row)["passed"] is True
-    # progress was pushed for every step, in order
-    assert pushes[:4] == ["specify", "clarify", "plan", "tasks"]
-    assert pushes[-1] == "deliver"
-    # the run shows up on the home view, the session does not double as an
-    # editor session
-    from tests.test_byo_authoring_flow import _t
-    ctx = await authoring._list_context(orch, OWNER)
-    assert [r.draft_id for r in ctx["runs"]] == [run.draft_id]
-    assert all(s["id"] != run.draft_id for s in ctx["sessions"])
-    _ = _t
+        run, message = await qc.start(orch, object(), owner, ["user"],
+                                      description="sort my inbox into folders every morning",
+                                      refresh=refresh)
+        assert run is not None and "Creating" in message
+        assert run.agent_name == "Sort Inbox Folders Morning"   # derived, never empty
+        await _settle(run)
+        assert run.state == qc.DONE, run.message
+        assert all(run.steps[s] == "done" for s in qc.STEPS)
+        assert run.agent_id and orch.deliver_agent_bundle.await_count == 1
+        # every phase went through the real machine: the session sits at generate
+        row = await asyncio.to_thread(aa.get_session, orch, owner, run.draft_id)
+        assert aa.phase_of(row) == "generate" and aa.analyze_record(row)["passed"] is True
+        # progress was pushed for every step, in order
+        assert pushes[:4] == ["specify", "clarify", "plan", "tasks"]
+        assert pushes[-1] == "deliver"
+        # the run shows up on the home view, the session does not double as an
+        # editor session
+        from tests.test_byo_authoring_flow import _t
+        ctx = await authoring._list_context(orch, owner)
+        assert [r.draft_id for r in ctx["runs"]] == [run.draft_id]
+        assert all(s["id"] != run.draft_id for s in ctx["sessions"])
+        _ = _t
 
 
 async def test_the_express_lane_stops_for_the_assistants_questions(db, tmp_path):
@@ -146,7 +189,7 @@ async def test_the_express_lane_stops_for_the_assistants_questions(db, tmp_path)
     assert [i["answer"] for i in aa.clarify_items(row)] == ["work", "newsletters"]
 
 
-async def test_an_analyze_refusal_generates_nothing(db, tmp_path):
+async def test_an_analyze_refusal_generates_nothing(db, tmp_path, skill_authority):
     class _Bad(_LLM):
         def __call__(self, websocket, messages, **kw):
             text = messages[-1]["content"]
@@ -156,40 +199,44 @@ async def test_an_analyze_refusal_generates_nothing(db, tmp_path):
                         "notes": ""}
             return super().__call__(websocket, messages, **kw)
     orch = _orch(db, _Bad(), tmp_path)
-    run, _ = await qc.start(orch, object(), OWNER, ["user"],
-                            description="sort my inbox and share the agent with my team")
-    await _settle(run)
-    assert run.state == qc.FAILED and run.steps["analyze"] == "failed"
-    assert run.outcome.get("violations"), run.message
-    orch.lifecycle_manager.generate_code.assert_not_awaited()
-    orch.deliver_agent_bundle.assert_not_awaited()
-    html = await authoring.render(orch, OWNER, ["user"], {})
-    assert "Fix in the editor" in html and "nothing was generated" in html
+    owner = skill_authority.owner
+    async with skill_authority.select(orch):
+        run, _ = await qc.start(orch, object(), owner, ["user"],
+                                description="sort my inbox and share the agent with my team")
+        await _settle(run)
+        assert run.state == qc.FAILED and run.steps["analyze"] == "failed"
+        assert run.outcome.get("violations"), run.message
+        orch.lifecycle_manager.generate_code.assert_not_awaited()
+        orch.deliver_agent_bundle.assert_not_awaited()
+        html = await authoring.render(orch, owner, ["user"], {})
+        assert "Fix in the editor" in html and "nothing was generated" in html
 
 
-async def test_without_a_desktop_the_run_waits_and_resend_delivers_later(db, tmp_path, monkeypatch):
+async def test_without_a_desktop_the_run_waits_and_resend_delivers_later(db, tmp_path, monkeypatch, skill_authority):
     orch = _orch(db, _LLM(), tmp_path, host=False)
-    orch.deliver_agent_bundle = AsyncMock(return_value=0)   # nobody to send it to
-    run, _ = await qc.start(orch, object(), OWNER, ["user"],
-                            description="sort my inbox into folders every morning")
-    await _settle(run)
-    assert run.state == qc.WAITING_FOR_DESKTOP and run.steps["deliver"] == "waiting"
-    html = await authoring.render(orch, OWNER, ["user"], {})
-    assert "Resend to my desktop" in html and "No desktop client connected" in html
-    # Resend re-enters generate_from_session, which (pinned in test_byo_authoring)
-    # reopens the exact immutable publication without a model call; here only
-    # the run's bookkeeping is under test.
-    calls = []
+    owner = skill_authority.owner
+    async with skill_authority.select(orch):
+        orch.deliver_agent_bundle = AsyncMock(return_value=0)   # nobody to send it to
+        run, _ = await qc.start(orch, object(), owner, ["user"],
+                                description="sort my inbox into folders every morning")
+        await _settle(run)
+        assert run.state == qc.WAITING_FOR_DESKTOP and run.steps["deliver"] == "waiting"
+        html = await authoring.render(orch, owner, ["user"], {})
+        assert "Resend to my desktop" in html and "No desktop client connected" in html
+        # Resend re-enters generate_from_session, which (pinned in test_byo_authoring)
+        # reopens the exact immutable publication without a model call; here only
+        # the run's bookkeeping is under test.
+        calls = []
 
-    async def _resend(o, user, draft_id, websocket=None, **kw):
-        calls.append(draft_id)
-        return {"status": "delivered", "agent_id": run.agent_id}
-    monkeypatch.setattr(aa, "generate_from_session", _resend)
-    result = await authoring.HANDLERS["chrome_author_quick_resend"](
-        orch, object(), OWNER, ["user"], {"draft_id": run.draft_id})
-    assert calls == [run.draft_id]
-    assert "Delivered" in result[2] and run.state == qc.DONE and run.steps["deliver"] == "done"
-    orch.lifecycle_manager.generate_code.assert_awaited_once()   # the run's single model call
+        async def _resend(o, user, draft_id, websocket=None, **kw):
+            calls.append(draft_id)
+            return {"status": "delivered", "agent_id": run.agent_id}
+        monkeypatch.setattr(aa, "generate_from_session", _resend)
+        result = await authoring.HANDLERS["chrome_author_quick_resend"](
+            orch, object(), owner, ["user"], {"draft_id": run.draft_id})
+        assert calls == [run.draft_id]
+        assert "Delivered" in result[2] and run.state == qc.DONE and run.steps["deliver"] == "done"
+        orch.lifecycle_manager.generate_code.assert_awaited_once()   # the run's single model call
 
 
 async def test_refusals_and_bounds(db, tmp_path, monkeypatch):
@@ -280,86 +327,121 @@ def test_skill_store_validation(tmp_path):
         store.save(OWNER, name="One too many", instructions="Long enough instructions.", applies_to="")
 
 
-def test_skills_reach_the_digest_and_the_slash_expansion(tmp_path, monkeypatch):
+async def test_skills_reach_the_digest_and_the_slash_expansion(tmp_path, monkeypatch, skill_authority):
     orch = SimpleNamespace(knowledge_index=SimpleNamespace(knowledge_dir=str(tmp_path)))
-    store = us.store_for(orch)
-    store.save(OWNER, name="House style", instructions="Always answer in British English.",
-               applies_to="")
-    store.save(OWNER, name="Research depth", instructions="Cite at least three sources.",
-               applies_to="web-research-1")
-    store.save(OWNER, name="Standup", instructions="Yesterday / today / blockers, one line each.",
-               applies_to="", command="standup")
-
     index = SimpleNamespace(get_techniques_for_agent=lambda aid: "")
-    digest = skill_packs.build_skill_digest(index, ["summarizer-1"], orch=orch, owner=OWNER)
-    assert "Your skill: House style" in digest and "Your skill: Standup" in digest
-    assert "Research depth" not in digest                      # scoped to another agent
-    digest = skill_packs.build_skill_digest(index, ["web-research-1"], orch=orch, owner=OWNER)
-    assert "Research depth" in digest
-    assert skill_packs.build_skill_digest(index, ["summarizer-1"]) == ""   # no owner: as before
-    assert skill_packs.build_skill_digest(index, ["summarizer-1"], orch=orch, owner="nobody") == ""
+    async with skill_authority.select(orch) as caller:
+        store = us.store_for(orch)
+        for name, instructions, applies_to, command in (
+            ("House style", "Always answer in British English.", "", ""),
+            ("Research depth", "Cite at least three sources.", "web-research-1", ""),
+            ("Standup", "Yesterday / today / blockers, one line each.", "", "standup"),
+        ):
+            await store.save(caller=caller, skill_id=str(uuid4()), command_id=str(uuid4()),
+                             expected_revision=0, name=name, instructions=instructions,
+                             applies_to=applies_to, command=command)
+        skills = await store.list(caller=caller)
+        digest = skill_packs.build_skill_digest(index, ["summarizer-1"], user_skills=skills)
+        assert "Your skill: House style" in digest and "Your skill: Standup" in digest
+        assert "Research depth" not in digest                      # scoped to another agent
+        digest = skill_packs.build_skill_digest(index, ["web-research-1"], user_skills=skills)
+        assert "Research depth" in digest
+        assert skill_packs.build_skill_digest(index, ["summarizer-1"]) == ""   # no selection: as before
 
-    commands = store.command_map(OWNER)
-    expanded = slash_commands.expand_message("/standup fixed the build", commands)
-    assert "Standup" in expanded and "one line each" in expanded and "fixed the build" in expanded
-    assert slash_commands.expand_message("/standup", commands).endswith("asking for any input it needs.")
-    assert slash_commands.expand_message("/help", commands).count("/standup") == 1
-    assert "/standup" in slash_commands.expand_message("/nope", commands)
-    assert slash_commands.expand_message("/weather Lexington", commands).startswith("What's the current weather")
-    assert slash_commands.expand_message("/usr/local/bin", commands) == "/usr/local/bin"
-    assert slash_commands.expand_message("/standup x") != "/standup x"   # unchanged without skills? no:
-    assert slash_commands.expand_message("/standup x", None).startswith("The user typed an unrecognized")
+        commands = {skill.command: skill for skill in skills if skill.enabled and skill.command}
+        expanded = slash_commands.expand_message("/standup fixed the build", commands)
+        assert "Standup" in expanded and "one line each" in expanded and "fixed the build" in expanded
+        assert slash_commands.expand_message("/standup", commands).endswith("asking for any input it needs.")
+        assert slash_commands.expand_message("/help", commands).count("/standup") == 1
+        assert "/standup" in slash_commands.expand_message("/nope", commands)
+        assert slash_commands.expand_message("/weather Lexington", commands).startswith("What's the current weather")
+        assert slash_commands.expand_message("/usr/local/bin", commands) == "/usr/local/bin"
+        assert slash_commands.expand_message("/standup x") != "/standup x"
+        assert slash_commands.expand_message("/standup x", None).startswith("The user typed an unrecognized")
 
-    store.set_enabled(OWNER, "house-style", False)
-    assert "House style" not in skill_packs.build_skill_digest(index, ["summarizer-1"], orch=orch, owner=OWNER)
+        house = next(skill for skill in skills if skill.slug == "house-style")
+        await store.set_enabled(caller=caller, skill_id=house.skill_id, command_id=str(uuid4()),
+                                expected_revision=house.revision, enabled=False)
+        current = await store.list(caller=caller)
+        assert "House style" not in skill_packs.build_skill_digest(index, ["summarizer-1"], user_skills=current)
+    # A different normally verified owner gets an independent empty catalog.
+    async with skill_authority.select(orch, method="GET", other_owner=str(uuid4())) as caller:
+        assert await store.list(caller=caller) == ()
+        assert skill_packs.build_skill_digest(index, ["summarizer-1"],
+                                             user_skills=await store.list(caller=caller)) == ""
     monkeypatch.setitem(flags._flags, "user_skills", False)
     assert us.store_for(orch) is None
-    assert skill_packs.build_skill_digest(index, ["summarizer-1"], orch=orch, owner=OWNER) == ""
+    assert skill_packs.build_skill_digest(index, ["summarizer-1"]) == ""
 
 
 # ── 4. the surface ───────────────────────────────────────────────────────────
 
-async def test_home_view_web_and_native(db, tmp_path):
+async def test_home_view_web_and_native(db, tmp_path, skill_authority):
+    from persistent_agents.models import AssignmentError
+
     orch = _orch(db, _LLM(), tmp_path)
-    html = await authoring.render(orch, OWNER, ["user"], {})
-    assert "Desktop host connected" in html
-    assert "chrome_author_quick_create" in html and "Create</button>" in html
-    assert "Advanced: build it step by step" in html and "chrome_author_start" in html
-    assert "Your skills" in html and "chrome_user_skill_save" in html
-    assert 'data-astral-commands="[]"' in html
-    assert "share" not in html.lower().replace("shared", "")   # no share/publish affordance
-    comps = await authoring.components(orch, OWNER, ["user"], {})
-    kinds = [(c["type"], c.get("submit_action")) for c in comps]
-    assert ("alert", None) == kinds[0]
-    submits = [k[1] for k in kinds if k[1]]
-    assert submits == ["chrome_author_quick_create", "chrome_author_start", "chrome_user_skill_save"]
-    # skills through the handlers
-    result = await authoring.HANDLERS["chrome_user_skill_save"](orch, object(), OWNER, ["user"], {
-        "fields": {"skill_name": "Standup", "skill_command": "standup", "skill_applies": "",
-                   "skill_instructions": "Yesterday / today / blockers."}})
-    assert "Saved" in result[2] and "/standup" in result[2]
-    html = await authoring.render(orch, OWNER, ["user"], {})
-    assert "/standup" in html and 'data-astral-commands="[{' in html
-    result = await authoring.HANDLERS["chrome_user_skill_save"](orch, object(), OWNER, ["user"], {
-        "fields": {"skill_name": "Standup", "skill_command": "help", "skill_applies": "",
-                   "skill_instructions": "Yesterday / today / blockers."}})
-    assert "built-in" in result[2]
-    result = await authoring.HANDLERS["chrome_user_skill_edit"](orch, object(), OWNER, ["user"],
-                                                          {"slug": "standup"})
-    assert result[1] == {"skill_slug": "standup"}
-    html = await authoring.render(orch, OWNER, ["user"], result[1])
-    assert "Edit skill" in html and 'name="skill_slug" value="standup"' in html
-    comps = await authoring.components(orch, OWNER, ["user"], result[1])
-    form = [c for c in comps if c.get("submit_action") == "chrome_user_skill_save"][0]
-    assert form["submit_payload"] == {"skill_slug": "standup"}
-    result = await authoring.HANDLERS["chrome_user_skill_toggle"](orch, object(), OWNER, ["user"],
-                                                            {"slug": "standup", "enabled": False})
-    assert "now off" in result[2]
-    html = await authoring.render(orch, OWNER, ["user"], {})
-    assert 'data-astral-commands="[]"' in html                     # disabled ⇒ not advertised
-    result = await authoring.HANDLERS["chrome_user_skill_delete"](orch, object(), OWNER, ["user"],
-                                                            {"slug": "standup"})
-    assert "deleted" in result[2] and us.store_for(orch).list(OWNER) == []
+    owner = skill_authority.owner
+    async with skill_authority.select(orch) as caller:
+        html = await authoring.render(orch, owner, ["user"], {})
+        assert "Desktop host connected" in html
+        assert "chrome_author_quick_create" in html and "Create</button>" in html
+        assert "Advanced: build it step by step" in html and "chrome_author_start" in html
+        assert "Your skills" in html and "chrome_user_skill_save" in html
+        assert 'data-astral-commands="[]"' in html
+        assert "share" not in html.lower().replace("shared", "")   # no share/publish affordance
+        comps = await authoring.components(orch, owner, ["user"], {})
+        kinds = [(c["type"], c.get("submit_action")) for c in comps]
+        assert ("alert", None) == kinds[0]
+        submits = [k[1] for k in kinds if k[1]]
+        assert submits == ["chrome_author_quick_create", "chrome_author_start", "chrome_user_skill_save"]
+        form = next(c for c in comps if c.get("submit_action") == "chrome_user_skill_save")
+        identity = form["submit_payload"]
+        assert UUID(identity["skill_id"]).version == UUID(identity["command_id"]).version == 4
+        assert identity["expected_revision"] == 0 and identity["skill_enabled"] == "true"
+        fields = {"skill_name": "Standup", "skill_command": "standup", "skill_applies": "",
+                  "skill_instructions": "Yesterday / today / blockers."}
+        # Mutations carry the actual rendered identity; the notice is receipt-safe.
+        result = await authoring.HANDLERS["chrome_user_skill_save"](
+            orch, object(), owner, ["user"], {**identity, "fields": fields})
+        assert "Skill saved." in result[2] and "/standup" not in result[2]
+        skills = await us.store_for(orch).list(caller=caller)
+        assert len(skills) == 1 and skills[0].skill_id == identity["skill_id"] and skills[0].revision == 1
+        html = await authoring.render(orch, owner, ["user"], {})
+        assert "/standup" in html and 'data-astral-commands="[{' in html
+        comps = await authoring.components(orch, owner, ["user"], {})
+        add = next(c for c in comps if c.get("submit_action") == "chrome_user_skill_save")
+        with pytest.raises(AssignmentError, match="skill_invalid") as invalid:
+            await authoring.HANDLERS["chrome_user_skill_save"](
+                orch, object(), owner, ["user"],
+                {**add["submit_payload"], "fields": {**fields, "skill_command": "help"}})
+        assert invalid.value.status_code == 422
+        assert await us.store_for(orch).list(caller=caller) == skills  # built-in command refused
+        result = await authoring.HANDLERS["chrome_user_skill_edit"](
+            orch, object(), owner, ["user"], {"slug": "standup"})
+        assert result[1] == {"skill_slug": "standup"}
+        html = await authoring.render(orch, owner, ["user"], result[1])
+        assert "Edit skill" in html and 'name="skill_slug" value="standup"' in html
+        comps = await authoring.components(orch, owner, ["user"], result[1])
+        form = next(c for c in comps if c.get("submit_action") == "chrome_user_skill_save")
+        edit = form["submit_payload"]
+        assert edit == {"skill_slug": "standup", "skill_id": identity["skill_id"],
+                        "command_id": edit["command_id"], "expected_revision": 1, "skill_enabled": "true"}
+        assert UUID(edit["command_id"]).version == 4 and edit["command_id"] != identity["command_id"]
+        cards = [c for c in comps if c.get("type") == "card" and c.get("title") == "Standup"]
+        toggle = next(c for c in cards[0]["content"] if c.get("action") == "chrome_user_skill_toggle")
+        result = await authoring.HANDLERS["chrome_user_skill_toggle"](
+            orch, object(), owner, ["user"], toggle["payload"])
+        assert "Skill setting saved." in result[2]
+        current = await us.store_for(orch).list(caller=caller)
+        assert len(current) == 1 and current[0].revision == 2 and not current[0].enabled
+        html = await authoring.render(orch, owner, ["user"], {})
+        assert 'data-astral-commands="[]"' in html                     # disabled ⇒ not advertised
+        comps = await authoring.components(orch, owner, ["user"], {})
+        card = next(c for c in comps if c.get("type") == "card" and c.get("title") == "Standup")
+        delete = next(c for c in card["content"] if c.get("action") == "chrome_user_skill_delete")
+        result = await authoring.HANDLERS["chrome_user_skill_delete"](
+            orch, object(), owner, ["user"], delete["payload"])
+        assert "deleted" in result[2] and await us.store_for(orch).list(caller=caller) == ()
 
 
 async def test_progress_pushes_only_while_the_person_is_looking(db, tmp_path, monkeypatch):
@@ -387,19 +469,21 @@ async def test_progress_pushes_only_while_the_person_is_looking(db, tmp_path, mo
     assert rendered == [authoring.SURFACE_KEY]
 
 
-async def test_quick_create_handler_and_dismiss(db, tmp_path):
+async def test_quick_create_handler_and_dismiss(db, tmp_path, skill_authority):
     orch = _orch(db, _LLM(), tmp_path)
-    result = await authoring.HANDLERS["chrome_author_quick_create"](
-        orch, object(), OWNER, ["user"], {"fields": {"description": "sort my inbox every morning"}})
-    assert "Creating" in result[2]
-    run = qc.runs_for(OWNER)[0]
-    await _settle(run)
-    assert run.state == qc.DONE
-    html = await authoring.render(orch, OWNER, ["user"], {})
-    assert "Running on" in html and "Dismiss" in html
-    await authoring.HANDLERS["chrome_author_quick_dismiss"](orch, object(), OWNER, ["user"],
-                                                            {"draft_id": run.draft_id})
-    assert qc.runs_for(OWNER) == []
+    owner = skill_authority.owner
+    async with skill_authority.select(orch):
+        result = await authoring.HANDLERS["chrome_author_quick_create"](
+            orch, object(), owner, ["user"], {"fields": {"description": "sort my inbox every morning"}})
+        assert "Creating" in result[2]
+        run = qc.runs_for(owner)[0]
+        await _settle(run)
+        assert run.state == qc.DONE
+        html = await authoring.render(orch, owner, ["user"], {})
+        assert "Running on" in html and "Dismiss" in html
+        await authoring.HANDLERS["chrome_author_quick_dismiss"](orch, object(), owner, ["user"],
+                                                                {"draft_id": run.draft_id})
+        assert qc.runs_for(owner) == []
 
 
 def test_step_editor_copy_and_stale_pass_warning(db):

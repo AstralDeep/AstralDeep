@@ -444,6 +444,10 @@ class WorkAdmissionRepository(Protocol):
         self, fence: ExecutionFence, *, transaction: Any | None = None
     ) -> OperationRecord: ...
 
+    def assert_current_execution_lease(
+        self, fence: ExecutionFence, *, transaction: Any
+    ) -> OperationRecord: ...
+
     def reselect_execution(
         self,
         fence: ExecutionFence,
@@ -739,6 +743,16 @@ class WorkAdmissionCoordinator:
         self, fence: ExecutionFence, *, transaction: Any | None = None
     ) -> OperationRecord:
         return self._repository.assert_current_execution(fence, transaction=transaction)
+
+    def assert_current_execution_lease(
+        self, fence: ExecutionFence, *, transaction: Any
+    ) -> OperationRecord:
+        """Observe a durable running execution and every live admission slot.
+
+        The caller owns the existing bounded transaction and its preceding
+        owner/session locks. This neither renews nor reselects an execution.
+        """
+        return self._repository.assert_current_execution_lease(fence, transaction=transaction)
 
     def reselect_execution(self, fence: ExecutionFence) -> ExecutionFence:
         return self._repository.reselect_execution(
@@ -1778,6 +1792,12 @@ class InMemoryWorkAdmissionRepository:
                 raise StaleExecutionFenceError("execution fence is stale")
             return record
 
+    def assert_current_execution_lease(
+        self, fence: ExecutionFence, *, transaction: Any
+    ) -> OperationRecord:
+        """An in-memory store cannot attest a durable transaction's leases."""
+        raise StaleExecutionFenceError("durable execution lease observation unavailable")
+
     def reselect_execution(
         self,
         fence: ExecutionFence,
@@ -2573,6 +2593,15 @@ class PlaneWorkAdmissionRepository:
                 transaction=transaction,
             )
         )
+
+    def assert_current_execution_lease(
+        self, fence: ExecutionFence, *, transaction: Any
+    ) -> OperationRecord:
+        if transaction is None:
+            raise StaleExecutionFenceError("durable execution lease observation unavailable")
+        return _from_plane_record(self._invoke(
+            self._plane_repository.assert_current_execution_lease,
+            _to_plane_fence(fence), transaction=transaction))
 
     def reselect_execution(
         self,

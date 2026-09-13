@@ -54,6 +54,7 @@ def projection_chrome_availability() -> dict[str, bool]:
         "remote_enabled": remote,
         "computer_enabled": computer,
         "skills_enabled": skills,
+        "notes_enabled": True,
         **workspace,
     }
 
@@ -68,4 +69,6 @@ def projection_native_chrome_availability(claims: dict) -> dict[str, bool]:
     capabilities = claims.get("_client_capabilities", []) if isinstance(claims, dict) else []
     values["work_enabled"] = bool(values.get("work_enabled", False) and isinstance(capabilities, list)
                                   and "work_read_v1" in capabilities)
+    values["notes_enabled"] = bool(values.get("notes_enabled", False) and isinstance(capabilities, list)
+                                   and "guidance_notes_v1" in capabilities)
     return values

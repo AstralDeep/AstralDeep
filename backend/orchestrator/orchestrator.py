@@ -302,8 +302,10 @@ class _ConnectionIngressFrame:
     local_final_verified: bool = False
     work_read: "WorkSurfaceRead | None" = field(default=None, repr=False)
     human_request: object = field(default=None, repr=False)
+    guidance_origin: object = field(default=None, repr=False)
+    guidance_navigation: object = field(default=None, repr=False)
 
-    def close_work_read(self) -> None:
+    def close_work_read(self, *, preserve_guidance: bool = False) -> None:
         """Release private request authority on every terminal or discarded path."""
         if self.work_read is not None:
             self.work_read.close()
@@ -311,6 +313,12 @@ class _ConnectionIngressFrame:
         if self.human_request is not None:
             self.human_request.close()
             self.human_request = None
+        if self.guidance_navigation is not None:
+            self.guidance_navigation.close()
+            self.guidance_navigation = None
+        if self.guidance_origin is not None and not preserve_guidance:
+            self.guidance_origin.close()
+            self.guidance_origin = None
 
 
 @dataclass
@@ -1678,6 +1686,8 @@ class Orchestrator:
 
         from orchestrator.human_request_authority import HumanRequestBoundary
         self.human_request_boundary = HumanRequestBoundary(self)
+        from personalization.explicit_note_service import ExplicitNoteService
+        self.explicit_notes = ExplicitNoteService(self)
 
         # Feature 004 — component feedback & tool-improvement loop
         from feedback.repository import FeedbackRepository
@@ -7720,7 +7730,10 @@ class Orchestrator:
             return None
         # Work is an owner-scoped read. Ordinary clients may still attach the
         # current chat transport hint; it grants no conversation scope here.
-        chat_id = str(chat_value) if chat_value is not None and not is_work_read else None
+        is_guidance = (action == "chrome_open" and surface == "guidance") or action in {
+            "chrome_note_search", "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
+        }
+        chat_id = str(chat_value) if chat_value is not None and not (is_work_read or is_guidance) else None
         # Keep idempotency material non-secret.  Generic UI payloads can carry
         # chat text, PHI, credentials, or model input; none of those values may
         # be persisted even as a dictionary-attackable digest.  Submission and
@@ -7902,16 +7915,30 @@ class Orchestrator:
 
         try:
             if frame.action != "chat_message" or human_lookup_eligible:
+                from orchestrator import user_skills
+                voice_guidance = frame.operation_kind == "voice_chat_message" and user_skills.enabled()
                 frame.human_request = capture_human_socket_request(
                     getattr(self, "human_request_boundary", None), websocket=context.websocket,
                     context=context, message=frame.parsed,
-                    purpose="skill_lookup" if frame.action == "chat_message" else "metadata",
+                    purpose=("voice_guidance" if voice_guidance else
+                             "skill_lookup" if frame.action == "chat_message" else "metadata"),
                 )
             if frame.human_request is not None:
+                if ((frame.action == "chrome_open" and frame.surface == "guidance")
+                        or frame.action in {"chrome_note_search", "chrome_note_save",
+                                            "chrome_note_toggle", "chrome_note_forget"}):
+                    from orchestrator.projection_surfaces.guidance import capture_navigation
+
+                    frame.guidance_navigation = capture_navigation(self, pending=frame.human_request)
                 # Retain the original issued caller before any admission/lane wait.
                 await frame.human_request.capture_session()
                 if frame.human_request.purpose == "metadata":
                     frame.read_only = frame.human_request.method == "WS_READ"
+                elif frame.human_request.purpose == "voice_guidance":
+                    from orchestrator.turn_guidance_authority import capture_turn_guidance_from_human
+                    caller = await frame.human_request.authenticate()
+                    frame.guidance_origin = await capture_turn_guidance_from_human(
+                        caller, expected_orchestrator=self)
         except asyncio.CancelledError:
             frame.close_work_read()
             raise
@@ -9044,6 +9071,8 @@ class Orchestrator:
                 "request_generation": work.frame.request_generation,
                 "work_read": work.frame.work_read,
                 "human_request": work.frame.human_request,
+                "guidance_origin": work.frame.guidance_origin,
+                "guidance_navigation": work.frame.guidance_navigation,
             }
             token = _CONNECTION_OPERATION_CONTEXT.set(
                 connection_operation_context
@@ -9378,6 +9407,15 @@ class Orchestrator:
         action = (parsed or {}).get("action")
         if control in {"register_ui", "close"} or (
             (parsed or {}).get("type") == "ui_event"
+            and action in {"chrome_open", "chrome_close", "load_chat", "new_chat",
+                           "chrome_note_search", "chrome_note_save", "chrome_note_toggle",
+                           "chrome_note_forget"}
+        ):
+            from orchestrator.projection_surfaces.guidance import invalidate_navigation
+
+            invalidate_navigation(self, context.websocket)
+        if control in {"register_ui", "close"} or (
+            (parsed or {}).get("type") == "ui_event"
             and (action in {"chrome_close", "load_chat", "new_chat"}
                  or (action == "chrome_open" and not work_candidate))
         ):
@@ -9567,14 +9605,18 @@ class Orchestrator:
         drain_started = time.monotonic()
         context.closing = True
         from orchestrator.work_surface_authority import invalidate
+        from orchestrator.projection_surfaces.guidance import invalidate_navigation
 
         invalidate(self, context.websocket)
+        invalidate_navigation(self, context.websocket)
         context.preregistration.clear()
         for frame in context.ingress:
             frame.close_work_read()
         context.ingress.clear()
         for work in context.operations.values():
-            work.frame.close_work_read()
+            work.frame.close_work_read(preserve_guidance=(
+                work.owner.owner_scope is OwnerScope.USER
+                and work.frame.operation_kind == "voice_chat_message"))
         await self._notify_interactive_capacity()
 
         connection_work = tuple(
@@ -10707,7 +10749,7 @@ class Orchestrator:
                         # it does not join the general native chrome surface set.
                         if _dt in ("windows", "android", "ios", "macos") or (
                             _dt == "watch" and isinstance(user_data.get("_client_capabilities"), list)
-                            and "work_read_v1" in user_data["_client_capabilities"]
+                            and ({"work_read_v1", "guidance_notes_v1"} & set(user_data["_client_capabilities"]))
                         ):
                             from orchestrator.chrome_availability import (
                                 projection_native_chrome_availability,
@@ -12389,6 +12431,13 @@ class Orchestrator:
                     if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
                         work_arguments = {"request_generation": msg.request_generation,
                                           "work_read": work_read}
+                    elif ((msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "guidance")
+                          or msg.action in {"chrome_note_search", "chrome_note_save",
+                                            "chrome_note_toggle", "chrome_note_forget"}):
+                        work_arguments = {
+                            "request_generation": msg.request_generation,
+                            "guidance_navigation": (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("guidance_navigation"),
+                        }
                     handled = await handle_chrome_event(
                         self, websocket, str(msg.action or ""), msg.payload or {}, user_id,
                         **work_arguments,
@@ -13719,6 +13768,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 ])
             except Exception:  # pragma: no cover — defensive
                 pass
+            from orchestrator.user_skill_catalog import SkillCatalogError
+            if type(e) is SkillCatalogError:
+                # Cleanup is complete; admission must still record a failure.
+                raise
         finally:
             # Feature 014: clear the per-turn step recorder reference.
             # We do NOT flush in-flight steps here — the success path
@@ -13742,18 +13795,43 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         VirtualWebSocket to capture outputs.
         """
         logger.info("Dispatching async chat for chat_id=%s user_id=%s", chat_id, user_id)
+        from orchestrator import user_skills
+        from orchestrator.human_request_authority import current_socket_human_read, retire_socket_human_read
+        from orchestrator.turn_guidance_authority import (
+            bind_background_guidance, capture_turn_guidance_from_human, use_turn_guidance,
+        )
+        from orchestrator.user_skill_catalog import SkillCatalogError
+        from persistent_agents.models import AssignmentError
+        origin = None
+        if user_skills.enabled():
+            caller = None
+            try:
+                caller = await current_socket_human_read(expected_orchestrator=self, websocket=websocket)
+                origin = await capture_turn_guidance_from_human(caller, expected_orchestrator=self)
+            except AssignmentError as exc:
+                raise SkillCatalogError("skill_lookup_unavailable", exc.status_code) from None
+            finally:
+                if caller is not None:
+                    retire_socket_human_read(caller)
 
         async def _run_in_background(vws, msg, cid, display, uid, draft, tools, atts):
             """Execute handle_chat_message with the virtual WS."""
-            workspace_lock = self._workspace_locks.setdefault(
-                cid, asyncio.Lock()
-            )
-            async with workspace_lock:
-                await self.handle_chat_message(
-                    vws, msg, cid, display,
-                    user_id=uid, draft_agent_id=draft, selected_tools=tools,
-                    attachments=atts,
-                )
+            from contextlib import nullcontext
+            try:
+                if origin is not None:
+                    vws.task._guidance_origin = origin
+                    scope = use_turn_guidance(bind_background_guidance(
+                        origin, expected_orchestrator=self, websocket=vws), expected_orchestrator=self)
+                else:
+                    scope = nullcontext()
+                with scope:
+                    workspace_lock = self._workspace_locks.setdefault(cid, asyncio.Lock())
+                    async with workspace_lock:
+                        await self.handle_chat_message(vws, msg, cid, display,
+                            user_id=uid, draft_agent_id=draft, selected_tools=tools, attachments=atts)
+            finally:
+                if origin is not None:
+                    origin.close()
 
         uid = user_id or self._get_user_id(websocket)
         connection_generation = None
@@ -13765,39 +13843,35 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             operation, _owner, _fence = authority
             connection_generation = operation.connection_generation
             request_generation = operation.request_generation
-            chat_record = await asyncio.to_thread(
-                self.history.get_conversation_record,
-                chat_id,
-                uid,
-            )
-            if chat_record is None:
-                raise ConversationNotFound("conversation not found")
-            self._bind_conversation_scope(
-                websocket,
-                chat_id=chat_id,
-                connection_generation=connection_generation,
-                request_generation=request_generation,
-                purpose="commit",
-                base_render_revision=int(chat_record.render_revision or 0),
-            )
+            try:
+                chat_record = await asyncio.to_thread(self.history.get_conversation_record, chat_id, uid)
+                if chat_record is None:
+                    raise ConversationNotFound("conversation not found")
+                self._bind_conversation_scope(websocket, chat_id=chat_id,
+                    connection_generation=connection_generation, request_generation=request_generation,
+                    purpose="commit", base_render_revision=int(chat_record.render_revision or 0))
+            except BaseException:
+                if origin is not None:
+                    origin.close()
+                raise
         # Short user-facing label for cross-device task frames (055).
         title = " ".join((display_message or message or "").split())[:60]
-        bg_task = await self.async_task_manager.submit(
-            chat_id=chat_id,
-            user_id=uid,
-            coro_factory=_run_in_background,
-            kind="async_chat",
-            title=title,
-            connection_generation=connection_generation,
-            request_generation=request_generation,
-            msg=message,
-            cid=chat_id,
-            display=display_message,
-            uid=uid,
-            draft=draft_agent_id,
-            tools=selected_tools,
-            atts=attachments,
-        )
+        try:
+            bg_task = await self.async_task_manager.submit(
+                chat_id=chat_id, user_id=uid, coro_factory=_run_in_background, kind="async_chat",
+                title=title, connection_generation=connection_generation,
+                request_generation=request_generation, msg=message, cid=chat_id,
+                display=display_message, uid=uid, draft=draft_agent_id, tools=selected_tools,
+                atts=attachments)
+        except BaseException:
+            if origin is not None:
+                origin.close()
+            raise
+        if origin is not None:
+            if bg_task._canonical_status().value in {"completed", "failed", "cancelled", "retryable"}:
+                origin.close()
+            else:
+                bg_task._guidance_origin = origin
 
         # Register the submitting websocket as a watcher
         bg_task.watchers.append(websocket)
@@ -13875,10 +13949,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception:  # pragma: no cover — VirtualWebSocket accepts attrs
             logger.debug("machine claims binding failed", exc_info=True)
         self.ui_sessions[vws] = binding
+        # Private exact source object, never inferred from synthetic audit claims.
+        vws._guidance_machine_authority = authority
 
     def _unbind_machine_turn(self, vws) -> None:
         """Drop a machine turn's session binding when the turn ends."""
         self.ui_sessions.pop(vws, None)
+        if hasattr(vws, "_guidance_machine_authority"):
+            vws._guidance_machine_authority = None
+        if hasattr(vws, "_guidance_scheduled_attempt"):
+            vws._guidance_scheduled_attempt = None
 
     async def run_scheduled_turn(
         self,
@@ -14011,6 +14091,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         vws = VirtualWebSocket(bg)
         if authority is not None:
             self._bind_machine_turn(vws, authority)
+            vws._guidance_scheduled_attempt = (scheduled_attempt, scheduled_store)
         try:
             if atomic_publication:
                 if not await asyncio.to_thread(
@@ -15111,6 +15192,69 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         }
 
     async def handle_chat_message(
+        self, websocket, message: str, chat_id: str, display_message: str = None,
+        user_id: str = None, draft_agent_id: str = None, selected_tools=None,
+        attachments=None, operation_context=None, voice_dispatch=None,
+    ):
+        """Keep one original guidance handoff within the actual admitted turn."""
+        from orchestrator import user_skills
+        from orchestrator.human_request_authority import (
+            current_socket_human_read, retire_socket_human_read,
+        )
+        from orchestrator.turn_guidance_authority import (
+            bind_foreground_guidance, bind_machine_guidance, bind_voice_guidance,
+            capture_turn_guidance_from_human, current_turn_guidance, use_turn_guidance,
+        )
+        from orchestrator.user_skill_catalog import SkillCatalogError
+        from persistent_agents.models import AssignmentError
+
+        async def execute():
+            return await self._handle_chat_message_with_guidance(
+                websocket, message, chat_id, display_message, user_id=user_id,
+                draft_agent_id=draft_agent_id, selected_tools=selected_tools,
+                attachments=attachments, operation_context=operation_context,
+                voice_dispatch=voice_dispatch)
+
+        if not user_skills.enabled():
+            return await execute()
+        origin = None
+        try:
+            binding = current_turn_guidance(expected_orchestrator=self,
+                                            websocket=websocket, chat_id=chat_id)
+            if binding is not None:
+                if binding.origin.owner_id != (user_id or self._get_user_id(websocket)):
+                    raise SkillCatalogError("skill_authentication_required", 401)
+                return await execute()
+            context = operation_context or _CONNECTION_OPERATION_CONTEXT.get()
+            if voice_dispatch is not None:
+                binding = bind_voice_guidance((context or {}).get("guidance_origin"),
+                    expected_orchestrator=self, websocket=websocket, voice_dispatch=voice_dispatch,
+                    operation_context=context, chat_id=chat_id)
+            elif getattr(websocket, "_guidance_machine_authority", None) is not None:
+                scheduled = getattr(websocket, "_guidance_scheduled_attempt", None) or (None, None)
+                binding = await bind_machine_guidance(expected_orchestrator=self,
+                    websocket=websocket, authority=websocket._guidance_machine_authority,
+                    chat_id=chat_id, scheduled_attempt=scheduled[0], scheduled_store=scheduled[1])
+                origin = binding.origin
+            else:
+                caller = await current_socket_human_read(expected_orchestrator=self, websocket=websocket)
+                try:
+                    origin = await capture_turn_guidance_from_human(caller, expected_orchestrator=self)
+                    binding = bind_foreground_guidance(origin, expected_orchestrator=self,
+                        websocket=websocket, operation_context=context, chat_id=chat_id)
+                finally:
+                    retire_socket_human_read(caller)
+            if binding.origin.owner_id != (user_id or self._get_user_id(websocket)):
+                raise SkillCatalogError("skill_authentication_required", 401)
+            with use_turn_guidance(binding, expected_orchestrator=self):
+                return await execute()
+        except AssignmentError as exc:
+            raise SkillCatalogError("skill_lookup_unavailable", exc.status_code) from None
+        finally:
+            if origin is not None:
+                origin.close()
+
+    async def _handle_chat_message_with_guidance(
         self,
         websocket,
         message: str,
@@ -15397,29 +15541,38 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.warning("Empty message received")
             return
 
-        # Feature 040 (US5): expand a user-typed /slash-command into a normal
-        # prompt BEFORE any processing, so the rewritten turn flows through the
-        # exact same permission / audit / PHI gates (no privileged bypass). The
-        # user still sees their original "/command" via display_message. Pure
-        # prompt-shaping; fail-open to today's behavior on any error.
-        if flags.is_enabled("slash_commands"):
+        # Read once from the exact original admitted turn. The observation ends
+        # before the model phase; its parent handoff remains fenced for children.
+        from orchestrator import user_skills as _user_skills
+        from orchestrator.user_skill_catalog import SkillCatalogError
+        from persistent_agents.models import AssignmentError
+        _current_user_skills = ()
+        _skill_facade = _user_skills.store_for(self)
+        if _skill_facade is not None:
+            from orchestrator.turn_guidance_authority import acquire_turn_guidance_reader
+            _skill_caller = None
             try:
-                from orchestrator import slash_commands
-                _user_commands = None
-                try:  # 077: the user's own /command skills (fail-open)
-                    from orchestrator import user_skills as _user_skills
-                    _skill_store = _user_skills.store_for(self)
-                    if _skill_store is not None and user_id:
-                        _user_commands = _skill_store.command_map(user_id) or None
-                except Exception:
-                    logger.debug("user_skills: command lookup skipped", exc_info=True)
-                _expanded = slash_commands.expand_message(message, _user_commands)
-                if _expanded != message:
-                    if display_message is None:
-                        display_message = message  # preserve what the user typed
-                    message = _expanded
-            except Exception:
-                logger.debug("slash_commands: expansion skipped (fail-open)", exc_info=True)
+                _skill_caller = await acquire_turn_guidance_reader(
+                    expected_orchestrator=self, websocket=websocket, chat_id=chat_id)
+                if _skill_caller.owner_id != user_id:
+                    raise SkillCatalogError("skill_authentication_required", 401)
+                _current_user_skills = await _skill_facade.list(caller=_skill_caller)
+            except AssignmentError as exc:
+                raise SkillCatalogError("skill_lookup_unavailable", exc.status_code) from None
+            finally:
+                if _skill_caller is not None:
+                    _skill_caller.close()
+
+        # Expansion still enters the ordinary permission/audit/PHI dispatch.
+        if flags.is_enabled("slash_commands"):
+            from orchestrator import slash_commands
+            _user_commands = {skill.command: skill for skill in _current_user_skills
+                              if skill.enabled and skill.command}
+            _expanded = slash_commands.expand_message(message, _user_commands)
+            if _expanded != message:
+                if display_message is None:
+                    display_message = message
+                message = _expanded
 
         # 030 FR-009 (025 T021): intercept deterministic onboarding ParamPicker
         # submits before the LLM/history path and persist them directly. These
@@ -15940,7 +16093,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                              "__desktop_codegen__", "__subtasks__"}
                     _agents_in_play = {a for a in tool_to_agent.values() if a and a not in _meta}
                     _digest = skill_packs.build_skill_digest(
-                        self.knowledge_index, _agents_in_play, orch=self, owner=user_id)
+                        self.knowledge_index, _agents_in_play, user_skills=_current_user_skills)
                     if _digest:
                         system_prompt += f"\n{_digest}\n"
                 except Exception:
@@ -25181,6 +25334,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 len(publication_recovery.degraded_publication_ids),
             )
         self.generated_agent_publication_service.start()
+        self._track_startup_background_task(
+            self.explicit_notes.expiry_loop(), name="explicit-note-expiry",
+        )
 
         # Feature 040 (US2): mark the bundled first-party fleet owner-safe so
         # their tools are usable out of the box (audited; idempotent — already-

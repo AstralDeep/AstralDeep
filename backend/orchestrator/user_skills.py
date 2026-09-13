@@ -1,6 +1,7 @@
 """Feature 077 — user-authored skills (US3).
 
-A skill is one markdown file the user writes in the product: a name, when it
+A skill is current owner guidance in the Plane revision catalog. Legacy Markdown
+is retained for controlled first-use materialization and recovery. Its format is: a name, when it
 applies (every chat, or named agents), an optional ``/command`` alias, and the
 instructions. It lives in the SAME format as an authored skill pack
 (``knowledge_packs/README.md``) under the runtime knowledge directory —
@@ -162,7 +163,11 @@ def parse_markdown(text: str) -> Optional[Skill]:
 # ---------------------------------------------------------------------------
 
 class UserSkillStore:
-    """Owner-scoped skill files with an mtime cache (one directory per owner)."""
+    """Legacy format utility retained for recovery/fixtures, never product wiring.
+
+    All current product readers and writers use :func:`store_for`. Existing files
+    cease being live authority once their owner catalog is materialized.
+    """
 
     def __init__(self, knowledge_dir: str) -> None:
         self.knowledge_dir = knowledge_dir
@@ -300,41 +305,26 @@ def _normalise_applies(value: Any) -> Tuple[str, ...]:
 # Wiring helpers
 # ---------------------------------------------------------------------------
 
-def store_for(orch) -> Optional[UserSkillStore]:
-    """The orchestrator's store (created on first use next to the knowledge
-    index), or None when the feature is off."""
+def store_for(orch):
+    """Return only the current revision facade; never fall back to file authority."""
     if not enabled():
         return None
+    from orchestrator.user_skill_catalog import UserSkillFacade
     store = getattr(orch, "_user_skill_store", None)
-    if not isinstance(store, UserSkillStore):
-        knowledge_dir = None
+    if type(store) is not UserSkillFacade:
         index = getattr(orch, "knowledge_index", None)
-        if index is not None:
-            knowledge_dir = getattr(index, "knowledge_dir", None)
+        knowledge_dir = getattr(index, "knowledge_dir", None)
         if not knowledge_dir:
             from orchestrator.knowledge_synthesis import DEFAULT_KNOWLEDGE_DIR
             knowledge_dir = DEFAULT_KNOWLEDGE_DIR
-        store = UserSkillStore(knowledge_dir)
-        try:
-            orch._user_skill_store = store
-        except Exception:  # noqa: BLE001 — a frozen test double
-            pass
+        store = UserSkillFacade(orch, knowledge_dir)
+        orch._user_skill_store = store
     return store
 
 
-def digest_lines(orch, owner: Optional[str], agent_ids: Any, *, max_chars: int) -> List[str]:
-    """Bounded ``### <skill>`` sections for the skill digest: always-skills
-    first, then skills scoped to an agent in play."""
-    if not owner:
-        return []
-    store = store_for(orch)
-    if store is None:
-        return []
-    try:
-        skills = store.enabled(owner)
-    except Exception:  # noqa: BLE001 — fail-open
-        logger.debug("user_skills: digest read failed", exc_info=True)
-        return []
+def digest_lines(skills, agent_ids: Any, *, max_chars: int) -> List[str]:
+    """Format an already authenticated snapshot; this pure helper performs no reads."""
+    skills = [skill for skill in skills if skill.enabled]
     in_play = set(agent_ids or ())
     picked = [s for s in skills if s.always] + [
         s for s in skills if not s.always and any(s.applies(a) for a in in_play)]

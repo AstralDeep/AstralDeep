@@ -35,6 +35,7 @@ meta-tool is not injected and behavior is byte-identical to today.
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import logging
 import time
 import uuid
@@ -181,14 +182,18 @@ async def _audit_subtask(orch, *, user_id: str, chat_id: Optional[str],
 async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
                    parent_chat_id: Optional[str], parent_ws,
                    allowed_tools: Optional[List[str]], budget,
-                   correlation_id: str) -> SubtaskResult:
+                   correlation_id: str, guidance_parent=None) -> SubtaskResult:
     """Run ONE sub-task in a fresh isolated context under a budget slice."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
+    from orchestrator import user_skills
+    from orchestrator.turn_guidance_authority import inherit_turn_guidance, use_turn_guidance
 
     title = str(spec.get("title") or "sub-task")[:120]
     instruction = str(spec.get("instruction") or "").strip()
     if not instruction:
         return SubtaskResult(title, status="failed", detail="empty instruction")
+    if user_skills.enabled() and (guidance_parent is None or guidance_parent.origin.owner_id != user_id):
+        return SubtaskResult(title, status="failed", detail="guidance_read_unavailable")
 
     # A sub-task hop counts against the turn's global ceiling like any other.
     reason = budget.charge(1)
@@ -223,16 +228,21 @@ async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
     # a pre-bound slice (a budget with a parent); we remove it in ``finally``.
     orch._chain_budgets[sub_chat] = budget
 
-    await _audit_subtask(orch, user_id=user_id, chat_id=parent_chat_id,
-                         correlation_id=correlation_id, action="spawned",
-                         outcome="in_progress", title=title)
-    await _progress(orch, parent_ws, f"{title} — running")
-
     try:
-        await asyncio.wait_for(
-            orch.handle_chat_message(vws, instruction, sub_chat, user_id=user_id,
-                                     selected_tools=allowed_tools),
-            timeout=min(SUBTASK_TIMEOUT_S, max(budget.wall_clock_s - budget.elapsed_s(), 1.0)))
+        await _audit_subtask(orch, user_id=user_id, chat_id=parent_chat_id,
+                             correlation_id=correlation_id, action="spawned",
+                             outcome="in_progress", title=title)
+        await _progress(orch, parent_ws, f"{title} — running")
+
+        async def child():
+            binding = (inherit_turn_guidance(guidance_parent, expected_orchestrator=orch,
+                       websocket=vws, chat_id=sub_chat, budget=budget) if guidance_parent is not None else None)
+            scope = use_turn_guidance(binding, expected_orchestrator=orch) if binding is not None else nullcontext()
+            with scope:
+                await orch.handle_chat_message(vws, instruction, sub_chat, user_id=user_id,
+                                               selected_tools=allowed_tools)
+        await asyncio.wait_for(child(), timeout=min(SUBTASK_TIMEOUT_S,
+                                                   max(budget.wall_clock_s - budget.elapsed_s(), 1.0)))
     except asyncio.CancelledError:
         task.outputs.clear()  # orphaned partials are DISCARDED (FR-023)
         await _audit_subtask(orch, user_id=user_id, chat_id=parent_chat_id,
@@ -326,6 +336,18 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
         return MCPResponse(error={"message": msg, "retryable": False})
 
     from audit.recorder import make_correlation_id
+    from orchestrator import user_skills
+    from orchestrator.turn_guidance_authority import current_turn_guidance
+    from persistent_agents.models import AssignmentError
+    guidance_parent = None
+    if user_skills.enabled():
+        try:
+            guidance_parent = current_turn_guidance(expected_orchestrator=orch,
+                websocket=websocket, chat_id=chat_id)
+            if guidance_parent is None or guidance_parent.origin.owner_id != user_id:
+                raise AssignmentError("guidance_read_unavailable", 503)
+        except AssignmentError:
+            return MCPResponse(error={"message": "guidance_read_unavailable", "retryable": False})
     correlation_id = make_correlation_id()
     budget = orch._chain_budget_for(chat_id)
     # Each sub-task gets a slice of the turn's global budget; the slice debits
@@ -343,7 +365,7 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
         asyncio.create_task(_run_one(
             orch, spec, user_id=user_id, parent_chat_id=chat_id,
             parent_ws=websocket, allowed_tools=allowed_tools, budget=sl,
-            correlation_id=correlation_id))
+            correlation_id=correlation_id, guidance_parent=guidance_parent))
         for spec, sl in zip(specs, slices)
     ]
     try:

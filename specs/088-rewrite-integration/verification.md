@@ -1,5 +1,74 @@
 # Feature 088 verification record
 
+## Installed current-user guidance and private notes ingress — 2026-09-13 UTC
+
+This successor pins Plane `aca6595547a4e138c43a57f2ad058a444f762fbc`
+and Projection `347b0c6de7f65031e890ce4e9a57c38e9704c363`. Plane remains
+at guarded schema `088.005`; the migration and expected-catalog digests below
+are unchanged. The shared UI protocol digest is now
+`f7559a3dfcd4f9e16f740df6e0cadbd540d1648dfdf4fbcb86366e624fbe0a6d`.
+Four wheel installs verify, and root independently compared all215 installed
+entries with their exact wheels, excluding only pip-rewritten RECORD files.
+The component/parser cohort passed205 with one stale expected-pin failure;
+the exact-pin and current-composition successor passed2 after updating the
+constants. The unchanged clean-checkout gate is run after the local commit.
+
+User skills now use one owner/revision facade for legacy materialization,
+authoring commands, command discovery and turn reads. First materialization,
+including an empty catalog, commits its required metadata-only hash-chain audit
+with the catalog. Legacy files remain recovery inputs rather than mutable live
+authority after that marker. Authoring commands bind rendered UUID/revision
+identities; receipt-safe notices do not echo historical input as current state.
+The common turn reader preserves original HTTP/socket, managed-background,
+machine/grant, voice/session and child-task custody. It rechecks current database
+lease/grant clocks and rejects replaced identities; it never substitutes a newer
+registration, extends authority, or turns guidance into write permission.
+
+The installed common cohort passed209 in412.84 seconds on2,229 frozen inputs,
+without a component source overlay. Root independently replayed all20 raw
+coverage reports. The migrated legacy authoring suite passed15 in40.54 seconds,
+with174/174 changed test statements covered and all3 raw reports replayed.
+Actual signed synthetic JWT verification, session issuance, PostgreSQL, encrypted
+storage and hash-chain audit execute; institutional replies and agent/model
+fixtures remain synthetic. This is not live identity/provider qualification.
+
+Private notes use the shared Projection forms and a current-socket navigation
+ticket. The host preserves the originally selected owner/session before admission,
+checks exact command revisions, builds the complete response, then verifies its
+displayed heads/expiry before delivery. New navigation, registration, disconnect,
+timeout and newer notes requests retire older tickets. The actual ingress cohort
+passed13, including issuance replacement, all navigation retirement paths,
+malformed-command refusal, metadata privacy and newer-request wins. Root verified
+97 artifacts and replayed all7 raw reports. The complete installed notes/protocol
+successor passed97 in163.93 seconds: adapter220/223, pure tests40/40, PostgreSQL
+tests284/285 and protocol tests24/24. All7 raw reports match their frozen sources.
+Watch adaptation preserves the complete form or refuses a device-limited view.
+
+The menu/startup/runtime cohort passed63 in10.21 seconds. Updated registered
+native clients receive the server's shared notes entry; unnegotiated REST clients
+do not receive unsupported private-view navigation. Actual startup schedules
+expiry after publication recovery; a real expired encrypted row is erased, and
+shutdown joins the worker before closing Plane. New menu tests38/38 and startup
+tests52/52 are covered. Its6 raw reports and2,232 frozen inputs verify exactly.
+Earlier root fixture failures (wrong menu-item shape and missing fixture alias)
+are retained separately, alongside the original legacy-catalog failures.
+
+Across this backend integration, exact current-file coverage observations cover
+1,330/1,397 changed production statements and2,501/2,514 changed test statements;
+every affected file meets90%. This is a local source-bound diagnostic, not
+canonical candidate release evidence. Ruff, scoped secret scanning and diff checks
+pass. Evidence is retained under `root-guidance-review-01`,
+`turn-guidance-installed-01`, `guidance-integration-01`, `guidance-ingress-01`,
+`authoring-ux-077-successor-01` and `component-install-08`. Completed private test
+databases are dropped after zero-connection checks.
+
+Selected agent/skill/note acceptance, combined expansion and execution/publication
+bindings remain T036 work; the current management/read milestone does not imply
+selected execution is complete. Native interaction qualification, full088,
+representative staging/recovery and protected release gates remain open. Product
+checkpoints remain local/unpushed; the previously submitted store builds do not
+contain these changes. Production deployment is not cleared.
+
 ## Installed owner guidance storage and encrypted notes — 2026-09-13 UTC
 
 Deep pins Plane `f8699a512b3dbfef756e12c0e78cf29d09418fc2` and Projection

@@ -39,9 +39,11 @@ from orchestrator.work_write_boundary import freeze_work_request
 from persistent_agents.models import AssignmentError
 
 _HUMAN_CALLER = contextvars.ContextVar("current_human_metadata_caller", default=None)
-_SOCKET_READS = frozenset({"chrome_author_list", "chrome_user_skill_edit", "chrome_declarative_view"})
+_SOCKET_READS = frozenset({"chrome_author_list", "chrome_user_skill_edit", "chrome_declarative_view",
+                           "chrome_note_search"})
 _SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle",
-                           "chrome_user_skill_delete", "chrome_declarative_command"})
+                           "chrome_user_skill_delete", "chrome_declarative_command",
+                           "chrome_note_save", "chrome_note_toggle", "chrome_note_forget"})
 MAX_SOCKET_MESSAGE_BYTES = 128 * 1024
 
 
@@ -56,7 +58,9 @@ def _socket_method(message):
     if action in _SOCKET_READS:
         return "WS_READ"
     payload = message.get("payload")
-    if action == "chrome_open" and type(payload) is dict and payload.get("surface") == "agent_authoring":
+    if (action == "chrome_open" and type(payload) is dict
+            and type(payload.get("surface")) is str
+            and payload.get("surface") in {"agent_authoring", "guidance"}):
         return "WS_READ"
     return None
 
@@ -155,6 +159,19 @@ class _Composition:
     socket_request: object = field(default=None, repr=False)
 
     @classmethod
+    def capture_host(cls, boundary):
+        """Capture storage identities only; this grants no caller authority."""
+        if type(boundary) is not HumanRequestBoundary:
+            _unavailable()
+        value = cls(None, boundary, boundary.orchestrator, boundary.plane_runtime,
+            boundary.repositories, boundary.repositories.agents, boundary.sessions,
+            boundary.sessions._sessions, boundary.repositories.history.sessions,
+            boundary.audit_repo, boundary.audit_repo._audit, boundary.repositories.audit,
+            boundary.adapter)
+        value.assert_host_current(boundary.orchestrator)
+        return value
+
+    @classmethod
     def capture(cls, request, boundary):
         if type(boundary) is not HumanRequestBoundary:
             _unavailable()
@@ -176,10 +193,10 @@ class _Composition:
         value.assert_current(boundary.orchestrator)
         return value
 
-    def assert_current(self, expected_orchestrator):
+    def assert_host_current(self, expected_orchestrator):
+        """Check the original host composition, without asserting a transport grant."""
         plane = getattr(getattr(self.orch, "runtime_composition", None), "plane", None)
         if (expected_orchestrator is not self.orch
-                or (self.socket_request is None and _orchestrator(self.app) is not self.orch)
                 or getattr(self.orch, "human_request_boundary", None) is not self.boundary
                 or self.boundary.closed or self.boundary.orchestrator is not self.orch
                 or self.boundary.plane_runtime is not self.runtime
@@ -202,6 +219,11 @@ class _Composition:
                 or self.repositories.audit is not self.audit_repository
                 or self.boundary.adapter is not self.adapter
                 or self.adapter.repositories is not self.repositories):
+            _unavailable()
+
+    def assert_current(self, expected_orchestrator):
+        self.assert_host_current(expected_orchestrator)
+        if self.socket_request is None and _orchestrator(self.app) is not self.orch:
             _unavailable()
         if self.socket_request is not None:
             self.socket_request.assert_socket()
@@ -438,7 +460,8 @@ class _HumanSocketRequest:
                 or _socket_policy() != self.policy
                 or _socket_message(self.message) != self.message_json
                 or (self.purpose == "metadata" and _socket_method(self.message) != self.method)
-                or (self.purpose == "skill_lookup" and self.message.get("action") != "chat_message")):
+                or (self.purpose == "skill_lookup" and self.message.get("action") != "chat_message")
+                or (self.purpose == "voice_guidance" and not _voice_guidance_message(self.message))):
             _unauthenticated()
 
     async def capture_session(self):
@@ -522,10 +545,19 @@ def capture_human_socket_request(boundary, *, websocket, context, message, purpo
                   and message.get("action") == "chat_message" else None)
     elif purpose == "metadata":
         method = _socket_method(message)
+    elif purpose == "voice_guidance":
+        method = "WS_READ" if _voice_guidance_message(message) else None
     else:
         _unauthenticated()
     return None if method is None else _HumanSocketRequest(boundary, websocket=websocket,
         context=context, message=message, method=method, purpose=purpose)
+
+
+def _voice_guidance_message(message):
+    return type(message) is dict and (message.get("type") == "voice_local_final" or (
+        message.get("type") == "ui_event" and message.get("action") == "chat_message"
+        and type(message.get("payload")) is dict
+        and type(message["payload"].get("voice_origin")) is dict))
 
 
 async def current_socket_human_read(*, expected_orchestrator, websocket):
