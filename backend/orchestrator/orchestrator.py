@@ -25161,14 +25161,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         self.persistent_assignments = None
         self.persistent_assignment_runner = None
         if flags.is_enabled("persistent_agents"):
-            from persistent_agents.approvals import AssignmentApprovalBridge
-            from persistent_agents.runner import AssignmentRunner
-            from persistent_agents.service import AssignmentService
-            self.persistent_assignments = AssignmentService(self)
-            self.persistent_assignment_runner = AssignmentRunner(self, self.persistent_assignments)
-            self.persistent_assignments.approval_executor = AssignmentApprovalBridge(
-                self.persistent_assignment_runner)
-            self.persistent_assignment_runner.start()
+            from persistent_agents.runtime import start_assignment_runtime
+            start_assignment_runtime(self)
 
         if flags.is_enabled("scheduler_execution"):
             try:

@@ -1,5 +1,56 @@
 # Feature 088 verification record
 
+## Fixed research HTTP, supervisor and retained result integration — 2026-09-13 UTC
+
+The versioned Work router now registers fixed research submission and an explicit
+`/{id}/result` read. The existing persistent-agent startup flag composes its one
+service/runner pair with the finite research handler and approval bridge. Failed
+construction closes the new store before publishing either object. Unsupported
+one-shot profiles cannot be claimed by this handler, and discovery advances past
+them. New acceptance requires that exact coherent runner and its live supervisor;
+an existing accepted receipt remains readable after the runner stops.
+
+The final root installed-component integration passed **16 tests in 103.91 seconds**
+with the full measured backend/component Python closure unchanged. Six cases run
+actual registered HTTP submission, automatic supervision, both execution fences,
+source/model dispatch, charging, result projection and audit; ten cover factory
+failure/cleanup and the actual orchestrator startup flag on/off. Institutional
+replies and the final source/model responses are synthetic, with the inherited
+fixture's unrelated policy-analyzer isolation. This is not live staging. A completed
+result remains readable after provider settings are removed, but a foreign owner
+or logout during delivery receives no result. No manual runner notification is
+needed, and accepted replay neither dispatches nor charges again.
+
+Independent final qualification is retained rather than reported as one combined
+run: HTTP **71/71** plus the unchanged acceptance/preflight **105/105** from the
+preceding cohort; projector and existing page builder **102/102**; runner **105
+passes** in the broad cohort plus **26/26** affected cases in its corrected
+network-harness successor. The prior HTTP cohort's empty-frame timeout failure
+was real: Starlette skipped empty frames without yielding to the deadline. The
+adapter now checks each raw ASGI frame and yields under one absolute timeout.
+The runner successor corrects only its test guard's numeric-IP resolution policy;
+external hostname resolution and connections remain refused. Initial failures,
+fixture corrections, exact commands, installed origins, source hashes, XML and
+coverage remain in the private qualification records.
+
+The result projector verifies the named model-result MAC, exact source/action
+bindings, typed revisions/resource counters, selected passage digests and rebuilt
+checkpoint result. It reads the two action rows in sorted ID order inside bounded
+SQL waits and compares the original/locked/final records. These are bounded READ
+COMMITTED checks, not an atomic owner-retirement snapshot. Private prompts,
+provider settings, MAC bindings and arbitrary checkpoint fields are not returned.
+Missing historical keys, non-retained content and unsupported profiles receive a
+closed, data-free disposition.
+
+Changed executable coverage across the nine production modules is **351/352
+(99.72%)**, every module above 90%, from its matching source-bound cohort. Ruff,
+diff and secret checks pass. No schema, dependency or additional feature flag was
+introduced; the qualified component pins remain unchanged. This batch is local
+and unpushed. Native submission still needs a qualified server-session authority
+bridge, and shared Work/result UI, remaining lifecycle controls, non-retained
+reacquisition/retries, broader profiles, full 088 and canonical staging/release
+evidence remain open. The owner's submitted client builds are a separate milestone.
+
 
 ## Work delivery and fixed-profile admission qualification — 2026-09-13 UTC
 

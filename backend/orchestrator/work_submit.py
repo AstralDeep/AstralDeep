@@ -189,13 +189,22 @@ class FixedResearchPreflight:
 
 
 class WorkSubmitService:
-    def __init__(self, assignments, audit, sessions, *, research_preflight=None):
+    def __init__(self, assignments, audit, sessions, *, research_preflight=None, new_admission_check=None):
         """Keep source-only acceptance unless this exact capability is supplied."""
         if research_preflight is not None and type(research_preflight) is not FixedResearchPreflight:
             raise TypeError("research_preflight must be FixedResearchPreflight")
+        if new_admission_check is not None and not callable(new_admission_check):
+            raise TypeError("new_admission_check must be a synchronous callable")
         self.assignments, self.audit, self.sessions = assignments, audit, sessions
         self.store = assignments.store
         self.research_preflight = research_preflight
+        self.new_admission_check = new_admission_check
+
+    def _check_new_admission(self):
+        """Run an optional server-only capability check, never on receipt replay."""
+        if self.new_admission_check is not None:
+            if _sync(self.new_admission_check()) is not None:
+                raise AssignmentError("work_submit_unavailable", 503)
 
     def _current(self, context, *, now=None):
         if type(context) is not AuthenticatedWorkRequest:
@@ -249,6 +258,7 @@ class WorkSubmitService:
         if accepted is not None:
             return accepted
         try:
+            self._check_new_admission()
             authority = await refresh_work_submission_authority(context, sessions=self.sessions)
             definition = await self._definition(context, authority, body)
             preflight = self.research_preflight
@@ -279,6 +289,7 @@ class WorkSubmitService:
                 if replay is not None:
                     self._current(context)
                     return WorkSubmissionResult(replay, False)
+                self._check_new_admission()
                 if preflight is not None:
                     preflight.assert_current(transaction, runtime=self.store.plane_runtime,
                                              owner_id=context.owner_id, prepared=prepared)
@@ -309,6 +320,7 @@ class WorkSubmitService:
                     raise AssignmentError("work_authority_unavailable", 403)
                 if preflight is not None:
                     preflight.assert_key(prepared)
+                self._check_new_admission()
                 return WorkSubmissionResult(record, True)
 
             result = await self.store.transaction(accept, bound_session_waits=True)

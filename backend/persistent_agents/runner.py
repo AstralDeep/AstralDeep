@@ -203,6 +203,64 @@ class AssignmentRunner:
         self.service._owner(record.owner_id, authority.claims)
         return authority
 
+    def fixed_research_ready(self, *, service, sessions) -> bool:
+        """Check exact server-owned composition without resolving any authority.
+
+        This reports handler availability only. It does not start supervision,
+        qualify provider configuration or grant a claim/dispatch permission.
+        """
+        from orchestrator.session_store import WebSessionStore
+        from persistent_agents.service import AssignmentService
+        from persistent_agents.store import AssignmentStore
+
+        if (type(self) is not AssignmentRunner or type(service) is not AssignmentService
+                or service is not self.service or service.store is not self.store
+                or type(self.store) is not AssignmentStore or service.orch is not self.orch
+                or type(sessions) is not WebSessionStore or not self._fixed_research()
+                or self.one_shot.sessions is not sessions or self._stopping):
+            return False
+        runtime = self.store.plane_runtime
+        return (runtime is not None and sessions._sessions.plane_runtime is runtime
+                and sessions._sessions.repository is runtime.repositories.history.sessions
+                and self.store.repository is runtime.repositories.assignments)
+
+    def _fixed_research(self):
+        """Only the existing exact handler selects this bounded research profile."""
+        from persistent_agents.research_episode import run_research_episode
+
+        return (type(self.one_shot) is OneShotLifecycle
+                and self.one_shot.episode is run_research_episode)
+
+    def _assert_operation_capability(self, record):
+        """Refuse unsupported fixed research before claim and again at dispatch.
+
+        Explicit legacy handlers retain their own contracts. Resource minima use
+        the same tool bound and model reservation as admission and execution;
+        the action ledger still decides current remaining allowance and policy.
+        """
+        if not self._fixed_research():
+            return
+        from llm_config import research_profile as profile
+        from persistent_agents.research_episode import source_request
+
+        if (not self.fixed_research_ready(service=self.service, sessions=self.one_shot.sessions)
+                or type(record) is not AssignmentRecord or record.operation is None
+                or type(record.operation.get("version")) is not int
+                or record.operation["version"] != 2):
+            raise DispatchDenied("assignment_operation_profile_unavailable")
+        request = source_request(record)
+        if (record.definition.consented_scopes != ("tools:read",)
+                or self.orch.tool_permissions.get_tool_scope(
+                    request["agent_id"], request["tool_name"]) != "tools:read"):
+            raise DispatchDenied("assignment_operation_profile_unavailable")
+        minimum = self.service.tool_bound(request["agent_id"] + ":" + request["tool_name"])
+        minimum["model_calls"] += 1
+        minimum["tokens"] += profile.RESERVED_TOKENS
+        minimum["elapsed_ms"] += profile.RESERVED_MILLISECONDS
+        if any(type(record.definition.limits.get(name)) is not int
+               or record.definition.limits[name] < amount for name, amount in minimum.items()):
+            raise DispatchDenied("assignment_operation_profile_unavailable")
+
     async def _tick_operations(self):
         """Scan one bounded page, advancing past unavailable original sessions."""
         if self._stopping or len(self._active) >= self.config.concurrency:
@@ -219,9 +277,11 @@ class AssignmentRunner:
                 return
             self._operation_cursor = (candidate.next_wake_at, candidate.assignment_id)
             try:
+                self._assert_operation_capability(candidate)
                 authority = await self._operation_authority(candidate)
                 def claim_current(tx, repo, current):
                     self.service._owner(current.owner_id, authority.claims)
+                    self._assert_operation_capability(current)
                     return repo.claim_operation_for_administration(tx, owner_id=current.owner_id,
                         assignment_id=current.assignment_id,
                         expected_state_version=authority.record.state_version,
@@ -342,6 +402,7 @@ class AssignmentRunner:
     async def _run_operation_claim(self, claim):
         """Run only the explicitly supplied handler under two renewable leases."""
         record = claim.assignment
+        self._assert_operation_capability(record)
         socket = VirtualWebSocket(BackgroundTask(
             task_id=str(uuid.uuid4()), chat_id=record.definition.conversation_id or record.assignment_id,
             user_id=record.owner_id, kind="one_shot_assignment"))
@@ -350,6 +411,7 @@ class AssignmentRunner:
         authority = None
         try:
             authority = await self._operation_authority(record)
+            self._assert_operation_capability(authority.record)
             fence = await self._admit(claim)
             lease = _EpisodeLease()
             executor = ActionExecutor(self, claim, fence, socket, operation_sessions=self.one_shot.sessions,
@@ -358,6 +420,7 @@ class AssignmentRunner:
 
             def bind(tx, repository, current):
                 self.service._owner(current.owner_id, authority.claims)
+                self._assert_operation_capability(current)
                 repository.bind_operation(tx, fence=claim.fence, binding=executor.binding)
                 return repository.assert_current_assignment_execution(tx, fence=claim.fence,
                     binding=executor.binding, authority=authority.observation)
@@ -365,6 +428,7 @@ class AssignmentRunner:
             await self.store.operation_lifecycle_transaction(
                 authority=authority, fence=claim.fence, callback=bind)
             renewal = asyncio.create_task(self._renew_operation(executor, asyncio.current_task()))
+            self._assert_operation_capability(executor.record)
             outcome = await self.one_shot.episode(executor)
             if not isinstance(outcome, OneShotEpisodeResult):
                 raise DispatchDenied("assignment_completion_invalid")
