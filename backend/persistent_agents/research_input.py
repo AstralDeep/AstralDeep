@@ -1,9 +1,11 @@
-"""Private, reconstructable input for one fixed USER research model attempt.
+"""Private input for one fixed USER research model attempt.
 
 Only route metadata, opaque source references and keyed bindings enter the action
 ledger. The complete body, configuration ciphertext and opened provider key stay
 in this immutable in-memory object. This object is not authority: callers must
 revalidate Plane's current source/config/session fences before permit or replay.
+Non-retained input additionally requires its original live acquisition proof;
+an unavailable ledger row cannot reconstruct a prompt.
 """
 
 from __future__ import annotations
@@ -13,7 +15,9 @@ import json
 from dataclasses import dataclass, field
 
 from astralplane.repositories.assignment_models import (
+    AssignmentActionOutcome,
     AssignmentInputReference,
+    AssignmentResultDisposition,
     AssignmentTransientInput,
 )
 from audit.pii import PrivateBindingKey, private_binding_key
@@ -66,7 +70,7 @@ def _record_identity(record) -> str:
         record.execution_profile != "one_shot"
         or operation.get("version") != 2
         or operation.get("kind") != "research"
-        or operation.get("source_retention") != "operation"
+        or operation.get("source_retention") not in {"operation", "none"}
         or operation.get("authority", {}).get("origin") != "interactive"
         or operation.get("authority", {}).get("reference_kind") != "session_incarnation"
     ):
@@ -153,13 +157,22 @@ class ResearchInput:
     _config: ResearchConfigSelection = field(repr=False)
     _key: PrivateBindingKey = field(repr=False)
     _request: ResearchRequest = field(repr=False)
+    _ephemeral: object = field(default=None, repr=False)
 
     @classmethod
-    async def capture(cls, record, source, *, config_store, key_id=None):
+    async def capture(cls, record, source, *, config_store, key_id=None, ephemeral=None):
         """Freeze source and exact uncached USER selection without storing prompts."""
         try:
             record_json = _record_identity(record)
-            source_json, observation = _source_identity(record, source)
+            if record.operation.get("source_retention") == "none":
+                from persistent_agents.research_recovery import EphemeralResearchSource
+                if type(ephemeral) is not EphemeralResearchSource:
+                    _deny()
+                source_json, observation = ephemeral.identity(record, source)
+            else:
+                if ephemeral is not None:
+                    _deny()
+                source_json, observation = _source_identity(record, source)
             key = private_binding_key(key_id)
             config = profile.select_config(
                 await config_store.capture_user(record.owner_id),
@@ -191,6 +204,7 @@ class ResearchInput:
                 config,
                 key,
                 request,
+                ephemeral,
             )
         except (ValueError, TypeError, KeyError, AttributeError, PermissionError):
             _deny()
@@ -214,7 +228,7 @@ class ResearchInput:
         return AssignmentTransientInput(
             binding_key_id=self.key_id,
             payload_binding=self.payload_binding,
-            source_retention="operation",
+            source_retention="none" if self._ephemeral is not None else "operation",
             references=(
                 AssignmentInputReference(
                     kind="source", resource_id=self.source_action_id, revision=1
@@ -231,7 +245,8 @@ class ResearchInput:
         """Compare already guarded/locked current rows and re-resolve the exact key."""
         self.assert_record(record)
         if (
-            _source_identity(record, source)[0] != self._source_json
+            (self._ephemeral.identity(record, source)[0] if self._ephemeral is not None
+             else _source_identity(record, source)[0]) != self._source_json
             or not self._config.matches(config_row)
             or private_binding_key(self.key_id) != self._key
         ):
@@ -335,6 +350,29 @@ class ResearchInput:
                 ),
             )
         ):
+            _deny()
+        return result
+
+    def ephemeral_result(self, action, selection) -> dict:
+        """Authenticate live selection against an unavailable model receipt."""
+        self.assert_action(action)
+        if self._ephemeral is None:
+            _deny()
+        result = self.selection_result(selection["passage_ids"])
+        expected = thaw(AssignmentActionOutcome(outcome="succeeded",
+            result_digest=action.result["result_digest"], result={}, actual=thaw(action.result["actual"]),
+            result_disposition=AssignmentResultDisposition(available=False,
+                reason="retention_discarded", binding_key_id=self.key_id)))
+        attempt = thaw(action.attempts[-1])
+        if (action.state != "succeeded" or action.ever_started is not True
+                or canonical(selection) != canonical(result)
+                or attempt.get("state") != "succeeded"
+                or canonical(attempt.get("outcome")) != canonical(expected)
+                or canonical(thaw(action.result)) != canonical({**expected,
+                    "result_available": False, "reacquisition_reason": "retention_discarded"})
+                or not hmac.compare_digest(expected["result_digest"], self.receipt_digest(
+                    action_id=action.action_id, attempt_id=attempt["attempt_id"],
+                    outcome="succeeded", result=result, actual=expected["actual"]))):
             _deny()
         return result
 

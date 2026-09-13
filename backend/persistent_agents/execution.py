@@ -117,6 +117,8 @@ class ActionExecutor:
         if operation_authority_lock is not None and not isinstance(operation_authority_lock, asyncio.Lock):
             raise TypeError("operation authority lock must be an asyncio lock")
         self.operation_authority_lock = operation_authority_lock
+        # Opaque generation only; source text never lives in executor/session state.
+        self._research_generation = None
         self.record = claim.assignment
         self.one_shot = self.record.execution_profile == "one_shot"
         self.binding = AssignmentOperationBinding(
@@ -139,7 +141,7 @@ class ActionExecutor:
         if (self.operation_sessions is None or self.interactive
                 or self.remote_marker is not None or self.approved_action_id is not None
                 or current.operation.get("version") != 2
-                or current.operation.get("source_retention") != "operation"
+                or current.operation.get("source_retention") not in {"operation", "none"}
                 or not isinstance(request, dict) or request.get("kind") != "tool"
                 or set(request) != {"kind", "agent_id", "tool_name", "arguments"}
                 or request.get("agent_id") != "web-research-1"
@@ -169,6 +171,8 @@ class ActionExecutor:
                         or self.remote_marker is not None or self.approved_action_id is not None):
                     raise DispatchDenied("assignment_operation_profile_unavailable")
                 _research.assert_record(self.record)
+                if _research._ephemeral is not None:
+                    _research._ephemeral.assert_executor(self)
             if authority is None:
                 from orchestrator.session_authority import refresh_operation_execution_authority
                 authority = await refresh_operation_execution_authority(
@@ -212,11 +216,25 @@ class ActionExecutor:
 
     async def action(self, key: str, request: dict[str, Any], *, task_id=None, event_id=None):
         """Keep preparation and permit authorization coherent with optional renewal."""
+        if self.one_shot and self.record.operation.get("source_retention") == "none":
+            raise DispatchDenied("assignment_operation_profile_unavailable")
         async with _OperationAuthorityWindow(self.operation_authority_lock if self.one_shot else None) as window:
             return await self._action(key, request, task_id=task_id, event_id=event_id,
                                       authority_window=window if window.lock is not None else None)
 
-    async def _action(self, key, request, *, task_id=None, event_id=None, authority_window=None):
+    async def acquire_research_source(self):
+        """One fresh charged read whose scanned body never enters durable storage."""
+        from persistent_agents.research_episode import source_request
+        from persistent_agents.research_recovery import EphemeralAcquisition
+
+        async with _OperationAuthorityWindow(self.operation_authority_lock) as window:
+            acquisition = EphemeralAcquisition.create(self)
+            self._research_generation = acquisition.generation
+            return await self._action(acquisition.action_key, source_request(self.record),
+                authority_window=window, ephemeral=acquisition)
+
+    async def _action(self, key, request, *, task_id=None, event_id=None, authority_window=None,
+                      ephemeral=None):
         if self.one_shot:
             self._operation_reader(request)
         await safe_text(canonical(request), reviewed_urls(self.record.definition.source))
@@ -227,6 +245,10 @@ class ActionExecutor:
             )
             if existing is None:
                 break
+            if ephemeral is not None:
+                # An acquisition never reuses a previously reserved/issued key,
+                # including an unknown commit acknowledgement or UUID collision.
+                raise DispatchDenied("assignment_research_binding_changed")
             if existing.intent.request_digest != digest(request):
                 raise DispatchDenied("assignment_action_binding_changed")
             unstarted_failure = (
@@ -249,6 +271,9 @@ class ActionExecutor:
         else:
             raise DispatchDenied("assignment_history_capacity_exhausted")
         checks = await self.refresh(request if request["kind"] == "tool" else None)
+        if ephemeral is not None:
+            from persistent_agents.research_recovery import assert_ready
+            assert_ready(self.record)
         limits = self.record.definition.limits
         timeout_ms = (min(120_000, limits["elapsed_ms"]
             - self.record.usage.get("spent", {}).get("elapsed_ms", 0)
@@ -282,20 +307,31 @@ class ActionExecutor:
             approval_expires_at=datetime.now(UTC) + timedelta(hours=1) if sensitive else None,
         )
         if self.one_shot:
-            action = await self.store.call_for_operation("put_action_for_execution",
-                fence=self.claim.fence, binding=self.binding, intent=intent,
-                authority=checks["authority"].observation)
+            if ephemeral is not None:
+                def prepare(tx, repository, current):
+                    assert_ready(current)
+                    return repository.put_action_for_execution(tx,
+                        fence=self.claim.fence, binding=self.binding, intent=intent,
+                        authority=checks["authority"].observation)
+                action = await self.store.operation_lifecycle_transaction(authority=checks["authority"],
+                    fence=self.claim.fence, binding=self.binding, callback=prepare)
+            else:
+                action = await self.store.call_for_operation("put_action_for_execution",
+                    fence=self.claim.fence, binding=self.binding, intent=intent,
+                    authority=checks["authority"].observation)
         else:
             action = await self.store.call("put_action", fence=self.claim.fence, intent=intent)
-        return (await self._execute(action, authority_window=authority_window)
+        return (await self._execute(action, authority_window=authority_window, ephemeral=ephemeral)
                 if authority_window is not None else await self.execute(action))
 
     async def execute(self, action):
         """Execute a stored action with an optional pre-permit authority window."""
+        if self.one_shot and self.record.operation.get("source_retention") == "none":
+            raise DispatchDenied("assignment_operation_profile_unavailable")
         async with _OperationAuthorityWindow(self.operation_authority_lock if self.one_shot else None) as window:
             return await self._execute(action, authority_window=window)
 
-    async def _execute(self, action, *, authority_window=None):
+    async def _execute(self, action, *, authority_window=None, ephemeral=None):
         operation_checks = None
         if self.one_shot:
             request = thaw(action.intent.request)
@@ -345,8 +381,7 @@ class ActionExecutor:
                 raise DispatchDenied("assignment_tool_time_bound_exceeded")
         attempt_id = str(uuid.uuid4())
         reserve = self.store.call_for_operation if self.one_shot else self.store.call
-        reserved = await reserve(
-            "reserve_action_for_execution" if self.one_shot else "reserve_action",
+        reserve_values = dict(
             fence=self.claim.fence, action_id=action.action_id,
             attempt_id=attempt_id, expected_request_digest=action.intent.request_digest,
             maximum=action.intent.maximum, quote_digest=action.intent.quote_digest,
@@ -354,6 +389,16 @@ class ActionExecutor:
             **({"binding": self.binding, "authority": operation_checks["authority"].observation}
                if self.one_shot else {}),
         )
+        if ephemeral is not None:
+            def reserve_ephemeral(tx, repository, current):
+                from persistent_agents.research_recovery import assert_ready
+                assert_ready(current)
+                return repository.reserve_action_for_execution(tx, **reserve_values)
+            reserved = await self._reader_policy_transaction(operation_checks["authority"],
+                action.action_id, reserve_ephemeral)
+        else:
+            reserved = await reserve(
+                "reserve_action_for_execution" if self.one_shot else "reserve_action", **reserve_values)
         if not reserved.created:
             raise DispatchDenied("assignment_attempt_already_reserved")
         started = time.monotonic()
@@ -486,9 +531,31 @@ class ActionExecutor:
                 except (ValueError, PermissionError) as exc:
                     code = _result_failure_code(exc.args[0] if len(exc.args) == 1 else None)
                     outcome, result = "failed", {"code": code}
-            receipt = AssignmentActionOutcome(
-                outcome=outcome, result_digest=digest(result), result=result, actual=actual,
-            )
+            source_proof = None
+            if ephemeral is not None:
+                from astralplane.repositories.assignment_models import AssignmentResultDisposition
+                from persistent_agents.research_recovery import EphemeralResearchSource
+
+                if outcome == "succeeded":
+                    try:
+                        source_proof = EphemeralResearchSource.from_effect(
+                            self.record, action, attempt_id, result, actual, ephemeral)
+                    except (ValueError, PermissionError):
+                        outcome = "failed"
+                # Even failed reads have no durable payload in this profile.
+                # The live proof alone can authenticate and use discarded text.
+                receipt = AssignmentActionOutcome(outcome=outcome,
+                    result_digest=(source_proof.receipt if source_proof is not None
+                        else ephemeral._key.sign("result", canonical({"profile": "ephemeral-read-failure-v1",
+                            "action_id": action.action_id, "attempt_id": attempt_id,
+                            "outcome": outcome, "actual": thaw(actual)}).encode("utf-8"))),
+                    result={}, actual=actual,
+                    result_disposition=AssignmentResultDisposition(available=False,
+                        reason="retention_discarded", binding_key_id=ephemeral._key.key_id))
+            else:
+                receipt = AssignmentActionOutcome(
+                    outcome=outcome, result_digest=digest(result), result=result, actual=actual,
+                )
             result_context = {}
             cancelled = False
             settlement_window = _OperationAuthorityWindow(
@@ -533,6 +600,17 @@ class ActionExecutor:
             observed_state = outcome
             if cancelled:
                 raise asyncio.CancelledError
+            if ephemeral is not None and source_proof is not None and result_context:
+                source_proof.assert_executor(self)
+                source_proof.identity(self.record, retained)
+                observed = source_proof
+                return
+            if ephemeral is not None and outcome == "failed":
+                # A failed read is already charged and has no reusable text.
+                # Do not mask cancellation/transport failure with an availability
+                # error from intentionally discarded content.
+                observed = {"code": _result_failure_code(result.get("code"))}
+                return
             if retained_result.get("result_available") is False:
                 raise DispatchDenied("assignment_result_unavailable")
 
@@ -647,6 +725,8 @@ class ActionExecutor:
             config = self.store.plane_runtime.repositories.encrypted_llm_config.get_user_for_update(
                 tx, owner_id=private.owner_id)
             private.assert_current(current, source, config)
+            if private._ephemeral is not None:
+                private._ephemeral.assert_executor(self)
             self._assert_fixed_reader_policy(tx, authority)
             return callback(tx, repository, current)
         return await self.store.operation_lifecycle_transaction(authority=authority,
@@ -664,7 +744,7 @@ class ActionExecutor:
             raise AssignmentError(error.code,
                 403 if error.code == "assignment_scope_revoked" else 503) from None
 
-    async def research_selection(self, key: str, *, source_action_id: str):
+    async def research_selection(self, key: str, *, source_action_id: str, ephemeral=None):
         """Attempt only the fixed USER passage-selection profile, never raw prompts.
 
         This entry remains unregistered. It cannot run a generic model intent or
@@ -682,6 +762,11 @@ class ActionExecutor:
             uuid.UUID(source_action_id)
         except (ValueError, TypeError, AttributeError):
             raise DispatchDenied("assignment_research_binding_changed") from None
+        if self.record.operation.get("source_retention") == "none":
+            from persistent_agents.research_recovery import EphemeralResearchSource, model_key
+            if type(ephemeral) is not EphemeralResearchSource or key != model_key(self.record, ephemeral):
+                raise DispatchDenied("assignment_research_binding_changed")
+            ephemeral.assert_executor(self)
         async with _OperationAuthorityWindow(self.operation_authority_lock) as window:
             source_request = {"kind": "tool", **{name: thaw(self.record.definition.source)[name]
                 for name in ("agent_id", "tool_name", "arguments")}}
@@ -689,6 +774,9 @@ class ActionExecutor:
             current, source = await self.store.read_current_action(fence=self.claim.fence,
                 binding=self.binding, action_id=source_action_id,
                 authority=initial["authority"].observation)
+            if ephemeral is not None:
+                from persistent_agents.research_recovery import assert_ready
+                assert_ready(current)
             # A linked page must pass its own ordinary consent/egress/tool checks.
             source_checks = await self.refresh(thaw(source.intent.request), authority=initial["authority"])
             if (source.intent.permission_digest != source_checks["permission_digest"]
@@ -704,7 +792,7 @@ class ActionExecutor:
                     raise DispatchDenied("assignment_research_binding_changed")
                 key_id = transient.binding_key_id
             private = await ResearchInput.capture(current, source, config_store=self.orch._llm_store,
-                                                   key_id=key_id)
+                                                   key_id=key_id, ephemeral=ephemeral)
             await safe_text(canonical(private.body()["messages"]), reviewed_urls(current.definition.source))
             checks = await self.refresh(route(), authority=initial["authority"], _research=private)
             maximum = AssignmentResourceAmount(model_calls=1, tokens=profile.RESERVED_TOKENS,
@@ -717,6 +805,10 @@ class ActionExecutor:
                         or existing.intent.precondition_digest != checks["precondition_digest"]):
                     raise DispatchDenied("assignment_precondition_changed")
                 if existing.state == "succeeded":
+                    if ephemeral is not None:
+                        # A discarded selection is not reconstructed from IDs or
+                        # a caller object. Only this live physical result returns.
+                        raise DispatchDenied("assignment_result_unavailable")
                     def cached(tx, repository, _current):
                         actual = repository.get_action(tx, owner_id=private.owner_id,
                             assignment_id=private.assignment_id, action_id=existing.action_id)
@@ -749,10 +841,19 @@ class ActionExecutor:
         from persistent_agents.research_input import route
 
         attempt_id = str(uuid.uuid4())
-        reservation = await self.store.call_for_operation("reserve_action_for_execution",
+        reserve_values = dict(
             fence=self.claim.fence, binding=self.binding, authority=operation_checks["authority"].observation,
             action_id=action.action_id, attempt_id=attempt_id, expected_request_digest=private.payload_binding,
             maximum=action.intent.maximum, quote_digest=None, quote_expires_at=None)
+        if private._ephemeral is not None:
+            def reserve_ephemeral(tx, repository, current):
+                from persistent_agents.research_recovery import assert_ready
+                assert_ready(current)
+                return repository.reserve_action_for_execution(tx, **reserve_values)
+            reservation = await self._research_transaction(private, operation_checks["authority"],
+                reserve_ephemeral, action_id=action.action_id)
+        else:
+            reservation = await self.store.call_for_operation("reserve_action_for_execution", **reserve_values)
         if not reservation.created:
             raise DispatchDenied("assignment_attempt_already_reserved")
         invocation = object()
@@ -820,12 +921,15 @@ class ActionExecutor:
                     result = {"code": "assignment_research_response_refused"}
             receipt_digest = private.receipt_digest(action_id=action.action_id, attempt_id=attempt_id,
                 outcome=outcome, result=result, actual=actual)
+            ephemeral = private._ephemeral is not None
             receipt = AssignmentActionOutcome(outcome=outcome, result_digest=receipt_digest,
-                result=result, actual=actual,
-                result_disposition=AssignmentResultDisposition(available=outcome != "uncertain",
-                    reason="reconstruction_required" if outcome == "uncertain" else None,
+                result={} if ephemeral else result, actual=actual,
+                result_disposition=AssignmentResultDisposition(available=not ephemeral and outcome != "uncertain",
+                    reason=("retention_discarded" if ephemeral else
+                            "reconstruction_required" if outcome == "uncertain" else None),
                     binding_key_id=private.key_id))
             retained = None
+            current_result = False
             try:
                 async with _OperationAuthorityWindow(self.operation_authority_lock):
                     fresh = await self.refresh(route(), _research=private)
@@ -841,6 +945,7 @@ class ActionExecutor:
                             result_authority=fresh["authority"].observation)
                     retained = await self._research_transaction(private, fresh["authority"], settle,
                                                                 action_id=action.action_id)
+                    current_result = True
             except (Exception, asyncio.CancelledError) as error:
                 # Source/config/key/session can disappear after a real effect,
                 # including while reacquiring the renewal lock. A committed but
@@ -855,7 +960,16 @@ class ActionExecutor:
             saved = thaw(retained.result)
             observed = saved
             if outcome == "uncertain":
+                if ephemeral and status != "succeeded":
+                    # The context owns the original cancellation/transport error.
+                    # Settlement completed; do not replace that signal merely
+                    # because this authentic attempt has unresolved consumption.
+                    return
                 raise DispatchDenied("assignment_action_uncertain")
+            if ephemeral and outcome == "succeeded" and current_result:
+                observed = {"result_available": True,
+                            "result": private.ephemeral_result(retained, result)}
+                return
             if saved.get("result_available") is False:
                 raise DispatchDenied("assignment_result_unavailable")
             if outcome != "succeeded":

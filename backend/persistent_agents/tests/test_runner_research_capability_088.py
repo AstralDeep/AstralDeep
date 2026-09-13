@@ -125,8 +125,19 @@ async def test_unsupported_prefix_does_not_starve_supported_research(capability,
 
 
 @pytest.mark.asyncio
+async def test_nonretained_fixed_research_is_claimed_through_ordinary_authority(capability, monkeypatch):
+    op = capability
+    record = await asyncio.to_thread(create, op, retention="none")
+    started = []
+    monkeypatch.setattr(op.runner, "_start_claim", started.append)
+    await op.runner._tick_operations()
+    assert [claim.assignment.assignment_id for claim in started] == [record.assignment_id]
+    assert len(op.session_fixture[-1]) == 1
+    assert (await current(op, record)).phase == "checking"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("changes", [
-    {"retention": "none"},
     {"tools": ("web-research-1:fetch_page", "other:read")},
     {"tools": ("other:read",)},
     {"tools": ()},
