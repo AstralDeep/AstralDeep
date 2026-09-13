@@ -17127,6 +17127,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         actor_user_id, auth_principal = self._llm_audit_principals(websocket)
         from persistent_agents.dispatch_context import current_dispatch
         persistent_dispatch = current_dispatch()
+        if persistent_dispatch is not None and persistent_dispatch.research_input is not None:
+            from persistent_agents.research_input import invoke_fixed_user_model
+            return await invoke_fixed_user_model(self, websocket, messages, persistent_dispatch,
+                tools_desc=tools_desc, temperature=temperature, feature=feature,
+                response_format=response_format, reasoning_effort=reasoning_effort,
+                allow_stream=allow_stream, stream_chat_id=stream_chat_id)
         try:
             client, source, resolved = await self._resolve_llm_client_for(websocket)
         except self._LLMUnavailable:

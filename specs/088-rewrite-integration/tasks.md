@@ -34,7 +34,7 @@ Independent test: one Send starts ordinary chat/public research; all existing co
 
 Independent test: existing accounts, providers, tools and clients still work; upgrade preserves populated data and IAM denials.
 
-- [ ] T014 [P] [US2] Add institutional issuer/client/BFF/native compatibility and owner denial fixtures under backend/tests/ using existing auth interfaces; preserve cookie CSRF, azp and RFC 8693 behavior (FR-002).
+- [x] T014 [P] [US2] Add institutional issuer/client/BFF/native compatibility and owner denial fixtures under backend/tests/ using existing auth interfaces; preserve cookie CSRF, azp and RFC 8693 behavior (FR-002).
 - [ ] T015 [US2] Integrate new work ingress with current Keycloak/session context in backend/orchestrator/auth.py and proposed backend/orchestrator/work_api.py; do not introduce donor SessionService or identity tables (FR-002, FR-010).
 - [ ] T016 [US2] Add provider breadth and user/system separation cases under backend/llm_config/tests/; qualify optional local inference framing/accounting through backend/llm_config/client_factory.py without removing existing providers (FR-019).
 - [x] T017 [US2] Bind provider endpoint/key retention edits explicitly in backend/orchestrator/projection_surfaces/llm.py and existing encrypted provider services; test changed destination, keep/replace/remove and redaction (FR-019).
@@ -76,7 +76,7 @@ Independent test: initial/unchanged/changed/insufficient-evidence observations, 
 
 - [ ] T039 [P] [US5] Add held-job fairness, finite allowance, pause/Stop/last-run and cron/interval/one-shot regression fixtures in components/AstralPlane/tests/repositories/test_scheduler.py and backend/scheduler/tests/ (FR-008, FR-014, SC-003).
 - [ ] T040 [US5] Add optional scheduler policy/observation and atomic occurrence-to-assignment admission/Stop using components/AstralPlane/src/astralplane/repositories/scheduler.py and guarded migration registry; preserve existing recurrence semantics (FR-008, FR-014).
-- [ ] T041 [US5] Integrate bounded eligible-owner rotation and continuation in existing backend/scheduler/ service and Plane scheduler; do not apply oldest-N before eligibility or change semantic due times to mask starvation (FR-008).
+- [x] T041 [US5] Integrate bounded eligible-owner rotation and continuation in existing backend/scheduler/ service and Plane scheduler; do not apply oldest-N before eligibility or change semantic due times to mask starvation (FR-008).
 - [ ] T042 [US5] Implement initial extractive/unchanged/changed/insufficient-evidence monitoring over existing source/checkpoint contracts in backend/persistent_agents/ with exact prior-result bindings and allowance preservation (FR-013, FR-014).
 - [ ] T043 [US5] Integrate exact result proposal/save/download/provenance through existing backend/orchestrator/projection_surfaces/workspace_timeline.py and persistent action approval/publication interfaces; reject stale/consumed review and reconcile unknown effects (FR-005, FR-013).
 - [ ] T044 [US5] Add shared recurring-work and saved-result views through components/AstralProjection/src/astralprojection/chrome/assignments.py and workspace.py with host adapters under backend/orchestrator/projection_surfaces/ (FR-014, FR-023).

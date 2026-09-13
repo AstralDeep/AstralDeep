@@ -17,6 +17,7 @@ treat these diagnostic checks as that proof.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -652,6 +653,32 @@ def validate(repo, platform, output):
     return state
 
 
+@contextmanager
+def result_query_copy(result, *, deadline):
+    """Let Xcode cache queries in an exact private copy, never the raw evidence."""
+    require(time.monotonic() < deadline)
+    before = tree(result)
+    require(all(stat.S_ISREG(entry["mode"]) for entry in before.values()))
+    with tempfile.TemporaryDirectory(prefix="apple-result-query-") as directory:
+        copied = Path(directory).resolve() / result.name
+        copied.mkdir(mode=0o700)
+        for name, entry in before.items():
+            require(time.monotonic() < deadline)
+            source = result / name
+            within(result, source)
+            raw = read(source)
+            require(
+                digest(raw) == entry["sha256"] and len(raw) == entry["size"]
+                and source.lstat().st_mode == entry["mode"]
+            )
+            destination = copied / name
+            write_new(destination, raw)
+            destination.chmod(stat.S_IMODE(entry["mode"]))
+        require(tree(copied) == before)
+        yield copied
+        require(time.monotonic() < deadline and tree(result) == before)
+
+
 def xcresult_json(result, operation, *, deadline):
     """Read Xcode metadata with the fixed sibling policy's bounded subprocess IO."""
     path = Path(__file__).resolve().with_name("export_xccov_line_coverage.py")
@@ -673,15 +700,16 @@ def xcresult_json(result, operation, *, deadline):
             "0.1.0",
             "--compact",
         ]
-    command += ["--path", str(result)]
-    return json_document(
-        policy._bounded_command(
-            command,
-            cwd=result.parent,
-            max_stdout_bytes=16 * 1024 * 1024,
-            export_deadline=min(deadline, time.monotonic() + 30),
+    with result_query_copy(result, deadline=deadline) as copied:
+        command += ["--path", str(copied)]
+        return json_document(
+            policy._bounded_command(
+                command,
+                cwd=copied.parent,
+                max_stdout_bytes=16 * 1024 * 1024,
+                export_deadline=min(deadline, time.monotonic() + 30),
+            )
         )
-    )
 
 
 def observation_cases(summary, tests, lane):

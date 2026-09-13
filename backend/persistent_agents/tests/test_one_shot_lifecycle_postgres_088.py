@@ -826,14 +826,9 @@ async def test_tick_runs_actual_governed_reader_then_yields_without_claiming_res
         handled.append(executor)
         return OneShotEpisodeResult(
             snapshot,
-            completion(
-                snapshot,
-                checkpoint={
-                    "schema_version": 1,
-                    "source_action_id": actions[0].action_id,
-                    "step": "source_observed",
-                },
-            ),
+            # The actual source action is already durable. A lifecycle-only
+            # handler has no result proof and must leave the checkpoint intact.
+            completion(snapshot),
         )
 
     runner = await reader_runner(op, handler)
@@ -850,7 +845,7 @@ async def test_tick_runs_actual_governed_reader_then_yields_without_claiming_res
         ).assignment
         assert len(handled) == 1 and len(op.physical) == 1 and len(op.delegations) == 1
         assert snapshot.lifecycle == "active" and snapshot.phase == "waiting"
-        assert snapshot.checkpoint["step"] == "source_observed"
+        assert snapshot.checkpoint == {"schema_version": 1}
         assert snapshot.next_wake_at > datetime.now(UTC)
         assert snapshot.usage["spent"]["tool_calls"] == 1
         assert snapshot.usage["spent"]["model_calls"] == 0
@@ -1159,20 +1154,26 @@ async def test_other_operation_rotation_before_settlement_suppresses_stale_outpu
     other = await asyncio.to_thread(create_operation, fixture, op.runtime)
     op.executor.operation_authority_lock = _episode_lease(op.executor).lock
     original = op.executor.store.call_for_operation
+    transaction = op.executor._reader_policy_transaction
     receipts = []
 
     async def conflicted(method, **kwargs):
         if method == "record_action_outcome":
             receipts.append(kwargs)
+        return await original(method, **kwargs)
+
+    async def rotate_before_guard(authority, action_id, callback):
+        if callback.__name__ == "retain":
             await refresh_operation_execution_authority(
                 owner_id=op.owner,
                 assignment_id=other.assignment_id,
                 sessions=op.sessions,
                 plane_runtime=op.runtime,
             )
-        return await original(method, **kwargs)
+        return await transaction(authority, action_id, callback)
 
     op.executor.store.call_for_operation = conflicted
+    op.executor._reader_policy_transaction = rotate_before_guard
     with pytest.raises(DispatchDenied, match="assignment_result_unavailable"):
         await op.executor.action("concurrent-session-read", REQUEST)
     snapshot = (

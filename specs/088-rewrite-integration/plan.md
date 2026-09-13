@@ -1,6 +1,6 @@
 # Implementation Plan: Rewrite integration
 
-**Branch**: `codex/088-rewrite-integration` | **Date**: 2026-09-10 | **Spec**: [spec.md](spec.md)
+**Continuation branch**: `codex/088-completion` | **Original plan date**: 2026-09-10 | **Spec**: [spec.md](spec.md)
 
 ## Summary
 
@@ -28,14 +28,16 @@ Port every rewrite capability through existing Deep/Plane/Projection boundaries,
 
 ## Constitution Check
 
-The September 12 follow-up requests that the existing PRs become ready for review
-once Apple version 1.6 is uploaded. Both iPhone/Watch and Mac uploads succeeded.
-Publish the current implemented, locally qualified checkpoint with its component
-pins and remaining limitations visible; the owner will merge the PRs. This
-supersedes the prior draft-only review-state instruction for this checkpoint. It
-does not complete unfinished 088 tasks, supply missing protected release evidence,
-or authorize this agent to merge or deploy the backend. The local release-evidence
-diagnostic remains fail closed and non-authorizing.
+The owner merged Plane #8, Projection #15 and Deep #195 on September 12, then
+requested local cleanup and completion of unfinished 088 work. Continue from
+those merged trees on `codex/088-completion`; preserve the original feature scope
+and the owner's merge authority. The owner reports iOS 1.6 is waiting for review
+and the Mac build is missing. Both previous Apple deliveries received transport
+acknowledgements, but the Mac acknowledgement does not establish a processed or
+selectable build. Check its current provider state before retrying the preserved
+signed package. These store and review actions do not complete unfinished tasks,
+supply missing protected release evidence, or authorize backend deployment. The
+local release-evidence diagnostic remains fail closed and non-authorizing.
 
 Pre-design and post-design assessment: compatible with existing architecture and security policy. Completed contract/task analysis mapped all 36 requirements and 47 capability families, with no critical issue. Its one high inconsistency, accepted-retry receipt ordering, was corrected before implementation. The explicit web-first timing decision in FR-024 does not waive authorization, data protection, shared contracts or live evidence.
 

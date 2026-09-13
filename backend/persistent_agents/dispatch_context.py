@@ -61,6 +61,7 @@ class PersistentDispatchContext:
     remote_marker: str | None = None
     strict_final_arguments: bool = False
     conversation_id: str | None = None
+    research_input: Any = field(default=None, repr=False)
     _consumed: bool = field(default=False, init=False)
     _arguments_json: str = field(default="", init=False, repr=False)
 
@@ -71,6 +72,13 @@ class PersistentDispatchContext:
                 or not 1 <= self.max_output_tokens <= 8192):
             raise ValueError("invalid persistent dispatch bounds")
         self._arguments_json = canonical(self.arguments)
+        if self.research_input is not None:
+            from persistent_agents.research_input import ResearchInput, route
+            if (type(self.research_input) is not ResearchInput or self.kind != "model"
+                    or self.owner_id != self.research_input.owner_id or self.arguments != route()
+                    or self.timeout_seconds != 65 or self.max_output_tokens != 1024
+                    or not self.strict_final_arguments):
+                raise DispatchDenied("assignment_research_binding_changed")
 
     @property
     def consumed(self) -> bool:
@@ -134,6 +142,9 @@ class PersistentDispatchContext:
                            kwargs: dict[str, Any]) -> Any:
         if self.kind != "model":
             raise DispatchDenied("assignment_unreserved_model_call")
+        if self.research_input is not None:
+            self.research_input.assert_body(self.owner_id, kwargs)
+            return await self._invoke(invoke, final_arguments=kwargs)
         # UTF-8 bytes plus framing are a conservative upper bound for text-only
         # input tokens. Images/audio and unknown provider extensions are denied.
         messages = kwargs.get("messages", [])
@@ -144,6 +155,34 @@ class PersistentDispatchContext:
         kwargs["max_completion_tokens"] = self.max_output_tokens
         return await self._invoke(invoke)
 
+    def _validate_final(self, arguments):
+        if self.research_input is not None:
+            self.research_input.assert_body(self.owner_id, arguments)
+        else:
+            self.validate_final_tool_arguments(arguments)
+
+    async def _observe_research_once(self, permit, outcome, result):
+        """Own exactly one observer through repeated caller cancellation.
+
+        Never restart an uncertain settlement after an acknowledgement is lost.
+        The durable authentic permit remains the recovery identity if this one
+        observer itself fails. Consume its exception before returning cancellation.
+        """
+        observer = asyncio.create_task(self.observe(permit, outcome, result))
+        cancelled = False
+        while not observer.done():
+            try:
+                await asyncio.shield(observer)
+            except asyncio.CancelledError:
+                cancelled = True
+            except BaseException:
+                break
+        try:
+            return observer.result()
+        finally:
+            if cancelled:
+                raise asyncio.CancelledError
+
     async def _invoke(self, invoke: Callable[[], Awaitable[Any]], *,
                       final_arguments: dict[str, Any] | None = None) -> Any:
         if self._consumed:
@@ -152,20 +191,31 @@ class PersistentDispatchContext:
         # this one-time capability. A refused attempt is recreated only from the
         # durable ledger, never by resetting an in-memory boolean.
         self._consumed = True
-        self.validate_final_tool_arguments(final_arguments)
+        self._validate_final(final_arguments)
         await self.authorize()
-        self.validate_final_tool_arguments(final_arguments)
+        self._validate_final(final_arguments)
         permit = await self.start()
         try:
             # Both prior operations can wait. A changed request after issuance
             # is never sent, but its authentic permit still settles once.
-            self.validate_final_tool_arguments(final_arguments)
-            async with asyncio.timeout(self.timeout_seconds):
+            self._validate_final(final_arguments)
+            if self.research_input is not None:
+                # The isolated helper owns its physical60s + mandatory5s cleanup;
+                # an outer timeout must not abandon that cleanup or its observer.
                 result = await invoke()
+            else:
+                async with asyncio.timeout(self.timeout_seconds):
+                    result = await invoke()
         except BaseException:
             # A cancelled thread/remote request can still finish. Keep its full
             # reservation and immutable uncertain receipt; never infer no-send.
-            await asyncio.shield(self.observe(permit, "uncertain", None))
+            if self.research_input is not None:
+                await self._observe_research_once(permit, "uncertain", None)
+            else:
+                await asyncio.shield(self.observe(permit, "uncertain", None))
             raise
-        await asyncio.shield(self.observe(permit, "succeeded", result))
+        if self.research_input is not None:
+            await self._observe_research_once(permit, "succeeded", result)
+        else:
+            await asyncio.shield(self.observe(permit, "succeeded", result))
         return result

@@ -1823,6 +1823,22 @@ def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
     assert "workflow_dispatch:" not in _workflow_head(_workflow_text(READINESS))
 
 
+def test_mac_store_resource_repair_uses_exported_package_before_upload() -> None:
+    workflow = _workflow_text(WORKFLOWS / "apple-release.yml")
+    helper = "components/AstralProjection/apple-clients/Scripts/repair_macos_store_package.py"
+    assert workflow.index(f"test -f {helper}") < workflow.index("- name: Require signing material")
+    export = workflow.index("- name: Export both archives for the App Store")
+    repair = workflow.index(f"python3 {helper}")
+    retain = workflow.index('echo "PKG=$PKG" >> "$GITHUB_ENV"')
+    assert export < repair < retain
+    repair_body = workflow[repair:retain].replace("\\\n", " ")
+    command = shlex.split(repair_body.split("\n", 1)[0])
+    assert command[2:6] == ["--input", "$PKG", "--output", "$REPAIRED_PKG"]
+    assert 'PKG="$REPAIRED_PKG"' in repair_body
+    assert "macos-store-signature-receipt.json" in repair_body
+    assert "--deep" not in repair_body
+
+
 # ---------------------------------------------------------------------------
 # Policy: local parsing is diagnostic-only; CI never trusts a local verdict
 # ---------------------------------------------------------------------------

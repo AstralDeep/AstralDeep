@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -201,6 +202,9 @@ class ScheduledJobStore:
             repository=repository,
             plane_runtime=runtime,
         )
+        self._scan_hint = None
+        self._scan_generation = 0
+        self._scan_lock = threading.Lock()
 
     def bind_coordinator(self, coordinator: WorkAdmissionCoordinator) -> None:
         """Bind the shared production operation authority exactly once."""
@@ -614,6 +618,9 @@ class ScheduledJobStore:
         ``eligibility`` is a pure pre-materialization handler declaration
         check.  A false decision leaves the job untouched; no occurrence or
         accepted operation is fabricated for an ineligible handler.
+        A resettable local continuation advances past refused rows. Its short
+        lock never spans a database call; concurrent scans remain protected by
+        PostgreSQL claim fences, and an older completion cannot regress hints.
         """
 
         self._validate_claim_settings(
@@ -632,6 +639,9 @@ class ScheduledJobStore:
                 scheduled_ms,
             )
 
+        with self._scan_lock:
+            continuation = self._scan_hint
+            scan_generation = self._scan_generation
         with self._plane.transaction() as transaction:
             batch = self._plane.repository.materialize_and_claim_due_for_administration(
                 transaction,
@@ -640,7 +650,12 @@ class ScheduledJobStore:
                 lease_seconds=lease_seconds,
                 eligible=is_eligible,
                 next_run=next_cadence,
+                continuation=continuation,
             )
+        with self._scan_lock:
+            if self._scan_generation == scan_generation:
+                self._scan_hint = batch.continuation
+                self._scan_generation += 1
         for job_id in batch.ineligible_job_ids:
             logger.warning(
                 "scheduler.handler_ineligible",

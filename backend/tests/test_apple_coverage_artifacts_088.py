@@ -884,6 +884,10 @@ def test_tool_reader_has_fixed_protected_import_command_and_bounded_output(
     specs = []
 
     def bounded(command, **kwargs):
+        copied = Path(command[-1])
+        assert copied != result
+        assert (copied / "Data/observation").read_bytes() == b"native result"
+        (copied / "database.sqlite3").write_bytes(b"generated cache")
         calls.append((command, kwargs))
         return raw
 
@@ -898,6 +902,8 @@ def test_tool_reader_has_fixed_protected_import_command_and_bounded_output(
         lambda spec: SimpleNamespace(_bounded_command=bounded),
     )
     result = tmp_path / "raw.xcresult"
+    write(result / "Data/observation", b"native result")
+    original = helper.tree(result)
     if raw == b'{"ok":true}':
         assert helper.xcresult_json(
             result, operation, deadline=helper.time.monotonic() + 5
@@ -912,7 +918,9 @@ def test_tool_reader_has_fixed_protected_import_command_and_bounded_output(
     ]
     command, options = calls[0]
     assert command[:2] == ["/usr/bin/xcrun", "xcresulttool"]
-    assert command[-2:] == ["--path", str(result)]
+    copied = Path(command[-1])
+    assert command[-2] == "--path" and copied.name == result.name
+    assert not copied.parent.exists() and helper.tree(result) == original
     assert command[2:-2] == (
         ["metadata", "get"]
         if operation == "metadata"
@@ -925,7 +933,7 @@ def test_tool_reader_has_fixed_protected_import_command_and_bounded_output(
             "--compact",
         ]
     )
-    assert options["cwd"] == tmp_path
+    assert options["cwd"] == copied.parent
     assert options["max_stdout_bytes"] == 16 * 1024 * 1024
     assert (
         helper.time.monotonic()
@@ -968,6 +976,72 @@ def test_observation_query_cannot_change_an_earlier_lane(built, monkeypatch):
 
     monkeypatch.setattr(helper, "xcresult_json", mutate)
     assert helper.main(args(built, "validate-observations")) == 2
+
+
+@pytest.mark.parametrize("outcome", ["passed", "failed", "cancelled", "original-changed"])
+def test_private_result_query_copy_preserves_all_raw_files_and_cleans_up(tmp_path, outcome):
+    result = tmp_path / "raw.xcresult"
+    write(result / "Data/observation", b"actual input")
+    write(result / "database.sqlite3", b"original cached input")
+    before = helper.tree(result)
+    selected = []
+
+    def query():
+        with helper.result_query_copy(result, deadline=helper.time.monotonic() + 5) as copied:
+            selected.append(copied)
+            assert helper.tree(copied) == before
+            assert copied.parent.stat().st_mode & 0o777 == 0o700
+            (copied / "database.sqlite3").write_bytes(b"tool-owned new cache")
+            if outcome == "failed":
+                raise TimeoutError()
+            if outcome == "cancelled":
+                raise KeyboardInterrupt()
+            if outcome == "original-changed":
+                (result / "Data/observation").write_bytes(b"unauthorized replacement")
+
+    if outcome == "passed":
+        query()
+    else:
+        expected = {
+            "failed": TimeoutError, "cancelled": KeyboardInterrupt,
+            "original-changed": helper.ArtifactError,
+        }[outcome]
+        with pytest.raises(expected):
+            query()
+    assert selected and not selected[0].parent.exists()
+    if outcome != "original-changed":
+        assert helper.tree(result) == before
+
+
+@pytest.mark.parametrize("change", ["link", "parent-link", "bytes", "entries", "deadline", "race"])
+def test_private_result_copy_rejects_unsafe_unbounded_or_changed_input(tmp_path, monkeypatch, change):
+    result = tmp_path / "raw.xcresult"
+    source = write(result / "Data/observation", b"original")
+    if change == "link":
+        (result / "linked").symlink_to(source)
+    elif change == "parent-link":
+        outside = tmp_path / "outside"
+        (result / "Data").rename(outside)
+        (result / "Data").symlink_to(outside, target_is_directory=True)
+    elif change == "bytes":
+        monkeypatch.setattr(helper, "MAX_BYTES", 1)
+    elif change == "entries":
+        monkeypatch.setattr(helper, "MAX_FILES", 0)
+    elif change == "race":
+        original_tree = helper.tree
+
+        def changed_tree(path):
+            facts = original_tree(path)
+            if path == result:
+                source.write_bytes(b"replacement")
+            return facts
+
+        monkeypatch.setattr(helper, "tree", changed_tree)
+    with pytest.raises(helper.ArtifactError):
+        with helper.result_query_copy(
+            result, deadline=helper.time.monotonic() + (-1 if change == "deadline" else 5)
+        ):
+            pytest.fail("unsafe evidence must never reach a native query")
 
 
 def native_fixture(tmp_path):
