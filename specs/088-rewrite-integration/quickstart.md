@@ -13,6 +13,24 @@ Run targeted Projection/Deep commands in `contracts/ui.md`; Plane assignment/adm
 
 ## Integrated journeys
 
+The current local backend slice registers `POST /api/work/v1/operations` for the
+qualified retained, single-public-page research profile. It requires normal
+institutional cookie authentication, same-origin JSON, the original server-owned
+session incarnation, sufficient source/model budget and the exact encrypted USER
+provider profile. The existing persistent-agent flag must compose a live runner.
+Accepted receipt replay remains independent of current provider/runner availability.
+This endpoint does not replace ordinary chat Send or establish native/framework
+execution authority from a bare bearer token.
+
+`GET /api/work/v1/operations/{id}/result` uses current owner read authority and
+returns `{id, revision, result}`. The version-1 result envelope has `available`,
+`reason` and `content`; supported completed retained results contain attributed
+one-page excerpts. Otherwise the reason is `not_completed`, `unsupported`,
+`not_retained` or `unavailable`, and content is null. Metadata list/detail/poll
+responses stay payload-free. Missing historical verification keys refuse result
+content; clearing provider settings does not erase a valid completed public result.
+Resume/event/approval/reconciliation and shared Work views remain separate work.
+
 - Existing Keycloak owner signs in; native PKCE remains functional. One ordinary Send starts chat/public research with existing provider, tool, PHI, egress and budget gates.
 - Owner A drafts, logs out, owner B logs in in the same tab: no A data/selection/history flash. Test same-owner reconnect, both bootstrap completion orders and genuine outage recovery.
 - Duplicate submission, reconnect and restart yield one logical task and no duplicated effect. Cancel/pause/resume and uncertainty reconciliation use current authorized bindings.

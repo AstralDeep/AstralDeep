@@ -1,4 +1,4 @@
-"""Partial Feature 088: authenticated, payload-free one-shot operation reads.
+"""Authenticated one-shot metadata and closed, explicit retained-result reads.
 
 This facade cannot admit, dispatch or control work. It shares the existing
 assignment owner policy and bounded async Plane store.
@@ -123,7 +123,7 @@ class WorkService:
 
         await self.store.transaction(read, bound_session_waits=True)
 
-    async def _read(self, method, owner_id, **kwargs):
+    async def _read(self, method, owner_id, *, include_result=False, **kwargs):
         def transaction(tx, repository):
             callback = getattr(repository, method, None)
             if not callable(callback):
@@ -132,16 +132,28 @@ class WorkService:
             if method == "get_operation":
                 if value is None:
                     raise AssignmentError("work_not_found", 404)
-                return _public(value, owner_id)
+                public = _public(value, owner_id)
+                if include_result:
+                    from orchestrator.work_result import project_research_result
+                    return {"id": public["id"], "revision": public["revision"],
+                            "result": project_research_result(tx, repository,
+                                owner_id=owner_id, read=value)}
+                return public
             return [_public(record, owner_id) for record in value]
         try:
-            return await self.store.transaction(transaction)
+            return await self.store.transaction(transaction, bound_session_waits=include_result)
         except (ValueError, TypeError, AttributeError, KeyError) as exc:
             raise AssignmentError("work_read_unavailable", 503) from exc
 
     async def get(self, owner_id, claims, identity):
         self._owner(owner_id, claims)
         return await self._read("get_operation", owner_id, assignment_id=_identity(identity))
+
+    async def result(self, owner_id, claims, identity):
+        """Read a verified retained result without widening metadata responses."""
+        self._owner(owner_id, claims)
+        return await self._read("get_operation", owner_id, include_result=True,
+                                assignment_id=_identity(identity))
 
     async def list(self, owner_id, claims, *, limit=50, after_id=None):
         self._owner(owner_id, claims)

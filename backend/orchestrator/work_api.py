@@ -221,6 +221,12 @@ async def poll_work(identity: str, request: Request, after_revision: str | None 
     return _json(await _read(request, owner_id, claims, "poll", identity=identity, after_revision=revision))
 
 
+@work_router.get("/{identity}/result")
+async def result_work(identity: str, request: Request, owner_id: str = _OWNER, claims: dict = _CLAIMS):
+    """Deliver only the closed result reconstructed from its settled ledger."""
+    return _json(await _read(request, owner_id, claims, "result", identity=identity))
+
+
 @work_router.post("/{identity}/pause")
 async def pause_work(identity: str, body: WorkControlRequest, request: Request,
                      owner_id: str = _WRITE_OWNER, claims: dict = _CLAIMS):
